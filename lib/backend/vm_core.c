@@ -161,7 +161,14 @@ static double as_number(Value v) {
 /* as_number_vm defined after VM struct (needs heap access for rationals) */
 
 /** @brief Wrap a double as an INT Value if it's an exact, small
- *         (< 1e15 in magnitude) integer, else as a FLOAT Value. */
+ *         (< 1e15 in magnitude) integer, else as a FLOAT Value.
+ *
+ * This classifies by the result's VALUE SHAPE and therefore may only be used
+ * where the operation is known to be in the EXACT domain (an exact-integer
+ * fold, `inexact->exact`, an exact-integer builtin).  For anything derived
+ * from operands whose exactness must be respected, use the tag-driven
+ * number_val_contagious() / number_val_contagious1() below — see the comment
+ * there for the class of silent wrong answers this distinction prevents. */
 static Value number_val(double d) {
     /* A negative zero must stay INEXACT.  IEEE-754 makes (* -1.0 0.0) = -0.0,
      * but the integer collapse below treats -0.0 == 0 and turned it into the
@@ -170,6 +177,40 @@ static Value number_val(double d) {
     if (d == 0.0 && signbit(d)) return FLOAT_VAL(d);
     if (d == (int64_t)d && fabs(d) < 1e15) return INT_VAL((int64_t)d);
     return FLOAT_VAL(d);
+}
+
+/** @brief Does @p v carry the INEXACT runtime tag?
+ *
+ * VAL_FLOAT is the VM's only inexact representation; VAL_INT, VAL_BIGNUM,
+ * VAL_RATIONAL, VAL_I128 and VAL_CHAR are all exact.  Exactness is a property
+ * of the operand's TAG, never of a result's value shape. */
+static inline int vm_is_inexact_tag(Value v) { return v.type == VAL_FLOAT; }
+
+/** @brief Wrap the double result of a BINARY numeric operation, preserving
+ *         R7RS inexact contagion (R7RS 6.2.2: an operation with any inexact
+ *         argument yields an inexact result).
+ *
+ * Classifying the result by value shape alone (bare number_val) collapsed an
+ * integral-valued flonum result to the EXACT integer, which then re-entered
+ * dispatch in the wrong numeric domain:
+ *
+ *     (- 2.0 1.0)              → exact 1  (must be inexact 1.0)
+ *     (/ (- 2.0 1.0) (+ 2.0 1.0))
+ *                              → 1/3      (must be 0.3333333333333333)
+ *
+ * The exactness of a flonum-domain result is decided HERE, by the operand
+ * tags, so no downstream dispatch can mistake it for an exact integer. */
+static inline Value number_val_contagious(Value a, Value b, double d) {
+    if (vm_is_inexact_tag(a) || vm_is_inexact_tag(b)) return FLOAT_VAL(d);
+    return number_val(d);
+}
+
+/** @brief Unary form of number_val_contagious(): (abs -2.0), (- 2.0),
+ *         (floor 2.5) and (max 1.0 2.0) are inexact because their argument
+ *         is, not because the value happens to be non-integral. */
+static inline Value number_val_contagious1(Value a, double d) {
+    if (vm_is_inexact_tag(a)) return FLOAT_VAL(d);
+    return number_val(d);
 }
 
 /*******************************************************************************
@@ -627,8 +668,13 @@ static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
 }
 
 /** @brief VM-aware coercion of a Value to a double, extending as_number()
- *         to unwrap heap-boxed rationals (num/denom) and duals (primal
- *         component) via the VM's heap. */
+ *         to unwrap heap-boxed rationals (num/denom), bignums and duals
+ *         (primal component) via the VM's heap.
+ *
+ * Every numeric tag must be covered here: a tag this function does not know
+ * reads the Value's .as union as an int64 heap index and answers 0.0, which
+ * is how a heap-boxed operand reaching a plain-double path turns into a
+ * silent zero rather than an error. */
 static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
@@ -636,6 +682,10 @@ static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_RATIONAL && vm) {
         VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (r && r->denom != 0) return (double)r->num / (double)r->denom;
+    }
+    if (v.type == VAL_BIGNUM && vm) {
+        VmBignum* b = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (b) return bignum_to_double(b);
     }
     if (v.type == VAL_DUAL && vm) {
         VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;

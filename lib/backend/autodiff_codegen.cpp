@@ -1129,6 +1129,77 @@ llvm::Value* AutodiffCodegen::unpackDualFromTagged(llvm::Value* tagged_val) {
  * @param tagged_val a tagged value that may or may not carry the DUAL_NUMBER tag.
  * @return the dual struct (loaded, or synthesized with only the primal field set).
  */
+llvm::Value* AutodiffCodegen::adPointToDouble(llvm::Value* tagged_val, const char* what) {
+    if (!tagged_val) return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    // Already a raw scalar: nothing is tagged, so nothing can be misread.
+    if (tagged_val->getType()->isDoubleTy()) return tagged_val;
+    if (tagged_val->getType()->isIntegerTy())
+        return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
+    if (tagged_val->getType() != ctx_.taggedValueType())
+        return tagged_.unpackDouble(tagged_val);
+
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // Hoist the spill slot: these calls sit inside per-element seeding loops.
+    llvm::AllocaInst* slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_point_slot");
+    }
+    b.CreateStore(tagged_val, slot);
+
+    llvm::FunctionCallee coerce = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_point_to_double",
+        llvm::FunctionType::get(ctx_.doubleType(),
+                                {ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* name = b.CreateGlobalString(what ? what : "autodiff", ".ad_op_name");
+    return b.CreateCall(coerce, {slot, name}, "ad_point_dbl");
+}
+
+llvm::Value* AutodiffCodegen::adPointPredicate(llvm::Value* tagged_val,
+                                               const char* runtime_fn,
+                                               bool raw_is_true) {
+    auto& b = ctx_.builder();
+    // A raw double / raw int is not tagged, so the answer is static.
+    if (!tagged_val || tagged_val->getType() != ctx_.taggedValueType())
+        return raw_is_true ? llvm::ConstantInt::getTrue(ctx_.context())
+                           : llvm::ConstantInt::getFalse(ctx_.context());
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::AllocaInst* slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_point_probe");
+    }
+    b.CreateStore(tagged_val, slot);
+
+    llvm::FunctionCallee pred = ctx_.module().getOrInsertFunction(
+        runtime_fn, llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false));
+    llvm::Value* r = b.CreateCall(pred, {slot}, "ad_pt_pred");
+    return b.CreateICmpNE(r, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+}
+
+llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
+    // A raw double/int reaching here IS a scalar.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_scalar", /*raw_is_true=*/true);
+}
+
+llvm::Value* AutodiffCodegen::adPointIsExactScalar(llvm::Value* tagged_val) {
+    // A raw double/int is not a HEAP exact scalar.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_exact_scalar",
+                            /*raw_is_true=*/false);
+}
+
+llvm::Value* AutodiffCodegen::adPointIsExactNumber(llvm::Value* tagged_val) {
+    // A raw value reaching here is never routed to the exact tier: a raw double
+    // is inexact, and a raw integer is packed as an exact tagged int64 by the
+    // caller before it asks. Answer false for anything still untagged.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_exact_number",
+                            /*raw_is_true=*/false);
+}
+
 llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -1151,16 +1222,19 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_bb);
 
-    // Scalar path: extract a primal double, build {primal, 0.0}.  Use
-    // base_type to pick between bitcast (DOUBLE) and SIToFP (everything
-    // else with a numeric data field — INT64, BOOL, CHAR).
+    // Scalar path: extract a primal double, build {primal, 0.0}.
+    //
+    // ESH-0393: this used to pick between a bitcast (DOUBLE) and SIToFP
+    // ("everything else with a numeric data field — INT64, BOOL, CHAR"). That
+    // enumeration silently assumed a heap pointer never arrives here, but an
+    // EXACT rational or bignum point is HEAP-tagged, so its data field IS a
+    // pointer — and `(derivative (lambda (x) (* x x)) 1/3)` differentiated at
+    // the rational object's ADDRESS, returning a number of heap magnitude.
+    // Classify by the runtime tag instead (adPointToDouble), which converts
+    // every numeric representation to the double it denotes and refuses a
+    // genuinely non-numeric point rather than fabricating one.
     ctx_.builder().SetInsertPoint(scalar_path);
-    llvm::Value* data_int = ctx_.builder().CreateExtractValue(tagged_val, {4}, "sudft_data");
-    llvm::Value* primal_si = ctx_.builder().CreateSIToFP(data_int, ctx_.doubleType(), "sudft_primal_si");
-    llvm::Value* primal_bc = ctx_.builder().CreateBitCast(data_int, ctx_.doubleType(), "sudft_primal_bc");
-    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-    llvm::Value* primal_final = ctx_.builder().CreateSelect(is_double, primal_bc, primal_si, "sudft_primal");
+    llvm::Value* primal_final = adPointToDouble(tagged_val, "derivative");
     // ESH-0117: start from a fully-zeroed 8-field dual so the e2/e1e2 and the
     // ep-derivative 4-jet (fields 4-7) are 0; only the primal is filled.
     llvm::Value* synth_dual = llvm::ConstantAggregateZero::get(ctx_.dualNumberType());
@@ -4295,15 +4369,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 AllocaInst* rt_result_slot = ctx_.builder().CreateAlloca(
                     ctx_.taggedValueType(), nullptr, "grad_rt_result");
 
-                Value* rt_point_base = tagged_.getBaseType(tagged_.getType(point_val));
-                Value* rt_point_is_double = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-                Value* rt_point_is_int = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-                Value* rt_point_is_dual = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-                Value* rt_point_is_scalar = ctx_.builder().CreateOr(
-                    ctx_.builder().CreateOr(rt_point_is_double, rt_point_is_int), rt_point_is_dual);
+                // ESH-0393: was an enumeration of DOUBLE/INT64/DUAL_NUMBER, which
+                // sent a HEAP-tagged exact rational/bignum scalar point down the
+                // collection path. One authority decides (adPointIsScalar).
+                Value* rt_point_is_scalar = adPointIsScalar(point_val);
 
                 // Recover the callable's declared input arity so the point
                 // is expanded to match the function's true signature. The closure
@@ -4425,7 +4494,9 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.SetInsertPoint(rvt_vcb);
                     Value* rvt_vsrc_ptr = b.CreateGEP(ctx_.taggedValueType(), rvt_vsrc, rvt_vidx);
                     Value* rvt_vsrc_val = b.CreateLoad(ctx_.taggedValueType(), rvt_vsrc_ptr);
-                    Value* rvt_vdbl = tagged_.unpackDouble(rvt_vsrc_val);
+                    // ESH-0393: classify the point element by its runtime tag
+                    // (an exact rational/bignum element is HEAP-tagged).
+                    Value* rvt_vdbl = adPointToDouble(rvt_vsrc_val, "gradient");
                     b.CreateStore(b.CreateBitCast(rvt_vdbl, ctx_.int64Type()),
                         b.CreateGEP(ctx_.int64Type(), rvt_vdst, rvt_vidx));
                     b.CreateStore(b.CreateAdd(rvt_vidx, ConstantInt::get(ctx_.int64Type(), 1)), rvt_vi);
@@ -4769,7 +4840,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
 
                 // Scalar path - create 1-element Scheme vector
                 ctx_.builder().SetInsertPoint(scalar_path);
-                Value* scalar_val = tagged_.unpackDouble(point_val);
+                Value* scalar_val = adPointToDouble(point_val, "gradient");   // ESH-0393
                 Value* scalar_vec_size = ConstantInt::get(ctx_.int64Type(), 8 + tagged_size);
                 Value* scalar_vec = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, scalar_vec_size});
                 ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), scalar_vec);
@@ -4858,7 +4929,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 // Load primal value at position j from input elements
                 Value* in_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), input_elems, inner_j);
                 Value* in_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), in_elem_ptr);
-                Value* primal_val = tagged_.unpackDouble(in_elem);
+                Value* primal_val = adPointToDouble(in_elem, "gradient");     // ESH-0393
 
                 // Set tangent: 1.0 if j == i, else 0.0
                 Value* is_active = ctx_.builder().CreateICmpEQ(inner_j, dim_i);
@@ -4991,7 +5062,28 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
 }
 
+/**
+ * @brief Entry point for the `gradient` operator.
+ *
+ * ESH-0394: at an EXACT scalar point, `(gradient f x)` is `(derivative f x)` --
+ * the reverse tape carries a raw double per node and cannot represent the
+ * answer -- so it takes the exact tier's order-1 tower pass, agreeing with
+ * `(derivative-n f x 1)` in value and in exactness. A vector point is declined
+ * twice over: its body indexes the point (not tower-safe arithmetic) and the
+ * runtime gate accepts only an exact NUMBER. Everything declined runs
+ * gradientJetPath() -- the existing reverse-mode implementation, unchanged.
+ */
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+    if (op && op->gradient_op.function && op->gradient_op.point) {
+        if (llvm::Value* exact = tryExactTowerRoute(
+                op->gradient_op.function, op->gradient_op.point, /*order=*/1,
+                [&]() { return gradientJetPath(op); }, "gradient"))
+            return exact;
+    }
+    return gradientJetPath(op);
+}
+
+llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->gradient_op.function) {
         eshkol_error("Invalid gradient operation - missing function");
@@ -5442,7 +5534,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     Value* is_double = ctx_.builder().CreateICmpEQ(input_base_type,
         ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-    Value* is_scalar = ctx_.builder().CreateOr(is_int64, is_double);
+    // ESH-0393: an exact rational/bignum is a scalar point too, and it is
+    // HEAP-tagged, so it failed the INT64|DOUBLE test and was routed into the
+    // collection path (its object then read as [dims][rank][elems]). This
+    // predicate feeds BOTH the entry branch below and the exit unwrap that
+    // returns a bare scalar instead of a 1-element vector, so the two agree:
+    // widening only the entry made (gradient f 1/3) answer #(0.666…) where
+    // (gradient f 0.333…) answers 0.666…. Deliberately narrower than
+    // adPointIsScalar (no DUAL_NUMBER), so nested AD keeps its own dispatch.
+    Value* is_scalar = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(is_int64, is_double),
+        adPointIsExactScalar(vector_val));
 
     // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
     // First check for HEAP_PTR (consolidated format)
@@ -5551,6 +5653,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Scheme vector so it goes through the same path as a (vector …) input.
     // Without this, a multi-parameter gradient on a list crashed — the cons
     // cell fell through to the vector path and was misread as [length][elems].
+    // An exact rational/bignum point never reaches this subtype chain: the
+    // widened `is_scalar` above already routed it to scalar_input (ESH-0393).
     ctx_.builder().SetInsertPoint(grad_check_cons);
     ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_tensor);
 
@@ -5673,14 +5777,12 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(scalar_input);
     eshkol_debug("Gradient: auto-promoting scalar input to 1D vector");
     
-    // Extract scalar value (INT64 or DOUBLE)
-    Value* scalar_val_int = tagged_.unpackInt64(vector_val);
-    
-    // Convert to double if needed
-    Value* scalar_double = ctx_.builder().CreateSelect(is_double,
-        ctx_.builder().CreateBitCast(scalar_val_int, ctx_.doubleType()),
-        ctx_.builder().CreateSIToFP(scalar_val_int, ctx_.doubleType()));
-    
+    // ESH-0393: the point's own tag decides. The predecessor selected between a
+    // bitcast (DOUBLE) and SIToFP (assumed INT64) over the raw data field, so a
+    // HEAP-tagged exact rational/bignum scalar point was promoted as its own
+    // ADDRESS. adPointToDouble converts each numeric representation once.
+    Value* scalar_double = adPointToDouble(vector_val, "gradient");
+
     // Allocate 1D tensor structure for promoted scalar via arena (OALR compliant - no malloc)
     Value* typed_promoted_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
 
@@ -6023,7 +6125,7 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(v2t_body);
     Value* v2t_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), v2t_elems, v2t_idx);
     Value* v2t_src_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), v2t_src_ptr);
-    Value* v2t_dbl = tagged_.unpackDouble(v2t_src_val);
+    Value* v2t_dbl = adPointToDouble(v2t_src_val, "gradient");   // ESH-0393
     Value* v2t_bits = ctx_.builder().CreateBitCast(v2t_dbl, ctx_.int64Type());
     Value* v2t_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), v2t_dst, v2t_idx);
     ctx_.builder().CreateStore(v2t_bits, v2t_dst_slot);
@@ -7459,7 +7561,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(jac_svec_copy_body);
     Value* jac_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), jac_scheme_elem_base_typed, jac_svec_i);
     Value* jac_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), jac_svec_src_ptr);
-    Value* jac_svec_double_val = tagged_.unpackDouble(jac_svec_tagged_elem);
+    Value* jac_svec_double_val = adPointToDouble(jac_svec_tagged_elem, "jacobian");   // ESH-0393
     Value* jac_svec_as_int64 = ctx_.builder().CreateBitCast(jac_svec_double_val, ctx_.int64Type());
     Value* jac_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), jac_typed_scheme_elems, jac_svec_i);
     ctx_.builder().CreateStore(jac_svec_as_int64, jac_svec_dst_ptr);
@@ -8091,6 +8193,18 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         }
     }
 
+    // ESH-0394: exact tier. At an EXACT point (integer / bignum / rational) the
+    // 8-jet cannot represent the answer -- it carries a raw double per
+    // component -- so run the same order-1 tower pass `derivative-n` runs, which
+    // does. `(derivative f x)` then equals `(derivative-n f x 1)` at an exact x
+    // in value and in exactness. Declines (emitting nothing) unless the body and
+    // the point are pure tower-safe arithmetic; an inexact point never reaches
+    // the test.
+    if (llvm::Value* exact = tryExactTowerRoute(
+            op->derivative_op.function, op->derivative_op.point, /*order=*/1,
+            [&]() { return codegenDerivativeMonolith(op); }, "derivative"))
+        return exact;
+
     if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
         eshkol_error("derivative: Required callbacks not set");
         return tagged_.packNull();
@@ -8179,6 +8293,97 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 #include "../core/taylor_recurrences.def"
     };
     return m;
+}
+
+// ── ESH-0394: eligibility predicate for the EXACT tier ──────────────────────
+//
+// The Taylor tower is the compiler's only AD carrier with exact coefficients,
+// so it is the only way `derivative`/`gradient`/`hessian` can answer exactly at
+// an exact point. It is NOT, however, a drop-in replacement for the 8-jet, and
+// the exact tier may only be entered where the difference cannot be observed:
+//
+//  1. A tower cannot NEST as the outer pass. Measured on this tree:
+//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)  =>  0
+//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )  =>  4  (correct)
+//     because an inner seeder reduces the tower it receives to c[0] and drops
+//     its tangent. Routing a body that differentiates again to the tower would
+//     turn a correct answer into a silent zero.
+//  2. A tower only has recurrences for the primitives in taylor_recurrences.def.
+//     Any other operation applied to a tower-tagged value has no rule to
+//     dispatch to.
+//
+// So the exact tier is entered only for a body this predicate ACCEPTS: numeric
+// literals, exact-rational literals (the parser emits `1/3` as
+// `(make-rational 1 3)`), the DIFFERENTIATION VARIABLE, and the arithmetic heads
+// of the .def table. It is deliberately the same whitelist
+// TaylorMonoEmitter::matchExpr walks, and must be kept in lockstep with it.
+// Everything else keeps the jet path, which stays exactly as correct as it is
+// today and merely answers inexactly.
+//
+// `only_var` is what enforces the third of those. matchExpr bails on a foreign
+// variable ("capture / global"), and so must this: a captured value is not
+// necessarily a number, and the two carriers disagree about what to do when it
+// is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
+//
+//   (derivative (lambda (x) (* x v)) 0.5)   raises "expected tensor, got dual-number"
+//   (derivative (lambda (x) (* x v)) 1/2)   answered 0, silently, when the exact
+//                                           tier accepted the capture
+//
+// Turning a raised diagnostic into a silent zero is the exact failure mode this
+// whole change exists to remove, so an accepted body may mention no variable but
+// the parameter. Passing `only_var == nullptr` accepts any variable, which is
+// correct for the POINT expression: it is evaluated in the enclosing scope, where
+// every variable is an ordinary value, and its runtime tag — not its spelling —
+// decides the route.
+//
+// The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
+// caller evaluate the point once to decide the route and once more inside the
+// arm it selects: an accepted expression is arithmetic over literals and
+// variables, so evaluating it twice is unobservable.
+static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int depth) {
+    if (!e || depth > 64) return false;
+    if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
+        e->type == ESHKOL_BIGNUM_LITERAL)
+        return true;
+    if (e->type == ESHKOL_VAR) {
+        if (!e->variable.id) return false;
+        return only_var == nullptr || *only_var == e->variable.id;
+    }
+    if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
+
+    const auto& call = e->operation.call_op;
+    const eshkol_ast* f = call.func;
+    if (!f || f->type != ESHKOL_VAR || !f->variable.id) return false;
+    const std::string head = f->variable.id;
+
+    const uint64_t nargs = call.num_vars;
+    const eshkol_ast* args = call.variables;
+    if (nargs > 0 && !args) return false;
+
+    // `n/d` is parsed as `(make-rational n d)`, so the exact tier has to accept
+    // that shape to accept a rational LITERAL at all. Accept ONLY that shape:
+    // both operands integer literals. `(make-rational x 3)` is a different thing
+    // entirely -- a constructor applied to the differentiation variable, which
+    // neither carrier differentiates (both answer 0 today) -- and admitting it
+    // would let the two arms drift apart the moment either one learned to.
+    if (head == "make-rational") {
+        if (nargs != 2) return false;
+        for (uint64_t i = 0; i < 2; i++)
+            if (args[i].type != ESHKOL_INT64 && args[i].type != ESHKOL_BIGNUM_LITERAL)
+                return false;
+        return true;
+    }
+
+    // The accepted heads: the .def arithmetic table, plus the two extra
+    // spellings matchExpr accepts alongside it.
+    const bool accepted = monoBinOps().count(head) != 0 ||
+                          monoUnOps().count(head) != 0 ||
+                          head == "expt" || head == "fabs";
+    if (!accepted) return false;
+
+    for (uint64_t i = 0; i < nargs; i++)
+        if (!towerSafeExpr(&args[i], only_var, depth + 1)) return false;
+    return true;
 }
 
 class TaylorMonoEmitter {
@@ -8635,6 +8840,239 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
     return r ? r : tagged_.packNull();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ESH-0394: the EXACT TIER for the jet/tape operators
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `derivative-n` and `taylor` answer an exact point exactly, because they run
+// the pass through the Taylor tower, whose coefficients are tagged values
+// (eshkol_taylor_alloc_exact) and whose arithmetic stays exact through
+// + - * / and non-negative-integer expt, demoting to f64 at the first
+// transcendental. `derivative`, `gradient` and `hessian` carry a raw double per
+// jet component, so they cannot represent an exact coefficient at all and used
+// to answer 0.666… where `derivative-n` answers 2/3.
+//
+// The exact tier closes that by ROUTING THE PASS, not by changing the carrier:
+// at an exact point, and only where the difference between the two carriers is
+// unobservable (towerSafeExpr above), the operator runs the SAME tower pass
+// `derivative-n` runs. The contract is therefore exactly
+//
+//     (derivative f x)  ==  (derivative-n f x 1)         at an exact x
+//     (hessian    f x)  ==  (derivative-n f x 2)         at an exact scalar x
+//
+// in value AND in exactness, with `derivative-n`/`taylor` as the oracle.
+//
+// Everything else is untouched: the decision is a single runtime tag test at
+// the entry of one AD call, the inexact arm is the existing jet path emitted
+// verbatim, and a point that is provably a double at compile time never even
+// reaches the test.
+
+/** @brief i1: may this AD pass enter the exact tier at runtime?
+ *
+ * Three conditions, all of which must hold:
+ *   - the point is an EXACT number (int64 / bignum / rational) — the same
+ *     question eshkol_taylor_seed_tagged asks before it seeds an exact tower,
+ *     so codegen and seeder cannot disagree;
+ *   - no forward differentiation is live (`__ad_pert_level == 0`) — a live jet
+ *     means the point may carry an outer perturbation the tower would drop;
+ *   - no tower pass is live (`__ad_tower_active == 0`) — a tower cannot nest as
+ *     the outer pass (see towerSafeExpr);
+ *   - no reverse tape is live (`__current_ad_tape == null`) — inside a gradient
+ *     pass the point or a capture may be a tape node, which is a carrier
+ *     interaction the exact tier declines. This is a RUNTIME test: the tape
+ *     global is created for every module, so its mere existence says nothing.
+ */
+llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* is_exact = adPointIsExactNumber(point_tagged);
+
+    llvm::Value* gate = is_exact;
+    if (llvm::GlobalVariable* gp = ctx_.adPertLevel()) {
+        llvm::Value* lvl = b.CreateLoad(ctx_.int64Type(), gp, "xt_pert_level");
+        gate = b.CreateAnd(gate,
+            b.CreateICmpEQ(lvl, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    if (llvm::GlobalVariable* gt = ctx_.adTowerActive()) {
+        llvm::Value* dep = b.CreateLoad(ctx_.int64Type(), gt, "xt_twr_depth");
+        gate = b.CreateAnd(gate,
+            b.CreateICmpEQ(dep, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    if (llvm::GlobalVariable* gtape = ctx_.currentAdTape()) {
+        llvm::Value* tape = b.CreateLoad(ctx_.ptrType(), gtape, "xt_tape");
+        gate = b.CreateAnd(gate, b.CreateICmpEQ(tape,
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context()))));
+    }
+    return gate;
+}
+
+/** @brief Is this (function, point) pair eligible for the exact tier?
+ *
+ * Resolves `function_ast` to a single-parameter body — an inline lambda, or a
+ * VAR naming a one-argument top-level define (via function_def_ast_, the same
+ * resolution tryMonomorphizedTaylor() uses) — and requires BOTH that body and
+ * the point expression to pass towerSafeExpr(). A function this cannot resolve
+ * is declined: its body may differentiate again, and a tower cannot nest.
+ */
+bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
+                                           const eshkol_ast* point_ast) {
+    if (!function_ast || !point_ast) return false;
+    // The point is evaluated in the enclosing scope, so any variable it mentions
+    // is an ordinary value; only its purity matters here, and its runtime tag
+    // decides the route.
+    if (!towerSafeExpr(point_ast, /*only_var=*/nullptr, 0)) return false;
+
+    const eshkol_ast* body = nullptr;
+    std::string param;
+    if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
+        const auto& L = function_ast->operation.lambda_op;
+        if (L.num_params != 1 || !L.parameters || !L.body) return false;
+        if (!L.parameters[0].variable.id) return false;
+        param = L.parameters[0].variable.id;
+        body = L.body;
+    } else if (function_ast->type == ESHKOL_VAR) {
+        if (!function_def_ast_ || !function_ast->variable.id) return false;
+        const std::string name = function_ast->variable.id;
+        // A LOCAL binding or parameter of the same name shadows the top-level
+        // define, so the define's body is not what this call will invoke.
+        // Reading eligibility off the shadowed AST would arm the exact tier for
+        // whatever the local actually holds -- including a nested
+        // differentiation, which the tower silently answers 0 for. The monolith
+        // resolves symbol_table_ before global_symbol_table_ for exactly this
+        // reason; the eligibility test has to agree with it.
+        if (symbol_table_ && symbol_table_->find(name) != symbol_table_->end())
+            return false;
+        auto it = function_def_ast_->find(name);
+        if (it == function_def_ast_->end() || !it->second) return false;
+        const eshkol_ast* def = it->second;
+        if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
+        const auto& D = def->operation.define_op;
+        if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return false;
+        if (!D.parameters[0].variable.id) return false;
+        param = D.parameters[0].variable.id;
+        body = D.value;
+    } else {
+        return false;
+    }
+    // The body may mention no variable but its own parameter.
+    return towerSafeExpr(body, &param, 0);
+}
+
+/**
+ * @brief Route an AD pass through the exact tier when its point is exact,
+ *        falling back to the operator's own jet path when it is not.
+ *
+ * Emits, in the current block:
+ *
+ *     p    = <point>                      ; once, for the decision
+ *     gate = adExactTowerGate(p)
+ *     br gate, exact, inexact
+ *   exact:    taylorApiCore(f, point, order, DERIV_N)    ; the tower pass
+ *   inexact:  jet_arm()                                  ; verbatim, unchanged
+ *
+ * and merges the two through a tagged slot. Returns nullptr WITHOUT emitting
+ * anything when the pass is not eligible, so every caller keeps its existing
+ * behaviour by simply falling through.
+ *
+ * @param function_ast The function being differentiated.
+ * @param point_ast The evaluation point.
+ * @param order Tower order: 1 for a first derivative, 2 for a scalar Hessian.
+ * @param jet_arm Emits the operator's existing (inexact) implementation.
+ * @param what Operator name, for the log line only.
+ * @return The merged tagged result, or nullptr if the route does not apply.
+ */
+llvm::Value* AutodiffCodegen::tryExactTowerRoute(
+        const eshkol_ast* function_ast, const eshkol_ast* point_ast, int order,
+        const std::function<llvm::Value*()>& jet_arm, const char* what) {
+    using namespace llvm;
+    if (order < 1 || !codegen_ast_callback_) return nullptr;
+    // Already emitting a tower pass: the exact tier is what that pass IS, so
+    // re-entering would nest a tower inside itself. (A tape/jet/tower being live
+    // at RUN time is handled by adExactTowerGate, not here -- those globals
+    // exist in every module, so their existence says nothing.)
+    if (adTowerMode_ != TowerMode::NONE) return nullptr;
+    // A double literal is provably INEXACT: decline from the AST, before any IR
+    // exists, so the commonest inexact spelling `(derivative f 0.5)` emits not
+    // one instruction of this route.
+    if (point_ast && point_ast->type == ESHKOL_DOUBLE) return nullptr;
+    if (!adExactTowerEligible(function_ast, point_ast)) return nullptr;
+
+    auto& b = ctx_.builder();
+    if (!b.GetInsertBlock() || !b.GetInsertBlock()->getParent()) return nullptr;
+
+    // Evaluate the point for the decision. towerSafeExpr proved it is
+    // arithmetic over literals and variables, so the selected arm may evaluate
+    // it again without any observable difference.
+    Value* praw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
+    if (!praw) return nullptr;
+    Value* ptagged = nullptr;
+    if (praw->getType() == ctx_.taggedValueType()) {
+        ptagged = praw;
+    } else if (praw->getType()->isIntegerTy()) {
+        // A raw integer point is EXACT by R7RS convention.
+        Value* i64v = praw->getType()->isIntegerTy(64)
+                    ? praw : b.CreateSExtOrTrunc(praw, ctx_.int64Type());
+        ptagged = tagged_.packInt64(i64v, /*is_exact=*/true);
+    } else {
+        // A raw double is provably INEXACT: the jet path is already the right
+        // answer, so do not emit a decision at all.
+        return nullptr;
+    }
+
+    eshkol_info("%s: exact-tier route armed (tower order %d)", what ? what : "autodiff", order);
+
+    Function* fn = b.GetInsertBlock()->getParent();
+    AllocaInst* slot;
+    {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "xt_result");
+    }
+
+    // Normalize either arm's result to a tagged value so both can merge. Every
+    // arm wired to this route returns a tagged value or a raw scalar.
+    //
+    // An arm that returns some OTHER representation is a wiring mistake, and by
+    // the time it is discovered both arms have been emitted, so there is nothing
+    // to fall back to. Report it as a compile-time ERROR rather than merging a
+    // packed null: an emitted error diagnostic now prevents artifact emission and
+    // execution, so a mis-wired arm fails the build instead of silently
+    // answering with a null where a number was asked for.
+    auto to_tagged = [&](Value* v, const char* arm) -> Value* {
+        if (!v) return tagged_.packNull();      // arm already reported its own failure
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isDoubleTy()) return tagged_.packDouble(v);
+        if (v->getType()->isIntegerTy(64)) return tagged_.packInt64(v, /*is_exact=*/true);
+        if (v->getType()->isIntegerTy())
+            return tagged_.packInt64(b.CreateSExtOrTrunc(v, ctx_.int64Type()), /*is_exact=*/true);
+        eshkol_error("%s: exact-tier %s arm produced a value that is neither tagged "
+                     "nor a raw scalar; it cannot be merged with the other arm",
+                     what ? what : "autodiff", arm);
+        return tagged_.packNull();
+    };
+
+    Value* gate = adExactTowerGate(ptagged);
+    BasicBlock* exact_bb   = BasicBlock::Create(ctx_.context(), "xt_exact", fn);
+    BasicBlock* inexact_bb = BasicBlock::Create(ctx_.context(), "xt_inexact", fn);
+    BasicBlock* done_bb    = BasicBlock::Create(ctx_.context(), "xt_done", fn);
+    b.CreateCondBr(gate, exact_bb, inexact_bb);
+
+    // ── exact: the same tower pass derivative-n runs ──
+    b.SetInsertPoint(exact_bb);
+    Value* order_i32 = ConstantInt::get(ctx_.int32Type(), order);
+    Value* exact_res = to_tagged(taylorApiCore(function_ast, point_ast, order_i32,
+                                               TowerMode::DERIV_N), "exact");
+    b.CreateStore(exact_res ? exact_res : tagged_.packNull(), slot);
+    b.CreateBr(done_bb);
+
+    // ── inexact: the operator's existing implementation, verbatim ──
+    b.SetInsertPoint(inexact_bb);
+    Value* jet_res = to_tagged(jet_arm(), "inexact");
+    b.CreateStore(jet_res ? jet_res : tagged_.packNull(), slot);
+    b.CreateBr(done_bb);
+
+    b.SetInsertPoint(done_bb);
+    return b.CreateLoad(ctx_.taggedValueType(), slot, "xt_selected");
+}
+
 /**
  * @brief Coerce a Taylor/derivative-n `order` argument value to i32.
  *
@@ -8800,7 +9238,27 @@ int AutodiffCodegen::detectPureDerivChain(const eshkol_operations_t* op,
  * @param op ESHKOL_HESSIAN_OP with hessian_op.function (scalar f) and hessian_op.point.
  * @return Tagged value wrapping an n-by-n tensor pointer (HEAP_PTR), or nullptr on error.
  */
+/**
+ * @brief Entry point for the `hessian` operator.
+ *
+ * ESH-0394: at an EXACT scalar point the Hessian is the second derivative, so
+ * it takes the exact tier's order-2 tower pass and agrees with
+ * `(derivative-n f x 2)` in value and in exactness. A vector point is declined
+ * (its body indexes the point, and the gate accepts only an exact NUMBER) and
+ * runs hessianJetPath() -- the existing forward-over-forward / matrix
+ * implementation, unchanged.
+ */
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
+    if (op && op->hessian_op.function && op->hessian_op.point) {
+        if (llvm::Value* exact = tryExactTowerRoute(
+                op->hessian_op.function, op->hessian_op.point, /*order=*/2,
+                [&]() { return hessianJetPath(op); }, "hessian"))
+            return exact;
+    }
+    return hessianJetPath(op);
+}
+
+llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->hessian_op.function || !op->hessian_op.point) {
         eshkol_error("Invalid hessian operation");
@@ -8966,15 +9424,12 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
             else if (typed_raw_->getType()->isDoubleTy())             rt_tagged = tagged_.packDouble(typed_raw_);
             else if (typed_raw_->getType()->isIntegerTy(64))          rt_tagged = tagged_.packInt64(typed_raw_, true);
             else                                                      rt_tagged = typed_raw_;
-            Value* rt_base = tagged_.getBaseType(tagged_.getType(rt_tagged));
-            Value* rt_is_d = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-            Value* rt_is_i = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-            Value* rt_is_du = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-            Value* rt_is_scalar = ctx_.builder().CreateOr(
-                ctx_.builder().CreateOr(rt_is_d, rt_is_i), rt_is_du);
+            // ESH-0393: this enumerated DOUBLE/INT64/DUAL_NUMBER, so a
+            // HEAP-tagged exact rational or bignum — an ordinary scalar point —
+            // failed the test and was routed into the vector/tensor path, which
+            // dereferenced the rational object as a tensor (SIGSEGV on
+            // `(hessian f 1/3)`). Ask the one authority instead.
+            Value* rt_is_scalar = adPointIsScalar(rt_tagged);
 
             llvm::IRBuilder<> eb(&cur->getEntryBlock(), cur->getEntryBlock().begin());
             hess_rt_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "hess_rt_result");
@@ -9002,23 +9457,11 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
             }
             // If !func_ptr, scalar_func_ptr stays nullptr and hessian_closure_val is used below.
 
-            // Get the scalar point value as a double. An integer point (e.g.
-            // (hessian cube 2)) must be converted via SIToFP — unpackDouble on
-            // an int-tagged value reads the integer bit pattern as a double.
-            Value* x;
-            if (typed_raw_->getType()->isDoubleTy()) {
-                x = typed_raw_;
-            } else if (typed_raw_->getType()->isIntegerTy(64)) {
-                x = ctx_.builder().CreateSIToFP(typed_raw_, ctx_.doubleType());
-            } else {
-                Value* pt = typed_raw_;
-                Value* base_ty = tagged_.getBaseType(tagged_.getType(pt));
-                Value* is_int = ctx_.builder().CreateICmpEQ(base_ty,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-                Value* as_int = ctx_.builder().CreateSIToFP(tagged_.unpackInt64(pt), ctx_.doubleType());
-                Value* as_dbl = tagged_.unpackDouble(pt);
-                x = ctx_.builder().CreateSelect(is_int, as_int, as_dbl);
-            }
+            // Get the scalar point value as a double. ESH-0393: the tagged case
+            // used to select between SIToFP (INT64) and unpackDouble (assumed
+            // DOUBLE), which reads a HEAP-tagged exact rational/bignum point as
+            // its own pointer bits. adPointToDouble classifies by runtime tag.
+            Value* x = adPointToDouble(typed_raw_, "hessian");
 
             // EXACT f''(x) via forward-over-forward AD: seed BOTH perturbation
             // slots on the single input, x_jet = {x, 1, 1, 0}. Then
@@ -9313,7 +9756,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(hess_svec_copy_body);
     Value* hess_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), hess_scheme_elem_base_typed, hess_svec_i);
     Value* hess_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_svec_src_ptr);
-    Value* hess_svec_double_val = tagged_.unpackDouble(hess_svec_tagged_elem);
+    Value* hess_svec_double_val = adPointToDouble(hess_svec_tagged_elem, "hessian");   // ESH-0393
     Value* hess_svec_as_int64 = ctx_.builder().CreateBitCast(hess_svec_double_val, ctx_.int64Type());
     Value* hess_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), hess_typed_scheme_elems, hess_svec_i);
     ctx_.builder().CreateStore(hess_svec_as_int64, hess_svec_dst_ptr);
@@ -10444,7 +10887,7 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     ctx_.builder().SetInsertPoint(dd_svec_copy_body);
     Value* dd_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dd_scheme_elem_base_typed, dd_svec_i);
     Value* dd_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dd_svec_src_ptr);
-    Value* dd_svec_double_val = tagged_.unpackDouble(dd_svec_tagged_elem);
+    Value* dd_svec_double_val = adPointToDouble(dd_svec_tagged_elem, "directional-derivative");   // ESH-0393
     Value* dd_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), dd_typed_scheme_elems, dd_svec_i);
     ctx_.builder().CreateStore(dd_svec_double_val, dd_svec_dst_ptr);
     Value* dd_svec_next_i = ctx_.builder().CreateAdd(dd_svec_i, ConstantInt::get(ctx_.int64Type(), 1));

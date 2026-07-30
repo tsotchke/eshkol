@@ -27,6 +27,26 @@
              (display ") ad=") (display ad)
              (display " fd=") (display fd) (newline))))
 
+;; ESH-0393: the exact tier is not an FD comparison — derivative-n/taylor at an
+;; exact seed must come back EXACT, so assert both the exactness tag and the
+;; value. task=#f -> PASS/FAIL; task=string -> XKNOWN on mismatch.
+(define (chk-exact id got expect task)
+  (if (and (exact? got) (= got expect))
+      (begin (set! op-pass (+ op-pass 1))
+             (display "PASS: ") (display id) (newline))
+      (if task
+          (begin (set! op-xknown (+ op-xknown 1))
+                 (display "XKNOWN: ") (display id)
+                 (display " (") (display task)
+                 (display ") got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline))
+          (begin (set! op-fail (+ op-fail 1))
+                 (display "FAIL: ") (display id)
+                 (display " got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline)))))
+
 ;; perturb component i of a Scheme vector by d (fresh copy).
 (define (perturb-vector v i d)
   (let ((n (vector-length v)) (out (make-vector (vector-length v) 0.0)))
@@ -136,19 +156,19 @@
     (row 0 #f)))
 
 ;; probe htensor.rat.t2.hess
-(define (h151 v) (/ 1.0 (+ 1.0 (tensor-dot v v))))
-(define H151 (hessian h151 (tensor 2 0.8 1.1)))
-(chk-hess "htensor.rat.t2.hess" H151 h151 (vector 0.8 1.1) 2 2e-3 1e-4 #f)
+(define (h187 v) (/ 1.0 (+ 1.0 (tensor-dot v v))))
+(define H187 (hessian h187 (tensor 2 0.8 1.1)))
+(chk-hess "htensor.rat.t2.hess" H187 h187 (vector 0.8 1.1) 2 2e-3 1e-4 #f)
 
 ;; probe htensor.es.v2.hess
-(define (h152 v) (+ (* (exp (* 0.3 (vref v 0))) (sin (vref v 1))) (* (vref v 0) (vref v 1))))
-(define H152 (hessian h152 (vector 0.7 1.2)))
-(chk-hess "htensor.es.v2.hess" H152 h152 (vector 0.7 1.2) 2 2e-3 1e-4 #f)
+(define (h188 v) (+ (* (exp (* 0.3 (vref v 0))) (sin (vref v 1))) (* (vref v 0) (vref v 1))))
+(define H188 (hessian h188 (vector 0.7 1.2)))
+(chk-hess "htensor.es.v2.hess" H188 h188 (vector 0.7 1.2) 2 2e-3 1e-4 #f)
 
 ;; probe htensor.es.t2.hess
-(define (h153 v) (+ (* (exp (* 0.3 (vref v 0))) (sin (vref v 1))) (* (vref v 0) (vref v 1))))
-(define H153 (hessian h153 (tensor 2 0.7 1.2)))
-(chk-hess "htensor.es.t2.hess" H153 h153 (vector 0.7 1.2) 2 2e-3 1e-4 #f)
+(define (h189 v) (+ (* (exp (* 0.3 (vref v 0))) (sin (vref v 1))) (* (vref v 0) (vref v 1))))
+(define H189 (hessian h189 (tensor 2 0.7 1.2)))
+(chk-hess "htensor.es.t2.hess" H189 h189 (vector 0.7 1.2) 2 2e-3 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

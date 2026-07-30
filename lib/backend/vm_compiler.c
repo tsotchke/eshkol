@@ -2387,10 +2387,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* If all operands are compile-time constants, evaluate at compile time */
     if (node->type == N_LIST && node->n_children >= 3) {
         if (head->type == N_SYMBOL) {
-            int all_const = 1, all_int = 1;
+            /* The fold's numeric domain is decided by the literals' EXACTNESS
+             * TAGS (parser: is_int = exact int64 literal, is_inexact = written
+             * in float syntax), never by the folded value's shape.  Folding
+             * `(- 2.0 1.0)` to the exact integer 1 because 1.0 happens to be
+             * integral let the following `/` divide exactly and produce 1/3
+             * where R7RS 6.2.2 requires 0.3333333333333333. */
+            int all_const = 1, all_int = 1, any_inexact = 0;
             for (int i = 1; i < node->n_children; i++) {
                 if (node->children[i]->type != N_NUMBER) { all_const = 0; break; }
                 if (!node->children[i]->is_int) all_int = 0;
+                if (node->children[i]->is_inexact) any_inexact = 1;
             }
             int is_add = strcmp(head->symbol, "+") == 0;
             int is_sub = strcmp(head->symbol, "-") == 0;
@@ -2419,7 +2426,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     return;
                 }
                 /* overflow → leave to runtime */
-            } else if (all_const) {
+            } else if (all_const && any_inexact) {
                 double result = 0;
                 int folded = 0;
                 if (is_add) {
@@ -2442,19 +2449,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                  * lets it produce an exact rational (or int), or a float, based
                  * on the actual operand types. */
                 if (folded) {
-                    /* Preserve a negative zero as INEXACT, exactly as the
-                     * runtime's number_val() does: IEEE-754 makes
-                     * (* -1.0 0.0) = -0.0, and the integer collapse treats
-                     * -0.0 == 0, so folding it discarded the sign bit and the
-                     * VM printed 0 where native prints -0. */
-                    int negative_zero = (result == 0.0 && signbit(result));
-                    int ci = chunk_add_const(c,
-                        (!negative_zero && result == (int64_t)result && fabs(result) < 1e15)
-                        ? INT_VAL((int64_t)result) : FLOAT_VAL(result));
+                    /* At least one operand was written in inexact syntax, so
+                     * the folded constant is INEXACT — unconditionally.  The
+                     * old value-shape test emitted INT_VAL whenever the result
+                     * was integral, which is how (- 2.0 1.0) reached the
+                     * runtime as the exact 1 and made (/ 1 3) exact; it also
+                     * flattened a folded -0.0 to the exact 0. */
+                    int ci = chunk_add_const(c, FLOAT_VAL(result));
                     if (ci >= 0) chunk_emit(c, OP_CONST, ci);
                     return;
                 }
             }
+            /* all_const but neither all-exact-int64 nor any-inexact: the
+             * operands are exact literals this fold cannot represent (an
+             * integer literal wider than int64).  Folding them through a
+             * double would silently make an exact result inexact, so leave
+             * them to the runtime, whose ops promote to the bignum domain. */
         }
     }
 

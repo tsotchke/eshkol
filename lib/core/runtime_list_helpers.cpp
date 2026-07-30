@@ -19,6 +19,12 @@ extern "C" {
 
 extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
+/* ESH-0393: the AD seed/point coercion authority (lib/core/runtime_taylor.c).
+ * Converts any numeric tagged value — int64, double, bignum, rational, jet,
+ * Taylor tower — to the double it denotes, reporting via *ok whether the value
+ * was a number at all. Used below so a (list …) AD point keeps exact elements. */
+extern double eshkol_ad_seed_to_double(const eshkol_tagged_value_t* v, int32_t* ok);
+
 /**
  * @brief Test whether a tagged value denotes a live (non-null) cons cell.
  *
@@ -119,10 +125,15 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
         // The AD svec path reads each element as a double; promote exact
         // integers so (gradient f (list 1 2)) behaves like (list 1.0 2.0).
         if (e.type != ESHKOL_VALUE_DOUBLE) {
-            // P2: an integer promotes to its value; a HEAP_PTR (bignum/rational/
-            // other) must NOT have its pointer bits reinterpreted as a double —
-            // use 0.0 rather than garbage.
-            double d = (e.type == ESHKOL_VALUE_HEAP_PTR) ? 0.0 : (double)e.data.int_val;
+            // ESH-0393: P2 correctly refused to reinterpret a HEAP_PTR element's
+            // pointer bits as a double, but substituted 0.0 — which fabricates a
+            // number just as surely, only quietly: (gradient f (list 1/3)) came
+            // back #(0). An exact rational/bignum element HAS a double it
+            // denotes, so ask the AD coercion authority for it and only fall
+            // back for a genuinely non-numeric element.
+            int32_t ok = 0;
+            double d = eshkol_ad_seed_to_double(&e, &ok);
+            if (!ok) d = 0.0;
             e.type = ESHKOL_VALUE_DOUBLE;
             e.data.double_val = d;
         }
