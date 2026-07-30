@@ -1,0 +1,449 @@
+;; tests/ad/exact_point_ad_test.esk
+;; ESH-0393: EXACT evaluation points at the jet/tape AD entry points.
+;;
+;; The forward jet and the reverse tape carry a raw double per component, so
+;; every AD entry point coerces its evaluation point to a double at the
+;; boundary. That coercion used to REINTERPRET the tagged value's data field --
+;; SIToFP at the jet seeder, a bitcast in the vector/tensor bridges -- which is
+;; correct only for an immediate. An exact rational or bignum is HEAP-tagged, so
+;; its data field is a POINTER, and the substrate silently differentiated at the
+;; object's ADDRESS:
+;;
+;;   (derivative (lambda (x) (* x x)) 1/3)   => 10201973616.0   (heap address)
+;;   (gradient   (lambda (v) …) (vector 1/3)) => #(26844973296.0)
+;;
+;; The scalar-vs-collection dispatches had the same shape of bug from the other
+;; side: they enumerated the tags a scalar was expected to carry, so an exact
+;; heap scalar was routed down the COLLECTION path and its rational object was
+;; dereferenced as [dims][rank][elems] -- (gradient f 1/3) returned #() and
+;; (hessian f 1/3) segfaulted.
+;;
+;; SEMANTICS ASSERTED HERE (see docs/reference/ad/operators.md, "Exact vs
+;; inexact seeds", and the guide's section 12 table):
+;;
+;;   * derivative-n / taylor keep the EXACT tier. An exact seed through
+;;     exact-preserving operators (+ - * / and non-negative-integer expt) comes
+;;     back exact. That is the documented tier (guide section 3) and is pinned
+;;     independently by tests/ad/exact_taylor_test.esk.
+;;
+;;   * the jet/tape entry points (derivative, gradient, jacobian, hessian,
+;;     laplacian, divergence, curl, directional-derivative) perform EXACTLY-ONCE
+;;     boundary coercion: an exact seed they cannot carry exactly is converted to
+;;     the double it denotes, once, at the boundary. The load-bearing property is
+;;     that the result must never disagree with the same computation performed at
+;;     (exact->inexact point).
+;;
+;;   * ESH-0394, section 6 below: `derivative`, `gradient` and `hessian` at an
+;;     exact point no longer need that coercion at all. They run the SAME tower
+;;     pass derivative-n runs, so they are EXACT there, and the contract tightens
+;;     from agreement-within-tolerance to an identity with the oracle:
+;;       (derivative f x) == (derivative-n f x 1),
+;;       (gradient   f x) == (derivative-n f x 1),
+;;       (hessian    f x) == (derivative-n f x 2)   at an exact scalar x,
+;;     in value AND in exactness. That is the tightening the previous revision of
+;;     this comment anticipated; the sections below it still hold, because an
+;;     exact answer never disagrees with the inexact one.
+;;
+;; The controlling assertion in sections 1-5 is therefore
+;;   |op(f, exact-pt) - op(f, (exact->inexact exact-pt))| <= tol,
+;; which is what catches a fabricated number regardless of its magnitude (a heap
+;; address, a 5e-314 denormal and a silent 0 all fail it), and in section 6 it is
+;; `exact?` on both sides plus `=` against the tower oracle.
+;;
+;; Runs identically under -r (JIT) and AOT.
+
+(define npass 0)
+(define nfail 0)
+
+(define (report name ok extra)
+  (if ok
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name) (display " ") (display extra) (newline))))
+
+;; Absolute/relative closeness, used for every exact-vs-inexact agreement check.
+(define (close? a b)
+  (<= (abs (- a b)) (+ 1e-9 (* 1e-9 (abs b)))))
+
+(define (check-close name got expect)
+  (report name (close? got expect)
+          (string-append "got=" (number->string got)
+                         " expect=" (number->string expect))))
+
+;; The exact-seed result must agree with the inexact-seed result. Both are
+;; computed by the caller; this only names the comparison.
+(define (check-agrees name exact-result inexact-result)
+  (report name (close? exact-result inexact-result)
+          (string-append "exact-seed=" (number->string exact-result)
+                         " inexact-seed=" (number->string inexact-result))))
+
+(define (check-exact-eq name got expect)
+  (report name (and (exact? got) (= got expect))
+          (string-append "got=" (number->string got)
+                         " exact?=" (if (exact? got) "#t" "#f")
+                         " expect=" (number->string expect))))
+
+;; ESH-0394 exact tier. The controlling assertion is against the ORACLE, not
+;; against a tolerance: the operator's answer at an exact point must be EXACT and
+;; numerically identical to the derivative-n/taylor tower's answer for the same
+;; f, point and order. `expect` is stated independently so a wrong oracle cannot
+;; certify a wrong operator.
+(define (check-exact-oracle name got oracle expect)
+  (report name (and (exact? got) (exact? oracle) (= got oracle) (= got expect))
+          (string-append "got=" (number->string got)
+                         " exact?=" (if (exact? got) "#t" "#f")
+                         " oracle=" (number->string oracle)
+                         " exact?=" (if (exact? oracle) "#t" "#f")
+                         " expect=" (number->string expect))))
+
+;; Exactness contagion stops at the first transcendental (R7RS): the answer
+;; DEMOTES to a double. It must then be BIT-IDENTICAL to the oracle -- that is
+;; the contract, `derivative` at an exact point IS the tower's answer -- and
+;; numerically agree with the plain double path.
+;;
+;; Bit-identity to the double path is deliberately NOT asserted, because the two
+;; carriers derive some transcendentals differently and always have. Measured on
+;; this tree, at the same inexact point 0.3333333333333333:
+;;   (derivative-n sqrt … 1) = 0.8660254037844386   (tower: u^(1/2) power recurrence)
+;;   (derivative   sqrt …)   = 0.8660254037844387   (jet: closed-form 0.5/sqrt x)
+;; i.e. one ulp apart, with the SAME inexact input -- so this is a jet-vs-tower
+;; recurrence difference, nothing to do with exactness. exp/log/sin do agree
+;; bit-for-bit, which is why the oracle side is pinned exactly.
+(define (check-demotes name got oracle double-path)
+  (report name (and (not (exact? got)) (= got oracle) (close? got double-path))
+          (string-append "got=" (number->string got)
+                         " exact?=" (if (exact? got) "#t" "#f")
+                         " oracle=" (number->string oracle)
+                         " double-path=" (number->string double-path))))
+
+;; ---------------------------------------------------------------------
+;; Section 1 -- derivative-n / taylor keep the EXACT tier (must not degrade).
+;; ---------------------------------------------------------------------
+(define (sq x) (* x x))
+(define (geom x) (/ 1 (- 1 x)))
+
+(check-exact-eq "derivative-n order 1 at 1/3 is exact" (derivative-n sq 1/3 1) 2/3)
+(check-exact-eq "derivative-n order 1 at a bignum point is exact"
+                (derivative-n sq 123456789012345678901 1)
+                246913578024691357802)
+(check-exact-eq "derivative-n order 2 at 1/3 is exact" (derivative-n sq 1/3 2) 2)
+
+;; (taylor geom 1/2 4) = (2 4 8 16 32), exactly.
+(let loop ((cs (taylor geom 1/2 4)) (es (list 2 4 8 16 32)) (k 0))
+  (if (not (null? es))
+      (begin
+        (check-exact-eq (string-append "taylor coefficient " (number->string k) " is exact")
+                        (car cs) (car es))
+        (loop (cdr cs) (cdr es) (+ k 1)))))
+
+;; ---------------------------------------------------------------------
+;; Section 2 -- `derivative` at a scalar exact point, every exact type.
+;; d/dx x^2 = 2x, so the value is point-dependent and a fabricated seed cannot
+;; accidentally agree.
+;; ---------------------------------------------------------------------
+(check-agrees "derivative at a rational point agrees with the inexact seed"
+              (derivative sq 1/3) (derivative sq (exact->inexact 1/3)))
+(check-close  "derivative at a rational point has the right value"
+              (derivative sq 1/3) 0.6666666666666666)
+
+(check-agrees "derivative at a bignum point agrees with the inexact seed"
+              (derivative sq 123456789012345678901)
+              (derivative sq (exact->inexact 123456789012345678901)))
+
+(check-agrees "derivative at a small exact integer agrees with the inexact seed"
+              (derivative sq 3) (derivative sq 3.0))
+(check-close  "derivative at a small exact integer has the right value"
+              (derivative sq 3) 6.0)
+
+;; A rational reached through a VARIABLE, not a literal: the point is exact only
+;; at runtime, so this is what proves the fix is a runtime-tag decision and not
+;; constant folding.
+(define p-rat (/ 1 3))
+(check-agrees "derivative at a runtime-valued rational agrees with the inexact seed"
+              (derivative sq p-rat) (derivative sq (exact->inexact p-rat)))
+
+;; R7RS contagion: a transcendental demotes to f64, but must still be the
+;; derivative AT 1/3 -- exp'(1/3) = exp(1/3) = 1.3956124250860895.
+(define (ex x) (exp x))
+(check-agrees "derivative of exp at a rational point agrees with the inexact seed"
+              (derivative ex 1/3) (derivative ex (exact->inexact 1/3)))
+(check-close  "derivative of exp at a rational point has the right value"
+              (derivative ex 1/3) 1.3956124250860895)
+
+;; ---------------------------------------------------------------------
+;; Section 3 -- `gradient` across point FORMS. (vector …), (list …) and a bare
+;; scalar all reach the tape; each must agree with its inexact counterpart.
+;; ---------------------------------------------------------------------
+(define (v0sq v) (* (vref v 0) (vref v 0)))
+
+(check-agrees "gradient at a (vector 1/3) point agrees with the inexact seed"
+              (vector-ref (gradient v0sq (vector 1/3)) 0)
+              (vector-ref (gradient v0sq (vector (exact->inexact 1/3))) 0))
+(check-close  "gradient at a (vector 1/3) point has the right value"
+              (vector-ref (gradient v0sq (vector 1/3)) 0) 0.6666666666666666)
+
+(check-agrees "gradient at a (vector <bignum>) point agrees with the inexact seed"
+              (vector-ref (gradient v0sq (vector 123456789012345678901)) 0)
+              (vector-ref (gradient v0sq (vector (exact->inexact 123456789012345678901))) 0))
+
+(check-agrees "gradient at a (vector 3) exact-integer point agrees with the inexact seed"
+              (vector-ref (gradient v0sq (vector 3)) 0)
+              (vector-ref (gradient v0sq (vector 3.0)) 0))
+
+(check-agrees "gradient at a (list 1/3) point agrees with the inexact seed"
+              (vector-ref (gradient v0sq (list 1/3)) 0)
+              (vector-ref (gradient v0sq (list (exact->inexact 1/3))) 0))
+
+;; A bare exact scalar point: `is_scalar` used to enumerate INT64/DOUBLE only, so
+;; a rational was treated as a collection and its object read as a tensor
+;; ((gradient f 1/3) answered #()). Note the RETURN SHAPE is asserted implicitly:
+;; a bare scalar point yields a bare scalar, so the exact and inexact seeds must
+;; agree in shape as well as value — widening the entry classification without
+;; widening the exit unwrap made the exact seed answer #(0.666…) here.
+(check-agrees "gradient at a bare rational scalar point agrees with the inexact seed"
+              (gradient sq 1/3) (gradient sq (exact->inexact 1/3)))
+(check-close  "gradient at a bare rational scalar point has the right value"
+              (gradient sq 1/3) 0.6666666666666666)
+
+;; MIXED vector: one exact rational, one double, one exact integer. Each slot's
+;; gradient is 2*x_i, so all three coercions are checked independently and a
+;; single misread slot cannot hide behind the others.
+(define (sum3sq v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))
+     (* (vref v 2) (vref v 2))))
+(let ((gm (gradient sum3sq (vector 1/3 0.5 2)))
+      (gi (gradient sum3sq (vector (exact->inexact 1/3) 0.5 2.0))))
+  (check-agrees "mixed-vector gradient slot 0 (rational) agrees with the inexact seed"
+                (vector-ref gm 0) (vector-ref gi 0))
+  (check-agrees "mixed-vector gradient slot 1 (double) agrees with the inexact seed"
+                (vector-ref gm 1) (vector-ref gi 1))
+  (check-agrees "mixed-vector gradient slot 2 (exact integer) agrees with the inexact seed"
+                (vector-ref gm 2) (vector-ref gi 2))
+  (check-close "mixed-vector gradient slot 0 has the right value"
+               (vector-ref gm 0) 0.6666666666666666))
+
+;; ---------------------------------------------------------------------
+;; Section 4 -- the remaining multivariate operators at an exact point.
+;; ---------------------------------------------------------------------
+;; hessian: use x^4 so the second derivative DEPENDS on the point (12x^2). x^2
+;; would give the constant 2 and pass even with a fabricated seed.
+(define (v0quart v) (* (vref v 0) (vref v 0) (vref v 0) (vref v 0)))
+(define (quart x) (* x x x x))
+
+(check-agrees "hessian at a (vector 1/3) point agrees with the inexact seed"
+              (vector-ref (vector-ref (hessian v0quart (vector 1/3)) 0) 0)
+              (vector-ref (vector-ref (hessian v0quart (vector (exact->inexact 1/3))) 0) 0))
+(check-close  "hessian at a (vector 1/3) point has the right value"
+              (vector-ref (vector-ref (hessian v0quart (vector 1/3)) 0) 0)
+              1.3333333333333333)
+
+;; A bare rational scalar point used to SEGFAULT here.
+(check-agrees "hessian at a bare rational scalar point agrees with the inexact seed"
+              (hessian quart 1/3) (hessian quart (exact->inexact 1/3)))
+
+;; jacobian of an R->R^2 map: row 0 is d(x^2)/dx = 2x, row 1 is d(x)/dx = 1.
+(define (jmap v) (vector (* (vref v 0) (vref v 0)) (vref v 0)))
+(check-agrees "jacobian row 0 at a (vector 1/3) point agrees with the inexact seed"
+              (vector-ref (vector-ref (jacobian jmap (vector 1/3)) 0) 0)
+              (vector-ref (vector-ref (jacobian jmap (vector (exact->inexact 1/3))) 0) 0))
+(check-close  "jacobian row 0 at a (vector 1/3) point has the right value"
+              (vector-ref (vector-ref (jacobian jmap (vector 1/3)) 0) 0)
+              0.6666666666666666)
+
+;; laplacian of x^4 = 12x^2 -- point-dependent.
+(check-agrees "laplacian at a (vector 1/3) point agrees with the inexact seed"
+              (laplacian v0quart (vector 1/3))
+              (laplacian v0quart (vector (exact->inexact 1/3))))
+(check-close  "laplacian at a (vector 1/3) point has the right value"
+              (laplacian v0quart (vector 1/3)) 1.3333333333333333)
+
+;; divergence of (x^2) = 2x -- point-dependent.
+(define (dmap v) (vector (* (vref v 0) (vref v 0))))
+(check-agrees "divergence at a (vector 1/3) point agrees with the inexact seed"
+              (divergence dmap (vector 1/3))
+              (divergence dmap (vector (exact->inexact 1/3))))
+(check-close  "divergence at a (vector 1/3) point has the right value"
+              (divergence dmap (vector 1/3)) 0.6666666666666666)
+
+;; curl of F = (y*z, x*z, x*y) is (x - x, y - y, z - z) = 0 only for that
+;; symmetric field; use F = (y^2, z^2, x^2) so curl = (-2z, -2x, -2y), which
+;; DEPENDS on the point and so cannot pass with a fabricated seed.
+(define (cmap v)
+  (vector (* (vref v 1) (vref v 1))
+          (* (vref v 2) (vref v 2))
+          (* (vref v 0) (vref v 0))))
+(let ((ce (curl cmap (vector 1/3 1/5 1/7)))
+      (ci (curl cmap (vector (exact->inexact 1/3) (exact->inexact 1/5) (exact->inexact 1/7)))))
+  (check-agrees "curl component 0 at an exact-rational point agrees with the inexact seed"
+                (vector-ref ce 0) (vector-ref ci 0))
+  (check-agrees "curl component 1 at an exact-rational point agrees with the inexact seed"
+                (vector-ref ce 1) (vector-ref ci 1))
+  (check-agrees "curl component 2 at an exact-rational point agrees with the inexact seed"
+                (vector-ref ce 2) (vector-ref ci 2)))
+
+;; directional-derivative of x^2 along e0 = 2x -- point-dependent.
+(check-agrees "directional-derivative at a (vector 1/3) point agrees with the inexact seed"
+              (directional-derivative v0sq (vector 1/3) (vector 1))
+              (directional-derivative v0sq (vector (exact->inexact 1/3)) (vector 1)))
+(check-close  "directional-derivative at a (vector 1/3) point has the right value"
+              (directional-derivative v0sq (vector 1/3) (vector 1)) 0.6666666666666666)
+
+;; ---------------------------------------------------------------------
+;; Section 5 -- an INEXACT seed must be entirely unaffected by all of the
+;; above, and the R->R^n forward derivative (which returns a VECTOR of
+;; component derivatives) must keep working at an exact integer point.
+;; ---------------------------------------------------------------------
+(check-close "derivative at an inexact point is unchanged"
+             (derivative sq 0.3333333333333333) 0.6666666666666666)
+(check-close "gradient at an inexact vector point is unchanged"
+             (vector-ref (gradient v0sq (vector 0.5)) 0) 1.0)
+
+;; (derivative f x) where f: R -> R^2 returns #(f0'(x) f1'(x)). At x=2 that is
+;; #(4 12) for (t^2, t^3). This is the behaviour that forbids blanket-routing
+;; `derivative` through the scalar-only Taylor tower, so it is pinned here.
+(define (rn t) (vector (* t t) (* t t t)))
+(let ((d (derivative rn 2)))
+  (check-close "R->R^n derivative component 0 at an exact integer point"
+               (vector-ref d 0) 4.0)
+  (check-close "R->R^n derivative component 1 at an exact integer point"
+               (vector-ref d 1) 12.0))
+
+;; ---------------------------------------------------------------------
+;; Section 6 -- THE EXACT TIER (ESH-0394).
+;;
+;; `derivative`, `gradient` and `hessian` at an exact point now run the SAME
+;; tower pass `derivative-n` runs, so the contract is an identity, not a
+;; tolerance:
+;;
+;;     (derivative f x) == (derivative-n f x 1)      at an exact x
+;;     (gradient   f x) == (derivative-n f x 1)      at an exact scalar x
+;;     (hessian    f x) == (derivative-n f x 2)      at an exact scalar x
+;;
+;; in value AND in exactness. Every check below asserts `exact?` on both sides
+;; and `=` between them, plus an independently-stated expected value so a wrong
+;; oracle cannot certify a wrong operator.
+;; ---------------------------------------------------------------------
+(define (cube x) (* x x x))
+(define (poly x) (+ (* 3 x x) (* -5 x) 7))    ; poly'  = 6x - 5 ; poly'' = 6
+(define (ip4 x) (expt x 4))                   ; ip4'   = 4x^3   ; ip4''  = 12x^2
+
+;; --- derivative: exact rational points on polynomials -----------------
+(check-exact-oracle "derivative of x^2 at 1/3 is exactly 2/3"
+                    (derivative sq 1/3) (derivative-n sq 1/3 1) 2/3)
+(check-exact-oracle "derivative of x^3 at 2/5 is exactly 12/25"
+                    (derivative cube 2/5) (derivative-n cube 2/5 1) 12/25)
+(check-exact-oracle "derivative of 3x^2-5x+7 at 1/3 is exactly -3"
+                    (derivative poly 1/3) (derivative-n poly 1/3 1) -3)
+;; A rational FUNCTION (division by a point-dependent denominator) stays exact:
+;; geom' = 1/(1-x)^2, and at 1/2 that is exactly 4.
+(check-exact-oracle "derivative of 1/(1-x) at 1/2 is exactly 4"
+                    (derivative geom 1/2) (derivative-n geom 1/2 1) 4)
+
+;; --- derivative: exact integer and bignum points ----------------------
+(check-exact-oracle "derivative of x^2 at the exact integer 3 is exactly 6"
+                    (derivative sq 3) (derivative-n sq 3 1) 6)
+(check-exact-oracle "derivative of x^2 at a bignum point is exact (no double rounding)"
+                    (derivative sq 123456789012345678901)
+                    (derivative-n sq 123456789012345678901 1)
+                    246913578024691357802)
+
+;; The point may be computed rather than written: exactness is a property of the
+;; VALUE at the boundary, not of the literal's spelling.
+(define pt13 (/ 1 3))
+(check-exact-oracle "derivative at a variable-held exact rational is exact"
+                    (derivative sq pt13) (derivative-n sq pt13 1) 2/3)
+
+;; --- gradient / hessian at an exact scalar point ----------------------
+(check-exact-oracle "gradient of x^2 at 1/3 is exactly 2/3"
+                    (gradient sq 1/3) (derivative-n sq 1/3 1) 2/3)
+(check-exact-oracle "gradient of x^3 at 2/5 is exactly 12/25"
+                    (gradient cube 2/5) (derivative-n cube 2/5 1) 12/25)
+(check-exact-oracle "hessian of x^2 at 1/3 is exactly 2"
+                    (hessian sq 1/3) (derivative-n sq 1/3 2) 2)
+(check-exact-oracle "hessian of 3x^2-5x+7 at 1/3 is exactly 6"
+                    (hessian poly 1/3) (derivative-n poly 1/3 2) 6)
+(check-exact-oracle "hessian of x^3 at 2/5 is exactly 12/5"
+                    (hessian cube 2/5) (derivative-n cube 2/5 2) 12/5)
+
+;; --- integer expt chains stay exact -----------------------------------
+(check-exact-oracle "derivative of x^4 (integer expt) at 1/3 is exactly 4/27"
+                    (derivative ip4 1/3) (derivative-n ip4 1/3 1) 4/27)
+(check-exact-oracle "hessian of x^4 (integer expt) at 1/3 is exactly 4/3"
+                    (hessian ip4 1/3) (derivative-n ip4 1/3 2) 4/3)
+(check-exact-oracle "derivative of x^4 at the exact integer 2 is exactly 32"
+                    (derivative ip4 2) (derivative-n ip4 2 1) 32)
+
+;; --- the first transcendental demotes to a double ---------------------
+;; Not an error and not a tolerance: the answer becomes inexact and must then be
+;; identical to the oracle AND to the plain double path at the same point.
+(define (fexp x) (exp x))
+(define (flog x) (log x))
+(define (fsqrt x) (sqrt x))
+(define (fmix x) (* (sin x) x x))     ; exact * exact * TRANSCENDENTAL
+(check-demotes "exp demotes an exact point to the double tier"
+               (derivative fexp 1/3) (derivative-n fexp 1/3 1)
+               (derivative fexp (exact->inexact 1/3)))
+(check-demotes "log demotes an exact point to the double tier"
+               (derivative flog 1/3) (derivative-n flog 1/3 1)
+               (derivative flog (exact->inexact 1/3)))
+(check-demotes "sqrt of a non-square demotes an exact point to the double tier"
+               (derivative fsqrt 1/3) (derivative-n fsqrt 1/3 1)
+               (derivative fsqrt (exact->inexact 1/3)))
+(check-demotes "one transcendental factor demotes the whole product"
+               (derivative fmix 1/3) (derivative-n fmix 1/3 1)
+               (derivative fmix (exact->inexact 1/3)))
+(check-demotes "hessian demotes at the first transcendental too"
+               (hessian fexp 1/3) (derivative-n fexp 1/3 2)
+               (hessian fexp (exact->inexact 1/3)))
+
+;; --- an INEXACT point is not promoted ---------------------------------
+;; The exact tier must be invisible on the double path: an inexact point keeps
+;; the jet/tape carrier and an inexact answer.
+(report "derivative at an inexact point stays inexact"
+        (not (exact? (derivative sq 0.5))) "")
+(report "gradient at an inexact point stays inexact"
+        (not (exact? (gradient sq 0.5))) "")
+(report "hessian at an inexact point stays inexact"
+        (not (exact? (hessian sq 0.5))) "")
+(check-close "derivative at an inexact point has the unchanged value"
+             (derivative sq 0.5) 1.0)
+(check-close "gradient at an inexact point has the unchanged value"
+             (gradient sq 0.5) 1.0)
+(check-close "hessian at an inexact point has the unchanged value"
+             (hessian sq 0.5) 2.0)
+
+;; --- a captured variable keeps the jet path --------------------------
+;; The exact tier accepts no variable but the differentiation parameter, because
+;; a captured value need not be a number and the two carriers disagree about what
+;; to do when it is not: with `(define capv (vector 1.0 2.0))`,
+;; `(derivative (lambda (x) (* x capv)) 0.5)` RAISES "expected tensor, got
+;; dual-number", and an exact tier that accepted the capture answered 0 silently
+;; instead. Both points must now behave the same way, so the value that IS a
+;; number is checked here and the raising case is left to the operator's own
+;; diagnostic (it aborts the program, so it cannot be asserted inline).
+(define capk 3)
+(check-close "a captured exact constant keeps the jet path and the right value"
+             (derivative (lambda (x) (* x capk)) 1/2) 3.0)
+(check-close "the same body at an inexact point is unchanged"
+             (derivative (lambda (x) (* x capk)) 0.5) 3.0)
+
+;; --- the exact tier must not disturb nested differentiation -----------
+;; A tower cannot nest as the outer pass, so a body that differentiates again is
+;; declined and keeps the jet path. Pinned here because the failure mode is a
+;; silent 0, not an error:
+;;   d/dx [ d/dy (x*y^2) at y=2 ] = d/dx [4x] = 4.
+(check-close "nested derivative at an exact integer point still answers 4"
+             (derivative (lambda (x) (derivative (lambda (y) (* x (* y y))) 2.0)) 3)
+             4.0)
+(check-close "nested derivative at an inexact point still answers 4"
+             (derivative (lambda (x) (derivative (lambda (y) (* x (* y y))) 2.0)) 3.0)
+             4.0)
+
+;; ---------------------------------------------------------------------
+(display "----") (newline)
+(display "exact-point AD tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: exact-seed AD entry points agree with the inexact seed") (newline))
+    (begin (display "FAIL: exact-seed AD entry points disagree") (newline)))
