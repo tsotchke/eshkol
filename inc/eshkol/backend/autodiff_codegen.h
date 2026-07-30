@@ -361,6 +361,10 @@ public:
      */
     llvm::Value* gradient(const eshkol_operations_t* op);
 
+    /** ESH-0394: the reverse-mode `gradient` implementation, run whenever the
+     *  exact tier declines. Unchanged from the pre-exact-tier `gradient()`. */
+    llvm::Value* gradientJetPath(const eshkol_operations_t* op);
+
     /**
      * Compute Jacobian matrix: (jacobian func args...)
      * @param op The Jacobian operation AST node
@@ -381,6 +385,11 @@ public:
      * @return Hessian matrix as tensor
      */
     llvm::Value* hessian(const eshkol_operations_t* op);
+
+    /** ESH-0394: the forward-over-forward / matrix `hessian` implementation, run
+     *  whenever the exact tier declines. Unchanged from the pre-exact-tier
+     *  `hessian()`. */
+    llvm::Value* hessianJetPath(const eshkol_operations_t* op);
 
     /**
      * Compute divergence (trace of Jacobian): (divergence func args...)

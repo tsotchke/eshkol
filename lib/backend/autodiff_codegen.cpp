@@ -5070,7 +5070,28 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
 }
 
+/**
+ * @brief Entry point for the `gradient` operator.
+ *
+ * ESH-0394: at an EXACT scalar point, `(gradient f x)` is `(derivative f x)` --
+ * the reverse tape carries a raw double per node and cannot represent the
+ * answer -- so it takes the exact tier's order-1 tower pass, agreeing with
+ * `(derivative-n f x 1)` in value and in exactness. A vector point is declined
+ * twice over: its body indexes the point (not tower-safe arithmetic) and the
+ * runtime gate accepts only an exact NUMBER. Everything declined runs
+ * gradientJetPath() -- the existing reverse-mode implementation, unchanged.
+ */
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+    if (op && op->gradient_op.function && op->gradient_op.point) {
+        if (llvm::Value* exact = tryExactTowerRoute(
+                op->gradient_op.function, op->gradient_op.point, /*order=*/1,
+                [&]() { return gradientJetPath(op); }, "gradient"))
+            return exact;
+    }
+    return gradientJetPath(op);
+}
+
+llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->gradient_op.function) {
         eshkol_error("Invalid gradient operation - missing function");
@@ -9171,7 +9192,27 @@ int AutodiffCodegen::detectPureDerivChain(const eshkol_operations_t* op,
  * @param op ESHKOL_HESSIAN_OP with hessian_op.function (scalar f) and hessian_op.point.
  * @return Tagged value wrapping an n-by-n tensor pointer (HEAP_PTR), or nullptr on error.
  */
+/**
+ * @brief Entry point for the `hessian` operator.
+ *
+ * ESH-0394: at an EXACT scalar point the Hessian is the second derivative, so
+ * it takes the exact tier's order-2 tower pass and agrees with
+ * `(derivative-n f x 2)` in value and in exactness. A vector point is declined
+ * (its body indexes the point, and the gate accepts only an exact NUMBER) and
+ * runs hessianJetPath() -- the existing forward-over-forward / matrix
+ * implementation, unchanged.
+ */
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
+    if (op && op->hessian_op.function && op->hessian_op.point) {
+        if (llvm::Value* exact = tryExactTowerRoute(
+                op->hessian_op.function, op->hessian_op.point, /*order=*/2,
+                [&]() { return hessianJetPath(op); }, "hessian"))
+            return exact;
+    }
+    return hessianJetPath(op);
+}
+
+llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->hessian_op.function || !op->hessian_op.point) {
         eshkol_error("Invalid hessian operation");
