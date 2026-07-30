@@ -8332,22 +8332,42 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 //     dispatch to.
 //
 // So the exact tier is entered only for a body this predicate ACCEPTS: numeric
-// literals, variables, exact-rational literals (the parser emits `1/3` as
-// `(make-rational 1 3)`), and the arithmetic heads of the .def table. It is
-// deliberately the same whitelist TaylorMonoEmitter::matchExpr walks, and must
-// be kept in lockstep with it. Everything else keeps the jet path, which stays
-// exactly as correct as it is today and merely answers inexactly.
+// literals, exact-rational literals (the parser emits `1/3` as
+// `(make-rational 1 3)`), the DIFFERENTIATION VARIABLE, and the arithmetic heads
+// of the .def table. It is deliberately the same whitelist
+// TaylorMonoEmitter::matchExpr walks, and must be kept in lockstep with it.
+// Everything else keeps the jet path, which stays exactly as correct as it is
+// today and merely answers inexactly.
+//
+// `only_var` is what enforces the third of those. matchExpr bails on a foreign
+// variable ("capture / global"), and so must this: a captured value is not
+// necessarily a number, and the two carriers disagree about what to do when it
+// is not. Measured on this tree with `(define v (vector 1.0 2.0))`:
+//
+//   (derivative (lambda (x) (* x v)) 0.5)   raises "expected tensor, got dual-number"
+//   (derivative (lambda (x) (* x v)) 1/2)   answered 0, silently, when the exact
+//                                           tier accepted the capture
+//
+// Turning a raised diagnostic into a silent zero is the exact failure mode this
+// whole change exists to remove, so an accepted body may mention no variable but
+// the parameter. Passing `only_var == nullptr` accepts any variable, which is
+// correct for the POINT expression: it is evaluated in the enclosing scope, where
+// every variable is an ordinary value, and its runtime tag — not its spelling —
+// decides the route.
 //
 // The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
 // caller evaluate the point once to decide the route and once more inside the
 // arm it selects: an accepted expression is arithmetic over literals and
 // variables, so evaluating it twice is unobservable.
-static bool towerSafeExpr(const eshkol_ast* e, int depth) {
+static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int depth) {
     if (!e || depth > 64) return false;
     if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
         e->type == ESHKOL_BIGNUM_LITERAL)
         return true;
-    if (e->type == ESHKOL_VAR) return e->variable.id != nullptr;
+    if (e->type == ESHKOL_VAR) {
+        if (!e->variable.id) return false;
+        return only_var == nullptr || *only_var == e->variable.id;
+    }
     if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
 
     const auto& call = e->operation.call_op;
@@ -8355,21 +8375,33 @@ static bool towerSafeExpr(const eshkol_ast* e, int depth) {
     if (!f || f->type != ESHKOL_VAR || !f->variable.id) return false;
     const std::string head = f->variable.id;
 
-    // The accepted heads: the .def arithmetic table, the two spellings
-    // matchExpr accepts alongside it, and the rational-literal constructor the
-    // parser desugars `n/d` into (an exact constant the tower kernel's
-    // scalar-operand path handles directly).
-    const bool accepted = monoBinOps().count(head) != 0 ||
-                          monoUnOps().count(head) != 0 ||
-                          head == "expt" || head == "fabs" ||
-                          head == "make-rational";
-    if (!accepted) return false;
-
     const uint64_t nargs = call.num_vars;
     const eshkol_ast* args = call.variables;
     if (nargs > 0 && !args) return false;
+
+    // `n/d` is parsed as `(make-rational n d)`, so the exact tier has to accept
+    // that shape to accept a rational LITERAL at all. Accept ONLY that shape:
+    // both operands integer literals. `(make-rational x 3)` is a different thing
+    // entirely -- a constructor applied to the differentiation variable, which
+    // neither carrier differentiates (both answer 0 today) -- and admitting it
+    // would let the two arms drift apart the moment either one learned to.
+    if (head == "make-rational") {
+        if (nargs != 2) return false;
+        for (uint64_t i = 0; i < 2; i++)
+            if (args[i].type != ESHKOL_INT64 && args[i].type != ESHKOL_BIGNUM_LITERAL)
+                return false;
+        return true;
+    }
+
+    // The accepted heads: the .def arithmetic table, plus the two extra
+    // spellings matchExpr accepts alongside it.
+    const bool accepted = monoBinOps().count(head) != 0 ||
+                          monoUnOps().count(head) != 0 ||
+                          head == "expt" || head == "fabs";
+    if (!accepted) return false;
+
     for (uint64_t i = 0; i < nargs; i++)
-        if (!towerSafeExpr(&args[i], depth + 1)) return false;
+        if (!towerSafeExpr(&args[i], only_var, depth + 1)) return false;
     return true;
 }
 
@@ -8903,26 +8935,45 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
 bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
                                            const eshkol_ast* point_ast) {
     if (!function_ast || !point_ast) return false;
-    if (!towerSafeExpr(point_ast, 0)) return false;
+    // The point is evaluated in the enclosing scope, so any variable it mentions
+    // is an ordinary value; only its purity matters here, and its runtime tag
+    // decides the route.
+    if (!towerSafeExpr(point_ast, /*only_var=*/nullptr, 0)) return false;
 
     const eshkol_ast* body = nullptr;
+    std::string param;
     if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
         const auto& L = function_ast->operation.lambda_op;
         if (L.num_params != 1 || !L.parameters || !L.body) return false;
+        if (!L.parameters[0].variable.id) return false;
+        param = L.parameters[0].variable.id;
         body = L.body;
     } else if (function_ast->type == ESHKOL_VAR) {
         if (!function_def_ast_ || !function_ast->variable.id) return false;
-        auto it = function_def_ast_->find(function_ast->variable.id);
+        const std::string name = function_ast->variable.id;
+        // A LOCAL binding or parameter of the same name shadows the top-level
+        // define, so the define's body is not what this call will invoke.
+        // Reading eligibility off the shadowed AST would arm the exact tier for
+        // whatever the local actually holds -- including a nested
+        // differentiation, which the tower silently answers 0 for. The monolith
+        // resolves symbol_table_ before global_symbol_table_ for exactly this
+        // reason; the eligibility test has to agree with it.
+        if (symbol_table_ && symbol_table_->find(name) != symbol_table_->end())
+            return false;
+        auto it = function_def_ast_->find(name);
         if (it == function_def_ast_->end() || !it->second) return false;
         const eshkol_ast* def = it->second;
         if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
         const auto& D = def->operation.define_op;
         if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return false;
+        if (!D.parameters[0].variable.id) return false;
+        param = D.parameters[0].variable.id;
         body = D.value;
     } else {
         return false;
     }
-    return towerSafeExpr(body, 0);
+    // The body may mention no variable but its own parameter.
+    return towerSafeExpr(body, &param, 0);
 }
 
 /**

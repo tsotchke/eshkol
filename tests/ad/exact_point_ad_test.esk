@@ -413,6 +413,21 @@
 (check-close "hessian at an inexact point has the unchanged value"
              (hessian sq 0.5) 2.0)
 
+;; --- a captured variable keeps the jet path --------------------------
+;; The exact tier accepts no variable but the differentiation parameter, because
+;; a captured value need not be a number and the two carriers disagree about what
+;; to do when it is not: with `(define capv (vector 1.0 2.0))`,
+;; `(derivative (lambda (x) (* x capv)) 0.5)` RAISES "expected tensor, got
+;; dual-number", and an exact tier that accepted the capture answered 0 silently
+;; instead. Both points must now behave the same way, so the value that IS a
+;; number is checked here and the raising case is left to the operator's own
+;; diagnostic (it aborts the program, so it cannot be asserted inline).
+(define capk 3)
+(check-close "a captured exact constant keeps the jet path and the right value"
+             (derivative (lambda (x) (* x capk)) 1/2) 3.0)
+(check-close "the same body at an inexact point is unchanged"
+             (derivative (lambda (x) (* x capk)) 0.5) 3.0)
+
 ;; --- the exact tier must not disturb nested differentiation -----------
 ;; A tower cannot nest as the outer pass, so a body that differentiates again is
 ;; declined and keeps the jet path. Pinned here because the failure mode is a
