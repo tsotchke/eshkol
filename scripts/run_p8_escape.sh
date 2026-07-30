@@ -55,9 +55,34 @@ TRACE_DIR="$REPO_ROOT/scripts/icc_traces"; mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/escape_matrix.jsonl"
 : > "$TRACE_FILE"     # fresh evidence set each run
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/p8-escape.XXXXXX")"
+# Per-run isolation, and pin the binary under test. This suite shells out to
+# eshkol-run for many minutes; a rebuild in the same worktree mid-run used to
+# swap the compiler underneath it and produce verdicts (including crashes) that
+# belong to no single build. Run against a private copy instead.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "p8-escape"
+PINNED_BUILD_DIR="$(eshkol_test_pin_toolchain "$BUILD_DIR")"
+ESHKOL_RUN="$PINNED_BUILD_DIR/eshkol-run"
+[ -x "$PINNED_BUILD_DIR/eshkol-vm-standalone-test" ] \
+    && VM_BIN="$PINNED_BUILD_DIR/eshkol-vm-standalone-test"
+echo "run_p8_escape: pinned toolchain -> $PINNED_BUILD_DIR" >&2
+
+WORK="$ESHKOL_TEST_TMPDIR/work"; mkdir -p "$WORK"
 # Disk cap: a runaway generator must not fill the disk (fuzz disk-budget policy).
-cleanup() { rm -rf "$WORK"; }
+cleanup() { rm -rf "$WORK"; eshkol_test_isolation_cleanup; }
 trap cleanup EXIT
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 DISK_CAP_KB=$(( 512 * 1024 ))   # 512 MB corpus ceiling

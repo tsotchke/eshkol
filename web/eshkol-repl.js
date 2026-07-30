@@ -602,6 +602,71 @@ class EshkolRepl {
                 // handles every value in the browser build; the
                 // binary/unary/seed/extract kernels below are therefore
                 // unreachable stubs.
+                // ESH-0393/0394 AD point classification + coercion. These used to
+                // be inline IR (a bitcast for DOUBLE, SIToFP for everything
+                // else); they became runtime calls so an exact rational/bignum
+                // point -- which is HEAP-tagged, so its data field is a POINTER
+                // -- stops being reinterpreted as a number. They are on the
+                // ORDINARY jet path, so a `() => 0` stub would silently
+                // differentiate every browser program at 0. Implement the
+                // conversion here instead, over the same tagged layout the
+                // region helpers above use: [0]=type, [1]=flags, [8..16]=data.
+                //
+                // The browser build has no bignum/rational and no Taylor tower
+                // (eshkol_is_taylor_tagged reports "not a tower" below), so a
+                // HEAP-tagged point is not a number it can represent: report
+                // "not a number" through `ok` rather than inventing one, which
+                // is what the native build's catchable type error does.
+                eshkol_ad_seed_to_double: (v, okPtr) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const setOk = (n) => { if (dv && okPtr) dv.setInt32(Number(okPtr), n, true); };
+                    if (!dv || !v) { setOk(0); return 0.0; }
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    setOk(1);
+                    if (bt === 2) return dv.getFloat64(p + 8, true);            // DOUBLE
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));   // INT64
+                    if (bt === 6) {                                             // DUAL: primal
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true)); // BOOL/CHAR
+                    setOk(0);
+                    return 0.0;
+                },
+                eshkol_ad_point_to_double: (v, _what) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0.0;
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    if (bt === 2) return dv.getFloat64(p + 8, true);
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));
+                    if (bt === 6) {
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true));
+                    return 0.0;
+                },
+                // Scalar-vs-collection: an immediate number (or a dual) is a
+                // scalar. A HEAP point in the browser build is a collection --
+                // the exact heap scalars are the ones it cannot represent.
+                eshkol_ad_point_is_scalar: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    const bt = dv.getUint8(Number(v)) & 0x0F;
+                    return (bt === 1 || bt === 2 || bt === 3 || bt === 4 || bt === 6) ? 1 : 0;
+                },
+                // No bignum/rational in the browser build, so no point is ever an
+                // exact HEAP scalar, and the exact tier is never entered.
+                eshkol_ad_point_is_exact_scalar: () => 0,
+                // ...but an immediate int64 IS an exact number, so answer from
+                // the tag rather than declaring a blanket 0.
+                eshkol_ad_point_is_exact_number: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    return ((dv.getUint8(Number(v)) & 0x0F) === 1) ? 1 : 0;
+                },
                 eshkol_is_taylor_tagged:        () => 0,
                 eshkol_taylor_c0:               () => 0.0,
                 eshkol_taylor_binary_tagged:    () => 0,
@@ -691,6 +756,59 @@ class EshkolRepl {
                 // populated by the preceding memmove, and there is no region to
                 // promote out of, so this is a genuine no-op.
                 eshkol_region_write_barrier_range: () => {},
+
+                // #341 user-reachable region handles + the shared region-teardown
+                // primitive. `with-region` lowering now goes through
+                // eshkol_region_unwind_to (promote the kept value one level out,
+                // restore the allocation slot, pop) instead of open-coding
+                // escape + region_pop + region_leave, so these imports appear in
+                // ANY module that uses with-region — not only ones using handles.
+                //
+                // eshkol_region_unwind_to(mark, vals, n): the caller stores the
+                // result INTO `vals` and reads the same slot back afterwards, so
+                // with no region system to promote out of the correct degradation
+                // is a genuine no-op — the value is already in the slot. (Unlike
+                // the old escape ABI, there is no separate `out` slot to fill.)
+                eshkol_region_unwind_to:  (_mark, _vals, _n) => {},
+                eshkol_region_mark:       () => 0,
+                // Continuation-crossing unwind: nothing to tear down.
+                eshkol_region_unwind_for_continuation: (_state) => {},
+                // (region-open …) — hand back a nonzero opaque token. Slot 1 /
+                // generation 1 in the runtime encoding ((gen << 8) | (slot+1)),
+                // so the token round-trips through region-open? below.
+                eshkol_region_open_builtin: (out, _a, _b, _reclaim) => {
+                    if (!this.memory || !out) return;
+                    const o = Number(out);
+                    const dv = new DataView(this.memory.buffer);
+                    new Uint8Array(this.memory.buffer).fill(0, o, o + 16);
+                    dv.setUint8(o, 1);            // ESHKOL_VALUE_INT64
+                    dv.setUint8(o + 1, 1);        // exact flag
+                    dv.setBigInt64(o + 8, 257n, true);  // (1 << 8) | 1
+                },
+                // (region-close handle v …) — same out-slot ABI as the escape
+                // helpers above: shallow-copy the first keep into `out` (nothing
+                // is freed, so nothing needs promoting), or leave the empty list for none.
+                // The n > 1 list form degrades to the first keep in the browser.
+                eshkol_region_close_builtin: (out, _handle, vals, n) => {
+                    if (!this.memory || !out) return;
+                    const o = Number(out);
+                    const bytes = new Uint8Array(this.memory.buffer);
+                    bytes.fill(0, o, o + 16);     // ESHKOL_VALUE_NULL = the empty list
+                    if (Number(n) >= 1 && vals) {
+                        const v = Number(vals);
+                        bytes.copyWithin(o, v, v + 16);
+                    }
+                },
+                // (region-open? handle) — with no region system a handle is
+                // never actually torn down, so report #f rather than claim a
+                // liveness the browser cannot track.
+                eshkol_region_open_p_builtin: (out, _handle) => {
+                    if (!this.memory || !out) return;
+                    const o = Number(out);
+                    const dv = new DataView(this.memory.buffer);
+                    new Uint8Array(this.memory.buffer).fill(0, o, o + 16);
+                    dv.setUint8(o, 3);            // ESHKOL_VALUE_BOOL
+                },
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,

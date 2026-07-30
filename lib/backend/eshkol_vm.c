@@ -755,6 +755,21 @@ static const BuiltinDef BUILTINS[] = {
     {"quantum-random", 1860, 0},
     {"quantum-random-int", 1861, 1},
     {"quantum-random-range", 1862, 2},
+    /* ═══════════════════════════════════════════════════════════════
+     * User-reachable region handles (#341) — IDs 2210-2212
+     *
+     * The variadic surface forms `region-open` and `region-close` are folded
+     * onto these fixed-arity natives by the prelude (BUILTINS[] is fixed-arity
+     * only); `region-open?` is direct. All three dispatch into the SAME C
+     * implementation the native backend uses (lib/core/runtime_regions.cpp), so
+     * the handle protocol, its validation and its error text cannot diverge
+     * between substrates. What differs is only reclamation: the VM heap has no
+     * escape evacuator, so a close here is bookkeeping-only — the same reason
+     * `with-region` is a pass-through on the VM. See tests/vm_parity/PARITY.tsv.
+     * ═══════════════════════════════════════════════════════════════ */
+    {"_region-open", 2210, 2},
+    {"_region-close-list", 2211, 2},
+    {"region-open?", 2212, 1},
     /* Sentinel */
     {NULL, 0, 0}
 };
