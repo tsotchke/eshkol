@@ -155,35 +155,91 @@
                     (display "PASS: ") (display id) (newline)))))))
     (row 0 #f)))
 
-;; probe vecpoint.dot
-(define Cvp (vector 2.0 -1.0 0.5 -0.75))
-(define (loss145 z) (tensor-dot z Cvp))
-(define lit145 (gradient (lambda (z) (loss145 z)) (vector 1.2335 0.5795 1.6262 0.6787)))
-(define var145 (gradient loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
-(define wrp145 (wg loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
-(chk-grad "vecpoint.dot.literal" lit145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.dot.firstclass" var145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.dot.wrapper" wrp145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
+;; probe exactpoint.big.derivative
+(define (fx172 x) (+ (* 1.5 x) (* x x) (* 0.5 x x x)))
+(define ad172 (derivative fx172 123456789012345678901))
+(define ai172 (derivative fx172 (exact->inexact 123456789012345678901)))
+(chk "exactpoint.big.derivative" ad172 ai172 1e-4 1e-6)
+(define pv172 123456789012345678901)
+(define adv172 (derivative fx172 pv172))
+(chk "exactpoint.big.derivative-var" adv172 ai172 1e-4 1e-6)
+(define gs172 (gradient fx172 123456789012345678901))
+(define gi172 (gradient fx172 (exact->inexact 123456789012345678901)))
+(chk "exactpoint.big.gradient-scalar" gs172 gi172 1e-4 1e-6)
 
-;; probe vecpoint.summul
-(define Cvp2 (vector 0.5 -1.5 0.25))
-(define (loss146 z) (tensor-sum (tensor-mul z Cvp2)))
-(define lit146 (gradient (lambda (z) (loss146 z)) (vector 1.0 2.0 4.0)))
-(define var146 (gradient loss146 (vector 1.0 2.0 4.0)))
-(define wrp146 (wg loss146 (vector 1.0 2.0 4.0)))
-(chk-grad "vecpoint.summul.literal" lit146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.summul.firstclass" var146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.summul.wrapper" wrp146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
+;; probe exactpoint.big.gradient-vector
+(define (fv173 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g173 (gradient fv173 (vector 123456789012345678901)))
+(define gr173 (gradient fv173 (vector (exact->inexact 123456789012345678901))))
+(chk "exactpoint.big.gradient-vector" (vector-ref g173 0) (vector-ref gr173 0) 1e-4 1e-6)
 
-;; probe vecpoint.matmul
-(define Kvp (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
-(define (loss147 z) (tensor-sum (tensor-matmul (reshape z 2 2) Kvp)))
-(define lit147 (gradient (lambda (z) (loss147 z)) (vector 1.0 2.0 3.0 4.0)))
-(define var147 (gradient loss147 (vector 1.0 2.0 3.0 4.0)))
-(define wrp147 (wg loss147 (vector 1.0 2.0 3.0 4.0)))
-(chk-grad "vecpoint.matmul.literal" lit147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.matmul.firstclass" var147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.matmul.wrapper" wrp147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
+;; probe exactpoint.big.gradient-list
+(define (fv174 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g174 (gradient fv174 (list 123456789012345678901)))
+(define gr174 (gradient fv174 (list (exact->inexact 123456789012345678901))))
+(chk "exactpoint.big.gradient-list" (vector-ref g174 0) (vector-ref gr174 0) 1e-4 1e-6)
+
+;; probe exactpoint.big.gradient-mixed
+(define (fm175 v) (+ (* (vref v 0) (vref v 0)) (* 2.0 (vref v 1) (vref v 1)) (* 0.5 (vref v 2) (vref v 2))))
+(define gm175 (gradient fm175 (vector 123456789012345678901 0.5 2)))
+(define gn175 (gradient fm175 (vector (exact->inexact 123456789012345678901) 0.5 2.0)))
+(chk "exactpoint.big.gradient-mixed-slot0" (vector-ref gm175 0) (vector-ref gn175 0) 1e-4 1e-6)
+(chk "exactpoint.big.gradient-mixed-slot1" (vector-ref gm175 1) (vector-ref gn175 1) 1e-4 1e-6)
+(chk "exactpoint.big.gradient-mixed-slot2" (vector-ref gm175 2) (vector-ref gn175 2) 1e-4 1e-6)
+
+;; probe exactpoint.big.hessian
+(define (fq176 v) (* (vref v 0) (vref v 0) (vref v 0) (vref v 0)))
+(define hs176 (vector-ref (vector-ref (hessian fq176 (vector 123456789012345678901)) 0) 0))
+(define hi176 (vector-ref (vector-ref (hessian fq176 (vector (exact->inexact 123456789012345678901))) 0) 0))
+(chk "exactpoint.big.hessian" hs176 hi176 2e-3 1e-4)
+(define lp176 (laplacian fq176 (vector 123456789012345678901)))
+(define li176 (laplacian fq176 (vector (exact->inexact 123456789012345678901))))
+(chk "exactpoint.big.laplacian" lp176 li176 2e-3 1e-4)
+(define dd176 (directional-derivative fq176 (vector 123456789012345678901) (vector 1)))
+(define di176 (directional-derivative fq176 (vector (exact->inexact 123456789012345678901)) (vector 1)))
+(chk "exactpoint.big.directional-derivative" dd176 di176 1e-4 1e-6)
+
+;; probe exactpoint.big.derivative-n-exact
+(define (fs177 x) (* x x))
+(define dn177 (derivative-n fs177 123456789012345678901 1))
+(chk-exact "exactpoint.big.derivative-n-exact" dn177 (* 2 123456789012345678901) #f)
+
+;; probe exactpoint.int3.derivative
+(define (fx178 x) (+ (* 1.5 x) (* x x) (* 0.5 x x x)))
+(define ad178 (derivative fx178 3))
+(define ai178 (derivative fx178 (exact->inexact 3)))
+(chk "exactpoint.int3.derivative" ad178 ai178 1e-4 1e-6)
+(define fd178 (/ (- (fx178 (+ (exact->inexact 3) 1e-5)) (fx178 (- (exact->inexact 3) 1e-5))) (* 2.0 1e-5)))
+(chk "exactpoint.int3.derivative-fd" ad178 fd178 1e-4 1e-6)
+(define pv178 3)
+(define adv178 (derivative fx178 pv178))
+(chk "exactpoint.int3.derivative-var" adv178 ai178 1e-4 1e-6)
+(define gs178 (gradient fx178 3))
+(define gi178 (gradient fx178 (exact->inexact 3)))
+(chk "exactpoint.int3.gradient-scalar" gs178 gi178 1e-4 1e-6)
+
+;; probe exactpoint.int3.gradient-vector
+(define (fv179 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g179 (gradient fv179 (vector 3)))
+(define gr179 (gradient fv179 (vector (exact->inexact 3))))
+(chk "exactpoint.int3.gradient-vector" (vector-ref g179 0) (vector-ref gr179 0) 1e-4 1e-6)
+(chk-grad "exactpoint.int3.gradient-vector-fd" g179 fv179 (vector (exact->inexact 3)) 1e-4 1e-4 #f)
+
+;; probe exactpoint.int3.gradient-list
+(define (fv180 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g180 (gradient fv180 (list 3)))
+(define gr180 (gradient fv180 (list (exact->inexact 3))))
+(chk "exactpoint.int3.gradient-list" (vector-ref g180 0) (vector-ref gr180 0) 1e-4 1e-6)
+(chk-grad "exactpoint.int3.gradient-list-fd" g180 fv180 (vector (exact->inexact 3)) 1e-4 1e-4 #f)
+
+;; probe exactpoint.int3.gradient-mixed
+(define (fm181 v) (+ (* (vref v 0) (vref v 0)) (* 2.0 (vref v 1) (vref v 1)) (* 0.5 (vref v 2) (vref v 2))))
+(define gm181 (gradient fm181 (vector 3 0.5 2)))
+(define gn181 (gradient fm181 (vector (exact->inexact 3) 0.5 2.0)))
+(chk "exactpoint.int3.gradient-mixed-slot0" (vector-ref gm181 0) (vector-ref gn181 0) 1e-4 1e-6)
+(chk "exactpoint.int3.gradient-mixed-slot1" (vector-ref gm181 1) (vector-ref gn181 1) 1e-4 1e-6)
+(chk "exactpoint.int3.gradient-mixed-slot2" (vector-ref gm181 2) (vector-ref gn181 2) 1e-4 1e-6)
+(chk-grad "exactpoint.int3.gradient-mixed-fd" gm181 fm181 (vector (exact->inexact 3) 0.5 2.0) 1e-4 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

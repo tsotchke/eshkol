@@ -3109,6 +3109,39 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
             FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
 
+    # Tape-retained AD nodes vs. per-iteration reclamation.
+    #
+    # ESH-0214e runs an escape-analysed loop body inside a nursery region that is
+    # arena_reset() at every TCO back edge. AD nodes created in the body were
+    # allocated from that nursery while the tape recording them lived outside it,
+    # so the reset recycled them and the next iteration reallocated at the same
+    # addresses — every earlier node's parents resolved to the FINAL iteration's
+    # subgraph. Reverse-mode gradients through a vector filled by vector-set! in
+    # a loop therefore returned the row for the last element written, for every
+    # element read, with exact primals and exit 0. Pins the minimal shape, a
+    # composed vector field against its closed-form Jacobian, and row-index
+    # sensitivity through a mutable selector, on both the JIT and AOT lanes.
+    add_test(
+        NAME tape_nursery_attribution_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tape_nursery_attribution_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tape_nursery_attribution_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot'"
+    )
+    set_tests_properties(tape_nursery_attribution_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Tensor-operand and checkpoint-resume hardening.
     #
     # (1) `embedding` reinterpreted its index/weight operands as tensors without
@@ -3267,6 +3300,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
+    # boundary coercion used to reinterpret the tagged data field, so a
+    # HEAP-tagged exact rational/bignum point was differentiated at its own
+    # ADDRESS (heap-magnitude garbage), read as a ~5e-314 denormal, or
+    # misclassified as a COLLECTION and dereferenced as [dims][rank][elems]
+    # (`(gradient f 1/3)` => #(), `(hessian f 1/3)` => SIGSEGV). The gate is that
+    # an exact seed never disagrees with the SAME operator at
+    # (exact->inexact point) -- which no fabricated seed can satisfy, whatever
+    # its magnitude -- while derivative-n/taylor keep the exact tier. BOTH lanes:
+    # the JIT and AOT differ in how the point literal reaches codegen.
+    add_test(
+        NAME exact_point_ad_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_point_ad_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_point_ad_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot'"
+    )
+    set_tests_properties(exact_point_ad_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
+    # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
+    # regression in it is a regression in all three. It was unwired -- nothing in
+    # CTest or any workflow ran it, and tests/ad/ is not globbed by
+    # scripts/run_autodiff_tests.sh (which globs tests/autodiff/ only) -- so it
+    # gates here now, in BOTH lanes.
+    add_test(
+        NAME exact_taylor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_taylor_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot'"
+    )
+    set_tests_properties(exact_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
