@@ -1,6 +1,14 @@
-; FILED: iota returns () for any count (BUILTINS fid 141 broken/colliding —
-; note eshkol_vm.c maps BOTH "memq" and "list->vector" to fid 139, and
-; iota=141 sits in the same block).
+; RESOLVED: iota is a stdlib .esk function (lib/core/list/generate.esk),
+; not a real native dispatch target; fid 141 in the BUILTINS[] tables has no
+; dispatcher case on either backend and was always a vestigial registration,
+; shadowed by the real definition once loaded. The actual defect was that
+; the VM's always-available embedded prelude (lib/backend/vm_prelude_source.h,
+; used whenever a program says `(require stdlib)` rather than the explicit
+; `(require core.list.generate)`) never defined `iota` at all, so the
+; vestigial fid-141 closure was the only thing left bound to the name and
+; printed "WARNING: unhandled native call ID 141" plus (). `iota` is now
+; defined directly in the VM prelude with full SRFI-1 (count [start [step]])
+; semantics, matching lib/core/list/generate.esk exactly on both routes.
 ; native -r : (0 1 2 3)
-; vm        : ()
+; vm        : (0 1 2 3)
 (display (iota 4))

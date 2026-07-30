@@ -79,6 +79,18 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"
     "(define (take n lst) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (- n 1) (cdr lst))))))\n"
     "(define (drop n lst) (if (= n 0) lst (if (null? lst) (list) (drop (- n 1) (cdr lst)))))\n"
+    /* SRFI-1 iota: (iota count [start [step]]). Mirrors
+     * lib/core/list/generate.esk exactly so the VM's always-available
+     * embedded prelude and the on-disk stdlib module agree; the VM used to
+     * leave `iota` bound to a dead BUILTINS-table entry (native id 141, no
+     * dispatcher case) whenever a program said `(require stdlib)` instead of
+     * explicitly `(require core.list.generate)`, so it silently returned ()
+     * for any arity (filed: tests/vm_parity/found/iota_returns_empty.esk). */
+    "(define (iota count . rest)\n"
+    "  (let ((start (if (pair? rest) (car rest) 0))\n"
+    "        (step (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 1)))\n"
+    "    (let loop ((n (- count 1)) (acc (list)))\n"
+    "      (if (< n 0) acc (loop (- n 1) (cons (+ start (* n step)) acc))))))\n"
     "(define (reduce f init lst) (fold-left f init lst))\n"
     "(define (merge compare a b)\n"
     "  (cond ((null? a) b) ((null? b) a)\n"

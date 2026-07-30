@@ -950,6 +950,73 @@ static void region_free_fwd_map(eshkol_region_t* region) {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// WHICH TAGS CARRY AN ARENA POINTER
+//
+// Every region escape path — the write barrier, the with-region result escape,
+// and the ESH-0214e nursery recycle — has to answer one question first: does
+// this tagged value hold a pointer into the region being reclaimed? It asked
+// ESHKOL_IS_ANY_PTR_TYPE, which enumerates the two CONSOLIDATED pointer tags
+// (HEAP_PTR / CALLABLE) plus ports. That set is NOT the set of pointer-carrying
+// tags.
+//
+// ESHKOL_VALUE_DUAL_NUMBER and ESHKOL_VALUE_COMPLEX sit in the 0-7 block that
+// eshkol_value_type_t labels "IMMEDIATE VALUES — data stored directly in tagged
+// value", but neither is an immediate: both put a POINTER in data.ptr_val,
+// aimed at a headerless 16-byte pair arena-allocated at the operation that
+// produced it (arena_allocate_dual_number; ComplexCodegen::packComplexToTagged).
+// Reading them as immediates made every escape path a silent no-op for them, so
+// a forward-mode dual or a complex number produced inside a region and stored
+// into a structure outside it kept a pointer into the arena about to be
+// recycled — and the next iteration reallocated the same address. The values
+// stayed dereferenceable and plausible, which is why this corrupted answers
+// instead of crashing.
+//
+// The arena-scope half of the same feature (eshkol_arena_iter_scope_end) got
+// this right by inverting the test: only PROVABLY pointer-free immediates
+// (NULL/INT64/DOUBLE/BOOL/CHAR, plus the eof-object) skip the pointer check.
+// These helpers bring the region half into line with that rule.
+//
+// Deliberately NOT included:
+//   SYMBOL (5)   — data.ptr_val is an interned symbol's stable text, owned by
+//                  the interning table rather than a region arena. Copying it
+//                  per escape would both be unnecessary and break the pointer
+//                  identity interning exists to provide.
+//   LOGIC_VAR(10)— data is a var_id integer, not a pointer.
+//   HANDLE/BUFFER/STREAM/EVENT (16-19) — linear resources whose payloads are
+//                  externally owned; duplicating one would duplicate the
+//                  resource. A region-resident one is reported below rather
+//                  than silently copied or silently dropped.
+// ───────────────────────────────────────────────────────────────────────────
+
+/* Byte size of the headerless, self-contained payload a pointer-carrying
+ * IMMEDIATE tag addresses, or 0 when the tag is not one of those. These cannot
+ * go through evac_object: it sizes and classifies an object from the
+ * eshkol_object_header_t 8 bytes below the payload, and these carry no header —
+ * those 8 bytes belong to whatever was allocated before them. A flat copy is
+ * complete for both (two doubles, no interior pointers), and neither has
+ * observable pointer identity, so copying cannot break eq?-style sharing the
+ * way copying an interned symbol would. */
+static size_t region_headerless_payload_size(uint8_t type) {
+    /* Exactness flags may be OR'd into a numeric tag; strip them before
+     * matching. The port flags share those bits but only ever ride on
+     * HEAP_PTR, which is not one of the values matched here. */
+    switch (type & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG | ESHKOL_VALUE_INEXACT_FLAG)) {
+        case ESHKOL_VALUE_DUAL_NUMBER: return sizeof(eshkol_dual_number_t);
+        case ESHKOL_VALUE_COMPLEX:     return 2 * sizeof(double);
+        default:                       return 0;
+    }
+}
+
+/* Does a value with this tag hold a pointer that a region reclaim could
+ * invalidate? The single predicate every escape path shares. */
+static bool region_value_carries_pointer(uint8_t type) {
+    const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
+                         ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
+    return ESHKOL_IS_ANY_PTR_TYPE(type) || is_port ||
+           region_headerless_payload_size(type) != 0;
+}
+
 // Classify an object (given its live original data pointer and the tagged value
 // referencing it) into an EvacKind. Ports are never deep-traversed (they wrap OS
 // resources / fds); they are leaf-copied with care so the escaped port struct is
@@ -969,6 +1036,34 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // LAMBDA_SEXPR / AD_NODE / PRIMITIVE / CONTINUATION: their interior
         // reference graph is not confidently traversable here and they almost
         // never escape a region via mutation. Kept shallow (documented).
+        //
+        // AD_NODE is the one where a shallow copy is not merely incomplete but
+        // SILENTLY WRONG: input1..input4 / tensor_value / saved_tensors / shape
+        // stay aimed into the dying arena while `value` copies inline, so the
+        // primal stays right and only the derivative is corrupted. Deep-walking
+        // it here cannot fix that either — the tape's nodes[] array still holds
+        // the ORIGINAL pointers, so the recorded evaluation order would refer to
+        // freed memory no matter how the graph is copied. The real invariant is
+        // upstream: a tape-retained node is allocated from the tape's own arena
+        // and is therefore never region-resident to begin with
+        // (eshkol_ad_home_arena, runtime_autodiff.cpp). This warning exists so
+        // that if a node with a live interior graph ever DOES reach the
+        // evacuator, it is reported in EVERY build rather than silently
+        // producing a plausible wrong gradient. Nodes with no inputs (variables
+        // and constants) are self-contained and copy correctly, so they stay
+        // quiet.
+        if (sub == CALLABLE_SUBTYPE_AD_NODE) {
+            const auto* n = (const ad_node_t*)old_data;
+            if (n->input1 || n->input2 || n->input3 || n->input4 ||
+                n->tensor_value || n->saved_tensors) {
+                eshkol_warn("region evacuate: an AD tape node with a live interior "
+                            "graph escaped a region as a shallow copy; its parents "
+                            "point into the arena being reclaimed and gradients "
+                            "through it would be wrong. This must not happen — a "
+                            "tape-retained node is allocated from the tape's own "
+                            "arena (eshkol_ad_home_arena).");
+            }
+        }
         return EVAC_LEAF;
     }
 
@@ -1101,14 +1196,19 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
 // leave it untouched.
 static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) {
     const uint8_t type = v.type;
-    const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
-                         ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
-    const bool is_heap = ESHKOL_IS_ANY_PTR_TYPE(type) || is_port;
-    if (!is_heap) return v;
+    if (!region_value_carries_pointer(type)) return v;
 
     void* p = (void*)(uintptr_t)v.data.ptr_val;
     if (!p) return v;
     if (region_index_owning(p) <= st.boundary_idx) return v;  // stable relative to dst
+
+    // Headerless fixed-size payload (dual number / complex): a flat copy is the
+    // whole object. evac_raw forwards, so two tagged values sharing one payload
+    // still share it after promotion.
+    if (const size_t raw_size = region_headerless_payload_size(type)) {
+        v.data.ptr_val = (uint64_t)(uintptr_t)evac_raw(st, p, raw_size);
+        return v;
+    }
 
     void* np = evac_object(st, p, v);
     v.data.ptr_val = (uint64_t)(uintptr_t)np;
@@ -1498,12 +1598,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
  *            made), or @p val unchanged if escaping wasn't needed/possible.
  */
 static eshkol_tagged_value_t region_escape_tagged_value_impl(eshkol_tagged_value_t val) {
-    const uint8_t type = val.type;
-    const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
-                         ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
-    const bool is_heap = ESHKOL_IS_ANY_PTR_TYPE(type) || is_port;
-
-    if (!is_heap) return val;
+    if (!region_value_carries_pointer(val.type)) return val;
 
     eshkol_region_t* current = region_current();
     if (!current) return val;
@@ -1586,11 +1681,7 @@ extern "C" void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
     // FAST PATH: no active region -> nothing can dangle.
     if (__region_stack_depth == 0) { *out = v; return; }
 
-    const uint8_t type = v.type;
-    const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
-                         ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
-    const bool is_heap = ESHKOL_IS_ANY_PTR_TYPE(type) || is_port;
-    if (!is_heap) { *out = v; return; }
+    if (!region_value_carries_pointer(v.type)) { *out = v; return; }
 
     void* vptr = (void*)(uintptr_t)v.data.ptr_val;
     if (!vptr) { *out = v; return; }

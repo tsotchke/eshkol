@@ -1,0 +1,7 @@
+; SRFI-1 iota: (iota count [start [step]]), exact/inexact, negative step
+(display (iota 5)) (newline)
+(display (iota 5 1)) (newline)
+(display (iota 5 0 2)) (newline)
+(display (iota 5 10 -2)) (newline)
+(display (iota 3 1.0 0.5)) (newline)
+(display (iota 0)) (newline)
