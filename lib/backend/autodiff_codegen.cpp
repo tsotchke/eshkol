@@ -8958,6 +8958,10 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     // at RUN time is handled by adExactTowerGate, not here -- those globals
     // exist in every module, so their existence says nothing.)
     if (adTowerMode_ != TowerMode::NONE) return nullptr;
+    // A double literal is provably INEXACT: decline from the AST, before any IR
+    // exists, so the commonest inexact spelling `(derivative f 0.5)` emits not
+    // one instruction of this route.
+    if (point_ast && point_ast->type == ESHKOL_DOUBLE) return nullptr;
     if (!adExactTowerEligible(function_ast, point_ast)) return nullptr;
 
     auto& b = ctx_.builder();
