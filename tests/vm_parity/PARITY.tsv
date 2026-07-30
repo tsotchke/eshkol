@@ -477,7 +477,7 @@ mkstemp	vm-supported
 mod	gap	no VM name binding
 model-load	vm-supported	
 model-save	vm-supported	
-modulo	vm-supported	
+modulo	vm-supported	values and both sign conventions agree on every representation (corpus/50_flonum_integer_division.esk); an INTEGRAL flonum result comes back EXACT in the VM and inexact natively (found/modulo_inexact_collapsed_vm.esk) - invisible to the printed-output differential
 monotonic-time-ms	vm-supported	
 mse-loss	gap	ml faculty has no VM fid coverage
 multi-head-attention	gap	ml faculty has no VM fid coverage

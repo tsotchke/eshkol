@@ -4,7 +4,9 @@
 ; (R7RS 4.1.6 `set!` stores in the location to which the variable is bound;
 ; R7RS 4.2.4 `do` evaluates its commands in the body's environment).
 ;
-; Regression cover for tests/vm_parity/found/do_set_param_native.esk: native
+; Regression cover for the divergence filed as
+; tests/vm_parity/found/do_set_param_native.esk, now fixed and promoted to
+; tests/vm_parity/corpus/51_do_body_set_mutation.esk: native
 ; assignment conversion decides whether a function/lambda PARAMETER needs a
 ; mutable cell by scanning the body for a `set!` of it. That scan had no case
 ; for `do` and never descended into cons-cell subtrees, so the parameter

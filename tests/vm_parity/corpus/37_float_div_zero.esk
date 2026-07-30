@@ -26,8 +26,8 @@
 
 ; A bignum operand must reach the bignum domain rather than the plain double
 ; path, where a heap pointer reads back as 0.0 and every bignum division
-; silently produced 0.  (A bignum over an INEXACT zero is left out: native
-; answers 0 there, filed in found/bignum_div_inexact_zero_native.esk.)
+; silently produced 0.  (A bignum over an INEXACT zero has its own file now
+; that native answers it correctly: corpus/52_bignum_inexact_zero_division.esk.)
 (display (/ (expt 2 100) 2.0)) (newline)
 (display (/ (expt 2 100) 2)) (newline)
 

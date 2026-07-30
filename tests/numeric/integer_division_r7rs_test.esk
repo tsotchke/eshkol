@@ -3,13 +3,15 @@
 ; R7RS 6.2.6 integer division across the whole numeric tower.
 ;
 ; Regression cover for the native-side defects the VM-parity differential
-; sweep filed (tests/vm_parity/found/):
-;   * float_remainder_modulo_native.esk — `remainder` called the C library's
-;     IEEE-754 round-to-NEAREST remainder() instead of the TRUNCATED
-;     remainder, and `modulo` had no flonum path at all (it took the SRem of
-;     two IEEE-754 bit patterns).
-;   * bignum_div_inexact_zero_native.esk — a bignum divided by an INEXACT
-;     zero answered 0 instead of an infinity.
+; sweep filed under tests/vm_parity/found/ and this change retired (each repro
+; was promoted into corpus/, so the differential now guards it on every
+; substrate):
+;   * float_remainder_modulo_native.esk (-> corpus/50) — `remainder` called the
+;     C library's IEEE-754 round-to-NEAREST remainder() instead of the
+;     TRUNCATED remainder, and `modulo` had no flonum path at all (it took the
+;     SRem of two IEEE-754 bit patterns).
+;   * bignum_div_inexact_zero_native.esk (-> corpus/52) — a bignum divided by
+;     an INEXACT zero answered 0 instead of an infinity.
 ; Plus floor-quotient / floor-remainder / floor/, which were int64-only and
 ; therefore disagreed with the `modulo` they are DEFINED to equal.
 
@@ -52,6 +54,40 @@
 (display ": (modulo 5 2.0) = 1.0") (newline)
 (display (if (= (remainder 5 2.0) 1.0) "PASS" "FAIL"))
 (display ": (remainder 5 2.0) = 1.0") (newline)
+
+; The pair the adversarial gates reported by value: an inexact DIVIDEND with an
+; exact divisor and a NON-integral quotient. Each wrong answer is diagnostic of
+; one of the two defects.
+;   (modulo 5.0 3)    was 0  — SRem(bit-pattern-of-5.0, 3); the IEEE-754 bit
+;                              pattern 4617315517961601024 happens to be
+;                              divisible by 3, so the garbage looked plausible.
+;   (remainder 5.0 3) was -1 — C's IEEE-754 remainder(5.0, 3.0) = 5 - 3*2,
+;                              round-to-NEAREST rather than truncated.
+(display (if (= (modulo 5.0 3) 2) "PASS" "FAIL"))
+(display ": (modulo 5.0 3) = 2.0 — not 0 (SRem of the bit pattern)") (newline)
+(display (if (= (remainder 5.0 3) 2) "PASS" "FAIL"))
+(display ": (remainder 5.0 3) = 2.0 — not -1 (IEEE round-to-nearest)") (newline)
+(display (if (= (modulo -5.0 3) 1) "PASS" "FAIL"))
+(display ": (modulo -5.0 3) = 1.0 — sign of the divisor") (newline)
+(display (if (= (remainder -5.0 3) -2) "PASS" "FAIL"))
+(display ": (remainder -5.0 3) = -2.0 — sign of the dividend") (newline)
+(display (if (= (modulo 5.0 -3) -1) "PASS" "FAIL"))
+(display ": (modulo 5.0 -3) = -1.0 — sign of the divisor") (newline)
+(display (if (= (remainder 5.0 -3) 2) "PASS" "FAIL"))
+(display ": (remainder 5.0 -3) = 2.0 — sign of the dividend") (newline)
+
+; Exactness is asserted here rather than in the VM-parity corpus: both
+; substrates PRINT `2`, and the VM comes back exact for the integral-result
+; `modulo` cases (found/modulo_inexact_collapsed_vm.esk), so the differential
+; cannot carry this half.
+(display (if (inexact? (modulo 5.0 3)) "PASS" "FAIL"))
+(display ": (modulo 5.0 3) is inexact — contagion, integral result") (newline)
+(display (if (inexact? (remainder 5.0 3)) "PASS" "FAIL"))
+(display ": (remainder 5.0 3) is inexact — contagion, integral result") (newline)
+(display (if (inexact? (modulo 5.0 2)) "PASS" "FAIL"))
+(display ": (modulo 5.0 2) is inexact") (newline)
+(display (if (exact? (modulo 5 3)) "PASS" "FAIL"))
+(display ": (modulo 5 3) stays EXACT — no contagion without an inexact operand") (newline)
 
 ; ── 3. bignum operands stay exact ────────────────────────────────────────
 (display (if (= (modulo (expt 2 100) 3) 1) "PASS" "FAIL"))

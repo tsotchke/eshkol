@@ -2,7 +2,8 @@
 ; 4.2.4: `do` evaluates its commands in the body's environment, and `set!`
 ; stores into the location the variable is bound to).
 ;
-; Native was the wrong side here (found/do_set_param_native.esk): its
+; Native was the wrong side here — the divergence filed as
+; found/do_set_param_native.esk, retired by this file: its
 ; assignment-conversion pass decides whether a parameter needs a mutable cell
 ; by scanning the body for a `set!` of it, and that scan had no case for `do`
 ; and never descended into cons-cell subtrees. The parameter stayed a by-value
