@@ -89,6 +89,56 @@
 (display (if (exact? (modulo 5 3)) "PASS" "FAIL"))
 (display ": (modulo 5 3) stays EXACT — no contagion without an inexact operand") (newline)
 
+; ── 2b. quotient: the third member of the trio ───────────────────────────
+; The double path used to FPToSI the truncated quotient into an int64 and pack
+; it EXACT, which lost contagion by construction and — because FPToSI outside
+; the int64 range is undefined behaviour and so had to be clamped — turned
+; every large quotient into the saturated constant 9223372036854774784.
+(display (if (= (quotient 7.0 2.0) 3) "PASS" "FAIL"))
+(display ": (quotient 7.0 2.0) = 3.0 — truncates toward zero") (newline)
+(display (if (inexact? (quotient 7.0 2.0)) "PASS" "FAIL"))
+(display ": (quotient 7.0 2.0) is inexact — contagion") (newline)
+(display (if (= (quotient -7.0 2.0) -3) "PASS" "FAIL"))
+(display ": (quotient -7.0 2.0) = -3.0 — truncates, does not floor") (newline)
+(display (if (= (quotient 5.5 2.0) 2) "PASS" "FAIL"))
+(display ": (quotient 5.5 2.0) = 2.0") (newline)
+; 1e20/3 is 3.3333333333333332e19, whose exact value is 33333333333333331968;
+; the comparison is against the FLONUM, not the decimal the printer shows,
+; because the shortest round-tripping text (33333333333333330000) reads back as
+; a different exact integer. What matters is that it is neither that nor the
+; saturated 9223372036854774784 the clamp used to produce.
+(display (if (= (quotient 1e20 3.0) 3.3333333333333332e19) "PASS" "FAIL"))
+(display ": (quotient 1e20 3.0) = 3.3333333333333332e19") (newline)
+(display (if (> (quotient 1e20 3.0) 9223372036854775808.0) "PASS" "FAIL"))
+(display ": (quotient 1e20 3.0) is past 2^63 — no int64 clamp left") (newline)
+(display (if (inexact? (quotient (expt 2 100) 2.0)) "PASS" "FAIL"))
+(display ": (quotient <bignum> 2.0) is inexact — mixed contagion") (newline)
+(display (if (exact? (quotient 7 2)) "PASS" "FAIL"))
+(display ": (quotient 7 2) stays EXACT — the exact path is unchanged") (newline)
+
+; ── 2c. a zero divisor raises for the WHOLE trio, every representation ───
+; R7RS 6.2.6: "it is an error if n2 is zero". The int64 paths always raised,
+; but the inexact ones answered numbers: (remainder 5.5 0.0) was +nan.0,
+; (quotient 5.0 0.0) was the saturated constant, and the mixed
+; bignum-times-inexact route answered +nan.0 / an infinity for all three.
+; `/` is deliberately excluded — an INEXACT zero divisor there is ordinary
+; IEEE-754 division, asserted separately below.
+(define (raises? thunk)
+  (call-with-current-continuation
+    (lambda (k) (with-exception-handler (lambda (e) (k #t)) (lambda () (thunk) #f)))))
+(display (if (raises? (lambda () (quotient 5.0 0.0))) "PASS" "FAIL"))
+(display ": (quotient 5.0 0.0) raises") (newline)
+(display (if (raises? (lambda () (remainder 5.5 0.0))) "PASS" "FAIL"))
+(display ": (remainder 5.5 0.0) raises — not +nan.0") (newline)
+(display (if (raises? (lambda () (modulo 5.5 0.0))) "PASS" "FAIL"))
+(display ": (modulo 5.5 0.0) raises") (newline)
+(display (if (raises? (lambda () (quotient (expt 2 100) 0.0))) "PASS" "FAIL"))
+(display ": (quotient <bignum> 0.0) raises — mixed route") (newline)
+(display (if (raises? (lambda () (modulo (expt 2 100) 0.0))) "PASS" "FAIL"))
+(display ": (modulo <bignum> 0.0) raises — mixed route") (newline)
+(display (if (raises? (lambda () (remainder (expt 2 100) 0.0))) "PASS" "FAIL"))
+(display ": (remainder <bignum> 0.0) raises — mixed route") (newline)
+
 ; ── 3. bignum operands stay exact ────────────────────────────────────────
 (display (if (= (modulo (expt 2 100) 3) 1) "PASS" "FAIL"))
 (display ": (modulo (expt 2 100) 3) = 1") (newline)

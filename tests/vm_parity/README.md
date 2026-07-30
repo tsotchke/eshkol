@@ -136,6 +136,7 @@ header. Filed while building this gate, 2026-07:
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
 | `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
 | `modulo_inexact_collapsed_vm.esk` | `(modulo <inexact> …)` with an integral result comes back **exact** — invisible to the corpus, which compares printed output |
+| `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |
 
 Divergences where **native is the wrong side** (filed rather than "fixed" in
 the VM to match a native bug; native codegen is not VM-owned):

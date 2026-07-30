@@ -99,18 +99,29 @@ makes the result inexact:
 (display (list (modulo (expt 2 100) 3) (floor-quotient (expt 2 100) 3))) (newline)
 (display (list (remainder 7.0 2.0) (modulo -7.0 3.0) (modulo 5 2.0))) (newline)
 (display (list (remainder 5.5 2.0) (modulo 5.5 2.0))) (newline)
+(display (list (exact? (quotient 7 2)) (exact? (quotient 7.0 2.0)))) (newline)
 ```
 ```
 (1 422550200076076467165567735125)
 (1 2 1)
 (1.5 1.5)
+(#t #f)
 ```
 
 > **Not C's `remainder()`.** The C library's `remainder(5.5, 2.0)` is `-0.5`
 > (IEEE-754 round-to-*nearest* remainder). Scheme's `remainder` is the
 > *truncated* remainder — `fmod` — so `(remainder 5.5 2.0)` is `1.5`.
 
-A zero divisor is an error for all of them (R7RS 6.2.6) and raises.
+An inexact result stays a flonum rather than being narrowed to a machine
+integer, so magnitudes past 2^63 are carried rather than saturated —
+`(quotient 1e20 3.0)` displays as `33333333333333330000` (the double
+`3.3333333333333332e19`), not the largest machine integer.
+
+A zero divisor is an error for `quotient`, `remainder`, `modulo` and their
+synonyms (R7RS 6.2.6) and raises, for every operand representation — fixnum,
+flonum and bignum alike. `/` is different: only an *exact* zero divisor is an
+error there, and an inexact one is ordinary IEEE-754 division, so
+`(/ (expt 2 100) 0.0)` is `+inf.0`.
 
 ## Rationals
 

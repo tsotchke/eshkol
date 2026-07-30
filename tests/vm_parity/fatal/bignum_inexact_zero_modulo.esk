@@ -1,0 +1,9 @@
+; The mixed bignum-times-inexact route of the integer-division trio, where the
+; divisor is an inexact zero. R7RS 6.2.6 makes it an error; this route was the
+; one place that answered +nan.0 instead of raising, so a bignum computation
+; that hit a zero divisor produced a number and carried on.
+;
+; `/` is deliberately NOT part of this: an inexact zero divisor there is
+; ordinary IEEE-754 division, gated by corpus/52_bignum_inexact_zero_division.esk.
+(display (modulo (expt 2 100) 0.0))
+(display "MUST-NOT-PRINT")
