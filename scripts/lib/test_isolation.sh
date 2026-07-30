@@ -268,11 +268,16 @@ ESHKOL_TEST_PIN_ARTIFACTS="eshkol-run stdlib.o stdlib.bc eshkol-vm-standalone-te
 
 # Portable "size mtime" stamp for one file. BSD stat and GNU stat disagree on
 # flags, so try both; a missing file stamps as "-" (absent is a stable state).
+# GNU must be tried first: GNU `stat -f` is not "BSD -f" at all, it means
+# --file-system and succeeds with filesystem-level numbers (free blocks/
+# inodes) instead of failing, so a BSD-first order silently fingerprints the
+# filesystem rather than the file — any unrelated fs activity between two
+# snapshots then reads as "the compiler binary changed during this run".
 eshkol_test_file_stamp() {
     local path="$1"
     [ -e "$path" ] || { printf '%s' '-'; return 0; }
-    stat -f '%z %m' "$path" 2>/dev/null && return 0
     stat -c '%s %Y' "$path" 2>/dev/null && return 0
+    stat -f '%z %m' "$path" 2>/dev/null && return 0
     # Last resort: content digest.
     cksum < "$path" 2>/dev/null || printf '%s' '?'
 }
