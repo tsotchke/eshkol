@@ -639,10 +639,34 @@ The rule therefore recomputes the stationarity residual from the retained `mu*`,
 points and weights, and refuses when it is not at the fixed point. Recomputing
 rather than trusting a residual stored by the forward is deliberate: a stored
 residual can be stale with respect to the operands actually on the node. The bar
-is `|F| <= tol * sum_i w_i * (1 + max_i |log_mu(x_i)|)` — relative to the terms
-being cancelled, with an absolute floor, because a purely relative bar divides by
-rounding noise in the most exact case available (every point coincident with the
-mean, so every log is zero).
+is
+
+```
+lambda_mu |F| <= tol * sum_i w_i * (1 + lambda_mu * max_i |log_mu(x_i)|),
+lambda_mu = 2 / (1 - c |mu|^2)
+```
+
+relative to the terms being cancelled, with an absolute floor, because a purely
+relative bar divides by rounding noise in the most exact case available (every
+point coincident with the mean, so every log is zero).
+
+**Both sides of that bar are measured in Riemannian units, and that is not
+cosmetic.** The logs are stored in ambient ball coordinates; the tangent space at
+`mu` carries the conformal metric `lambda_mu^2 <.,.>`, so the invariant length of
+a tangent vector `v` is `lambda_mu |v|`. The factor cancels out of the relative
+term but *not* out of the floor — and the floor is the whole reason the bar is not
+purely relative. Scaled in ambient coordinates, `lambda_mu` diverges at the ball
+boundary, every `|log|` collapses toward zero, the floor swamps the relative term,
+and the bar degenerates to `|F|_ambient <= tol * sum_i w_i`, which a mean wrong by
+a whole unit of hyperbolic distance satisfies comfortably. Measured, not feared:
+with the ambient scale the forward accepted means wrong by `8.8e-8` (points
+`1e-9` inside the boundary) and `7.6e-6` (points one ulp inside) as converged, and
+the backward would then have differentiated them. In Riemannian units the `1` is
+one unit of hyperbolic distance, so the floor still protects the coincident-point
+case while the relative term stays live near the boundary. The forward
+(`vm_frechet_mean_compute`, `lib/backend/vm_geometric.c`) applies the identical
+scale at the identical default tolerance: the forward's gate is what makes the
+backward's gate satisfiable, so the two must not drift apart.
 
 Because the derivative is only available at a converged fixed point, the
 `frechet-mean` forward is computed in **f64**, in both the portable and the
@@ -653,13 +677,37 @@ also gates its own convergence and raises a catchable Scheme error rather than
 returning a near-answer that would be laundered into a wrong gradient
 (`tests/vm/frechet_mean_surface_regression.esk`).
 
+**Where f64 runs out, the forward refuses.** Ambient ball coordinates cannot
+resolve hyperbolic position near the boundary: `u = (-mu) (+)_c x` is formed by
+cancellation, so a `mu` and an `x` more than roughly 19 units of hyperbolic
+distance apart drive `|u|` to `1` in f64 even though both are strictly interior
+points, and `artanh` then has no value. The log map used to clamp to `1 - 1e-15`
+and hand back a fabricated magnitude of ~17.6, which the iteration converged on
+and reported as success; it now reports that no finite log exists and the caller
+raises. Two further honesty gates go with it: the iterate must stay strictly
+inside the ball (on the boundary `k = (1 - c|mu|^2)/sqrt(c)` is zero, so every log
+evaluates to zero and a zero residual would not mean stationarity), and
+acceptance requires **two consecutive** sub-tolerance iterates rather than one.
+The last is not defensive padding — the residual has an evaluation noise floor of
+its own near the boundary, and on points `1e-9` inside it the residual oscillated
+between `2.4e-7` and `4.9e-6` for 131 iterations before producing a single
+`9.86e-10` draw by rounding luck, which a one-sample test accepted; the accepted
+mean was wrong by `3.0e-8`. A run whose residual stops improving is now declared
+stagnant and refused, and the reported mean is the best iterate seen rather than
+the last. Net effect, measured on points at `+/-x0` with weights `2:1`, whose mean
+has the closed form `tanh(artanh(x0)/3)`: accepted out to `x0 = 1 - 1e-6` with
+relative error `8e-16` to `2.3e-12`, and refused from `x0 = 1 - 1e-7` inward,
+where it previously returned wrong answers of up to `7.4e-5`.
+
 Verified by `ctest -R frechet_mean_backward_gradcheck`: the implicit gradient
 against central finite differences of an independently written forward converged
 to the last bit (`3.8e-11` on the points, `6.9e-12` on the weights, against a
 `1e-6` bar), the Euclidean `K = 0` limit against its closed form, a check that
 the implicit answer genuinely *differs* from the one-step-unrolled one (by
-`7.8e-2`, so the choice above is a real decision and not a restatement), and six
-refusal paths.
+`7.8e-2`, so the choice above is a real decision and not a restatement), a check
+that measures both candidate residual scales on one near-boundary triple and
+asserts the ambient one would have passed (`9.7e-12`) where the Riemannian one
+does not (`7.6e-8`), and seven refusal paths.
 
 **Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
 

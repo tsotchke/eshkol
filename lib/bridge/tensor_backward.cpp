@@ -1183,10 +1183,31 @@ extern "C" void tensor_frechet_mean_backward(ad_node_t* node) {
      * purely relative one divides by zero in the most exact case available,
      * where every point coincides with the mean and each log is zero to
      * rounding. The 1 + |.| denominator is the convention the gradient-oracle
-     * comparison helpers already use. */
+     * comparison helpers already use.
+     *
+     * BOTH TERMS ARE MEASURED IN RIEMANNIAN UNITS. The logs above are ambient
+     * ball coordinates; the tangent space at mu carries the conformal metric
+     * lambda_mu^2 <.,.> with lambda_mu = 2/(1 - c|mu|^2), so the invariant
+     * length of a tangent vector v is lambda_mu |v|_2. The common factor
+     * cancels out of the relative term, but NOT out of the floor — and the
+     * floor is the whole reason the bar is not purely relative. In ambient
+     * coordinates lambda_mu diverges at the boundary, every |log| collapses
+     * toward zero, the floor swamps the relative term, and the bar degenerates
+     * to |resid|_ambient <= tol * wsum, which a mu wrong by a whole unit of
+     * hyperbolic distance satisfies comfortably. That is not hypothetical: with
+     * the ambient scale the forward iteration accepted means wrong by 8.8e-8
+     * and 7.6e-6 as converged, and this rule would then have differentiated
+     * them and returned exactly the plausible wrong gradient the gate exists to
+     * prevent. In Riemannian units the 1 is one unit of hyperbolic distance, so
+     * the floor still protects the coincident-point case while the relative
+     * term stays live near the boundary. vm_frechet_mean_compute in
+     * lib/backend/vm_geometric.c applies the identical scale at the identical
+     * default tolerance: the forward's gate is what makes this gate satisfiable,
+     * so the two must not drift apart. */
     double resid_norm = std::sqrt(FrechetGeometry::dot(resid.data(), resid.data(), dim));
-    double resid_scale = wsum * (1.0 + max_log);
-    double resid_rel = resid_norm / resid_scale;
+    double lambda = 2.0 / (1.0 - geo.c * FrechetGeometry::dot(mu, mu, dim));
+    double resid_scale = wsum * (1.0 + lambda * max_log);
+    double resid_rel = (lambda * resid_norm) / resid_scale;
     if (!(resid_rel <= tol)) {
         eshkol_fatal("frechet-mean backward: the retained mean is NOT a converged "
                      "stationary point — the stationarity residual "

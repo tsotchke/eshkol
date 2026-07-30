@@ -78,5 +78,59 @@
 (check "positive curvature raises a catchable error"
        (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-eq 1.0))))
 
+;; ---- Case 6: near the boundary the mean is REFUSED, not approximated -----
+;; The ball's ambient f64 coordinates cannot resolve hyperbolic position near
+;; the boundary: one ulp of x is O(0.1) units of arc length once |x| is within
+;; ~1e-13 of 1, and the stationarity residual reaches the precision floor of its
+;; own evaluation well before that. Three separate things used to let a wrong
+;; answer out of this regime, and each has a case here.
+;;
+;; The reference values are the 1-D closed form again: points at +/-x0 with
+;; weights 2:1 have the mean tanh(artanh(x0)/3), evaluated to 20 digits.
+(define (mean-2to1 x0)
+  (let ((pts (make-tensor '(2 2) 0.0))
+        (w   (make-tensor '(2) 1.0)))
+    (tensor-set! pts '(0 0) x0)
+    (tensor-set! pts '(1 0) (- x0))
+    (tensor-set! w '(0) 2.0)
+    (guard (e (#t 'caught)) (tensor-ref (frechet-mean pts w -1.0) '(0)))))
+
+;; 6a. Inside the resolvable region the answer is accurate, not merely accepted.
+;; This is the control: the refusals below must not be a blanket refusal of
+;; everything near the boundary.
+(check "x0=0.9 matches the closed form"
+       (approx= (mean-2to1 0.9) 0.45480342898199512 1e-14))
+(check "x0=1-1e-3 matches the closed form"
+       (approx= (mean-2to1 0.999) 0.85290992286246344 1e-12))
+(check "x0=1-1e-6 matches the closed form"
+       (approx= (mean-2to1 0.999999) 0.98425098685564609 1e-10))
+
+;; 6b. Residual scale. The gate compares the residual against wsum*(1 + max|log|)
+;; in RIEMANNIAN units. Measured in the ambient coordinates the logs are stored
+;; in, the conformal factor collapses every |log| toward zero as the mean
+;; approaches the boundary, the absolute floor swamps the relative term, and the
+;; bar degenerates to something a mean wrong by a whole unit of hyperbolic
+;; distance satisfies. With the ambient scale this returned 0.99841382813968
+;; against a true mean of 0.99841385788455 and called it converged.
+(check "x0=1-1e-9 is refused, not answered to 3e-8"
+       (eq? 'caught (mean-2to1 0.999999999)))
+
+;; 6c. Noise-floor lottery. One sub-tolerance residual sample is not evidence:
+;; on this input the residual oscillated between 2.4e-7 and 4.9e-6 for 131
+;; iterations and then produced a single 9.86e-10 draw by rounding luck, which a
+;; one-sample test accepted. Acceptance now needs two consecutive sub-tolerance
+;; iterates, and a residual that stops improving ends the run.
+(check "x0=1-1e-7 is refused rather than drawing until it passes"
+       (eq? 'caught (mean-2to1 0.9999999)))
+
+;; 6d. Fabricated log magnitude. u = (-mu) (+)_c x is formed by cancellation, so
+;; a mu and an x more than ~19 units of hyperbolic distance apart drive |u| to 1
+;; even though both are strictly interior. artanh has no value there. The log map
+;; used to clamp to 1-1e-15 and hand back a fabricated magnitude of ~17.6, which
+;; the iteration then converged on; it now reports no finite log and the caller
+;; refuses. x0 one ulp inside the boundary reaches this on the first iteration.
+(check "one ulp inside the boundary is refused, not clamped"
+       (eq? 'caught (mean-2to1 0.9999999999999999)))
+
 (display "frechet-mean surface regression complete")
 (newline)

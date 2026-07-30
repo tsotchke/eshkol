@@ -242,6 +242,64 @@ double rel_err(double a, double b) {
     return std::fabs(a - b) / (1.0 + std::fabs(b));
 }
 
+/* ===== Near-boundary configuration: the residual SCALE ==================== */
+
+/* Four points on the sphere of radius 0.9999 in a narrow angular cluster, so
+ * that the mean also sits at |mu| ~ 0.9999 and the conformal factor
+ * lambda_mu = 2/(1 - c|mu|^2) is ~1e4, while the mutual hyperbolic distances
+ * stay around 0.1 and the problem is perfectly well conditioned in Riemannian
+ * terms. This is the configuration that separates the two possible scales for
+ * the stationarity residual, and it is the reason the gate measures it in
+ * Riemannian units. See the check that uses it. */
+const double kNearR = 0.9999;
+const double kNearDirs[kN * kD] = {
+    1.0,  1.0e-5,  0.0,
+    1.0, -2.0e-5,  1.0e-5,
+    1.0,  0.0,    -1.5e-5,
+    1.0,  5.0e-6,  2.0e-5,
+};
+/* Ambient displacement applied to the mean. In arc length this is
+ * lambda_mu * 1e-11 ~ 1e-7 units of hyperbolic distance: far outside the 1e-9
+ * stationarity bar in the units the manifold actually measures, and far inside
+ * it in the ambient ball coordinates the logs happen to be stored in. */
+const double kNearMuOffset = 1.0e-11;
+
+std::vector<double> near_boundary_points_flat() {
+    std::vector<double> flat((size_t)(kN * kD));
+    for (int64_t i = 0; i < kN; i++) {
+        std::vector<double> d((size_t)kD);
+        for (int64_t k = 0; k < kD; k++) d[(size_t)k] = kNearDirs[i * kD + k];
+        double n = norm(d);
+        for (int64_t k = 0; k < kD; k++)
+            flat[(size_t)(i * kD + k)] = kNearR * d[(size_t)k] / n;
+    }
+    return flat;
+}
+
+/** @brief The two candidate residual ratios at a given (points, weights, mu).
+ *  @param amb  out: |F|_2 / (wsum * (1 + max|log|)), the ambient scale.
+ *  @param riem out: lambda_mu|F|_2 / (wsum * (1 + lambda_mu max|log|)). */
+void residual_ratios(const std::vector<double>& flat_pts,
+                     const std::vector<double>& w,
+                     const std::vector<double>& mu,
+                     double c, double* amb, double* riem) {
+    std::vector<double> F((size_t)kD, 0.0);
+    double wsum = 0.0, max_log = 0.0;
+    std::vector<std::vector<double>> X = points_from(flat_pts.data());
+    for (int64_t i = 0; i < kN; i++) {
+        std::vector<double> lg = log_map(mu, X[(size_t)i], c);
+        wsum += w[(size_t)i];
+        for (int64_t k = 0; k < kD; k++) {
+            F[(size_t)k] += w[(size_t)i] * lg[(size_t)k];
+            max_log = std::max(max_log, std::fabs(lg[(size_t)k]));
+        }
+    }
+    double fn  = norm(F);
+    double lam = 2.0 / (1.0 - c * dot(mu, mu));
+    *amb  = fn / (wsum * (1.0 + max_log));
+    *riem = (lam * fn) / (wsum * (1.0 + lam * max_log));
+}
+
 #if defined(ESHKOL_HAVE_FORK_DEATH_TESTS)
 bool refuses(void (*body)()) {
     std::fflush(stdout);
@@ -291,6 +349,22 @@ void body_mean_outside_ball() {
 void body_missing_points() {
     Fixture f;
     f.out.input1 = nullptr;
+    f.dispatch();
+}
+
+/* Non-stationary by 1e-7 units of hyperbolic distance, at a mean whose conformal
+ * factor is ~1e4. Measuring the residual in the ambient ball coordinates puts
+ * this at ~1e-11, comfortably inside the 1e-9 bar, so the gate would accept it
+ * and the rule would return a plausible wrong gradient. Measured in the units
+ * the manifold defines, it is ~1e-7 and refused. */
+void body_near_boundary_nonstationary() {
+    Fixture f;
+    std::vector<double> flat = near_boundary_points_flat();
+    f.pts_data = flat;
+    f.mu = frechet_mean(points_from(flat.data()), f.w_data, kC);
+    f.mu[0] += kNearMuOffset;
+    f.pts.tensor_value = f.pts_data.data();
+    f.out.tensor_value = f.mu.data();
     f.dispatch();
 }
 
@@ -447,8 +521,33 @@ int main() {
         report("Euclidean limit (K=0) vs closed form", ok, detail);
     }
 
-    /* ---- 5-10. the gates ---------------------------------------------- */
+    /* ---- 5. the residual SCALE separates two answers ------------------- */
+    /* This check is what makes the near-boundary refusal below non-vacuous. It
+     * asserts, using this file's own independent log map, that the very same
+     * (points, weights, mu) triple is INSIDE the tolerance when the residual is
+     * scaled in ambient ball coordinates and OUTSIDE it when scaled in
+     * Riemannian units. Without this, "the rule refuses" could be any of the
+     * other guards firing; with it, the refusal can only be the scale. */
+    {
+        std::vector<double> flat = near_boundary_points_flat();
+        std::vector<double> w(kW, kW + (size_t)kN);
+        std::vector<double> mu = frechet_mean(points_from(flat.data()), w, kC);
+        mu[0] += kNearMuOffset;
+
+        double amb = 0.0, riem = 0.0;
+        residual_ratios(flat, w, mu, kC, &amb, &riem);
+        bool ok = (amb <= 1e-9) && (riem > 1e-9);
+        char detail[160];
+        std::snprintf(detail, sizeof detail,
+                      "ambient %.3e would pass, riemannian %.3e does not "
+                      "(bar 1e-9, |mu| = %.8f)", amb, riem, norm(mu));
+        report("ambient residual scale is the vacuous one", ok, detail);
+    }
+
+    /* ---- 6-12. the gates ---------------------------------------------- */
 #if defined(ESHKOL_HAVE_FORK_DEATH_TESTS)
+    report("refuses a near-boundary non-stationary mean",
+           refuses(&body_near_boundary_nonstationary));
     report("refuses a non-converged mean (1e-3 off)",  refuses(&body_not_converged));
     report("refuses a barely non-converged mean (1e-6)", refuses(&body_barely_not_converged));
     report("refuses a point outside the ball",         refuses(&body_point_outside_ball));

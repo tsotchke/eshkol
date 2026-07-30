@@ -106,6 +106,11 @@ static void vm_raise_error_msg(VM* vm, const char* msg);
  * returns successfully produces a mean the derivative will accept. */
 #define VM_FRECHET_MAX_ITERS 256
 #define VM_FRECHET_RESID_TOL 1e-9
+/* Consecutive iterations allowed to make no real progress before the run is
+ * declared stagnant. See the stagnation comment in the iteration below: a
+ * plateau is the residual's own evaluation noise floor, and continuing past it
+ * only draws again against the tolerance. */
+#define VM_FRECHET_MAX_STALL 4
 
 static double vm_frechet_dot(const double* a, const double* b, int n) {
     double t = 0.0;
@@ -126,22 +131,38 @@ static void vm_frechet_mobius_add(const double* a, const double* x, double c,
     for (int i = 0; i < n; i++) out[i] = (A1 * a[i] + B1 * x[i]) / D;
 }
 
-/** @brief log_mu(x) into @p out; scratch must hold n doubles. */
-static void vm_frechet_log_map(const double* mu, const double* x, double c,
-                               int n, double* out, double* scratch) {
+/**
+ * @brief log_mu(x) into @p out; scratch must hold n doubles.
+ *
+ * @return 0 if u = (-mu) (+)_c x lands on or outside the ball boundary in
+ *         floating point, in which case artanh has no value and NO finite log
+ *         exists to return. This is reachable from operands that are each
+ *         strictly inside the ball: |u| is formed by cancellation, so a mu and
+ *         an x separated by more than about 19 units of hyperbolic distance
+ *         drive |u| to 1 in f64 even though both are interior points. Clamping
+ *         sr to 1 - 1e-15 here (what this used to do) substitutes a fabricated
+ *         log magnitude of ~17.6 for one that does not exist, and the iteration
+ *         then converges on it and reports success — a plausible wrong mean.
+ *         The caller turns this into a catchable refusal instead. The backward
+ *         rule already refuses on exactly this condition; the two must agree,
+ *         or the forward hands out means whose derivative is undefined.
+ */
+static int vm_frechet_log_map(const double* mu, const double* x, double c,
+                              int n, double* out, double* scratch) {
     for (int i = 0; i < n; i++) scratch[i] = -mu[i];
     vm_frechet_mobius_add(scratch, x, c, n, out);       /* out = u */
     double s = sqrt(c);
     double r = sqrt(vm_frechet_dot(out, out, n));
     if (r <= 0.0) {                                     /* x == mu */
         for (int i = 0; i < n; i++) out[i] = 0.0;
-        return;
+        return 1;
     }
     double sr = s * r;
-    if (sr >= 1.0) sr = 1.0 - 1e-15;                    /* caller gates the domain */
+    if (!(sr < 1.0)) return 0;                          /* no finite log exists */
     double k = (1.0 - c * vm_frechet_dot(mu, mu, n)) / s;
     double f = k * atanh(sr) / r;
     for (int i = 0; i < n; i++) out[i] *= f;
+    return 1;
 }
 
 /** @brief exp_mu(v) into @p out; scratch must hold n doubles. */
@@ -169,7 +190,7 @@ static void vm_frechet_exp_map(const double* mu, const double* v, double c,
  * @param n_w      number of entries actually available in @p wts
  * @param K        sectional curvature, must be <= 0
  * @param mu       out: dim doubles
- * @param scratch  3 * dim doubles of scratch
+ * @param scratch  4 * dim doubles of scratch
  * @param resid_out out: the achieved relative stationarity residual
  * @return NULL on success, else a static human-readable reason. The reason is
  *         returned rather than raised here so the caller owns the VM error
@@ -218,9 +239,10 @@ static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
                    "radius 1/sqrt(-K)";
     }
 
-    double* step  = scratch;
-    double* lg    = scratch + dim;
-    double* tmp   = scratch + 2 * dim;
+    double* step    = scratch;
+    double* lg      = scratch + dim;
+    double* tmp     = scratch + 2 * dim;
+    double* best_mu = scratch + 3 * dim;
 
     /* Seed from the weighted Euclidean average — inside the ball because the
      * ball is convex in the ambient coordinates. */
@@ -230,13 +252,35 @@ static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
         for (int k = 0; k < dim; k++) mu[k] += w * pts[(int64_t)i * dim + k] / wsum;
     }
 
-    double resid_rel = 0.0;
+    double resid_rel    = 0.0;
+    double best_rel     = HUGE_VAL; /* smallest residual seen; best_mu is its iterate */
+    double progress_rel = HUGE_VAL; /* reference for the stagnation test */
+    int    stall        = 0;        /* consecutive iterations with no real progress */
+    int    confirm      = 0;        /* consecutive sub-tolerance iterates */
+    int    stagnated    = 0;        /* ended on the residual's noise plateau */
+    for (int k = 0; k < dim; k++) best_mu[k] = mu[k];
     for (int it = 0; it < VM_FRECHET_MAX_ITERS; it++) {
+        /* The iterate must stay strictly inside the ball. It should, because the
+         * exp map is a Mobius addition and the ball is invariant under it, but a
+         * step taken from within one ulp of the boundary can round onto it. That
+         * case must not be allowed to look like convergence: at |mu| = 1/sqrt(c)
+         * the factor k = (1 - c|mu|^2)/sqrt(c) is zero, so every log_mu(x_i)
+         * evaluates to the zero vector and the residual is exactly zero. */
+        double mu_sq = vm_frechet_dot(mu, mu, dim);
+        if (!(c * mu_sq < 1.0))
+            return "the iterate reached the Poincare ball boundary, where the log "
+                   "map degenerates to zero and a zero residual does not mean "
+                   "stationarity";
+
         for (int k = 0; k < dim; k++) step[k] = 0.0;
         double max_log = 0.0;
         for (int i = 0; i < n_points; i++) {
             double w = (wts && i < n_w) ? wts[i] : 1.0;
-            vm_frechet_log_map(mu, pts + (int64_t)i * dim, c, dim, lg, tmp);
+            if (!vm_frechet_log_map(mu, pts + (int64_t)i * dim, c, dim, lg, tmp))
+                return "a log_mu(x_i) has no finite value in f64 — the iterate and "
+                       "that point are too far apart in hyperbolic distance for the "
+                       "ambient ball coordinates to separate them (refusing rather "
+                       "than substituting a fabricated log magnitude)";
             for (int k = 0; k < dim; k++) {
                 step[k] += w * lg[k];
                 double a = fabs(lg[k]);
@@ -244,15 +288,94 @@ static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
             }
         }
         double resid = sqrt(vm_frechet_dot(step, step, dim));
-        /* Relative WITH an absolute floor: 1 + max|log|, not max|log|. When the
-         * points coincide with the iterate every log_mu(x_i) is zero to rounding
-         * (~1e-19), and a purely relative bar would divide a numerically-exact
-         * residual by that noise and report a huge relative error for the most
-         * exact case there is. The 1 + |.| denominator is the same convention the
-         * gradient-oracle comparison helpers use. */
-        resid_rel = resid / (wsum * (1.0 + max_log));
+        /* The residual is measured in RIEMANNIAN units, not in the ambient ball
+         * coordinates the logs are represented in. The tangent space at mu carries
+         * the conformal metric lambda_mu^2 * <.,.> with lambda_mu = 2/(1 - c|mu|^2),
+         * so the invariant length of a tangent vector v is lambda_mu * |v|_2.
+         *
+         * Scaling matters because of the absolute floor. The bar is relative WITH a
+         * floor — 1 + max|log|, not max|log| — because when the points coincide with
+         * the iterate every log_mu(x_i) is zero to rounding (~1e-19), and a purely
+         * relative bar would divide a numerically exact residual by that noise and
+         * reject the most exact case there is. But a floor is only meaningful in
+         * units where 1 means something, and it does not in the ambient
+         * coordinates: as mu approaches the boundary lambda_mu diverges, every
+         * ambient |log| collapses toward zero, the floor swamps the relative term,
+         * and the bar degenerates to |resid|_ambient <= tol * wsum — which a mean
+         * that is wrong by O(1) unit of hyperbolic distance passes easily. That was
+         * measured, not feared: with the ambient scale the iteration returned a
+         * "converged" mean wrong by 8.8e-8 (points 1e-9 inside the boundary) and by
+         * 7.6e-6 (points one ulp inside) and reported success. In Riemannian units
+         * 1 means one unit of hyperbolic distance, so the floor keeps protecting the
+         * coincident-point case while the relative term stays live near the
+         * boundary. The backward rule in lib/bridge/tensor_backward.cpp uses the
+         * identical scale — the forward's gate is what makes the backward's gate
+         * satisfiable, so they must not drift apart. */
+        double lambda = 2.0 / (1.0 - c * mu_sq);
+        resid_rel = (lambda * resid) / (wsum * (1.0 + lambda * max_log));
         *resid_out = resid_rel;
-        if (resid_rel <= VM_FRECHET_RESID_TOL) return NULL;
+
+        /* ---- Acceptance needs TWO consecutive sub-tolerance iterates ------
+         * One sample is not evidence. Near the boundary the residual has an
+         * evaluation noise floor of its own — the ambient logs are formed by
+         * cancellation, so |F| cannot be resolved below roughly lambda_mu times
+         * the rounding error of the log terms. Once the iterate is inside that
+         * floor, successive iterations resample rounding noise, and if the loop
+         * is allowed to keep drawing, one draw eventually cancels below the bar
+         * by luck and the gate passes a mean that is not stationary. Measured on
+         * two points 1e-9 inside the boundary: the residual oscillated between
+         * 2.4e-7 and 4.9e-6 for 131 iterations and then produced a single
+         * 9.86e-10 draw, which the one-sample test accepted; the accepted mean
+         * was wrong by 3.0e-8, two orders worse than the bar it had just passed,
+         * and an independent evaluation of the same formula at the same point
+         * gave 1.2e-6.
+         *
+         * A genuine fixed point survives the retest: the iteration is locally
+         * contracting there, so the next iterate is at least as good. Noise is
+         * not reproducible, so demanding two consecutive passes at two distinct
+         * iterates squares the probability of a lucky draw. Combined with the
+         * stagnation break below it removes the lottery rather than shortening
+         * it. The machine-exact case is accepted by the moved == 0 path instead,
+         * which is a stronger witness than any residual sample: the iteration
+         * literally cannot move.
+         *
+         * Remember the best ITERATE, not merely the best number: the residual is
+         * not monotone in the last few digits, so the second of the two
+         * confirming iterates can be marginally worse than the first. Returning
+         * the better one keeps the exactly-representable fixtures exact (the
+         * weights-3:1 diameter case lands on 0.5 to the last bit) and hands the
+         * backward the smallest residual available, which is precisely the
+         * quantity the backward's own gate is measured against. */
+        if (resid_rel < best_rel) {
+            best_rel = resid_rel;
+            for (int k = 0; k < dim; k++) best_mu[k] = mu[k];
+        }
+
+        if (resid_rel <= VM_FRECHET_RESID_TOL) {
+            if (++confirm >= 2) break;      /* accepted below, at best_mu */
+        } else {
+            confirm = 0;
+        }
+
+        /* ---- Stagnation is the noise floor, not slow convergence ----------
+         * The Karcher iteration is a contraction on a Hadamard manifold, and the
+         * diameter representable in f64 ambient ball coordinates is bounded (a
+         * point more than about 19 units of hyperbolic distance from the iterate
+         * drives |u| to 1 and is refused above), so a genuinely converging run
+         * improves its residual by a factor bounded well away from 1 on every
+         * iteration. A residual that fails to improve by even 0.1% over four
+         * consecutive iterations has therefore reached the floor of its own
+         * evaluation, and further iterations buy nothing but fresh draws against
+         * the tolerance. Stop, and refuse: `stagnated` records that the run ended
+         * on the plateau rather than at a fixed point, so the acceptance test
+         * below will not honour a lucky sample taken on the way there. */
+        if (resid_rel < progress_rel * (1.0 - 1e-3)) {
+            progress_rel = resid_rel;
+            stall = 0;
+        } else if (++stall >= VM_FRECHET_MAX_STALL) {
+            stagnated = 1;
+            break;
+        }
 
         for (int k = 0; k < dim; k++) step[k] /= wsum;
         vm_frechet_exp_map(mu, step, c, dim, tmp, lg);
@@ -263,13 +386,28 @@ static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
             mu[k] = tmp[k];
         }
         /* A step that does not move the iterate at all cannot improve the
-         * residual either; stop rather than spin out the budget. The caller
-         * still applies the residual gate to whatever was reached. */
+         * residual either; stop rather than spin out the budget. This is not a
+         * failure: an iterate the map cannot leave at f64 resolution is a fixed
+         * point to the precision available, and it is a reproducible witness
+         * rather than a sample, so it needs no confirming second draw. */
         if (moved == 0.0) break;
     }
 
-    if (resid_rel <= VM_FRECHET_RESID_TOL) return NULL;
-    return "the Karcher iteration did not converge";
+    /* ---- Acceptance -------------------------------------------------------
+     * Report the best iterate found, and only if the run did not end on the
+     * residual's noise plateau. A stagnated run may well have drawn a single
+     * sub-tolerance residual on its way across the plateau; honouring that is
+     * exactly the lottery the confirmation rule exists to close, so the
+     * stagnation flag vetoes it regardless of best_rel. */
+    for (int k = 0; k < dim; k++) mu[k] = best_mu[k];
+    *resid_out = best_rel;
+    if (!stagnated && best_rel <= VM_FRECHET_RESID_TOL) return NULL;
+    return stagnated
+        ? "the Karcher iteration stagnated above the stationarity tolerance — the "
+          "residual stopped improving, which means it reached the precision floor "
+          "of its own evaluation in f64 ambient ball coordinates (these points are "
+          "too close to the boundary for their Frechet mean to be resolved)"
+        : "the Karcher iteration did not converge";
 }
 
 /**
@@ -296,7 +434,7 @@ static void vm_dispatch_frechet_mean(VM* vm) {
 
     int64_t shape[1] = { dim };
     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
-    double* scratch = (double*)vm_alloc(&vm->heap.regions, (size_t)(3 * dim) * sizeof(double));
+    double* scratch = (double*)vm_alloc(&vm->heap.regions, (size_t)(4 * dim) * sizeof(double));
     if (!out || !scratch) {
         vm_raise_error_msg(vm, "frechet-mean: out of memory");
         return;
