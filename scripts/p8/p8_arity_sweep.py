@@ -15,15 +15,27 @@ constructs three deterministic calls:
     warity   one wrong-arity call (arity +/- 1)
     wtype    one wrong-type call (an argument swapped for an incompatible type)
 Each call is guard-wrapped and its `write`n value (or the token ERR on a caught
-error) is printed on an indexed line. The program is run under NATIVE
+error) is printed between sentinels. Each program is run under NATIVE
 (eshkol-run -r) and the hosted VM (emit-eskb + eshkol-vm-standalone-test); the
-per-index outputs must be IDENTICAL — a matching value on both, or ERR on both.
-A hard crash (SIGSEGV/abort, which guard cannot catch) on one engine but not the
-other truncates that engine's output and is reported as a divergence at the
-first missing index.
+two engines' outcomes must be IDENTICAL — a matching value on both, ERR on both,
+or a refusal on both.
 
-Each builtin gets its OWN tiny program so one hard crash isolates to three
-probes instead of poisoning the batch.
+ONE PROBE PER COMPILATION UNIT. Every probe is its own .esk file, so a probe's
+verdict describes only the construct it calls. This is load-bearing rather than
+tidy: the compiler's granularity for refusing to emit is the whole translation
+unit. Once a malformed call became a fatal COMPILE-TIME diagnostic instead of a
+runtime event `guard` could catch, three co-located probes shared one fate — the
+wrong-arity probe suppressed its two well-formed siblings' output, and the reader
+saw "present on VM, missing on native" for constructs whose behaviour is in fact
+identical on both engines. Co-location made the harness measure itself. (Same
+defect class as the shared temp files fixed in #367: an unrelated cell decides
+another cell's verdict.)
+
+An engine REFUSING a probe is therefore a first-class outcome, not an absence:
+distinct both from producing a value and from `guard` catching a runtime error.
+Both engines refusing agree; one refusing while the other answers is a real
+divergence. A hard crash (SIGSEGV/abort, which guard cannot catch) is the same
+observation — no probe output plus a non-zero status — and compares the same way.
 
 Determinism: a builtin's three probes are a pure function of its NAME (args are
 derived from a per-name hash), so a probe is identical regardless of which
@@ -114,15 +126,30 @@ def correct_args(name, cat, arity):
     return out
 
 
-def build_program(name, cat, arity):
-    """Return (esk_source, [probe_keys]) — 3 indexed guard-wrapped probes.
+def build_programs(name, cat, arity):
+    """Return [(esk_source, probe_key)] — ONE PROGRAM PER PROBE.
 
     The VM emits a newline after every output op, so a probe cannot rely on
     line structure. Each probe is bracketed by whitespace-free sentinels
     (#P8# idx # value #/P8#); the reader strips ALL whitespace from both
     engines' output identically, then regex-extracts each probe. A value's
     own internal spaces vanish on both sides, so the comparison is exact and
-    newline-insertion-proof."""
+    newline-insertion-proof.
+
+    ONE COMPILATION UNIT PER PROBE is load-bearing, and for the same reason
+    each builtin already gets its own program rather than sharing a batch.
+    The original harness emitted all three probes into ONE file, which was
+    safe only while a malformed call was a RUNTIME event that `guard` could
+    catch. Wrong arity is now a COMPILE-TIME error (ESH-0362): native refuses
+    to emit code for the whole translation unit, so the `warity` probe took
+    its two well-formed siblings down with it — `nres` came back empty and
+    every index was "missing on native, present on VM". That reported
+    `<name>::correct` and `<name>::wtype` as NEW native-vs-VM divergences for
+    builtins whose correct-arity behaviour is in fact identical on both
+    engines, i.e. the harness measured its own co-location, not a parity gap.
+    A compile-time rejection must therefore be scoped to the probe that
+    provoked it.
+    """
     head = [
         "(define (probe idx thunk)",
         "  (display \"#P8#\") (display idx) (display \"#\")",
@@ -133,32 +160,35 @@ def build_program(name, cat, arity):
     if cat == "hash":
         head.append("(define __ht (make-hash-table))")
         head.append("(hash-table-set! __ht 1 10)")
-    src = ["\n".join(head)]
-    keys = []
+    prelude = "\n".join(head)
 
     def call(args):
         return "(%s %s)" % (name, " ".join(args))
 
+    def program(body):
+        return prelude + "\n" + body + "\n"
+
+    out = []
     # correct arity
     a = correct_args(name, cat, arity)
-    src.append('(probe 0 (lambda () %s))' % call(a))
-    keys.append("%s::correct" % name)
-    # wrong arity: one extra arg (or one fewer if arity>=1)
+    out.append((program('(probe 0 (lambda () %s))' % call(a)),
+                "%s::correct" % name))
+    # wrong arity: one fewer arg (or one extra when the builtin takes none)
     if arity >= 1:
         wa = a[:-1]
     else:
         wa = [pick("num", name, 99)]
-    src.append('(probe 1 (lambda () %s))' % call(wa))
-    keys.append("%s::warity" % name)
+    out.append((program('(probe 0 (lambda () %s))' % call(wa)),
+                "%s::warity" % name))
     # wrong type: swap arg 0 (if any) for an incompatible type
     if arity >= 1:
         wt = list(a)
         wt[0] = WTYPE.get(cat, '"x"')
     else:
         wt = [WTYPE.get(cat, '"x"')]
-    src.append('(probe 2 (lambda () %s))' % call(wt))
-    keys.append("%s::wtype" % name)
-    return "\n".join(src) + "\n", keys
+    out.append((program('(probe 0 (lambda () %s))' % call(wt)),
+                "%s::wtype" % name))
+    return out
 
 
 def run(cmd, timeout, env=None):
@@ -207,24 +237,25 @@ def run_vm(esk, vm, native, workdir, timeout):
     return rc, parse_indexed(out), to
 
 
-def compare(keys, nres, vres, ncrash, vcrash):
-    """Yield divergence keys. A probe diverges if the engines disagree on its
-    value, or exactly one engine is missing the index (crash truncation)."""
-    divs = []
-    for idx, key in enumerate(keys):
-        nv = nres.get(idx)
-        vv = vres.get(idx)
-        if nv is None and vv is None:
-            # both missing: attribute to a crash only if exactly one crashed.
-            if ncrash != vcrash:
-                divs.append(key)
-            continue
-        if nv is None or vv is None:
-            divs.append(key)     # one engine truncated here
-            continue
-        if nv != vv:
-            divs.append(key)
-    return divs
+def diverges(nres, vres, ncrash, vcrash):
+    """True iff this ONE probe's outcome differs between the engines.
+
+    Each program now carries exactly one probe, always at index 0, so the
+    verdict is scoped to the construct under test: a rejection cannot be
+    attributed to a sibling probe that happens to share the file.
+
+    "REJECTED" is a first-class outcome, not an absence. A wrong-arity or
+    wrong-type call that native refuses to COMPILE produces no probe output
+    at all, which is materially different from producing a value and
+    materially different from `guard` catching a runtime error (ERR). Both
+    engines refusing agree; one refusing while the other yields a value is a
+    real divergence.
+    """
+    nv = nres.get(0, "REJECTED" if ncrash else None)
+    vv = vres.get(0, "REJECTED" if vcrash else None)
+    if nv is None and vv is None:
+        return False
+    return nv != vv
 
 
 def main():
@@ -272,18 +303,27 @@ def main():
     tested = 0
     for e in cands:
         name, cat, arity = e["name"], e["category"], e["arity"]
-        src, keys = build_program(name, cat, arity)
-        esk = os.path.join(workdir, "probe.esk")
-        with open(esk, "w") as fh:
-            fh.write(src)
-        nrc, nres, nto = run_native(esk, args.native, workdir, args.timeout)
-        vrc, vres, vto = run_vm(esk, args.vm, args.native, workdir, args.timeout)
-        if nto or vto:
-            continue  # a timeout is environmental, not a parity claim
-        ncrash = (nrc not in (0,))
-        vcrash = (vrc in ("compile",)) or (isinstance(vrc, int) and vrc not in (0,))
-        all_divs.extend(compare(keys, nres, vres, ncrash, vcrash))
-        tested += 1
+        counted = False
+        for src, key in build_programs(name, cat, arity):
+            # One file per probe kind, rewritten per builtin. The persistent
+            # run-cache key folds BOTH the canonical source path and the source
+            # BYTES (exe/eshkol-run.cpp makeJitRunCacheKey), so a rewritten file
+            # can never serve a previous probe's cached binary; the name only
+            # has to identify which probe a leftover file belongs to.
+            esk = os.path.join(workdir, "probe_%s.esk" % key.split("::")[-1])
+            with open(esk, "w") as fh:
+                fh.write(src)
+            nrc, nres, nto = run_native(esk, args.native, workdir, args.timeout)
+            vrc, vres, vto = run_vm(esk, args.vm, args.native, workdir, args.timeout)
+            if nto or vto:
+                continue  # a timeout is environmental, not a parity claim
+            ncrash = (nrc not in (0,))
+            vcrash = (vrc in ("compile",)) or (isinstance(vrc, int) and vrc not in (0,))
+            if diverges(nres, vres, ncrash, vcrash):
+                all_divs.append(key)
+            counted = True
+        if counted:
+            tested += 1
 
     all_divs = sorted(set(all_divs))
     new_divs = [k for k in all_divs if k not in baseline]
