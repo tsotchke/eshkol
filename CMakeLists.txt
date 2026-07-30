@@ -3212,6 +3212,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
+    # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
+    # regression in it is a regression in all three. It was unwired -- nothing in
+    # CTest or any workflow ran it, and tests/ad/ is not globbed by
+    # scripts/run_autodiff_tests.sh (which globs tests/autodiff/ only) -- so it
+    # gates here now, in BOTH lanes.
+    add_test(
+        NAME exact_taylor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_taylor_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot'"
+    )
+    set_tests_properties(exact_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
