@@ -317,6 +317,40 @@ residual from the retained `μ*`, points and weights (recomputed, not stored: a
 stored residual can be stale relative to the operands actually on the node) and
 refuses when it is not stationary, including for a displacement of only `1e-6`.
 
+**The bar, exactly, because a consumer matching this has to use the same one:**
+
+```
+λ_μ‖F‖₂ ≤ tol · Σ_i w_i · (1 + λ_μ · max_i ‖log_μ(x_i)‖_∞),
+λ_μ = 2/(1 − c‖μ‖²),   tol = 1e-9
+```
+
+Both sides are in **Riemannian** units, and that is load-bearing rather than
+pedantic. The logs are stored in ambient ball coordinates; the tangent space at
+`μ` carries the conformal metric `λ_μ²⟨·,·⟩`, so a tangent vector's invariant
+length is `λ_μ‖v‖`. The factor cancels out of the relative term but not out of the
+absolute floor — and the floor is why the bar is not purely relative (with every
+point coincident with the mean, each log is zero to rounding, and a purely
+relative bar would divide an exact residual by that noise). Scaled in ambient
+coordinates the floor swamps the relative term as `μ` approaches the boundary,
+`λ_μ` diverges, every `‖log‖` collapses, and the bar degenerates to
+`‖F‖_ambient ≤ tol·Σw_i` — which a mean wrong by a whole unit of hyperbolic
+distance satisfies. With the ambient scale the forward accepted means wrong by
+`8.8e-8` and `7.6e-6` as converged. A consumer that reproduces this gate in
+ambient units will believe it has a converged mean when it does not.
+
+**The forward's honest range, which is narrower than the ball.** Ambient f64
+coordinates cannot resolve hyperbolic position near the boundary: `u = (−μ) ⊕_c x`
+is formed by cancellation, so a `μ` and an `x` more than roughly 19 units of
+hyperbolic distance apart drive `‖u‖` to `1` even though both are strictly
+interior, and `artanh` has no value. Nor is the residual resolvable there — it has
+an evaluation noise floor of its own, so acceptance requires two consecutive
+sub-tolerance iterates and a run whose residual stops improving is refused as
+stagnant. Measured on points at `±x0` with weights `2:1`, closed form
+`tanh(artanh(x0)/3)`: accepted out to `x0 = 1 − 1e-6` with relative error `8e-16`
+to `2.3e-12`, refused from `x0 = 1 − 1e-7` inward. Consumers should treat a
+refusal in that regime as correct and reformulate (recentre the chart, or carry
+more precision), not retry.
+
 The forward changed too, and consumers should note it: VM opcode 817 previously
 returned the **Euclidean weighted average** and discarded its curvature argument
 entirely. On the Poincaré ball that is not the Riemannian center of mass and not
