@@ -44,171 +44,13 @@
 #include <semiclassical_qllm/backend.h>
 #endif
 
-/* Architecture constants (must match weight_matrices.c) */
-#define D 256
-#define H 16
-#define HD 2
-#define N_LAYERS 6
-#define FFN_DIM 2304
-#define MEM_SIZE 4
-#define SCALE 300.0f
-#define AD_NODE_FIELDS 8
-#define ARENA_CELLS 16
-#define ARENA_CELL_FIELDS 5
-
-/* Opcodes -- canonical numbering from eshkol_compiler.c */
-typedef enum {
-    OP_NOP=0, OP_CONST=1, OP_NIL=2, OP_TRUE=3, OP_FALSE=4, OP_POP=5, OP_DUP=6,
-    OP_ADD=7, OP_SUB=8, OP_MUL=9, OP_DIV=10, OP_MOD=11, OP_NEG=12, OP_ABS=13,
-    OP_EQ=14, OP_LT=15, OP_GT=16, OP_LE=17, OP_GE=18, OP_NOT=19,
-    OP_GET_LOCAL=20, OP_SET_LOCAL=21, OP_GET_UPVALUE=22, OP_SET_UPVALUE=23,
-    OP_CLOSURE=24, OP_CALL=25, OP_TAIL_CALL=26, OP_RETURN=27,
-    OP_JUMP=28, OP_JUMP_IF_FALSE=29, OP_LOOP=30,
-    OP_CONS=31, OP_CAR=32, OP_CDR=33, OP_NULL_P=34,
-    OP_PRINT=35, OP_HALT=36, OP_NATIVE_CALL=37,
-    OP_CLOSE_UPVALUE=38,
-    OP_VEC_CREATE=39, OP_VEC_REF=40, OP_VEC_SET=41, OP_VEC_LEN=42,
-    OP_STR_REF=43, OP_STR_LEN=44,
-    OP_PAIR_P=45, OP_NUM_P=46, OP_STR_P=47, OP_BOOL_P=48, OP_PROC_P=49, OP_VEC_P=50,
-    OP_SET_CAR=51, OP_SET_CDR=52, OP_POPN=53,
-    OP_OPEN_CLOSURE=54, OP_CALLCC=55, OP_INVOKE_CC=56,
-    OP_PUSH_HANDLER=57, OP_POP_HANDLER=58, OP_GET_EXN=59,
-    OP_PACK_REST=60, OP_WIND_PUSH=61, OP_WIND_POP=62, OP_VOID=63,
-    OP_AD_VAR=64, OP_AD_CONST=65,
-    OP_AD_ADD=66, OP_AD_SUB=67, OP_AD_MUL=68,
-    OP_AD_NEG=69, OP_AD_ABS=70, OP_AD_RELU=71,
-    OP_AD_SIGMOID=72, OP_AD_TANH=73,
-    OP_AD_EXP=74, OP_AD_LOG=75, OP_AD_SQRT=76,
-    OP_AD_BACKWARD=77, OP_AD_GRAD=78,
-    OP_AD_DIV=79, OP_AD_POW=80, OP_AD_SIN=81, OP_AD_COS=82,
-    OP_COUNT=83
-} OpCode;
-
-typedef struct { OpCode op; int operand; } Instr;
-
-/* State vector layout (must match weight_matrices.c) */
-enum {
-    S_PC=0, S_TOS=1, S_SOS=2, S_R2=3, S_R3=4, S_DEPTH=5,
-    S_OUTPUT=6, S_HALT=7,
-    S_MEM0=8, S_MEM1=9, S_MEM2=10, S_MEM3=11,
-    S_SP=12, S_FP=13, S_HAS_OUT=14, S_CUR_CLOSURE=15,
-    S_EXC_DEPTH=S_SP, S_WIND_DEPTH=S_FP,
-    S_OPCODE=16, S_OPERAND=17,
-    S_PRODUCT=18, S_LOADVAL=19,
-    S_STORED0=20, S_STORED1=21, S_STORED2=22, S_STORED3=23,
-    S_ZOPER=24, S_ZPC1=25,
-    S_CMP_EQ=26, S_CMP_LT=27,
-    S_IS_CALL=28, S_IS_RET=29, S_IS_NATIVE=30,
-    S_ABS_DELTA=31,
-
-    /* Type tags for TOS/SOS/R2/R3 (32-35) — persist across steps.
-     * Type encoding: 0=number, 1=boolean, 2=pair, 3=closure,
-     *                4=string, 5=vector, 6=nil, 7=continuation */
-    S_TYPE_TOS=32, S_TYPE_SOS=33, S_TYPE_R2=34, S_TYPE_R3=35,
-
-    S_AD_TAPE_LEN=36,
-    S_AD_CURSOR=37,
-    S_AD_MODE=38,
-    S_AD_CUR_OP=39,
-    S_AD_CUR_VALUE=40,
-    S_AD_CUR_GRAD=41,
-    S_AD_CUR_LEFT=42,
-    S_AD_CUR_RIGHT=43,
-    S_AD_CUR_SAVED=44,
-    S_AD_LEFT_VALUE=45,
-    S_AD_LEFT_GRAD=46,
-    S_AD_UNARY_ABS_ACTIVE=S_AD_LEFT_GRAD,
-    S_AD_RIGHT_VALUE=47,
-
-    S_AD_TAPE_BASE=48,
-
-    S_AD_IS_FORWARD=112,
-    S_AD_IS_BACKWARD=113,
-    S_AD_GRAD_ACCUM=114,
-    S_AD_UNARY_RELU_ACTIVE=S_AD_GRAD_ACCUM,
-    S_AD_PROD_GRAD_LV=115,
-    S_AD_PROD_GRAD_RV=116,
-    S_AD_LEFT_GRAD_NEW=117,
-    S_AD_RIGHT_GRAD_NEW=118,
-    S_AD_PROD_LR=119,
-    S_AD_PROD_GRAD_CV=S_AD_PROD_LR,
-    S_AD_PROD_GRAD_SV=120,
-    S_AD_SPARE1=120,
-
-    S_TYPE_IS_NUM=121,
-    S_TYPE_IS_BOOL=122,
-    S_TYPE_IS_PAIR=123,
-    S_TYPE_IS_PROC=124,
-    S_TYPE_IS_STR=125,
-    S_TYPE_IS_VEC=126,
-    S_TYPE_IS_NIL=127,
-
-    S_AD_SPARE2=121, S_AD_SPARE3=122, S_AD_SPARE4=123,
-    S_AD_SPARE5=124, S_AD_SPARE6=125, S_AD_SPARE7=126, S_AD_SPARE8=127,
-
-    S_ARENA_BASE=128,
-    S_ARENA_NEXT=S_ARENA_BASE + ARENA_CELLS * ARENA_CELL_FIELDS,
-
-    S_ARENA_WRITE_KIND,
-    S_ARENA_WRITE_CAR,
-    S_ARENA_WRITE_CDR,
-    S_ARENA_READ_CAR,
-    S_ARENA_READ_CDR,
-    S_ARENA_TARGET,
-    S_ARENA_NEW_KIND,
-    S_ARENA_NEW_CAR,
-    S_ARENA_NEW_CDR,
-    S_ARENA_NEW_CAR_TYPE,
-    S_ARENA_NEW_CDR_TYPE,
-    S_ARENA_VEC_WRITE,
-    S_ARENA_VEC_BASE,
-    S_ARENA_VEC_LEN,
-    S_ARENA_VEC_E0,
-    S_ARENA_VEC_E1,
-    S_ARENA_VEC_E2,
-    S_ARENA_VEC_E3,
-    S_ARENA_VEC_T0,
-    S_ARENA_VEC_T1,
-    S_ARENA_VEC_T2,
-    S_ARENA_VEC_T3,
-    S_ARENA_VEC_HAS_E0,
-    S_ARENA_VEC_HAS_E1,
-    S_ARENA_VEC_HAS_E2,
-    S_ARENA_VEC_HAS_E3,
-    S_ARENA_LIST_BASE,
-    S_ARENA_LIST_E0,
-    S_ARENA_LIST_E1,
-    S_ARENA_LIST_E2,
-    S_ARENA_LIST_E3,
-    S_ARENA_LIST_T0,
-    S_ARENA_LIST_T1,
-    S_ARENA_LIST_T2,
-    S_ARENA_LIST_T3,
-    S_ARENA_LIST_CDR0,
-    S_ARENA_LIST_CDR1,
-    S_ARENA_LIST_CDR2,
-    S_ARENA_LIST_CDR3,
-    S_ARENA_LIST_CDRT0,
-    S_ARENA_LIST_CDRT1,
-    S_ARENA_LIST_CDRT2,
-    S_ARENA_LIST_CDRT3,
-    S_ARENA_LIST_HAS_E0,
-    S_ARENA_LIST_HAS_E1,
-    S_ARENA_LIST_HAS_E2,
-    S_ARENA_LIST_HAS_E3,
-    S_ARENA_TRANSIENT_START=S_ARENA_WRITE_KIND,
-    S_ARENA_TRANSIENT_END=S_ARENA_LIST_HAS_E3
-};
-
-/* Type tag values */
-#define TYPE_NUMBER  0.0f
-#define TYPE_BOOL    1.0f
-#define TYPE_PAIR    2.0f
-#define TYPE_CLOSURE 3.0f
-#define TYPE_STRING  4.0f
-#define TYPE_VECTOR  5.0f
-#define TYPE_NIL     6.0f
-#define TYPE_CONT    7.0f
+/* Architecture constants, opcode numbering, state-vector layout and type tags.
+ *
+ * These were previously a private copy in this file. The copy had drifted from
+ * the producer (weight_matrices.c): it lacked OP_SWAP=83 and used 83 as its
+ * OP_COUNT sentinel, so a valid SWAP emitted by the producer decoded here as an
+ * out-of-range opcode. Both sides now share one definition. */
+#include "sdnc_isa.h"
 
 /* Weight file header (QLMW format) */
 typedef struct {
@@ -269,7 +111,7 @@ static Weights* load_weights(const char* path) {
  * Instruction Embedding
  ******************************************************************************/
 
-static void embed_instruction(const Instr* instr, int pos, float out[D]) {
+static void embed_instruction(const SdncInstr* instr, int pos, float out[D]) {
     memset(out, 0, D * sizeof(float));
     out[0] = (float)pos;
     out[1] = -(float)(pos * pos) / 2.0f;
@@ -319,7 +161,7 @@ static struct {
 } g_wind_stack[MAX_WINDS];
 static int g_wind_depth = 0;
 
-static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
+static void exec_loop_postprocess(float x[D], const SdncInstr* prog, int n_instr) {
     /* IS_NATIVE: DIV, MOD, etc. */
     if (x[S_IS_NATIVE] > 0.5f) {
         int pc = (int)roundf(x[S_PC]) - 1;
@@ -988,7 +830,7 @@ static void forward_pass_qllm(const Weights* w, const float state[D],
 }
 #endif /* USE_QLLM */
 
-static int run_program(const Weights* w, const Instr* prog, int n_instr,
+static int run_program(const Weights* w, const SdncInstr* prog, int n_instr,
                         float* outputs, int max_out) {
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
@@ -1021,7 +863,7 @@ static int run_program(const Weights* w, const Instr* prog, int n_instr,
 }
 
 #ifdef USE_QLLM
-static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
+static int run_program_qllm(const Weights* w, const SdncInstr* prog, int n_instr,
                               float* outputs, int max_out, qllm_device_t dev) {
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
@@ -1058,7 +900,7 @@ static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
  * ESKB Bytecode Loader
  ******************************************************************************/
 
-static Instr* load_eskb(const char* path, int* n_instr_out) {
+static SdncInstr* load_eskb(const char* path, int* n_instr_out) {
     EskbModule mod;
     if (eskb_load_file(path, &mod) < 0) return NULL;
     if (mod.code_len <= 0) {
@@ -1066,7 +908,7 @@ static Instr* load_eskb(const char* path, int* n_instr_out) {
         return NULL;
     }
 
-    Instr* prog = (Instr*)calloc((size_t)mod.code_len, sizeof(Instr));
+    SdncInstr* prog = (SdncInstr*)calloc((size_t)mod.code_len, sizeof(SdncInstr));
     if (!prog) {
         eskb_module_free(&mod);
         return NULL;
@@ -1080,7 +922,7 @@ static Instr* load_eskb(const char* path, int* n_instr_out) {
             eskb_module_free(&mod);
             return NULL;
         }
-        prog[i].op = (OpCode)mod.opcodes[i];
+        prog[i].op = (SdncOpCode)mod.opcodes[i];
         prog[i].operand = mod.operands[i];
 
         if (prog[i].op == OP_CONST && prog[i].operand >= 0 &&
@@ -1146,22 +988,22 @@ int main(int argc, char** argv) {
 
     printf("\n  Built-in tests:\n\n");
 
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("3+5", p, 5, 8); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("(3+5)*2", p, 7, 16); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("10-7", p, 5, 3); }
-    { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("mem[0]=42", p, 5, 42); }
-    { Instr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("7*11", p, 5, 77); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("3<5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("10/2", p, 5, 5); }
     /* Recursive factorial */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,5},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
         {OP_GET_LOCAL,0},{OP_CONST,0},{OP_EQ,0},{OP_JUMP_IF_FALSE,11},
         {OP_CONST,1},{OP_RETURN,0},
@@ -1169,7 +1011,7 @@ int main(int argc, char** argv) {
         {OP_MUL,0},{OP_RETURN,0}};
       QTEST("rec fact(5)", p, 19, 120); }
     /* Cons pair */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("car(cons 3 4)", p, 6, 3); }
 
     #undef QTEST
@@ -1177,7 +1019,7 @@ int main(int argc, char** argv) {
     /* Load external bytecode if provided */
     if (bc_path) {
         int n_instr;
-        Instr* prog = load_eskb(bc_path, &n_instr);
+        SdncInstr* prog = load_eskb(bc_path, &n_instr);
         if (prog) {
             printf("\n  External bytecode: %s (%d instructions)\n", bc_path, n_instr);
             float outputs[64];
@@ -1201,7 +1043,7 @@ int main(int argc, char** argv) {
                dev == QLLM_DEVICE_METAL ? "METAL" : "CPU/NEON");
 
         /* fib(15) = 610 */
-        Instr fib_prog[]={
+        SdncInstr fib_prog[]={
             {OP_CONST,15},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
             {OP_GET_LOCAL,0},{OP_CONST,1},{OP_LE,0},{OP_JUMP_IF_FALSE,11},
             {OP_GET_LOCAL,0},{OP_RETURN,0},
