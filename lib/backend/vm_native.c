@@ -7393,8 +7393,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
-        /* Create dual number: x + 1ε */
-        VmDual* d = vm_dual_make(&vm->heap.regions, as_number(x_val), 1.0);
+        /* Create dual number: x + 1ε
+         *
+         * ESH-0393: seeded via as_number_vm(), not as_number(). as_number()
+         * knows only the IMMEDIATE tags, so a VAL_RATIONAL point silently
+         * became 0.0 and `(derivative (lambda (x) (* x x)) 1/3)` answered 0 on
+         * the VM where the native backend answers 0.666…. as_number_vm() is
+         * the VM's own heap-aware coercion (it unwraps rationals and duals) and
+         * was already what the gradient primitive used — the AD natives here
+         * were simply inconsistent with it. Same change applies to the
+         * jacobian/hessian/divergence/curl/laplacian/directional-derivative
+         * point and direction reads below. */
+        VmDual* d = vm_dual_make(&vm->heap.regions, as_number_vm(vm, x_val), 1.0);
         if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
         int32_t dptr = heap_alloc(&vm->heap);
         if (dptr < 0) { vm->error = 1; break; }
@@ -11858,7 +11868,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -11868,7 +11878,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
         } else {
-            point[0] = as_number(x_val);
+            point[0] = as_number_vm(vm, x_val);
             n = 1;
         }
 
@@ -11969,7 +11979,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -11979,7 +11989,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
         } else {
-            point[0] = as_number(x_val);
+            point[0] = as_number_vm(vm, x_val);
             n = 1;
         }
 
@@ -12039,7 +12049,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -12049,7 +12059,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
         } else {
-            point[0] = as_number(x_val);
+            point[0] = as_number_vm(vm, x_val);
             n = 1;
         }
 
@@ -12136,7 +12146,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < 3) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -12178,7 +12188,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else if (rp.type == VAL_PAIR) {
                 Value cur = rp; int idx = 0;
                 while (cur.type == VAL_PAIR && idx < 3) {
-                    fp[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    fp[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                     cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
                 }
             }
@@ -12188,7 +12198,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else if (rm.type == VAL_PAIR) {
                 Value cur = rm; int idx = 0;
                 while (cur.type == VAL_PAIR && idx < 3) {
-                    fm[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    fm[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                     cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
                 }
             }
@@ -12235,7 +12245,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -12245,7 +12255,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
         } else {
-            point[0] = as_number(x_val);
+            point[0] = as_number_vm(vm, x_val);
             n = 1;
         }
 
@@ -12285,7 +12295,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -12295,7 +12305,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
         } else {
-            point[0] = as_number(x_val);
+            point[0] = as_number_vm(vm, x_val);
             n = 1;
         }
 
@@ -12303,7 +12313,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (dir_val.type == VAL_PAIR) {
             Value cur = dir_val;
             while (cur.type == VAL_PAIR && nd < VM_AD_MAX_VARS) {
-                dir[nd++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                dir[nd++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (dir_val.type == VAL_TENSOR && dir_val.as.ptr >= 0) {
@@ -12313,7 +12323,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int i = 0; i < nd; i++) dir[i] = t->data[i];
             }
         } else {
-            dir[0] = as_number(dir_val);
+            dir[0] = as_number_vm(vm, dir_val);
             nd = 1;
         }
 
