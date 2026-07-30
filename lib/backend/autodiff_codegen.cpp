@@ -4903,95 +4903,37 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
 
                 /* Arity of a RUNTIME closure is only known at run time, so the
-                 * spread is a switch with one call site per arity. The ceiling
-                 * was 8, and arity 9+ fell into the vectorized default: an
-                 * arity-12 loss reached through a wrapper (e.g.
-                 * (define (gwrap f p) (gradient f p))) was called with ONE
-                 * vector argument, so it produced nothing at all while the
-                 * same loss called directly by name was correct. Raised to 32,
-                 * and anything above it now raises a named error instead of
-                 * silently taking the vector path — see gcall_too_many below. */
-                const int GRAD_MAX_ARITY = 32;
-                /* Sentinel the closure ABI uses for a variadic callable; it
-                 * legitimately wants the vectorized single-argument form. */
-                const uint64_t GRAD_VARIADIC_ARITY = 255;
-                BasicBlock* gcall_default = BasicBlock::Create(ctx_.context(), "grad_call_vec", current_func);
-                BasicBlock* gcall_merge = BasicBlock::Create(ctx_.context(), "grad_call_merge", current_func);
+                 * point has to be spread into that many scalar arguments by a
+                 * dispatch on the arity. The ceiling was 8, and arity 9+ fell
+                 * into the vectorized default: an arity-12 loss reached through
+                 * a wrapper (e.g. (define (gwrap f p) (gradient f p))) was
+                 * called with ONE vector argument, so it produced nothing at all
+                 * while the same loss called directly by name was correct. The
+                 * ceiling is now GRAD_MAX_ARITY (32) and anything above it
+                 * raises a named error instead of silently taking the vector
+                 * path.
+                 *
+                 * The dispatch itself is emitted ONCE PER MODULE, out of line —
+                 * getOrCreateGradSpreadHelper() in llvm_codegen.cpp, which also
+                 * documents why: inlining one fully expanded closure call per
+                 * arity here cost ~1.03M lines of stdlib IR across the six
+                 * gradient sites (2.7x the whole stdlib) and, because Windows
+                 * cannot discard weak_any stdlib definitions, +92s of opt/llc on
+                 * every user compile. The helper owns the ceiling, the raise and
+                 * the arity-0/1/variadic vector form. */
+                if (!gradient_spread_call_callback_) {
+                    eshkol_error("gradient: runtime-closure arity spread helper not configured");
+                    return nullptr;
+                }
                 // ESH-0093: the callee body runs one forward level deeper
                 adPertLevelStore(ctx_.builder().CreateAdd(rt_pert_level,
                     ConstantInt::get(ctx_.int64Type(), 1)));
-                SwitchInst* gcall_sw = ctx_.builder().CreateSwitch(clo_arity, gcall_default, GRAD_MAX_ARITY);
-
-                std::vector<std::pair<BasicBlock*, Value*>> gcall_variants;
-                for (int k = 1; k <= GRAD_MAX_ARITY; k++) {
-                    BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
-                        "grad_call_a" + std::to_string(k), current_func);
-                    gcall_sw->addCase(ConstantInt::get(ctx_.int64Type(), k), case_bb);
-                    ctx_.builder().SetInsertPoint(case_bb);
-                    std::vector<Value*> cargs;
-                    if (k == 1) {
-                        cargs.push_back(dual_vec_tagged);  // vectorized single-arg function
-                    } else {
-                        for (int j = 0; j < k; j++) {
-                            Value* ep = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dual_elems_typed,
-                                ConstantInt::get(ctx_.int64Type(), j));
-                            cargs.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), ep));
-                        }
-                    }
-                    Value* r = closure_call_callback_(closure_val, cargs, "autodiff", callback_context_);
-                    BasicBlock* cexit = ctx_.builder().GetInsertBlock();  // closure call may add blocks
-                    ctx_.builder().CreateBr(gcall_merge);
-                    gcall_variants.push_back({cexit, r});
+                Value* call_result = gradient_spread_call_callback_(closure_val, dual_vec_tagged,
+                    dual_elems_typed, clo_arity, callback_context_);
+                if (!call_result) {
+                    eshkol_error("gradient: failed to call runtime closure");
+                    return nullptr;
                 }
-                // Default: arity 0 (unreadable), variadic, or above the spread
-                // ceiling. The first two legitimately want the vectorized
-                // single-argument form; the third is a real limit and says so
-                // rather than quietly mis-calling the loss.
-                ctx_.builder().SetInsertPoint(gcall_default);
-                BasicBlock* gcall_vec = BasicBlock::Create(ctx_.context(), "grad_call_vec_ok", current_func);
-                BasicBlock* gcall_too_many = BasicBlock::Create(ctx_.context(), "grad_call_arity_over", current_func);
-                Value* over_ceiling = ctx_.builder().CreateAnd(
-                    ctx_.builder().CreateICmpUGT(clo_arity,
-                        ConstantInt::get(ctx_.int64Type(), GRAD_MAX_ARITY)),
-                    ctx_.builder().CreateICmpNE(clo_arity,
-                        ConstantInt::get(ctx_.int64Type(), GRAD_VARIADIC_ARITY)));
-                ctx_.builder().CreateCondBr(over_ceiling, gcall_too_many, gcall_vec);
-
-                ctx_.builder().SetInsertPoint(gcall_too_many);
-                {
-                    llvm::Function* arity_err_fn =
-                        ctx_.module().getFunction("eshkol_type_error_with_operand");
-                    if (!arity_err_fn) {
-                        llvm::FunctionType* ft = llvm::FunctionType::get(
-                            ctx_.builder().getVoidTy(),
-                            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(),
-                             ctx_.builder().getPtrTy()}, false);
-                        arity_err_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                            "eshkol_type_error_with_operand", &ctx_.module());
-                        arity_err_fn->setDoesNotReturn();
-                    }
-                    Value* slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr,
-                                                              "grad_arity_err_slot");
-                    ctx_.builder().CreateStore(closure_val, slot);
-                    Value* proc = ctx_.builder().CreateGlobalString("gradient", "grad_arity_proc");
-                    Value* expected = ctx_.builder().CreateGlobalString(
-                        "callable whose argument count is at most 32 (a loss with more "
-                        "coordinates must take its point as one vector argument)",
-                        "grad_arity_expected");
-                    ctx_.builder().CreateCall(arity_err_fn, {proc, expected, slot});
-                    ctx_.builder().CreateUnreachable();
-                }
-
-                ctx_.builder().SetInsertPoint(gcall_vec);
-                Value* gdef_r = closure_call_callback_(closure_val,
-                    std::vector<Value*>{dual_vec_tagged}, "autodiff", callback_context_);
-                BasicBlock* gdef_exit = ctx_.builder().GetInsertBlock();
-                ctx_.builder().CreateBr(gcall_merge);
-                gcall_variants.push_back({gdef_exit, gdef_r});
-
-                ctx_.builder().SetInsertPoint(gcall_merge);
-                PHINode* call_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), gcall_variants.size());
-                for (auto& cv : gcall_variants) call_result->addIncoming(cv.second, cv.first);
 
                 // ESH-0093: pop the perturbation level
                 adPertLevelStore(rt_pert_level);
