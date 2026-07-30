@@ -8842,7 +8842,11 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
  *   - no forward differentiation is live (`__ad_pert_level == 0`) — a live jet
  *     means the point may carry an outer perturbation the tower would drop;
  *   - no tower pass is live (`__ad_tower_active == 0`) — a tower cannot nest as
- *     the outer pass (see towerSafeExpr).
+ *     the outer pass (see towerSafeExpr);
+ *   - no reverse tape is live (`__current_ad_tape == null`) — inside a gradient
+ *     pass the point or a capture may be a tape node, which is a carrier
+ *     interaction the exact tier declines. This is a RUNTIME test: the tape
+ *     global is created for every module, so its mere existence says nothing.
  */
 llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
     auto& b = ctx_.builder();
@@ -8858,6 +8862,11 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
         llvm::Value* dep = b.CreateLoad(ctx_.int64Type(), gt, "xt_twr_depth");
         gate = b.CreateAnd(gate,
             b.CreateICmpEQ(dep, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    if (llvm::GlobalVariable* gtape = ctx_.currentAdTape()) {
+        llvm::Value* tape = b.CreateLoad(ctx_.ptrType(), gtape, "xt_tape");
+        gate = b.CreateAnd(gate, b.CreateICmpEQ(tape,
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context()))));
     }
     return gate;
 }
@@ -8923,10 +8932,11 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
         const std::function<llvm::Value*()>& jet_arm, const char* what) {
     using namespace llvm;
     if (order < 1 || !codegen_ast_callback_) return nullptr;
-    // Already inside a tower pass, or a reverse tape is live in this function:
-    // both are carrier interactions the exact tier deliberately declines.
+    // Already emitting a tower pass: the exact tier is what that pass IS, so
+    // re-entering would nest a tower inside itself. (A tape/jet/tower being live
+    // at RUN time is handled by adExactTowerGate, not here -- those globals
+    // exist in every module, so their existence says nothing.)
     if (adTowerMode_ != TowerMode::NONE) return nullptr;
-    if (ctx_.currentAdTape()) return nullptr;
     if (!adExactTowerEligible(function_ast, point_ast)) return nullptr;
 
     auto& b = ctx_.builder();
