@@ -8,7 +8,7 @@
 (display "add: ") (display add) (newline)
 (display "sub: ") (display sub) (newline)
 (display "mul: ") (display mul) (newline)
-(display "div: ") (display div) (newline)
+(display "divide: ") (display divide) (newline)
 
 ;; Comparison operators (core.operators.compare)
 (display "eq: ") (display eq) (newline)
