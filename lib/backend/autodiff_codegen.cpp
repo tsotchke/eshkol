@@ -8997,14 +8997,24 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
 
     // Normalize either arm's result to a tagged value so both can merge. Every
     // arm wired to this route returns a tagged value or a raw scalar.
-    auto to_tagged = [&](Value* v) -> Value* {
-        if (!v) return tagged_.packNull();
+    //
+    // An arm that returns some OTHER representation is a wiring mistake, and by
+    // the time it is discovered both arms have been emitted, so there is nothing
+    // to fall back to. Report it as a compile-time ERROR rather than merging a
+    // packed null: an emitted error diagnostic now prevents artifact emission and
+    // execution, so a mis-wired arm fails the build instead of silently
+    // answering with a null where a number was asked for.
+    auto to_tagged = [&](Value* v, const char* arm) -> Value* {
+        if (!v) return tagged_.packNull();      // arm already reported its own failure
         if (v->getType() == ctx_.taggedValueType()) return v;
         if (v->getType()->isDoubleTy()) return tagged_.packDouble(v);
         if (v->getType()->isIntegerTy(64)) return tagged_.packInt64(v, /*is_exact=*/true);
         if (v->getType()->isIntegerTy())
             return tagged_.packInt64(b.CreateSExtOrTrunc(v, ctx_.int64Type()), /*is_exact=*/true);
-        return nullptr;   // unexpected representation: caller falls back
+        eshkol_error("%s: exact-tier %s arm produced a value that is neither tagged "
+                     "nor a raw scalar; it cannot be merged with the other arm",
+                     what ? what : "autodiff", arm);
+        return tagged_.packNull();
     };
 
     Value* gate = adExactTowerGate(ptagged);
@@ -9017,13 +9027,13 @@ llvm::Value* AutodiffCodegen::tryExactTowerRoute(
     b.SetInsertPoint(exact_bb);
     Value* order_i32 = ConstantInt::get(ctx_.int32Type(), order);
     Value* exact_res = to_tagged(taylorApiCore(function_ast, point_ast, order_i32,
-                                               TowerMode::DERIV_N));
+                                               TowerMode::DERIV_N), "exact");
     b.CreateStore(exact_res ? exact_res : tagged_.packNull(), slot);
     b.CreateBr(done_bb);
 
     // ── inexact: the operator's existing implementation, verbatim ──
     b.SetInsertPoint(inexact_bb);
-    Value* jet_res = to_tagged(jet_arm());
+    Value* jet_res = to_tagged(jet_arm(), "inexact");
     b.CreateStore(jet_res ? jet_res : tagged_.packNull(), slot);
     b.CreateBr(done_bb);
 
