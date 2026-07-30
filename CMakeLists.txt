@@ -2737,6 +2737,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pkg/eshkol_pkg.cpp")
         add_executable(eshkol-pkg-subprocess-timeout-test tests/pkg/subprocess_timeout_test.cpp)
         target_compile_features(eshkol-pkg-subprocess-timeout-test PRIVATE cxx_std_17)
         target_include_directories(eshkol-pkg-subprocess-timeout-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        # The test spawns ITSELF as the child under test, so it needs no
+        # external program (it used to run /bin/sleep, which does not exist on
+        # a NixOS host — /bin holds only `sh` — so the test measured the
+        # distribution's filesystem layout instead of the timeout). argv[0] is
+        # the primary source for that path; this definition is the fallback for
+        # a PATH-resolved bare argv[0] and for Windows, where argv[0] may lack
+        # the .exe suffix.
+        target_compile_definitions(eshkol-pkg-subprocess-timeout-test PRIVATE
+            ESHKOL_SUBPROCESS_TEST_SELF="$<TARGET_FILE:eshkol-pkg-subprocess-timeout-test>")
         add_test(
             NAME eshkol-pkg-subprocess-timeout
             COMMAND eshkol-pkg-subprocess-timeout-test
