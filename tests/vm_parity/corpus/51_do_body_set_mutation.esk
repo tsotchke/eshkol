@@ -1,0 +1,30 @@
+; `set!` from a `do` body must mutate the enclosing binding (R7RS 4.1.6 with
+; 4.2.4: `do` evaluates its commands in the body's environment, and `set!`
+; stores into the location the variable is bound to).
+;
+; Native was the wrong side here — the divergence filed as
+; found/do_set_param_native.esk, retired by this file: its
+; assignment-conversion pass decides whether a parameter needs a mutable cell
+; by scanning the body for a `set!` of it, and that scan had no case for `do`
+; and never descended into cons-cell subtrees. The parameter stayed a by-value
+; LLVM Argument, so the store had nowhere to land and the mutation was dropped.
+;
+; NOT gated here (the VM is the wrong side, still filed in found/):
+;   nested do loops mutating one binding — native 64, VM 8.
+;   `when` inside a `do` body — the VM does not terminate.
+(define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
+(display (f 10)) (newline)
+(define (k n) (do ((i 0 (+ i 1))) ((= i 3) n) (set! n (* n 2))))
+(display (k 1)) (newline)
+(define (m a b)
+  (do ((i 0 (+ i 1))) ((= i 2))
+    (set! a (+ a 1))
+    (set! b (* b 3)))
+  (list a b))
+(display (m 0 1)) (newline)
+(display ((lambda (n) (do ((i 0 (+ i 1))) ((= i 4)) (set! n (- n 1))) n) 10)) (newline)
+(define (g)
+  (let ((acc 0))
+    (do ((i 1 (+ i 1))) ((> i 4) acc)
+      (set! acc (+ acc i)))))
+(display (g)) (newline)

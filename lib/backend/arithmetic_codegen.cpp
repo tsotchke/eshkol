@@ -1965,10 +1965,12 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
  * @brief Polymorphic Scheme `modulo` operation.
  *
  * Dispatches to the bignum runtime (op code 4) when either operand is a
- * bignum; otherwise unpacks int64 operands, raises a divide-by-zero
- * exception on a zero divisor, and computes the result via LLVM's `srem`
- * followed by a floor-mod sign correction (R7RS `modulo`: the result has the
- * same sign as the divisor, unlike C's truncating `srem`).
+ * bignum; then, when either operand is inexact, computes the FLOORED
+ * remainder in double precision (`frem` == C `fmod`, plus the same sign
+ * correction) so exactness contagion holds; otherwise unpacks int64 operands,
+ * raises a divide-by-zero exception on a zero divisor, and computes the result
+ * via LLVM's `srem` followed by a floor-mod sign correction (R7RS `modulo`:
+ * the result has the same sign as the divisor, unlike C's truncating `srem`).
  *
  * NOTE: the live `modulo` builtin is lowered by codegenModulo() in
  * llvm_codegen.cpp; this method mirrors that semantics for any future caller.
@@ -1981,16 +1983,66 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     // R7RS modulo: result has same sign as divisor
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "mod_bn", func);
+    llvm::BasicBlock* chk_dbl = llvm::BasicBlock::Create(ctx_.context(), "mod_check_dbl", func);
+    llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "mod_double", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "mod_int", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mod_merge", func);
 
     llvm::Value* any_bignum = emitIsBignumCheck(left, right);
-    ctx_.builder().CreateCondBr(any_bignum, bn_path, int_path);
+    ctx_.builder().CreateCondBr(any_bignum, bn_path, chk_dbl);
 
     ctx_.builder().SetInsertPoint(bn_path);
     llvm::Value* bn_mod_tagged = emitBignumBinaryCall(left, right, 4);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* bn_exit = ctx_.builder().GetInsertBlock();
+
+    // Flonum dispatch — an inexact operand makes the result inexact (R7RS
+    // exactness contagion), so `modulo` must be the FLOORED remainder computed
+    // in double precision. Without this branch a DOUBLE operand fell into the
+    // int64 path below, whose unpackInt64 reads the IEEE-754 bit pattern
+    // rather than the numeric value. Mirrors codegenModulo().
+    ctx_.builder().SetInsertPoint(chk_dbl);
+    llvm::Value* mod_l_dbl = ctx_.builder().CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(left)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* mod_r_dbl = ctx_.builder().CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(right)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateOr(mod_l_dbl, mod_r_dbl, "mod_any_double"),
+        dbl_path, int_path);
+
+    ctx_.builder().SetInsertPoint(dbl_path);
+    llvm::Value* mod_a_dbl = extractAsDouble(left);
+    llvm::Value* mod_b_dbl = extractAsDouble(right);
+    llvm::Value* mod_dzero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    // R7RS 6.2.6: it is an error if the divisor is zero — raise, matching the
+    // int64 path rather than quietly answering +nan.0.
+    llvm::BasicBlock* dbl_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_dbl_zero", func);
+    llvm::BasicBlock* dbl_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "mod_dbl_safe", func);
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateFCmpOEQ(mod_b_dbl, mod_dzero, "mod_dbl_zero_check"),
+        dbl_zero_bb, dbl_safe_bb);
+    ctx_.builder().SetInsertPoint(dbl_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+    ctx_.builder().SetInsertPoint(dbl_safe_bb);
+    // frem is C's fmod (TRUNCATED, sign of the dividend); fold into the
+    // divisor's sign for R7RS `modulo` / `floor-remainder`.
+    llvm::Value* dbl_rem = ctx_.builder().CreateFRem(mod_a_dbl, mod_b_dbl, "mod_fmod");
+    llvm::Value* dbl_signs_differ = ctx_.builder().CreateXor(
+        ctx_.builder().CreateFCmpOLT(dbl_rem, mod_dzero, "mod_dbl_rem_neg"),
+        ctx_.builder().CreateFCmpOLT(mod_b_dbl, mod_dzero, "mod_dbl_div_neg"),
+        "mod_dbl_signs_differ");
+    llvm::Value* dbl_need_adjust = ctx_.builder().CreateAnd(dbl_signs_differ,
+        ctx_.builder().CreateFCmpONE(dbl_rem, mod_dzero, "mod_dbl_rem_nonzero"),
+        "mod_dbl_need_adjust");
+    llvm::Value* dbl_mod = ctx_.builder().CreateSelect(dbl_need_adjust,
+        ctx_.builder().CreateFAdd(dbl_rem, mod_b_dbl, "mod_dbl_adjusted"),
+        dbl_rem, "mod_dbl_result");
+    llvm::Value* dbl_mod_tagged = tagged_.packDouble(dbl_mod);
+    ctx_.builder().CreateBr(merge);
+    llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
 
     // Integer path
     ctx_.builder().SetInsertPoint(int_path);
@@ -2028,8 +2080,9 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "mod_result_phi");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "mod_result_phi");
     phi->addIncoming(bn_mod_tagged, bn_exit);
+    phi->addIncoming(dbl_mod_tagged, dbl_exit);
     phi->addIncoming(int_tagged, int_exit);
 
     return phi;
@@ -3096,7 +3149,8 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
  * zeroed. Otherwise dispatches to the bignum runtime (op 6) when either
  * operand is a bignum, else computes `srem` for int64 operands (guarding the
  * INT64_MIN/-1 undefined-behavior case by sanitizing the divisor to 1) or
- * calls the C `remainder` function for doubles, and raises a divide-by-zero
+ * `frem` (== C `fmod`, the TRUNCATED remainder — NOT C's IEEE-754
+ * round-to-nearest `remainder()`) for doubles, and raises a divide-by-zero
  * exception on a zero int64 divisor.
  *
  * @param dividend Tagged dividend.
@@ -3216,22 +3270,38 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
-    // Double path: use C's remainder function
+    // Double path: TRUNCATED remainder (R7RS 6.2.6 `remainder` /
+    // `truncate-remainder`: the result has the same sign as the DIVIDEND).
+    //
+    // This used to call the C library's `remainder()`, which is IEEE-754
+    // round-to-NEAREST remainder — a different function: remainder(5.5, 2.0)
+    // is -0.5 (5.5 - 2.0*3) whereas the truncated remainder is 1.5
+    // (5.5 - 2.0*2). It is also wrong on INTEGRAL flonums, which R7RS
+    // requires to behave like integers: remainder(7.0, 2.0) is -1.0 but
+    // (remainder 7 2) is 1. `frem` is exactly C's `fmod` — truncated — and
+    // matches the int64 SRem path above.
     ctx_.builder().SetInsertPoint(double_path);
     llvm::Value* a_dbl = extractAsDouble(dividend);
     llvm::Value* b_dbl = extractAsDouble(divisor);
 
-    llvm::Function* rem_func = ctx_.module().getFunction("remainder");
-    if (!rem_func) {
-        llvm::FunctionType* rem_type = llvm::FunctionType::get(
-            ctx_.doubleType(),
-            {ctx_.doubleType(), ctx_.doubleType()},
-            false);
-        rem_func = llvm::Function::Create(rem_type, llvm::Function::ExternalLinkage,
-                                          "remainder", &ctx_.module());
-    }
+    // R7RS 6.2.6: "it is an error if n2 is zero". The int64 path above raises,
+    // `modulo` raises on both of its paths, and `quotient` raises on both of
+    // its paths, so this one did too little: `frem(x, 0.0)` is +nan.0, which
+    // means (remainder 5.5 0.0) answered a NUMBER while the exact
+    // (remainder 5 0) raised. One divisor test, one behaviour, whatever the
+    // representation.
+    llvm::BasicBlock* dbl_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_dbl_zero", func);
+    llvm::BasicBlock* dbl_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "rem_dbl_safe", func);
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateFCmpOEQ(b_dbl, llvm::ConstantFP::get(ctx_.doubleType(), 0.0),
+                                     "rem_dbl_zero_check"),
+        dbl_zero_bb, dbl_safe_bb);
+    ctx_.builder().SetInsertPoint(dbl_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
 
-    llvm::Value* dbl_result = ctx_.builder().CreateCall(rem_func, {a_dbl, b_dbl}, "rem_result");
+    ctx_.builder().SetInsertPoint(dbl_safe_bb);
+    llvm::Value* dbl_result = ctx_.builder().CreateFRem(a_dbl, b_dbl, "rem_fmod_result");
     llvm::Value* dbl_tagged = tagged_.packDouble(dbl_result);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
@@ -3387,10 +3457,43 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
-    // Double path: divide and truncate
+    // Double path: divide and truncate, and STAY INEXACT.
+    //
+    // R7RS 6.2.1 exactness contagion: an inexact operand makes the result
+    // inexact, so `(quotient 7.0 2.0)` is 3.0, not the exact 3 — the same rule
+    // that governs `modulo` / `remainder` above, and the same rule the bignum
+    // runtime already follows for mixed operands. This path used to
+    // `FPToSI` the truncated quotient into an int64 and pack it EXACT, which
+    // broke that contract and, worse, silently fabricated values: because
+    // FPToSI outside [INT64_MIN, INT64_MAX] is undefined behavior, the range
+    // was clamped to +-2^63, so `(quotient 1e20 3.0)` — true value
+    // 3.3333333333333332e19 — came back as the saturated exact integer
+    // 9223372036854774784, and `(quotient 5.0 0.0)` returned that same
+    // constant instead of raising, since trunc(+inf.0) clamps there too.
+    //
+    // Keeping the value as a double removes BOTH failure modes at the root:
+    // there is no int64 conversion left to overflow, so no clamp is needed and
+    // no UB is reachable, and the divisor test below is the only zero handling
+    // required.
     ctx_.builder().SetInsertPoint(double_path);
     llvm::Value* a_dbl = extractAsDouble(dividend);
     llvm::Value* b_dbl = extractAsDouble(divisor);
+
+    // R7RS 6.2.6: "it is an error if n2 is zero" — raise, exactly as the int64
+    // path above does and as `modulo` does on both paths. Returning
+    // trunc(+inf.0) would hand the caller a number, and a number is precisely
+    // what a caller cannot detect as a failure.
+    llvm::BasicBlock* dbl_zero_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_dbl_zero", func);
+    llvm::BasicBlock* dbl_safe_bb = llvm::BasicBlock::Create(ctx_.context(), "quot_dbl_safe", func);
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateFCmpOEQ(b_dbl, llvm::ConstantFP::get(ctx_.doubleType(), 0.0),
+                                     "quot_dbl_zero_check"),
+        dbl_zero_bb, dbl_safe_bb);
+    ctx_.builder().SetInsertPoint(dbl_zero_bb);
+    raiseDivideByZeroException();
+    ctx_.builder().CreateUnreachable();
+
+    ctx_.builder().SetInsertPoint(dbl_safe_bb);
     llvm::Value* div_result = ctx_.builder().CreateFDiv(a_dbl, b_dbl, "fdiv_result");
 
     llvm::Function* trunc_func = ctx_.module().getFunction("trunc");
@@ -3404,19 +3507,7 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     }
 
     llvm::Value* truncated = ctx_.builder().CreateCall(trunc_func, {div_result}, "trunc_result");
-    // P1: FPToSI of a double outside [INT64_MIN, INT64_MAX] is undefined behavior
-    // (poison value returned as a valid int). Clamp to the representable range so
-    // the conversion is always defined.
-    {
-        llvm::Value* qd_max = llvm::ConstantFP::get(ctx_.doubleType(), 9223372036854774784.0);
-        llvm::Value* qd_min = llvm::ConstantFP::get(ctx_.doubleType(), -9223372036854775808.0);
-        truncated = ctx_.builder().CreateSelect(
-            ctx_.builder().CreateFCmpOGT(truncated, qd_max), qd_max,
-            ctx_.builder().CreateSelect(
-                ctx_.builder().CreateFCmpOLT(truncated, qd_min), qd_min, truncated));
-    }
-    llvm::Value* dbl_as_int = ctx_.builder().CreateFPToSI(truncated, ctx_.int64Type(), "quot_int");
-    llvm::Value* dbl_tagged = tagged_.packInt64(dbl_as_int, true);
+    llvm::Value* dbl_tagged = tagged_.packDouble(truncated);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
 

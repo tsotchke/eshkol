@@ -483,7 +483,7 @@ mkstemp	vm-supported
 mod	gap	no VM name binding
 model-load	vm-supported	
 model-save	vm-supported	
-modulo	vm-supported	
+modulo	vm-supported	values and both sign conventions agree on every representation (corpus/50_flonum_integer_division.esk); an INTEGRAL flonum result comes back EXACT in the VM and inexact natively (found/modulo_inexact_collapsed_vm.esk) - invisible to the printed-output differential
 monotonic-time-ms	vm-supported	
 mse-loss	gap	ml faculty has no VM fid coverage
 multi-head-attention	gap	ml faculty has no VM fid coverage
@@ -673,7 +673,7 @@ ptr-add	native-only-justified	low-level memory/FFI primitive tied to native code
 quantum-random	vm-supported	
 quantum-random-int	vm-supported	
 quantum-random-range	vm-supported	
-quotient	vm-supported	
+quotient	vm-supported	exact operands agree; with an INEXACT operand the VM packs the truncated quotient as an EXACT int64, so it loses contagion and wraps past 2^63 (found/quotient_inexact_native_vm.esk)
 rand	gap	PRNG surface has no VM binding
 randint	gap	PRNG surface has no VM binding
 randn	gap	PRNG surface has no VM binding
@@ -703,7 +703,7 @@ region-close	native-only-justified	#341 region handles: the name resolves on bot
 region-open	native-only-justified	#341 region handles: see region-close. Open/close/validate and every error message match; the VM records a bookkeeping-only handle whose close frees nothing.
 region-open?	vm-supported	
 relu	vm-supported	
-remainder	vm-supported	
+remainder	vm-supported	values and the truncated-remainder sign convention agree on every representation (corpus/50_flonum_integer_division.esk); a zero divisor raises everywhere except the VM's pure-double path, which answers +nan.0 (found/quotient_inexact_native_vm.esk)
 remove	gap	no VM name binding
 remq	gap	no VM name binding
 remv	gap	no VM name binding
