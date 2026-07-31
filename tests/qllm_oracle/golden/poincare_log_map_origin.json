@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "poincare_log_map_origin",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/poincare_maps.esk",
   "reference": "src/model/grr.c::fast_log_map_origin",
   "formula": "t = sqrt(c)|y| clamped to 1-1e-7 inside artanh; out = y * artanh(t)/(sqrt(c)|y|)",

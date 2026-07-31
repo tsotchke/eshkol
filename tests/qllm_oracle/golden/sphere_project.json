@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "sphere_project",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/sphere_ops.esk",
   "reference": "python/qllm/torch_geometric.py::sphere_project",
   "formula": "out = grad - <grad, x> * x",

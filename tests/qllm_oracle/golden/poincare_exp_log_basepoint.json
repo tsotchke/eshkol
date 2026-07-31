@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "poincare_exp_log_basepoint",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/poincare_maps.esk",
   "reference": "standard Mobius/Ganea exp_x and log_x, qllm-clamped artanh",
   "formula": "lambda_x = 2/(1-c|x|^2); exp_x(v) = x (+)_c tanh(sqrt(c) lambda_x |v|/2) v/(sqrt(c)|v|); log_x(y) = (2/(sqrt(c) lambda_x)) artanh(sqrt(c)|u|) u/|u|, u = (-x) (+)_c y",
