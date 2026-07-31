@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "poincare_retract",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/poincare_retract.esk",
   "reference": "python/qllm/torch_geometric.py::poincare_retract",
   "formula": "z = x + step; scale = sqrt(((1-eps)/c) / clamp_min(|z|^2, eps)) if |z|^2 > (1-eps)/c else 1; out = z * scale",

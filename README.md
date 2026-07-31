@@ -665,8 +665,22 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
-### v1.3.3-evolve Release Candidate
+### v1.3.4-evolve Release
 
+- **Consumer-hardening correctness wave**: an emitted compile-time error now
+  prevents artifact emission and execution, so a diagnosed program fails the
+  build instead of producing a wrong answer. Exactness is decided from an
+  operand's runtime tag rather than a result's value shape, on the native
+  flonum integer-division family and across the bytecode VM's numeric surface;
+  automatic differentiation answers exactly at exact (rational/bignum) points,
+  survives per-iteration nursery reclamation, and no longer returns zeros above
+  gradient arity 16; `define-library`/`import` resolve same-unit libraries on
+  all three back ends; and `--shared-lib` links a real, C-ABI-correct shared
+  library.
+- **New capability**: a portable event loop (kqueue / epoll / IOCP, fail-closed
+  on WASM), a fixed-point and `i128` exact-accumulation engine with
+  order-independent bit-exact reductions, the qLLM bridge implementation, and
+  embedding / Fréchet-mean backward passes.
 - **Portable 16-file release payload**: 15 platform archives plus
   `SHA256SUMS.txt`. Linux x64/ARM64 ship Lite, XLA, and CUDA; macOS x64/ARM64
   ship Lite and XLA; Windows x64 ships Lite, XLA, and CUDA; Windows ARM64
@@ -676,15 +690,19 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   cache links, image-codec dependencies, generic ARM64 stdlib code,
   architecture-matched compiler-rt, and CUDA consumer paths are verified by
   the release workflow rather than inferred from builder-local success.
-- **Complete executable evidence**: 44/44 suites and 716/716 tests, CTest
-  76/76, SICP 88/88 under JIT and AOT, 1,057/1,057 declared executable
-  language surfaces, and ICC architecture/readiness at 8/8 and 100/100, as
-  recorded in the
-  [release-candidate readiness report](docs/internal/RELEASE_READINESS_REPORT.md).
-- **Explicit VM scope**: the supported shared corpus passes 68/68 across
-  native LLVM, VM source, and emitted ESKB. This is not a claim of complete
-  backend parity: the current 916-row ratchet classifies 540 VM-supported
-  entries, 44 justified native-only entries, and 332 explicit gaps in
+- **Execution-backed evidence**, all measured on the release commit: the
+  aggregate suite 45/45 suites and 770 individual tests, CTest 139/139, the
+  SICP full-book gate 88/88 probes across all five chapters under both `-r` and
+  AOT, and the reference-Scheme differential oracle 34/34 AGREE against
+  chibi-scheme 0.12.0. The language-surface gate enforces a monotonic floor of
+  1,091 declared constructs at 100% execution-backed coverage: a construct
+  earns its row by dispatching or executing in a passing run, and lexical
+  name-presence is a diagnostic only, earning no release credit. CTest results
+  are now completion-oracle evidence in their own right, so a red suite turns
+  the release gate red.
+- **Explicit VM scope**: this is not a claim of complete backend parity. The
+  951-row ratchet classifies 578 VM-supported entries, 44 justified
+  native-only entries, and 329 explicit gaps in
   [`tests/vm_parity/PARITY.tsv`](tests/vm_parity/PARITY.tsv); see
   [VM Parity](docs/VM_PARITY.md) for the enforced contract.
 

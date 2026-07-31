@@ -44,7 +44,7 @@ VJP tests.
 {
   "schema_version": 1,
   "primitive": "poincare_project",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/poincare_project.esk",
   "reference": "python/qllm/torch_geometric.py::poincare_project",
   "formula": "conf = clamp_min(1 - c*|x|^2, eps); out = 0.25 * conf^2 * grad",

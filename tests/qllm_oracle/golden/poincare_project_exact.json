@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "poincare_project.exact_rational",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/poincare_project.esk",
   "reference": "python/qllm/torch_geometric.py::poincare_project",
   "ad_mode": "forward_taylor_tower_exact_rational",
