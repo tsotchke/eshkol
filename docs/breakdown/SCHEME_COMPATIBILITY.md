@@ -678,7 +678,7 @@ Eshkol's native module system is `require`/`provide`. R7RS `define-library` and 
 
 ### Precompiled Stdlib
 
-The standard library is compiled to a single object file (`stdlib.o`) using the `--shared-lib` flag. All symbols use `LinkOnceODRLinkage`, which means:
+The standard library is compiled to a single object file (`stdlib.o`) using the `--shared-lib -c` flags (`-c` pins the object flavour; `--shared-lib` alone links a loadable shared library). All symbols use `LinkOnceODRLinkage`, which means:
 - If a user defines a function with the same name, the user's definition wins (External linkage overrides LinkOnceODR).
 - No duplicate symbol errors at link time.
 - The linker keeps exactly one copy of each function.

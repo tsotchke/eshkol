@@ -1,0 +1,108 @@
+;; `with-region` lowering contract — native vs vm-src vs vm-eskb.
+;;
+;; The VM lowering of `with-region` used to compile children[1..] as a plain
+;; expression sequence. That was wrong twice over:
+;;
+;;   * no OP_POP for non-final body expressions, so every multi-expression body
+;;     stranded one value per non-final expression on the operand stack. Top
+;;     level bindings are stack slots handed out by counting, so the strands
+;;     shifted every later `define` onto an occupied slot;
+;;   * the region SPECIFIER was compiled as an expression: `'name` became a
+;;     stray push and `('name size)` became a CALL of `name` with argument
+;;     `size` — a hard runtime error on a documented spelling.
+;;
+;; This file pins all three documented spellings (anonymous, `'name`,
+;; `('name size)`), the form's value as an expression, its statement use
+;; followed by later bindings, nesting, use inside a procedure, and use inside a
+;; loop, so the two substrates cannot drift again.
+;;
+;; What is deliberately NOT compared here is reclamation. On the VM
+;; `with-region` is value- and effect-transparent but frees nothing: the VM heap
+;; has no escape evacuator to promote a body result out with, the same reason a
+;; `(region-close)` there is bookkeeping-only. Native brackets the body and
+;; tears it down through eshkol_region_unwind_to(). See tests/vm_parity/PARITY.tsv;
+;; native reclamation is gated by tests/memory/ and tests/v1_3_edge_cases/.
+
+;; ── all three documented spellings, as statements with multi-expression bodies ──
+(with-region
+  (display "anon-a")
+  (display "anon-b"))
+(newline)
+
+(with-region 'scratch
+  (display "named-a")
+  (display "named-b"))
+(newline)
+
+(with-region ('scratch 4096)
+  (display "sized-a")
+  (display "sized-b"))
+(newline)
+
+;; ── later bindings must still read back correctly (the slot-shift guard) ──
+(define after-a 111)
+(define after-b 222)
+(display (+ after-a after-b))
+(newline)
+
+;; ── the form is an expression: its value is its last body expression ──
+(display (with-region (+ 1 2) (* 3 4)))
+(newline)
+(display (with-region 'scratch (+ 1 2) (* 5 6)))
+(newline)
+(display (with-region ('scratch 4096) (+ 1 2) (* 7 8)))
+(newline)
+
+;; ── single-expression bodies keep their value on every spelling ──
+(display (with-region 41))
+(display (with-region 'scratch 42))
+(display (with-region ('scratch 512) 43))
+(newline)
+
+;; ── nesting, and a region result feeding an enclosing region's body ──
+(display
+  (with-region ('outer 2048)
+    (display "outer-stmt")
+    (+ 100 (with-region ('inner 512)
+             (display "inner-stmt")
+             (* 2 3)))))
+(newline)
+
+;; ── inside a procedure, in tail position and not ──
+(define (sum-to n)
+  (with-region ('inner 1024)
+    (display "")
+    (let loop ((i 0) (acc 0))
+      (if (> i n) acc (loop (+ i 1) (+ acc i))))))
+(display (sum-to 10))
+(newline)
+
+(define (twice n)
+  (with-region 'scratch
+    (display "")
+    (* 2 n)))
+(display (twice (sum-to 4)))
+(newline)
+
+;; ── inside a loop: a stranded value per iteration would grow the operand
+;;    stack without bound, so surviving 400 iterations is part of the contract ──
+(define (spin i acc)
+  (if (< i 400)
+      (spin (+ i 1)
+            (with-region ('per-iteration 256)
+              (display "")
+              (+ acc 1)))
+      acc))
+(display (spin 0 0))
+(newline)
+
+;; ── a define whose value comes from a region, then read back ──
+(define from-region
+  (with-region ('scratch 8192)
+    (display "")
+    (let loop ((i 0) (acc 0))
+      (if (= i 100) acc (loop (+ i 1) (+ acc i))))))
+(display from-region)
+(newline)
+(display (+ from-region 1))
+(newline)

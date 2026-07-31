@@ -603,6 +603,52 @@ across every new-feature family).
   AD on the VM needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower
   and stays native-only, recorded on the `op:DERIVATIVE` row of
   `tests/vm_parity/PARITY.tsv`.
+- **`with-region` was mis-lowered on the bytecode VM, two independent ways, and
+  returned an untagged value on native.** The VM compiled `(with-region spec
+  body ...)` as a bare expression sequence. It emitted no `OP_POP` for non-final
+  body expressions, so every multi-expression body stranded one value per
+  non-final expression on the operand stack — and because top-level bindings are
+  stack slots handed out by counting, the strands shifted every later `define`
+  onto an occupied slot: after a three-expression region body, `(+ 111 222)` read
+  back **0** instead of 333, and after `(with-region 'scratch …)` a later
+  `(display x)` printed the region NAME instead of `x`. It also compiled the
+  region SPECIFIER as an expression, so the documented `(with-region ('name
+  size) body ...)` spelling became a call of `name` with argument `size` and died
+  with `ERROR: calling non-function` — a documented spelling that could not run
+  on the VM at all. Both are fixed by recognising the specifier (all three
+  documented spellings) and lowering the body exactly like `begin`. On native,
+  `codegenWithRegion` stored the body result into the tagged-value slot it hands
+  to `eshkol_region_unwind_to()` WITHOUT packing it, so a primitive-literal
+  result carried an uninitialised type tag: `(with-region 41)` displayed
+  `#<unknown>` and `(with-region 4.5)` displayed `()`. That tag is what the
+  unwind path dispatches promotion on, so it was a latent memory-safety hazard
+  as well as a wrong value. All three axes (native, `vm-src`, `vm-eskb`) now
+  agree and are gated permanently by
+  `tests/vm_parity/corpus/with_region_lowering.esk`. One undocumented spelling
+  does not agree and is filed rather than fixed: `(with-region (quote name))`
+  with no other body, where the VM reader's collapse of `'name` and
+  `(quote name)` into one node makes the sole argument look like a specifier
+  (`tests/vm_parity/found/with_region_explicit_quote_body_vm.esk`). VM-side
+  *reclamation* remains absent and is documented as such: the VM heap still has
+  no escape evacuator, the same boundary a VM `region-close` declares.
+
+- **`scripts/check_wasm_imports.py` could report present WASM stubs as
+  missing.** The `env: { … }` key scanner matched braces and quotes with a
+  character scan that did not know where comments were, so an apostrophe inside
+  a `//` comment (`WASM can't longjmp out of host frames`) opened a phantom
+  string literal; the next real quote closed it, and any brace in between was
+  read in the wrong context. One unmatched brace ends the block early, after
+  which every remaining stub is reported MISSING though present — a gate that
+  names a symbol sitting right there in the file. Regex literals containing
+  backticks or braces, and strings containing `//`, desynchronised it the same
+  way, and quoted keys were never recognised. The scanner now tokenizes the glue
+  (comments, all three string flavours, `${…}` substitutions, regex literals)
+  and brace-matches over the token stream. A 13-fixture self-test pins every one
+  of those constructs and runs before the tool reports any verdict, so a broken
+  scanner fails loudly instead of returning a phantom red or a silent green;
+  both JS glue files are now mandatory rather than skipped-with-a-warning, since
+  a stub present in only one still breaks the other.
+
 - **A named-let loop procedure used as a first-class value SIGSEGVed.** R7RS
   4.2.4 defines `(let loop ((v init) …) body)` as a letrec binding, so `loop` is
   an ordinary value that may be stored, returned or passed on, and it keeps the

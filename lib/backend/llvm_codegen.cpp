@@ -1152,6 +1152,19 @@ namespace {
     std::string g_cached_features;
     bool g_freestanding_codegen = false;
 
+    /* SHARED-LIBRARY EXPORT ABI (--shared-lib, linked-library flavour)
+     *
+     * When set, library-mode codegen wraps every exported top-level function
+     * in a thunk that presents the PLATFORM C ABI for `eshkol_tagged_value_t`
+     * instead of LLVM's first-class-struct return/argument convention.  See
+     * emitSharedLibraryExportWrappers() for why the two are not the same
+     * thing.  Only the LINKED shared library sets this: the relocatable
+     * `--shared-lib -c` object flavour (used for the precompiled stdlib and
+     * cmake/EshkolCompile.cmake) is consumed by other Eshkol modules that
+     * call with the internal struct convention, so it must stay unwrapped.
+     */
+    bool g_shared_library_exports = false;
+
     // Initialize the native target description once per compiler process.
     // Normal compiler and JIT processes retain host-specialized codegen.  The
     // stdlib build may set ESHKOL_TARGET_CPU/ESHKOL_TARGET_FEATURES through
@@ -1868,6 +1881,10 @@ private:
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
     bool freestanding_codegen_;
+    // SHARED-LIBRARY EXPORT ABI: true only for the linked --shared-lib
+    // flavour.  See g_shared_library_exports and
+    // emitSharedLibraryExportWrappers().
+    bool shared_library_exports_ = false;
     // WASM MODE: True when the module targets a standalone
     // wasm32-unknown-unknown object. Like freestanding native, a standalone
     // wasm module has no hosted REPL to introspect function sources, so the
@@ -1911,6 +1928,7 @@ public:
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         freestanding_codegen_ = is_freestanding_codegen;
+        shared_library_exports_ = is_library_mode && g_shared_library_exports;
         wasm_codegen_ = is_wasm32;
         fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
@@ -5595,6 +5613,315 @@ private:
                 G.setLinkage(GlobalValue::InternalLinkage);
             }
         }
+
+        emitSharedLibraryExportWrappers(asts, num_asts);
+    }
+
+    /* ── SHARED-LIBRARY EXPORT ABI ───────────────────────────────────────────
+     *
+     * THE DEFECT this exists to fix: LLVM's calling convention for a
+     * first-class-struct return is NOT the platform C calling convention for
+     * the same struct, and `--shared-lib` was exporting the former while
+     * promising the latter.
+     *
+     * `eshkol_tagged_value_type` is the raw 5-field struct
+     * `{i8, i8, i16, i32, i64}` (type, flags, reserved, explicit padding,
+     * data) — a field-for-field mirror of the C `eshkol_tagged_value_t`, which
+     * is exactly right for the LAYOUT of loads and stores.  It is not a
+     * description of how the value travels in registers.  Given a
+     * `define {i8,i8,i16,i32,i64} @f()`, the backend flattens the aggregate
+     * into one return value PER FIELD and assigns them to consecutive return
+     * registers.  On AArch64 that is:
+     *
+     *     _f:  mov w0, #1     ; type
+     *          mov w1, #0x10  ; flags       <- C caller reads this as data
+     *          mov w2, #0     ; reserved
+     *          mov w3, #0     ; padding
+     *          mov w4, #42    ; data        <- the payload, in x4
+     *          ret
+     *
+     * A C caller compiled against `eshkol_tagged_value_t` follows AAPCS: a
+     * 16-byte non-HFA composite comes back in x0:x1, so it reads
+     * `{type = 1, flags = 0, data = 16}` — the flags byte, zero-extended,
+     * masquerading as the payload.  `42` is stranded in x4.  Arguments were
+     * corrupted the same way and worse: with two tagged parameters the
+     * flattened fields overflow the 8 argument registers and the callee reads
+     * its second argument off the stack, while the C caller passed it in
+     * x2:x3.
+     *
+     * Both directions are affected, so the wrapper coerces both.
+     *
+     * THE FIX: leave the internal convention alone — every Eshkol-to-Eshkol
+     * call in the module is consistent with itself, and the struct type is
+     * what makes GEP-based field access correct — and coerce only at the
+     * export boundary.  The user's function keeps its body under a decorated
+     * symbol and the exported name becomes a thin thunk with the platform C
+     * signature.  This is the same coercion the REPL already performs in the
+     * opposite direction when it calls a native C function that returns a
+     * tagged value (see tryResolveReplFunction / `__cabi_thunk`); it was
+     * simply never wired for shared-library exports.
+     *
+     * PER-PLATFORM COERCION
+     *
+     *   AArch64 (AAPCS64) and x86-64 SysV, and every other 64-bit ELF/Mach-O
+     *   target we emit for (riscv64 LP64D, ppc64le ELFv2, loongarch64):
+     *   a 16-byte composite of two integer eightbytes is returned in the
+     *   first two GPRs (x0:x1 / rax:rdx) and passed in two consecutive GPRs.
+     *   `[2 x i64]` is precisely what Clang coerces such a struct to, in both
+     *   directions, so the thunk's signature is
+     *   `[2 x i64] @f([2 x i64], …)`.  Windows on ARM64 follows AAPCS64 here
+     *   and is covered by the same case.
+     *
+     *   Windows x64 (Microsoft ABI) is different and needs the memory form:
+     *   an aggregate whose size is not exactly 1, 2, 4 or 8 bytes is returned
+     *   through a hidden pointer supplied by the caller in RCX, and passed as
+     *   a pointer to a caller-owned temporary.  A 16-byte tagged value hits
+     *   both rules, so the thunk there is
+     *   `void @f(ptr sret(%tv) noalias, ptr, …)` — which is byte-identical to
+     *   what MSVC/clang-cl generate for
+     *   `eshkol_tagged_value_t f(eshkol_tagged_value_t …)`.
+     *
+     *   Anything else (32-bit targets, where the return is via memory but the
+     *   arguments are by-value on the stack, so neither shape above applies)
+     *   is refused rather than silently mis-exported.
+     */
+    enum class SharedLibraryExportAbi {
+        RegisterPair,  // [2 x i64] in and out (AAPCS64, SysV, RISC-V, …)
+        MemorySret,    // sret return + by-pointer arguments (Windows x64)
+        Unsupported
+    };
+
+    SharedLibraryExportAbi sharedLibraryExportAbi() const {
+        const llvm::Triple triple = getModuleTargetTriple(*module);
+        if (!triple.isArch64Bit()) {
+            // 16-byte aggregates return via memory on i386/ARM32/wasm32 but
+            // their arguments are passed by value on the stack, so neither
+            // coercion above models the C ABI.
+            return SharedLibraryExportAbi::Unsupported;
+        }
+        if (triple.isOSWindows() && triple.getArch() == llvm::Triple::x86_64) {
+            return SharedLibraryExportAbi::MemorySret;
+        }
+        switch (triple.getArch()) {
+            case llvm::Triple::aarch64:
+            case llvm::Triple::aarch64_be:
+            case llvm::Triple::x86_64:
+            case llvm::Triple::riscv64:   // LP64D: two integer eightbytes -> a0:a1
+            case llvm::Triple::ppc64le:   // ELFv2 -> r3:r4 (NOT ELFv1, which is memory)
+            case llvm::Triple::loongarch64:
+                return SharedLibraryExportAbi::RegisterPair;
+            default:
+                return SharedLibraryExportAbi::Unsupported;
+        }
+    }
+
+    // Symbol suffix carrying the unwrapped, internal-convention definition of
+    // an exported function.  Kept exported (not internalized) so a linker map
+    // or a debugger still names the real body, and so a future Eshkol-to-
+    // Eshkol dynamic link has a struct-convention entry point to bind to.
+    static std::string sharedLibraryImplSymbolName(const std::string& name) {
+        return name + "__eshkol_internal_abi";
+    }
+
+    void emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
+        if (!shared_library_exports_) return;
+
+        const SharedLibraryExportAbi abi = sharedLibraryExportAbi();
+        if (abi == SharedLibraryExportAbi::Unsupported) {
+            eshkol_error(
+                "--shared-lib cannot export the C ABI for tagged values on "
+                "target '%s': a 16-byte aggregate does not travel in two "
+                "general-purpose registers there. Build a relocatable object "
+                "instead (--shared-lib -c) or target a 64-bit platform.",
+                getModuleTargetTriple(*module).str().c_str());
+            fatal_codegen_error_ = true;
+            return;
+        }
+
+        // Collect the export set from the AST so only genuine top-level
+        // `(define (f …) …)` functions are wrapped — never lambdas, helper
+        // thunks, or runtime declarations.
+        std::vector<std::string> export_names;
+        std::unordered_set<std::string> seen;
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP ||
+                asts[i].operation.op != ESHKOL_DEFINE_OP ||
+                !asts[i].operation.define_op.is_function ||
+                !asts[i].operation.define_op.name) {
+                continue;
+            }
+            std::string name = asts[i].operation.define_op.name;
+            if (seen.insert(name).second) {
+                export_names.push_back(std::move(name));
+            }
+        }
+
+        ArrayType* pair_type = ArrayType::get(int64_type, 2);
+        const Align tagged_align(8);
+        unsigned wrapped = 0;
+
+        for (const std::string& name : export_names) {
+            Function* impl = module->getFunction(name);
+            if (!impl || impl->isDeclaration() || impl->hasLocalLinkage()) {
+                continue;
+            }
+            FunctionType* impl_type = impl->getFunctionType();
+            bool all_tagged = !impl_type->isVarArg() &&
+                              impl_type->getReturnType() == tagged_value_type;
+            for (Type* param : impl_type->params()) {
+                if (param != tagged_value_type) {
+                    all_tagged = false;
+                    break;
+                }
+            }
+            if (!all_tagged) {
+                // A signature of plain scalars already speaks an ABI C can
+                // call directly — LLVM's convention for an i64 or a double IS
+                // the platform's — so there is nothing to coerce and nothing to
+                // say.  But ANY aggregate left in a signature this pass did not
+                // wrap (a partially-tagged specialization, a dual number, a
+                // varargs export) has the same flatten-per-field problem the
+                // pass exists to fix, and the pass does not know its C spelling,
+                // so say so rather than export a convention we cannot vouch for.
+                bool has_unknown_aggregate =
+                    impl_type->getReturnType()->isAggregateType();
+                for (Type* param : impl_type->params()) {
+                    has_unknown_aggregate |= param->isAggregateType();
+                }
+                if (has_unknown_aggregate || impl_type->isVarArg()) {
+                    eshkol_warn(
+                        "--shared-lib: exported function '%s' has a signature "
+                        "this compiler cannot map to the platform C ABI; it is "
+                        "exported with Eshkol's internal convention and is not "
+                        "safe to call from C",
+                        name.c_str());
+                }
+                continue;
+            }
+
+            const unsigned arity = impl_type->getNumParams();
+
+            // Move the body to the decorated symbol. Renaming an LLVM Function
+            // rewrites the SYMBOL only — every existing use is by pointer, so
+            // all in-module Eshkol call sites and every function-as-value
+            // closure keep pointing at the real body with the internal
+            // convention intact.
+            impl->setName(sharedLibraryImplSymbolName(name));
+
+            FunctionType* thunk_type = nullptr;
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                std::vector<Type*> params(arity, pair_type);
+                thunk_type = FunctionType::get(pair_type, params, false);
+            } else {
+                std::vector<Type*> params(arity + 1, ptr_type);
+                thunk_type = FunctionType::get(void_type, params, false);
+            }
+
+            // The exported name must be a STRONG definition: it is the symbol
+            // a host dlsym()s, and a weak one could be preempted by an
+            // identically named weak definition elsewhere in the link.
+            Function* thunk = Function::Create(thunk_type,
+                                               GlobalValue::ExternalLinkage,
+                                               name, module.get());
+            if (thunk->getName() != name) {
+                // Something already owns the exported name; do not silently
+                // export a mangled alias.
+                eshkol_error("--shared-lib: export name '%s' is already taken "
+                             "by another symbol; cannot emit its C ABI thunk",
+                             name.c_str());
+                thunk->eraseFromParent();
+                impl->setName(name);
+                fatal_codegen_error_ = true;
+                return;
+            }
+            // The thunk is emitted after the main codegen walk, so it must not
+            // disturb the builder's insertion point or debug location.
+            BasicBlock* saved_block = builder->GetInsertBlock();
+            BasicBlock::iterator saved_point =
+                saved_block ? builder->GetInsertPoint() : BasicBlock::iterator();
+            DebugLoc saved_loc = builder->getCurrentDebugLocation();
+            builder->SetCurrentDebugLocation(DebugLoc());
+
+            BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+            builder->SetInsertPoint(entry);
+
+            std::vector<Value*> call_args;
+            call_args.reserve(arity);
+
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                // Inbound: [2 x i64] register pair -> struct, through memory.
+                // Clang lowers the C-side coercion exactly this way, so the
+                // two agree bit-for-bit including the padding bytes.
+                for (unsigned i = 0; i < arity; ++i) {
+                    AllocaInst* slot = builder->CreateAlloca(
+                        tagged_value_type, nullptr,
+                        "export_arg" + std::to_string(i) + "_slot");
+                    slot->setAlignment(tagged_align);
+                    builder->CreateAlignedStore(thunk->getArg(i), slot,
+                                                tagged_align);
+                    call_args.push_back(builder->CreateAlignedLoad(
+                        tagged_value_type, slot, tagged_align,
+                        "export_arg" + std::to_string(i)));
+                }
+            } else {
+                // Windows x64: argument 0 is the sret pointer; each tagged
+                // argument arrives as a pointer to the caller's temporary.
+                thunk->addParamAttr(0, Attribute::getWithStructRetType(
+                                           *context, tagged_value_type));
+                thunk->addParamAttr(0, Attribute::NoAlias);
+                thunk->addParamAttr(0, Attribute::getWithAlignment(
+                                           *context, tagged_align));
+                for (unsigned i = 0; i < arity; ++i) {
+                    call_args.push_back(builder->CreateAlignedLoad(
+                        tagged_value_type, thunk->getArg(i + 1), tagged_align,
+                        "export_arg" + std::to_string(i)));
+                }
+            }
+
+            CallInst* result = builder->CreateCall(impl_type, impl, call_args,
+                                                   "export_result");
+            result->setCallingConv(impl->getCallingConv());
+
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                AllocaInst* ret_slot = builder->CreateAlloca(
+                    tagged_value_type, nullptr, "export_ret_slot");
+                ret_slot->setAlignment(tagged_align);
+                builder->CreateAlignedStore(result, ret_slot, tagged_align);
+                builder->CreateRet(builder->CreateAlignedLoad(
+                    pair_type, ret_slot, tagged_align, "export_ret_pair"));
+            } else {
+                builder->CreateAlignedStore(result, thunk->getArg(0),
+                                            tagged_align);
+                builder->CreateRetVoid();
+            }
+
+            if (saved_block) {
+                builder->SetInsertPoint(saved_block, saved_point);
+            } else {
+                builder->ClearInsertionPoint();
+            }
+            builder->SetCurrentDebugLocation(saved_loc);
+
+            // The body keeps whatever linkage finalizeLibrarySymbols chose for
+            // it (linkonce_odr / weak, so a user definition can still override
+            // a stdlib one); the thunk owns the strong exported name.
+            //
+            // Pin the body's symbol. The thunk is its only caller, so once the
+            // inliner folds the body in, a discardable linkonce_odr definition
+            // with no remaining references is exactly what GlobalDCE deletes --
+            // and `<name>__eshkol_internal_abi` is a documented entry point
+            // (tooling, debuggers, and the ABI test's negative control all name
+            // it). `llvm.used` keeps the symbol without blocking the inlining.
+            markGlobalValueUsed(impl);
+            wrapped++;
+        }
+
+        eshkol_info("Shared-library exports: wrapped %u function(s) in the "
+                    "platform C ABI (%s)",
+                    wrapped,
+                    abi == SharedLibraryExportAbi::RegisterPair
+                        ? "register pair"
+                        : "sret/by-pointer");
     }
 
     // LIBRARY MODE: Create initialization function instead of main
@@ -33662,6 +33989,19 @@ private:
             }
             AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
             builder->restoreIP(with_region_saved_ip);
+
+            // codegenAST returns a RAW i64/double for a primitive literal and a
+            // tagged struct for everything else. Storing the raw form into a
+            // tagged_value_type slot writes the payload and leaves the TYPE TAG
+            // uninitialised, which was visible as `(with-region 41)` displaying
+            // `#<unknown>` and `(with-region 4.5)` displaying `()` — the VM
+            // (correctly) printed 41 and 4.5. It is also a memory-safety hazard
+            // rather than a display quirk: eshkol_region_unwind_to() promotes
+            // this slot by DISPATCHING ON THAT TAG, so a garbage tag that
+            // happens to read as a heap pointer sends the evacuator deep-walking
+            // an arbitrary address. Pack first, exactly as every other caller
+            // that hands a codegen result to the tagged-value runtime does.
+            result = ensureTaggedValue(result);
             builder->CreateStore(result, result_alloca);
 
             // #341: promote the result out AND tear the region down in one call.
@@ -40478,6 +40818,14 @@ void eshkol_set_freestanding_codegen(int enabled) {
 
 int eshkol_get_freestanding_codegen(void) {
     return g_freestanding_codegen ? 1 : 0;
+}
+
+void eshkol_set_shared_library_exports(int enabled) {
+    g_shared_library_exports = (enabled != 0);
+}
+
+int eshkol_get_shared_library_exports(void) {
+    return g_shared_library_exports ? 1 : 0;
 }
 
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
