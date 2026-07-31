@@ -720,6 +720,233 @@ ResolvedInstallArtifact resolve_install_artifact(
     return {};
 }
 
+// ---------------------------------------------------------------------------
+// Module source resolution — the single authority for require/import/load
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** @brief `$ESHKOL_PATH` entry separator: `;` on Windows, `:` elsewhere. */
+constexpr char module_path_separator =
+#ifdef _WIN32
+    ';';
+#else
+    ':';
+#endif
+
+/** @brief Stack of directories pushed by ScopedRequiringFile.
+ *
+ *  Thread-local: module resolution is a compile-time activity that happens on
+ *  the thread driving the compilation, and a runtime worker thread must never
+ *  inherit a half-built stack from it. */
+thread_local std::vector<std::string> g_requiring_dirs;
+
+/** @brief Canonical path of @p candidate when it names an existing regular
+ *  file (symlinks followed), else an empty string.
+ *
+ *  Regular-file — not merely "exists" — because a directory that happens to
+ *  share a module's spelling is not a module: accepting it produced a path
+ *  that every later open() failed on, one tier too late to try the next
+ *  candidate. */
+std::string module_file_if_regular(const std::filesystem::path& candidate) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(candidate, ec) || ec) {
+        return {};
+    }
+    auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+    if (ec) {
+        canonical = std::filesystem::absolute(candidate, ec);
+        if (ec) return {};
+    }
+    return canonical.string();
+}
+
+/** @brief The relative file names @p module_name may be spelled as.
+ *
+ *  A dotted module name yields exactly one (`a/b.esk`).  A path literal
+ *  yields the verbatim spelling and, when it does not already end in `.esk`,
+ *  the extension-appended one — both probed inside every tier, so an omitted
+ *  extension resolves wherever the file lives rather than only when the
+ *  working directory happens to hold it. */
+std::vector<std::string> module_path_candidates(const std::string& module_name) {
+    const bool is_path_literal =
+        !module_name.empty() &&
+        (module_name[0] == '/' ||
+         module_name.rfind("./", 0) == 0 ||
+         module_name.rfind("../", 0) == 0 ||
+         module_name.find('/') != std::string::npos ||
+         (module_name.size() > 4 &&
+          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
+
+    if (!is_path_literal) {
+        std::string dotted = module_name;
+        for (char& c : dotted) {
+            if (c == '.') c = '/';
+        }
+        return {dotted + ".esk"};
+    }
+
+    const bool has_extension =
+        module_name.size() >= 4 &&
+        module_name.compare(module_name.size() - 4, 4, ".esk") == 0;
+    if (has_extension) {
+        return {module_name};
+    }
+    return {module_name, module_name + ".esk"};
+}
+
+/** @brief First candidate of @p candidates that exists under @p dir. */
+std::string probe_module_dir(const std::filesystem::path& dir,
+                             const std::vector<std::string>& candidates) {
+    for (const auto& candidate : candidates) {
+        auto resolved = module_file_if_regular(dir / candidate);
+        if (!resolved.empty()) {
+            return resolved;
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+InstallSearchRoot module_source_root() {
+    const auto roots = install_module_roots();
+
+    // The Eshkol module tree is the one that actually carries stdlib.esk.
+    for (const auto& root : roots) {
+        std::error_code ec;
+        if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
+            return root;
+        }
+    }
+
+    // No root carried stdlib.esk. Fall back to the first directory that at
+    // least exists, so a partial install still resolves user modules — but
+    // never promote $ESHKOL_LIB_DIR here: it names a directory of native
+    // archives, and accepting it as the module root would point (require …)
+    // at a build directory with no .esk files in it.
+    for (const auto& root : roots) {
+        if (root.origin == InstallOrigin::EnvOverride) {
+            continue;
+        }
+        std::error_code ec;
+        if (std::filesystem::is_directory(root.path, ec)) {
+            return root;
+        }
+    }
+
+    return {};
+}
+
+std::string resolve_module_source_path(const std::string& module_name,
+                                       const std::string& base_dir,
+                                       const std::string& lib_dir) {
+    if (module_name.empty()) {
+        return {};
+    }
+
+    const auto candidates = module_path_candidates(module_name);
+
+    // An absolute path literal names exactly one file; the tiers below are
+    // about *finding* a relative one and must not be consulted for it.
+    if (module_name[0] == '/' || std::filesystem::path(module_name).is_absolute()) {
+        return probe_module_dir(std::filesystem::path(), candidates);
+    }
+
+    // Tier 1: the directory of the file doing the require/import/load. A
+    // program's own sources come before anything else, so moving the program
+    // does not change which files it loads.
+    const std::string effective_base = base_dir.empty() ? std::string(".") : base_dir;
+    if (auto found = probe_module_dir(effective_base, candidates); !found.empty()) {
+        return found;
+    }
+
+    // Tier 2: the working directory / project root. A dotted module like
+    // `src.core.encoder.x` is rooted at the project, not at the requiring
+    // file's directory — so a file in tests/gates/ that (require src.core…)
+    // resolves against ./src/…, not tests/gates/src/….
+    if (effective_base != ".") {
+        if (auto found = probe_module_dir(".", candidates); !found.empty()) {
+            return found;
+        }
+    }
+
+    // Tier 3: $ESHKOL_PATH — the explicit override, which the `-I` flags are
+    // merged into. Ahead of the install for the same reason $ESHKOL_LIB_DIR
+    // precedes every archive location: a location the user asked for must not
+    // be silently outranked by a copy that ships with the compiler. Empty
+    // segments, missing directories and files-posing-as-directories are
+    // skipped — they cannot hold modules.
+    if (const char* eshkol_path = std::getenv("ESHKOL_PATH")) {
+        std::stringstream stream(eshkol_path);
+        std::string search_dir;
+        while (std::getline(stream, search_dir, module_path_separator)) {
+            if (search_dir.empty()) continue;
+            std::error_code ec;
+            std::filesystem::path dir(search_dir);
+            if (!std::filesystem::is_directory(dir, ec) || ec) continue;
+            if (auto found = probe_module_dir(dir, candidates); !found.empty()) {
+                return found;
+            }
+        }
+    }
+
+    // Tier 4: the installed library directory, including directory-as-module
+    // entry points so `(require web)` finds lib/web/web.esk or lib/web/index.esk.
+    if (!lib_dir.empty()) {
+        if (auto found = probe_module_dir(lib_dir, candidates); !found.empty()) {
+            return found;
+        }
+        std::error_code ec;
+        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
+        if (std::filesystem::is_directory(dir_module, ec) && !ec) {
+            auto entry = module_file_if_regular(dir_module / (module_name + ".esk"));
+            if (!entry.empty()) return entry;
+            auto index = module_file_if_regular(dir_module / "index.esk");
+            if (!index.empty()) return index;
+        }
+    }
+
+    // Tier 5: build-tree fallback. A layout whose module root resolved
+    // elsewhere (or not at all) can still be running out of a tree with a
+    // plain lib/ beside or above the working directory.
+    for (const char* fallback : {"lib", "../lib"}) {
+        if (auto found = probe_module_dir(fallback, candidates); !found.empty()) {
+            return found;
+        }
+    }
+
+    return {};
+}
+
+ScopedRequiringFile::ScopedRequiringFile(const std::string& source_path) {
+    if (source_path.empty()) {
+        return;
+    }
+    // Pseudo-paths ("<repl>", "<string>", "-e") name no directory; leaving the
+    // stack untouched keeps resolution rooted at the working directory, which
+    // is the right answer for a form that came from a terminal or a flag.
+    if (source_path.front() == '<') {
+        return;
+    }
+    std::string dir = std::filesystem::path(source_path).parent_path().string();
+    if (dir.empty()) {
+        dir = ".";
+    }
+    g_requiring_dirs.push_back(std::move(dir));
+    pushed_ = true;
+}
+
+ScopedRequiringFile::~ScopedRequiringFile() {
+    if (pushed_ && !g_requiring_dirs.empty()) {
+        g_requiring_dirs.pop_back();
+    }
+}
+
+std::string current_requiring_directory() {
+    return g_requiring_dirs.empty() ? std::string(".") : g_requiring_dirs.back();
+}
+
 std::string archive_build_version(const std::filesystem::path& artifact) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(artifact, ec) || ec) {

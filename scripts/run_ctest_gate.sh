@@ -83,6 +83,7 @@ fixed_point_exact_accumulation_gate	^fixedpoint_	Fixed-point / i128 exact-accumu
 exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor)_(runtime|aot)_smoke$	Exact-input AD identity tier
 runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	Runtime-closure gradient arity spread
 define_library_same_unit_gate	^define_library_same_unit_	R7RS same-unit define-library resolution
+module_load_path_engine_parity_gate	^load_path_engine_parity_test$	Relative (load …) resolves identically on every execution engine
 GROUPS
 )
 

@@ -343,6 +343,36 @@ across every new-feature family).
 
 ### Fixed
 
+- **A relative `(load "sib.esk")` resolved to a different file depending on
+  which execution engine ran the program.** `eshkol-run -r prog.esk` uses the
+  persistent JIT run cache for a single input with no `-d`/dump flags and no
+  `$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`, and the in-process LLVM JIT otherwise.
+  Each engine carried its own copy of the module search order, and the copies
+  disagreed about the first tier: the AOT lane (and therefore the run cache)
+  looked beside the **source file**, the in-process JIT looked in the process's
+  **working directory**. The same command on the same file therefore printed
+  one answer with the cache warm and `Module not found:` — or, with a
+  same-named file in the working directory, a *silently different* answer —
+  with it bypassed. A third copy in the JIT's path-form `(import "…")` handler
+  searched cwd-then-`lib/` only, and `process_imports` in the AOT lane searched
+  the source directory only. Resolution now happens once, in
+  `eshkol::platform::resolve_module_source_path()`, which every lane calls and
+  none may shadow; the requiring file is established by the same scope that
+  attributes source text, so nested loads root at their own file rather than at
+  the outermost one. The order is the documented one — requiring file's
+  directory, working directory, `$ESHKOL_PATH`/`-I`, install, build-tree
+  fallback (`docs/reference/language/modules.md`) — so both spellings the test
+  corpus uses (sibling-relative and project-root-relative) keep resolving.
+  Path literals written without `.esk` are now probed with and without the
+  extension in every tier, not only against the working directory. New CTest
+  gate `load_path_engine_parity_test` runs one program through all four lanes
+  and demands byte-identical output, with a same-named decoy planted in the
+  working directory so a cwd-rooted regression fails on a different answer
+  rather than on a missing file. Found because `run_language_coverage.sh` sets
+  the coverage trace dir, which bypasses the cache: the entire qllm oracle
+  suite — whose exporters `(load "qllm_oracle_lib.esk")` from a sibling —
+  aborted under it while passing under every other harness.
+
 - **`(tensor (list (list …) (list …)))` built a rank-1 tensor of zeros, and the
   rank-2 read that followed segfaulted.** `(tensor X)` on a single collection
   argument walked exactly ONE level of `X`, coercing every element with
