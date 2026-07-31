@@ -8,7 +8,6 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/build_config.h>
 #include <eshkol/eshkol.h>
-#include <eshkol/logger.h>
 
 #include <algorithm>
 #include <array>
@@ -735,6 +734,23 @@ constexpr char module_path_separator =
     ':';
 #endif
 
+/** @brief Optional sink for module-search diagnostics; null unless a driver
+ *  installs one.
+ *
+ *  This file must keep linking on its OWN — `cuda_runtime_link_args_test`
+ *  links `platform_runtime.cpp.o` plus one test TU and nothing else — so the
+ *  resolver cannot call the logger directly: doing so left an undefined
+ *  `eshkol_printf` in that link on every Linux lane. The diagnostic is
+ *  therefore injected by whoever owns the `-d` flag. */
+ModuleSearchDiagnostic g_module_search_diagnostic = nullptr;
+
+/** @brief Report a skipped search-path entry, if anyone is listening. */
+void note_module_search(const char* message, const std::string& detail) {
+    if (g_module_search_diagnostic) {
+        g_module_search_diagnostic(message, detail.c_str());
+    }
+}
+
 /** @brief Stack of directories pushed by ScopedRequiringFile.
  *
  *  Thread-local: module resolution is a compile-time activity that happens on
@@ -809,6 +825,10 @@ std::string probe_module_dir(const std::filesystem::path& dir,
 }
 
 } // namespace
+
+void set_module_search_diagnostic(ModuleSearchDiagnostic sink) {
+    g_module_search_diagnostic = sink;
+}
 
 InstallSearchRoot module_source_root() {
     const auto roots = install_module_roots();
@@ -891,11 +911,11 @@ std::string resolve_module_source_path(const std::string& module_name,
             //   ESHKOL_PATH="/does/not/exist" → valid syntax, wrong content
             //   ESHKOL_PATH="/etc/passwd"     → a file, not a directory
             if (!std::filesystem::exists(dir, ec) || ec) {
-                eshkol_debug("ESHKOL_PATH entry does not exist: %s", search_dir.c_str());
+                note_module_search("ESHKOL_PATH entry does not exist", search_dir);
                 continue;
             }
             if (!std::filesystem::is_directory(dir, ec) || ec) {
-                eshkol_debug("ESHKOL_PATH entry is not a directory: %s", search_dir.c_str());
+                note_module_search("ESHKOL_PATH entry is not a directory", search_dir);
                 continue;
             }
             if (auto found = probe_module_dir(dir, candidates); !found.empty()) {

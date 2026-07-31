@@ -4033,6 +4033,15 @@ int main(int argc, char **argv)
     // alike — rather than only the stage it happens to sit next to.
     const unsigned long diagnostics_at_startup = eshkol_diagnostic_error_count();
 
+    // Let the shared module resolver explain a skipped search-path entry under
+    // -d. The resolver cannot call the logger itself — it has to keep linking
+    // standalone (see set_module_search_diagnostic) — so the driver, which is
+    // what owns -d in the first place, supplies the sink.
+    eshkol::platform::set_module_search_diagnostic(
+        [](const char* message, const char* detail) {
+            eshkol_debug("%s: %s", message, detail);
+        });
+
     int ch = 0;
 
     uint8_t debug_mode = 0;

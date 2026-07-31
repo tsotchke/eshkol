@@ -217,6 +217,26 @@ InstallArtifactNote describe_install_artifact(std::string_view label,
 // The order is the one documented in docs/reference/language/modules.md.
 
 /**
+ * @brief Sink for "why was this search-path entry skipped" diagnostics.
+ * @param message What happened, e.g. "ESHKOL_PATH entry is not a directory".
+ * @param detail  The entry it happened to.
+ */
+using ModuleSearchDiagnostic = void (*)(const char* message, const char* detail);
+
+/**
+ * @brief Install (or clear, with `nullptr`) the module-search diagnostic sink.
+ *
+ * The resolver deliberately does NOT call the logger itself: this translation
+ * unit has to keep linking on its own — `cuda_runtime_link_args_test` links
+ * `platform_runtime.cpp.o` plus a single test TU and nothing else — and a
+ * direct `eshkol_debug()` left an undefined `eshkol_printf` in exactly that
+ * link. Whoever owns the `-d` flag installs the sink instead; with none
+ * installed the entries are skipped silently, which is what a standalone
+ * link needs.
+ */
+void set_module_search_diagnostic(ModuleSearchDiagnostic sink);
+
+/**
  * @brief Locate the Eshkol module source tree (the directory that carries
  *        `stdlib.esk` beside the `core/`, `agent/`, … subtrees).
  *
