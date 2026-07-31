@@ -335,8 +335,223 @@ across every new-feature family).
   manifest was regenerated for the new VM tensor special forms (builtin count
   unchanged). A CI identity guard rejects new commits that carry a forbidden
   private author email.
+- **`Rational` in the compile-time numeric tower.** Eshkol has had R7RS exact
+  rationals at runtime (`HEAP_SUBTYPE_RATIONAL`, `rational?`) with no
+  corresponding type, so `rational` was not a spellable type name. It is now a
+  registered exact type under `Number`, a sibling of `Integer`/`Real` — matching
+  how `Complex` already sits beside `Real` in this graph rather than above it.
 
 ### Fixed
+
+- **`(tensor (list (list …) (list …)))` built a rank-1 tensor of zeros, and the
+  rank-2 read that followed segfaulted.** `(tensor X)` on a single collection
+  argument walked exactly ONE level of `X`, coercing every element with
+  "heap pointer -> 0.0", so a nest of lists silently lost its shape and
+  displayed as `#(0 0)`; `(tensor #(#(1 2) #(3 4)))` looked correct only because
+  the *parser* flattens nested `#(...)` literals at compile time. A rectangular
+  nest of lists and/or vectors — in any combination, to any rank up to 8, with
+  nested tensors as elements — now builds the N-dimensional tensor its shape
+  describes, matching the "classify by runtime value, not construction form"
+  principle. A ragged or otherwise non-rectangular nest raises a clean catchable
+  error instead of fabricating a wrong shape.
+- **Every rank and bounds guard in `tensor-get`/`tensor-ref` and `tensor-set!`
+  had been silently deleted by the optimizer.** Those guards emitted their
+  diagnostic only `if (printf && exit)` resolved through the codegen function
+  table, which never registers either symbol — so each failure block compiled to
+  a bare `unreachable`, from which LLVM infers the guarded condition is
+  impossible and removes the branch. A multi-index read of a lower-rank tensor
+  therefore ran off the end of the dimensions array and underflowed the slice
+  rank (SIGSEGV on both JIT and AOT), and an out-of-range `tensor-set!` wrote
+  outside the element buffer. All four guards now raise a catchable error
+  through the runtime, and the list-index idiom `(tensor-ref t (list i j …))`
+  gained the runtime rank check its multi-argument sibling always had.
+- **`(number->string -0.0)` produced `"-0"`, which reads back as the exact
+  integer `0`.** `"-0"` is not a flonum external representation, so the reader
+  took it as an exact zero — which has no sign — and both the inexactness and
+  the sign bit were lost: `(/ 1.0 -0.0)` is `-inf.0` but
+  `(/ 1.0 (string->number (number->string -0.0)))` came back `+inf.0`. That is a
+  loss of the VALUE, not merely of its exactness, so negative zero now renders
+  `"-0.0"`, which reads back as an inexact negative zero (R7RS 6.2.6
+  round-trip). Positive zero and the other integral-valued doubles keep the
+  established no-`.0` form (`0`, `3`, `1234567`), whose read-back recovers the
+  same numeric value. The shared formatter backs native and the bytecode VM, so
+  all three substrates emit the same bytes.
+- **`--strict-types` did not make type errors fatal, contradicting `--help`
+  ("Type errors are fatal") and `docs/reference/runtime/eshkol-run.md`.** The
+  flag only changed the *wording* of the diagnostic — `[ERROR] Type error:`
+  instead of `[WARN] Type warning:` — after which code generation ran to
+  completion, the compile exited **0**, and the AOT path wrote a finished
+  binary for the program the type checker had just rejected. Every reject
+  fixture in `tests/typesystem/` demonstrated it: the error was printed and the
+  build succeeded anyway, so any build step trusting `$?` (or the existence of
+  the output file) certified ill-typed code. Under `--strict-types`, accumulated
+  type errors now abort compilation at the end of the type-checking phase: the
+  compile exits nonzero and **no** binary is produced. Gradual mode (the
+  default) is byte-for-byte unchanged — it warns and continues — and `--unsafe`
+  still reports nothing.
+- **A checked cast silently swallowed errors inside the expression it wrapped.**
+  `(the <type> <expr>)` synthesized `<expr>` and then *discarded* the result, so
+  a failing inner synthesis (an unbound variable, say) produced no diagnostic at
+  all and was not counted — the ascription hid exactly the nested error its
+  documentation promises not to hide, and `--strict-types` had nothing to be
+  fatal about. Nested failures now go through the unified enforcement point
+  while the ascribed type still flows onward: `the` trusts the *type*, not the
+  expression.
+- **`(the <type> expr)` rejected the most natural bare type names.** `(the
+  number 3)` was a parse error — "Unknown function: the" followed by "Undefined
+  variable: number" — because the form was recognised via a hand-maintained
+  allow-list inside the parser that omitted `number`, `pair`, `vector`,
+  `procedure`, `list`, `tensor`, `complex` and `rational`, so the ascription
+  degraded into a call to an undefined procedure named `the`. `number` is one of
+  the eight documented narrowing predicates, and
+  `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` used `(the number (car
+  mixed-list))` as its own example. The parser's private list is gone: bare type
+  names now come from one canonical registry in the type system
+  (`eshkol::hott::builtinTypeSpellings()`), which also populates the type
+  environment's name table — so a spelling the parser accepts is always a
+  spelling the checker can resolve, and the two cannot drift apart again. Bare
+  container/constructor names (`pair`, `vector`, `list`, `tensor`, `complex`,
+  `procedure`, `closure`, `hash-table`, `qubit`, the sized integer and
+  autodiff spellings) resolve to their real types instead of silently widening
+  to `any`, `number` resolves through the previously-unwired
+  `HOTT_TYPE_NUMBER` kind, and calling through an ascribed callable
+  (`((the procedure f) x)`) no longer hits codegen's "Call expression requires
+  variable or inline lambda" bail-out.
+- **ESH-0362: an arity error is now FATAL, on every execution path — no more
+  poisoned handles.** Calling a fixed-arity function with the wrong number of
+  arguments printed a named diagnostic and then *kept going*. Three distinct
+  fail-open cells, all closed at the root:
+  - **Too few arguments** (the reported case). The closure-call arity check
+    emitted `Arity mismatch: f expects 2 arguments but got 1` and returned
+    `nullptr` without marking the compilation fatal. A `nullptr` from codegen is
+    indistinguishable from "this form produced no value", so the enclosing
+    `(define h (f a))` bound `h` to **null** and compilation continued. Under
+    `-r` the program ran with the poisoned binding — `(process-pid h)` answered
+    `0` and the next consumer dereferenced NULL (`SIGSEGV at 0x0`, far from the
+    real mistake); under `-o` the driver wrote a complete binary and **exited
+    0**, shipping the poisoned program.
+  - **Too many arguments.** The argument loop simply never pushed a surplus
+    argument, so the call was emitted at the callee's parameter count and the
+    extra arguments *vanished*: `(add2 1 2 99)` ran as `(add2 1 2)` and printed
+    `3`. The only trace was a gradual-typing `Type warning: function 'add2'
+    expects 2 arguments, got 3`, which by design never fails a build.
+  - **`-r` / REPL slot calls.** The two `__repl_fwd_<name>` indirect-call paths
+    synthesise the callee's signature from the *call's* argument count, so a
+    wrong count was not even a mismatch — it was a silent ABI disagreement, and
+    the callee read its missing parameter out of whatever the register happened
+    to hold. This is the path a `(require …)`d module's functions are called
+    through, so the same file that named the error under `-o` reported nothing
+    under `-r`. Both paths now consult the registered arity, and abstain only
+    when it cannot be established (a genuine forward reference, a variadic
+    callee, or a closure whose signature carries capture slots).
+
+  All three now fail the compilation: `-r` exits nonzero without running, `-o`
+  writes no binary, and the named diagnostic text is preserved verbatim — it is
+  a consumer-facing contract. A related silent rebind is now surfaced too: when
+  an `extern` reuses a C symbol already declared in the module with a *different
+  parameter count* (e.g. `(extern void h :real strlen)` against the runtime's own
+  1-parameter `strlen`), the declaration site warns instead of letting the call
+  site paper the difference over with a null argument.
+
+- **ESH-0363: FFI pointer arguments are type-checked at the boundary — an
+  integer is no longer dereferenced as an address.** An `extern` parameter
+  declared `ptr` / `string` / `char*` was passed to C by unconditionally
+  reinterpreting the tagged value's 64-bit payload as a pointer. A number in a
+  pointer position therefore became a pointer *equal to that number*:
+  `(run-argv-capture argv 5000)` — the timeout supplied where the positional
+  `cwd` belongs — reached the `execvp` shim as `const char* 0x1388` and died with
+  `SIGSEGV at address 0x1388`, with no diagnostic and no exit code. Codegen now
+  emits a check ahead of that conversion for every pointer-declared `extern`
+  parameter and raises a **catchable** `ESHKOL_EXCEPTION_TYPE_ERROR` naming the
+  extern, the argument position, the declared type and the offending value:
+  `FFI type error in process-spawn-argv-flags-raw (C symbol
+  qllm_process_spawn_argv_flags): argument 2 is declared 'ptr' and requires a
+  string or pointer handle, but got the integer 5000`. Applied across the whole
+  `extern` surface — **216 pointer-typed parameters over 323 declarations**, of
+  which 115 across 80 declarations are the `agent.*` FFI surface — not just the
+  reported call. A statically-decidable case (a numeric *literal* in a pointer
+  position) is reported at compile time instead of as an LLVM verifier message.
+  The predicate is a denylist of the immediate tags that cannot denote memory
+  (numbers, characters, symbols, `#t`, dual/complex numbers, logic variables),
+  never an allowlist of pointer tags, so a legitimate handle, port, bytevector,
+  callable, `'()` or `#f` (Eshkol's spelling of a NULL pointer argument) can
+  never be rejected. `--freestanding` and `wasm32` targets are excluded: neither
+  has the hosted error runtime to raise into.
+  `lib/agent/subprocess.esk` additionally validates `cwd` and `timeout-ms` by
+  name, so the reported error identifies the parameter the caller actually got
+  wrong rather than the internal `-raw` extern, and the spawn-family docstrings
+  plus `docs/reference/agent/ffi.md` now state exact arities and positional
+  meanings (`cwd` is the REQUIRED SECOND positional of every `process-spawn*`,
+  and the THIRD positional of the `run-*` wrappers is the timeout).
+
+- **ESH-0364: a diagnostic for code from a `(require …)`d module named the wrong
+  file.** The AOT driver inlines every required module's forms into ONE flat AST
+  array and compiles them as a single unit under a single ambient source context
+  — the entry file. Any diagnostic for a form that came from a module therefore
+  printed the ENTRY file's NAME beside the MODULE's LINE number. For a 3-line
+  entry file requiring a module, the reported location was `entry.esk:6:13` — a
+  line that file does not have; where the entry file was longer, it pointed at
+  real but unrelated source, which is worse than reporting no location at all.
+  (The JIT path was already correct: `executeBatch` takes explicit per-module
+  provenance, which is why the same mistake was named accurately under `-r` and
+  misattributed under `-o`.) Root cause: `eshkol_ast_t` carried `line`/`column`
+  but no FILE, so a location was only meaningful relative to whatever context
+  happened to be ambient. AST nodes now carry `source_file_id`, an id into a
+  process-lifetime interned table, stamped on every top-level form at the single
+  choke point every form passes through (a form cannot span two files, so inner
+  nodes inherit their enclosing form's file). Codegen adopts that file for the
+  duration of the form's codegen, so all of `generateLLVMIR`'s separate top-level
+  walks — externs, function defines, global defines, `createMainWrapper`,
+  `createLibraryInitFunction` — are covered by one scope, along with any future
+  one. The module's source TEXT is resolved with its name, so the caret block
+  renders the offending line from the right file; a file that cannot be read
+  degrades to `file:line:col:` without the excerpt rather than to a wrong
+  excerpt. Deliberately an id rather than a `const char*`: AST nodes are built in
+  many places with no central zero-init, so an unset field holds garbage — a
+  garbage id falls outside the table and reads as "unknown", where a garbage
+  pointer would be dereferenced by the diagnostic printer.
+- **ESH-0365: `(import (lib name))` reported the position of its CLOSING PAREN,
+  and the language-coverage gate was certifying `import` on an accident.** The
+  R7RS import form is lowered to a `require`, and the lowered node took its
+  source position from the token the spec loop had just consumed — which is the
+  form's closing `)`, not the `(import` that begins it. So a diagnostic about a
+  malformed import pointed its caret at the closing paren. It also meant `import`
+  had no execution-backed coverage evidence of its own: the tracker credits a
+  compile-time form only when a parser-dispatch event and an accept/codegen event
+  share an exact source position, and the dispatch event is recorded at the
+  operator token while the accept event took its position from the closing paren.
+  `import` was nonetheless certified covered at 1078/1078 — by a **cross-file
+  collision**. Before ESH-0364, a required module's codegen events were attributed
+  to the REQUIRING file, and in `tests/modules/r7rs_import_modifiers_test.esk` the
+  imported module's `define`s at lines 5-7 column 2 landed on exactly the same
+  positions as that file's own `(import …)` forms at lines 5-7 column 2. The
+  position-only credit rule ignores the operation kind, so an unrelated `define`
+  in another file was granting `import` its coverage. Fixing the attribution
+  removed the collision and exposed the wrong position underneath it. The lowered
+  node now carries the `(import` position, which both puts the caret on the
+  construct and earns `import` genuine same-file evidence in all six import tests
+  — coverage stays 1078/1078 on real evidence rather than a coincidence.
+- **`iota` silently ignored its `start` and `step` arguments.** The stdlib
+  defined `iota` as a strictly 1-argument function while callers (including
+  `tests/features/new_functions_test.esk`, comments and all) were already writing
+  `(iota 5 1)` and `(iota 5 0 2)`. Because codegen discarded arguments past the
+  callee's parameter count (the ESH-0362 fail-open above), both returned
+  `(0 1 2 3 4)` — the wrong list, with no error and no build-failing warning, and
+  a test that "passed" while asserting nothing about start or step. `iota` now
+  takes the optional positional `start` and `step` of SRFI-1 / R7RS-large
+  (`(iota 5 1)` → `(1 2 3 4 5)`, `(iota 5 0 2)` → `(0 2 4 6 8)`), delegating to
+  the existing `iota-from` / `iota-step`. Found by making arity errors fatal,
+  which turned the silent wrong answer into a compile error.
+- **The type-system negative suite aborted at its first fixture.**
+  `scripts/run_typesystem_tests.sh` runs under `set -e` but invoked the compiler
+  unguarded — and it is a *negative* suite, where a nonzero compile exit is the
+  expected outcome. This never fired only because the faults its fixtures inject
+  used to compile successfully anyway (`arity_mismatch_test.esk` reported its
+  error and exited 0). With arity errors now fatal, the first fixture killed the
+  harness mid-file, with no PASS/FAIL line and no summary — a suite that reports
+  nothing looks nothing like a suite that fails. The compile invocation no longer
+  trips `set -e`; verdicts come from the EXPECT-STDERR patterns, never the exit
+  status. All 20 fixtures now run (20/20).
 
 - **Higher-order derivatives through a variable-bound derivative closure were
   silently wrong.** `(define df (derivative f))` followed by `(derivative df)`
@@ -388,6 +603,105 @@ across every new-feature family).
   AD on the VM needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower
   and stays native-only, recorded on the `op:DERIVATIVE` row of
   `tests/vm_parity/PARITY.tsv`.
+- **`with-region` was mis-lowered on the bytecode VM, two independent ways, and
+  returned an untagged value on native.** The VM compiled `(with-region spec
+  body ...)` as a bare expression sequence. It emitted no `OP_POP` for non-final
+  body expressions, so every multi-expression body stranded one value per
+  non-final expression on the operand stack — and because top-level bindings are
+  stack slots handed out by counting, the strands shifted every later `define`
+  onto an occupied slot: after a three-expression region body, `(+ 111 222)` read
+  back **0** instead of 333, and after `(with-region 'scratch …)` a later
+  `(display x)` printed the region NAME instead of `x`. It also compiled the
+  region SPECIFIER as an expression, so the documented `(with-region ('name
+  size) body ...)` spelling became a call of `name` with argument `size` and died
+  with `ERROR: calling non-function` — a documented spelling that could not run
+  on the VM at all. Both are fixed by recognising the specifier (all three
+  documented spellings) and lowering the body exactly like `begin`. On native,
+  `codegenWithRegion` stored the body result into the tagged-value slot it hands
+  to `eshkol_region_unwind_to()` WITHOUT packing it, so a primitive-literal
+  result carried an uninitialised type tag: `(with-region 41)` displayed
+  `#<unknown>` and `(with-region 4.5)` displayed `()`. That tag is what the
+  unwind path dispatches promotion on, so it was a latent memory-safety hazard
+  as well as a wrong value. All three axes (native, `vm-src`, `vm-eskb`) now
+  agree and are gated permanently by
+  `tests/vm_parity/corpus/with_region_lowering.esk`. One undocumented spelling
+  does not agree and is filed rather than fixed: `(with-region (quote name))`
+  with no other body, where the VM reader's collapse of `'name` and
+  `(quote name)` into one node makes the sole argument look like a specifier
+  (`tests/vm_parity/found/with_region_explicit_quote_body_vm.esk`). VM-side
+  *reclamation* remains absent and is documented as such: the VM heap still has
+  no escape evacuator, the same boundary a VM `region-close` declares.
+
+- **`scripts/check_wasm_imports.py` could report present WASM stubs as
+  missing.** The `env: { … }` key scanner matched braces and quotes with a
+  character scan that did not know where comments were, so an apostrophe inside
+  a `//` comment (`WASM can't longjmp out of host frames`) opened a phantom
+  string literal; the next real quote closed it, and any brace in between was
+  read in the wrong context. One unmatched brace ends the block early, after
+  which every remaining stub is reported MISSING though present — a gate that
+  names a symbol sitting right there in the file. Regex literals containing
+  backticks or braces, and strings containing `//`, desynchronised it the same
+  way, and quoted keys were never recognised. The scanner now tokenizes the glue
+  (comments, all three string flavours, `${…}` substitutions, regex literals)
+  and brace-matches over the token stream. A 13-fixture self-test pins every one
+  of those constructs and runs before the tool reports any verdict, so a broken
+  scanner fails loudly instead of returning a phantom red or a silent green;
+  both JS glue files are now mandatory rather than skipped-with-a-warning, since
+  a stub present in only one still breaks the other.
+
+- **A named-let loop procedure used as a first-class value SIGSEGVed.** R7RS
+  4.2.4 defines `(let loop ((v init) …) body)` as a letrec binding, so `loop` is
+  an ordinary value that may be stored, returned or passed on, and it keeps the
+  bindings its body closed over. But a named-let loop function's signature
+  carries one capture *pointer* per captured free variable (the per-call capture
+  design that makes concurrent invocations race-free) and is deliberately not the
+  closure ABI, so a first-class reference used to fall through to the generic
+  function-table path and yield the bare function pointer. Calling the leaked
+  procedure then entered the loop function with its capture parameters filled
+  from whatever the closure dispatcher happened to pass, and the first read of a
+  captured variable dereferenced that as a capture cell — a wild-pointer crash on
+  both JIT and AOT, not a wrong answer. A first-class reference now materialises a
+  real closure whose environment holds the address of each shared capture cell,
+  with a lazily emitted per-loop trampoline forwarding those cells as the pointer
+  arguments the loop function expects. The cells are the arena storage a
+  set!-mutated capture already gets, so a leaked procedure keeps reading and
+  writing the same storage the loop wrote through and it outlives the enclosing
+  frame. Regression tests: `tests/features/namedlet_escaped_closure_test.esk`
+  (15 checks over six escape shapes, green under `-r` and AOT) and
+  `tests/vm_parity/corpus/47_namedlet_escaped_closure.esk`, which gates the two
+  shapes the VM can express across native, `vm-src` and `vm-eskb`.
+- **A nested collection meant different things depending on how it was
+  written.** A rectangular nested vector *literal* is flattened into a
+  higher-rank tensor literal by the parser, so it never reached the shared
+  tensor-operand check as a nest; the identical value built at run time did, and
+  was rejected. `(tensor-shape #(#(1.0 2.0) #(3.0 4.0)))` was `(2 2)` while
+  `(tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))` was a type error —
+  one operation, two answers, decided by construction form rather than by value.
+  The operand check now classifies a nest by value and routes it to the same
+  rank-N walker `(tensor X)` uses, which makes every tensor operation accept a
+  runtime-built nest of lists and/or vectors at any rank and extent. Nothing
+  about what either value *is* changed: `(vector (vector 1 2) (vector 3 4))`
+  remains an R7RS vector of two vectors and `#(#(1 2) #(3 4))` remains Eshkol's
+  rank-2 tensor literal; only the tensor-coercion question now has one answer.
+- **A ragged nested vector literal could not be written at all, though the
+  identical runtime-built value works.** The parser reported a *parse*
+  diagnostic for a nest whose sub-shapes disagree and returned an invalid node.
+  Once compile diagnostics became fatal, that diagnostic refuses the whole
+  translation unit — `(define v #(#(1.0 2.0) #(3.0)))` is a hard compile failure
+  even where the program never asks for a tensor — while
+  `(vector (vector 1.0 2.0) (vector 3.0))` compiles and runs. (Before
+  diagnostics were fatal the same invalid node was worse rather than better:
+  `(tensor-shape #(#(1.0 2.0) #(3.0)))` silently answered `()`,
+  `(tensor-shape #(#(1.0 2.0) 3.0))` answered `(2)`, and binding the literal and
+  then reading it dereferenced the hole the invalid node left behind.) A
+  non-rectangular nest cannot be a tensor, but it is a perfectly ordinary nested
+  vector, so the parser now lowers one to `(vector <sub-literal> …)` and lets the
+  value-based walker rule on it: a catchable error naming the mismatch, raised at
+  the operation that demanded a tensor, and the literal remains a nameable nested
+  vector in the meantime. That leaves exactly one raggedness check in the
+  language rather than one per spelling. Gated by
+  `tests/vm_parity/corpus/46_tensor_literal_spellings.esk` and
+  `tests/features/tensor_nested_literal_spellings_test.esk`.
 - **A compiler could link a stale *system* runtime archive in preference to its
   own, and `ESHKOL_LIB_DIR` could not override it.** `find_runtime_library()`
   searched name-major: every location for `libeshkol-runtime.a` — including

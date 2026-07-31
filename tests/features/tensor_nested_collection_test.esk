@@ -1,0 +1,203 @@
+;; Nested-collection tensor construction + tensor-ref/tensor-set! bounds.
+;;
+;; Two bugs, one repro: (display (tensor-ref (tensor (list (list 1.0 2.0)
+;; (list 3.0 4.0))) 0 0)) exited 139 (SIGSEGV) on both native JIT and AOT.
+;;
+;;   1. `(tensor X)` on a single collection argument walked exactly ONE level of
+;;      X, coercing every element with "heap pointer -> 0.0". A list of lists
+;;      therefore became a RANK-1 tensor of zeros (it displayed as `#(0 0)`) and
+;;      the 2x2 shape was silently lost. `(tensor #(#(1 2) #(3 4)))` looked fine
+;;      only because the PARSER flattens nested `#(...)` literals at compile
+;;      time — nothing did the equivalent when the nesting is a runtime value.
+;;
+;;   2. The rank/bounds guards in tensor-get and tensor-set! emitted their
+;;      diagnostic only `if (printf && exit)` were resolvable through the codegen
+;;      function table. Nothing ever registers `printf`/`exit` there, so those
+;;      failure blocks compiled to a bare `unreachable` — from which LLVM infers
+;;      the guarded condition is impossible and DELETES the check. Every
+;;      multi-index tensor-get and every tensor-set! was therefore unguarded: a
+;;      rank-2 read of a rank-1 tensor ran off the dimensions array (SIGSEGV),
+;;      and an out-of-range tensor-set! wrote outside the element buffer.
+;;
+;; Both are fixed: a rectangular nest of lists/vectors builds the N-D tensor its
+;; shape describes, a non-rectangular one raises a CATCHABLE error, and the
+;; guards raise instead of evaporating. This file asserts values on the happy
+;; path and `guard`-catchability (never a crash) on the error path.
+;;
+;; NOTE: native-only by design — the bytecode VM's `tensor` builtin returns nil
+;; for a nested-list argument (it has no equivalent unpacking), so this file is
+;; not part of the VM parity corpus.
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (display expected)
+             (display " got ") (display got) (newline))))
+
+;; ── Rectangular nests build the tensor their shape describes ──
+
+(define m2x2 (tensor (list (list 1.0 2.0) (list 3.0 4.0))))
+(check "2x2 ref 0 0" (tensor-ref m2x2 0 0) 1.0)
+(check "2x2 ref 0 1" (tensor-ref m2x2 0 1) 2.0)
+(check "2x2 ref 1 0" (tensor-ref m2x2 1 0) 3.0)
+(check "2x2 ref 1 1" (tensor-ref m2x2 1 1) 4.0)
+(check "2x2 shape"   (tensor-shape m2x2)   (list 2 2))
+
+;; The `#(#(...) #(...))` literal already worked; it must stay identical to the
+;; runtime-nested form (same shape, same elements, same printed text).
+(define v2x2 (tensor #(#(1 2) #(3 4))))
+(check "vec-literal shape" (tensor-shape v2x2) (list 2 2))
+(check "vec-literal ref 1 1" (tensor-ref v2x2 1 1) 4.0)
+
+;; Non-square, so a transposed stride would be caught.
+(define m2x3 (tensor (list (list 1.0 2.0 3.0) (list 4.0 5.0 6.0))))
+(check "2x3 shape"   (tensor-shape m2x3) (list 2 3))
+(check "2x3 ref 0 2" (tensor-ref m2x3 0 2) 3.0)
+(check "2x3 ref 1 0" (tensor-ref m2x3 1 0) 4.0)
+(check "2x3 ref 1 2" (tensor-ref m2x3 1 2) 6.0)
+
+;; Rank 3 — the dimension walk must not stop at 2.
+(define c2x2x2 (tensor (list (list (list 1.0 2.0) (list 3.0 4.0))
+                             (list (list 5.0 6.0) (list 7.0 8.0)))))
+(check "3D shape"       (tensor-shape c2x2x2) (list 2 2 2))
+(check "3D ref 0 0 0"   (tensor-ref c2x2x2 0 0 0) 1.0)
+(check "3D ref 1 0 1"   (tensor-ref c2x2x2 1 0 1) 6.0)
+(check "3D ref 1 1 1"   (tensor-ref c2x2x2 1 1 1) 8.0)
+
+;; Mixed nesting: a list of vectors and a vector of lists are both rectangular.
+(define lov (tensor (list (vector 1.0 2.0) (vector 3.0 4.0))))
+(check "list-of-vectors shape" (tensor-shape lov) (list 2 2))
+(check "list-of-vectors ref 1 0" (tensor-ref lov 1 0) 3.0)
+
+(define vol (tensor (vector (list 1.0 2.0) (list 3.0 4.0))))
+(check "vector-of-lists shape" (tensor-shape vol) (list 2 2))
+(check "vector-of-lists ref 0 1" (tensor-ref vol 0 1) 2.0)
+
+;; Integer leaves promote to doubles, as everywhere else on the tensor surface.
+(define mi (tensor (list (list 1 2) (list 3 4))))
+(check "int-leaf shape"   (tensor-shape mi) (list 2 2))
+(check "int-leaf ref 1 1" (tensor-ref mi 1 1) 4.0)
+
+;; ── Unnested forms are unchanged ──
+(check "flat list shape"   (tensor-shape (tensor (list 1.0 2.0 3.0)))   (list 3))
+(check "flat list ref 2"   (tensor-ref  (tensor (list 1.0 2.0 3.0)) 2)  3.0)
+(check "flat vector shape" (tensor-shape (tensor (vector 1.0 2.0 3.0))) (list 3))
+(check "scalar shape"      (tensor-shape (tensor 7.5))                  (list 1))
+(check "scalar ref 0"      (tensor-ref  (tensor 7.5) 0)                 7.5)
+;; An existing tensor passes straight through.
+(check "tensor passthrough" (tensor-shape (tensor m2x2)) (list 2 2))
+
+;; The row-major index list must agree with the scalar-index form.
+(check "index-list (1 0)" (tensor-ref m2x2 (list 1 0)) 3.0)
+(check "index-list (0 1)" (tensor-ref m2x2 (list 0 1)) 2.0)
+
+;; ── Displayed form reflects the nesting ──
+;; A rank-1 tensor of two zeros — what the bug produced — printed as `#(0 0)`;
+;; the correct 2x2 prints its rows. Shown for the record; the shape/element
+;; assertions above are what actually pin the values down.
+(display "     2x2 displays as ") (display m2x2) (newline)
+(display "     3D  displays as ") (display c2x2x2) (newline)
+
+;; ── Non-rectangular nests raise a CATCHABLE error (never a crash) ──
+
+(check "ragged rows"
+       (guard (e (#t 'raised))
+         (tensor (list (list 1.0 2.0) (list 3.0 4.0 5.0))))
+       'raised)
+
+(check "scalar among sub-lists"
+       (guard (e (#t 'raised))
+         (tensor (list (list 1.0 2.0) 3.0)))
+       'raised)
+
+(check "sub-list among scalars"
+       (guard (e (#t 'raised))
+         (tensor (list 1.0 (list 2.0 3.0))))
+       'raised)
+
+(check "ragged rank 3"
+       (guard (e (#t 'raised))
+         (tensor (list (list (list 1.0 2.0)) (list (list 3.0 2.0) (list 4.0 5.0)))))
+       'raised)
+
+;; ── Rank and bounds guards on well-formed tensors ──
+
+;; More indices than the tensor has dimensions — the original SIGSEGV.
+(check "rank-2 read of rank-1"
+       (guard (e (#t 'raised)) (tensor-ref (tensor (list 1.0 2.0)) 0 0))
+       'raised)
+
+(check "rank-3 read of rank-2"
+       (guard (e (#t 'raised)) (tensor-ref m2x2 0 0 0))
+       'raised)
+
+;; Index past a dimension on a correctly shaped tensor.
+(check "row index out of range"
+       (guard (e (#t 'raised)) (tensor-ref m2x2 5 0))
+       'raised)
+
+(check "column index out of range"
+       (guard (e (#t 'raised)) (tensor-ref m2x2 0 5))
+       'raised)
+
+(check "flat index out of range"
+       (guard (e (#t 'raised)) (tensor-ref (tensor (list 1.0 2.0 3.0)) 99))
+       'raised)
+
+(check "negative index"
+       (guard (e (#t 'raised)) (tensor-ref (tensor (list 1.0 2.0 3.0)) -1))
+       'raised)
+
+;; Same rank mismatch through the LIST-index idiom. `tensor-get` reaches the
+;; runtime-count path (a 2-argument `tensor-ref` is the flat vref shorthand
+;; instead), where the index count is only known at run time — that path had no
+;; rank check at all, so it read dims[i] past the end of the dimensions array and
+;; then underflowed `ndim - count` into a huge unsigned slice rank.
+(check "rank-2 list index on rank-1"
+       (guard (e (#t 'raised)) (tensor-get (tensor (list 1.0 2.0)) (list 0 0)))
+       'raised)
+
+;; …while the valid list-index reads through the same path still work, including
+;; a partial index, which yields a slice rather than a scalar.
+(check "list index full (1 1)" (tensor-get m2x2 (list 1 1)) 4.0)
+(check "list index scalar"     (tensor-get (tensor (list 1.0 2.0)) 1) 2.0)
+(check "partial list index slices" (tensor-shape (tensor-get m2x2 (list 1))) (list 2))
+(check "partial list index values"
+       (list (tensor-ref (tensor-get m2x2 (list 1)) 0)
+             (tensor-ref (tensor-get m2x2 (list 1)) 1))
+       (list 3.0 4.0))
+
+;; tensor-set! must refuse the same accesses — an unguarded write corrupts the
+;; heap rather than merely reading garbage.
+(check "tensor-set! flat out of range"
+       (guard (e (#t 'raised)) (tensor-set! (tensor (list 1.0 2.0 3.0)) 99 42.0))
+       'raised)
+
+(check "tensor-set! too many indices"
+       (guard (e (#t 'raised)) (tensor-set! (tensor (list 1.0 2.0 3.0)) 0 1 42.0))
+       'raised)
+
+;; A refused write must leave the tensor untouched.
+(define tset (tensor (list 1.0 2.0 3.0)))
+(guard (e (#t 'raised)) (tensor-set! tset 99 42.0))
+(check "refused write left tensor intact"
+       (list (tensor-ref tset 0) (tensor-ref tset 1) (tensor-ref tset 2))
+       (list 1.0 2.0 3.0))
+
+;; An in-range write still works (the guards must not over-reject).
+(define tok (tensor (list (list 1.0 2.0) (list 3.0 4.0))))
+(tensor-set! tok 1 0 99.0)
+(check "in-range 2-D write" (tensor-ref tok 1 0) 99.0)
+(check "in-range write left neighbours alone"
+       (list (tensor-ref tok 0 0) (tensor-ref tok 1 1))
+       (list 1.0 4.0))
+
+(newline)
+(if (= fail-count 0)
+    (display "ALL NESTED TENSOR CHECKS PASSED\n")
+    (begin (display "error: ") (display fail-count)
+           (display " nested tensor checks FAILED\n")))

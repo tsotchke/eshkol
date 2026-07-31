@@ -82,6 +82,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["ffi_boundary_fail_open"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'FFI boundary fails closed: an arity error is fatal under -r AND AOT (never a null binding, never a written binary, named diagnostic preserved), and an argument whose type cannot be an address is rejected at every `extern` pointer parameter with a catchable type error instead of being dereferenced'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["jit_repl_clean_exit"]
           event_values: ["PASS"]
         severity: medium
@@ -277,6 +285,105 @@ oracles:
         severity: medium
         label: 'P8 axis-8 (memory profiles): peak RSS is FLAT in the iteration count across workload shapes (AD-training step loop / resident KB tick / proof-search churn / parallel-map batch × auto-scope|with-region) — a leak that scales RSS with work (the training-loop OOM class) trips the machine-independent ratio invariant'
         action: ./scripts/run_p8_escape.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # CTEST-BACKED PILLARS (wired 2026-07-31)
+      #
+      # Until scripts/run_ctest_gate.sh existed, NO criterion anywhere in this
+      # file consumed a CTest RESULT: the only ctest mentions were `action:`
+      # strings, and the `test_evidence` criteria are index-level ("the tests
+      # exist and are runnable"), not execution-backed. The whole suite
+      # therefore had no oracle teeth, which is how two pillars with perfectly
+      # good CTest gates — the fixed-point engine and the exact-input AD tier —
+      # shipped into the v1.3.4 cut ungated by the target that judges it.
+      #
+      # scripts/run_ctest_gate.sh runs CTest, writes one kind:"ctest" event per
+      # test plus one per named GROUP plus the `ctest_suite_green` roll-up into
+      # scripts/icc_traces/ctest_gate.jsonl, and also emits the canonical
+      # kind:"test_result" events the architecture invariants read. A group
+      # whose regex matches NO configured test is reported ABSENT and FAILS —
+      # a pillar cannot quietly stop being covered because its tests were
+      # renamed or configured out.
+      #
+      # Run it before measuring readiness, the same way run_icc_smoke.sh and
+      # run_vm_parity.sh are run:
+      #     BUILD_DIR=build ./scripts/run_ctest_gate.sh
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["ctest_suite_green"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'The CTest suite is green AND its verdicts reach this oracle: every configured test passed, every gated group below is present and green, and ctest itself exited 0. This is the roll-up that gives the whole suite teeth — before it, a criterion could only assert that tests were INDEXED, so a red ctest run could not turn the release gate red.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["fixed_point_exact_accumulation_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Fixed-point / i128 exact-accumulation engine (#390): two''s-complement i128 arithmetic (wrap, compare, divide), Q-format round-trip and saturation, and an exact i128 dot product that is bit-identical to the rational reference all pass; the failure-injection runner still refuses its injected faults, and the shared-library ABI contract holds. Five CTest gates — fixedpoint_test_i128 / fixedpoint_test_fixed / fixedpoint_test_dot_exact / fixedpoint_runner_failures / fixedpoint_test_shared_abi — which existed but were run by no workflow, no smoke probe and no criterion.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["exact_input_ad_identity_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Exact-input AD tier (#393): derivative/gradient/hessian evaluated at an EXACT point (rational, bignum) route through the Taylor tower and satisfy the identity contract in value AND in exactness — (derivative f x) == (derivative-n f x 1), (hessian f x) == (derivative-n f x 2), exact? #t preserved — with the exact-coefficient Taylor tier itself green as the oracle they route to. Both lanes, since the JIT and the AOT lane reach codegen with different point literals: exact_point_ad_{runtime,aot}_smoke and exact_taylor_{runtime,aot}_smoke.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["runtime_closure_arity_spread_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Runtime-closure gradient arity spread (#398): the gradient of a closure reached through a wrapper is analytically correct at EVERY arity in the declared 1..32 range, captured and uncaptured, and the variadic / vector-point / scalar-point forms are NOT spread. The MAX_CALL_ARGS_LIMIT=16 clamp made arity 17-32 SIGSEGV, return a silent all-zero gradient, or raise a type error — all inside the declared ceiling — so this is the retro-catch that dies at check 19 on the pre-fix build; the out-of-line spread helper must not reintroduce a per-arity ceiling. It was executed only by run_autodiff_tests.sh''s glob, which emits no trace and is referenced by no criterion.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["define_library_same_unit_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'R7RS-small 5.6.1 same-unit libraries: a (define-library (m …) …) written in the compilation unit being compiled is importable by the forms below it with no filesystem search, its export surface is the union of its export clauses, only/except/rename/prefix work over it, require shares the registry, and an import written ABOVE its define-library is refused as the forward reference it is. Gated on all three substrates, because the JIT (ReplJITContext::execute), the AOT lane (process_requires) and the VM (its own reader and module machinery) resolve imports at three independent call sites.'
+        action: ./scripts/run_ctest_gate.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # VM SURFACE + PARITY ROLL-UPS pulled into the release gate
+      #
+      # Both existed but were measured by SIDE targets (`vm-parity` at the
+      # bottom of this file), not by `eshkol-compiler-readiness` — the target
+      # the v1.3.4 cut is judged on. The two are complementary and neither
+      # alone is sufficient: the parity gate is a DIFFERENTIAL (a defect shared
+      # by native and the VM passes by agreement), while the surface suite is
+      # SELF-CHECKING against R7RS (a shared defect fails).
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [vm_surface]
+          event_names: ["vm_surface_regression_suite"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'VM extended-surface regressions (tests/vm/*_surface_regression.esk), compiled to .eskb and executed on the standalone VM, are all green. This is the self-checking half of the VM surface — every probe asserts against R7RS or a closed form inside ONE run, so a defect SHARED by native and the VM cannot pass by agreement. It carries #394''s 549-check numeric tag-dispatch probe: a numeric result takes its exactness from its operands'' runtime TAGS, never from the shape of its value, so an integral-valued flonum may not come back exact (the (- 2.0 1.0) -> exact 1 collapse that made (/ 1.0 3.0) answer 1/3), and a mixed flonum x ratnum computes with BOTH operands instead of truncating the flonum into the numerator (which answered 0).'
+        action: ./scripts/run_vm_surface_tests.sh
+      - runtime_event:
+          event_kinds: [vm_parity]
+          event_names: ["vm_parity_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'VM parity gate: the codegen-vs-VM surface audit (every symbol supported or waived in tests/vm_parity/PARITY.tsv) plus the corpus differential on BOTH VM axes (vm-src and --emit-eskb), the out-of-subset probes and the fatal-error fail-closed probes are all green. Also measured by the `vm-parity` target; duplicated here because the release cut is judged on this one, and this is the criterion that carries the #394 numeric tag-dispatch differential (corpus/52) and the same-unit define-library differential (corpus/53).'
+        action: ./scripts/run_vm_parity.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # ESH-0011 PORTABLE EVENT LOOP (#399) — the probe and a criterion both
+      # existed, but the criterion lived ONLY under `v1.4-release`. The event
+      # loop ships in v1.3.4, and v1.3.4 is judged on this target, so it was
+      # shipping outside the gate that judges the cut. Same probe, same
+      # evidence; no new emitter.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["event_loop_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESH-0011 portable event loop (kqueue/epoll/IOCP): (make-event-loop 64) yields a handle, a pipe read+write round-trips through event-loop-poll inside the timeout, an idle poll waits its budget and returns instead of hanging, a closed handle fails closed, and 1000 open/close cycles never exhaust the descriptor table — green on JIT and AOT.'
+        action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
   # TOTAL-LANGUAGE completion — unlike the compiler-readiness ratchet above,
@@ -928,6 +1035,19 @@ oracles:
         severity: medium
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: run_ad_numerics_gate
+
+      # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
+      # Tier 1 networking primitive registers its descriptors against. Real
+      # criterion, not a placeholder: the probe runs the acceptance battery on
+      # JIT and AOT, and the battery asserts the pipe round-trip, a measured
+      # timeout, close-then-use failing closed, and 1000 open/close cycles.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["event_loop_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
+        action: run_icc_smoke
 
       - runtime_event:
           event_kinds: [v1_4_connection]

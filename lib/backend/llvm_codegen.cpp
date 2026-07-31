@@ -624,6 +624,77 @@ static std::string g_debug_source_directory;
 static std::string g_source_text;
 static std::string g_source_filepath;
 
+/* Per-file source text, for diagnostics rendered from a file that is NOT the
+ * ambient source context (ESH-0364).
+ *
+ * The AOT driver inlines every `(require …)`d module's forms into one flat AST
+ * array and compiles them as a single unit under a single ambient context — the
+ * ENTRY file. Any diagnostic for a form that came from a module therefore
+ * printed the entry file's NAME beside the module's LINE number: a location that
+ * resolves to real but unrelated source, which is worse than no location at all.
+ * (The JIT path was already correct — repl_jit.cpp's executeBatch takes explicit
+ * per-module provenance — so the same mistake was named accurately under `-r`
+ * and misattributed under `-o`.)
+ *
+ * Filled lazily and only on a diagnostic path, so the read costs nothing in a
+ * clean compile. A file that cannot be read caches an empty string: the
+ * diagnostic then prints "file:line:col:" without the source line and caret,
+ * which is still a location the reader can act on. */
+static std::map<std::string, std::string> g_source_text_by_file;
+
+static const std::string& sourceTextForFile(const std::string& path) {
+    static const std::string empty;
+    if (path.empty()) return empty;
+    if (path == g_source_filepath && !g_source_text.empty()) return g_source_text;
+    auto it = g_source_text_by_file.find(path);
+    if (it != g_source_text_by_file.end()) return it->second;
+    std::string text;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) {
+            text.assign((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        }
+    }
+    return g_source_text_by_file.emplace(path, std::move(text)).first->second;
+}
+
+/* Make a top-level form's originating file the ambient source context for the
+ * duration of its codegen, restoring the previous one on the way out. Nodes with
+ * no provenance (every inner node) and forms from the ambient file itself are a
+ * no-op, so the cost on the hot path is one integer compare. */
+class ScopedAstProvenance {
+public:
+    explicit ScopedAstProvenance(uint32_t source_file_id) {
+        if (source_file_id == 0) return;
+        const char* name = eshkol_source_file_name(source_file_id);
+        if (!name || !*name || g_source_filepath == name) return;
+        // Resolve the text BEFORE rebinding g_source_filepath: sourceTextForFile
+        // short-circuits on `path == g_source_filepath` to reuse the ambient
+        // text, so assigning the new path first made that test trivially true
+        // and handed back the OUTGOING file's text — the caret then rendered a
+        // line from the wrong file (or nothing, when the new line number ran
+        // past the old file's end).
+        std::string text = sourceTextForFile(std::string(name));
+        saved_path_ = std::move(g_source_filepath);
+        saved_text_ = std::move(g_source_text);
+        active_ = true;
+        g_source_filepath = name;
+        g_source_text = std::move(text);
+    }
+    ~ScopedAstProvenance() {
+        if (!active_) return;
+        g_source_filepath = std::move(saved_path_);
+        g_source_text = std::move(saved_text_);
+    }
+    ScopedAstProvenance(const ScopedAstProvenance&) = delete;
+    ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
+private:
+    std::string saved_path_;
+    std::string saved_text_;
+    bool active_ = false;
+};
+
 struct AotModuleStats {
     uint64_t functions = 0;
     uint64_t definitions = 0;
@@ -1081,6 +1152,19 @@ namespace {
     std::string g_cached_features;
     bool g_freestanding_codegen = false;
 
+    /* SHARED-LIBRARY EXPORT ABI (--shared-lib, linked-library flavour)
+     *
+     * When set, library-mode codegen wraps every exported top-level function
+     * in a thunk that presents the PLATFORM C ABI for `eshkol_tagged_value_t`
+     * instead of LLVM's first-class-struct return/argument convention.  See
+     * emitSharedLibraryExportWrappers() for why the two are not the same
+     * thing.  Only the LINKED shared library sets this: the relocatable
+     * `--shared-lib -c` object flavour (used for the precompiled stdlib and
+     * cmake/EshkolCompile.cmake) is consumed by other Eshkol modules that
+     * call with the internal struct convention, so it must stay unwrapped.
+     */
+    bool g_shared_library_exports = false;
+
     // Initialize the native target description once per compiler process.
     // Normal compiler and JIT processes retain host-specialized codegen.  The
     // stdlib build may set ESHKOL_TARGET_CPU/ESHKOL_TARGET_FEATURES through
@@ -1296,6 +1380,9 @@ namespace ControlFlowCallbacks {
     static llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     static llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     static llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    static llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                                  llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                                  void* context);
     static llvm::Function* getClosureAllocWrapper(void* context);
     static llvm::Function* getConsSetPtrWrapper(void* context);
     static llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
@@ -1344,6 +1431,9 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                                                        llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                                                        void* context);
     friend llvm::Function* ControlFlowCallbacks::getClosureAllocWrapper(void* context);
 
 private:
@@ -1483,6 +1573,28 @@ private:
     // seeded with the outer's value at the call site.
     std::unordered_map<llvm::Function*, std::vector<std::string>> named_let_captures;
 
+    // ESCAPED NAMED-LET LOOP PROCEDURE.  A named-let loop function's LLVM
+    // signature is (params..., one capture POINTER per captured free var), so
+    // it can only be entered by a caller that knows the capture list.  When the
+    // loop procedure is used as a first-class VALUE — `(set! g loop)`,
+    // `(cons loop '())`, `(map loop xs)` — codegenVariable used to fall through
+    // to the generic `function_table` path and hand back the bare Function*,
+    // whose capture parameters the closure dispatcher then filled with whatever
+    // happened to be in the argument registers.  Calling the leaked procedure
+    // dereferenced that garbage as a capture cell (SIGSEGV).  These two maps let
+    // codegenVariable build a REAL closure instead: the env holds one tagged
+    // int64 per capture (the address of the shared cell, exactly the convention
+    // `capturePointerTagFromCurrentFunction` already uses), and a per-loop
+    // trampoline re-derefs those slots back into the pointer arguments the loop
+    // function expects.
+    struct NamedLetEscapeInfo {
+        llvm::Function* loop_func = nullptr;
+        std::vector<std::string> captures;
+        uint64_t arity = 0;
+    };
+    std::unordered_map<std::string, NamedLetEscapeInfo> named_let_escapes;
+    std::unordered_map<llvm::Function*, llvm::Function*> named_let_escape_thunks;
+
     // HoTT TYPE TRACKING: Maps variable names to their compile-time HoTT types
     // This enables type-directed optimizations when both operand types are known
     std::unordered_map<std::string, eshkol::hott::TypeId> symbol_hott_types;
@@ -1515,6 +1627,59 @@ private:
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
     std::unordered_map<std::string, uint64_t> function_arity_table;
+
+    // FFI POINTER-ARG GUARD (ESH-0363): the declared parameter type KEYWORDS of
+    // every `extern`, keyed by both the Eshkol-visible name and the real C
+    // symbol (call sites resolve by either).
+    //
+    // The LLVM signature alone cannot tell an FFI pointer parameter from an
+    // internal one — `ptr`, `string` and `char*` all collapse to the same
+    // opaque pointer type, and internal Eshkol functions also take pointer
+    // parameters (closure environments, named-let capture slots). Recording
+    // the declared keyword at `extern` codegen time is what lets the call site
+    // guard exactly the FFI boundary and nothing else.
+    std::unordered_map<std::string, std::vector<std::string>> extern_param_type_names_;
+
+    // True when the emitted module can raise into the hosted error runtime.
+    // Standalone freestanding and wasm32 objects have no hosted exception path
+    // (eshkol_type_error and friends live in the hosted runtime source set), so
+    // the FFI pointer-argument guard — which raises a catchable type error — is
+    // only emitted for hosted native codegen.
+    bool ffiPointerArgGuardEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
+
+    /* R7RS §5.3.1 TOP-LEVEL REDEFINITION.
+     *
+     * "At the top level of a program, a definition
+     *      (define <variable> <expression>)
+     *  has essentially the same effect as the assignment expression
+     *      (set! <variable> <expression>)
+     *  if <variable> is bound to a non-syntax value.  However, if
+     *  <variable> is not bound [...] the definition will bind <variable>
+     *  to a new location before performing the assignment."
+     *
+     * So a top-level name has exactly ONE location, every definition of it
+     * assigns to that location in program order, and every reference reads
+     * the location when it is evaluated — not when it is compiled.
+     *
+     * Eshkol's fast path deliberately violates that in exchange for direct
+     * calls: a `(define (f ...) ...)` becomes an LLVM Function resolved at
+     * the call site through function_table / `<name>_func`, while a
+     * `(define f <expr>)` becomes a tagged_value GlobalVariable resolved
+     * through symbol_table.  Two definitions of one name therefore produced
+     * two independent bindings, and the call site picked between them by
+     * namespace priority and by codegen order rather than by program order.
+     *
+     * This set holds the names that are defined more than once at the top
+     * level of the current compilation unit.  For exactly those names the
+     * fast path is switched off and the R7RS single-location model is used:
+     * the location is a tagged_value global (created in Step 1.5), every
+     * definition — value or procedure — stores into it at its own position
+     * in program order (Step 3), and every reference loads from it.  Single
+     * definitions, which is every name in practice, keep the direct call.
+     */
+    std::unordered_set<std::string> redefined_toplevel_names;
 
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
@@ -1716,6 +1881,10 @@ private:
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
     bool freestanding_codegen_;
+    // SHARED-LIBRARY EXPORT ABI: true only for the linked --shared-lib
+    // flavour.  See g_shared_library_exports and
+    // emitSharedLibraryExportWrappers().
+    bool shared_library_exports_ = false;
     // WASM MODE: True when the module targets a standalone
     // wasm32-unknown-unknown object. Like freestanding native, a standalone
     // wasm module has no hosted REPL to introspect function sources, so the
@@ -1759,6 +1928,7 @@ public:
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         freestanding_codegen_ = is_freestanding_codegen;
+        shared_library_exports_ = is_library_mode && g_shared_library_exports;
         wasm_codegen_ = is_wasm32;
         fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
@@ -2120,6 +2290,15 @@ public:
         function_return_types["semver-compare"] = BuiltinTypes::Integer;
         function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
         function_return_types["make-pipe"] = BuiltinTypes::Value;
+        /* ESH-0011 event loop. make-event-loop is Value, not Integer: it
+         * returns an integer handle OR #f where the platform has no loop, so
+         * the tagged-value shape is the honest one. poll returns a list. */
+        function_return_types["make-event-loop"] = BuiltinTypes::Value;
+        function_return_types["event-loop-add-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-remove-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-poll"] = BuiltinTypes::Value;
+        function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-backend"] = BuiltinTypes::String;
         function_return_types["fd-write"] = BuiltinTypes::Integer;
         function_return_types["make-line-reader"] = BuiltinTypes::Integer;
         function_return_types["line-reader-poll"] = BuiltinTypes::String;
@@ -2833,6 +3012,26 @@ public:
                     if (cfg->strict_types) {
                         eshkol_error("HoTT: %zu type errors detected (strict mode)",
                                     type_checker.errors().size());
+                        // `--strict-types` means what --help and
+                        // docs/reference/runtime/eshkol-run.md say it means:
+                        // "Type errors are fatal". It used to only change the
+                        // WORDING of the diagnostic — codegen ran to completion,
+                        // the compile exited 0, and AOT wrote a finished binary
+                        // for a program the type checker had just rejected. Any
+                        // build step trusting $? (or the mere existence of the
+                        // output) therefore certified ill-typed code.
+                        //
+                        // Abort here rather than at the fatal_codegen_error_
+                        // check further down: the program is already rejected,
+                        // so generating code for it can only add noise (or fault
+                        // on the very inconsistency that was reported).
+                        //
+                        // Gradual mode (the default) is untouched: it warns and
+                        // continues, exactly as before. `--unsafe` reports
+                        // nothing and is likewise unaffected.
+                        eshkol_error("Refusing to generate code for a program with "
+                                     "type errors (--strict-types)");
+                        return std::make_pair(nullptr, nullptr);
                     } else if (!cfg->unsafe_mode) {
                         eshkol_warn("HoTT: %zu type warnings detected (gradual typing continues)",
                                    type_checker.errors().size());
@@ -2844,7 +3043,12 @@ public:
             // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
             // Global variables (including lambdas) are processed ONLY in main function context
             // This avoids issues with processing lambdas without a function context
-            
+
+            // Step 0: R7RS §5.3.1 — which top-level names are defined more than
+            // once?  Must run before Step 1.5 creates bindings and before Step 2
+            // compiles any body that references them.
+            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
+
             // Step 1: Create function declarations FIRST (including nested functions)
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 bool is_external_define =
@@ -2910,9 +3114,25 @@ public:
             // module emits @<name> as a pure external declaration plus a
             // __repl_var_<name> marker that addModule consumes to allocate
             // the shared 16-byte tagged_value slot on first definition.
+            // R7RS §5.3.1: a name defined more than once at top level is bound
+            // through a location even when every one of its definitions is a
+            // procedure definition, so the location is pre-declared here for
+            // `is_function` defines too. Ordinary (single) procedure defines
+            // keep the direct-call fast path and get no location.
+            //
+            // Library mode is excluded: it has no `main`, so the definition
+            // stores that make a location authoritative are emitted by the
+            // chunked __eshkol_lib_init* sequence rather than the top-level
+            // order, and creating a location no definition writes to would be
+            // strictly worse than the direct call. No stdlib module defines a
+            // name twice, so this exclusion is currently unreachable in
+            // practice; if one ever did, it keeps the pre-existing behaviour
+            // instead of a location that reads as zero.
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
-                    !asts_to_use[i].operation.define_op.is_function) {
+                    (!asts_to_use[i].operation.define_op.is_function ||
+                     (!library_mode &&
+                      isRedefinedTopLevelName(asts_to_use[i].operation.define_op.name)))) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
                     // `:external` references and library `provide` bindings keep
                     // their raw public name so they bind cross-object to
@@ -3071,8 +3291,14 @@ public:
                                                asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                                                asts_to_use[i].operation.define_op.is_function);
 
-                        // Skip function definitions - they were already compiled in earlier pass
+                        // Skip function definitions - they were already compiled in earlier pass.
+                        // R7RS §5.3.1: a *redefined* name is bound through a
+                        // location, so its procedure definitions still have to
+                        // assign to that location here, at their own position in
+                        // the top-level order — that is what makes the later
+                        // define win and the earlier one win before it.
                         if (is_function_def) {
+                            emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
                             continue;
                         }
 
@@ -3392,6 +3618,15 @@ public:
                 // Step 3: Process global variable definitions BEFORE calling scheme_main
                 current_function = c_main;
                 for (size_t i = 0; i < num_asts_to_use; i++) {
+                    // R7RS §5.3.1: procedure definitions of a redefined name assign
+                    // to that name's binding location, in top-level order, exactly
+                    // as in the no-user-main path above.
+                    if (asts_to_use[i].type == ESHKOL_OP &&
+                        asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                        asts_to_use[i].operation.define_op.is_function) {
+                        emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
+                        continue;
+                    }
                     // Process non-function top-level defines to initialize global variables
                     if (asts_to_use[i].type == ESHKOL_OP &&
                         asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
@@ -4162,6 +4397,7 @@ private:
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
         // Calculus extraction: wire closure call, arity table, captures, closure alloc
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
         autodiff_->setFunctionArityTable(&function_arity_table);
         autodiff_->setFunctionBodyAstTable(&function_body_ast);
         autodiff_->setFunctionDefAstTable(&function_def_ast);
@@ -4242,6 +4478,9 @@ private:
             this
         );
         strio_->setDisplayValueFunc(eshkol_display_value_func);
+        // R7RS §5.3.1: display must not short-circuit a redefined name to the
+        // name-keyed `<name>_sexpr` side table (see setRedefinedTopLevelNames).
+        strio_->setRedefinedTopLevelNames(&redefined_toplevel_names);
         eshkol_debug("Created StringIOCodegen with callbacks");
 
         // Initialize BindingCodegen - variable binding operations
@@ -4641,6 +4880,127 @@ private:
         function_table["displayTensorRecursive"] = display_tensor_recursive_func;
         eshkol_debug("Created recursive N-dimensional tensor display helper function");
     }
+    
+    /* R7RS §5.3.1: find the top-level names that are defined more than once
+     * in this compilation unit.  Those are the names whose binding must be a
+     * single mutable location assigned in program order (see the
+     * redefined_toplevel_names comment) instead of a compile-time-resolved
+     * direct call.
+     *
+     * `:external` defines are skipped: they are the precompiled stdlib's
+     * bindings, re-materialised into this AST by process_requires with their
+     * bodies living in the linked object.  A user define of the same name is
+     * a *shadow* of a separately compiled unit, not an in-unit redefinition,
+     * and is already handled by the user-shadows-builtin path (audit Bug G).
+     * Counting them here would drag every stdlib-shadowing call onto the
+     * indirect path for no semantic gain.
+     */
+    void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
+        redefined_toplevel_names.clear();
+        if (!asts) return;
+
+        std::unordered_map<std::string, unsigned> counts;
+        for (size_t i = 0; i < num_asts; i++) {
+            if (asts[i].type != ESHKOL_OP) continue;
+            if (asts[i].operation.op != ESHKOL_DEFINE_OP) continue;
+            if (asts[i].operation.define_op.is_external) continue;
+            const char* name = asts[i].operation.define_op.name;
+            if (!name || !name[0]) continue;
+            counts[name]++;
+        }
+
+        for (const auto& entry : counts) {
+            if (entry.second > 1) {
+                redefined_toplevel_names.insert(entry.first);
+                eshkol_debug("R7RS 5.3.1: '%s' is defined %u times at top level - "
+                             "binding through a single mutable location",
+                             entry.first.c_str(), entry.second);
+            }
+        }
+    }
+
+    bool isRedefinedTopLevelName(const char* name) const {
+        return name && name[0] &&
+               redefined_toplevel_names.find(name) != redefined_toplevel_names.end();
+    }
+
+    /* Wrap a top-level LLVM function in a zero-capture arena closure and
+     * return it as a CALLABLE tagged_value — the first-class value of a
+     * procedure definition.  Shared by the function-as-value path in
+     * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
+     * produce byte-identical closures (same packed_info / return_type_info
+     * layout the closure-call path decodes). */
+    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params) {
+        if (!func) return nullptr;
+
+        Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+        // Pack closure info: no captures (bits 0-15), arity (bits 16-31)
+        uint64_t packed_info = (num_params & 0xFFFF) << 16;
+        Value* packed_info_val = sizeConst(packed_info);
+
+        Value* sexpr_ptr = intPtrConst(0);
+        // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+        Value* return_type_info = intPtrConst(return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                 {arena_ptr, func_ptr_int, packed_info_val,
+                                                  sexpr_ptr, return_type_info, closure_name});
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
+     * name.  Ordinary procedure definitions need no store — their call sites
+     * resolve the LLVM function directly — but a redefined name is bound
+     * through a location, so each definition has to assign the procedure to
+     * that location at its own point in program order.  Emitted from the
+     * main/global-init sequence, where `builder` is already positioned at
+     * the definition's place in the top-level order. */
+    void emitRedefinitionStoreForFunctionDefine(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP ||
+            ast->operation.op != ESHKOL_DEFINE_OP ||
+            !ast->operation.define_op.is_function ||
+            ast->operation.define_op.is_external) {
+            return;
+        }
+
+        const char* name = ast->operation.define_op.name;
+        if (!isRedefinedTopLevelName(name)) return;
+
+        auto declared_it = declared_functions_by_ast.find(ast);
+        if (declared_it == declared_functions_by_ast.end() || !declared_it->second) {
+            eshkol_debug("R7RS 5.3.1: no declared function for redefined '%s' - "
+                         "skipping location store", name);
+            return;
+        }
+
+        std::string storage_name =
+            userGlobalStorageName(name, g_repl_mode_enabled, library_mode);
+        GlobalVariable* location = module->getNamedGlobal(storage_name);
+        if (!location) {
+            eshkol_debug("R7RS 5.3.1: no location global for redefined '%s' (%s)",
+                         name, storage_name.c_str());
+            return;
+        }
+
+        uint64_t arity = ast->operation.define_op.num_params;
+        Value* callable = emitFunctionAsCallableValue(declared_it->second, arity);
+        if (!callable) return;
+
+        builder->CreateStore(callable, location);
+        // The location is the binding: keep both symbol tables pointing at it so
+        // every later reference (call or value read) loads from it.
+        symbol_table[name] = location;
+        global_symbol_table[name] = location;
+        function_arity_table[name] = arity;
+        eshkol_debug("R7RS 5.3.1: stored procedure '%s' (arity=%llu) into its "
+                     "binding location %s", name,
+                     (unsigned long long)arity, storage_name.c_str());
+    }
+
 
     // DWARF DEBUG INFO: build the DISubprogram for an Eshkol `define`d function.
     //
@@ -5253,6 +5613,315 @@ private:
                 G.setLinkage(GlobalValue::InternalLinkage);
             }
         }
+
+        emitSharedLibraryExportWrappers(asts, num_asts);
+    }
+
+    /* ── SHARED-LIBRARY EXPORT ABI ───────────────────────────────────────────
+     *
+     * THE DEFECT this exists to fix: LLVM's calling convention for a
+     * first-class-struct return is NOT the platform C calling convention for
+     * the same struct, and `--shared-lib` was exporting the former while
+     * promising the latter.
+     *
+     * `eshkol_tagged_value_type` is the raw 5-field struct
+     * `{i8, i8, i16, i32, i64}` (type, flags, reserved, explicit padding,
+     * data) — a field-for-field mirror of the C `eshkol_tagged_value_t`, which
+     * is exactly right for the LAYOUT of loads and stores.  It is not a
+     * description of how the value travels in registers.  Given a
+     * `define {i8,i8,i16,i32,i64} @f()`, the backend flattens the aggregate
+     * into one return value PER FIELD and assigns them to consecutive return
+     * registers.  On AArch64 that is:
+     *
+     *     _f:  mov w0, #1     ; type
+     *          mov w1, #0x10  ; flags       <- C caller reads this as data
+     *          mov w2, #0     ; reserved
+     *          mov w3, #0     ; padding
+     *          mov w4, #42    ; data        <- the payload, in x4
+     *          ret
+     *
+     * A C caller compiled against `eshkol_tagged_value_t` follows AAPCS: a
+     * 16-byte non-HFA composite comes back in x0:x1, so it reads
+     * `{type = 1, flags = 0, data = 16}` — the flags byte, zero-extended,
+     * masquerading as the payload.  `42` is stranded in x4.  Arguments were
+     * corrupted the same way and worse: with two tagged parameters the
+     * flattened fields overflow the 8 argument registers and the callee reads
+     * its second argument off the stack, while the C caller passed it in
+     * x2:x3.
+     *
+     * Both directions are affected, so the wrapper coerces both.
+     *
+     * THE FIX: leave the internal convention alone — every Eshkol-to-Eshkol
+     * call in the module is consistent with itself, and the struct type is
+     * what makes GEP-based field access correct — and coerce only at the
+     * export boundary.  The user's function keeps its body under a decorated
+     * symbol and the exported name becomes a thin thunk with the platform C
+     * signature.  This is the same coercion the REPL already performs in the
+     * opposite direction when it calls a native C function that returns a
+     * tagged value (see tryResolveReplFunction / `__cabi_thunk`); it was
+     * simply never wired for shared-library exports.
+     *
+     * PER-PLATFORM COERCION
+     *
+     *   AArch64 (AAPCS64) and x86-64 SysV, and every other 64-bit ELF/Mach-O
+     *   target we emit for (riscv64 LP64D, ppc64le ELFv2, loongarch64):
+     *   a 16-byte composite of two integer eightbytes is returned in the
+     *   first two GPRs (x0:x1 / rax:rdx) and passed in two consecutive GPRs.
+     *   `[2 x i64]` is precisely what Clang coerces such a struct to, in both
+     *   directions, so the thunk's signature is
+     *   `[2 x i64] @f([2 x i64], …)`.  Windows on ARM64 follows AAPCS64 here
+     *   and is covered by the same case.
+     *
+     *   Windows x64 (Microsoft ABI) is different and needs the memory form:
+     *   an aggregate whose size is not exactly 1, 2, 4 or 8 bytes is returned
+     *   through a hidden pointer supplied by the caller in RCX, and passed as
+     *   a pointer to a caller-owned temporary.  A 16-byte tagged value hits
+     *   both rules, so the thunk there is
+     *   `void @f(ptr sret(%tv) noalias, ptr, …)` — which is byte-identical to
+     *   what MSVC/clang-cl generate for
+     *   `eshkol_tagged_value_t f(eshkol_tagged_value_t …)`.
+     *
+     *   Anything else (32-bit targets, where the return is via memory but the
+     *   arguments are by-value on the stack, so neither shape above applies)
+     *   is refused rather than silently mis-exported.
+     */
+    enum class SharedLibraryExportAbi {
+        RegisterPair,  // [2 x i64] in and out (AAPCS64, SysV, RISC-V, …)
+        MemorySret,    // sret return + by-pointer arguments (Windows x64)
+        Unsupported
+    };
+
+    SharedLibraryExportAbi sharedLibraryExportAbi() const {
+        const llvm::Triple triple = getModuleTargetTriple(*module);
+        if (!triple.isArch64Bit()) {
+            // 16-byte aggregates return via memory on i386/ARM32/wasm32 but
+            // their arguments are passed by value on the stack, so neither
+            // coercion above models the C ABI.
+            return SharedLibraryExportAbi::Unsupported;
+        }
+        if (triple.isOSWindows() && triple.getArch() == llvm::Triple::x86_64) {
+            return SharedLibraryExportAbi::MemorySret;
+        }
+        switch (triple.getArch()) {
+            case llvm::Triple::aarch64:
+            case llvm::Triple::aarch64_be:
+            case llvm::Triple::x86_64:
+            case llvm::Triple::riscv64:   // LP64D: two integer eightbytes -> a0:a1
+            case llvm::Triple::ppc64le:   // ELFv2 -> r3:r4 (NOT ELFv1, which is memory)
+            case llvm::Triple::loongarch64:
+                return SharedLibraryExportAbi::RegisterPair;
+            default:
+                return SharedLibraryExportAbi::Unsupported;
+        }
+    }
+
+    // Symbol suffix carrying the unwrapped, internal-convention definition of
+    // an exported function.  Kept exported (not internalized) so a linker map
+    // or a debugger still names the real body, and so a future Eshkol-to-
+    // Eshkol dynamic link has a struct-convention entry point to bind to.
+    static std::string sharedLibraryImplSymbolName(const std::string& name) {
+        return name + "__eshkol_internal_abi";
+    }
+
+    void emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
+        if (!shared_library_exports_) return;
+
+        const SharedLibraryExportAbi abi = sharedLibraryExportAbi();
+        if (abi == SharedLibraryExportAbi::Unsupported) {
+            eshkol_error(
+                "--shared-lib cannot export the C ABI for tagged values on "
+                "target '%s': a 16-byte aggregate does not travel in two "
+                "general-purpose registers there. Build a relocatable object "
+                "instead (--shared-lib -c) or target a 64-bit platform.",
+                getModuleTargetTriple(*module).str().c_str());
+            fatal_codegen_error_ = true;
+            return;
+        }
+
+        // Collect the export set from the AST so only genuine top-level
+        // `(define (f …) …)` functions are wrapped — never lambdas, helper
+        // thunks, or runtime declarations.
+        std::vector<std::string> export_names;
+        std::unordered_set<std::string> seen;
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP ||
+                asts[i].operation.op != ESHKOL_DEFINE_OP ||
+                !asts[i].operation.define_op.is_function ||
+                !asts[i].operation.define_op.name) {
+                continue;
+            }
+            std::string name = asts[i].operation.define_op.name;
+            if (seen.insert(name).second) {
+                export_names.push_back(std::move(name));
+            }
+        }
+
+        ArrayType* pair_type = ArrayType::get(int64_type, 2);
+        const Align tagged_align(8);
+        unsigned wrapped = 0;
+
+        for (const std::string& name : export_names) {
+            Function* impl = module->getFunction(name);
+            if (!impl || impl->isDeclaration() || impl->hasLocalLinkage()) {
+                continue;
+            }
+            FunctionType* impl_type = impl->getFunctionType();
+            bool all_tagged = !impl_type->isVarArg() &&
+                              impl_type->getReturnType() == tagged_value_type;
+            for (Type* param : impl_type->params()) {
+                if (param != tagged_value_type) {
+                    all_tagged = false;
+                    break;
+                }
+            }
+            if (!all_tagged) {
+                // A signature of plain scalars already speaks an ABI C can
+                // call directly — LLVM's convention for an i64 or a double IS
+                // the platform's — so there is nothing to coerce and nothing to
+                // say.  But ANY aggregate left in a signature this pass did not
+                // wrap (a partially-tagged specialization, a dual number, a
+                // varargs export) has the same flatten-per-field problem the
+                // pass exists to fix, and the pass does not know its C spelling,
+                // so say so rather than export a convention we cannot vouch for.
+                bool has_unknown_aggregate =
+                    impl_type->getReturnType()->isAggregateType();
+                for (Type* param : impl_type->params()) {
+                    has_unknown_aggregate |= param->isAggregateType();
+                }
+                if (has_unknown_aggregate || impl_type->isVarArg()) {
+                    eshkol_warn(
+                        "--shared-lib: exported function '%s' has a signature "
+                        "this compiler cannot map to the platform C ABI; it is "
+                        "exported with Eshkol's internal convention and is not "
+                        "safe to call from C",
+                        name.c_str());
+                }
+                continue;
+            }
+
+            const unsigned arity = impl_type->getNumParams();
+
+            // Move the body to the decorated symbol. Renaming an LLVM Function
+            // rewrites the SYMBOL only — every existing use is by pointer, so
+            // all in-module Eshkol call sites and every function-as-value
+            // closure keep pointing at the real body with the internal
+            // convention intact.
+            impl->setName(sharedLibraryImplSymbolName(name));
+
+            FunctionType* thunk_type = nullptr;
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                std::vector<Type*> params(arity, pair_type);
+                thunk_type = FunctionType::get(pair_type, params, false);
+            } else {
+                std::vector<Type*> params(arity + 1, ptr_type);
+                thunk_type = FunctionType::get(void_type, params, false);
+            }
+
+            // The exported name must be a STRONG definition: it is the symbol
+            // a host dlsym()s, and a weak one could be preempted by an
+            // identically named weak definition elsewhere in the link.
+            Function* thunk = Function::Create(thunk_type,
+                                               GlobalValue::ExternalLinkage,
+                                               name, module.get());
+            if (thunk->getName() != name) {
+                // Something already owns the exported name; do not silently
+                // export a mangled alias.
+                eshkol_error("--shared-lib: export name '%s' is already taken "
+                             "by another symbol; cannot emit its C ABI thunk",
+                             name.c_str());
+                thunk->eraseFromParent();
+                impl->setName(name);
+                fatal_codegen_error_ = true;
+                return;
+            }
+            // The thunk is emitted after the main codegen walk, so it must not
+            // disturb the builder's insertion point or debug location.
+            BasicBlock* saved_block = builder->GetInsertBlock();
+            BasicBlock::iterator saved_point =
+                saved_block ? builder->GetInsertPoint() : BasicBlock::iterator();
+            DebugLoc saved_loc = builder->getCurrentDebugLocation();
+            builder->SetCurrentDebugLocation(DebugLoc());
+
+            BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+            builder->SetInsertPoint(entry);
+
+            std::vector<Value*> call_args;
+            call_args.reserve(arity);
+
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                // Inbound: [2 x i64] register pair -> struct, through memory.
+                // Clang lowers the C-side coercion exactly this way, so the
+                // two agree bit-for-bit including the padding bytes.
+                for (unsigned i = 0; i < arity; ++i) {
+                    AllocaInst* slot = builder->CreateAlloca(
+                        tagged_value_type, nullptr,
+                        "export_arg" + std::to_string(i) + "_slot");
+                    slot->setAlignment(tagged_align);
+                    builder->CreateAlignedStore(thunk->getArg(i), slot,
+                                                tagged_align);
+                    call_args.push_back(builder->CreateAlignedLoad(
+                        tagged_value_type, slot, tagged_align,
+                        "export_arg" + std::to_string(i)));
+                }
+            } else {
+                // Windows x64: argument 0 is the sret pointer; each tagged
+                // argument arrives as a pointer to the caller's temporary.
+                thunk->addParamAttr(0, Attribute::getWithStructRetType(
+                                           *context, tagged_value_type));
+                thunk->addParamAttr(0, Attribute::NoAlias);
+                thunk->addParamAttr(0, Attribute::getWithAlignment(
+                                           *context, tagged_align));
+                for (unsigned i = 0; i < arity; ++i) {
+                    call_args.push_back(builder->CreateAlignedLoad(
+                        tagged_value_type, thunk->getArg(i + 1), tagged_align,
+                        "export_arg" + std::to_string(i)));
+                }
+            }
+
+            CallInst* result = builder->CreateCall(impl_type, impl, call_args,
+                                                   "export_result");
+            result->setCallingConv(impl->getCallingConv());
+
+            if (abi == SharedLibraryExportAbi::RegisterPair) {
+                AllocaInst* ret_slot = builder->CreateAlloca(
+                    tagged_value_type, nullptr, "export_ret_slot");
+                ret_slot->setAlignment(tagged_align);
+                builder->CreateAlignedStore(result, ret_slot, tagged_align);
+                builder->CreateRet(builder->CreateAlignedLoad(
+                    pair_type, ret_slot, tagged_align, "export_ret_pair"));
+            } else {
+                builder->CreateAlignedStore(result, thunk->getArg(0),
+                                            tagged_align);
+                builder->CreateRetVoid();
+            }
+
+            if (saved_block) {
+                builder->SetInsertPoint(saved_block, saved_point);
+            } else {
+                builder->ClearInsertionPoint();
+            }
+            builder->SetCurrentDebugLocation(saved_loc);
+
+            // The body keeps whatever linkage finalizeLibrarySymbols chose for
+            // it (linkonce_odr / weak, so a user definition can still override
+            // a stdlib one); the thunk owns the strong exported name.
+            //
+            // Pin the body's symbol. The thunk is its only caller, so once the
+            // inliner folds the body in, a discardable linkonce_odr definition
+            // with no remaining references is exactly what GlobalDCE deletes --
+            // and `<name>__eshkol_internal_abi` is a documented entry point
+            // (tooling, debuggers, and the ABI test's negative control all name
+            // it). `llvm.used` keeps the symbol without blocking the inlining.
+            markGlobalValueUsed(impl);
+            wrapped++;
+        }
+
+        eshkol_info("Shared-library exports: wrapped %u function(s) in the "
+                    "platform C ABI (%s)",
+                    wrapped,
+                    abi == SharedLibraryExportAbi::RegisterPair
+                        ? "register pair"
+                        : "sret/by-pointer");
     }
 
     // LIBRARY MODE: Create initialization function instead of main
@@ -7363,14 +8032,72 @@ private:
         return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
+    /* Argument source for a RUNTIME-COUNTED closure call (see codegenClosureCall).
+     *
+     * Normally a call site knows statically how many arguments it passes, so
+     * `call_args` carries them. A caller that only learns the count at run time
+     * — the AD gradient spreading a point into a runtime closure's declared
+     * number of scalar parameters — instead hands over a staging array plus the
+     * runtime count. The dispatcher already switches on a runtime argument
+     * count (it has to: `fixed_params` comes from the closure), so this mode
+     * reuses that one switch instead of making the caller emit a separate,
+     * fully expanded closure call per possible arity.
+     *
+     * Contract for the caller:
+     *   - `args_ptr` points to `width` contiguous tagged_value slots,
+     *   - slots [0, count) hold the live arguments,
+     *   - slots [count, width) are initialised to tagged null (they are loaded
+     *     unconditionally, and are what the arity-mismatch padding reads),
+     *   - `count` is already clamped to [0, width].
+     */
+    struct ClosureSpreadArgs {
+        Value* args_ptr = nullptr;
+        Value* count = nullptr;
+        int width = 0;
+    };
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
-                              bool parameter_dispatch = true) {
+                              bool parameter_dispatch = true,
+                              const ClosureSpreadArgs* spread = nullptr) {
         func_result = ensureTaggedValue(func_result);
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* merge_bb = BasicBlock::Create(*context, "call_merge", current_func);
+
+        // Spread mode: the arguments live in the caller's staging array rather
+        // than in call_args, and the count is a runtime value. Load every slot
+        // once here, in the block that dominates both the variadic and the
+        // non-variadic dispatch, so each arm can share them (the static path
+        // hoists its padded-array loads for the same reason).
+        ArrayType* spread_args_type = spread
+            ? ArrayType::get(tagged_value_type, spread->width) : nullptr;
+        std::vector<Value*> spread_arg_vals;
+        Value* spread_count = nullptr;
+        if (spread) {
+            spread_arg_vals.reserve((size_t)spread->width);
+            for (int i = 0; i < spread->width; i++) {
+                spread_arg_vals.push_back(builder->CreateLoad(tagged_value_type,
+                    builder->CreateGEP(spread_args_type, spread->args_ptr,
+                        {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)}),
+                    "spread_arg"));
+            }
+            // Re-clamp here rather than trusting the caller: this value feeds
+            // both dispatches, and neither may select an arm that does not exist.
+            spread_count = builder->CreateSelect(
+                builder->CreateICmpUGT(spread->count,
+                    ConstantInt::get(int64_type, spread->width)),
+                ConstantInt::get(int64_type, spread->width), spread->count,
+                "spread_count");
+        }
+        // A spread call always carries at least one argument (the caller routes
+        // the zero-argument case to a static call), so the "no arguments" forms
+        // below stay bound to the static path.
+        const bool have_first_arg = spread ? true : !call_args.empty();
+        auto firstArg = [&]() -> Value* {
+            return spread ? spread_arg_vals[0] : call_args[0];
+        };
 
         // A parameter object is both a heap object and a procedure.  Dispatch
         // it before the ordinary closure path so it never gets interpreted as
@@ -7389,11 +8116,11 @@ private:
             Value* parameter_bits = unpackInt64FromTaggedValue(func_result);
             Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
                                                            "call_parameter_handle");
-            if (call_args.empty()) {
+            if (!have_first_arg) {
                 parameter_result = codegenParameterRef(parameter_ptr);
             } else {
                 Value* converted = codegenParameterConverterFor(
-                    parameter_ptr, call_args[0], "parameter-procedure-converter");
+                    parameter_ptr, firstArg(), "parameter-procedure-converter");
                 parameter_result = codegenParameterSet(parameter_ptr, converted);
             }
             builder->CreateBr(merge_bb);
@@ -7462,7 +8189,7 @@ private:
                 ConstantInt::get(
                     int64_type,
                     offsetof(eshkol_continuation_state_t, value)));
-            Value* invoke_value = call_args.empty() ? packNullToTaggedValue() : call_args[0];
+            Value* invoke_value = have_first_arg ? firstArg() : packNullToTaggedValue();
             builder->CreateStore(invoke_value, value_slot);
 
             // Unwind dynamic-wind stack before longjmp
@@ -7548,7 +8275,17 @@ private:
         // If so, we need to handle all arguments with polymorphic arithmetic instead of
         // using the fixed-arity function stored in the closure
         // Only do this check if we have arguments (skip for empty arg calls)
-        if (!call_args.empty()) {
+        //
+        // Spread mode skips this fold, and that is a value-preserving skip, not
+        // a dropped case. The fold exists so a 2-ary builtin closure can absorb
+        // MORE than two arguments (`(fold + …)`); with exactly two it computes
+        // polymorphicOp(a, b), which is verbatim the body of the function the
+        // closure points at (createBuiltinArithmeticFunction emits
+        // `builtin_<op>_2arg(a, b) = polymorphicOp(a, b)`), so calling through
+        // the pointer gives the identical value. Those four closures are arity
+        // 2, and a spread arm is only entered when the closure's declared arity
+        // equals the arm, so no other arm can be one of them.
+        if (!spread && !call_args.empty()) {
             Function* builtin_add = createBuiltinArithmeticFunction("+", 2);
             Function* builtin_sub = createBuiltinArithmeticFunction("-", 2);
             Function* builtin_mul = createBuiltinArithmeticFunction("*", 2);
@@ -7787,6 +8524,19 @@ private:
             arg_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_arg_ptr"));
             rest_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_rest_ptr"));
         }
+        // Spread mode builds the rest list with a runtime loop instead of an
+        // unrolled chain, so it needs one car slot, one accumulator and one
+        // index rather than a slot pair per static argument.
+        Value* spread_car_slot = nullptr;
+        Value* spread_rest_slot = nullptr;
+        Value* spread_rest_acc = nullptr;
+        Value* spread_rest_idx = nullptr;
+        if (spread) {
+            spread_car_slot = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_car");
+            spread_rest_slot = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_cdr");
+            spread_rest_acc = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_rest");
+            spread_rest_idx = builder->CreateAlloca(int64_type, nullptr, "var_spread_i");
+        }
 
         // Restore insertion point
         builder->restoreIP(saved_ip);
@@ -7798,8 +8548,63 @@ private:
         // list is built once per fixed-arity arm, then specialize only the
         // final call by capture count.
         const int MAX_VARIADIC_FIXED_LIMIT = 16;
-        const int max_variadic_fixed =
-            std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
+        const int max_variadic_fixed = std::min<int>(MAX_VARIADIC_FIXED_LIMIT,
+            spread ? spread->width : (int)call_args.size());
+
+        /* Spread mode: build the rest list ONCE, with a runtime loop bounded
+         * below by the runtime `fixed_params`, instead of an unrolled cons chain
+         * per fixed-arity arm. Arm f is reached only when fixed_params == f, so
+         * a list consed from slots [fixed_params, count) is exactly the list
+         * that arm's unrolled chain would have produced — same elements, same
+         * order, built back to front the same way. Emitting it once is also what
+         * keeps the arm count from multiplying the cons chains: the unrolled
+         * form costs O(width²) cons sites per call.
+         */
+        Value* spread_rest_list = nullptr;
+        if (spread) {
+            Value* null_rest = packPtrToTaggedValue(
+                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+            builder->CreateStore(null_rest, spread_rest_acc);
+            builder->CreateStore(
+                builder->CreateSub(spread_count, ConstantInt::get(int64_type, 1)),
+                spread_rest_idx);
+
+            BasicBlock* rest_cond = BasicBlock::Create(*context, "var_spread_rest_cond", current_func);
+            BasicBlock* rest_body = BasicBlock::Create(*context, "var_spread_rest_body", current_func);
+            BasicBlock* rest_done = BasicBlock::Create(*context, "var_spread_rest_done", current_func);
+            builder->CreateBr(rest_cond);
+
+            builder->SetInsertPoint(rest_cond);
+            Value* rest_i = builder->CreateLoad(int64_type, spread_rest_idx);
+            // Signed: the index walks down to fixed_params - 1, and count may be 0.
+            builder->CreateCondBr(builder->CreateICmpSGE(rest_i, fixed_params),
+                                  rest_body, rest_done);
+
+            builder->SetInsertPoint(rest_body);
+            Value* rest_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* rest_cons = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {rest_arena});
+            Value* rest_elem = builder->CreateLoad(tagged_value_type,
+                builder->CreateGEP(spread_args_type, spread->args_ptr,
+                    {ConstantInt::get(int64_type, 0), rest_i}));
+            builder->CreateStore(rest_elem, spread_car_slot);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {rest_cons, ConstantInt::get(int1_type, 0), spread_car_slot});
+            builder->CreateStore(builder->CreateLoad(tagged_value_type, spread_rest_acc),
+                                 spread_rest_slot);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {rest_cons, ConstantInt::get(int1_type, 1), spread_rest_slot});
+            builder->CreateStore(
+                packPtrToTaggedValue(builder->CreatePtrToInt(rest_cons, int64_type),
+                                     ESHKOL_VALUE_HEAP_PTR),
+                spread_rest_acc);
+            builder->CreateStore(builder->CreateSub(rest_i, ConstantInt::get(int64_type, 1)),
+                                 spread_rest_idx);
+            builder->CreateBr(rest_cond);
+
+            builder->SetInsertPoint(rest_done);
+            spread_rest_list = builder->CreateLoad(tagged_value_type, spread_rest_acc,
+                                                   "var_spread_rest_list");
+        }
         // Hoist the capture-slot GEPs once (loop-invariant across every
         // fixed-arity arm; each over-provisions the same MAX capture pointers).
         // Recomputing them per arm would be O(fixed · MAX_CAP) GEPs and inflate
@@ -7823,22 +8628,25 @@ private:
             var_fixed_sw->addCase(ConstantInt::get(int64_type, fixed_count), fixed_bb);
             builder->SetInsertPoint(fixed_bb);
 
-            Value* rest_list = packPtrToTaggedValue(
-                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-            for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+            Value* rest_list = spread_rest_list;
+            if (!spread) {
+                rest_list = packPtrToTaggedValue(
+                    ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                    Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
 
-                builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
-                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                    {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
+                    builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
 
-                builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
-                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                    {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
+                    builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
 
-                Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-                rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+                    Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+                    rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+                }
             }
 
             // OVER-PROVISION captures (see the non-variadic switch comment):
@@ -7846,7 +8654,11 @@ private:
             // N. No per-capture switch, so one call per fixed-arity arm.
             std::vector<Value*> full_args;
             for (int i = 0; i < fixed_count; i++) {
-                if ((size_t)i < call_args.size()) {
+                if (spread) {
+                    // Slots at or beyond the runtime count hold tagged null,
+                    // which is the same padding the static path emits below.
+                    full_args.push_back(spread_arg_vals[(size_t)i]);
+                } else if ((size_t)i < call_args.size()) {
                     full_args.push_back(call_args[(size_t)i]);
                 } else {
                     full_args.push_back(packPtrToTaggedValue(
@@ -7895,35 +8707,49 @@ private:
         // preserves the existing partial-application/Y-combinator padding path
         // without emitting the full 16x32 worst-case matrix at every call site.
         const int MAX_CALL_ARGS_LIMIT = 16;
-        const int max_call_args = std::min<int>(
-            MAX_CALL_ARGS_LIMIT,
-            std::max<int>((int)call_args.size(), 4));
-        IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
-        builder->SetInsertPoint(&entry_block, entry_block.begin());
-
-        // Alloca array for padded arguments
+        // Spread mode dispatches over the caller's staging width, so its arms
+        // cover every arity the caller can pass — the static cushion below is
+        // for call sites whose argument count is fixed.
+        const int max_call_args = spread
+            ? spread->width
+            : std::min<int>(MAX_CALL_ARGS_LIMIT,
+                            std::max<int>((int)call_args.size(), 4));
         ArrayType* padded_args_type = ArrayType::get(tagged_value_type, max_call_args);
-        Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
+        Value* padded_args_array = nullptr;
+        if (spread) {
+            // The caller already provided the array, already padded with tagged
+            // null past the live count.
+            padded_args_array = spread->args_ptr;
+        } else {
+            IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
+            builder->SetInsertPoint(&entry_block, entry_block.begin());
 
-        builder->restoreIP(saved_ip_nonvar);
+            // Alloca array for padded arguments
+            padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
 
-        // Store actual call_args into array
-        for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
-            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            builder->CreateStore(call_args[i], slot_ptr);
+            builder->restoreIP(saved_ip_nonvar);
+
+            // Store actual call_args into array
+            for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
+                Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                builder->CreateStore(call_args[i], slot_ptr);
+            }
+
+            // Fill remaining slots with undefined (null) values for arity mismatch handling
+            Value* undef_val = packNullToTaggedValue();
+            for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
+                Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                builder->CreateStore(undef_val, slot_ptr);
+            }
         }
 
-        // Fill remaining slots with undefined (null) values for arity mismatch handling
-        Value* undef_val = packNullToTaggedValue();
-        for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
-            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            builder->CreateStore(undef_val, slot_ptr);
-        }
-
-        // Determine actual arg count to use: max(call_args.size(), fixed_params)
-        Value* call_args_count = ConstantInt::get(int64_type, call_args.size());
+        // Determine actual arg count to use: max(argument count, fixed_params).
+        // Spread mode's argument count is a runtime value; everything downstream
+        // already treats this as one.
+        Value* call_args_count = spread
+            ? spread_count : ConstantInt::get(int64_type, call_args.size());
         Value* use_fixed = builder->CreateICmpUGT(fixed_params, call_args_count);
         Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
             "actual_arg_count");
@@ -7943,11 +8769,17 @@ private:
         // dominates all arm blocks) and let the arms share them — O(MAX_ARGS +
         // MAX_CAP).
         std::vector<Value*> hoisted_arg_vals;
-        hoisted_arg_vals.reserve((size_t)max_call_args);
-        for (int i = 0; i < max_call_args; i++) {
-            Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+        if (spread) {
+            // Already loaded once, before the variadic split, so both dispatches
+            // share them.
+            hoisted_arg_vals = spread_arg_vals;
+        } else {
+            hoisted_arg_vals.reserve((size_t)max_call_args);
+            for (int i = 0; i < max_call_args; i++) {
+                Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+            }
         }
         std::vector<Value*> hoisted_cap_ptrs;
         hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
@@ -8056,22 +8888,53 @@ private:
         Value* direct_func_ptr_i64 = unpackInt64FromTaggedValue(func_result);
         Value* direct_func_ptr = builder->CreateIntToPtr(direct_func_ptr_i64, PointerType::getUnqual(*context));
 
-        std::vector<Type*> direct_param_types(call_args.size(), tagged_value_type);
-        FunctionType* direct_func_type = FunctionType::get(tagged_value_type, direct_param_types, false);
+        // A raw function pointer has no closure metadata to read, so the call
+        // shape is the argument count itself: static here, and in spread mode a
+        // runtime count, which needs the same one-arm-per-count dispatch as the
+        // closure path above.
+        std::vector<std::pair<BasicBlock*, Value*>> direct_results;
+        if (spread) {
+            BasicBlock* direct_default = BasicBlock::Create(*context, "do_direct_default", current_func);
+            SwitchInst* direct_sw = builder->CreateSwitch(spread_count, direct_default,
+                max_call_args + 1);
+            for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
+                BasicBlock* arm = BasicBlock::Create(*context,
+                    "do_direct_args_" + std::to_string(arg_count), current_func);
+                direct_sw->addCase(ConstantInt::get(int64_type, arg_count), arm);
+                builder->SetInsertPoint(arm);
+                std::vector<Value*> direct_args(spread_arg_vals.begin(),
+                                                spread_arg_vals.begin() + arg_count);
+                std::vector<Type*> direct_types((size_t)arg_count, tagged_value_type);
+                Value* r = builder->CreateCall(
+                    FunctionType::get(tagged_value_type, direct_types, false),
+                    direct_func_ptr, direct_args);
+                builder->CreateBr(merge_bb);
+                direct_results.push_back({builder->GetInsertBlock(), r});
+            }
+            builder->SetInsertPoint(direct_default);
+            direct_results.push_back({direct_default, packNullToTaggedValue()});
+            builder->CreateBr(merge_bb);
+        } else {
+            std::vector<Type*> direct_param_types(call_args.size(), tagged_value_type);
+            FunctionType* direct_func_type = FunctionType::get(tagged_value_type, direct_param_types, false);
 
-        Value* direct_result = builder->CreateCall(direct_func_type, direct_func_ptr, call_args);
-        builder->CreateBr(merge_bb);
-        BasicBlock* direct_exit_bb = builder->GetInsertBlock();
+            Value* direct_result = builder->CreateCall(direct_func_type, direct_func_ptr, call_args);
+            builder->CreateBr(merge_bb);
+            direct_results.push_back({builder->GetInsertBlock(), direct_result});
+        }
 
         // MERGE: PHI node to select result from all paths
         builder->SetInsertPoint(merge_bb);
         PHINode* phi = builder->CreatePHI(tagged_value_type,
-                                          results.size() + (parameter_dispatch ? 3 : 2),
+                                          results.size() + direct_results.size()
+                                              + (parameter_dispatch ? 2 : 1),
                                           "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
         }
-        phi->addIncoming(direct_result, direct_exit_bb);
+        for (auto& [bb, val] : direct_results) {
+            phi->addIncoming(val, bb);
+        }
         phi->addIncoming(as_is_result, as_is_exit_bb);
         if (parameter_dispatch) {
             phi->addIncoming(ensureTaggedValue(parameter_result), parameter_exit_bb);
@@ -8080,6 +8943,174 @@ private:
         return phi;
     }
 
+    /* ================= runtime-closure arity spread (AD gradient) =============
+     *
+     * A gradient of a RUNTIME closure has to call that closure with its own
+     * declared number of scalar arguments, and that number is only known at run
+     * time. GRAD_MAX_ARITY is the supported ceiling; above it the call raises a
+     * named error instead of quietly taking the single-vector path (which would
+     * leave the loss's remaining parameters uninitialised — the silent wrong
+     * answer that raising the ceiling from 8 fixed).
+     *
+     * The dispatch is emitted ONCE PER MODULE, out of line, and every gradient
+     * site calls it. It used to be inlined at each site as a switch with one
+     * fully expanded closure call per arity, whose per-arity cost grows with the
+     * arity (n-ary arithmetic fold, unrolled variadic rest-list chain). With the
+     * ceiling at 32 and six gradient sites in the standard library that came to
+     * ~1.03M lines of IR — 2.7x the entire stdlib (585,967 -> 1,561,902 lines,
+     * stdlib.bc 6.65MB -> 19.76MB). Platforms that emit stdlib definitions
+     * `linkonce_odr` discard the unused ones early; Windows/COFF emits them
+     * `weak_any` (see sexprGlobalLinkage), which cannot be discarded, so every
+     * user compile ran opt and llc over all of it: measured LLVM work per
+     * compile went 25.4s -> 117.7s and every GPU/XLA test hit the harness's 120s
+     * compile budget.
+     *
+     * Out of line the arity dispatch happens once, and it is the closure
+     * dispatcher's OWN runtime argument-count switch (ClosureSpreadArgs) rather
+     * than a second, per-arity one layered on top. Raising the ceiling now costs
+     * one more arm in one function instead of 24 fully expanded calls at every
+     * gradient site.
+     */
+    static constexpr int GRAD_MAX_ARITY = 32;
+    /* Sentinel the closure ABI uses for a variadic callable; it legitimately
+     * wants the vectorized single-argument form. */
+    static constexpr uint64_t GRAD_VARIADIC_ARITY = 255;
+
+    Function* getOrCreateGradSpreadHelper() {
+        const char* helper_name = "__eshkol_ad_gradient_spread_call";
+        if (Function* existing = module->getFunction(helper_name)) {
+            return existing;
+        }
+
+        // (closure, whole-point vector, dual-element array, declared arity)
+        FunctionType* helper_type = FunctionType::get(
+            tagged_value_type,
+            {tagged_value_type, tagged_value_type, PointerType::getUnqual(*context), int64_type},
+            false);
+        // Module-local: the only callers are this module's gradient sites, so it
+        // never needs to be a discardable-or-not linkonce/weak definition.
+        Function* helper = Function::Create(helper_type, Function::InternalLinkage,
+                                           helper_name, module.get());
+        Value* closure_arg = helper->getArg(0);
+        Value* vector_arg = helper->getArg(1);
+        Value* elems_arg = helper->getArg(2);
+        Value* arity_arg = helper->getArg(3);
+        closure_arg->setName("closure");
+        vector_arg->setName("point_vector");
+        elems_arg->setName("dual_elems");
+        arity_arg->setName("declared_arity");
+
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", helper);
+        builder->SetInsertPoint(entry);
+
+        ArrayType* args_type = ArrayType::get(tagged_value_type, GRAD_MAX_ARITY);
+        Value* args_array = builder->CreateAlloca(args_type, nullptr, "grad_spread_args");
+        Value* null_tagged = packNullToTaggedValue();
+        for (int i = 0; i < GRAD_MAX_ARITY; i++) {
+            builder->CreateStore(null_tagged, builder->CreateGEP(args_type, args_array,
+                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)}));
+        }
+
+        BasicBlock* over_bb = BasicBlock::Create(*context, "grad_arity_over", helper);
+        BasicBlock* within_bb = BasicBlock::Create(*context, "grad_arity_ok", helper);
+        BasicBlock* vector_bb = BasicBlock::Create(*context, "grad_call_vector", helper);
+        BasicBlock* spread_bb = BasicBlock::Create(*context, "grad_call_spread", helper);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "grad_call_done", helper);
+
+        Value* over_ceiling = builder->CreateAnd(
+            builder->CreateICmpUGT(arity_arg, ConstantInt::get(int64_type, GRAD_MAX_ARITY)),
+            builder->CreateICmpNE(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY)));
+        builder->CreateCondBr(over_ceiling, over_bb, within_bb);
+
+        builder->SetInsertPoint(over_bb);
+        {
+            Function* arity_err_fn = module->getFunction("eshkol_type_error_with_operand");
+            if (!arity_err_fn) {
+                FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false);
+                arity_err_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_type_error_with_operand", module.get());
+                arity_err_fn->setDoesNotReturn();
+            }
+            Value* slot = builder->CreateAlloca(tagged_value_type, nullptr, "grad_arity_err_slot");
+            builder->CreateStore(closure_arg, slot);
+            Value* proc = builder->CreateGlobalString("gradient", "grad_arity_proc");
+            Value* expected = builder->CreateGlobalString(
+                "callable whose argument count is at most "
+                + std::to_string(GRAD_MAX_ARITY)
+                + " (a loss with more coordinates must take its point as one "
+                  "vector argument)",
+                "grad_arity_expected");
+            builder->CreateCall(arity_err_fn, {proc, expected, slot});
+            builder->CreateUnreachable();
+        }
+
+        // Arity 1 is the vectorized single-argument loss; arity 0 (unreadable)
+        // and the variadic sentinel legitimately want that same form.
+        builder->SetInsertPoint(within_bb);
+        Value* wants_vector = builder->CreateOr(
+            builder->CreateICmpULE(arity_arg, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY)));
+        builder->CreateCondBr(wants_vector, vector_bb, spread_bb);
+
+        builder->SetInsertPoint(vector_bb);
+        Value* vector_result = ensureTaggedValue(codegenClosureCall(closure_arg,
+            std::vector<Value*>{vector_arg}, "autodiff"));
+        BasicBlock* vector_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        // Arity 2..GRAD_MAX_ARITY: stage that many dual elements and let the
+        // closure dispatcher spread them (see ClosureSpreadArgs).
+        builder->SetInsertPoint(spread_bb);
+        Value* copy_idx = builder->CreateAlloca(int64_type, nullptr, "grad_spread_i");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), copy_idx);
+        BasicBlock* copy_cond = BasicBlock::Create(*context, "grad_spread_copy_cond", helper);
+        BasicBlock* copy_body = BasicBlock::Create(*context, "grad_spread_copy_body", helper);
+        BasicBlock* copy_done = BasicBlock::Create(*context, "grad_spread_copy_done", helper);
+        builder->CreateBr(copy_cond);
+
+        builder->SetInsertPoint(copy_cond);
+        Value* ci = builder->CreateLoad(int64_type, copy_idx);
+        builder->CreateCondBr(builder->CreateICmpULT(ci, arity_arg), copy_body, copy_done);
+
+        builder->SetInsertPoint(copy_body);
+        // Reads exactly the elements the inlined per-arity cases read: the
+        // dual vector's slots [0, arity).
+        Value* src = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, elems_arg, ci));
+        builder->CreateStore(src, builder->CreateGEP(args_type, args_array,
+            {ConstantInt::get(int64_type, 0), ci}));
+        builder->CreateStore(builder->CreateAdd(ci, ConstantInt::get(int64_type, 1)), copy_idx);
+        builder->CreateBr(copy_cond);
+
+        builder->SetInsertPoint(copy_done);
+        ClosureSpreadArgs spread_args;
+        spread_args.args_ptr = args_array;
+        spread_args.count = arity_arg;
+        spread_args.width = GRAD_MAX_ARITY;
+        Value* spread_result = ensureTaggedValue(codegenClosureCall(closure_arg,
+            std::vector<Value*>{}, "autodiff", true, &spread_args));
+        BasicBlock* spread_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "grad_call_result");
+        result->addIncoming(vector_result, vector_exit);
+        result->addIncoming(spread_result, spread_exit);
+        builder->CreateRet(result);
+
+        if (saved.isSet()) builder->restoreIP(saved);
+        return helper;
+    }
+
+    Value* codegenGradientSpreadCall(Value* closure_val, Value* point_vector,
+                                     Value* dual_elems, Value* declared_arity) {
+        Function* helper = getOrCreateGradSpreadHelper();
+        return builder->CreateCall(helper, {ensureTaggedValue(closure_val),
+                                            ensureTaggedValue(point_vector),
+                                            dual_elems, declared_arity});
+    }
 
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* getTaggedValueType(Value* tagged_val) {
@@ -8557,6 +9588,22 @@ private:
     // CRITICAL: This prevents ICmp type mismatch assertions
     Value* safeExtractInt64(Value* val) {
         return tagged_->safeExtractInt64(val);
+    }
+
+    /**
+     * @brief R7RS 6.2.6 `floor-quotient`: floor(a/b), for any numeric
+     *        representation.
+     *
+     * Derived from the floored remainder rather than re-implemented:
+     * `(a - (modulo a b)) / b`. The numerator is an exact multiple of `b` by
+     * construction, so exact operands stay exact (the division never produces a
+     * rational) and fixnum / bignum / flonum operands all flow through the
+     * polymorphic primitives. Also the sole place `floor/` gets its quotient,
+     * so the two can never disagree.
+     */
+    Value* emitFloorQuotient(Value* a, Value* b) {
+        Value* m = arith_->mod(a, b);
+        return arith_->div(arith_->sub(a, m), b);
     }
 
     // Helper: Extract car element from cons cell as tagged value (type-safe approach)
@@ -9650,6 +10697,16 @@ private:
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
 
+        // ESH-0364: adopt this form's originating file as the source context, so
+        // `line`/`column` are reported against the file they were measured in.
+        // Placed here rather than in the callers because generateLLVMIR walks the
+        // top-level array from several loops (externs, function defines, global
+        // defines) and createMainWrapper/createLibraryInitFunction walk it again
+        // — one scope at the single entry point covers every one of them, and
+        // any future walk, for free. Only top-level forms carry provenance;
+        // inner nodes are 0 and correctly inherit the enclosing form's file.
+        ScopedAstProvenance provenance(ast->source_file_id);
+
         // Update source location for error context
         if (ast->line > 0) {
             current_source_line = ast->line;
@@ -10135,6 +11192,28 @@ private:
             }
         }
 
+        // ESCAPED NAMED-LET LOOP PROCEDURE used as a VALUE.  This must precede
+        // the generic function_table path below: a loop function's signature
+        // carries one capture POINTER per captured free variable, so handing
+        // back the bare Function* (or wrapping it in a capture-less closure)
+        // leaves those parameters to be filled with whatever the closure
+        // dispatcher happens to pass — dereferenced as a capture cell on the
+        // first read of a captured variable, which is a wild-pointer SIGSEGV
+        // rather than a wrong answer.  Build a genuine closure over the shared
+        // capture cells instead, so a leaked loop procedure keeps seeing the
+        // same storage the loop itself wrote through (the cells are arena-moved
+        // by codegenNamedLet when the body set!s them, so they outlive the
+        // enclosing frame).
+        {
+            auto escape_it = named_let_escapes.find(var_name);
+            if (escape_it != named_let_escapes.end() && escape_it->second.loop_func) {
+                if (Value* escaped =
+                        codegenNamedLetEscapeClosure(var_name, escape_it->second)) {
+                    return escaped;
+                }
+            }
+        }
+
         // Check function_table for function names being used as values (first-class functions)
         // NOTE: Math builtins are handled above to avoid returning raw C functions
         auto func_it = function_table.find(var_name);
@@ -10147,31 +11226,9 @@ private:
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
                 uint64_t num_params = arity_it->second;
-                Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-                // Pack closure info: no captures, arity in bits 16-31
-                // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
-                uint64_t packed_info = 0;  // No captures (bits 0-15 = 0)
-                packed_info |= (num_params & 0xFFFF) << 16;  // Arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
-
-                // No S-expression for now
-                Value* sexpr_ptr = intPtrConst(0);
-
-                // Return type unknown for general user functions
-                // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+                return emitFunctionAsCallableValue(func, num_params);
             }
 
             // Fallback: return raw function pointer (for C functions, builtins, etc.)
@@ -12476,6 +13533,183 @@ private:
         return builder->CreateLoad(tagged_value_type, result_ptr);
     }
 
+    // ESH-0362 (JIT/REPL half) ────────────────────────────────────────────────
+    //
+    // Authoritative parameter count of a REPL-registered callee, or -1 when it
+    // cannot be established and no arity conclusion may be drawn.
+    //
+    // The two REPL slot-call paths (a `__repl_fwd_<name>` indirect call through
+    // a JIT-resolved function pointer) SYNTHESISE the callee's FunctionType from
+    // the CALL's argument count. An arity mismatch there is therefore not even a
+    // mismatch — it is a silent ABI disagreement: the callee reads its missing
+    // parameter out of whatever the register happened to hold. Under `-r` this
+    // is the path a `(require …)`d module's functions are called through, so
+    // `(process-spawn-argv argv)` against the two-parameter definition handed
+    // the C spawn shim an uninitialised `cwd`, with no diagnostic at all. (The
+    // AOT/direct-call arity check does report it, which is why the same file
+    // compiled with `-o` names the error and this one did not.)
+    //
+    // The registry's arity is F.arg_size() at registration time, i.e. the ABI
+    // parameter count — it counts capture slots and the variadic rest slot too.
+    // So it is only usable as a user-visible arity when the callee has neither,
+    // and every other case returns -1 rather than risk rejecting a legal call.
+    int64_t replEnforceableArity(const std::string& func_name) {
+        if (func_name.empty()) return -1;
+        std::lock_guard<std::mutex> lock(g_repl_mutex);
+        auto arity_it = g_repl_function_arities.find(func_name);
+        if (arity_it == g_repl_function_arities.end()) {
+            return -1;  // genuinely unknown / not yet defined: a real forward ref
+        }
+        auto var_it = g_repl_variadic_functions.find(func_name);
+        if (var_it != g_repl_variadic_functions.end() && var_it->second.second) {
+            return -1;  // rest slot: any count at or above `fixed` is legal
+        }
+        if (g_repl_lambda_captures.count(func_name)) {
+            return -1;  // closure: signature carries capture slots
+        }
+        auto name_it = g_repl_lambda_names.find(func_name);
+        if (name_it != g_repl_lambda_names.end() &&
+            g_repl_lambda_captures.count(name_it->second)) {
+            return -1;
+        }
+        return (int64_t)arity_it->second;
+    }
+
+    // Report a REPL slot-call arity mismatch with the same wording the
+    // AOT/direct-call path uses, and fail the compilation. Returns true when a
+    // mismatch was found (caller must abort codegen of the call).
+    bool replSlotArityMismatch(const std::string& func_name, uint64_t num_call_args) {
+        int64_t expected = replEnforceableArity(func_name);
+        if (expected < 0 || (uint64_t)expected == num_call_args) {
+            return false;
+        }
+        eshkol_error_at(
+            g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+            current_source_line, current_source_column,
+            g_source_text.empty() ? nullptr : g_source_text.c_str(),
+            "Arity mismatch: %s expects %llu arguments but got %llu",
+            func_name.c_str(), (unsigned long long)expected,
+            (unsigned long long)num_call_args);
+        markFatalCodegenError();
+        return true;
+    }
+
+    // FFI POINTER-ARG GUARD (ESH-0363) ────────────────────────────────────────
+    //
+    // An `extern` parameter declared `ptr` / `string` / `char*` is passed to C
+    // by unpacking the tagged value's 64-bit payload and IntToPtr'ing it. That
+    // conversion is unconditional, so a NUMBER lands in the callee as an
+    // address: `(run-argv-capture argv 5000)` — 5000 mistaken for the positional
+    // `cwd` string — reached execvp's C shim as `const char* 0x1388` and died
+    // with SIGSEGV at address 0x1388. No diagnostic, no exit code, just a fault
+    // at a numerically suspicious address, and only because the value happened
+    // to be small; a large fixnum can hit mapped memory and corrupt instead.
+    //
+    // This emits a branch on the argument's tagged TYPE BYTE that rejects the
+    // values which provably cannot be an address, and raises a catchable type
+    // error naming the extern, the argument position, and the declared type.
+    //
+    // The predicate is a DENYLIST of immediate tags, deliberately not an
+    // allowlist of pointer tags. Eshkol's type byte is a crowded encoding: the
+    // multimedia tags (HANDLE/BUFFER/STREAM/EVENT = 16..19), the deprecated
+    // pointer aliases (CONS_PTR/STRING_PTR/… = 32..40) and the port flag bits
+    // OR'd onto HEAP_PTR all denote real addresses, and some codegen paths fold
+    // the exact/inexact flag into the type byte (see i128_runtime.cpp's
+    // TYPE_FLAG_MASK note). An allowlist would have to enumerate all of those
+    // correctly or it would reject a legitimate pointer — a guard that breaks
+    // working programs. Matching only the seven unflagged immediate tags means
+    // the worst case is a MISSED catch on an exotic encoding, never a false
+    // rejection.
+    //
+    // `#f` is exempt: it is how Eshkol spells a NULL pointer argument at this
+    // boundary (`(process-spawn-raw command cwd #f 0)` passes a NULL envp,
+    // `(process-read-all-stdout-raw proc n #f)` a NULL out-param), so BOOL is
+    // rejected only when its payload is non-zero, i.e. `#t`.
+    void emitFfiPointerArgGuard(Value* tagged_arg,
+                                const std::string& extern_name,
+                                const std::string& real_symbol,
+                                uint64_t param_index,
+                                const std::string& declared_type) {
+        if (!ffiPointerArgGuardEnabled() || !tagged_arg) return;
+        if (tagged_arg->getType() != tagged_value_type) return;
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        if (!current_bb || current_bb->getTerminator()) return;
+        Function* current_fn = current_bb->getParent();
+        if (!current_fn) return;
+
+        Value* type_byte = getTaggedValueType(tagged_arg);
+        Value* payload = unpackInt64FromTaggedValue(tagged_arg);
+
+        // tags 1..7: INT64, DOUBLE, BOOL, CHAR, SYMBOL, DUAL_NUMBER, COMPLEX
+        Value* immediate_span = builder->CreateICmpULE(
+            builder->CreateSub(type_byte, ConstantInt::get(int8_type, 1)),
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX - 1));
+        Value* is_logic_var = builder->CreateICmpEQ(
+            type_byte, ConstantInt::get(int8_type, ESHKOL_VALUE_LOGIC_VAR));
+        Value* rejected = builder->CreateOr(immediate_span, is_logic_var);
+
+        // …except #f, the canonical spelling of a NULL pointer argument.
+        Value* is_false = builder->CreateAnd(
+            builder->CreateICmpEQ(type_byte,
+                                  ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL)),
+            builder->CreateICmpEQ(payload, ConstantInt::get(int64_type, 0)));
+        rejected = builder->CreateAnd(rejected, builder->CreateNot(is_false));
+
+        BasicBlock* ok_bb = BasicBlock::Create(*context, "ffi_ptr_arg_ok", current_fn);
+        BasicBlock* err_bb = BasicBlock::Create(*context, "ffi_ptr_arg_type_error", current_fn);
+        builder->CreateCondBr(rejected, err_bb, ok_bb);
+
+        builder->SetInsertPoint(err_bb);
+
+        // Source span, so the raised error carries "file:line:col:" like every
+        // other v1.3 runtime type error.
+        if (current_source_line > 0) {
+            Function* set_loc_fn = module->getFunction("eshkol_set_error_location");
+            if (!set_loc_fn) {
+                FunctionType* set_loc_ft = FunctionType::get(
+                    void_type,
+                    {PointerType::getUnqual(*context), int32_type, int32_type},
+                    false);
+                set_loc_fn = Function::Create(set_loc_ft, Function::ExternalLinkage,
+                                              "eshkol_set_error_location", module.get());
+            }
+            Value* file_val = g_source_filepath.empty()
+                ? static_cast<Value*>(ConstantPointerNull::get(PointerType::getUnqual(*context)))
+                : static_cast<Value*>(builder->CreateGlobalStringPtr(g_source_filepath,
+                                                                     "ffi_ptr_arg_file"));
+            builder->CreateCall(set_loc_fn, {
+                file_val,
+                ConstantInt::get(int32_type, current_source_line),
+                ConstantInt::get(int32_type, current_source_column)});
+        }
+
+        Function* err_fn = module->getFunction("eshkol_ffi_pointer_arg_type_error");
+        if (!err_fn) {
+            FunctionType* err_ft = FunctionType::get(
+                void_type,
+                {PointerType::getUnqual(*context),   // extern name (Eshkol-visible)
+                 PointerType::getUnqual(*context),   // real C symbol
+                 int32_type,                          // 1-based argument position
+                 PointerType::getUnqual(*context),   // declared type keyword
+                 int8_type,                           // observed tagged type byte
+                 int64_type},                         // observed payload bits
+                false);
+            err_fn = Function::Create(err_ft, Function::ExternalLinkage,
+                                      "eshkol_ffi_pointer_arg_type_error", module.get());
+            err_fn->setDoesNotReturn();
+        }
+        builder->CreateCall(err_fn, {
+            builder->CreateGlobalStringPtr(extern_name, "ffi_ptr_arg_fn"),
+            builder->CreateGlobalStringPtr(real_symbol, "ffi_ptr_arg_sym"),
+            ConstantInt::get(int32_type, (uint32_t)(param_index + 1)),
+            builder->CreateGlobalStringPtr(declared_type, "ffi_ptr_arg_decl"),
+            type_byte,
+            payload});
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(ok_bb);
+    }
+
     /**
      * @brief Hoist a tagged-value alloca (optionally an array) to the current
      *        function's entry block.
@@ -12657,9 +13891,47 @@ private:
         builder->SetInsertPoint(ok_bb);
     }
 
+    // Declared type keyword of parameter `param_index` of an `extern`, or an
+    // empty string when `callee_name` is not an extern (or the position is
+    // beyond its declared parameters — a varargs tail). Tries the Eshkol name
+    // first, then the real C symbol, because call sites reach externs by either.
+    std::string externDeclaredParamType(const std::string& eshkol_name,
+                                        const std::string& real_symbol,
+                                        uint64_t param_index) const {
+        for (const std::string& key : {eshkol_name, real_symbol}) {
+            if (key.empty()) continue;
+            auto it = extern_param_type_names_.find(key);
+            if (it == extern_param_type_names_.end()) continue;
+            if (param_index >= it->second.size()) continue;
+            return it->second[param_index];
+        }
+        return std::string();
+    }
+
+    static bool externTypeIsPointerLike(const std::string& declared) {
+        return declared == "ptr" || declared == "string" || declared == "char*";
+    }
+
     Value* codegenCall(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             return nullptr;
+        }
+
+        // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
+        // runtime, so a call through it must behave exactly like a call to the
+        // wrapped expression. Unwrap and re-dispatch rather than teaching each
+        // head form about ascriptions: every case below (variable head, inline
+        // lambda, nested call, operation-result) then works through a cast.
+        // Without this, `((the procedure f) 7)` reached the "Call expression
+        // requires variable or inline lambda" bail-out, which made the
+        // `procedure`/`closure`/`(-> a b)` ascriptions unusable in the one
+        // position where ascribing a callable is the point.
+        if (op->call_op.func->type == ESHKOL_OP &&
+            op->call_op.func->operation.op == ESHKOL_THE_OP &&
+            op->call_op.func->operation.the_op.expr) {
+            eshkol_operations_t unwrapped = *op;
+            unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
+            return codegenCall(&unwrapped);
         }
 
         // ((lambda (x) body) arg) — inline lambda head
@@ -12999,57 +14271,39 @@ private:
             // Return as MULTI_VALUE heap ptr
             return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
-        // R7RS floor-quotient: floor(a/b), handling negative divisors correctly
+        // R7RS 6.2.6 floor-quotient: floor(n1/n2).
+        //
+        // This family used to be int64-ONLY: each of floor-quotient /
+        // floor-remainder / floor/ extracted both operands with
+        // safeExtractInt64 and did its own SDiv/SRem. That silently disagreed
+        // with the R7RS synonyms it is *defined* to equal — R7RS 6.2.6 states
+        // that `modulo` IS `floor-remainder` — because `modulo` dispatches on
+        // bignum and flonum representations and these did not:
+        //   (floor-quotient  (expt 2 100) 3)  gave 1745178066
+        //   (floor-remainder 7.0 2.0)         gave 7881299347898368
+        // Both are now expressed with the polymorphic tagged-value primitives,
+        // so exact-integer, bignum and flonum operands all behave, and there is
+        // exactly ONE floored-remainder implementation in the compiler.
+        //
+        // floor-quotient is derived rather than re-implemented:
+        //     (a - (modulo a b)) / b
+        // The numerator is an exact multiple of b by construction, so the
+        // exact-division path returns an integer (never a rational), and the
+        // formula is representation-agnostic. A zero divisor now raises (R7RS:
+        // "it is an error if n2 is zero") instead of being sanitized to 1 and
+        // quietly answering the dividend.
         if (func_name == "floor-quotient") {
             if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            // floor division: q = a/b, adjust if signs differ and remainder != 0
-            Value* q = builder->CreateSDiv(a, b);
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adjusted = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
-            Value* result = builder->CreateSelect(need_adjust, adjusted, q);
-            return packInt64ToTaggedValue(result);
+            Value* a = typedValueToTaggedValue(a_tv);
+            Value* b = typedValueToTaggedValue(b_tv);
+            return emitFloorQuotient(a, b);
         }
-        // R7RS floor-remainder: a - b * floor-quotient(a, b)
-        if (func_name == "floor-remainder") {
-            if (op->call_op.num_vars != 2) { eshkol_error("floor-remainder requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
-            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            // floor remainder: r = a%b, adjust if signs differ and r != 0
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adjusted = builder->CreateAdd(r, b);
-            Value* result = builder->CreateSelect(need_adjust, adjusted, r);
-            return packInt64ToTaggedValue(result);
-        }
+        // R7RS 6.2.6: (floor-remainder n1 n2) IS (modulo n1 n2). One
+        // implementation, no second copy to drift out of sync.
+        if (func_name == "floor-remainder") return codegenModulo(op);
         // R7RS floor/: returns (values floor-quotient floor-remainder)
         if (func_name == "floor/") {
             if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
@@ -13057,27 +14311,10 @@ private:
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            Value* q = builder->CreateSDiv(a, b);
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adj_q = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
-            Value* adj_r = builder->CreateAdd(r, b);
-            Value* final_q = builder->CreateSelect(need_adjust, adj_q, q);
-            Value* final_r = builder->CreateSelect(need_adjust, adj_r, r);
-            Value* tq = packInt64ToTaggedValue(final_q);
-            Value* tr = packInt64ToTaggedValue(final_r);
+            Value* a = typedValueToTaggedValue(a_tv);
+            Value* b = typedValueToTaggedValue(b_tv);
+            Value* tr = arith_->mod(a, b);
+            Value* tq = arith_->div(arith_->sub(a, tr), b);
             // Pack as multi-value
             Value* arena_ptr = getArenaPtr();
             llvm::FunctionCallee alloc_mv = module->getOrInsertFunction("arena_allocate_multi_value",
@@ -14959,6 +16196,13 @@ private:
         if (func_name == "semver-compare") return system_->semverCompare(op);
         if (func_name == "semver-satisfies?") return system_->semverSatisfies(op);
         if (func_name == "make-pipe") return system_->makePipe(op);
+        /* ESH-0011 portable event loop. */
+        if (func_name == "make-event-loop") return system_->makeEventLoop(op);
+        if (func_name == "event-loop-add-fd!") return system_->eventLoopAddFd(op);
+        if (func_name == "event-loop-remove-fd!") return system_->eventLoopRemoveFd(op);
+        if (func_name == "event-loop-poll") return system_->eventLoopPoll(op);
+        if (func_name == "event-loop-close") return system_->eventLoopClose(op);
+        if (func_name == "event-loop-backend") return system_->eventLoopBackend(op);
         if (func_name == "fd-write") return system_->fdWrite(op);
         if (func_name == "make-line-reader") return system_->makeLineReader(op);
         if (func_name == "line-reader-poll") return system_->lineReaderPoll(op);
@@ -17271,6 +18515,12 @@ private:
             }
             if (is_repl_user_func && !is_repl_user_var) {
                 size_t num_call_args = op->call_op.num_vars;
+                // ESH-0362: the slot type below is built from num_call_args, so a
+                // wrong count silently becomes an ABI mismatch instead of an
+                // error. Check the registered arity first.
+                if (replSlotArityMismatch(func_name, num_call_args)) {
+                    return nullptr;
+                }
                 size_t slot_arity = repl_is_variadic ? (repl_fixed_params + 1) : num_call_args;
 
                 // Get-or-create the external __repl_fwd_<func_name> slot in this module.
@@ -17903,6 +19153,15 @@ private:
                     }
 
                     size_t arity = op->call_op.num_vars;
+                    // ESH-0362: same synthesised-signature hazard as the
+                    // is_repl_user_func slot path above — a wrong argument count
+                    // here produces an indirect call whose shape disagrees with
+                    // the callee, not a diagnostic. Reject it when the callee's
+                    // arity is actually known (a true forward reference is not,
+                    // and stays permitted).
+                    if (replSlotArityMismatch(func_name, arity)) {
+                        return nullptr;
+                    }
                     size_t fn_param_count = fwd_is_variadic ? (fwd_fixed_params + 1) : arity;
 
                     // Create function type for the indirect call
@@ -18358,20 +19617,29 @@ private:
                 }
             }
 
-            // Make the call (no captures) — verify arity first
+            // Make the call (no captures) — verify arity first.
+            //
+            // ESH-0362: this used to WARN and then pad the shortfall with null
+            // tagged values (or truncate the excess) and emit the call anyway.
+            // That is the fail-open arity class: the caller keeps running with
+            // a null where a real argument belonged, so the first thing that
+            // dereferences it faults far from the actual mistake (a null
+            // process handle reaching a C shim → SIGSEGV at 0x0). An arity
+            // mismatch is a program error, not a recoverable condition: report
+            // it and fail the compilation. Found during FFI-boundary hardening.
             {
                 FunctionType* ft = callee->getFunctionType();
                 size_t expected = ft->getNumParams();
                 size_t actual = call_args.size();
                 if (actual != expected && !ft->isVarArg()) {
-                    eshkol_warn_at(
+                    eshkol_error_at(
                         g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                         current_source_line, current_source_column,
                         g_source_text.empty() ? nullptr : g_source_text.c_str(),
                         "Arity mismatch in no-capture call to %s: expected %zu, got %zu",
                         callee->getName().str().c_str(), expected, actual);
-                    while (call_args.size() < expected) call_args.push_back(packNullToTaggedValue());
-                    if (call_args.size() > expected) call_args.resize(expected);
+                    markFatalCodegenError();
+                    return nullptr;
                 }
             }
             if (builder->GetInsertBlock()->getTerminator()) {
@@ -18456,6 +19724,21 @@ private:
                 else if (actual_type == tagged_value_type && expected_type != tagged_value_type) {
                     Value* original_tagged = arg;
                     if (expected_type->isPointerTy()) {
+                        // ESH-0363: validate BEFORE the IntToPtr. Only externs
+                        // are guarded — the declared keyword lookup is what
+                        // distinguishes an FFI `ptr`/`string`/`char*` parameter
+                        // from an internal pointer parameter (closure env,
+                        // named-let capture slot), which the LLVM type alone
+                        // cannot.
+                        std::string declared = externDeclaredParamType(
+                            func_name, callee->getName().str(), i);
+                        if (externTypeIsPointerLike(declared)) {
+                            emitFfiPointerArgGuard(original_tagged, func_name,
+                                                   callee->getName().str(), i, declared);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
+                        }
                         Value* data_i64 = unpackInt64FromTaggedValue(original_tagged);
                         arg = builder->CreateIntToPtr(data_i64, expected_type);
                     } else if (expected_type->isDoubleTy()) {
@@ -18504,7 +19787,53 @@ private:
                 }
                 // Perform type conversion if necessary
                 else if (actual_type != expected_type) {
-                    if (actual_type->isIntegerTy() && expected_type->isIntegerTy()) {
+                    // ESH-0363, static half. A literal number reaches this
+                    // branch as a RAW i64/double rather than a tagged value, so
+                    // the runtime guard above never sees it. Previously nothing
+                    // here handled int→pointer and the mistake surfaced as
+                    //   LLVM module verification failed: Call parameter type does
+                    //   not match function signature! i64 5000 ptr
+                    // — fail-closed, but a compiler-internals message that says
+                    // nothing about the user's `(c-getenv 5000)`. When the
+                    // parameter belongs to an `extern` and was declared
+                    // pointer-like, the mismatch is statically decidable, so
+                    // report it as a proper diagnostic and fail the compilation.
+                    // `0` is exempt: it is a legitimate spelling of NULL.
+                    bool ffi_null_literal_converted = false;
+                    if (expected_type->isPointerTy() && !actual_type->isPointerTy()) {
+                        std::string declared = externDeclaredParamType(
+                            func_name, callee->getName().str(), i);
+                        auto* const_int = dyn_cast<ConstantInt>(arg);
+                        const bool is_null_literal = const_int && const_int->isZero();
+                        if (externTypeIsPointerLike(declared) && !is_null_literal) {
+                            std::string got = "a number";
+                            if (const_int) {
+                                got = "the integer " +
+                                      std::to_string(const_int->getSExtValue());
+                            } else if (auto* const_fp = dyn_cast<ConstantFP>(arg)) {
+                                got = "the number " +
+                                      std::to_string(
+                                          const_fp->getValueAPF().convertToDouble());
+                            }
+                            eshkol_error_at(
+                                g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                                current_source_line, current_source_column,
+                                g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                                "FFI type error in %s: argument %llu is declared `%s` "
+                                "and requires a string or pointer handle, but got %s",
+                                func_name.c_str(), (unsigned long long)(i + 1),
+                                declared.c_str(), got.c_str());
+                            markFatalCodegenError();
+                            return nullptr;
+                        }
+                        if (is_null_literal) {
+                            arg = builder->CreateIntToPtr(arg, expected_type);
+                            ffi_null_literal_converted = true;
+                        }
+                    }
+                    if (ffi_null_literal_converted) {
+                        // already the right type; skip the numeric conversions
+                    } else if (actual_type->isIntegerTy() && expected_type->isIntegerTy()) {
                         // Integer to integer conversion
                         if (actual_type->getIntegerBitWidth() > expected_type->getIntegerBitWidth()) {
                             arg = builder->CreateTrunc(arg, expected_type);
@@ -18562,9 +19891,31 @@ private:
                     }
                 }
                 args.push_back(arg);
+            } else {
+                // ESH-0362: too many arguments. This `else` did not exist — the
+                // surplus argument was simply never pushed, so the call was
+                // emitted with the callee's parameter count and the extra
+                // arguments VANISHED. `(f a b c)` against a two-parameter `f`
+                // ran as `(f a b)` and exited 0; the only trace was a gradual
+                // "Type warning: function 'f' expects 2 arguments, got 3" from
+                // the HoTT checker, which by design never fails the build. The
+                // arity check further down could not catch it either, because
+                // dropping the surplus here made args.size() match exactly.
+                // Silently discarding an argument the programmer wrote is the
+                // same fail-open class as padding a missing one with null.
+                // Found during FFI-boundary hardening.
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s expects %u arguments but got %llu",
+                    func_name.c_str(), func_type->getNumParams(),
+                    (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                return nullptr;
             }
         }
-        
+
         // Add captured arguments for closure calls
         if (is_closure_call) {
             // ARITY FIX: Use actual capture count from nested_function_captures, not the difference
@@ -18591,6 +19942,20 @@ private:
             size_t expected_params = func_type->getNumParams() - actual_captures;
 
             // Check for arity mismatch (allow variadic: caller can pass fewer args)
+            //
+            // ESH-0362: both branches diagnosed the mismatch and returned
+            // nullptr WITHOUT marking the codegen fatal. A nullptr from
+            // codegenAST() is indistinguishable from "this form produced no
+            // value", so the enclosing (define …) simply bound the name to a
+            // null tagged value and compilation continued — the program ran
+            // with a POISONED HANDLE. Concretely, `(define h (f a))` against a
+            // two-parameter `f` printed the named diagnostic, bound `h` to
+            // null, and the next `(g h)` handed NULL to a C shim → SIGSEGV at
+            // 0x0, far from the real mistake, with a zero exit status from the
+            // compile step. markFatalCodegenError() makes generateLLVMIR()
+            // return no module, which the AOT driver and the JIT batch path
+            // both already turn into a nonzero exit. The diagnostic text is
+            // unchanged — it is the named contract consumers key on.
             bool is_var = variadic_function_info.count(func_name) > 0 &&
                           variadic_function_info[func_name].second;
             size_t min_params = is_var ? variadic_function_info[func_name].first : expected_params;
@@ -18601,6 +19966,7 @@ private:
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %zu arguments but got %llu",
                     func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
                 return nullptr;
             }
             if (is_var && op->call_op.num_vars < min_params) {
@@ -18610,6 +19976,7 @@ private:
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s requires at least %zu arguments but got %llu",
                     func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
                 return nullptr;
             }
 
@@ -18958,20 +20325,28 @@ private:
             }
         }
 
-        // Verify arity before creating the call
+        // Verify arity before creating the call.
+        //
+        // ESH-0362: same fail-open arity class as the no-capture variadic site
+        // above. This branch is where "too many arguments" landed: the excess
+        // was silently RESIZED AWAY and the call emitted, so `(f a b c)` against
+        // a two-parameter `f` dropped `c` with only a warning and ran. Padding
+        // the other direction injected nulls into positions the callee will
+        // dereference. Both are program errors; fail the compilation instead.
+        // Found during FFI-boundary hardening.
         {
             FunctionType* ft = callee->getFunctionType();
             size_t expected = ft->getNumParams();
             size_t actual = args.size();
             if (actual != expected && !ft->isVarArg()) {
-                eshkol_warn_at(
+                eshkol_error_at(
                     g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch in general call to %s: expected %zu, got %zu",
                     callee->getName().str().c_str(), expected, actual);
-                while (args.size() < expected) args.push_back(packNullToTaggedValue());
-                if (args.size() > expected) args.resize(expected);
+                markFatalCodegenError();
+                return nullptr;
             }
         }
         if (builder->GetInsertBlock()->getTerminator()) {
@@ -20261,17 +21636,18 @@ private:
         // Normal path: continue with the original codegen below.
         builder->SetInsertPoint(normal_mod_bb);
 
-        // Unpack integers
-        Value* int_val1 = unpackInt64FromTaggedValue(arg1);
-        Value* int_val2 = unpackInt64FromTaggedValue(arg2);
         Value* zero = ConstantInt::get(int64_type, 0);
-
-        // Check for division by zero
-        Value* is_zero = builder->CreateICmpEQ(int_val2, zero, "mod_zero_check");
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* zero_bb = BasicBlock::Create(*context, "mod_zero", func);
         BasicBlock* safe_bb = BasicBlock::Create(*context, "mod_safe", func);
-        builder->CreateCondBr(is_zero, zero_bb, safe_bb);
+        // The divide-by-zero test is per-representation and is now emitted on
+        // the int64 and flonum paths individually: a DOUBLE tagged value's
+        // raw int64 storage field is its BIT PATTERN, not its numeric value,
+        // so a single shared integer comparison cannot serve both (it also
+        // sent every flonum operand into the int64 SRem path, which is what
+        // made (modulo 5.5 2.0) return garbage). Enter the dispatch here and
+        // let each representation raise for itself.
+        builder->CreateBr(safe_bb);
 
         // Division by zero path - raise exception
         builder->SetInsertPoint(zero_bb);
@@ -20313,10 +21689,12 @@ private:
         builder->SetInsertPoint(safe_bb);
 
         Value* any_bignum = arith_->emitIsBignumCheck(arg1, arg2);
-        BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum", func);
-        BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",    func);
-        BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",  func);
-        builder->CreateCondBr(any_bignum, bn_bb, int_bb);
+        BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum",   func);
+        BasicBlock* chk_bb = BasicBlock::Create(*context, "mod_check_dbl", func);
+        BasicBlock* dbl_bb = BasicBlock::Create(*context, "mod_double",   func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",      func);
+        BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",    func);
+        builder->CreateCondBr(any_bignum, bn_bb, chk_bb);
 
         // Bignum path: eshkol_bignum_binary_tagged op=4 → mod
         builder->SetInsertPoint(bn_bb);
@@ -20324,8 +21702,73 @@ private:
         BasicBlock* bn_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 
+        // FLONUM DISPATCH: an inexact operand makes the result inexact (R7RS
+        // exactness contagion), so `modulo` on a flonum must be the FLOORED
+        // remainder computed in double precision. Previously there was NO
+        // flonum path at all: both operands went through
+        // unpackInt64FromTaggedValue, so (modulo 5.5 2.0) took the SRem of two
+        // IEEE-754 bit patterns and returned a huge meaningless integer.
+        // R7RS 6.2.6 defines modulo/floor-remainder on integers, and an
+        // integral flonum IS an integer ((integer? 3.0) is #t), so this path
+        // is required for conformance, not just for the non-integral case.
+        builder->SetInsertPoint(chk_bb);
+        Value* mod_l_is_dbl = builder->CreateICmpEQ(arg1_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* mod_r_is_dbl = builder->CreateICmpEQ(arg2_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* mod_any_dbl = builder->CreateOr(mod_l_is_dbl, mod_r_is_dbl, "mod_any_double");
+        builder->CreateCondBr(mod_any_dbl, dbl_bb, int_bb);
+
+        // Flonum path — floored remainder: frem is C's fmod (TRUNCATED, sign
+        // of the dividend); fold it into the divisor's sign so the result
+        // matches R7RS `modulo` / `floor-remainder`.
+        builder->SetInsertPoint(dbl_bb);
+        Value* mod_a_dbl = arith_->extractAsDouble(arg1);
+        Value* mod_b_dbl = arith_->extractAsDouble(arg2);
+        Value* dzero = ConstantFP::get(double_type, 0.0);
+        // R7RS 6.2.6: it is an error if the divisor is zero. Raise, exactly as
+        // the int64 path does (and as the bytecode VM does), rather than
+        // quietly answering +nan.0.
+        BasicBlock* dbl_safe_bb = BasicBlock::Create(*context, "mod_double_safe", func);
+        builder->CreateCondBr(builder->CreateFCmpOEQ(mod_b_dbl, dzero, "mod_dbl_zero_check"),
+                              zero_bb, dbl_safe_bb);
+        builder->SetInsertPoint(dbl_safe_bb);
+        Value* dbl_rem = builder->CreateFRem(mod_a_dbl, mod_b_dbl, "mod_fmod");
+        Value* dbl_rem_neg = builder->CreateFCmpOLT(dbl_rem, dzero, "mod_dbl_rem_neg");
+        Value* dbl_div_neg = builder->CreateFCmpOLT(mod_b_dbl, dzero, "mod_dbl_div_neg");
+        Value* dbl_signs_differ = builder->CreateXor(dbl_rem_neg, dbl_div_neg,
+                                                     "mod_dbl_signs_differ");
+        Value* dbl_rem_nonzero = builder->CreateFCmpONE(dbl_rem, dzero, "mod_dbl_rem_nonzero");
+        Value* dbl_need_adjust = builder->CreateAnd(dbl_signs_differ, dbl_rem_nonzero,
+                                                    "mod_dbl_need_adjust");
+        Value* dbl_adjusted = builder->CreateFAdd(dbl_rem, mod_b_dbl, "mod_dbl_adjusted");
+        Value* dbl_mod = builder->CreateSelect(dbl_need_adjust, dbl_adjusted, dbl_rem,
+                                               "mod_dbl_result");
+        Value* dbl_mod_tagged = packDoubleToTaggedValue(dbl_mod);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+        builder->CreateBr(mrg_bb);
+
         // Int64 fast path — Scheme's modulo: result has same sign as divisor.
         builder->SetInsertPoint(int_bb);
+        Value* int_val1 = unpackInt64FromTaggedValue(arg1);
+        Value* int_val2 = unpackInt64FromTaggedValue(arg2);
+        BasicBlock* int_safe_bb = BasicBlock::Create(*context, "mod_int_safe", func);
+        builder->CreateCondBr(builder->CreateICmpEQ(int_val2, zero, "mod_zero_check"),
+                              zero_bb, int_safe_bb);
+        builder->SetInsertPoint(int_safe_bb);
+        // Audit M4 (P0), mirroring remainder()/quotient(): SRem of INT64_MIN by
+        // -1 is undefined behavior in LLVM (SIGFPE on x86). The mathematical
+        // result is 0 and SRem(x, 1) == 0, so sanitize the divisor to 1 in
+        // exactly that case; no other input changes.
+        {
+            Value* mod_is_min = builder->CreateICmpEQ(int_val1,
+                ConstantInt::get(int64_type, INT64_MIN));
+            Value* mod_is_neg1 = builder->CreateICmpEQ(int_val2,
+                ConstantInt::get(int64_type, -1));
+            int_val2 = builder->CreateSelect(
+                builder->CreateAnd(mod_is_min, mod_is_neg1),
+                ConstantInt::get(int64_type, 1), int_val2);
+        }
         Value* rem = builder->CreateSRem(int_val1, int_val2, "remainder");
         Value* rem_neg = builder->CreateICmpSLT(rem, zero, "rem_neg");
         Value* div_neg = builder->CreateICmpSLT(int_val2, zero, "div_neg");
@@ -20338,10 +21781,11 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 
-        // Merge (bn vs int paths).
+        // Merge (bn vs flonum vs int paths).
         builder->SetInsertPoint(mrg_bb);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "modulo_phi");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "modulo_phi");
         result_phi->addIncoming(bn_result, bn_exit);
+        result_phi->addIncoming(dbl_mod_tagged, dbl_exit);
         result_phi->addIncoming(int_tagged, int_exit);
         BasicBlock* normal_exit_mod = builder->GetInsertBlock();
         builder->CreateBr(mod_outer_merge);
@@ -24303,6 +25747,26 @@ private:
 
         eshkol_debug("Creating external function declaration: %s (real: %s)", func_name, real_func_name);
 
+        // FFI POINTER-ARG GUARD (ESH-0363): record the DECLARED parameter type
+        // keywords before anything can return early. Both the "already
+        // declared" fast paths below skip the type mapping entirely, and a
+        // module that redeclares an extern (e.g. two `(require …)`s reaching the
+        // same wrapper) would otherwise leave its call sites unguarded.
+        {
+            std::vector<std::string> declared;
+            declared.reserve(num_params);
+            for (uint64_t i = 0; i < num_params; i++) {
+                if (op->extern_op.parameters[i].type == ESHKOL_STRING &&
+                    op->extern_op.parameters[i].str_val.ptr) {
+                    declared.emplace_back(op->extern_op.parameters[i].str_val.ptr);
+                } else {
+                    declared.emplace_back();
+                }
+            }
+            extern_param_type_names_[func_name] = declared;
+            extern_param_type_names_[real_func_name] = std::move(declared);
+        }
+
         // EXTERN CONFLICT FIX: Check if function already exists in the module or function_table
         // This avoids creating conflicting declarations (e.g., printf with void vs int return)
         // which causes LLVM to create mangled names like printf.4
@@ -24311,6 +25775,38 @@ private:
             applyExternFunctionAttributes(op->extern_op, existing_func);
             function_table[func_name] = existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
+            // ESH-0362: reuse binds the Eshkol name to a signature the
+            // declaration did not ask for. That is intentional for benign
+            // return-type disagreements (the `printf` void-vs-int case this path
+            // exists for), but a differing PARAMETER COUNT silently changes the
+            // call shape: `(extern void h :real strlen)` reused the runtime's own
+            // 1-parameter `strlen` declaration, so `(h)` was a 0-vs-1 arity
+            // mismatch that the call site used to paper over by padding a null
+            // argument — i.e. handing `strlen` a null pointer to dereference.
+            // The call site now rejects it, so name the disagreement here, where
+            // it can actually be fixed.
+            FunctionType* existing_ft = existing_func->getFunctionType();
+            bool declared_variadic = false;
+            for (uint64_t p = 0; p < num_params; p++) {
+                if (op->extern_op.parameters[p].type == ESHKOL_STRING &&
+                    op->extern_op.parameters[p].str_val.ptr &&
+                    std::strcmp(op->extern_op.parameters[p].str_val.ptr, "...") == 0) {
+                    declared_variadic = true;
+                    break;
+                }
+            }
+            if (!existing_ft->isVarArg() && !declared_variadic &&
+                existing_ft->getNumParams() != num_params) {
+                eshkol_warn(
+                    "extern '%s' declares %llu parameter(s) but C symbol '%s' is "
+                    "already declared in this module with %u — the existing "
+                    "declaration wins, so calls to '%s' must supply %u argument(s). "
+                    "Declare the extern with the symbol's real signature to avoid "
+                    "the surprise.",
+                    func_name, (unsigned long long)num_params, real_func_name,
+                    existing_ft->getNumParams(), func_name,
+                    existing_ft->getNumParams());
+            }
             return nullptr;
         }
 
@@ -24610,6 +26106,8 @@ private:
             "semver-compare", "semver-satisfies?",
             "make-pipe", "fd-write", "make-line-reader",
             "line-reader-poll", "line-reader-close", "fd-close",
+            "make-event-loop", "event-loop-add-fd!", "event-loop-remove-fd!",
+            "event-loop-poll", "event-loop-close", "event-loop-backend",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "http-server-create", "http-server-port", "http-server-accept",
@@ -26393,26 +27891,101 @@ private:
     // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
     // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
     // a SET_OP anywhere in the AST subtree `ast`. Mirrors the recursion structure
-    // of findFreeVariablesImpl. Uses `default: return false;` so any unhandled op
-    // type only makes the fix incomplete (a missed set! → by-value capture, the
-    // pre-existing behavior), never incorrect.
+    // of findFreeVariablesImpl.
+    //
+    // COMPLETENESS MATTERS (ESH-0214f / vm-parity `do_set_param_native`): this
+    // predicate also drives ASSIGNMENT CONVERSION — boxing a set!-mutated
+    // function/lambda parameter into an alloca (codegenFunctionDefinition ~11252,
+    // codegenLambda ~27380). There, a MISSED set! is not merely "incomplete": the
+    // parameter stays a by-value LLVM Argument, so codegenSet finds no storage
+    // location and the assignment is dropped with a "not mutable" diagnostic. That
+    // is exactly how
+    //     (define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
+    // returned 10 instead of 13: `do` lowers to the call_op layout but had no case
+    // here, and nothing walked into ESHKOL_CONS subtrees (which is where `do`
+    // keeps its bindings/steps/test/result forms), so the set! was invisible.
+    //
+    // The safe direction of error is to over-approximate — a spurious `true` only
+    // costs one unused alloca / one arena-promoted capture, whereas a spurious
+    // `false` silently miscompiles a mutation. So every structural container the
+    // parser can produce is walked, and `default: return false` is now reached
+    // only by genuine leaves (literals, quote, type annotations, macro defs).
     bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
         if (!ast) return false;
+        // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
+        // clauses and every other list-shaped payload live in CONS cells, not in
+        // ESHKOL_OP nodes. Quoted data is unreachable from here (QUOTE_OP is a
+        // leaf below), and a set! can only be recognized via an ESHKOL_SET_OP
+        // node, so walking cons cells cannot manufacture a false positive out of
+        // a literal list.
+        if (ast->type == ESHKOL_CONS) {
+            return astSetsVar(ast->cons_cell.car, var) ||
+                   astSetsVar(ast->cons_cell.cdr, var);
+        }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
                 if (op->set_op.name && var == op->set_op.name) return true;
                 return astSetsVar(op->set_op.value, var);
+            // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP: {
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            // `do`: call_op.func is CONS(bindings, CONS(test, results)) and
+            // call_op.variables[] is the body (see codegenDo).
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_EXTERN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP: {
                 if (op->call_op.func && astSetsVar(op->call_op.func, var)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astSetsVar(&op->call_op.variables[i], var)) return true;
                 }
                 return false;
             }
+            // ---- sequence_op layout: expressions[] ---------------------------
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
@@ -26425,11 +27998,7 @@ private:
             case ESHKOL_LETREC_OP:
             case ESHKOL_LETREC_STAR_OP: {
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr &&
-                        astSetsVar(binding->cons_cell.cdr, var)) {
-                        return true;
-                    }
+                    if (astSetsVar(&op->let_op.bindings[i], var)) return true;
                 }
                 return astSetsVar(op->let_op.body, var);
             }
@@ -26437,6 +28006,109 @@ private:
                 return astSetsVar(op->lambda_op.body, var);
             case ESHKOL_DEFINE_OP:
                 return astSetsVar(op->define_op.value, var);
+            // ---- named layouts ----------------------------------------------
+            case ESHKOL_GUARD_OP: {
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    if (astSetsVar(&op->guard_op.clauses[i], var)) return true;
+                }
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->guard_op.body[i], var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->with_region_op.body[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_RAISE_OP:
+                return astSetsVar(op->raise_op.exception, var);
+            case ESHKOL_VALUES_OP:
+                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                    if (astSetsVar(&op->values_op.expressions[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_CALL_WITH_VALUES_OP:
+                return astSetsVar(op->call_with_values_op.producer, var) ||
+                       astSetsVar(op->call_with_values_op.consumer, var);
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP: {
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    if (astSetsVar(&op->let_values_op.producers[i], var)) return true;
+                }
+                return astSetsVar(op->let_values_op.body, var);
+            }
+            case ESHKOL_MATCH_OP: {
+                if (astSetsVar(op->match_op.expr, var)) return true;
+                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                    if (astSetsVar(op->match_op.clauses[i].guard, var)) return true;
+                    if (astSetsVar(op->match_op.clauses[i].body, var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_CALL_CC_OP:
+                return astSetsVar(op->call_cc_op.proc, var);
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return astSetsVar(op->dynamic_wind_op.before, var) ||
+                       astSetsVar(op->dynamic_wind_op.thunk, var) ||
+                       astSetsVar(op->dynamic_wind_op.after, var);
+            case ESHKOL_OWNED_OP:
+                return astSetsVar(op->owned_op.value, var);
+            case ESHKOL_MOVE_OP:
+                return astSetsVar(op->move_op.value, var);
+            case ESHKOL_BORROW_OP: {
+                if (astSetsVar(op->borrow_op.value, var)) return true;
+                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->borrow_op.body[i], var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_SHARED_OP:
+                return astSetsVar(op->shared_op.value, var);
+            case ESHKOL_WEAK_REF_OP:
+                return astSetsVar(op->weak_ref_op.value, var);
+            case ESHKOL_COMPOSE_OP:
+                return astSetsVar(op->compose_op.func_a, var) ||
+                       astSetsVar(op->compose_op.func_b, var);
+            case ESHKOL_TENSOR_OP:
+                for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
+                    if (astSetsVar(&op->tensor_op.elements[i], var)) return true;
+                }
+                return false;
+            // ---- automatic-differentiation ops: each has its OWN union member
+            // (function/point/…), NOT the call_op layout — see eshkol.h.
+            case ESHKOL_DIFF_OP:
+                return astSetsVar(op->diff_op.expression, var);
+            case ESHKOL_DERIVATIVE_OP:
+                return astSetsVar(op->derivative_op.function, var) ||
+                       astSetsVar(op->derivative_op.point, var);
+            case ESHKOL_TAYLOR_OP:
+            case ESHKOL_DERIVATIVE_N_OP:
+                return astSetsVar(op->taylor_op.function, var) ||
+                       astSetsVar(op->taylor_op.point, var) ||
+                       astSetsVar(op->taylor_op.order, var);
+            case ESHKOL_GRADIENT_OP:
+                return astSetsVar(op->gradient_op.function, var) ||
+                       astSetsVar(op->gradient_op.point, var);
+            case ESHKOL_JACOBIAN_OP:
+                return astSetsVar(op->jacobian_op.function, var) ||
+                       astSetsVar(op->jacobian_op.point, var);
+            case ESHKOL_HESSIAN_OP:
+                return astSetsVar(op->hessian_op.function, var) ||
+                       astSetsVar(op->hessian_op.point, var);
+            case ESHKOL_DIVERGENCE_OP:
+                return astSetsVar(op->divergence_op.function, var) ||
+                       astSetsVar(op->divergence_op.point, var);
+            case ESHKOL_CURL_OP:
+                return astSetsVar(op->curl_op.function, var) ||
+                       astSetsVar(op->curl_op.point, var);
+            case ESHKOL_LAPLACIAN_OP:
+                return astSetsVar(op->laplacian_op.function, var) ||
+                       astSetsVar(op->laplacian_op.point, var);
+            case ESHKOL_DIRECTIONAL_DERIV_OP:
+                return astSetsVar(op->directional_deriv_op.function, var) ||
+                       astSetsVar(op->directional_deriv_op.point, var) ||
+                       astSetsVar(op->directional_deriv_op.direction, var);
             default:
                 return false;
         }
@@ -26539,6 +28211,87 @@ private:
                 return false;
             default:
                 return false;
+        }
+    }
+
+    /**
+     * @brief True iff @p name is used as a VALUE (not merely called) anywhere in
+     *        @p ast — `(set! g loop)`, `(list loop)`, `(map loop xs)`, a return
+     *        position — as opposed to the direct call `(loop …)`.
+     *
+     * codegenNamedLet uses this to decide whether the loop procedure can outlive
+     * the frame that created it. If it can, every capture cell must live in the
+     * arena rather than on the caller's stack: a leaked procedure reads its
+     * captures through the cell pointer, and a stack cell is dangling as soon as
+     * the enclosing function returns. That was a real crash, not a theoretical
+     * one — a read-only captured PARAMETER (materialised into an entry-block
+     * alloca) came back as a pair once the frame had been reused, so
+     * `(< i n)` inside a leaked loop body reported "expected number, got pair".
+     *
+     * Only the direct-callee position is excluded, and only for CALL_OP. IF_OP /
+     * COND_OP share the call_op layout but their `func` field is the condition,
+     * so it is inspected normally. Unhandled op kinds fall back to
+     * astReferencesVar, which counts a direct call too: that OVER-approximates
+     * escape, which costs one arena cell and can never be incorrect.
+     */
+    bool astUsesNameAsValue(const eshkol_ast_t* ast, const std::string& name) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_VAR) {
+            return ast->variable.id && name == ast->variable.id;
+        }
+        if (ast->type == ESHKOL_CONS) {
+            return astUsesNameAsValue(ast->cons_cell.car, name) ||
+                   astUsesNameAsValue(ast->cons_cell.cdr, name);
+        }
+        if (ast->type != ESHKOL_OP) return false;
+
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                // The callee position of a direct `(name …)` call does not make
+                // the procedure escape; every argument position does.
+                const eshkol_ast_t* callee = op->call_op.func;
+                const bool direct_self_call =
+                    callee && callee->type == ESHKOL_VAR && callee->variable.id &&
+                    name == callee->variable.id;
+                if (!direct_self_call && astUsesNameAsValue(callee, name)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astUsesNameAsValue(&op->call_op.variables[i], name)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+                if (astUsesNameAsValue(op->call_op.func, name)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astUsesNameAsValue(&op->call_op.variables[i], name)) return true;
+                }
+                return false;
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (astUsesNameAsValue(&op->sequence_op.expressions[i], name)) return true;
+                }
+                return false;
+            case ESHKOL_SET_OP:
+                return (op->set_op.name && name == op->set_op.name) ||
+                       astUsesNameAsValue(op->set_op.value, name);
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (astUsesNameAsValue(&op->let_op.bindings[i], name)) return true;
+                }
+                return astUsesNameAsValue(op->let_op.body, name);
+            case ESHKOL_LAMBDA_OP:
+                return astUsesNameAsValue(op->lambda_op.body, name);
+            case ESHKOL_DEFINE_OP:
+                return astUsesNameAsValue(op->define_op.value, name);
+            default:
+                // Conservative: any reference at all counts as an escape.
+                return astReferencesVar(ast, name);
         }
     }
 
@@ -28336,6 +30089,176 @@ private:
     }
 
 
+    /**
+     * @brief Build (once per loop function) the trampoline that lets an escaped
+     *        named-let loop procedure be entered through the ordinary closure ABI.
+     *
+     * A named-let loop function is `tagged f(tagged p0..pk-1, ptr c0..cm-1)`,
+     * where each `ci` points DIRECTLY at the shared cell holding capture `i`.
+     * The closure dispatcher, by contrast, passes `&env.captures[i]` — a slot
+     * holding a tagged value. The trampoline bridges exactly that one level:
+     * each slot carries the cell address as a tagged INT64 (the same convention
+     * `capturePointerTagFromCurrentFunction` uses when a body lambda captures a
+     * `_cap` argument), so the thunk loads it, turns it back into a pointer, and
+     * forwards it. Without the trampoline the dispatcher would hand the loop
+     * function pointers to the env slots themselves and every read of a captured
+     * variable would return the tag bytes instead of the value.
+     *
+     * Emitted lazily: only a named let whose loop procedure is actually used as
+     * a value pays for it, so the stdlib's many ordinary loops emit no extra IR.
+     */
+    Function* getNamedLetEscapeThunk(const NamedLetEscapeInfo& info) {
+        if (!info.loop_func) return nullptr;
+        auto cached = named_let_escape_thunks.find(info.loop_func);
+        if (cached != named_let_escape_thunks.end()) return cached->second;
+
+        const size_t k = (size_t)info.arity;
+        const size_t m = info.captures.size();
+
+        std::vector<Type*> param_types(k, tagged_value_type);
+        for (size_t i = 0; i < m; i++) {
+            param_types.push_back(PointerType::getUnqual(*context));
+        }
+        FunctionType* thunk_type = FunctionType::get(tagged_value_type, param_types, false);
+        Function* thunk = Function::Create(
+            thunk_type, Function::InternalLinkage,
+            info.loop_func->getName().str() + "_escape", module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* prev_function = current_function;
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+        builder->SetInsertPoint(entry);
+        current_function = thunk;
+
+        std::vector<Value*> forwarded;
+        forwarded.reserve(k + m);
+        auto arg_it = thunk->arg_begin();
+        for (size_t i = 0; i < k; i++, ++arg_it) {
+            arg_it->setName("p" + std::to_string(i));
+            forwarded.push_back(&*arg_it);
+        }
+        for (size_t i = 0; i < m; i++, ++arg_it) {
+            arg_it->setName(info.captures[i] + "_slot");
+            Value* slot_value = builder->CreateLoad(tagged_value_type, &*arg_it,
+                                                    info.captures[i] + ".slot");
+            Value* cell_int = unpackInt64FromTaggedValue(slot_value);
+            forwarded.push_back(builder->CreateIntToPtr(
+                cell_int, PointerType::getUnqual(*context), info.captures[i] + ".cell"));
+        }
+
+        Value* result = builder->CreateCall(info.loop_func, forwarded);
+        builder->CreateRet(result);
+
+        current_function = prev_function;
+        builder->restoreIP(old_point);
+        named_let_escape_thunks[info.loop_func] = thunk;
+        return thunk;
+    }
+
+    /**
+     * @brief Materialise a first-class closure for a named-let loop procedure
+     *        used as a VALUE, or nullptr when the capture cells are not
+     *        reachable from the function currently being emitted.
+     *
+     * Each capture's shared cell is located the same three ways the rest of the
+     * backend locates one: the loop function's own `<fv>_cap` pointer argument,
+     * an enclosing lambda's `captured_<fv>` slot (which holds the cell address
+     * as a tagged int64), or the symbol table when the cell is a plain alloca /
+     * global / pointer instruction of the active function. Returning nullptr
+     * (rather than guessing) keeps the old behaviour for any shape not covered,
+     * so this can never make a working program worse.
+     */
+    Value* codegenNamedLetEscapeClosure(const std::string& loop_name,
+                                        const NamedLetEscapeInfo& info) {
+        Function* active_function = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (!active_function || !info.loop_func) return nullptr;
+
+        // Resolve every capture cell BEFORE emitting anything, so a shape we
+        // cannot handle leaves no half-built closure behind.
+        std::vector<Value*> cell_ptrs;
+        cell_ptrs.reserve(info.captures.size());
+        for (const std::string& fv : info.captures) {
+            Value* cell = nullptr;
+
+            const std::string cap_arg_name = fv + "_cap";
+            for (auto& arg : active_function->args()) {
+                if (arg.getName() == cap_arg_name && arg.getType()->isPointerTy()) {
+                    cell = &arg;
+                    break;
+                }
+            }
+
+            if (!cell) {
+                const std::string captured_arg_name = "captured_" + fv;
+                for (auto& arg : active_function->args()) {
+                    if (arg.getName() == captured_arg_name && arg.getType()->isPointerTy()) {
+                        Value* slot = builder->CreateLoad(tagged_value_type, &arg,
+                                                          fv + ".captured_slot");
+                        Value* cell_int = unpackInt64FromTaggedValue(slot);
+                        cell = builder->CreateIntToPtr(
+                            cell_int, PointerType::getUnqual(*context), fv + ".captured_cell");
+                        break;
+                    }
+                }
+            }
+
+            if (!cell) {
+                auto sym_it = symbol_table.find(fv);
+                Value* sym = (sym_it != symbol_table.end()) ? sym_it->second : nullptr;
+                if (sym && sym->getType()->isPointerTy()) {
+                    Instruction* inst = dyn_cast<Instruction>(sym);
+                    if (!inst || inst->getFunction() == active_function) {
+                        cell = sym;
+                    }
+                }
+            }
+
+            if (!cell) {
+                eshkol_debug("Named let '%s' used as a value: capture '%s' has no reachable cell",
+                             loop_name.c_str(), fv.c_str());
+                return nullptr;
+            }
+            cell_ptrs.push_back(cell);
+        }
+
+        Function* thunk = getNamedLetEscapeThunk(info);
+        if (!thunk) return nullptr;
+
+        Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        uint64_t packed_info = info.captures.size() & 0xFFFF;
+        packed_info |= (info.arity & 0xFFFF) << 16;
+        Value* packed_info_val = sizeConst(packed_info);
+        Value* sexpr_ptr = intPtrConst(0);
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | ((info.arity & 0xFF) << 8);
+        Value* return_type_info = intPtrConst(return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+        Value* closure_ptr = builder->CreateCall(
+            getArenaAllocateClosureWithHeaderFunc(),
+            {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+
+        if (!info.captures.empty()) {
+            // env layout: { size_t packed_info; eshkol_tagged_value_t captures[] }
+            Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr,
+                                                    ConstantInt::get(int64_type, 8));
+            Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
+            Value* captures_base = builder->CreateGEP(int8_type, env_ptr,
+                                                      ConstantInt::get(int64_type, 8));
+            for (size_t i = 0; i < cell_ptrs.size(); i++) {
+                Value* slot = builder->CreateGEP(tagged_value_type, captures_base,
+                                                 ConstantInt::get(int64_type, (int64_t)i));
+                Value* cell_int = builder->CreatePtrToInt(cell_ptrs[i], int64_type);
+                builder->CreateStore(packInt64ToTaggedValue(cell_int, true), slot);
+            }
+        }
+
+        eshkol_debug("Named let '%s' escaped as a value: closure over %zu capture cell(s)",
+                     loop_name.c_str(), info.captures.size());
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
     // Named let: (let loop ((var init) ...) body)
     // Transforms to: (letrec ((loop (lambda (var ...) body))) (loop init ...))
     Value* codegenNamedLet(const eshkol_operations_t* op) {
@@ -28412,6 +30335,15 @@ private:
         //   - Other raw value        → same as raw-value Argument
         static int named_let_counter = 0;
         int current_counter = named_let_counter++;
+        // ESCAPED LOOP PROCEDURE: if the body uses `loop_name` as a VALUE (rather
+        // than only calling it), the procedure can outlive this frame. A leaked
+        // procedure reads its captures THROUGH the cell pointer, so every cell
+        // must then live in the arena — a stack cell is dangling the moment the
+        // enclosing function returns. Concretely: a read-only captured parameter
+        // is otherwise materialised into an entry-block alloca, and reading it
+        // from a leaked procedure after the frame was reused produced
+        // "Type error in <: expected number, got pair".
+        const bool loop_escapes = astUsesNameAsValue(op->let_op.body, loop_name);
         std::vector<Value*> capture_outer_ptrs;
         capture_outer_ptrs.reserve(free_vars.size());
         // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: fv -> arena storage for set!-mutated
@@ -28481,7 +30413,14 @@ private:
             // by-value-loads it — losing the mutation. Arena-move it first, then
             // pointer-pass the arena storage. Record it so codegenLambda's pointer
             // Argument branch pointer-passes instead of by-value loading.
-            if (isa<AllocaInst>(outer_val) && astSetsVar(op->let_op.body, fv)) {
+            // The same arena move is required, for a different reason, when the
+            // loop procedure escapes: the cell must outlive this frame even if
+            // nothing ever set!s it. Rebinding symbol_table (below) keeps the
+            // enclosing scope on the shared arena cell in both cases, so a later
+            // set! in the enclosing scope is still visible to the leaked
+            // procedure and vice versa.
+            if (isa<AllocaInst>(outer_val) &&
+                (loop_escapes || astSetsVar(op->let_op.body, fv))) {
                 Value* arena_ptr = builder->CreateLoad(
                     PointerType::getUnqual(*context), global_arena);
                 Value* arena_storage = builder->CreateCall(
@@ -28531,10 +30470,38 @@ private:
             }
 
             // Raw value (Argument with tagged_value/int64/double, or some
-            // computed Value). Materialise into an alloca on the caller's
-            // entry block so we can pass a pointer. set! through this pointer
-            // updates only the local slot, NOT the original Argument — which
-            // matches existing semantics (Arguments are immutable in Eshkol).
+            // computed Value). Materialise into a per-call cell so we can pass a
+            // pointer. set! through this pointer updates only that cell, NOT the
+            // original Argument — which matches existing semantics (Arguments are
+            // immutable in Eshkol).
+            //
+            // The cell is a stack alloca normally, and ARENA storage when the loop
+            // procedure escapes: a leaked procedure reads its captures through
+            // this pointer long after this frame is gone. A read-only captured
+            // parameter used to come back as whatever had reused the stack slot
+            // ("Type error in <: expected number, got pair").
+            if (loop_escapes) {
+                Value* esc_arena = builder->CreateLoad(
+                    PointerType::getUnqual(*context), global_arena);
+                Value* esc_cell = builder->CreateCall(
+                    getArenaAllocateFunc(), {esc_arena, sizeConst(16)});
+                Value* esc_tagged = outer_val;
+                if (esc_tagged->getType() != tagged_value_type) {
+                    if (esc_tagged->getType()->isDoubleTy()) {
+                        esc_tagged = packDoubleToTaggedValue(esc_tagged);
+                    } else if (esc_tagged->getType()->isIntegerTy(64)) {
+                        esc_tagged = packInt64ToTaggedValue(esc_tagged, true);
+                    } else if (esc_tagged->getType()->isIntegerTy(1)) {
+                        esc_tagged = packBoolToTaggedValue(esc_tagged);
+                    }
+                }
+                builder->CreateStore(esc_tagged, esc_cell);
+                capture_outer_ptrs.push_back(esc_cell);
+                eshkol_debug("Named let '%s': raw capture '%s' -> arena cell (loop escapes)",
+                             loop_name.c_str(), fv.c_str());
+                continue;
+            }
+
             BasicBlock* save_bb = builder->GetInsertBlock();
             Function* parent_fn = save_bb->getParent();
             BasicBlock& entry_bb = parent_fn->getEntryBlock();
@@ -28609,6 +30576,24 @@ private:
         Value* prev_loop_st = had_prev_st ? symbol_table[func_key] : nullptr;
         bool had_prev_gst = global_symbol_table.count(func_key) > 0;
         Value* prev_loop_gst = had_prev_gst ? global_symbol_table[func_key] : nullptr;
+
+        // ESCAPED LOOP PROCEDURE: record what a first-class reference to
+        // `loop_name` needs (the loop function, its capture list and its
+        // user-visible arity) so codegenVariable can build a real closure
+        // instead of leaking a bare Function* whose capture parameters the
+        // closure dispatcher would fill with garbage.  Saved/restored on the
+        // same discipline as the function_table entry above, so nested and
+        // sequential loops sharing a name never see each other's metadata.
+        bool had_prev_escape = named_let_escapes.count(loop_name) > 0;
+        NamedLetEscapeInfo prev_escape =
+            had_prev_escape ? named_let_escapes[loop_name] : NamedLetEscapeInfo{};
+        {
+            NamedLetEscapeInfo escape_info;
+            escape_info.loop_func = loop_func;
+            escape_info.captures = free_vars;
+            escape_info.arity = (uint64_t)param_names.size();
+            named_let_escapes[loop_name] = escape_info;
+        }
 
         // Register function so it can be called recursively
         function_table[loop_name] = loop_func;
@@ -28882,6 +30867,11 @@ private:
             global_symbol_table[func_key] = prev_loop_gst;
         } else {
             global_symbol_table.erase(func_key);
+        }
+        if (had_prev_escape) {
+            named_let_escapes[loop_name] = prev_escape;
+        } else {
+            named_let_escapes.erase(loop_name);
         }
 
         eshkol_debug("Named let '%s' completed", loop_name.c_str());
@@ -31999,6 +33989,19 @@ private:
             }
             AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
             builder->restoreIP(with_region_saved_ip);
+
+            // codegenAST returns a RAW i64/double for a primitive literal and a
+            // tagged struct for everything else. Storing the raw form into a
+            // tagged_value_type slot writes the payload and leaves the TYPE TAG
+            // uninitialised, which was visible as `(with-region 41)` displaying
+            // `#<unknown>` and `(with-region 4.5)` displaying `()` — the VM
+            // (correctly) printed 41 and 4.5. It is also a memory-safety hazard
+            // rather than a display quirk: eshkol_region_unwind_to() promotes
+            // this slot by DISPATCHING ON THAT TAG, so a garbage tag that
+            // happens to read as a heap pointer sends the evacuator deep-walking
+            // an arbitrary address. Pack first, exactly as every other caller
+            // that hands a codegen result to the tagged-value runtime does.
+            result = ensureTaggedValue(result);
             builder->CreateStore(result, result_alloca);
 
             // #341: promote the result out AND tear the region down in one call.
@@ -38494,6 +40497,13 @@ namespace ControlFlowCallbacks {
         return codegen->codegenClosureCall(closure, args, info);
     }
 
+    llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                           llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                           void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->codegenGradientSpreadCall(closure, point_vector, dual_elems, declared_arity);
+    }
+
     llvm::Function* getClosureAllocWrapper(void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->getArenaAllocateClosureWithHeaderFunc();
@@ -38808,6 +40818,14 @@ void eshkol_set_freestanding_codegen(int enabled) {
 
 int eshkol_get_freestanding_codegen(void) {
     return g_freestanding_codegen ? 1 : 0;
+}
+
+void eshkol_set_shared_library_exports(int enabled) {
+    g_shared_library_exports = (enabled != 0);
+}
+
+int eshkol_get_shared_library_exports(void) {
+    return g_shared_library_exports ? 1 : 0;
 }
 
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {

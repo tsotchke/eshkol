@@ -56,21 +56,59 @@ static bool safe_mul4(int64_t a, int64_t b, int64_t c, int64_t d, int64_t* resul
 
 /*
  * Arena-based zero-initialized allocation for backward pass temporaries.
- * Uses the global arena with a scope push/pop pattern — the caller must
- * call backward_scope_end() when done. Returns nullptr on failure.
  *
- * OpenMP per-thread buffers also use the global arena — the arena is
- * only accessed from the main thread's scope, and per-thread buffers
- * are allocated before the parallel region begins.
+ * These temporaries get a DEDICATED arena, not a scope on the global arena.
+ * That distinction is load-bearing and was a live bug:
+ *
+ *   arena_pop_scope() rewinds the arena's bump pointer to the mark taken by
+ *   the matching push, so it reclaims EVERY allocation made from that arena
+ *   in between — no matter who made it or what lifetime it was meant to have.
+ *   The backward pass allocates two different lifetimes:
+ *
+ *     temporaries   grad_input / grad_kernel / ... — die at the end of this
+ *                   node's dispatch, which is what the scope is for;
+ *     persistent    an input node's tensor_gradient, allocated lazily on
+ *                   first accumulation (eshkol_accumulate_tensor_grad, and
+ *                   the lib/bridge rules' alloc_grad) — must outlive this
+ *                   dispatch, because the node upstream of it reads that
+ *                   buffer on a LATER dispatch.
+ *
+ *   Both used get_global_arena(), so the pop reclaimed the persistent ones
+ *   too. The chain then read reclaimed memory and gradients came back as
+ *   zero. (This file previously asserted the opposite — that accumulated
+ *   gradients "live in the unscoped global arena and survive this pop". They
+ *   were allocated inside the scope, so they did not.)
+ *
+ * Fixing it here rather than at each allocation site is the root: the two
+ * lifetimes now live in two arenas, so no allocation site has to know whether
+ * a backward scope happens to be open above it. Persistent gradient buffers
+ * keep coming from the global arena and are no longer touched by the pop.
+ *
+ * The arena is thread-safe for the same reason the global arena is: on a pool
+ * worker, arena_push_scope/arena_pop_scope degrade to commit-only (retain and
+ * leave the shared scope stack alone), which is the existing safe fallback for
+ * concurrent backward work. OpenMP per-thread buffers are allocated before the
+ * parallel region begins, from the main thread's scope.
+ */
+static arena_t* backward_temp_arena() {
+    static arena_t* temps = nullptr;
+    if (!temps) temps = arena_create_threadsafe(1u << 20);   /* 1 MiB blocks */
+    return temps;
+}
+
+/*
+ * Open a scope on the backward temporaries arena. The caller must call
+ * backward_scope_end() when done. Returns nullptr on failure.
  */
 static arena_t* backward_scope_begin() {
-    arena_t* arena = get_global_arena();
+    arena_t* arena = backward_temp_arena();
     if (arena) arena_push_scope(arena);
     return arena;
 }
 
 /** @brief Pop the arena scope opened by backward_scope_begin(), bulk-freeing
- *         the backward pass's temporary gradient buffers. */
+ *         the backward pass's temporary gradient buffers. Persistent gradient
+ *         buffers live in the global arena and are unaffected. */
 static void backward_scope_end(arena_t* arena) {
     if (arena) arena_pop_scope(arena);
 }
@@ -1346,7 +1384,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     case AD_NODE_TENSOR_SUM:
     case AD_NODE_TENSOR_BROADCAST_ADD:
     case AD_NODE_TENSOR_BROADCAST_MUL:
-    case AD_NODE_TENSOR_EMBEDDING: {
+    case AD_NODE_TENSOR_EMBEDDING:
+    /* The Riemannian center of mass is defined implicitly, as the stationary
+     * point of the weighted variance, so its rule differentiates that condition
+     * rather than the iteration that solves it. Lives with the other bridge
+     * geometry in lib/bridge/tensor_backward.cpp. */
+    case AD_NODE_FRECHET_MEAN: {
         /* Use the bridge dispatch table to find the right backward fn */
         bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
         if (!fn) {
@@ -1358,14 +1401,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         break;
     }
 
-    case AD_NODE_FRECHET_MEAN:
-        /* No exact backward for the Riemannian center-of-mass node yet. Refuse
-         * rather than leave the gradient at a silent zero. */
-        eshkol_fatal("unsupported AD op: exact backward for the Frechet-mean "
-                     "tensor node is not implemented; refusing to drop the "
-                     "gradient silently.");
-        break;
-
     default:
         /* Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
          * differentiated by their scalar backward emitted in codegen and
@@ -1375,9 +1410,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         break;
     }
 
-    /* Pop arena scope — all temporary gradient buffers are bulk-freed here.
-     * Accumulated gradients in AD nodes (via eshkol_accumulate_tensor_grad)
-     * live in the unscoped global arena and survive this pop. */
+    /* Pop the temporaries scope — every buffer allocated from bwd_arena above
+     * is bulk-freed here. Accumulated gradients in AD nodes (via
+     * eshkol_accumulate_tensor_grad, and the lib/bridge rules' alloc_grad) come
+     * from the GLOBAL arena, which this pop does not touch — see
+     * backward_temp_arena() for why they must not share an arena with the
+     * temporaries. */
     backward_scope_end(bwd_arena);
 }
 

@@ -1,0 +1,154 @@
+; Runtime-closure gradient: the arity spread, across the whole supported range.
+;
+; A loss reached as a VALUE (through a wrapper, a parameter, a variable) has no
+; compile-time arity, so the gradient has to call it with its declared number of
+; scalar arguments decided at run time. That dispatch is emitted once per module,
+; out of line (getOrCreateGradSpreadHelper in lib/backend/llvm_codegen.cpp);
+; before it existed the spread was inlined per gradient site as one fully
+; expanded closure call per arity, and only arities up to the closure
+; dispatcher's static argument arm count actually worked:
+;
+;   arity 17-32, no captures -> SIGSEGV
+;   arity 17-31, captured    -> SILENT all-zero gradient
+;   arity 32,    captured    -> "Type error in *: ... got pair"
+;
+; each of which the declared ceiling of 32 claimed was supported. This file
+; pins the claim: f(x) = sum_i (i+1) x_i^2 has grad_i = 2(i+1) x_i, so at
+; x_i = 1 every index is its own witness (2, 4, 6, ...), and a wrong or dropped
+; argument shows up as a specific wrong number rather than a plausible one.
+
+(define (gwrap f p) (gradient f p))
+
+; Checks are counted as well as printed. The pre-fix build does not print a
+; FAIL — it DIES at check 19 — so a gate that only looks for "FAIL:" would read
+; a truncated run as green. The trailing summary is the anchor that proves the
+; whole spread was walked.
+(define arity-spread-checks 0)
+(define arity-spread-failures 0)
+
+(define (check name got want)
+  (set! arity-spread-checks (+ arity-spread-checks 1))
+  (if (< (abs (- got want)) 1e-9)
+      (display "PASS")
+      (begin (set! arity-spread-failures (+ arity-spread-failures 1))
+             (display "FAIL")))
+  (display ": ") (display name)
+  (display " expected ") (display want)
+  (display " got ") (display got)
+  (newline))
+
+(define (arity-spread-summary)
+  (if (= arity-spread-failures 0)
+      (begin (display "PASS: runtime-closure gradient arity spread, ")
+             (display arity-spread-checks)
+             (display " checks"))
+      (begin (display "FAIL: runtime-closure gradient arity spread, ")
+             (display arity-spread-failures)
+             (display " of ") (display arity-spread-checks)
+             (display " checks wrong")))
+  (newline))
+
+; --- plain closures, arity 2 .. 32 (the spread's whole range) ---
+(define (loss2 x0 x1) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1))))
+(define g2 (gwrap loss2 (list 1.0 1.0)))
+(check "arity 2: length" (vector-length g2) 2)
+(check "arity 2: grad[0]" (vector-ref g2 0) 2.0)
+(check "arity 2: grad[1]" (vector-ref g2 1) 4.0)
+(define (loss3 x0 x1 x2) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2))))
+(define g3 (gwrap loss3 (list 1.0 1.0 1.0)))
+(check "arity 3: length" (vector-length g3) 3)
+(check "arity 3: grad[0]" (vector-ref g3 0) 2.0)
+(check "arity 3: grad[2]" (vector-ref g3 2) 6.0)
+(define (loss8 x0 x1 x2 x3 x4 x5 x6 x7) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7))))
+(define g8 (gwrap loss8 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 8: length" (vector-length g8) 8)
+(check "arity 8: grad[0]" (vector-ref g8 0) 2.0)
+(check "arity 8: grad[7]" (vector-ref g8 7) 16.0)
+(define (loss9 x0 x1 x2 x3 x4 x5 x6 x7 x8) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8))))
+(define g9 (gwrap loss9 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 9: length" (vector-length g9) 9)
+(check "arity 9: grad[0]" (vector-ref g9 0) 2.0)
+(check "arity 9: grad[8]" (vector-ref g9 8) 18.0)
+(define (loss12 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11))))
+(define g12 (gwrap loss12 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 12: length" (vector-length g12) 12)
+(check "arity 12: grad[0]" (vector-ref g12 0) 2.0)
+(check "arity 12: grad[11]" (vector-ref g12 11) 24.0)
+(define (loss16 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15))))
+(define g16 (gwrap loss16 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 16: length" (vector-length g16) 16)
+(check "arity 16: grad[0]" (vector-ref g16 0) 2.0)
+(check "arity 16: grad[15]" (vector-ref g16 15) 32.0)
+(define (loss17 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16))))
+(define g17 (gwrap loss17 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 17: length" (vector-length g17) 17)
+(check "arity 17: grad[0]" (vector-ref g17 0) 2.0)
+(check "arity 17: grad[16]" (vector-ref g17 16) 34.0)
+(define (loss20 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16)) (* 18 (* x17 x17)) (* 19 (* x18 x18)) (* 20 (* x19 x19))))
+(define g20 (gwrap loss20 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 20: length" (vector-length g20) 20)
+(check "arity 20: grad[0]" (vector-ref g20 0) 2.0)
+(check "arity 20: grad[19]" (vector-ref g20 19) 40.0)
+(define (loss31 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23 x24 x25 x26 x27 x28 x29 x30) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16)) (* 18 (* x17 x17)) (* 19 (* x18 x18)) (* 20 (* x19 x19)) (* 21 (* x20 x20)) (* 22 (* x21 x21)) (* 23 (* x22 x22)) (* 24 (* x23 x23)) (* 25 (* x24 x24)) (* 26 (* x25 x25)) (* 27 (* x26 x26)) (* 28 (* x27 x27)) (* 29 (* x28 x28)) (* 30 (* x29 x29)) (* 31 (* x30 x30))))
+(define g31 (gwrap loss31 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 31: length" (vector-length g31) 31)
+(check "arity 31: grad[0]" (vector-ref g31 0) 2.0)
+(check "arity 31: grad[30]" (vector-ref g31 30) 62.0)
+(define (loss32 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23 x24 x25 x26 x27 x28 x29 x30 x31) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16)) (* 18 (* x17 x17)) (* 19 (* x18 x18)) (* 20 (* x19 x19)) (* 21 (* x20 x20)) (* 22 (* x21 x21)) (* 23 (* x22 x22)) (* 24 (* x23 x23)) (* 25 (* x24 x24)) (* 26 (* x25 x25)) (* 27 (* x26 x26)) (* 28 (* x27 x27)) (* 29 (* x28 x28)) (* 30 (* x29 x29)) (* 31 (* x30 x30)) (* 32 (* x31 x31))))
+(define g32 (gwrap loss32 (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "arity 32: length" (vector-length g32) 32)
+(check "arity 32: grad[0]" (vector-ref g32 0) 2.0)
+(check "arity 32: grad[31]" (vector-ref g32 31) 64.0)
+
+; --- closures that CAPTURE: the callee reads its captures positionally
+;     after its own k arguments, so a mis-sized argument list corrupts
+;     the captures rather than the arguments (this is what returned a
+;     silent all-zero gradient at arity 20) ---
+(define (mkloss2 s) (lambda (x0 x1) (* s (+ (* 1 (* x0 x0)) (* 2 (* x1 x1))))))
+(define c2 (gwrap (mkloss2 3.0) (list 1.0 1.0)))
+(check "captured arity 2: grad[0]" (vector-ref c2 0) 6.0)
+(check "captured arity 2: grad[1]" (vector-ref c2 1) 12.0)
+(define (mkloss12 s) (lambda (x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11) (* s (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11))))))
+(define c12 (gwrap (mkloss12 3.0) (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "captured arity 12: grad[0]" (vector-ref c12 0) 6.0)
+(check "captured arity 12: grad[11]" (vector-ref c12 11) 72.0)
+(define (mkloss20 s) (lambda (x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19) (* s (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16)) (* 18 (* x17 x17)) (* 19 (* x18 x18)) (* 20 (* x19 x19))))))
+(define c20 (gwrap (mkloss20 3.0) (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "captured arity 20: grad[0]" (vector-ref c20 0) 6.0)
+(check "captured arity 20: grad[19]" (vector-ref c20 19) 120.0)
+(define (mkloss32 s) (lambda (x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23 x24 x25 x26 x27 x28 x29 x30 x31) (* s (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11)) (* 13 (* x12 x12)) (* 14 (* x13 x13)) (* 15 (* x14 x14)) (* 16 (* x15 x15)) (* 17 (* x16 x16)) (* 18 (* x17 x17)) (* 19 (* x18 x18)) (* 20 (* x19 x19)) (* 21 (* x20 x20)) (* 22 (* x21 x21)) (* 23 (* x22 x22)) (* 24 (* x23 x23)) (* 25 (* x24 x24)) (* 26 (* x25 x25)) (* 27 (* x26 x26)) (* 28 (* x27 x27)) (* 29 (* x28 x28)) (* 30 (* x29 x29)) (* 31 (* x30 x30)) (* 32 (* x31 x31))))))
+(define c32 (gwrap (mkloss32 3.0) (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0)))
+(check "captured arity 32: grad[0]" (vector-ref c32 0) 6.0)
+(check "captured arity 32: grad[31]" (vector-ref c32 31) 192.0)
+
+; --- the forms that must NOT be spread: arity 1 takes the whole point as
+;     one vector argument, a scalar point is one dual, and a variadic
+;     loss's fixed parameters are its declared arity ---
+(define (v1 v) (+ (* 1 (* (vref v 0) (vref v 0))) (* 2 (* (vref v 1) (vref v 1))) (* 3 (* (vref v 2) (vref v 2)))))
+(define gv (gwrap v1 (vector 2.0 3.0 4.0)))
+(check "arity 1 vector point: grad[0]" (vector-ref gv 0) 4.0)
+(check "arity 1 vector point: grad[2]" (vector-ref gv 2) 24.0)
+(define gt (gwrap v1 #(2.0 3.0 4.0)))
+(check "arity 1 tensor point: grad[0]" (vector-ref gt 0) 4.0)
+(check "arity 1 tensor point: grad[2]" (vector-ref gt 2) 24.0)
+(define (sq x) (* x x))
+(check "scalar point" (gwrap sq 3.0) 6.0)
+(define (vlo a b . rest) (+ (* 1 (* a a)) (* 2 (* b b))))
+(define gvar (gwrap vlo (list 1.0 1.0)))
+(check "variadic loss: grad[0]" (vector-ref gvar 0) 2.0)
+(check "variadic loss: grad[1]" (vector-ref gvar 1) 4.0)
+
+; --- a builtin arithmetic procedure used as the loss: the dispatcher's
+;     n-ary fold is not emitted in spread mode, because with exactly two
+;     arguments the function the closure points at computes the same
+;     polymorphic operation ---
+(define plus +)
+(define gplus (gwrap plus (list 2.0 5.0)))
+(check "builtin + as loss: grad[0]" (vector-ref gplus 0) 1.0)
+(check "builtin + as loss: grad[1]" (vector-ref gplus 1) 1.0)
+(define times *)
+(define gtimes (gwrap times (list 2.0 5.0)))
+(check "builtin * as loss: grad[0]" (vector-ref gtimes 0) 5.0)
+(check "builtin * as loss: grad[1]" (vector-ref gtimes 1) 2.0)
+
+(arity-spread-summary)

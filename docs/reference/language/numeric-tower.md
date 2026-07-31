@@ -40,6 +40,13 @@ Conversions: `exact->inexact` (a.k.a. `inexact`), `inexact->exact` (a.k.a. `exac
 > **Display convention:** an inexact value with no fractional part prints without a
 > decimal point — `(+ 1.0 2)` prints `3`, and `(+ 1/2 0.5)` prints `1` — but it is
 > still inexact (`(inexact? (+ 1/2 0.5))` ⇒ `#t`).
+>
+> **Negative zero is the one exception:** `-0.0` prints `-0.0`, not `-0`. `-0`
+> would read back as the *exact* integer zero, which has no sign, so both the
+> inexactness and the sign bit would be lost — and the sign is observable
+> (`(/ 1.0 -0.0)` ⇒ `-inf.0`, `(/ 1.0 0.0)` ⇒ `+inf.0`). Positive zero prints
+> `0` like every other integral-valued double, since reading `0` back recovers
+> the same numeric value.
 
 > **Shortest round-trip printing (R7RS 6.2.6):** `display`, `write`, and
 > `number->string` emit the **shortest decimal string that reads back as the
@@ -63,6 +70,65 @@ Integer arithmetic promotes to bignum automatically; there is no overflow.
 9999999999999999999800000000000000000001
 (3 2 2 6 12)
 ```
+
+### Integer division (R7RS 6.2.6)
+
+Three sign conventions, each with its R7RS synonym. `modulo` **is**
+`floor-remainder`, `remainder` **is** `truncate-remainder`, and `quotient`
+**is** `truncate-quotient` — the same procedure under two names, so they agree
+on every representation.
+
+| procedure | synonym | sign of result |
+|---|---|---|
+| `quotient` | `truncate-quotient` | truncates toward zero |
+| `remainder` | `truncate-remainder` | sign of the **dividend** |
+| `floor-quotient` | — | floors toward −∞ |
+| `modulo` | `floor-remainder` | sign of the **divisor** |
+
+`floor/` and `truncate/` return both halves as two values.
+
+```scheme
+(display (list (quotient -7 3) (remainder -7 3) (modulo -7 3))) (newline)
+(display (list (floor-quotient -7 3) (floor-remainder -7 3))) (newline)
+(display (call-with-values (lambda () (floor/ -7 3)) list)) (newline)
+```
+```
+(-2 -1 2)
+(-3 2)
+(-3 2)
+```
+
+All of them accept bignums, and — because an integral flonum *is* an integer
+(`(integer? 7.0)` ⇒ `#t`) — inexact operands too, where exactness contagion
+makes the result inexact:
+
+```scheme
+(display (list (modulo (expt 2 100) 3) (floor-quotient (expt 2 100) 3))) (newline)
+(display (list (remainder 7.0 2.0) (modulo -7.0 3.0) (modulo 5 2.0))) (newline)
+(display (list (remainder 5.5 2.0) (modulo 5.5 2.0))) (newline)
+(display (list (exact? (quotient 7 2)) (exact? (quotient 7.0 2.0)))) (newline)
+```
+```
+(1 422550200076076467165567735125)
+(1 2 1)
+(1.5 1.5)
+(#t #f)
+```
+
+> **Not C's `remainder()`.** The C library's `remainder(5.5, 2.0)` is `-0.5`
+> (IEEE-754 round-to-*nearest* remainder). Scheme's `remainder` is the
+> *truncated* remainder — `fmod` — so `(remainder 5.5 2.0)` is `1.5`.
+
+An inexact result stays a flonum rather than being narrowed to a machine
+integer, so magnitudes past 2^63 are carried rather than saturated —
+`(quotient 1e20 3.0)` displays as `33333333333333330000` (the double
+`3.3333333333333332e19`), not the largest machine integer.
+
+A zero divisor is an error for `quotient`, `remainder`, `modulo` and their
+synonyms (R7RS 6.2.6) and raises, for every operand representation — fixnum,
+flonum and bignum alike. `/` is different: only an *exact* zero divisor is an
+error there, and an inexact one is ordinary IEEE-754 division, so
+`(/ (expt 2 100) 0.0)` is `+inf.0`.
 
 ## Rationals
 
@@ -121,24 +187,32 @@ contagion): exact + inexact → inexact.
 1
 ```
 
-## Known issue — rationals degrade near the bignum boundary (ESH-0105)
+## Known issue — rationals degrade near the bignum boundary on the VM (ESH-0105)
 
-Exact rational arithmetic silently loses exactness — or returns a wrong value —
-once a **bignum** operand is involved, instead of producing an exact result or
-signalling an error.
+The native back end carries exact rationals with bignum components and produces
+the exact result:
 
 ```scheme
-(display (* 1/3 99999999999999999999)) (newline)   ; expected 33333333333333333333
-(display (+ 1/3 (expt 10 30))) (newline)            ; expected 3000…0001/3
-(display (/ 1 (expt 10 19))) (newline)              ; expected exact 1/10000000000000000000
+(display (* 1/3 99999999999999999999)) (newline)   ; 33333333333333333333
+(display (+ 1/3 (expt 10 30))) (newline)            ; 3000…0001/3
+(display (/ 1 (expt 10 19))) (newline)              ; 1/10000000000000000000
 ```
+
+The **bytecode VM** cannot: its rational is an `int64` numerator over an `int64`
+denominator, so a bignum combined with a rational has no exact representation
+there and falls back to the correctly-rounded inexact double.
+
 ```
-0
-1000000000000000000000000000000
+33333333333333330000
+1e+30
 1e-19
 ```
-Observed: `(* 1/3 <bignum>)` returns `0`; `(+ 1/3 <bignum>)` drops the fraction;
-`(/ 1 (expt 10 19))` degrades to an inexact double (`1e-19`) whereas
-`(/ 1 (expt 10 18))` is still an exact rational. Keep rational computations within
-the fixnum range for exact results, or convert deliberately with
-`exact->inexact` when you want doubles.
+
+Within the fixnum range the VM is exact and agrees with native, including mixed
+exact/inexact arithmetic (`(* 0.5 1/3)` is `0.16666666666666666` on both). Keep
+rational computations inside the fixnum range if you need the VM to stay exact,
+or convert deliberately with `exact->inexact` when you want doubles.
+
+Closing the gap needs bignum components in the VM's rational representation;
+tracked with `tests/vm_parity/found/bignum_rational_mixed.esk` and
+`tests/vm_parity/found/bignum_exact_rational.esk`.

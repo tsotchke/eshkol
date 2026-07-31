@@ -2146,9 +2146,19 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         }
     }
 
-    // Check for S-expression lookup (for displaying lambdas/procedures)
+    // Check for S-expression lookup (for displaying lambdas/procedures).
+    //
+    // R7RS 5.3.1: skip the short-circuit for a name that is defined more than
+    // once at top level. The `<name>_sexpr` global is a compile-time side table
+    // keyed by name alone, so it cannot say which definition the binding
+    // currently holds -- taking it made `(define (g x) ...)` `(define g 42)`
+    // `(display g)` print the procedure source instead of 42. Falling through
+    // to the runtime value is also strictly better when the current binding
+    // *is* a procedure: the C display path recovers the source form from the
+    // lambda registry, which is keyed by the live function pointer.
     if (op->call_op.variables[0].type == ESHKOL_VAR &&
-        op->call_op.variables[0].variable.id) {
+        op->call_op.variables[0].variable.id &&
+        !isRedefinedTopLevelName(op->call_op.variables[0].variable.id)) {
         std::string var_name = op->call_op.variables[0].variable.id;
 
         // Try scoped name first (e.g., "enclosing.var_sexpr")

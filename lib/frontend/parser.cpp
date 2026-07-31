@@ -8,6 +8,7 @@
 #include <eshkol/core/logic.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/logger.h>
+#include <eshkol/types/hott_types.h>
 
 #include <string.h>
 #include <algorithm>
@@ -19,12 +20,19 @@
 #include <sstream>
 #include <vector>
 #include <set>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 #if defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
 #endif
 
 /* ── Parse context for diagnostic messages ── */
 static thread_local std::string g_parse_filename = "<unknown>";
+/* Interned id of g_parse_filename, stamped onto every top-level form so a
+ * diagnostic can name the file the form really came from rather than whichever
+ * file happened to be the ambient source context at codegen time. */
+static thread_local uint32_t g_parse_filename_id = 0;
 static thread_local const char* g_parse_source = NULL;
 /* Cumulative file line across successive eshkol_parse_next_ast_from_stream
  * calls.  Each call advances the counter by however many newlines it
@@ -2042,34 +2050,26 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
 // Parse type expressions for the HoTT type system
 // Supports: primitive types, arrow types, container types, forall, etc.
 
-// Parse a primitive type name and return the corresponding type expression
+// Parse a bare type name and return the corresponding type expression.
+//
+// Bare type-name spellings come from the type system's canonical registry
+// (eshkol::hott::builtinTypeSpellings()) — this function must NOT keep a
+// private list of its own. A registry entry either names a dedicated
+// hott_type_kind_t (`integer` -> HOTT_TYPE_INTEGER) or carries HOTT_TYPE_VAR,
+// meaning "resolve by name", which TypeChecker::resolveType() does through the
+// type environment's name table. That table is populated from the very same
+// registry, so a spelling accepted here always resolves to a real type.
+//
+// Anything not in the registry is a type variable (the `a` in
+// `(forall (a) (-> a a))`), unchanged.
 static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
-    // Check for primitive types (case-insensitive)
-    std::string lower = name;
-    for (auto& c : lower) c = std::tolower((unsigned char)c);
+    const eshkol::hott::BuiltinTypeSpelling* spelling =
+        eshkol::hott::lookupBuiltinTypeSpelling(name);
 
-    if (lower == "integer" || lower == "int" || lower == "int64") {
-        return hott_make_integer_type();
-    } else if (lower == "real" || lower == "float" || lower == "double" || lower == "float64") {
-        return hott_make_real_type();
-    } else if (lower == "boolean" || lower == "bool") {
-        return hott_make_boolean_type();
-    } else if (lower == "string" || lower == "str") {
-        return hott_make_string_type();
-    } else if (lower == "char" || lower == "character") {
-        return hott_make_char_type();
-    } else if (lower == "symbol") {
-        return hott_make_symbol_type();
-    } else if (lower == "null" || lower == "nil") {
-        return hott_make_null_type();
-    } else if (lower == "any") {
-        return hott_make_any_type();
-    } else if (lower == "nothing" || lower == "never") {
-        return hott_make_nothing_type();
-    } else {
-        // Treat as type variable (lowercase letters starting with a-z)
-        return hott_make_type_var(name.c_str());
+    if (spelling && spelling->kind != HOTT_TYPE_VAR) {
+        return hott_make_primitive_type(spelling->kind);
     }
+    return hott_make_type_var(name.c_str());
 }
 
 // Parse a type expression from the tokenizer
@@ -3955,9 +3955,35 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
     ast.operation.op = ESHKOL_PROVIDE_OP;
     ast.operation.provide_op.num_exports = exports.size();
     ast.operation.provide_op.export_names = new char*[exports.size()];
+    ast.operation.provide_op.library_name = nullptr;
     for (size_t i = 0; i < exports.size(); i++) {
         ast.operation.provide_op.export_names[i] = parser_copy_cstr(exports[i]);
     }
+    return ast;
+}
+
+/**
+ * @brief Builds the marker node that establishes an R7RS library in this compilation unit.
+ *
+ * Identical to a `(provide ...)` node except that it also carries the dotted
+ * library name. `process_requires()` (AOT) and the JIT/REPL require handler
+ * read that name into the frontend library registry
+ * (lib/frontend/library_registry.h), so a later `(import (name ...))` in the
+ * same compilation unit resolves without a filesystem search — which is what
+ * R7RS-small 5.6.1 requires of a library defined before the forms that import
+ * it. Carrying the export list here as well (rather than only on the
+ * per-clause provide) is what lets `(import (prefix (name) p:))` build its
+ * aliases for a same-unit library.
+ *
+ * The node generates no code: every lane strips `ESHKOL_PROVIDE_OP` before
+ * codegen, and codegen itself lowers it to nil.
+ */
+static eshkol_ast_t make_library_definition_ast(const std::string& library_name,
+                                                const std::vector<std::string>& exports,
+                                                uint32_t line,
+                                                uint32_t column) {
+    eshkol_ast_t ast = make_provide_ast(exports, line, column);
+    ast.operation.provide_op.library_name = parser_copy_cstr(library_name);
     return ast;
 }
 
@@ -4298,16 +4324,26 @@ static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& spec
 /**
  * @brief Parses an R7RS `(define-library (name ...) <library-declaration>*)` top-level form into a lowered AST.
  *
- * First parses the parenthesized library name (its joined form is
- * currently unused beyond validation), then iterates the library's
+ * First parses the parenthesized library name, then iterates the library's
  * declaration clauses:
- *  - `(export name...)` becomes a provide/export AST (make_provide_ast());
+ *  - `(export name...)` contributes to the library's export surface;
  *    renamed exports (`(export (old new))`) are not yet supported.
  *  - `(import <import-set>...)` is parsed via parse_r7rs_import_sets() and
  *    lowered to require/alias forms via append_r7rs_import_forms().
  *  - `(begin expr...)` has each contained expression parsed in place via
  *    parse_expression() and appended as-is.
  *  - any other clause name is a parse error (unsupported clause).
+ *
+ * The lowered body is followed by a single library-definition marker
+ * (make_library_definition_ast()) naming the library and listing every
+ * exported symbol. The marker is what makes the library exist for the rest of
+ * the compilation unit: the driver's require handling reads it into the
+ * frontend library registry, so a later `(import (name ...))` resolves to this
+ * library rather than searching the filesystem for a file that was never
+ * written (R7RS-small 5.6.1). Emitting it last — after the body, and after any
+ * `import` clause of this same library — is what keeps the ordering rule
+ * honest: a library is established by its whole `define-library` form, so it
+ * cannot satisfy an import written above it.
  *
  * All lowered forms across the library's clauses are combined into a
  * single AST via make_sequence_or_null_ast().
@@ -4322,8 +4358,8 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
                                  "define-library")) {
         return {.type = ESHKOL_INVALID};
     }
-    (void)library_name;
 
+    std::vector<std::string> library_exports;
     std::vector<eshkol_ast_t> lowered_forms;
     while (true) {
         Token clause_open = tokenizer.nextToken();
@@ -4366,8 +4402,11 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(clause_name, "define-library export expects at least one symbol");
                 return {.type = ESHKOL_INVALID};
             }
-            lowered_forms.push_back(make_provide_ast(exports, clause_name.line,
-                                                     clause_name.column));
+            // Accumulated rather than emitted per clause: R7RS allows several
+            // `export` clauses, and the library's importable surface is their
+            // union, which the single trailing marker carries.
+            library_exports.insert(library_exports.end(),
+                                   exports.begin(), exports.end());
         } else if (clause_name.value == "import") {
             std::vector<R7rsImportSpec> specs;
             if (!parse_r7rs_import_sets(tokenizer, clause_name, &specs)) {
@@ -4396,6 +4435,9 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
             return {.type = ESHKOL_INVALID};
         }
     }
+
+    lowered_forms.push_back(make_library_definition_ast(
+        library_name, library_exports, form_token.line, form_token.column));
 
     return make_sequence_or_null_ast(lowered_forms, form_token.line, form_token.column);
 }
@@ -4737,22 +4779,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // `the` when it heads something that is not a type ascription (e.g. a
         // user procedure named `the`); in that case fall through to the
         // ordinary call path below. An ascription's second element is a type:
-        // either a parenthesised type form `(vector any)` or a primitive type
-        // name. A bare non-type symbol keeps `the` an ordinary call head.
+        // either a parenthesised type form `(vector any)` or a bare type name.
+        // A bare non-type symbol keeps `the` an ordinary call head.
+        //
+        // Bare names are recognised through the type system's canonical registry
+        // (eshkol::hott::isBuiltinTypeName) — the same registry that populates
+        // the type environment's name table and drives parsePrimitiveType above.
+        // A second hand-maintained allow-list lived here, and omitting `number`
+        // from it is exactly what made `(the number 3)` the parse error "Unknown
+        // function: the" while `(the string s)` worked.
         Token t2 = tokenizer.peekToken();  // non-destructive (pushes back)
-        auto isPrimitiveTypeName = [](const std::string& n) {
-            std::string l = n;
-            for (auto& c : l) c = std::tolower((unsigned char)c);
-            return l == "integer" || l == "int" || l == "int64" ||
-                   l == "real" || l == "float" || l == "double" || l == "float64" ||
-                   l == "boolean" || l == "bool" || l == "string" || l == "str" ||
-                   l == "char" || l == "character" || l == "symbol" ||
-                   l == "null" || l == "nil" || l == "any" ||
-                   l == "nothing" || l == "never";
-        };
         bool looks_like_ascription =
             (t2.type == TOKEN_LPAREN) ||
-            (t2.type == TOKEN_SYMBOL && isPrimitiveTypeName(t2.value));
+            (t2.type == TOKEN_SYMBOL && eshkol::hott::isBuiltinTypeName(t2.value));
         if (looks_like_ascription) {
             hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
             if (!type_expr) {
@@ -9746,7 +9785,34 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                     specs.push_back(spec);
                 }
-                return make_r7rs_import_ast(specs, token.line, token.column);
+                // ESH-0365: locate the lowered node at the `import` form's
+                // START, not at `token` — which by here is the form's CLOSING
+                // PAREN, because the spec loop above exits on TOKEN_RPAREN.
+                // `ast.line`/`ast.column` still hold the operator token, i.e.
+                // where the construct actually begins.
+                //
+                // A desugared node that reports its closing paren is the same
+                // defect class as ESH-0364: a location must identify the
+                // construct it describes. Two consequences, both real:
+                //
+                //  * A diagnostic about a bad import pointed a caret at `)`.
+                //  * `import` earned no execution-backed coverage of its own.
+                //    The tracker credits a compile-time form when a parser
+                //    dispatch event and an accept/codegen event share an exact
+                //    source position; the dispatch event is recorded at the
+                //    operator token, while the accept event took its position
+                //    from this call — so they never matched. `import` was
+                //    nonetheless certified covered, by an ACCIDENT: before
+                //    ESH-0364, a required module's codegen events were attributed
+                //    to the REQUIRING file, and in
+                //    tests/modules/r7rs_import_modifiers_test.esk the imported
+                //    module's `define`s at lines 5-7 column 2 collided with that
+                //    file's own `(import …)` forms at lines 5-7 column 2. The
+                //    position-only credit rule ignores the operation kind, so an
+                //    unrelated `define` in another file was granting `import` its
+                //    coverage. Fixing the attribution removed the collision and
+                //    exposed that this position was wrong all along.
+                return make_r7rs_import_ast(specs, ast.line, ast.column);
             }
             if (token.type != TOKEN_STRING) {
                 PARSE_ERROR_AT(token, "import requires a string path or R7RS library import set");
@@ -10486,40 +10552,68 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
 
     // Check if ALL elements are tensor_ops with identical shapes → nested vector flattening
     bool all_sub_tensors = true;
+    bool any_sub_tensor = false;
     for (auto& elem : elements) {
-        if (elem.type != ESHKOL_OP || elem.operation.op != ESHKOL_TENSOR_OP) {
+        if (elem.type == ESHKOL_OP && elem.operation.op == ESHKOL_TENSOR_OP) {
+            any_sub_tensor = true;
+        } else {
             all_sub_tensors = false;
-            break;
         }
     }
 
-    if (all_sub_tensors && elements.size() > 0) {
-        // Verify all sub-tensors have the same shape
-        uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
-        uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
-        uint64_t sub_total = elements[0].operation.tensor_op.total_elements;
-        bool shapes_match = true;
-
-        for (size_t i = 1; i < elements.size(); i++) {
+    // A nest whose sub-shapes do not all agree cannot be a tensor. Decide that
+    // here so both the ragged case (`#(#(1 2) #(3))`) and the mixed case
+    // (`#(#(1 2) 3)`) take the same exit as the runtime-built spelling below.
+    bool sub_shapes_match = all_sub_tensors;
+    if (all_sub_tensors) {
+        const uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
+        const uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
+        for (size_t i = 1; i < elements.size() && sub_shapes_match; i++) {
             if (elements[i].operation.tensor_op.num_dimensions != sub_ndim) {
-                eshkol_error( "nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
-                    (unsigned long long)sub_ndim, i,
-                    (unsigned long long)elements[i].operation.tensor_op.num_dimensions);
-                ast.type = ESHKOL_INVALID;
-                return ast;
+                sub_shapes_match = false;
+                break;
             }
             for (uint64_t d = 0; d < sub_ndim; d++) {
                 if (elements[i].operation.tensor_op.dimensions[d] != sub_dims[d]) {
-                    eshkol_error( "nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
-                        (unsigned long long)d, (unsigned long long)sub_dims[d], i,
-                        (unsigned long long)elements[i].operation.tensor_op.dimensions[d]);
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
+                    sub_shapes_match = false;
+                    break;
                 }
             }
         }
+    }
 
-        if (shapes_match) {
+    // NON-RECTANGULAR NEST: build the value, do not flatten and do not fail the
+    // parse.  `#(#(1.0 2.0) #(3.0))` and `#(#(1.0 2.0) 3.0)` describe no tensor,
+    // so the only honest answer is the one the runtime already gives the
+    // identical runtime-built value: a catchable error naming the mismatch, from
+    // eshkol_tensor_from_collection, at the operation that asked for a tensor.
+    //
+    // This used to raise a *parse* diagnostic and return ESHKOL_INVALID, which
+    // was both uncatchable and not fatal: `(tensor-shape #(#(1.0 2.0) #(3.0)))`
+    // silently answered `()` and kept running, and binding the literal and then
+    // reading it (`(define v #(#(1.0 2.0) #(3.0)))` … `(vector-length v)`)
+    // dereferenced the hole the invalid node left behind and SIGSEGVed.
+    //
+    // Lowering the nest to `(vector <sub-literal> ...)` keeps ONE
+    // raggedness check for the whole language — the value-based walker — so the
+    // literal and the runtime-built spelling of the same value cannot disagree,
+    // and it matches the bytecode VM, which also treats the ragged literal as an
+    // ordinary nested vector value and only complains when a tensor is demanded.
+    // Rectangular nests are untouched: they keep the compile-time flattening
+    // that makes `#(#(1 2) #(3 4))` Eshkol's rank-2 tensor literal.
+    if (any_sub_tensor && !sub_shapes_match) {
+        return make_parser_call_ast("vector", elements,
+                                    elements[0].line, elements[0].column);
+    }
+
+    if (all_sub_tensors && elements.size() > 0) {
+        // Every sub-tensor has the same shape (checked above), so the nest is
+        // rectangular and flattens into one higher-rank tensor literal.
+        uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
+        uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
+        uint64_t sub_total = elements[0].operation.tensor_op.total_elements;
+
+        {
             // Flatten into N+1 dimensional tensor
             // #(#(1 2) #(3 4)) with sub_dims=[2] → dims=[2, 2], elements=[1, 2, 3, 4]
             uint64_t outer_count = elements.size();
@@ -10889,6 +10983,13 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             eshkol_ast_t result = parse_expression(tokenizer);
             g_parse_source = NULL;
 
+            /* Stamp the form's originating FILE. This is the one choke point
+             * every top-level form passes through, and a form cannot span two
+             * files, so stamping here (rather than at each of the ~40 places
+             * that assign `line`) gives complete provenance with no chance of a
+             * missed site. Inner nodes stay 0 and inherit this form's file. */
+            result.source_file_id = g_parse_filename_id;
+
             if (result.type == ESHKOL_OP && parser_language_coverage_enabled()) {
                 eshkol_language_coverage_accept(
                     g_parse_filename.c_str(),
@@ -10941,8 +11042,46 @@ extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_column = 1;
 }
 
+/* Interned source-file table backing eshkol_ast_t::source_file_id.
+ *
+ * A deque of strings (never reallocates its elements) plus a name->id map. Ids
+ * are 1-based so 0 stays the "unknown" sentinel, and the table is process-
+ * lifetime so an id stamped during parsing resolves correctly at codegen time,
+ * long after the loader's own path string has died. */
+static std::mutex g_source_file_table_mutex;
+static std::deque<std::string>& source_file_table() {
+    static std::deque<std::string> table;
+    return table;
+}
+static std::unordered_map<std::string, uint32_t>& source_file_ids() {
+    static std::unordered_map<std::string, uint32_t> ids;
+    return ids;
+}
+
+extern "C" uint32_t eshkol_intern_source_file(const char* path) {
+    if (!path || !*path) return 0;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& ids = source_file_ids();
+    auto it = ids.find(path);
+    if (it != ids.end()) return it->second;
+    auto& table = source_file_table();
+    table.emplace_back(path);
+    uint32_t id = (uint32_t)table.size();  // 1-based
+    ids.emplace(path, id);
+    return id;
+}
+
+extern "C" const char* eshkol_source_file_name(uint32_t id) {
+    if (id == 0) return NULL;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& table = source_file_table();
+    if (id > table.size()) return NULL;  // unset/garbage id reads as unknown
+    return table[id - 1].c_str();
+}
+
 extern "C" void eshkol_set_parse_source_context(const char* source_name) {
     g_parse_filename = (source_name && *source_name) ? source_name : "<unknown>";
+    g_parse_filename_id = eshkol_intern_source_file(g_parse_filename.c_str());
 }
 
 extern "C" const char* eshkol_get_parse_source_context(void) {

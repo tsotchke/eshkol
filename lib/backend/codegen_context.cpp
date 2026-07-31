@@ -63,6 +63,80 @@ llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
     return builder_.CreateLoad(tv_ty, out_slot, "wb_result");
 }
 
+// === Runtime Guard Failure ===
+//
+// See the header for the full history: a guard whose diagnostic was conditional
+// on lookupFunction("printf")/("exit") compiled to a bare `unreachable`, which
+// let LLVM delete the guarding branch outright. These two helpers are the single
+// implementation every codegen module uses to close a guard's failure block.
+
+void CodegenContext::emitRaise(const char* message) {
+    llvm::Value* msg = builder_.CreateGlobalString(message ? message : "runtime error");
+    emitRaiseWithMessagePtr(msg);
+}
+
+void CodegenContext::emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value*> args) {
+    if (args.empty()) {
+        emitRaise(format);
+        return;
+    }
+
+    // Buffer lives in the entry block: a guard can sit inside a loop body, and
+    // an alloca there re-adjusts the stack pointer on every iteration.
+    constexpr uint64_t kMsgBufSize = 256;
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilderBase::InsertPoint saved_ip = builder_.saveIP();
+    if (fn && !fn->empty()) {
+        llvm::BasicBlock& entry = fn->getEntryBlock();
+        builder_.SetInsertPoint(&entry, entry.begin());
+    }
+    llvm::AllocaInst* buf = builder_.CreateAlloca(
+        int8Type(), llvm::ConstantInt::get(int64Type(), kMsgBufSize), "raise_msg_buf");
+    builder_.restoreIP(saved_ip);
+
+    llvm::Function* snprintf_fn = funcs_.getSnprintf();
+    if (!snprintf_fn) {
+        // No snprintf available: still raise, just without the runtime detail.
+        emitRaise(format);
+        return;
+    }
+
+    std::vector<llvm::Value*> call_args;
+    call_args.reserve(args.size() + 3);
+    call_args.push_back(buf);
+    // snprintf's second parameter is size_t, which is i32 on wasm32 and i64 on
+    // native 64-bit — take the width from the type system rather than assuming.
+    call_args.push_back(llvm::ConstantInt::get(types_.getSizeType(), kMsgBufSize));
+    call_args.push_back(builder_.CreateGlobalString(format));
+    for (llvm::Value* a : args) call_args.push_back(a);
+    builder_.CreateCall(snprintf_fn, call_args);
+
+    emitRaiseWithMessagePtr(buf);
+}
+
+void CodegenContext::emitRaiseWithMessagePtr(llvm::Value* message_ptr) {
+    llvm::Function* make_exc = module_.getFunction("eshkol_make_exception_with_header");
+    if (!make_exc) {
+        llvm::FunctionType* make_ty = llvm::FunctionType::get(
+            ptrType(), {int32Type(), ptrType()}, false);
+        make_exc = llvm::Function::Create(make_ty, llvm::GlobalValue::ExternalLinkage,
+                                          "eshkol_make_exception_with_header", &module_);
+    }
+    llvm::Function* raise_fn = module_.getFunction("eshkol_raise");
+    if (!raise_fn) {
+        llvm::FunctionType* raise_ty = llvm::FunctionType::get(
+            voidType(), {ptrType()}, false);
+        raise_fn = llvm::Function::Create(raise_ty, llvm::GlobalValue::ExternalLinkage,
+                                          "eshkol_raise", &module_);
+        raise_fn->setDoesNotReturn();
+    }
+
+    llvm::Value* exc_type = llvm::ConstantInt::get(int32Type(), ESHKOL_EXCEPTION_ERROR);
+    llvm::Value* exc = builder_.CreateCall(make_exc, {exc_type, message_ptr});
+    builder_.CreateCall(raise_fn, {exc});
+    builder_.CreateUnreachable();
+}
+
 CodegenContext::CodegenContext(llvm::LLVMContext& llvm_ctx,
                                llvm::Module& llvm_mod,
                                llvm::IRBuilder<>& ir_builder,

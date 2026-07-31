@@ -772,7 +772,7 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
         {"equal?", "(equal? a b)", "Structural equality (recursive)", "(equal? '(1 2) '(1 2)) => #t"},
 
         // Memory management (OALR)
-        {"with-region", "(with-region [name] [size] body ...)", "Execute body with memory region", "(with-region data 1024 ...)"},
+        {"with-region", "(with-region ['name | ('name size)] body ...)", "Execute body with memory region", "(with-region ('data 1024) ...)"},
         {"owned", "(owned expr)", "Mark value as owned (single owner)", "(owned (list 1 2 3))"},
         {"move", "(move var)", "Transfer ownership of variable", "(move x)"},
         {"borrow", "(borrow var body ...)", "Temporarily borrow a value", "(borrow x (display x))"},

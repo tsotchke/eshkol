@@ -1,6 +1,16 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+/* Element count above which a `#(...)` / `(vector ...)` literal is built by
+ * allocate-then-fill (constant operand-stack depth) instead of by pushing every
+ * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
+ * is one instruction per element and comfortably inside the operand stack;
+ * above it the literal's size must not be limited by the stack, so the fill
+ * form is used. */
+#ifndef VM_VEC_LITERAL_STACK_CHUNK
+#define VM_VEC_LITERAL_STACK_CHUNK 256
+#endif
+
 /**
  * @brief Compile node->children[first..last] as a sequence of operands left
  *        on the stack, registering each pushed result as an anonymous local
@@ -25,6 +35,178 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * closure.arity, which vm_closure_arity() reports to `gradient`. */
 #define VM_PACK_FUNC_ARITY(pc, arity) \
     ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
+
+/* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
+ *
+ * "At the top level of a program, a definition
+ *      (define <variable> <expression>)
+ *  has essentially the same effect as the assignment expression
+ *      (set! <variable> <expression>)
+ *  if <variable> is bound to a non-syntax value."
+ *
+ * The VM binds each top-level define to a fresh stack slot, and resolve_local()
+ * scans backwards, so a *later* reference already found the later definition.
+ * What it could not do is update an *earlier* one: a procedure defined before
+ * the redefinition captured the first definition's slot as an upvalue, so
+ * calling it after the redefinition still ran the old body.
+ *
+ * Top-level captures are already by reference — compile_form_define() and
+ * compile_form_lambda_2() convert every is_local upvalue of a top-level
+ * closure into an open (stack-slot) upvalue via native call 151, precisely so
+ * a later `set!` is visible. A redefinition is a `set!`, so assigning to the
+ * existing slot instead of adding a second one gives R7RS semantics for free.
+ *
+ * This is restricted to names the *user program* defines more than once
+ * (registered below from a pre-scan of the source). Applying it to any name
+ * that merely already resolves would also capture the builtin preamble and
+ * the Scheme prelude, whose slots are pre-registered before user code is
+ * compiled: a user `(define (car x) ...)` would then rebind the slot the
+ * prelude's own `map`/`fold` read through, letting user code break the
+ * standard library. Native keeps the stdlib in a separately compiled object
+ * where that cannot happen, so matching it here also preserves parity.
+ */
+#define VM_MAX_REDEFINED_NAMES 128
+static char g_vm_redefined_names[VM_MAX_REDEFINED_NAMES][128];
+static int  g_vm_n_redefined = 0;
+
+/** @brief Forget every registered redefined top-level name. */
+static void vm_clear_redefined_toplevel_names(void) {
+    g_vm_n_redefined = 0;
+}
+
+/** @brief Register @p name as defined more than once at the program's top
+ *         level (idempotent; silently ignored past the table capacity, which
+ *         only costs the old stale-binding behaviour). */
+static void vm_add_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return;
+    if (g_vm_n_redefined >= VM_MAX_REDEFINED_NAMES) return;
+    strncpy(g_vm_redefined_names[g_vm_n_redefined], name, 127);
+    g_vm_redefined_names[g_vm_n_redefined][127] = 0;
+    g_vm_n_redefined++;
+}
+
+/** @return 1 if @p name is defined more than once at the top level of the
+ *          program being compiled. */
+static int vm_is_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return 0;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return 1;
+    return 0;
+}
+
+/** @return the name a top-level `define` form binds — `x` for both
+ *          `(define x v)` and `(define (x . args) body)` — or NULL if @p e is
+ *          not a define form. */
+static const char* vm_define_bound_name(Node* e) {
+    if (!e || e->type != N_LIST || e->n_children < 2) return NULL;
+    if (e->children[0]->type != N_SYMBOL) return NULL;
+    if (strcmp(e->children[0]->symbol, "define") != 0) return NULL;
+    Node* target = e->children[1];
+    if (target->type == N_SYMBOL) return target->symbol;
+    if (target->type == N_LIST && target->n_children >= 1 &&
+        target->children[0]->type == N_SYMBOL) {
+        return target->children[0]->symbol;
+    }
+    return NULL;
+}
+
+/** @brief Register every name that @p n top-level @p forms define more than
+ *         once (R7RS §5.3.1). Replaces any previous registration. */
+static void vm_register_redefined_from_forms(Node** forms, int n) {
+    vm_clear_redefined_toplevel_names();
+    if (!forms) return;
+
+    char seen[VM_MAX_REDEFINED_NAMES * 4][128];
+    int n_seen = 0;
+    for (int i = 0; i < n; i++) {
+        const char* name = vm_define_bound_name(forms[i]);
+        if (!name) continue;
+        int already = 0;
+        for (int s = 0; s < n_seen; s++)
+            if (strcmp(seen[s], name) == 0) { already = 1; break; }
+        if (already) {
+            vm_add_redefined_toplevel_name(name);
+        } else if (n_seen < (int)(sizeof(seen) / sizeof(seen[0]))) {
+            strncpy(seen[n_seen], name, 127);
+            seen[n_seen][127] = 0;
+            n_seen++;
+        }
+    }
+}
+
+/** @brief Same as vm_register_redefined_from_forms() for a driver that has no
+ *         parsed top-level array — parses @p source into a throw-away AST just
+ *         to count the definitions. The parser has no registration side
+ *         effects (macros are expanded during compilation, not parsing), so
+ *         reading the source twice is safe. */
+static void vm_prescan_redefined_toplevel_names(const char* source) {
+    vm_clear_redefined_toplevel_names();
+    if (!source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+
+    Node* forms[VM_MAX_REDEFINED_NAMES * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+
+    vm_register_redefined_from_forms(forms, n_forms);
+
+    for (int i = 0; i < n_forms; i++) free_node(forms[i]);
+    src_ptr = saved_src;
+}
+
+/* First stack slot that belongs to the user program: every slot below it was
+ * created by emit_builtin_preamble() or by the Scheme prelude. A redefinition
+ * may only assign to a location the user program itself created — otherwise the
+ * FIRST user definition of a name that happens to collide with a builtin (and
+ * is then redefined) would overwrite the preamble's own closure slot, letting
+ * user code rebind what the prelude's map/fold read through. Native keeps its
+ * stdlib in a separately compiled object where that cannot happen; the
+ * watermark keeps the VM matching it. */
+static int g_vm_user_locals_base = 0;
+
+/** @brief Mark @p n_locals as the boundary between prelude and user slots. */
+static void vm_set_user_locals_base(int n_locals) {
+    g_vm_user_locals_base = n_locals > 0 ? n_locals : 0;
+}
+
+/* The group-compilation driver in compile_and_run() pre-registers a NIL local
+ * per member of a mutually-recursive define group before compiling any of
+ * them, so inside a group `resolve_local` finds a slot that no definition has
+ * run yet. Suppress the redefinition rule for that window. */
+static int g_vm_predeclared_group_depth = 0;
+
+/** @return the existing top-level slot a redefinition of @p name must assign
+ *          to, or -1 when this define should create a new binding.
+ *
+ * A heap-boxed target (set!-mutated *and* captured, so its slot holds a
+ * 1-element vector) is declined: assigning into the box means emitting
+ * GET_LOCAL/CONST before the value, which would leave two untracked values
+ * under the value's own compile-time stack accounting. Such a name would have
+ * to be redefined *and* set!-mutated *and* captured; declining leaves it on
+ * the previous behaviour rather than risking mis-tracked slots. */
+static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
+    if (!c || c->enclosing != NULL) return -1;          /* top level only */
+    if (g_vm_predeclared_group_depth > 0) return -1;
+    if (!vm_is_redefined_toplevel_name(name)) return -1;
+
+    int slot = resolve_local(c, name);
+    if (slot < 0) return -1;
+    if (slot < g_vm_user_locals_base) return -1;   /* prelude/builtin location */
+    for (int li = c->n_locals - 1; li >= 0; li--) {
+        if (c->locals[li].slot == slot && c->locals[li].boxed) return -1;
+    }
+    return slot;
+}
 
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
@@ -257,6 +439,310 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
 }
 
 /**
+ * @brief Reports whether @p name is a library this compilation unit has
+ *        already defined with `define-library`.
+ *
+ * R7RS-small 5.6.1: a `define-library` form defines its library for the forms
+ * that follow it, so an import of such a name must resolve from the unit and
+ * never from the filesystem.  Being *compiled* is what makes a library
+ * resolvable, which is also what makes an import written above its
+ * `define-library` correctly fail to find it.
+ */
+/* A compile-time defect the VM must not run past.
+ *
+ * The VM's ordinary diagnostics are warnings (an unbound name is reported and
+ * the program still runs), which is exactly how an `import` written above its
+ * `define-library` could produce a program that ran and answered while the
+ * native lanes refused to compile it at all.  This flag is the fail-closed
+ * signal for that class: both drivers check it after compiling and refuse to
+ * execute or to emit bytecode. */
+static int g_vm_compile_failed = 0;
+
+/**
+ * @brief Reports a fatal compile-time defect and arms the fail-closed flag.
+ *
+ * @param message  the defect, one line.
+ * @param detail   optional second line naming the rule that was broken;
+ *                 may be NULL.
+ */
+static void vm_compile_error(const char* message, const char* detail) {
+    fprintf(stderr, "ERROR: %s\n", message ? message : "compilation failed");
+    if (detail && *detail) fprintf(stderr, "ERROR:   %s\n", detail);
+    g_vm_compile_failed = 1;
+}
+
+/** @return nonzero when this compilation hit a fatal defect. */
+static int vm_compile_failed(void) { return g_vm_compile_failed; }
+
+/** @brief Clears the fail-closed flag at the start of a compilation. */
+static void vm_clear_compile_failure(void) { g_vm_compile_failed = 0; }
+
+/* Libraries this compilation unit defines somewhere BELOW the point currently
+ * being compiled.  Populated before compilation begins, and emptied name by
+ * name as each `define-library` is reached, so whatever is still listed when
+ * an import fails is precisely the set of libraries that exist in this unit
+ * but are written after the import — the forward reference R7RS-small 5.6.1
+ * forbids.  Mirrors library_registry::planUnit() on the native side. */
+static char g_vm_planned_libraries[64][128];
+static int g_vm_n_planned_libraries = 0;
+
+static void vm_clear_planned_libraries(void) { g_vm_n_planned_libraries = 0; }
+
+static void vm_add_planned_library(const char* name) {
+    if (!name || !*name || g_vm_n_planned_libraries >= 64) return;
+    for (int i = 0; i < g_vm_n_planned_libraries; i++)
+        if (strcmp(g_vm_planned_libraries[i], name) == 0) return;
+    strncpy(g_vm_planned_libraries[g_vm_n_planned_libraries], name, 127);
+    g_vm_planned_libraries[g_vm_n_planned_libraries][127] = '\0';
+    g_vm_n_planned_libraries++;
+}
+
+static int vm_library_planned_later(const char* name) {
+    if (!name) return 0;
+    for (int i = 0; i < g_vm_n_planned_libraries; i++)
+        if (strcmp(g_vm_planned_libraries[i], name) == 0) return 1;
+    return 0;
+}
+
+static void vm_drop_planned_library(const char* name) {
+    for (int i = 0; i < g_vm_n_planned_libraries; i++) {
+        if (strcmp(g_vm_planned_libraries[i], name) != 0) continue;
+        for (int j = i + 1; j < g_vm_n_planned_libraries; j++)
+            memcpy(g_vm_planned_libraries[j - 1], g_vm_planned_libraries[j], 128);
+        g_vm_n_planned_libraries--;
+        return;
+    }
+}
+
+static int vm_unit_library_index(const char* name) {
+    if (!name) return -1;
+    for (int i = 0; i < g_compiler_ctx.n_unit_libraries; i++) {
+        if (strcmp(g_compiler_ctx.unit_libraries[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+static int vm_unit_library_defined(const char* name) {
+    return vm_unit_library_index(name) >= 0;
+}
+
+/**
+ * @brief Records @p name as a library defined by this compilation unit,
+ *        together with the union of its `export` clauses.
+ *
+ * A repeated `define-library` for the same name re-establishes it, matching
+ * the native registry's last-definition-wins rule.
+ */
+static void vm_unit_library_define(const char* name,
+                                   const char exports[][128], int n_exports) {
+    if (!name || !*name) return;
+    int idx = vm_unit_library_index(name);
+    if (idx < 0) {
+        if (g_compiler_ctx.n_unit_libraries >= 64) return;
+        idx = g_compiler_ctx.n_unit_libraries++;
+        strncpy(g_compiler_ctx.unit_libraries[idx].name, name, 127);
+        g_compiler_ctx.unit_libraries[idx].name[127] = '\0';
+    }
+    g_compiler_ctx.unit_libraries[idx].n_exports = 0;
+    for (int i = 0; i < n_exports && i < 64; i++) {
+        strncpy(g_compiler_ctx.unit_libraries[idx].exports[i], exports[i], 127);
+        g_compiler_ctx.unit_libraries[idx].exports[i][127] = '\0';
+        g_compiler_ctx.unit_libraries[idx].n_exports++;
+    }
+}
+
+/**
+ * @brief Joins an R7RS library-name datum into the dotted module name the
+ *        rest of the module machinery speaks.
+ *
+ * `(smoke v1_3)` becomes `smoke.v1_3`, matching what the native front end's
+ * parse_r7rs_library_name() produces, so both back ends resolve the same
+ * library to the same file (`smoke/v1_3.esk`) when it is not in this unit.
+ * R7RS permits exact non-negative integers as name components, so an integer
+ * literal is joined by its written value.
+ *
+ * @return 1 on success, 0 if @p datum is not a well-formed library name.
+ */
+static int vm_library_name_from_datum(const Node* datum, char* out, size_t out_size) {
+    if (!datum || !out || out_size == 0) return 0;
+    if (datum->type != N_LIST || datum->n_children < 1) return 0;
+    out[0] = '\0';
+    size_t used = 0;
+    for (int i = 0; i < datum->n_children; i++) {
+        const Node* part = datum->children[i];
+        char piece[128];
+        if (part->type == N_SYMBOL) {
+            snprintf(piece, sizeof(piece), "%s", part->symbol);
+        } else if (part->type == N_NUMBER && part->is_int && part->ival >= 0) {
+            snprintf(piece, sizeof(piece), "%lld", (long long)part->ival);
+        } else {
+            return 0;
+        }
+        size_t need = strlen(piece) + (i > 0 ? 1 : 0);
+        if (used + need + 1 > out_size) return 0;
+        if (i > 0) out[used++] = '.';
+        memcpy(out + used, piece, strlen(piece));
+        used += strlen(piece);
+        out[used] = '\0';
+    }
+    return used > 0;
+}
+
+/**
+ * @brief Notes every `define-library` in @p forms that has not been compiled
+ *        yet, so an import above one can be reported as the forward reference
+ *        it is rather than as a missing file.
+ */
+static void vm_plan_unit_libraries(Node* const* forms, int n_forms) {
+    vm_clear_planned_libraries();
+    if (!forms) return;
+    for (int i = 0; i < n_forms; i++) {
+        const Node* f = forms[i];
+        if (!f || f->type != N_LIST || f->n_children < 2) continue;
+        if (f->children[0]->type != N_SYMBOL) continue;
+        if (strcmp(f->children[0]->symbol, "define-library") != 0) continue;
+        char name[256];
+        if (!vm_library_name_from_datum(f->children[1], name, sizeof(name))) continue;
+        if (vm_unit_library_defined(name)) continue;
+        vm_add_planned_library(name);
+    }
+}
+
+/**
+ * @brief vm_plan_unit_libraries() for a driver with no parsed top-level array:
+ *        parses @p source into throw-away forms just to note the library names.
+ *
+ * The parser has no registration side effects, so reading the source twice is
+ * safe — the same argument vm_prescan_redefined_toplevel_names() relies on.
+ */
+static void vm_prescan_unit_libraries(const char* source) {
+    vm_clear_planned_libraries();
+    if (!source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+
+    Node* forms[VM_MAX_REDEFINED_NAMES * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+
+    vm_plan_unit_libraries(forms, n_forms);
+
+    for (int i = 0; i < n_forms; i++) free_node(forms[i]);
+    src_ptr = saved_src;
+}
+
+/**
+ * @brief Peels the R7RS import-set wrappers off @p set and returns the
+ *        library-name datum underneath.
+ *
+ * `(only (m) a)`, `(except (m) a)`, `(prefix (m) p:)` and `(rename (m) (a b))`
+ * all name a library in their second position; anything else IS the library
+ * name.  The VM has no per-module visibility boundary — every top-level
+ * binding is a global of the one unit — so the filters themselves are not
+ * lowered here; what matters for resolution is which library is named.
+ */
+static const Node* vm_import_set_library_datum(const Node* set) {
+    if (!set || set->type != N_LIST || set->n_children < 1) return set;
+    const Node* head = set->children[0];
+    if (head->type == N_SYMBOL && set->n_children >= 2 &&
+        (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
+         strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0)) {
+        return vm_import_set_library_datum(set->children[1]);
+    }
+    return set;
+}
+
+/**
+ * @brief Loads and compiles the source file backing dotted module @p mod_name.
+ *
+ * Shared by `(require m)` and `(import (m …))` so the two forms cannot drift
+ * apart in what they resolve or how often they load it.  Emits no balancing
+ * value of its own: the caller owns the stack contract described on
+ * compile_form_require().
+ */
+static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
+    if (!mod_name || !*mod_name) return;
+
+    /* Track already-loaded modules to avoid double-loading */
+    for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
+        if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
+    }
+    if (g_compiler_ctx.n_loaded < 64)
+        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
+
+    /* stdlib is the prelude — builtins already available */
+    if (strcmp(mod_name, "stdlib") == 0) return;
+
+    /* Build file path: module.name → lib/module/name.esk */
+    char path[512];
+    snprintf(path, sizeof(path), "lib/");
+    int pi = 4;
+    for (const char* p = mod_name; *p && pi < 500; p++) {
+        path[pi++] = (*p == '.') ? '/' : *p;
+    }
+    path[pi] = '\0';
+    strncat(path, ".esk", sizeof(path) - pi - 1);
+
+#ifdef ESHKOL_VM_NO_DISASM
+    /* WASM mode: no filesystem access. Prelude builtins already available. */
+    return;
+#else
+    /* Read and parse the file */
+    FILE* mf = fopen(path, "r");
+    if (!mf) {
+        /* Try alternative path: replace ALL dots with slashes */
+        char alt[512];
+        snprintf(alt, sizeof(alt), "%s.esk", mod_name);
+        for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
+        mf = fopen(alt, "r");
+    }
+    if (mf) {
+        fseek(mf, 0, SEEK_END);
+        long len = ftell(mf);
+        fseek(mf, 0, SEEK_SET);
+        char* src = (char*)malloc(len + 1);
+        if (src) {
+            fread(src, 1, len, mf);
+            src[len] = '\0';
+            fclose(mf);
+            /* Parse and compile all top-level forms.
+             *
+             * Under the SAME stack discipline the unit's own top level uses
+             * (eshkol_vm.c): a form that bound nothing left one value behind,
+             * and dropping the POP here desynchronized `n_locals` from the
+             * real stack depth for every module containing a non-defining
+             * top-level form — every later local in that module, and in the
+             * importing unit, then addressed the wrong slot. */
+            const char* saved_src = src_ptr;
+            src_ptr = src;
+            while (1) {
+                skip_ws();
+                if (!*src_ptr) break;
+                Node* expr = parse_sexp();
+                if (!expr) break;
+                int before = c->n_locals;
+                compile_expr(c, expr, 0);
+                if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+                free_node(expr);
+            }
+            src_ptr = saved_src;
+            free(src);
+        } else {
+            fclose(mf);
+        }
+    }
+    /* If file not found, silently continue (builtins always available) */
+#endif
+}
+
+/**
  * @brief Compile a `(require module.name)` form: resolves the dotted
  *        module name to a `lib/module/name.esk` source path, and if not
  *        already loaded (tracked in the compiler context to avoid
@@ -278,76 +764,257 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
      * placeholder is emitted there only if it happened to add none. */
     int locals_at_start = c->n_locals;
     if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
-        const char* mod_name = node->children[1]->symbol;
-        /* Track already-loaded modules to avoid double-loading */
-        for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
-            if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) {
-                chunk_emit(c, OP_NIL, 0);
-                return;
-            }
+        /* A `require` may also name a library this unit defines: the two
+         * module styles share one namespace, so `(require m)` after
+         * `(define-library (m) …)` must not go to disk either. */
+        if (!vm_unit_library_defined(node->children[1]->symbol)) {
+            vm_compile_module_by_name(c, node->children[1]->symbol);
         }
-        if (g_compiler_ctx.n_loaded < 64)
-            strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
-
-        /* stdlib is the prelude — builtins already available */
-        if (strcmp(mod_name, "stdlib") == 0) { chunk_emit(c, OP_NIL, 0); return; }
-
-        /* Build file path: module.name → lib/module/name.esk */
-        char path[512];
-        snprintf(path, sizeof(path), "lib/");
-        int pi = 4;
-        for (const char* p = mod_name; *p && pi < 500; p++) {
-            path[pi++] = (*p == '.') ? '/' : *p;
-        }
-        path[pi] = '\0';
-        strncat(path, ".esk", sizeof(path) - pi - 1);
-
-#ifdef ESHKOL_VM_NO_DISASM
-        /* WASM mode: no filesystem access. Prelude builtins already available. */
-        chunk_emit(c, OP_NIL, 0);
-        return;
-#endif
-        /* Read and parse the file */
-        FILE* mf = fopen(path, "r");
-        if (!mf) {
-            /* Try alternative path: replace ALL dots with slashes */
-            char alt[512];
-            snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-            for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
-            mf = fopen(alt, "r");
-        }
-        if (mf) {
-            fseek(mf, 0, SEEK_END);
-            long len = ftell(mf);
-            fseek(mf, 0, SEEK_SET);
-            char* src = (char*)malloc(len + 1);
-            if (src) {
-                fread(src, 1, len, mf);
-                src[len] = '\0';
-                fclose(mf);
-                /* Parse and compile all top-level forms */
-                const char* saved_src = src_ptr;
-                src_ptr = src;
-                while (1) {
-                    skip_ws();
-                    if (!*src_ptr) break;
-                    Node* expr = parse_sexp();
-                    if (!expr) break;
-                    compile_expr(c, expr, 0);
-                    free_node(expr);
-                }
-                src_ptr = saved_src;
-                free(src);
-            } else {
-                fclose(mf);
-            }
-        }
-        /* If file not found, silently continue (builtins always available) */
     }
     /* Balance the caller's POP when the require added no binding of its own
      * (empty/absent module, or a malformed require). */
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
     return;
+}
+
+/** @brief Emits `(define <alias> <target>)` through the ordinary define path. */
+static void vm_emit_import_alias(FuncChunk* c, const char* alias, const char* target) {
+    if (!alias || !*alias || !target || !*target || strcmp(alias, target) == 0) return;
+    Node* def = make_call_node("define");
+    if (!def) return;
+    Node* lhs = make_symbol_node(alias);
+    Node* rhs = make_symbol_node(target);
+    if (!lhs || !rhs) { free_node(lhs); free_node(rhs); free_node(def); return; }
+    add_child(def, lhs);
+    add_child(def, rhs);
+    int before = c->n_locals;
+    compile_expr(c, def, 0);
+    if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+    free_node(def);
+}
+
+/**
+ * @brief Resolves one R7RS import set of a SAME-UNIT library, emitting the
+ *        aliases it asks for and reporting the names it makes visible.
+ *
+ * The VM has one global top level and therefore no visibility boundary, so
+ * `only` and `except` need no code — they only narrow which names a `prefix`
+ * further out is applied to.  `rename` and `prefix` DO need code: they are
+ * the import sets that introduce new names, which the native front end also
+ * lowers to plain `define` aliases.
+ *
+ * @return the number of names @p visible received, or -1 when the set does
+ *   not bottom out in a library this compilation unit defines (in which case
+ *   nothing was emitted and the caller falls back to the module search path).
+ */
+static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
+                                      char visible[][128], int max_visible) {
+    if (!set || set->type != N_LIST || set->n_children < 1) return -1;
+    const Node* head = set->children[0];
+
+    if (head->type == N_SYMBOL && set->n_children >= 2 &&
+        (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
+         strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0)) {
+        int n = vm_resolve_unit_import_set(c, set->children[1], visible, max_visible);
+        if (n < 0) return -1;
+
+        if (strcmp(head->symbol, "only") == 0) {
+            int kept = 0;
+            for (int i = 0; i < n; i++) {
+                for (int a = 2; a < set->n_children; a++) {
+                    if (set->children[a]->type == N_SYMBOL &&
+                        strcmp(set->children[a]->symbol, visible[i]) == 0) {
+                        if (kept != i) strncpy(visible[kept], visible[i], 127);
+                        kept++;
+                        break;
+                    }
+                }
+            }
+            return kept;
+        }
+        if (strcmp(head->symbol, "except") == 0) {
+            int kept = 0;
+            for (int i = 0; i < n; i++) {
+                int excluded = 0;
+                for (int a = 2; a < set->n_children; a++) {
+                    if (set->children[a]->type == N_SYMBOL &&
+                        strcmp(set->children[a]->symbol, visible[i]) == 0) { excluded = 1; break; }
+                }
+                if (excluded) continue;
+                if (kept != i) strncpy(visible[kept], visible[i], 127);
+                kept++;
+            }
+            return kept;
+        }
+        if (strcmp(head->symbol, "rename") == 0) {
+            for (int a = 2; a < set->n_children; a++) {
+                const Node* pair = set->children[a];
+                if (pair->type != N_LIST || pair->n_children != 2) continue;
+                if (pair->children[0]->type != N_SYMBOL ||
+                    pair->children[1]->type != N_SYMBOL) continue;
+                const char* from = pair->children[0]->symbol;
+                const char* to = pair->children[1]->symbol;
+                for (int i = 0; i < n; i++) {
+                    if (strcmp(visible[i], from) != 0) continue;
+                    vm_emit_import_alias(c, to, from);
+                    strncpy(visible[i], to, 127);
+                    visible[i][127] = '\0';
+                    break;
+                }
+            }
+            return n;
+        }
+        /* prefix: the last element is the prefix symbol */
+        const Node* prefix = set->children[set->n_children - 1];
+        if (prefix->type != N_SYMBOL) return n;
+        for (int i = 0; i < n; i++) {
+            char alias[128];
+            snprintf(alias, sizeof(alias), "%s%s", prefix->symbol, visible[i]);
+            vm_emit_import_alias(c, alias, visible[i]);
+            strncpy(visible[i], alias, 127);
+            visible[i][127] = '\0';
+        }
+        return n;
+    }
+
+    /* Base case: a library name datum. */
+    char name[256];
+    if (!vm_library_name_from_datum(set, name, sizeof(name))) return -1;
+    int idx = vm_unit_library_index(name);
+    if (idx < 0) return -1;
+    int n = g_compiler_ctx.unit_libraries[idx].n_exports;
+    if (n > max_visible) n = max_visible;
+    for (int i = 0; i < n; i++) {
+        strncpy(visible[i], g_compiler_ctx.unit_libraries[idx].exports[i], 127);
+        visible[i][127] = '\0';
+    }
+    return n;
+}
+
+/**
+ * @brief Compile an R7RS `(import <import-set> …)` form.
+ *
+ * Resolution order matches the native front end (lib/frontend/library_registry.h):
+ *   1. libraries this compilation unit defined earlier with `define-library`,
+ *   2. the module search path.
+ * A same-unit library's bindings are already top-level globals of this unit —
+ * `define-library` spliced its body in — so importing one loads nothing; only
+ * the aliases an import set asks for are emitted.
+ */
+static void compile_form_import(FuncChunk* c, Node* node, int tail) {
+    (void)tail;
+    int locals_at_start = c->n_locals;
+    for (int i = 1; i < node->n_children; i++) {
+        char visible[64][128];
+        if (vm_resolve_unit_import_set(c, node->children[i], visible, 64) >= 0) continue;
+        const Node* lib = vm_import_set_library_datum(node->children[i]);
+        char name[256];
+        if (!vm_library_name_from_datum(lib, name, sizeof(name))) continue;
+        if (vm_library_planned_later(name)) {
+            /* The library exists in this unit but is written BELOW the import.
+             * R7RS-small 5.6.1 defines a library by its `define-library` form,
+             * so nothing is defined until that form has been read. Refusing
+             * here is what keeps the VM from running a program both native
+             * lanes reject — its body would otherwise still be spliced in
+             * below, and the import would look like it had worked. */
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "library '%s' is imported above its define-library form", name);
+            vm_compile_error(msg,
+                             "A library must be defined before it is imported "
+                             "(R7RS-small 5.6.1); move the define-library above "
+                             "the import, or put the library in its own file.");
+            continue;
+        }
+        vm_compile_module_by_name(c, name);
+    }
+    if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
+}
+
+/**
+ * @brief Compile an R7RS `(define-library (name …) <library-declaration> …)` form.
+ *
+ * The library's `begin` bodies are spliced into the unit exactly where the
+ * form appears — the VM has one global top level, so that IS the library's
+ * effect — and the library name is recorded afterwards, so it becomes
+ * importable by the forms that follow and stays unresolvable to the forms
+ * above it (R7RS-small 5.6.1).  `export` needs no code for the same reason
+ * `provide` needs none: there is no visibility boundary to enforce.  An
+ * `import` clause is resolved with the same order a top-level import uses,
+ * before the name of the library being defined is registered, so a library
+ * cannot import itself into existence.
+ */
+static void compile_form_define_library(FuncChunk* c, Node* node, int tail) {
+    (void)tail;
+    int locals_at_start = c->n_locals;
+
+    char library_name[256];
+    int named = vm_library_name_from_datum(node->children[1], library_name,
+                                           sizeof(library_name));
+
+    char exports[64][128];
+    int n_exports = 0;
+
+    for (int i = 2; i < node->n_children; i++) {
+        Node* clause = node->children[i];
+        if (!clause || clause->type != N_LIST || clause->n_children < 1) continue;
+        Node* clause_head = clause->children[0];
+        if (clause_head->type != N_SYMBOL) continue;
+
+        if (strcmp(clause_head->symbol, "export") == 0) {
+            /* No code: the VM has no visibility boundary, so an export names
+             * a binding that is already a global of this unit.  The list is
+             * still recorded — it is the surface a later `(prefix …)` import
+             * of this library builds its aliases over, and R7RS allows more
+             * than one export clause, whose union is the library's surface. */
+            for (int e = 1; e < clause->n_children && n_exports < 64; e++) {
+                if (clause->children[e]->type != N_SYMBOL) continue;
+                strncpy(exports[n_exports], clause->children[e]->symbol, 127);
+                exports[n_exports][127] = '\0';
+                n_exports++;
+            }
+            continue;
+        }
+        if (strcmp(clause_head->symbol, "import") == 0) {
+            /* Resolve, then discard the placeholder compile_form_import()
+             * leaves for a caller that would POP it — this clause is not an
+             * expression position. */
+            int before = c->n_locals;
+            compile_form_import(c, clause, 0);
+            if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+            continue;
+        }
+        if (strcmp(clause_head->symbol, "begin") == 0) {
+            /* Same stack discipline the top-level driver applies: a body form
+             * that binds nothing leaves one value that has to be dropped, and
+             * one that binds occupies its slot and must not be. */
+            for (int b = 1; b < clause->n_children; b++) {
+                int before = c->n_locals;
+                compile_expr(c, clause->children[b], 0);
+                if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+            }
+            continue;
+        }
+        if (strcmp(clause_head->symbol, "include") == 0 ||
+            strcmp(clause_head->symbol, "include-ci") == 0) {
+            /* `include` is already a VM form (it splices a file's forms into
+             * the current unit); a library declaration means exactly that. */
+            int before = c->n_locals;
+            compile_expr(c, clause, 0);
+            if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
+            continue;
+        }
+        /* Any other declaration (cond-expand, include-library-declarations)
+         * is not part of the supported subset; ignore it rather than emit
+         * bytecode whose meaning we cannot justify. */
+    }
+
+    if (named) {
+        vm_unit_library_define(library_name, exports, n_exports);
+        vm_drop_planned_library(library_name);
+    }
+
+    if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
 /**
@@ -1214,7 +1881,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     (void)head; (void)tail;
     if (node->children[1]->type == N_SYMBOL) {
         /* Simple variable definition */
+        int redef_slot = vm_redefinition_target_slot(c, node->children[1]->symbol);
         compile_expr(c, node->children[2], 0);
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: assign to the name's existing location, so every
+             * closure that already captured that slot sees the new value.
+             * SET_LOCAL consumes the value; push NIL in its place so the
+             * caller's "this define added no local, POP its result"
+             * bookkeeping still balances. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
         add_local(c, node->children[1]->symbol);
         return;
     }
@@ -1223,7 +1901,11 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         Node* sig = node->children[1];
         char* fname = sig->children[0]->symbol;
 
-        int func_slot = add_local(c, fname);
+        /* R7RS §5.3.1: a redefinition reuses the name's existing location
+         * rather than binding a new one, so the body below also resolves the
+         * name to that slot. */
+        int redef_slot = vm_redefinition_target_slot(c, fname);
+        int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
@@ -1361,6 +2043,13 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                     g_n_repatch++;
                 }
             }
+        }
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: store the new procedure into the name's existing
+             * location. Must come after the open-upvalue conversion above,
+             * which needs the closure on the stack top. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
         }
         chunk_free_arrays(&func);
         return;
@@ -1809,6 +2498,116 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
 }
 
 /**
+ * @brief Is @p n the reader's representation of a quoted symbol, i.e. `'sym`
+ *        (equivalently the list `(quote sym)`)?
+ *
+ * The VM reader lowers `'x` to the two-element list `(quote x)` (vm_parser.c),
+ * so this is the shape a with-region region NAME arrives in.
+ */
+static int is_quoted_symbol(Node* n) {
+    return n && n->type == N_LIST && n->n_children == 2 &&
+           is_sym(n->children[0], "quote") &&
+           n->children[1] && n->children[1]->type == N_SYMBOL;
+}
+
+/**
+ * @brief Compile `(with-region [spec] body ...)` — the VM lowering of the OALR
+ *        lexically-scoped region form.
+ *
+ * TWO DEFECTS THIS REPLACES. The previous lowering was
+ *
+ *     for (int i = 1; i < node->n_children; i++)
+ *         compile_expr(c, node->children[i], tail && i == last);
+ *
+ * which got the form wrong in two independent ways:
+ *
+ *  1. NO `OP_POP` FOR NON-FINAL BODY EXPRESSIONS. Every body expression leaves
+ *     its value on the operand stack, so a multi-expression body stranded one
+ *     value per non-final expression. This is NOT benign on the VM: top-level
+ *     bindings live in stack slots that the compiler hands out by counting
+ *     (`add_local`), and the top-level driver emits exactly ONE `OP_POP` per
+ *     expression that grew no local (eshkol_vm.c). Strand N extra values and
+ *     every subsequent top-level `define` is assigned a slot that is already
+ *     occupied by junk — the same slot-shift corruption documented on
+ *     compile_form_require() above, in the opposite direction. Lowered exactly
+ *     like `begin` now: discard all but the last.
+ *
+ *  2. THE REGION SPECIFIER WAS COMPILED AS AN EXPRESSION. The documented
+ *     surface syntax (docs/reference/runtime/memory-model.md) is
+ *
+ *         (with-region body ...)              ; anonymous
+ *         (with-region 'name body ...)        ; named
+ *         (with-region ('name size) body ...) ; named + size hint in bytes
+ *
+ *     The specifier is DECLARATIVE — it names and sizes the arena. Compiling
+ *     it as an expression made `'name` a stray value push (see defect 1), and
+ *     made `('name size)` a CALL of the symbol `name` with argument `size`,
+ *     i.e. a hard "not a function" runtime error on a documented spelling.
+ *     The specifier is now recognised and skipped, as the native front end
+ *     does (lib/frontend/parser.cpp, ESHKOL_WITH_REGION_OP).
+ *
+ * WHY THE BODY IS OTHERWISE A PASS-THROUGH (the honest VM boundary). Native
+ * brackets the body with region_create/region_push/eshkol_region_enter and
+ * tears it down through the single shared teardown primitive
+ * `eshkol_region_unwind_to()` (llvm_codegen.cpp codegenWithRegion), which
+ * promotes the body result one region level out before the arena dies. The VM
+ * emits no such bracket because the VM heap has no escape evacuator to promote
+ * a kept value with: a real push/pop here would free the object graph the body
+ * just returned. This is the SAME boundary the user-reachable handle surface
+ * declares — `(region-close)` on the VM is bookkeeping-only for exactly this
+ * reason (vm_native.c fid 2211, tests/vm_parity/PARITY.tsv). So on the VM
+ * `with-region` is value- and effect-transparent but reclaims nothing; VM-side
+ * reclamation is gated on a VM-heap evacuator that does not exist yet.
+ * Correspondingly this lowering must NOT grow a parallel teardown mechanism:
+ * when the evacuator lands, the bracket belongs on `eshkol_region_unwind_to`'s
+ * VM counterpart, not on an open-coded push/pop pair here.
+ */
+static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
+    /* Recognise the optional region specifier. `'name` and `('name size)` are
+     * specifiers; anything else is the first body expression.
+     *
+     * The native front end distinguishes the reader's `'name` sugar from an
+     * explicitly written `(quote name)` (its tokenizer sees TOKEN_QUOTE), and
+     * treats only the former as a specifier. The VM reader collapses both to
+     * `(quote name)`, so a with-region whose SOLE body expression is literally
+     * `(quote name)` is read here as "specifier, empty body" — a degenerate
+     * form with no use (its value is a symbol and its body allocates nothing).
+     * That one undocumented spelling is therefore the ONE place this form
+     * diverges from native (native yields the symbol, the VM the empty-body
+     * diagnostic plus `()`); it is filed as a verified divergence in
+     * tests/vm_parity/found/with_region_explicit_quote_body_vm.esk and on the
+     * op:WITH_REGION row of tests/vm_parity/PARITY.tsv. Every DOCUMENTED
+     * spelling agrees on both substrates (corpus/with_region_lowering.esk). */
+    int body_start = 1;
+    Node* spec = node->children[1];
+    if (is_quoted_symbol(spec)) {
+        body_start = 2;                              /* (with-region 'name …) */
+    } else if (spec && spec->type == N_LIST && spec->n_children >= 1 &&
+               spec->n_children <= 2 && is_quoted_symbol(spec->children[0])) {
+        body_start = 2;                       /* (with-region ('name size) …) */
+    }
+
+    if (body_start >= node->n_children) {
+        /* Native rejects this at parse time ("with-region requires at least
+         * one body expression"). Report it the same way and still leave
+         * exactly one value on the stack: an expression that emits nothing
+         * would have the caller's balancing OP_POP discard a live value. */
+        fprintf(stderr, "ERROR: with-region requires at least one body expression\n");
+        chunk_emit(c, OP_NIL, 0);
+        return;
+    }
+
+    for (int i = body_start; i < node->n_children; i++) {
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_POP, 0);
+        } else {
+            compile_expr(c, node->children[i], tail);
+        }
+    }
+}
+
+/**
  * @brief Core expression compiler: dispatches on Node @p node's type/head
  *        symbol and emits the corresponding bytecode into chunk @p c.
  *
@@ -1822,7 +2621,8 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
  * (arithmetic, comparisons, cons/car/cdr, vector/string ops, call/cc,
  * etc.). Most substantial special forms (cond/case/let family/define/
  * set!/do/lambda/guard/dynamic-wind/delay/parameterize/let-values/
- * with-exception-handler/define-record-type/require) are delegated to the
+ * with-exception-handler/define-record-type/require/with-region) are
+ * delegated to the
  * dedicated compile_form_*() functions above; `if` and the arithmetic/
  * comparison primitives remain compiled inline here.
  * @p tail indicates whether @p node is in tail position, enabling
@@ -2183,10 +2983,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* If all operands are compile-time constants, evaluate at compile time */
     if (node->type == N_LIST && node->n_children >= 3) {
         if (head->type == N_SYMBOL) {
-            int all_const = 1, all_int = 1;
+            /* The fold's numeric domain is decided by the literals' EXACTNESS
+             * TAGS (parser: is_int = exact int64 literal, is_inexact = written
+             * in float syntax), never by the folded value's shape.  Folding
+             * `(- 2.0 1.0)` to the exact integer 1 because 1.0 happens to be
+             * integral let the following `/` divide exactly and produce 1/3
+             * where R7RS 6.2.2 requires 0.3333333333333333. */
+            int all_const = 1, all_int = 1, any_inexact = 0;
             for (int i = 1; i < node->n_children; i++) {
                 if (node->children[i]->type != N_NUMBER) { all_const = 0; break; }
                 if (!node->children[i]->is_int) all_int = 0;
+                if (node->children[i]->is_inexact) any_inexact = 1;
             }
             int is_add = strcmp(head->symbol, "+") == 0;
             int is_sub = strcmp(head->symbol, "-") == 0;
@@ -2215,7 +3022,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     return;
                 }
                 /* overflow → leave to runtime */
-            } else if (all_const) {
+            } else if (all_const && any_inexact) {
                 double result = 0;
                 int folded = 0;
                 if (is_add) {
@@ -2238,19 +3045,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                  * lets it produce an exact rational (or int), or a float, based
                  * on the actual operand types. */
                 if (folded) {
-                    /* Preserve a negative zero as INEXACT, exactly as the
-                     * runtime's number_val() does: IEEE-754 makes
-                     * (* -1.0 0.0) = -0.0, and the integer collapse treats
-                     * -0.0 == 0, so folding it discarded the sign bit and the
-                     * VM printed 0 where native prints -0. */
-                    int negative_zero = (result == 0.0 && signbit(result));
-                    int ci = chunk_add_const(c,
-                        (!negative_zero && result == (int64_t)result && fabs(result) < 1e15)
-                        ? INT_VAL((int64_t)result) : FLOAT_VAL(result));
+                    /* At least one operand was written in inexact syntax, so
+                     * the folded constant is INEXACT — unconditionally.  The
+                     * old value-shape test emitted INT_VAL whenever the result
+                     * was integral, which is how (- 2.0 1.0) reached the
+                     * runtime as the exact 1 and made (/ 1 3) exact; it also
+                     * flattened a folded -0.0 to the exact 0. */
+                    int ci = chunk_add_const(c, FLOAT_VAL(result));
                     if (ci >= 0) chunk_emit(c, OP_CONST, ci);
                     return;
                 }
             }
+            /* all_const but neither all-exact-int64 nor any-inexact: the
+             * operands are exact literals this fold cannot represent (an
+             * integer literal wider than int64).  Folding them through a
+             * double would silently make an exact result inexact, so leave
+             * them to the runtime, whose ops promote to the bignum domain. */
         }
     }
 
@@ -2354,6 +3164,33 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * and every vector consumer silently disagree with the native backend. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
+        /* OP_VEC_CREATE consumes its elements off the operand stack, so the
+         * direct form needs n_elems stack slots — which made a literal's member
+         * count a function of ESHKOL_VM_STACK_SIZE (a #(...) of a few thousand
+         * numbers died with "STACK OVERFLOW" partway through pushing it).
+         * A literal's size must be governed by the literal, so past a
+         * threshold the vector is allocated once and filled slot by slot at
+         * CONSTANT stack depth: the element count is then bounded only by the
+         * growable code and constant arrays, not by the operand stack. */
+        if (n_elems > VM_VEC_LITERAL_STACK_CHUNK) {
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+            chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+            int saved_locals = c->n_locals;
+            add_local(c, "__vec_literal__");
+            for (int i = 1; i < node->n_children; i++) {
+                chunk_emit(c, OP_DUP, 0);                                   /* vec */
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1)));/* idx */
+                int elem_locals = c->n_locals;
+                add_local(c, "__vec_literal_idx__");
+                compile_expr(c, node->children[i], 0);                      /* val */
+                c->n_locals = elem_locals;
+                chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+                chunk_emit(c, OP_POP, 0);       /* drop the nil */
+            }
+            c->n_locals = saved_locals;
+            return;
+        }
         for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
         chunk_emit(c, OP_VEC_CREATE, n_elems);
         return;
@@ -2494,8 +3331,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (require module.name) — load and compile the module */
     if (is_sym(head, "require")) { compile_form_require(c, node, tail); return; }
-    /* (provide name ...) — no-op: all symbols are visible */
-    if (is_sym(head, "provide")) {
+    /* (define-library (name …) <declaration> …) — R7RS-small 5.6.1 */
+    if (is_sym(head, "define-library") && node->n_children >= 2 &&
+        node->children[1]->type == N_LIST) {
+        compile_form_define_library(c, node, tail); return;
+    }
+    /* (import <import-set> …) — resolves against this unit's libraries first */
+    if (is_sym(head, "import") && node->n_children >= 2) {
+        compile_form_import(c, node, tail); return;
+    }
+    /* (provide name ...) / (export name ...) — no-op: all symbols are visible.
+     * The OP_NIL is not decorative: the top-level and body compilers POP after
+     * any form that bound nothing, so returning without pushing would make
+     * that POP discard a live value and shift every later binding down a slot
+     * (the same corruption compile_form_require() guards against). */
+    if (is_sym(head, "provide") || is_sym(head, "export")) {
+        chunk_emit(c, OP_NIL, 0);
         return;
     }
 
@@ -3085,8 +3936,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* -- with-region -- */
     if (is_sym(head, "with-region") && node->n_children >= 2) {
-        for (int i = 1; i < node->n_children; i++)
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        compile_form_with_region(c, node, tail);
         return;
     }
 

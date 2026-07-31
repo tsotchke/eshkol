@@ -108,6 +108,13 @@ eshkol_test_isolation_prune_stale() {
     local count
     count=$(find "$root" -maxdepth 1 -type d -name 'eshkol-test.*' 2>/dev/null | wc -l | tr -d ' ')
     [ -n "$count" ] || return 0
+    # Nothing to prune in an empty root. Without this, every glob below
+    # ("$root"/eshkol-test.*) stays a literal, unmatched pattern, and the
+    # commands it feeds (du, ls) exit non-zero on that literal path. Under a
+    # caller's `set -euo pipefail` that non-zero status is fatal, so an empty
+    # temp root silently kills the *calling* test suite instead of just
+    # finding nothing to prune.
+    [ "$count" -gt 0 ] || return 0
     if [ "$count" -gt "$max_dirs" ]; then
         # ls -dt sorts newest first; tail past the cap is the overflow.
         # shellcheck disable=SC2012
@@ -129,6 +136,13 @@ eshkol_test_isolation_prune_stale() {
     local min_age total oldest
     min_age="${ESHKOL_TEST_TMP_MIN_AGE_MIN:-120}"
     while :; do
+        # Same hazard as the count-sweep guard above, reachable from inside
+        # this loop: each iteration deletes one directory, so a set that
+        # started non-empty can drain to zero before the loop exits. Recheck
+        # before the glob-into-du call below rather than trusting the $count
+        # captured before the loop started.
+        count=$(find "$root" -maxdepth 1 -type d -name 'eshkol-test.*' 2>/dev/null | wc -l | tr -d ' ')
+        [ -n "$count" ] && [ "$count" -gt 0 ] || return 0
         total=$(du -sm -- "$root"/eshkol-test.* 2>/dev/null | awk '{s+=$1} END {print s+0}')
         [ -n "$total" ] || return 0
         [ "$total" -le "$max_mb" ] && return 0
@@ -268,11 +282,16 @@ ESHKOL_TEST_PIN_ARTIFACTS="eshkol-run stdlib.o stdlib.bc eshkol-vm-standalone-te
 
 # Portable "size mtime" stamp for one file. BSD stat and GNU stat disagree on
 # flags, so try both; a missing file stamps as "-" (absent is a stable state).
+# GNU must be tried first: GNU `stat -f` is not "BSD -f" at all, it means
+# --file-system and succeeds with filesystem-level numbers (free blocks/
+# inodes) instead of failing, so a BSD-first order silently fingerprints the
+# filesystem rather than the file — any unrelated fs activity between two
+# snapshots then reads as "the compiler binary changed during this run".
 eshkol_test_file_stamp() {
     local path="$1"
     [ -e "$path" ] || { printf '%s' '-'; return 0; }
-    stat -f '%z %m' "$path" 2>/dev/null && return 0
     stat -c '%s %Y' "$path" 2>/dev/null && return 0
+    stat -f '%z %m' "$path" 2>/dev/null && return 0
     # Last resort: content digest.
     cksum < "$path" 2>/dev/null || printf '%s' '?'
 }

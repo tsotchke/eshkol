@@ -86,6 +86,25 @@ class EshkolRepl {
     }
 
     /**
+     * Write a tagged #f into a struct-return out-parameter slot.
+     *
+     * The tagged layout is {u8 type, u8 flags, u16 reserved, u32 pad, u64 data}
+     * = 16 bytes; type 3 with data 0 is #f (SYS_TYPE_BOOL in
+     * lib/core/system_builtins.c). The older degradation stubs below are
+     * written `() => {}`, which leaves the caller's slot holding whatever was
+     * on the stack — harmless for a value nobody reads, wrong for one the
+     * program branches on. Anything that must FAIL CLOSED writes a real #f.
+     *
+     * @param {number} ptr - Pointer to the 16-byte out slot
+     */
+    writeFalse(ptr) {
+        if (!this.memory || !ptr) return;
+        const view = new Uint8Array(this.memory.buffer, ptr, 16);
+        view.fill(0);
+        view[0] = 3;
+    }
+
+    /**
      * Write a string to WASM memory (caller must ensure space)
      * @param {string} str - JavaScript string
      * @param {number} ptr - Pointer to write location
@@ -342,11 +361,20 @@ class EshkolRepl {
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                eshkol_tensor_destination_checked: () => 0,
+                eshkol_tensor_matrix_operand_checked: () => 0,
+                eshkol_tensor_counts_checked: () => {},
+                eshkol_tensor_axis_checked: (axis) => axis,
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
                 eshkol_deep_equal: (a, b) => false,
                 eshkol_display_value: (val) => {},
+                // R7RS `write` (write/write-shared/write-simple) to stdout:
+                // void eshkol_write_value(const tagged_value_t* value) — same
+                // single-pointer-argument shape as eshkol_display_value above,
+                // degraded the same way (no-op; full fidelity is native-only).
+                eshkol_write_value: (val) => {},
 
                 // Lambda registry
                 eshkol_lambda_registry_init: () => {},
@@ -424,6 +452,15 @@ class EshkolRepl {
                 rename: () => -1,
                 eshkol_rename: () => -1,
                 eshkol_builtin_make_temp_file: () => 0,
+                // __arena-used (ESH-0187): void eshkol_builtin_arena_used(sv_t* out)
+                // — the SystemCodegen all-pointer calling convention (see
+                // getOrDeclareRuntimeFuncAllPtr in system_codegen.cpp), so the only
+                // wasm-side parameter is the result out-slot. The browser build has
+                // no bounded/introspectable arena (a fresh bump allocator per
+                // program, no cap to report), so this degrades the same way as the
+                // error-object accessor stubs below: a no-op that leaves `out`
+                // alone rather than fabricating a byte count.
+                eshkol_builtin_arena_used: (out) => {},
                 mkdir: () => -1,
                 rmdir: () => -1,
                 getcwd: () => 0,
@@ -527,6 +564,15 @@ class EshkolRepl {
                     if (chunks) chunks.push(String(value));
                     else console.log('[port]', value);
                 },
+                // R7RS `write` to an explicit port: same degraded shape as
+                // eshkol_display_value_to_port above (write/display fidelity
+                // is not distinguished in the browser stub).
+                eshkol_write_value_to_port: (value, port) => {
+                    if (!this._stringPorts) this._stringPorts = new Map();
+                    const chunks = this._stringPorts.get(port);
+                    if (chunks) chunks.push(String(value));
+                    else console.log('[port]', value);
+                },
 
                 // Exception handling — degraded to console.error + throw.
                 eshkol_raise: (excPtr) => {
@@ -602,6 +648,71 @@ class EshkolRepl {
                 // handles every value in the browser build; the
                 // binary/unary/seed/extract kernels below are therefore
                 // unreachable stubs.
+                // ESH-0393/0394 AD point classification + coercion. These used to
+                // be inline IR (a bitcast for DOUBLE, SIToFP for everything
+                // else); they became runtime calls so an exact rational/bignum
+                // point -- which is HEAP-tagged, so its data field is a POINTER
+                // -- stops being reinterpreted as a number. They are on the
+                // ORDINARY jet path, so a `() => 0` stub would silently
+                // differentiate every browser program at 0. Implement the
+                // conversion here instead, over the same tagged layout the
+                // region helpers above use: [0]=type, [1]=flags, [8..16]=data.
+                //
+                // The browser build has no bignum/rational and no Taylor tower
+                // (eshkol_is_taylor_tagged reports "not a tower" below), so a
+                // HEAP-tagged point is not a number it can represent: report
+                // "not a number" through `ok` rather than inventing one, which
+                // is what the native build's catchable type error does.
+                eshkol_ad_seed_to_double: (v, okPtr) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const setOk = (n) => { if (dv && okPtr) dv.setInt32(Number(okPtr), n, true); };
+                    if (!dv || !v) { setOk(0); return 0.0; }
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    setOk(1);
+                    if (bt === 2) return dv.getFloat64(p + 8, true);            // DOUBLE
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));   // INT64
+                    if (bt === 6) {                                             // DUAL: primal
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true)); // BOOL/CHAR
+                    setOk(0);
+                    return 0.0;
+                },
+                eshkol_ad_point_to_double: (v, _what) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0.0;
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    if (bt === 2) return dv.getFloat64(p + 8, true);
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));
+                    if (bt === 6) {
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true));
+                    return 0.0;
+                },
+                // Scalar-vs-collection: an immediate number (or a dual) is a
+                // scalar. A HEAP point in the browser build is a collection --
+                // the exact heap scalars are the ones it cannot represent.
+                eshkol_ad_point_is_scalar: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    const bt = dv.getUint8(Number(v)) & 0x0F;
+                    return (bt === 1 || bt === 2 || bt === 3 || bt === 4 || bt === 6) ? 1 : 0;
+                },
+                // No bignum/rational in the browser build, so no point is ever an
+                // exact HEAP scalar, and the exact tier is never entered.
+                eshkol_ad_point_is_exact_scalar: () => 0,
+                // ...but an immediate int64 IS an exact number, so answer from
+                // the tag rather than declaring a blanket 0.
+                eshkol_ad_point_is_exact_number: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    return ((dv.getUint8(Number(v)) & 0x0F) === 1) ? 1 : 0;
+                },
                 eshkol_is_taylor_tagged:        () => 0,
                 eshkol_taylor_c0:               () => 0.0,
                 eshkol_taylor_binary_tagged:    () => 0,
@@ -638,6 +749,21 @@ class EshkolRepl {
                 eshkol_exception_add_irritant_ptr: () => {},
                 eshkol_parallel_map_sret:          () => {},
                 eshkol_builtin_file_rename:        () => {},
+
+                // ESH-0011 portable event loop. No file descriptors exist in the
+                // browser sandbox, so there is nothing for a readiness
+                // multiplexer to watch and the whole surface fails closed with
+                // #f — the same degradation make-pipe / fd-write / fd-close
+                // already use here. Native builds get kqueue / epoll / IOCP; see
+                // lib/core/event_loop.c. `event-loop-backend` answers "none" so
+                // a program can detect the situation instead of guessing.
+                eshkol_builtin_make_event_loop:       (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_add_fd:     (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_remove_fd:  (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_poll:       (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_close:      (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_backend:    (out) => this.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},

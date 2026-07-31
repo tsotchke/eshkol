@@ -25,7 +25,7 @@ eshkol-run -r <file.esk>
 |------|-------|----------|-------------|
 | `--output` | `-o` | `<path>` | Output path for the compiled binary. Without this flag, the binary is named from the first source file. |
 | `--compile-only` | `-c` | (none) | Compile to an object file (`.o`) only; do not link into an executable. Also produces a `.bc` bitcode file for REPL JIT use. |
-| `--shared-lib` | `-s` | (none) | Compile as a shared library (no `main` function). All symbols use `LinkOnceODRLinkage` so user programs can override them. Implies `--compile-only`. |
+| `--shared-lib` | `-s` | (none) | Link a loadable shared library (`libNAME.dylib` / `libNAME.so` / `NAME.dll`) with no `main` function. All symbols use `LinkOnceODRLinkage` so user programs can override them, and exported functions use the platform C ABI for tagged values so a host can dlopen the library, call `__eshkol_lib_init__(arena)` once, then call them. Add `-c`/`--emit-object` (or name a `-o <path>.o`) to stop at the library-mode object instead; that object keeps Eshkol's internal convention and is meant for linking into other Eshkol modules, not for calling from C. |
 | `--wasm` | `-w` | (none) | Compile to WebAssembly (`.wasm`) format. Sets the target triple to `wasm32-unknown-unknown`. |
 | `--emit-eskb` | `-B` | `<path>` | Emit ESKB bytecode format to the specified path. Used by the bytecode VM subsystem. |
 

@@ -729,12 +729,12 @@ The standard library is compiled as a custom build step:
 ```cmake
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stdlib.o
-    COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "stdlib" "lib/stdlib.esk"
+    COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -c -o "stdlib" "lib/stdlib.esk"
     DEPENDS eshkol-run lib/stdlib.esk
 )
 ```
 
-Library mode (`--shared-lib`) uses `LinkOnceODRLinkage` for all symbols, allowing user programs to override any stdlib function without duplicate symbol errors.
+Library mode (`--shared-lib`) uses `LinkOnceODRLinkage` for all symbols, allowing user programs to override any stdlib function without duplicate symbol errors. The `-c` pins the **object** flavour: without it, `--shared-lib` links a loadable shared library and coerces its exports to the platform C ABI, which is not what an object destined to be linked into other Eshkol modules wants.
 
 ### Build Commands
 
@@ -784,8 +784,11 @@ eshkol-run program.esk -o program
 # Compile to WebAssembly
 eshkol-run --wasm program.esk
 
-# Library mode (for stdlib)
-eshkol-run --shared-lib -o stdlib lib/stdlib.esk
+# Library-mode object (for stdlib) -- -c pins the object flavour
+eshkol-run --shared-lib -c -o stdlib lib/stdlib.esk
+
+# Loadable shared library with C-ABI exports (for a C/Python host)
+eshkol-run --shared-lib -o mylib mylib.esk
 
 # JIT eval mode (uses REPL JIT internally)
 eshkol-run -e '(display (+ 1 2))'

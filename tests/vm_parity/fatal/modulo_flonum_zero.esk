@@ -1,0 +1,14 @@
+; The FLONUM half of the claim modulo_zero.esk's header already makes: a zero
+; divisor is fatal for `modulo` on both substrates whether the operands are
+; exact or inexact. R7RS 6.2.6 says it is an error if n2 is zero, and the
+; alternative — quietly answering +nan.0 because IEEE frem does — would make a
+; program that divides by an accidental 0.0 silently produce NaNs downstream
+; instead of stopping.
+;
+; The exact form was gated; this one was only asserted in a comment. It became
+; testable when native grew a flonum `modulo` path at all: before that, both
+; operands went through the int64 unpack, so the divisor tested here was the
+; bit pattern of 0.0, which IS zero, and the probe would have passed for the
+; wrong reason.
+(display (modulo 1.0 0.0))
+(display "MUST-NOT-PRINT")

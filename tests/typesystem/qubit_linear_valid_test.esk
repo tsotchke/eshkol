@@ -1,5 +1,6 @@
 ;; Type System Test: a qubit threaded through gates (used once) type-checks clean
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: consumed more than once
 ;; EXPECT-NO-STDERR: was not consumed
 

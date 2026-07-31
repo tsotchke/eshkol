@@ -821,6 +821,21 @@ to exactly the same value as `expr`.
 (the (list real) xs)
 ```
 
+`<type>` may be any parenthesised type form, or any **bare type name the type
+system knows** — spelled case-insensitively. That is a guarantee, not a list to
+maintain by hand: the parser and the type environment are driven from one
+canonical registry, so a name that resolves to a type is always spellable here
+and in `x : <type>` annotations. The registry covers the numeric tower
+(`number`, `integer`/`int`, the sized `i8`…`u64`/`isize`/`usize` spellings,
+`bigint`, `natural`, `rational`, `real`/`float`/`double`/`float64`/`float32`,
+`complex`), text (`string`/`str`, `char`/`character`, `symbol`), the other ground
+types (`boolean`/`bool`, `null`/`nil`, `any`/`value`, `nothing`/`never`),
+containers and constructors written bare (`list`, `vector`, `tensor`, `pair`,
+`procedure`, `closure`, `hash-table`, `ptr`/`pointer`), the autodiff types
+(`dual`, `ad-node`), and the linear resources (`handle`, `buffer`, `stream`,
+`qubit`). A bare container name leaves its element type unspecified; the
+parenthesised form (`(vector real)`) pins it.
+
 #### 3.6.7 Predicate-Guarded Narrowing
 Inside a branch guarded by a type predicate, the checker narrows the tested
 value to that type. Narrowing is honored across `if` and `and`, and is
@@ -4038,7 +4053,12 @@ eshkol-run input.esk -o output
 
 #### Library Compilation
 ```bash
+# Library-mode object, for linking into other Eshkol modules
 eshkol-run --shared-lib input.esk -o library.o
+
+# Loadable shared library with platform-C-ABI exports, for a C/Python host
+# (writes libmylib.dylib / libmylib.so / mylib.dll)
+eshkol-run --shared-lib input.esk -o mylib
 ```
 
 #### IR Dump

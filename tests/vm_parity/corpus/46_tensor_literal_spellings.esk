@@ -1,0 +1,72 @@
+; A nested collection denotes the same tensor however it was WRITTEN.
+;
+; Eshkol accepts a nested collection wherever a tensor is expected, and it may
+; be written two ways: as a nested vector LITERAL, which the parser flattens
+; into a higher-rank tensor literal at compile time, or built at run time with
+; `vector` / `list`. Those are the same value, so every tensor question about
+; them must get the same answer — on native codegen (AOT and -r JIT) and on the
+; bytecode VM alike.
+;
+; This corpus entry exists because they used to disagree. The runtime-built
+; spelling never reached the parser's flattening, so it arrived at the shared
+; tensor-operand check as a vector whose elements are not numbers and was
+; rejected outright:
+;
+;   (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))
+;       native  Type error in tensor-shape: expected tensor or numeric vector
+;       vm      (2 2)
+;   (tensor-shape #(#(1.0 2.0) #(3.0 4.0)))
+;       native  (2 2)
+;       vm      (2 2)
+;
+; One operation, two answers, decided by construction form rather than by value.
+; The operand check now classifies a nest by value and routes it to the same
+; rank-N walker `(tensor X)` uses, so the spellings cannot diverge again.
+;
+; The last three blocks pin the rest of the contract. Coercing a nest to a
+; tensor must not change what the nest IS: `(vector (vector …) …)` stays an
+; ordinary R7RS vector of vectors, and a flat collection still coerces to rank 1.
+; And a nest that CANNOT be a tensor must fail the same way in either spelling —
+; a clean, CATCHABLE error naming the mismatch, raised at the operation that
+; demanded the tensor rather than at the reader. That row used to disagree three
+; ways: the VM set a fatal `vm->error` no `guard` could intercept, native
+; fabricated `()` and kept running, and once compile diagnostics became fatal
+; the literal spelling stopped compiling at all while the identical
+; runtime-built value ran. All four axes agree now, so it is gated here instead
+; of filed.
+
+; ---- rank 2, both spellings ----
+(display (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))) (newline)
+(display (tensor-shape #(#(1.0 2.0) #(3.0 4.0)))) (newline)
+
+; ---- rank 3, both spellings ----
+(display (tensor-shape (vector (vector (vector 1.0 2.0) (vector 3.0 4.0))
+                               (vector (vector 5.0 6.0) (vector 7.0 8.0))))) (newline)
+(display (tensor-shape #(#(#(1.0 2.0) #(3.0 4.0)) #(#(5.0 6.0) #(7.0 8.0))))) (newline)
+
+; ---- non-square, so a transposed stride would show as a wrong element ----
+(display (tensor-shape (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)))) (newline)
+(display (tensor-ref (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)) 1 2)) (newline)
+(display (tensor-ref #(#(1.0 2.0 3.0) #(4.0 5.0 6.0)) 1 2)) (newline)
+
+; ---- the runtime-built nest is still an R7RS vector of vectors ----
+(define vv (vector (vector 1.0 2.0) (vector 3.0 4.0)))
+(display (vector-length vv)) (newline)
+(display (vector? vv)) (newline)
+(display (vector-ref (vector-ref vv 1) 0)) (newline)
+
+; ---- a flat collection still coerces to rank 1, both spellings ----
+(display (tensor-shape (vector 1.0 2.0 3.0))) (newline)
+(display (tensor-shape #(1.0 2.0 3.0))) (newline)
+
+; ---- a ragged nest raises CATCHABLY, in either spelling ----
+(display (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) #(3.0))))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref #(#(1.0 2.0) #(3.0)) 0 0))) (newline)
+(display (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) 3.0)))) (newline)
+(display (guard (e (#t "caught"))
+           (tensor-shape (vector (vector 1.0 2.0) (vector 3.0))))) (newline)
+
+; ---- a ragged literal is still a nameable, readable nested vector ----
+(define ragged #(#(1.0 2.0) #(3.0)))
+(display (vector-length ragged)) (newline)
+(display (vector-length (vector-ref ragged 0))) (newline)

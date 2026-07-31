@@ -77,13 +77,44 @@ The standard library is required the same way:
 12
 ```
 
-### Note — `define-library` and `import` in the same file
+### `define-library` and `import` in the same file
 
-`import` resolves from the **filesystem**, not from a `define-library` written
-earlier in the same file. Put a `define-library` in its own file and `import` it
-from another. (If you write both in one file, the `begin` body still executes and
-defines its names at top level, but the `import` line will report the module as not
-found on the path.)
+A library defined in the file being compiled is importable by the forms written
+below it, with no filesystem search (R7RS-small 5.6.1). Resolution order is:
+
+1. libraries this compilation unit already defined with `define-library`,
+2. precompiled stdlib modules,
+3. the module search path above.
+
+```scheme
+(define-library (geo)
+  (export area)
+  (begin (define (area r) (* 3 r r))))
+
+(import (geo))
+(display (area 2)) (newline)
+```
+```
+12
+```
+
+A library is established by its **whole** `define-library` form, so it cannot
+satisfy an `import` written above it — that is a forward reference, and the
+compiler says so and names the line the library is defined on:
+
+```
+Module 'geo' not found: its define-library form is at line 7, below this import
+  A library must be defined before it is imported (R7RS-small 5.6.1); move the
+  define-library above the import, or put the library in its own file.
+```
+
+`only`, `except`, `rename` and `prefix` work over a same-unit library exactly as
+they do over a file-backed one. The two module spellings share one namespace:
+`(require geo)` resolves a same-unit `(define-library (geo) …)` too.
+
+Same-unit libraries do not yet hide their non-exported names — the library body
+is spliced into the unit's top level, so every name it defines is visible.
+Strict library isolation is tracked as module-privacy work.
 
 ## `load`
 

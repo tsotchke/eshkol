@@ -27,6 +27,26 @@
              (display ") ad=") (display ad)
              (display " fd=") (display fd) (newline))))
 
+;; ESH-0393: the exact tier is not an FD comparison — derivative-n/taylor at an
+;; exact seed must come back EXACT, so assert both the exactness tag and the
+;; value. task=#f -> PASS/FAIL; task=string -> XKNOWN on mismatch.
+(define (chk-exact id got expect task)
+  (if (and (exact? got) (= got expect))
+      (begin (set! op-pass (+ op-pass 1))
+             (display "PASS: ") (display id) (newline))
+      (if task
+          (begin (set! op-xknown (+ op-xknown 1))
+                 (display "XKNOWN: ") (display id)
+                 (display " (") (display task)
+                 (display ") got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline))
+          (begin (set! op-fail (+ op-fail 1))
+                 (display "FAIL: ") (display id)
+                 (display " got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline)))))
+
 ;; perturb component i of a Scheme vector by d (fresh copy).
 (define (perturb-vector v i d)
   (let ((n (vector-length v)) (out (make-vector (vector-length v) 0.0)))
@@ -136,9 +156,9 @@
     (row 0 #f)))
 
 ;; probe htensor.mmsq.v4.hess
-(define (h154 v) (tensor-sum (tensor-matmul (reshape v 2 2) (reshape v 2 2))))
-(define H154 (hessian h154 (vector 1.0 2.0 3.0 4.0)))
-(chk-hess "htensor.mmsq.v4.hess" H154 h154 (vector 1.0 2.0 3.0 4.0) 4 2e-3 1e-4 #f)
+(define (h190 v) (tensor-sum (tensor-matmul (reshape v 2 2) (reshape v 2 2))))
+(define H190 (hessian h190 (vector 1.0 2.0 3.0 4.0)))
+(chk-hess "htensor.mmsq.v4.hess" H190 h190 (vector 1.0 2.0 3.0 4.0) 4 2e-3 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

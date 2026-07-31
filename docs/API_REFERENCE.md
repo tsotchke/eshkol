@@ -1771,14 +1771,18 @@ Conversion between numbers and strings.
 For inexact (floating-point) numbers, `number->string` — like `display` and
 `write` — emits the **shortest decimal string that reads back as the identical
 `double`** (R7RS 6.2.6): no digits are lost and none are fabricated. Integral
-doubles print without a trailing `.0`. The native compiler and the bytecode VM
-share one conversion routine, so their output is byte-identical.
+doubles print without a trailing `.0`; negative zero is the one exception and
+prints `-0.0`, because `-0` would read back as the *exact* integer zero and lose
+both the inexactness and the observable sign. The native compiler and the
+bytecode VM share one conversion routine, so their output is byte-identical.
 
 **Examples**:
 ```scheme
 (number->string 42)         ; => "42"
 (string->number "3.14")     ; => 3.14
 (number->string (sqrt 2.0)) ; => "1.4142135623730951"
+(number->string 3.0)        ; => "3"      (integral double, still inexact)
+(number->string -0.0)       ; => "-0.0"   (sign and inexactness both survive)
 ```
 
 ---
@@ -6505,7 +6509,7 @@ eshkol-run -r <file.esk>         (JIT run file)
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 | `--output FILE` | `-o` | Output path for compiled binary |
 | `--compile-only` | `-c` | Compile to intermediate object file (`.o`) only |
-| `--shared-lib` | `-s` | Compile as shared library (LinkOnceODR linkage) |
+| `--shared-lib` | `-s` | Link a loadable shared library (`.dylib`/`.so`/`.dll`); add `-c` for a relocatable object instead |
 | `--wasm` | `-w` | Compile to WebAssembly (`.wasm`) format |
 | `--lib LIB` | `-l` | Link an external shared library |
 | `--lib-path DIR` | `-L` | Add directory to library search path |
@@ -6533,6 +6537,52 @@ eshkol-run -r <file.esk>         (JIT run file)
 ;; Dump LLVM IR for debugging
 ;; $ eshkol-run --dump-ir program.esk -o program
 ```
+
+#### `--shared-lib`: the two flavours
+
+| Invocation | Artifact |
+|------------|----------|
+| `--shared-lib` | Linked shared library: `libNAME.dylib` / `libNAME.so` / `NAME.dll` |
+| `--shared-lib -c`, `--shared-lib --emit-object`, `--shared-lib -o NAME.o` | Relocatable object with library linkage (no `main`) |
+
+The linked library is self-contained: it carries the Eshkol runtime, so a host
+needs no further link arguments.
+
+```c
+/* $ eshkol-run mylib.esk --shared-lib -o mylib   ->  libmylib.dylib */
+void*  h    = dlopen("./libmylib.dylib", RTLD_NOW);
+void (*init)(void*) = dlsym(h, "__eshkol_lib_init__");
+void* (*arena)(void) = dlsym(h, "get_global_arena");
+init(arena());                       /* once, before any exported call */
+
+eshkol_tagged_value_t (*f)(eshkol_tagged_value_t) = dlsym(h, "my-function");
+eshkol_tagged_value_t r = f(eshkol_make_int64(41, true));
+```
+
+#### Shared-library export ABI
+
+Every top-level `(define (f ...) ...)` in a linked shared library is exported
+under its source name with the **platform C ABI** for `eshkol_tagged_value_t`:
+declare it in C exactly as it reads in the header and call it directly. Both
+directions are covered -- return values and tagged arguments passed by value.
+
+This is a boundary contract, not the internal one. Eshkol's internal calling
+convention passes a tagged value as an LLVM first-class struct, which the
+backend flattens into one register per field; that is not how a C compiler
+passes the same 16-byte struct. The exported name is therefore a thunk that
+speaks the C ABI, and the unwrapped body remains available under
+`<name>__eshkol_internal_abi` for tooling and debuggers. Per platform:
+
+| Target | Exported shape |
+|--------|----------------|
+| AArch64 (AAPCS64), x86-64 SysV, riscv64, ppc64le, loongarch64 -- macOS, Linux, and Windows on ARM64 | 16-byte value in the first two general-purpose registers (`x0:x1`, `rax:rdx`) |
+| Windows x64 (Microsoft ABI) | Hidden `sret` pointer for the return, tagged arguments by pointer to a caller-owned temporary -- what MSVC/clang-cl generate for the same declaration |
+| 32-bit targets | Not supported for the linked flavour: the return is via memory but arguments are by value on the stack. `--shared-lib` reports this and writes no artifact; use `--shared-lib -c` and link the object yourself. |
+
+The relocatable object flavour keeps the **internal** convention on every
+symbol, because those objects are linked into other Eshkol modules (the
+precompiled standard library, `cmake/EshkolCompile.cmake` consumers) that call
+with it. Do not dlopen a `--shared-lib -c` object and call it from C.
 
 ---
 
