@@ -246,30 +246,71 @@ int main(int argc, char** argv) {
                                      eshkol_make_int64(777, true)), 777);
 
     /* NEGATIVE DIRECTION -- see the header comment. The unwrapped body still
-     * speaks Eshkol's internal first-class-struct convention. Calling it
-     * through the C ABI must NOT produce 42: that corruption is the defect,
-     * and a harness that cannot observe it cannot certify the fix either. */
+     * speaks Eshkol's internal first-class-struct convention, so a C caller
+     * must NOT be able to use it as if it were the export. A harness that
+     * cannot observe that difference cannot certify the fix either.
+     *
+     * HOW, WITHOUT CORRUPTING OURSELVES. The obvious probe -- call it as
+     * `tv_t (*)(void)` and check the answer is wrong -- is safe only where the
+     * internal convention returns entirely in registers. It does on AArch64,
+     * whose eight return registers hold all five fields. It does NOT on
+     * x86-64: two integer return registers cannot carry five values, so LLVM
+     * lowers the body to a hidden sret pointer, and calling it through a
+     * no-argument prototype makes the callee write SIXTEEN BYTES through
+     * whatever junk occupies the first argument register. That is undefined
+     * behaviour with side effects rather than an observation, and it behaved
+     * like one: it segfaulted the macOS x86-64 lane outright and corrupted the
+     * Linux x86-64 process into a dlclose() deadlock -- after every real
+     * assertion had already passed.
+     *
+     * So probe with the prototype that is safe on BOTH shapes first: passing a
+     * valid pointer can never be a wild write. A register-returning body
+     * ignores the argument and leaves the buffer untouched; an sret body fills
+     * it in. The buffer therefore tells us which shape we are on, and only
+     * once we know it is the register shape do we perform the direct
+     * wrong-ABI call. No architecture conditionals, and no path that can
+     * scribble on the process. */
     printf("  negative control (unwrapped internal-ABI symbol):\n");
-    tv_t (*raw_int)(void) =
-        (tv_t (*)(void))dlsym(handle, "abi-int__eshkol_internal_abi");
-    if (!raw_int) {
+    void* raw_sym = dlsym(handle, "abi-int__eshkol_internal_abi");
+    if (!raw_sym) {
         printf("    MISSING abi-int__eshkol_internal_abi: the export thunk is "
                "not in place at all\n");
         failures++;
     } else {
-        tv_t raw = raw_int();
-        report("raw abi-int", raw);
-        if (raw.type == ESHKOL_VALUE_INT64 &&
-            raw.flags == ESHKOL_VALUE_EXACT_FLAG &&
-            raw.data.int_val == 42) {
-            printf("    NEGATIVE CONTROL FAILED: the internal-convention "
-                   "symbol also read back correctly, so this harness cannot "
-                   "detect the ABI defect it is meant to guard\n");
-            failures++;
+        tv_t probe;
+        memset(&probe, 0, sizeof probe);
+        ((void (*)(tv_t*))raw_sym)(&probe);
+
+        if (probe.type == ESHKOL_VALUE_INT64 &&
+            probe.flags == ESHKOL_VALUE_EXACT_FLAG &&
+            probe.data.int_val == 42) {
+            /* sret shape: the body demands a hidden return pointer that the
+             * exported name does not. Two prototypes, each correct for its own
+             * symbol, both reaching the same body -- which is precisely the
+             * translation the thunk exists to perform. Had the thunk never
+             * been emitted, the exported name would BE this function and the
+             * public prototype above could not have returned 42. */
+            report("raw abi-int (via sret)", probe);
+            printf("    ok: internal-convention symbol returns through a "
+                   "hidden pointer, an ABI the exported name does not use\n");
         } else {
-            printf("    ok: internal-convention symbol reads back corrupt "
-                   "(type=%u flags=0x%02x data=%" PRId64 ") as it must\n",
-                   (unsigned)raw.type, (unsigned)raw.flags, raw.data.int_val);
+            /* Register shape: the mismatch is confined to registers, so the
+             * direct wrong-ABI call reads garbage without writing any. */
+            tv_t raw = ((tv_t (*)(void))raw_sym)();
+            report("raw abi-int", raw);
+            if (raw.type == ESHKOL_VALUE_INT64 &&
+                raw.flags == ESHKOL_VALUE_EXACT_FLAG &&
+                raw.data.int_val == 42) {
+                printf("    NEGATIVE CONTROL FAILED: the internal-convention "
+                       "symbol also read back correctly, so this harness "
+                       "cannot detect the ABI defect it is meant to guard\n");
+                failures++;
+            } else {
+                printf("    ok: internal-convention symbol reads back corrupt "
+                       "(type=%u flags=0x%02x data=%" PRId64 ") as it must\n",
+                       (unsigned)raw.type, (unsigned)raw.flags,
+                       raw.data.int_val);
+            }
         }
     }
 
@@ -384,27 +425,44 @@ def main(path):
     expect("add(0,777)", add(make_int(0), make_int(777)), VALUE_INT64,
            EXACT_FLAG, lambda t: t.data.int_val == 777, 777)
 
-    # Negative direction: the unwrapped internal-convention symbol must look
-    # corrupt from here too.
+    # Negative direction: the unwrapped internal-convention symbol must not be
+    # usable from here as if it were the export. Same hazard as the C harness,
+    # same resolution -- see its comment. Declaring restype=Tagged here would
+    # make ctypes follow the platform's register convention for a 16-byte
+    # struct return, which on x86-64 leaves the callee writing sixteen bytes
+    # through an argument register it was never given: a wild write inside the
+    # interpreter, not an observation. Probe with the always-safe pointer
+    # prototype first and let the result identify the shape.
     print("  negative control (unwrapped internal-ABI symbol):")
     try:
-        raw_fn = fn("abi-int__eshkol_internal_abi")
+        raw_sym = lib["abi-int__eshkol_internal_abi"]
     except (AttributeError, OSError):
         failures.append("negative control: no abi-int__eshkol_internal_abi "
                         "symbol -- the export thunk is not in place at all")
-        raw_fn = None
-    if raw_fn is not None:
-        raw = raw_fn()
-        report("raw abi-int", raw)
-        if (raw.type == VALUE_INT64 and raw.flags == EXACT_FLAG
-                and raw.data.int_val == 42):
-            failures.append("negative control: the internal-convention symbol "
-                            "read back correctly, so ctypes cannot detect the "
-                            "defect")
+        raw_sym = None
+    if raw_sym is not None:
+        raw_sym.argtypes = [ctypes.POINTER(Tagged)]
+        raw_sym.restype = None
+        probe = Tagged()
+        raw_sym(ctypes.byref(probe))
+        if (probe.type == VALUE_INT64 and probe.flags == EXACT_FLAG
+                and probe.data.int_val == 42):
+            report("raw abi-int (via sret)", probe)
+            print("    ok: internal-convention symbol returns through a hidden "
+                  "pointer, an ABI the exported name does not use")
         else:
-            print("    ok: internal-convention symbol reads back corrupt "
-                  "(type=%d flags=0x%02x data=%d) as it must"
-                  % (raw.type, raw.flags, raw.data.int_val))
+            raw_fn = fn("abi-int__eshkol_internal_abi")
+            raw = raw_fn()
+            report("raw abi-int", raw)
+            if (raw.type == VALUE_INT64 and raw.flags == EXACT_FLAG
+                    and raw.data.int_val == 42):
+                failures.append("negative control: the internal-convention "
+                                "symbol read back correctly, so ctypes cannot "
+                                "detect the defect")
+            else:
+                print("    ok: internal-convention symbol reads back corrupt "
+                      "(type=%d flags=0x%02x data=%d) as it must"
+                      % (raw.type, raw.flags, raw.data.int_val))
 
     if failures:
         for message in failures:
