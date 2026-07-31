@@ -1,9 +1,0 @@
-; FILED: set! of a function PARAMETER from a `do` body — NATIVE is the wrong
-; side here. R7RS: the three writes mutate the binding, so n ends at 13.
-; native -r : 10   (wrong — the do body's writes do not reach the parameter)
-; vm        : 13   (correct — `do` compiles inline, so set! is a direct store)
-; Native's named-let form of the same program IS correct (13), so this is
-; specific to native's `do` lowering. Native codegen is not VM-owned.
-(define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
-(display (f 10))
-(newline)

@@ -53,6 +53,7 @@
 #  include <windows.h>
 #else
 #  include <cerrno>
+#  include <chrono>
 #  include <csignal>
 #  include <ctime>
 #  include <sys/types.h>
@@ -262,9 +263,20 @@ inline int run_subprocess(const std::vector<std::string>& args,
         // SIGCHLD/alarm) keeps this header free of process-wide signal state,
         // which matters because run_subprocess is called from a long-lived host
         // process that installs its own handlers.
+        //
+        // The deadline is measured on the MONOTONIC clock, not std::time().
+        // Wall-clock seconds were wrong in two directions and both are real:
+        //   * truncation — `std::time(nullptr) + 1` taken 999ms into a second
+        //     expires after ~1ms, so a healthy child doing a sub-second job
+        //     could be SIGKILLed and reported as a timeout;
+        //   * non-monotonicity — an NTP/`settimeofday` step forward kills a
+        //     healthy child instantly, and a step backward pushes the deadline
+        //     away, which is exactly the unbounded wait this timeout exists to
+        //     prevent.
+        // steady_clock is immune to both and gives sub-second resolution.
         const struct timespec poll_interval = {0, 10 * 1000 * 1000}; // 10ms
-        const auto deadline =
-            std::time(nullptr) + static_cast<std::time_t>(timeout_seconds);
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(timeout_seconds);
         bool timed_out = false;
         for (;;) {
             pid_t r = waitpid(pid, &status, WNOHANG);
@@ -276,7 +288,7 @@ inline int run_subprocess(const std::vector<std::string>& args,
                 return errno;
             }
             // r == 0: still running.
-            if (std::time(nullptr) >= deadline) {
+            if (std::chrono::steady_clock::now() >= deadline) {
                 timed_out = true;
                 break;
             }

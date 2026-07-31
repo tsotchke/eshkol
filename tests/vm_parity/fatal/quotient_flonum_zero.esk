@@ -1,0 +1,7 @@
+; `quotient` by a zero divisor is fatal on both substrates for every operand
+; representation. R7RS 6.2.6 makes a zero n2 an error for the whole
+; integer-division trio, and the alternative here was not a NaN but a
+; plausible integer: native truncated +inf.0 and clamped the FPToSI to the
+; int64 range, so (quotient 5.0 0.0) answered 9223372036854774784.
+(display (quotient 5.0 0.0))
+(display "MUST-NOT-PRINT")
