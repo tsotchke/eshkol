@@ -1,0 +1,87 @@
+;;; R7RS-small 5.6.1 — a library defined in THIS file is importable by the
+;;; forms written below it, with no filesystem search.
+;;;
+;;; `define-library` used to validate its library name and throw it away, so
+;;; the only thing `import` could consult was the module search path — a
+;;; lookup that can only ever find a library living in some OTHER file.  A
+;;; single-file program therefore reported `Module 'smoke.v1_3' not found`
+;;; about a library written three lines above the import.
+;;;
+;;; The contract this file pins:
+;;;   * a library becomes importable once its whole `define-library` form has
+;;;     been processed, so the forms after it can name it,
+;;;   * the export list is the union of every `export` clause,
+;;;   * `(prefix …)` over a same-unit library builds its aliases,
+;;;   * a same-unit library may itself import another one, and
+;;;   * the older `require` spelling resolves against the same registry.
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write want)
+             (display " got ") (write got) (newline))))
+
+;; ── the defect itself: define-library then import, one file ──────────────
+(define-library (smoke v1_3)
+  (export greet)
+  (begin
+    (define (greet who) (string-append "hi " who))))
+
+(import (smoke v1_3))
+
+(check "same-unit import resolves without a file" (greet "world") "hi world")
+
+;; ── the export surface is the UNION of several export clauses ────────────
+(define-library (smoke multi)
+  (export twice)
+  (export thrice)
+  (begin
+    (define (twice x) (* 2 x))
+    (define (thrice x) (* 3 x))))
+
+(import (smoke multi))
+
+(check "first export clause" (twice 21) 42)
+(check "second export clause" (thrice 14) 42)
+
+;; ── a prefix import of a same-unit library builds its aliases ────────────
+(define-library (smoke pfx)
+  (export area)
+  (begin
+    (define (area r) (* 3 (* r r)))))
+
+(import (prefix (smoke pfx) geo-))
+
+(check "prefix alias over a same-unit library" (geo-area 2) 12)
+(check "unprefixed name is still the same binding" (area 2) 12)
+
+;; ── a library may import another library of the same unit ────────────────
+(define-library (smoke base)
+  (export base-value)
+  (begin
+    (define (base-value x) (+ x 1))))
+
+(define-library (smoke derived)
+  (import (smoke base))
+  (export derived-value)
+  (begin
+    (define (derived-value x) (* 10 (base-value x)))))
+
+(import (smoke derived))
+
+(check "library importing a sibling of the same unit" (derived-value 3) 40)
+
+;; ── the older `require` spelling shares the registry ─────────────────────
+(require smoke.v1_3)
+
+(check "require of a same-unit library" (greet "again") "hi again")
+
+;; ── summary ─────────────────────────────────────────────────────────────
+(if (= failures 0)
+    (begin (display "PASS: r7rs define-library same-unit import") (newline))
+    (begin (display "FAIL: ") (display failures)
+           (display " same-unit library checks failed") (newline)))

@@ -548,7 +548,7 @@ op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-
 op:GUARD	vm-supported	guard/raise verified 2026-07
 op:HESSIAN	gap	returns 0 (found/ad_gradient_wrong.esk)
 op:IF	vm-supported	vm_compiler special-form dispatch
-op:IMPORT	native-only-justified	front-end module machinery
+op:IMPORT	vm-supported	R7RS (import <import-set> …): the VM compiler resolves each set against the libraries this compilation unit defines with define-library BEFORE the module search path, the same order the native front end uses; only/except need no code because the VM has one global top level and therefore no visibility boundary, while rename/prefix lower to plain define aliases (corpus/53_define_library_same_unit.esk)
 op:INCLUDE	native-only-justified	parse-time form handled by the native front-end
 op:JACOBIAN	gap	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
 op:KB_ASSERT	vm-supported	BUILTINS fid 511
@@ -579,11 +579,11 @@ op:MUL	vm-supported	OP_MUL bytecode
 op:OR	vm-supported	vm_compiler special-form dispatch
 op:OWNED	native-only-justified	OALR ownership — native-arena construct
 op:PARAMETERIZE	gap	depends on make-parameter; fids 702/703 exist but surface incomplete
-op:PROVIDE	native-only-justified	front-end module machinery
+op:PROVIDE	vm-supported	(provide …) and (export …) name bindings that are already globals of the VM's single top level, so they emit no binding code — but they DO emit a nil placeholder, because the top-level and body compilers POP after any form that bound nothing and returning empty made that POP discard a live value
 op:QUASIQUOTE	vm-supported	vm_compiler quasiquote expansion (tail splicing verified; mid-template splicing diverges: see op:UNQUOTE_SPLICING)
 op:QUOTE	vm-supported	vm_compiler special-form dispatch
 op:RAISE	vm-supported	guard/raise verified 2026-07
-op:REQUIRE	native-only-justified	module machinery resolved by the front-end; (require stdlib) is a VM no-op
+op:REQUIRE	vm-supported	(require m) loads and compiles m's forms into this unit (stdlib is the prelude, so it is a no-op) and resolves against this unit's define-library registry first, so the two module spellings share one namespace on both back ends
 op:SDNC_IMPROVE	gap	core.sdnc has no VM fids
 op:SDNC_PARAMS	gap	core.sdnc has no VM fids
 op:SDNC_PRED	gap	core.sdnc has no VM fids

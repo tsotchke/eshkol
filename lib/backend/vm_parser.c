@@ -48,6 +48,19 @@ typedef struct {
     const char* source_path;   /* Source file path */
     char loaded_modules[64][128]; /* Module cache for require */
     int n_loaded;
+    /* R7RS-small 5.6.1: the libraries this compilation unit defines itself.
+     * A `(define-library (my lib) …)` records its dotted name here once its
+     * whole form has been compiled, and `(import (my lib))` consults this
+     * list BEFORE the filesystem search — the same resolution order the
+     * native front end uses (lib/frontend/library_registry.h).  Process-
+     * global for the same reason it is there: the standalone VM compiles one
+     * unit per process and the REPL session is one unit. */
+    struct {
+        char name[128];
+        char exports[64][128];   /* the union of the library's export clauses */
+        int  n_exports;
+    } unit_libraries[64];
+    int n_unit_libraries;
     int fold_case_symbols;    /* include-ci reader mode (R7RS case-folding) */
 } CompilerContext;
 
