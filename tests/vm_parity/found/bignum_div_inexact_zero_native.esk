@@ -1,8 +1,0 @@
-; FILED: bignum divided by an INEXACT zero — NATIVE is the wrong side here.
-; Inexactness is contagious, so this is IEEE-754 division: +inf.0.
-; native -r : 0        (wrong — the bignum is dropped before the division)
-; vm        : +inf.0   (correct)
-; Native codegen is not VM-owned; filed so the divergence is recorded rather
-; than "fixed" in the VM to match a native bug.
-(display (/ (expt 2 100) 0.0))
-(newline)

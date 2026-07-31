@@ -61,11 +61,13 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (30 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (47 programs inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
-  quasiquote, rewrite-only macros, `guard`/`raise`, `call/cc`, `values`,
+  `set!` from a `do` body, flonum integer division (`modulo`/`remainder`
+  sign conventions under exactness contagion), quasiquote, rewrite-only
+  macros, `guard`/`raise`, `call/cc`, `values`,
   `define-record-type`, a sieve) under three axes — native `eshkol-run -r`,
   `vm-src` (the VM's own compiler), and `vm-eskb`
   (`--profile hosted-vm --emit-eskb` + VM) — and byte-compares
@@ -133,15 +135,14 @@ header. Filed while building this gate, 2026-07:
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
 | `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
+| `modulo_inexact_collapsed_vm.esk` | `(modulo <inexact> …)` with an integral result comes back **exact** — invisible to the corpus, which compares printed output |
+| `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |
 
 Divergences where **native is the wrong side** (filed rather than "fixed" in
 the VM to match a native bug; native codegen is not VM-owned):
 
 | repro | divergence |
 |---|---|
-| `bignum_div_inexact_zero_native.esk` | `(/ <bignum> 0.0)` → native `0`, VM `+inf.0` |
-| `do_set_param_native.esk` | `set!` of a parameter from a `do` body is dropped natively |
-| `float_remainder_modulo_native.esk` | non-integral float `remainder`/`modulo` → native garbage |
 | `namedlet_escaped_closure_native_segv.esk` | calling a leaked named-let procedure SIGSEGVs natively |
 | `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
 | `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
@@ -152,7 +153,17 @@ the VM to match a native bug; native codegen is not VM-owned):
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
 in the VM, move its repro into `corpus/` and flip the manifest row to
-`vm-supported` — the gate then guards the fix forever.
+`vm-supported` — the gate then guards the fix forever. The mirror rule holds
+for the native side: when native is repaired, the repro is **promoted out of
+`found/`** into `corpus/` in the same change, so the table above never claims
+a defect the compiler no longer has.
+
+Retired this way so far — `bignum_div_inexact_zero_native.esk` →
+`corpus/53_bignum_inexact_zero_division.esk`, `do_set_param_native.esk` →
+`corpus/51_do_body_set_mutation.esk`, and `float_remainder_modulo_native.esk`
+→ `corpus/50_flonum_integer_division.esk`. (`corpus/52` was claimed by
+`#394`'s `52_numeric_tag_dispatch.esk` on master; this file was renumbered
+to the next free slot when the branches merged.)
 
 ## Regenerating
 

@@ -1,0 +1,29 @@
+; FILED: `modulo` with an inexact operand and an INTEGRAL result loses its
+; inexactness in the VM — the VM is the wrong side here.
+;
+; R7RS 6.2.1: "if any argument is inexact, then the result is also inexact".
+; The two substrates print the same digits, so the corpus differential (which
+; compares printed output) cannot see this at all — only `exact?` separates
+; them, which is why this is filed rather than added to corpus/50.
+;
+;                              native -r   vm
+;   (exact? (modulo 5.0 3))    #f          #t   <- wrong
+;   (exact? (modulo 5   2.0))  #f          #t   <- wrong
+;   (exact? (remainder 5.0 3)) #f          #f
+;   (exact? (modulo 5.5 2.0))  #f          #f
+;   (modulo 5.0 3)             2           2    (values agree)
+;
+; `remainder` keeps its inexactness and so does a non-integral `modulo`, so
+; this is specifically the VM collapsing an INTEGRAL flonum result to an exact
+; integer — the VAL_INT collapse family in the VM's numeric tag dispatch, not
+; a floored-remainder bug. Native's flonum `modulo`/`remainder` paths were
+; themselves wrong until the fix that added corpus/50; with native correct,
+; this became visible.
+(display (exact? (modulo 5.0 3)))
+(newline)
+(display (exact? (modulo 5 2.0)))
+(newline)
+(display (exact? (remainder 5.0 3)))
+(newline)
+(display (exact? (modulo 5.5 2.0)))
+(newline)
