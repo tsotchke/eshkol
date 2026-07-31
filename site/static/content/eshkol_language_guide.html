@@ -397,7 +397,7 @@ also accepts <code>#(...)</code> tensor literals),
 <p><strong>Signal Processing:</strong> <code>fft</code>,
 <code>ifft</code>, <code>convolve</code>, <code>fir-filter</code>,
 <code>iir-filter</code>, <code>butterworth-lowpass</code>,
-<code>window-hamming</code>, <code>window-hann</code></p>
+<code>hamming-window</code>, <code>hann-window</code></p>
 <p><strong>Consciousness Engine:</strong> <code>unify</code>,
 <code>walk</code>, <code>make-substitution</code>,
 <code>make-fact</code>, <code>make-kb</code>, <code>kb-assert!</code>,
@@ -407,7 +407,7 @@ also accepts <code>#(...)</code> tensor literals),
 <code>expected-free-energy</code>, <code>make-workspace</code>,
 <code>ws-register!</code>, <code>ws-step!</code></p>
 <p><strong>Web Platform:</strong> <code>web-create-element</code>,
-<code>web-set-text</code>, <code>web-add-event-listener</code>,
+<code>web-set-text-content</code>, <code>web-add-event-listener</code>,
 <code>web-canvas-*</code></p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
@@ -912,8 +912,8 @@ with no interpreter overhead.</p>
 <h3 id="windowing-functions">Windowing Functions</h3>
 <pre class="scheme"><code>;; Apply window functions before FFT to reduce spectral leakage
 (define n 1024)
-(define hamming-win (window-hamming n))
-(define hann-win (window-hann n))
+(define hamming-win (hamming-window n))
+(define hann-win (hann-window n))
 
 (define windowed-signal (tensor-mul signal hamming-win))
 (define spectrum (fft windowed-signal))</code></pre>
@@ -947,13 +947,13 @@ eshkol-run program.esk --wasm -o program.wasm
 <h3 id="dom-api">DOM API</h3>
 <pre class="scheme"><code>;; Create and manipulate DOM elements
 (define heading (web-create-element &quot;h1&quot;))
-(web-set-text heading &quot;Hello from Eshkol!&quot;)
+(web-set-text-content heading &quot;Hello from Eshkol!&quot;)
 
 (define button (web-create-element &quot;button&quot;))
-(web-set-text button &quot;Click me&quot;)
+(web-set-text-content button &quot;Click me&quot;)
 (web-add-event-listener button &quot;click&quot;
   (lambda (event)
-    (web-set-text heading &quot;Clicked!&quot;)))</code></pre>
+    (web-set-text-content heading &quot;Clicked!&quot;)))</code></pre>
 <h3 id="canvas-api">Canvas API</h3>
 <pre class="scheme"><code>;; 2D canvas drawing
 (define canvas (web-canvas-create 800 600))

@@ -532,7 +532,7 @@ quantum_step(ctx)          // Full mixing round
 
 ### N-Dimensional Display
 
-**Recursive tensor display** from [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.cpp):
+**Recursive tensor display** from [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.h):
 ```scheme
 (define T (tensor 2 2 2  1 2 3 4 5 6 7 8))
 (display T)
