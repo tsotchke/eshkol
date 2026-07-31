@@ -2240,6 +2240,56 @@ if(TARGET eshkol-xla-runtime-obj)
     eshkol_target_llvm_includes(eshkol-xla-runtime-obj)
 endif()
 
+# ── Position independence for the generated-program runtime ────────────────
+#
+# `libeshkol-runtime.a` is linked into `--shared-lib` output, and an ELF linker
+# REFUSES a non-PIC object in a `-shared` link ("relocation R_X86_64_32S ...
+# can not be used when making a shared object; recompile with -fPIC").  So
+# position independence is not an optimization choice here: it is a property
+# the artifact must have for a documented capability to work at all.  macOS
+# hid this because Mach-O codegen is position-independent by default; both
+# Linux lite lanes caught it.
+#
+# The property is set on the OBJECT libraries, not on the `eshkol-runtime`
+# archive below.  That is the load-bearing detail: the archive only aggregates
+# `$<TARGET_OBJECTS:...>`, and compile flags come from the target that does the
+# compiling, so POSITION_INDEPENDENT_CODE on the STATIC target would be a
+# silent no-op.
+#
+# SCOPE — deliberately these targets rather than a global
+# CMAKE_POSITION_INDEPENDENT_CODE.  Only the runtime (and the agent-FFI
+# archive, set where it is defined) is ever consumed by a `-shared` link;
+# ESHKOL_NON_RUNTIME_SRC — the LLVM backend, parser and REPL that make up the
+# rest of `eshkol-static` — is linked only into the eshkol-run/eshkol-repl
+# executables, so compiling it PIC would pay the cost with no beneficiary.
+#
+# Accepted consequence: these objects are also members of `eshkol-static`, so
+# the compiler's own runtime half becomes PIC too.  The alternative — a second,
+# PIC-only copy of the runtime archive — was rejected: it doubles runtime
+# compile time and adds a permanent second artifact to build, install, discover
+# (resolve_runtime_archive) and ship, to avoid a cost that is small on x86-64
+# global-data access and already largely paid, since these objects are linked
+# into executables built -fPIE and most Linux distributions default to PIE.
+set(ESHKOL_RUNTIME_PIC_OBJ_TARGETS
+    eshkol-runtime-core-obj
+    eshkol-runtime-hosted-obj
+    eshkol-backend-runtime-obj
+    eshkol-runtime-support-obj
+)
+foreach(_eshkol_pic_target IN ITEMS
+    eshkol-vm-unity-obj
+    eshkol-gpu-runtime-obj
+    eshkol-xla-runtime-obj
+)
+    if(TARGET ${_eshkol_pic_target})
+        list(APPEND ESHKOL_RUNTIME_PIC_OBJ_TARGETS ${_eshkol_pic_target})
+    endif()
+endforeach()
+foreach(_eshkol_pic_target IN LISTS ESHKOL_RUNTIME_PIC_OBJ_TARGETS)
+    set_target_properties(${_eshkol_pic_target} PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+endforeach()
+
 set(ESHKOL_RUNTIME_OBJECTS
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
   $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
@@ -5122,6 +5172,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
 
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
+
+        # A program that requires an agent module links this archive alongside
+        # libeshkol-runtime.a, including when the output is a `--shared-lib`
+        # shared object — so it needs the same position independence, for the
+        # same ELF reason.  Its bundled third-party dependencies
+        # (eshkol-agent-sqlite3, eshkol-agent-tree-sitter-grammars, Yoga) already
+        # set this; the Eshkol-owned half was the gap.
+        set_target_properties(eshkol-agent-ffi PROPERTIES
+            POSITION_INDEPENDENT_CODE ON)
 
         if(APPLE)
             target_compile_options(eshkol-agent-ffi PRIVATE
