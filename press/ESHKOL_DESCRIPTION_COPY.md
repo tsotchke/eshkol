@@ -356,7 +356,7 @@ release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.4-evolve |
-| Release date | 23 July 2026 (builds on v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Release date | 31 July 2026 (builds on v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM 21 (version-enforced) |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
