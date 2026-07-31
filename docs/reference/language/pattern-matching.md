@@ -61,19 +61,19 @@ symbol
 1
 ```
 
-## Known issue — apostrophe-quote in the subject position
+## Quoted subjects
 
-Using `'datum` as the `match` **subject** hangs silently. Use the explicit
-`(quote datum)` form instead:
+Either quote spelling works in the `match` **subject** position:
 
 ```scheme
-;; hangs:   (match 'foo ((? symbol?) "sym") (_ "other"))
-;; works:
+(display (match 'foo ((? symbol?) "sym") (_ "other"))) (newline)
 (display (match (quote foo) ((? symbol?) "sym") (_ "other"))) (newline)
 ```
 ```
 sym
+sym
 ```
-This is the same quote-dispatch family as the `guard` issue (ESH-0106). The
-project's `match` predicate test suite (`(? pred)` patterns, wildcard, list/cons
-destructuring, multi-clause dispatch) passes 21/21 with this convention.
+The apostrophe form used to hang silently; that was the same quote-dispatch
+family as **ESH-0106**, closed with it. The project's `match` predicate test
+suite (`(? pred)` patterns, wildcard, list/cons destructuring, multi-clause
+dispatch) passes 21/21.

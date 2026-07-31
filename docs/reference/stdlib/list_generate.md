@@ -9,25 +9,32 @@ Constructors for numeric ranges (`iota`, `range`) and simple list building
 
 ## Functions
 
-### `(iota count)`
-Returns `(0 1 … count-1)`. Built tail-recursively from the top down.
+### `(iota count [start [step]])`
+SRFI-1 `iota`. Returns `count` numbers `(start start+step start+2·step …)`;
+`start` defaults to `0` and `step` to `1`, so `(iota count)` is
+`(0 1 … count-1)`. Note arg order: **count first**, then `start`, then `step`.
+Built tail-recursively from the top down. The two- and three-argument forms
+delegate to `iota-from` / `iota-step`.
 
 ### `(iota-from count start)`
-Returns `count` consecutive integers starting at `start`:
-`(start start+1 … start+count-1)`. Note arg order: **count first, start second**.
+The two-argument form under its own name: `(start start+1 … start+count-1)`.
 
 ### `(iota-step count start step)`
-Returns `count` numbers `(start start+step start+2·step …)`.
+The three-argument form under its own name.
 
 ```scheme
 ;; generate.esk
 (require core.list.generate)
 (display (iota 5)) (newline)
+(display (iota 5 1)) (newline)
+(display (iota 5 1 2)) (newline)
 (display (iota-from 5 1)) (newline)
 (display (iota-step 5 0 2)) (newline)
 ```
 ```
 (0 1 2 3 4)
+(1 2 3 4 5)
+(1 3 5 7 9)
 (1 2 3 4 5)
 (0 2 4 6 8)
 ```

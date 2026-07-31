@@ -59,7 +59,7 @@ Read the accumulated gradient at `node` after `ad-backward`. (Builtin aliases `a
 ```
 ```
 y=4 dy/dx=4
-s=2.12815 ds/da=2.5263
+s=2.128146809304331 ds/da=2.526303832590501
 ```
 (dy/dx = 2x = 4; ds/da = cos 0.5 + exp 0.5 = 2.5263.)
 
@@ -132,7 +132,7 @@ Returns the new output node. This is what lets any op whose backward is not a pl
 (display g)(newline)
 ```
 ```
-(0.339589 2.01877)
+(0.3395893495876965 2.0187680487630892)
 ```
 (Matches central finite differences of `softplus(x*y)+y^2` at `(1.5, 0.5)`: `d/dx = sigmoid(xy)*y`, `d/dy = sigmoid(xy)*x + 2y`; verified in `tests/ad/stateful_tape_test.esk`.)
 
@@ -163,7 +163,7 @@ Record a custom op whose backward is computed by **central finite differences** 
 (newline)
 ```
 ```
-(11.5839 4)
+(11.583853163799063 4.000000000559112)
 ```
 
 ### Builtin recorded ops (with backward rules)

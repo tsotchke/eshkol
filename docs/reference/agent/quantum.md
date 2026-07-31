@@ -181,9 +181,13 @@ active: `"moonlab-qrng"` or `"classical-fallback"`.
 (display (quantum-random-int 100)) (newline)
 (display (quantum-random-range 10 20)) (newline)
 ```
+One sample run — these are random draws, so **every run prints different
+numbers**. What is fixed is the range of each: `quantum-random` in `[0,1)`,
+`quantum-random-int 100` in `[0,100)`, `quantum-random-range 10 20` in
+`[10,20)`.
 ```
-0.459341
-95
+0.12326899229981436
+8
 10
 ```
 

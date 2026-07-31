@@ -103,7 +103,7 @@ foo
 #t
 ```
 
-> Note the quote-in-`guard` limitation (ESH-0106): inside a `guard` form use
-> `(quote name)` rather than `'name`. See
+> Both quote spellings — `'name` and `(quote name)` — behave identically
+> everywhere, including inside a `guard` form (**ESH-0106**, closed). See
 > [error-handling.md](error-handling.md) and
 > [quote-and-quasiquote.md](quote-and-quasiquote.md).

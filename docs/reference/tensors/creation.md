@@ -1,6 +1,6 @@
 # Tensors — Creation, dtypes, and the vector/tensor distinction
 
-Everything below is verified by running it on the v1.3.0 compiler; outputs are
+Everything below is verified by running it on the v1.3.4 compiler; outputs are
 pasted as printed.
 
 ---
@@ -17,7 +17,7 @@ layouts and purposes.
 | Holds mixed types? | yes (int, string, double, …) | no — numeric only |
 | Has `dtype`/`shape`? | no | yes (`f64` default) |
 | Multi-dimensional? | nested vectors only | native n-D via shape |
-| AD point type | ✅ all operators incl. `hessian`/`laplacian` | ✅ first-order; ✗ `hessian`/`laplacian` (ESH-0095) |
+| AD point type | all operators incl. `hessian`/`laplacian` | all operators incl. `hessian`/`laplacian` (ESH-0095 closed by #343) |
 
 ```scheme
 ;; vector holds heterogeneous values

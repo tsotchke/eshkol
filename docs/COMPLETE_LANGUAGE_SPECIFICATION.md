@@ -1098,7 +1098,8 @@ All arithmetic operators are polymorphic (work on integers, floats, dual numbers
 **Examples:**
 ```scheme
 (+ 1 2)        ; => 3
-(+ 1.5 2.5)    ; => 4.0
+(+ 1.5 2.5)    ; => 4    (inexact; a double with no fractional part prints
+               ;          without a decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; => 15
 ```
 
@@ -1339,10 +1340,16 @@ All comparison operators return booleans and support numeric type promotion.
 #### 4.6.3 `fold` / `foldl` - Left Fold
 **Signature:** `(fold proc init list)`
 
+`proc` is called as `(proc acc elt)` — **accumulator first, element second** —
+which is the R6RS `fold-left` convention, not the SRFI-1 `fold` one. `fold-left`
+and `foldl` are exact synonyms. See
+[`core.list.higher_order`](reference/stdlib/list_higher_order.md).
+
 **Example:**
 ```scheme
 (fold + 0 '(1 2 3 4))  ; => 10
-(fold cons '() '(1 2 3))  ; => (3 2 1)
+(fold cons '() '(1 2 3))  ; => (((() . 1) . 2) . 3)
+(fold-right cons '() '(1 2 3))  ; => (1 2 3)  ; use fold-right to rebuild a list
 ```
 
 #### 4.6.4 `fold-right` / `foldr` - Right Fold
@@ -1643,9 +1650,11 @@ The core modules are under `lib/core/`:
 All compound car/cdr operations (caar through cddddr)
 
 #### 5.2.2 generate.esk
-- `(iota n)` - Generate list [0, 1, ..., n-1]
-- `(iota-from n start)` - Generate n numbers from start
-- `(iota-step n start step)` - Generate with custom step
+- `(iota n [start [step]])` - SRFI-1: `n` numbers from `start` (default `0`) in
+  increments of `step` (default `1`). `(iota 5)` → `(0 1 2 3 4)`,
+  `(iota 5 1)` → `(1 2 3 4 5)`, `(iota 5 1 2)` → `(1 3 5 7 9)`
+- `(iota-from n start)` - the two-argument form under its own name
+- `(iota-step n start step)` - the three-argument form under its own name
 - `(repeat n x)` - Create list of n copies of x
 - `(make-list n fill)` - N-element list with fill
 - `(range start end)` - Generate [start, start+1, ..., end-1]
@@ -2321,7 +2330,7 @@ struct ad_tape {
 (define (radial v)
   (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
 
-(divergence radial (vector 1.0 1.0))  ; => 2.0
+(divergence radial (vector 1.0 1.0))  ; => 2
 ```
 
 #### 8.3.4 `curl` - Vector Field Curl
@@ -2358,7 +2367,7 @@ struct ad_tape {
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1))))  ; x² + y²
 
-(laplacian harmonic (vector 1.0 1.0))  ; => 4.0
+(laplacian harmonic (vector 1.0 1.0))  ; => 4
 ```
 
 #### 8.3.6 `directional-derivative` - Directional Derivative

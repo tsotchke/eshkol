@@ -1,6 +1,6 @@
 # Eshkol Language Core Reference
 
-Complete reference for the Eshkol language core, targeting **v1.3.0-evolve**.
+Complete reference for the Eshkol language core, targeting **v1.3.4-evolve**.
 
 Every example in these documents was executed against a fresh build of the compiler
 (`cmake --build build --target eshkol-run stdlib`) and the shown output is the real
@@ -40,7 +40,7 @@ it is called out explicitly.
 ## Known-issue conventions
 
 Open defects are tracked in the project ledger (`.swarm/tasks/ESH-*.json`). Where a
-form has a documented defect, the reference links it inline as, e.g., **ESH-0104**.
+form has a documented defect, the reference links it inline as, e.g., **ESH-0090**.
 These are documented honestly as *Known Issues* — they are real, reproducible, and not
 worked around in the examples.
 
@@ -49,11 +49,19 @@ Consolidated list of language-core known issues referenced here:
 | Ledger | Summary |
 |--------|---------|
 | ESH-0090 | A user `(define (raise …) …)` cannot shadow the builtin `raise`. |
-| ESH-0092 | Top-level globals are emitted as raw C symbols; a name colliding with libc (e.g. `free`) crashes at teardown (SIGBUS). |
-| ESH-0104 | Long forms `(quasiquote …)`/`(unquote …)`/`(unquote-splicing …)` are not wired; only the reader sugar ``` ` ``` `,` `,@` evaluate. |
-| ESH-0105 | Exact rational arithmetic silently degrades to `double` (or `0`) once a bignum operand is involved. |
-| ESH-0106 | `'sym` reader sugar inside a `guard` form (clause body or `raise` argument) is compiled as a variable reference. |
-| ESH-0107 | Nested `quasiquote` (level ≥ 2) collapses to `()`. |
-| ESH-0108 | stdlib `length`/`filter` are non-tail-recursive; they crash (SIGILL) on very large lists. |
 | ESH-0101 / ESH-0102 | Differential findings around `guard` value corruption / optimization-level-dependent crashes. |
+| ESH-0109 (part) | Curried `define` sugar `(define ((f x) y) …)` is a parse error, and `raise-continuable` is an unknown function on the native path (it exists in the bytecode VM). The `cond`/`case` `=>` and `define-values` parts of that ledger entry are done. |
 | — | Mutual tail recursion is **not** optimized; ping-pong recursion crashes around 500k depth (self tail recursion is fully optimized). |
+
+Closed since v1.3.3 — kept here because earlier releases documented them, and
+each is now covered by an example in the page that used to carry the warning:
+
+| Ledger | Was | Now |
+|--------|-----|-----|
+| ESH-0092 / ESH-0103 | A top-level global named after a libc symbol (`free`, `log`, …) corrupted it: SIGBUS at teardown, or a `set!` silently lost. | Ordinary bindings on JIT and AOT — see [binding-mutation-and-scope.md](binding-mutation-and-scope.md). |
+| ESH-0104 | Long forms `(quasiquote …)`/`(unquote …)`/`(unquote-splicing …)` were inert data. | Identical to the reader sugar — see [quote-and-quasiquote.md](quote-and-quasiquote.md). |
+| ESH-0105 | Exact rational arithmetic degraded to `double` (or `0`) once a bignum operand appeared. | Stays exact: `(+ 1/3 (expt 2 70))` → `3541774862152233910273/3`, `exact?` → `#t`. |
+| ESH-0106 | `'sym` inside a `guard` form compiled as a variable reference. | Both quote spellings agree everywhere — see [error-handling.md](error-handling.md). |
+| ESH-0107 | Nested `quasiquote` (level ≥ 2) collapsed to `()`. | Follows the R7RS level rule — see [quote-and-quasiquote.md](quote-and-quasiquote.md). |
+| ESH-0108 | stdlib `length`/`filter` crashed (SIGILL) on very large lists. | `(length (iota 1000000))` → `1000000`; `(filter even? (iota 1000000))` → 500,000 elements. |
+| ESH-0109 (`=>` and `define-values`) | `=>` was parsed as a variable reference; `define-values` was unsupported. | R7RS `=>` clauses work in `cond` and `case` — see [control-flow.md](control-flow.md); `(define-values (a b) (values 1 2))` binds both. |

@@ -326,7 +326,7 @@ multivariate, tensor, sparse, and checkpointed-reverse AD:
 ```scheme
 (derivative-n (lambda (x) (* x x x x x)) 2.0 3)   ; => 240   (d³/dx³ x⁵, any order)
 (derivative-n (lambda (x) (expt x 30)) 7 1)       ; => 96597172674395391805128210  (EXACT bignum)
-(taylor (lambda (x) (exp x)) 0.0 4)               ; => (1 1 0.5 0.166667 0.0416667)  (Taylor series)
+(taylor (lambda (x) (exp x)) 0.0 4)               ; => (1 1 0.5 0.16666666666666666 0.041666666666666664)
 ```
 
 See the **[Automatic Differentiation user guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)**

@@ -66,7 +66,7 @@ sdnc? #t
 params length 12220416
 run length 256
 grad length == params length #t
-loss 0.125 -> 0.030797
+loss 0.125 -> 0.030796962863858274
 ```
 
 ## Edge cases

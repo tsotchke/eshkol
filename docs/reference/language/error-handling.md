@@ -39,18 +39,18 @@ and the `clause`s are tried like a `cond` (each `(test result …)`, optional
 (str oops)
 ```
 
-### Known issue — `'sym` sugar inside `guard` (ESH-0106)
+### Quoted symbols inside `guard` (ESH-0106, closed)
 
-Inside a `guard` form, the `'` reader sugar is compiled as a variable reference,
-both in clause bodies and in a `raise` argument.
+Both quote spellings behave identically inside a `guard` form — in clause bodies
+and in the `raise` argument:
 
 ```scheme
-;; WRONG: 'boom is read as a variable
-(guard (e (#t e)) (raise 'boom))   ; => error: Undefined variable: boom
+(display (guard (e (#t e)) (raise 'boom))) (newline)
+(display (guard (e (#t e)) (raise (quote boom)))) (newline)
 ```
-**Always use the explicit `(quote …)` form inside `guard`:**
-```scheme
-(display (guard (e (#t e)) (raise (quote boom)))) (newline)  ; => boom
+```
+boom
+boom
 ```
 
 ### Known issues — differential `guard` findings (ESH-0101 / ESH-0102)
