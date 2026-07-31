@@ -1,0 +1,228 @@
+;; event_loop_test.esk — ESH-0011 portable event loop (kqueue / epoll / IOCP).
+;;
+;; Every ticket acceptance criterion is checked here by OBSERVING BEHAVIOUR, not
+;; by asserting that a function exists:
+;;
+;;   • (make-event-loop 64) returns a valid handle       → checks 1-2
+;;   • pipe read+write round-trip through event-loop-poll
+;;     completes within timeout                          → checks 4-7
+;;   • event-loop-close releases the underlying kernel
+;;     resource                                          → checks 12-14
+;;
+;; The resource-release check is the interesting one. "It returned #t" proves
+;; nothing about a descriptor actually being handed back, so instead the test
+;; opens and closes 1000 loops in sequence. Each loop holds one kqueue/epoll
+;; descriptor (or one completion port). If close leaked it, the process would
+;; hit its descriptor limit — 256 by default on macOS — long before the
+;; thousandth iteration and creation would start returning #f. Completing the
+;; run is positive evidence the kernel object is released.
+;;
+;; Runs identically under -r (JIT), AOT, and the bytecode VM: all three call the
+;; same lib/core/event_loop.c, so there is no parity gap and no PARITY.tsv row.
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (display "PASS: ") (display name) (newline)
+        (set! passed (+ passed 1)))
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (set! failed (+ failed 1)))))
+
+;; ─── Which backend are we actually exercising? ─────────────────────
+;; Reported rather than assumed, so the log says what ran on this host.
+(display "event-loop backend: ") (display (event-loop-backend)) (newline)
+
+;; ═══════════════════════════════════════════════════════════════════
+;; Acceptance 1 — (make-event-loop 64) returns a valid handle
+;; ═══════════════════════════════════════════════════════════════════
+
+(define loop (make-event-loop 64))
+
+(check "(make-event-loop 64) returns a handle, not #f"
+       (not (eq? loop #f)))
+
+(check "the handle is a positive integer"
+       (and (integer? loop) (> loop 0)))
+
+;; A size the platform cannot honour is a caller mistake, so it raises rather
+;; than handing back a loop that silently holds nothing.
+(check "max-events of 0 raises catchably"
+       (guard (e (#t #t))
+         (begin (make-event-loop 0) #f)))
+
+;; ═══════════════════════════════════════════════════════════════════
+;; Acceptance 2 — pipe read+write round-trip through event-loop-poll
+;; ═══════════════════════════════════════════════════════════════════
+
+(define p (make-pipe))
+(check "make-pipe returns a (read-fd . write-fd) pair"
+       (and (pair? p) (>= (car p) 0) (>= (cdr p) 0)))
+
+(define read-fd (car p))
+(define write-fd (cdr p))
+
+(check "the read end registers for read interest"
+       (event-loop-add-fd! loop read-fd 1))
+
+;; Nothing has been written, so a zero timeout must report nothing. This also
+;; pins that poll does not fabricate readiness for a registered-but-idle fd.
+(check "an idle registered fd reports no events at timeout 0"
+       (null? (event-loop-poll loop 0)))
+
+(define bytes-written (fd-write write-fd "ping"))
+(check "fd-write reports 4 bytes written to the write end"
+       (eqv? bytes-written 4))
+
+(define ready (event-loop-poll loop 2000))
+
+(check "poll reports exactly one ready descriptor"
+       (and (pair? ready) (null? (cdr ready))))
+
+(check "the ready descriptor is the pipe's read end"
+       (eqv? (car (car ready)) read-fd))
+
+(check "the reported event is readable (bit 0)"
+       (> (bitwise-and (cdr (car ready)) 1) 0))
+
+;; Level-triggered: the bytes are still buffered, so polling again must report
+;; the same readiness rather than consuming the notification.
+(check "readiness is level-triggered, not edge-triggered"
+       (pair? (event-loop-poll loop 0)))
+
+;; ═══════════════════════════════════════════════════════════════════
+;; Write interest, and removal
+;; ═══════════════════════════════════════════════════════════════════
+
+(check "the write end registers for write interest"
+       (event-loop-add-fd! loop write-fd 2))
+
+(define both (event-loop-poll loop 1000))
+(check "an empty pipe's write end is reported writable"
+       (letrec ((find (lambda (xs)
+                        (if (null? xs)
+                            #f
+                            (if (eqv? (car (car xs)) write-fd)
+                                (> (bitwise-and (cdr (car xs)) 2) 0)
+                                (find (cdr xs)))))))
+         (find both)))
+
+(check "event-loop-remove-fd! reports #t for a watched descriptor"
+       (event-loop-remove-fd! loop read-fd))
+
+(check "event-loop-remove-fd! reports #f for an unwatched descriptor"
+       (not (event-loop-remove-fd! loop read-fd)))
+
+(check "a removed descriptor is no longer reported"
+       (letrec ((find (lambda (xs)
+                        (if (null? xs)
+                            #f
+                            (if (eqv? (car (car xs)) read-fd)
+                                #t
+                                (find (cdr xs)))))))
+         (not (find (event-loop-poll loop 0)))))
+
+;; ═══════════════════════════════════════════════════════════════════
+;; Timeout — returns ON TIME, and returns AT ALL
+;;
+;; A hang is the failure mode that matters most for a blocking primitive, so
+;; this measures the wait instead of trusting it: a fresh pipe nobody writes to,
+;; a 150 ms budget, and a wall-clock check that the call both waited and came
+;; back. An implementation that spun and returned instantly would fail the lower
+;; bound; one that wedged would never reach the check at all.
+;; ═══════════════════════════════════════════════════════════════════
+
+(define q (make-pipe))
+(define quiet-loop (make-event-loop 4))
+(event-loop-add-fd! quiet-loop (car q) 1)
+
+(define t0 (current-time-ns))
+(define quiet (event-loop-poll quiet-loop 150))
+(define elapsed-ms (/ (- (current-time-ns) t0) 1000000.0))
+
+(display "  idle poll waited ") (display elapsed-ms) (display " ms") (newline)
+
+(check "an idle poll returns the empty list on timeout"
+       (null? quiet))
+
+(check "an idle poll actually waited for its timeout (>= 100 ms)"
+       (>= elapsed-ms 100.0))
+
+(check "an idle poll returned rather than hanging (< 5000 ms)"
+       (< elapsed-ms 5000.0))
+
+(event-loop-close quiet-loop)
+(fd-close (car q))
+(fd-close (cdr q))
+
+;; ═══════════════════════════════════════════════════════════════════
+;; Acceptance 3 — event-loop-close releases the kernel resource, and a
+;; closed handle fails closed
+;; ═══════════════════════════════════════════════════════════════════
+
+(check "event-loop-close reports success"
+       (event-loop-close loop))
+
+;; Double-close is observable but not fatal — the contract ESH-0010 specifies
+;; for handle lifecycles. Close is idempotent-observable; USE fails closed.
+(check "closing an already-closed handle reports #f, without raising"
+       (not (event-loop-close loop)))
+
+(check "polling a closed handle raises catchably"
+       (guard (e (#t #t))
+         (begin (event-loop-poll loop 0) #f)))
+
+(check "adding to a closed handle raises catchably"
+       (guard (e (#t #t))
+         (begin (event-loop-add-fd! loop read-fd 1) #f)))
+
+;; Generation tagging: a fresh loop may land in the recycled slot, and the
+;; retired handle must still be rejected rather than addressing the new loop.
+(define reused (make-event-loop 8))
+(check "a fresh loop opens after the previous one was closed"
+       (and (integer? reused) (> reused 0)))
+
+(check "a stale handle is still rejected after its slot is reused"
+       (guard (e (#t #t))
+         (begin (event-loop-poll loop 0) #f)))
+
+(check "the fresh loop is usable"
+       (null? (event-loop-poll reused 0)))
+(event-loop-close reused)
+
+(fd-close read-fd)
+(fd-close write-fd)
+
+;; The real resource-release evidence — see the file header for why this is the
+;; check that actually proves the kqueue/epoll/IOCP object is handed back.
+;;
+;; The cycle body is a separate procedure and the driver is a named `let` so the
+;; recursion is in strict tail position with no intervening binding form. An
+;; inlined `(let ((l ...)) ... (cycle ...))` puts the self-call inside a `let`
+;; body, which the bytecode VM does not tail-optimise — it overflows the frame
+;; stack at a few hundred iterations. Keep this shape.
+(define (open-and-close-one-loop)
+  (let ((l (make-event-loop 4)))
+    (if (eq? l #f) #f (event-loop-close l))))
+
+(check "1000 open/close cycles never exhaust the descriptor table"
+       (let cycle ((i 1000))
+         (if (= i 0)
+             #t
+             (if (open-and-close-one-loop)
+                 (cycle (- i 1))
+                 #f))))
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+;; The success path deliberately falls off the end instead of calling (exit 0):
+;; `exit` is not a bytecode-VM native, so an explicit success exit would make
+;; this test unrunnable on the VM axis even with every check green. Falling
+;; through yields status 0 on the native backends just the same.
+(if (= failed 0)
+    (begin (display "PASS: event_loop_test") (newline))
+    (begin (display "FAIL: event_loop_test") (newline) (exit 1)))

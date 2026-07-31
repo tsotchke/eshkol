@@ -146,6 +146,177 @@ tool for a scratch region whose entire contents should be freed at a lexical
 boundary; it is simply no longer *required* to achieve flat RSS in a resident
 loop.
 
+## User-reachable region handles (#341)
+
+`with-region` is the **recommended default and should stay your first choice**.
+It is RAII-shaped: the region is bound to a lexical block, so it is unwind-safe
+and impossible to forget to close. Reach for the handle API below only when the
+shape you need genuinely has no convenient lexical body.
+
+The motivating shape is an **autodiff training step**. The per-iteration nursery
+of the previous section deliberately refuses that loop: its static escape
+analysis disqualifies any body containing a `gradient`/derivative op, a `set!`,
+or a `tensor-set!`, and a training step trips all three. That exclusion is by
+design, not a bug — the nursery is aimed at pure or structurally-mutating tick
+loops. The machinery, however, works perfectly: region entry swaps the arena the
+AD tape is allocated from, so a per-step region reclaims the whole tape. What was
+missing was a **non-lexical surface** for the same machinery.
+
+### Surface
+
+```scheme
+(region-open)                 ; anonymous, default size    -> handle
+(region-open 1048576)         ; size hint in bytes         -> handle
+(region-open 'step)           ; debug name                 -> handle
+(region-open 'step 1048576)   ; name + size hint           -> handle
+
+(region-close handle)             ; reclaim, return '()
+(region-close handle v)           ; reclaim, return the deep-promoted v
+(region-close handle v1 v2 ...)   ; reclaim, return a list of promoted values
+
+(region-open? handle)         ; #t while the handle names a live region
+```
+
+A **handle is an opaque exact integer token**. Do not do arithmetic on it, print
+it as meaningful data, or store it past its close — treat it as an opaque value
+whose only legal uses are `region-close` and `region-open?`. A single numeric
+argument to `region-open` is read as the size hint; a single non-numeric argument
+is read as the debug name. Handles are **per-thread**, like the region stack.
+
+Everything allocated between `region-open` and its `region-close` is reclaimed at
+the close. The values named in the `region-close` result list are
+**deep-promoted** out first — the same transitive escape evacuator `with-region`
+uses for its result, interior-pointer walk included (ESH-0214c/d), so shared
+structure stays shared and no promoted object retains a pointer into the freed
+arena. Values *not* named are genuinely unreachable afterwards.
+
+Unlike `with-region`, the keep list is **explicit and mandatory**: there is no
+lexical body for escape analysis to scan, so the runtime cannot infer what you
+meant to keep. Anything you do not name is freed.
+
+> **Everything means everything.** While a handle is open, the current
+> allocation arena *is* the region's, so **every** value materialised in that
+> window lives there — including quoted list/vector literals, interned results,
+> and values bound by an enclosing `let` whose initialiser runs inside the
+> window. A value is only safe past the close if it is named in the keep list or
+> was created before the open. This is the one place the unstructured form is
+> genuinely sharper than `with-region`, whose lexical body makes the window
+> obvious at a glance; keep the window between `region-open` and `region-close`
+> short and mechanical for the same reason.
+
+```scheme
+;; WRONG — `'(1 2 3)` is built while the region is open, so region-close frees it.
+(let ((h (region-open)))
+  (equal? '(1 2 3) (region-close h (compute))))   ; compares against freed memory
+
+;; RIGHT — bind the close's result, then compare (or build the literal first).
+(let* ((h    (region-open))
+       (kept (region-close h (compute))))
+  (equal? (list 1 2 3) kept))
+```
+
+```scheme
+;; A training loop. `params` is handed forward; the ~123 MB/step AD tape is not.
+(let loop ((step 0) (params initial-params))
+  (if (= step total-steps)
+      params
+      (let ((h (region-open 'step)))
+        (let* ((g   (gradient loss params))
+               (new (update params g learning-rate)))
+          (loop (+ step 1) (region-close h new))))))
+```
+
+### Safety contract
+
+The API is unstructured, so misuse is possible in a way it is not with
+`with-region`. Every misuse has a defined, memory-safe outcome — a clean
+catchable error or a defined operation — and none can produce a dangling pointer
+or a silently wrong answer. Each row is gated by
+`tests/memory/region_handle_safety_test.esk`, run under `ESHKOL_ARENA_POISON=1`.
+
+| Situation | Outcome |
+|---|---|
+| **Double close** | Clean catchable error: `region-close: invalid or already-closed region handle`. Nothing is freed twice. |
+| **Use after close** (closing a handle whose region already went away) | Same clean catchable error. `(region-open? h)` is `#f` and never raises. |
+| **Close out of order** (closing an outer handle while an inner one is live) | **Defined cascade**: closes the inner regions too, innermost first, promoting the kept values out at every level, and invalidates the inner handles' tokens. This is deliberately the same operation an unwind performs, so there is no ordering rule to get wrong. |
+| **Never closed** | Bounded. Each open handle holds one region-stack entry; after 64 the next `region-open` raises `region-open: too many open region handles — a region-close is missing`. No unbounded growth, no corruption, and the runtime stays usable. |
+| **Fabricated / stale integer passed as a handle** | Fails validation, clean catchable error. A token carries a **generation** counter alongside its slot, so a reused slot never accepts an old token, and `0`/negative values are never handles. |
+| **Handle carried to another thread** | Fails validation there. Clean error, never a cross-thread free. |
+| **Value not in the keep list, read after close** | Unreachable. Under `ESHKOL_ARENA_POISON=1` the arena is stamped with `0xCB` before release, so a missed escape root crashes on an obvious sentinel address instead of reading plausible stale data. |
+
+### Unwind semantics
+
+**A non-local exit that crosses an open region closes it.** This holds for both
+`raise`/`guard` and a `call/cc` continuation escape, and for both `with-region`
+bodies and open handles:
+
+- the **in-flight value** — the raised value, or the value delivered to the
+  continuation — is deep-promoted out of every region being closed *before* any
+  arena is freed, so a handler never receives a pointer into freed memory;
+- the allocation-routing slot is restored before the arena dies, so no
+  post-unwind allocation can target a dead arena;
+- the tokens of the closed handles are invalidated, so `(region-open? h)` reads
+  `#f` in the handler and a later `region-close` raises cleanly rather than
+  tearing down an unrelated region.
+
+Mechanically the region depth is recorded as a mark next to the existing
+`wind_mark` / `promise_mark` on the exception-handler record and on the captured
+continuation state, and the unwind runs in the same place those two do. This is
+also a **fix for `with-region`**: before this change a `raise` out of a
+`with-region` body jumped past `region_pop` *and* `eshkol_region_leave`, leaking
+the region and leaving the allocation slot pointing at an arena that was never
+freed.
+
+There is exactly **one teardown path**. Explicit close, out-of-order close,
+`with-region` exit, a raise, and a continuation escape all call the same
+`eshkol_region_unwind_to()` primitive — promote the kept values one level out,
+restore the allocation slot, pop — so the structured and unstructured surfaces
+cannot drift apart.
+
+### Interaction with the automatic nursery
+
+A loop containing `region-open`/`region-close` is **not** given an automatic
+per-iteration nursery: the iter-scope analysis is an allowlist, and these
+builtins are not on it. Your explicit handles win, and the two reclamation
+mechanisms never nest unexpectedly.
+
+### Measured
+
+161-parameter MLP (14 → 10 → 1, tanh), full-batch `gradient` per step, fresh
+parameter vector written each step; peak RSS in MB via `/usr/bin/time -l`, native
+AOT. One step's tape is ~126 MB, so ~131 MB is the single-step floor. Source and
+driver: `tests/memory/region_handle_training_rss.esk` /
+`region_handle_training_rss_test.sh`.
+
+| steps | 5 | 10 | 20 | 40 |
+|---|---|---|---|---|
+| plain loop (no scoping) | 632 | 1258 | 2510 | 5013 |
+| `region-open`/`region-close`, default size hint | 343 | 605 | 847 | 879 |
+| `with-region` per step, sized region | 131 | 132 | 132 | 132 |
+| `region-open`/`region-close`, sized region | **132** | **132** | **132** | **132** |
+
+All four produce **bit-identical** trained parameters. Reclamation is complete:
+instrumenting the surviving arena shows it grows by exactly 2592 bytes per step —
+the promoted 161-double parameter vector and nothing else.
+
+**Size the region.** The difference between the two handle rows is not
+reclamation — both reclaim everything — it is the *allocator's* high-water mark.
+With the default 64 KiB hint, each step's arena reaches ~126 MB by adding
+geometrically doubling blocks, and freeing that block sequence every step walks
+the peak upward. A hint large enough to hold one step's work in a **single block**
+keeps the address ranges stable and makes peak RSS flat. This applies equally to
+`with-region`, and is the single most effective tuning knob for either form.
+
+### Substrate support
+
+Native (JIT and AOT) implements the full contract above. On the **bytecode VM**
+the handle protocol, its validation and its error text are identical — the same C
+implementation backs both — but a close reclaims nothing: the VM heap has no
+escape evacuator, which is also why `with-region` is a pass-through there. See
+`tests/vm_parity/PARITY.tsv`. Observable program output is byte-identical
+(`tests/vm_parity/corpus/region_handle_contract.esk` pins it); only the
+reclamation is absent.
+
 ## Parallel workers: commit-only reclamation
 
 Work-stealing pool workers all share the single thread-safe process arena, whose

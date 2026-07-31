@@ -1327,6 +1327,12 @@ typedef struct eshkol_exception_handler {
     // A raise rolls back every later evaluation before longjmp so failed
     // promise computations remain retryable per R7RS.
     void* promise_mark;
+    // #341: region-stack depth when this handler was installed. A raise closes
+    // every region opened after this point — `with-region` bodies and open
+    // `region-open` handles alike — after deep-promoting the raised value out of
+    // them, so a non-local exit can neither leak a region nor leave the
+    // allocation slot pointing at an arena it is about to free.
+    uint64_t region_mark;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
 } eshkol_exception_handler_t;
 
@@ -1470,6 +1476,10 @@ typedef struct eshkol_continuation_state {
     eshkol_tagged_value_t value;        // Value passed when continuation is invoked
     void* wind_mark;                    // Dynamic-wind stack marker at capture time
     void* promise_mark;                 // Promise-evaluation chain marker at capture time
+    // #341: region-stack depth at capture time. Invoking the continuation closes
+    // every region opened since, after deep-promoting the delivered value out of
+    // them (see eshkol_region_unwind_for_continuation).
+    uint64_t region_mark;
 } eshkol_continuation_state_t;
 
 /**
@@ -2576,6 +2586,22 @@ typedef struct eshkol_ast {
     // Source location for error reporting
     uint32_t line;      // 1-based line number (0 = unknown)
     uint32_t column;    // 1-based column number (0 = unknown)
+    /* Originating source FILE, as an id into the parser's interned table
+     * (0 = unknown). See eshkol_intern_source_file/eshkol_source_file_name.
+     *
+     * `line`/`column` alone are not a location: the AOT driver inlines every
+     * `(require …)`d module's forms into ONE flat AST array compiled as one
+     * unit, so a diagnostic rendered from the ambient source context printed the
+     * ENTRY file's name beside a MODULE's line number — a location that points
+     * at real but unrelated source. Only top-level forms are stamped; inner
+     * nodes are 0 and inherit their enclosing form's file, which is exactly
+     * right because a form cannot span two files.
+     *
+     * Deliberately an ID and not a `const char*`: AST nodes are built in many
+     * places without a central zero-init, so an unset field holds garbage. A
+     * garbage id simply falls outside the table and reads as "unknown"; a
+     * garbage pointer would be dereferenced by the diagnostic printer. */
+    uint32_t source_file_id;
 } eshkol_ast_t;
 
 // ===== Unified AST Literal Builders =====
@@ -2720,6 +2746,19 @@ hott_type_expr_t* hott_make_symbol_type(void);
 hott_type_expr_t* hott_make_null_type(void);
 hott_type_expr_t* hott_make_any_type(void);
 hott_type_expr_t* hott_make_nothing_type(void);
+
+/**
+ * @brief Construct a payload-free hott_type_expr_t of an arbitrary primitive @p kind.
+ *
+ * The kind-generic form of the constructors above, for callers that carry a
+ * hott_type_kind_t rather than naming one at the call site — notably the
+ * parser, which drives bare type-name spellings from the type system's
+ * canonical registry (eshkol::hott::builtinTypeSpellings()).
+ *
+ * @param kind A primitive (payload-free) HOTT_TYPE_* constant.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_primitive_type(hott_type_kind_t kind);
 
 // Create type variables
 /**
@@ -2899,6 +2938,25 @@ extern "C" void eshkol_reset_parse_line_counter(void);
 /** Set/query the diagnostic and coverage source name for the current parser thread. */
 extern "C" void eshkol_set_parse_source_context(const char* source_name);
 extern "C" const char* eshkol_get_parse_source_context(void);
+
+/**
+ * @brief Intern a source file path, returning its stable id (never 0).
+ *
+ * The table lives for the process and its entries are never reallocated away,
+ * so an id is safe to store in an AST node and resolve much later — after the
+ * loader's own path strings have gone out of scope.
+ * @param path File path to intern; NULL or empty returns 0 ("unknown").
+ * @return A nonzero id, or 0 when @p path is NULL/empty.
+ */
+extern "C" uint32_t eshkol_intern_source_file(const char* path);
+
+/**
+ * @brief Resolve an interned source-file id back to its path.
+ * @param id Id previously returned by eshkol_intern_source_file().
+ * @return The interned path, or NULL when @p id is 0 or not a live id (which is
+ *         how an unset/garbage eshkol_ast_t::source_file_id reads as unknown).
+ */
+extern "C" const char* eshkol_source_file_name(uint32_t id);
 /** Reset/query the current thread's cumulative parser error state. */
 extern "C" void eshkol_reset_parse_errors(void);
 extern "C" int eshkol_parse_had_error(void);

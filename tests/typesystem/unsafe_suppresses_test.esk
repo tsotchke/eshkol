@@ -1,5 +1,6 @@
 ;; Type System Test: Unsafe mode suppresses all type diagnostics
 ;; EXPECT-MODE: unsafe
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: Type error
 ;; EXPECT-NO-STDERR: Type warning
 

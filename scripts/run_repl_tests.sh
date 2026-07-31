@@ -20,8 +20,24 @@ else
     REPL_BIN="./$BUILD_DIR/eshkol-repl"
 fi
 
-OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/eshkol-repl-test.XXXXXX")"
-trap 'rm -f -- "${OUTPUT_FILE:?}"' EXIT
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path — see scripts/lib/test_isolation.sh.
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "repl"
+OUTPUT_FILE="$ESHKOL_TEST_TMPDIR/repl.out"
 
 
 # Colors for output
@@ -94,7 +110,10 @@ for test_file in tests/repl/*.esk; do
         echo -e "${RED}❌ PROCESS FAILURE (exit $EXIT_CODE)${NC}"
         FAILED_TESTS+=("$test_name (exit $EXIT_CODE)")
         ((FAIL++)) || true
-    elif grep -q "error:" "$OUTPUT_FILE" 2>/dev/null; then
+    # `error:` alone is a compiler diagnostic, not a verdict: these
+    # programs print their own FAIL lines and exit 0, so scan for
+    # failure markers too — anywhere on the line, not just column 0.
+    elif eshkol_test_output_has_failure "$OUTPUT_FILE" 'error:'; then
         echo -e "${RED}❌ RUNTIME ERROR${NC}"
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true

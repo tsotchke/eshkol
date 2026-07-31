@@ -1,0 +1,47 @@
+; ESH-0011 portable event loop: native-vs-VM output must be byte-identical.
+;
+; The VM dispatches to the same lib/core/event_loop.c the JIT/AOT backends call,
+; so handles, interest bits, poll-result shape and the close contract are one
+; implementation rather than two — this entry is what proves that claim instead
+; of asserting it.
+;
+; Everything printed here is deterministic and independent of which descriptor
+; numbers the OS happens to hand out: list LENGTHS and interest BITS, never a
+; raw fd, and no elapsed time. The full acceptance battery (timing, stale-handle
+; rejection, 1000 open/close cycles) lives in
+; tests/v1_3_edge_cases/event_loop_test.esk; this file exists purely for the
+; differential.
+
+(define loop (make-event-loop 8))
+(display (if loop "loop-open" "no-loop")) (newline)
+
+(define p (make-pipe))
+(define read-fd (car p))
+(define write-fd (cdr p))
+
+(display (event-loop-add-fd! loop read-fd 1)) (newline)   ; #t
+
+; Nothing written yet: a zero timeout reports an empty list on both substrates.
+(display (length (event-loop-poll loop 0))) (newline)     ; 0
+
+(display (fd-write write-fd "x")) (newline)               ; 1 byte
+
+; One ready descriptor, reporting readable (bit 0) and nothing else. The write
+; end is still open, so no hangup bit rides along.
+(define ready (event-loop-poll loop 500))
+(display (length ready)) (newline)                        ; 1
+(display (cdr (car ready))) (newline)                     ; 1
+(display (= (car (car ready)) read-fd)) (newline)         ; #t
+
+; Level-triggered: the byte is still buffered, so readiness repeats.
+(display (length (event-loop-poll loop 0))) (newline)     ; 1
+
+(display (event-loop-remove-fd! loop read-fd)) (newline)  ; #t
+(display (event-loop-remove-fd! loop read-fd)) (newline)  ; #f — not watched
+
+; Close is idempotent-observable: #t once, #f thereafter, never a raise.
+(display (event-loop-close loop)) (newline)               ; #t
+(display (event-loop-close loop)) (newline)               ; #f
+
+(display (fd-close read-fd)) (newline)                    ; #t
+(display (fd-close write-fd)) (newline)                   ; #t

@@ -79,6 +79,18 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"
     "(define (take n lst) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (- n 1) (cdr lst))))))\n"
     "(define (drop n lst) (if (= n 0) lst (if (null? lst) (list) (drop (- n 1) (cdr lst)))))\n"
+    /* SRFI-1 iota: (iota count [start [step]]). Mirrors
+     * lib/core/list/generate.esk exactly so the VM's always-available
+     * embedded prelude and the on-disk stdlib module agree; the VM used to
+     * leave `iota` bound to a dead BUILTINS-table entry (native id 141, no
+     * dispatcher case) whenever a program said `(require stdlib)` instead of
+     * explicitly `(require core.list.generate)`, so it silently returned ()
+     * for any arity (filed: tests/vm_parity/found/iota_returns_empty.esk). */
+    "(define (iota count . rest)\n"
+    "  (let ((start (if (pair? rest) (car rest) 0))\n"
+    "        (step (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 1)))\n"
+    "    (let loop ((n (- count 1)) (acc (list)))\n"
+    "      (if (< n 0) acc (loop (- n 1) (cons (+ start (* n step)) acc))))))\n"
     "(define (reduce f init lst) (fold-left f init lst))\n"
     "(define (merge compare a b)\n"
     "  (cond ((null? a) b) ((null? b) a)\n"
@@ -102,6 +114,15 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
     "(define (format fmt . args) (_format-list fmt args))\n"
+    /* User-reachable region handles (#341). The variadic surface is folded onto
+     * the fixed-arity natives 2210/2211; #f stands for an omitted argument, and
+     * the natives apply the same "lone numeric argument is the size hint" rule
+     * the native backend does, so every arity agrees across substrates. */
+    "(define (region-open . a)\n"
+    "  (cond ((null? a) (_region-open #f #f))\n"
+    "        ((null? (cdr a)) (_region-open (car a) #f))\n"
+    "        (else (_region-open (car a) (car (cdr a))))))\n"
+    "(define (region-close h . keeps) (_region-close-list h keeps))\n"
     "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
     "(define (read . args)\n"
     "  (cond ((null? args) (_read0))\n"

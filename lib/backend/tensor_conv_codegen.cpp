@@ -96,14 +96,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "mp2d_dims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: maxpool2d requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, num_dims});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("max-pool2d: requires at least a 2D tensor (got %lldD)", {num_dims});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -387,14 +380,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "ap2d_dims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: avgpool2d requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, num_dims});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("avg-pool2d: requires at least a 2D tensor (got %lldD)", {num_dims});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -869,6 +855,22 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Value* in_total_field = builder.CreateStructGEP(tensor_type, input_ptr, 3);
     llvm::Value* in_total = builder.CreateLoad(ctx_.int64Type(), in_total_field);
 
+    // Guard: conv2d input requires at least a 2D tensor. Without this the
+    // dims[num_dims - 2] read below indexes *before* the dimensions array for a
+    // rank-1 input (h_idx == -1), and the garbage H/W then size the output
+    // tensor and bound the convolution loops. max-pool2d/avg-pool2d have always
+    // guarded their input rank; conv2d only ever guarded its kernel.
+    {
+        llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
+        llvm::Value* dims_ok = builder.CreateICmpUGE(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+        llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_indims_ok", cur_fn);
+        llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_indims_err", cur_fn);
+        builder.CreateCondBr(dims_ok, ok_bb, err_bb);
+        builder.SetInsertPoint(err_bb);
+        ctx_.emitRaiseFmt("conv2d: input requires at least a 2D tensor (got %lldD)", {num_dims});
+        builder.SetInsertPoint(ok_bb);
+    }
+
     // Get last 2 dimensions (H, W)
     llvm::Value* h_idx = builder.CreateSub(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2));
     llvm::Value* w_idx = builder.CreateSub(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -899,14 +901,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_kdims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: conv2d kernel requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, k_ndim});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("conv2d: kernel requires at least a 2D tensor (got %lldD)", {k_ndim});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -1222,14 +1217,52 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
     llvm::Value* gamma_is_tensor = paramIsTensor(gamma_source);
     llvm::Value* beta_is_tensor = paramIsTensor(beta_source);
 
+    // `paramIsTensor` only establishes that the parameter is *some* heap object.
+    // Reading its tensor fields directly (the historical `tagged_.unpackPtr`)
+    // therefore misread a per-feature gamma/beta handed in as a Scheme vector or
+    // list — the vector's length header became the elements pointer. Classify by
+    // runtime tag instead, ONCE, out here: the classifier can allocate (it
+    // coerces a numeric collection to a 1-D tensor) and the consumer below runs
+    // inside the per-element normalization loop.
+    auto checkedParamTensor = [&](llvm::Value* source, llvm::Value* is_tensor,
+                                  const char* pname) -> llvm::Value* {
+        if (!source || source->getType() != ctx_.taggedValueType()) return nullptr;
+        llvm::BasicBlock* chk_bb = llvm::BasicBlock::Create(
+            ctx_.context(), name + "_" + pname + "_chk", current_func);
+        llvm::BasicBlock* skip_bb = llvm::BasicBlock::Create(
+            ctx_.context(), name + "_" + pname + "_chk_skip", current_func);
+        llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(
+            ctx_.context(), name + "_" + pname + "_chk_done", current_func);
+        builder.CreateCondBr(is_tensor, chk_bb, skip_bb);
+
+        builder.SetInsertPoint(chk_bb);
+        llvm::Value* checked = unpackTensorOperandChecked(
+            source, (std::string(name) + " " + pname).c_str());
+        llvm::BasicBlock* chk_exit = builder.GetInsertBlock();
+        builder.CreateBr(done_bb);
+
+        builder.SetInsertPoint(skip_bb);
+        builder.CreateBr(done_bb);
+
+        builder.SetInsertPoint(done_bb);
+        llvm::PHINode* p = builder.CreatePHI(ctx_.ptrType(), 2,
+                                             name + "_" + pname + "_ptr");
+        p->addIncoming(checked, chk_exit);
+        p->addIncoming(llvm::ConstantPointerNull::get(ctx_.ptrType()), skip_bb);
+        return p;
+    };
+    llvm::Value* gamma_param_ptr = checkedParamTensor(gamma_source, gamma_is_tensor, "gamma");
+    llvm::Value* beta_param_ptr = checkedParamTensor(beta_source, beta_is_tensor, "beta");
+
     // Return the effective per-element AD node for a scale/shift parameter:
     // gamma[idx]/beta[idx] when the parameter is a tensor, else the shared
     // scalar node. Reuses adNodeFromTensorElementBits so an element that is
     // itself an outer AD variable (a gradient input) is wired in directly.
     auto effectiveParamNode = [&](llvm::Value* scalar_node, llvm::Value* source,
-                                  llvm::Value* is_tensor, llvm::Value* idx,
+                                  llvm::Value* is_tensor, llvm::Value* param_ptr,
+                                  llvm::Value* idx,
                                   const std::string& pname) -> llvm::Value* {
-        if (!source || source->getType() != ctx_.taggedValueType())
+        if (!source || source->getType() != ctx_.taggedValueType() || !param_ptr)
             return scalar_node;
         llvm::BasicBlock* t_bb = llvm::BasicBlock::Create(ctx_.context(), pname + "_tensor", current_func);
         llvm::BasicBlock* s_bb = llvm::BasicBlock::Create(ctx_.context(), pname + "_scalar", current_func);
@@ -1237,7 +1270,7 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
         builder.CreateCondBr(is_tensor, t_bb, s_bb);
 
         builder.SetInsertPoint(t_bb);
-        llvm::Value* tptr = tagged_.unpackPtr(source);
+        llvm::Value* tptr = param_ptr;
         llvm::Value* pelems = builder.CreateLoad(ctx_.ptrType(),
             builder.CreateStructGEP(ctx_.tensorType(), tptr, 2));
         llvm::Value* ptotal = builder.CreateLoad(ctx_.int64Type(),
@@ -1359,9 +1392,9 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
     llvm::Value* norm_centered = autodiff_->recordADNodeBinary(3, norm_elem_node, mean_node);
     llvm::Value* normalized = autodiff_->recordADNodeBinary(5, norm_centered, std_node);
     llvm::Value* eff_gamma = effectiveParamNode(gamma_node, gamma_source,
-        gamma_is_tensor, norm_k, name + "_gamma_pe");
+        gamma_is_tensor, gamma_param_ptr, norm_k, name + "_gamma_pe");
     llvm::Value* eff_beta = effectiveParamNode(beta_node, beta_source,
-        beta_is_tensor, norm_k, name + "_beta_pe");
+        beta_is_tensor, beta_param_ptr, norm_k, name + "_beta_pe");
     llvm::Value* scaled = autodiff_->recordADNodeBinary(4, normalized, eff_gamma);
     llvm::Value* shifted = autodiff_->recordADNodeBinary(2, scaled, eff_beta);
     builder.CreateStore(builder.CreatePtrToInt(shifted, ctx_.int64Type()),

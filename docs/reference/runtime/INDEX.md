@@ -25,6 +25,11 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.0-evolve).
   pattern, and the AD-mode-flag limitation.
 - [JIT internals](jit-internals.md) — the run cache, the stdlib object cache, and
   the Large code model / arm64 Branch26 veneer.
+- [Event loop](event-loop.md) — the portable readiness multiplexer over
+  kqueue / epoll / IOCP: `make-event-loop`, `event-loop-add-fd!`,
+  `event-loop-remove-fd!`, `event-loop-poll`, `event-loop-close`, the Windows
+  completion-vs-readiness adaptation and its stated limits, and why the loop
+  lives outside the arena.
 
 ## See also
 

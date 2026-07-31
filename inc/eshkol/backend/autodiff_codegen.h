@@ -23,6 +23,7 @@
 #include <llvm/IR/Value.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -89,6 +90,95 @@ public:
     // Introduces basic blocks — callers must not assume the builder
     // stays in the current block.
     llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
+
+    /**
+     * ESH-0393. Coerce an AD evaluation point / seed component to the double
+     * the jet and tape substrates carry, classifying by the value's RUNTIME
+     * TAG rather than by the shape the call site expected.
+     *
+     * `TaggedValueCodegen::unpackDouble` bitcasts the tagged data field, and
+     * the jet seeder used to `SIToFP` it; both are correct only for an
+     * immediate. An exact rational or bignum is HEAP-tagged, so its data
+     * field is a pointer, and either reinterpretation silently differentiates
+     * at the object's ADDRESS (heap-magnitude garbage from SIToFP, a ~5e-314
+     * denormal from the bitcast). Every AD point/seed boundary therefore goes
+     * through here, which defers the dispatch to the one runtime authority
+     * (`eshkol_ad_point_to_double`): int64/double inline-equivalent, rational
+     * and bignum converted exactly once, a jet's primal and a Taylor tower's
+     * c[0] unwrapped, and a genuinely non-numeric point raised as a catchable
+     * type error instead of coerced.
+     *
+     * Emits exactly one call and no basic blocks, so it is a drop-in
+     * replacement at sites that must stay in their current block. The tagged
+     * spill slot is hoisted into the function entry block, so using this
+     * inside a loop body does not grow the frame per iteration.
+     *
+     * @param tagged The point (a tagged value, or an already-raw double/int).
+     * @param what   Operator name used in the diagnostic ("derivative", ...).
+     */
+    llvm::Value* adPointToDouble(llvm::Value* tagged, const char* what);
+
+    /**
+     * ESH-0393. Is this evaluation point a SCALAR (f: R→R) rather than a
+     * collection (f: R^n→R)? Returns an i1.
+     *
+     * Every multivariate entry point has to answer this before it can seed,
+     * and each used to enumerate the tags it expected a scalar to carry
+     * (DOUBLE, INT64, sometimes DUAL_NUMBER). An exact rational or bignum is
+     * an ordinary scalar that happens to be HEAP-tagged, so it failed every
+     * enumeration and was routed down the collection path — where its object
+     * was dereferenced as [dims][rank][elems]. Defers to the one runtime
+     * authority (`eshkol_ad_point_is_scalar`) so all operators agree.
+     */
+    llvm::Value* adPointIsScalar(llvm::Value* tagged);
+
+    /**
+     * ESH-0393. Is this point an EXACT HEAP scalar (rational or bignum)? i1.
+     *
+     * Narrower than adPointIsScalar on purpose: it excludes DUAL_NUMBER and
+     * Taylor towers. Operators that classify a dual point separately (a dual
+     * point means an enclosing differentiation is live) must have their
+     * `INT64 | DOUBLE` scalar test widened by exactly the exact-heap-numeric
+     * case, or widening the classification would re-route nested AD too.
+     *
+     * A point's ENTRY classification and its EXIT unwrap must be widened
+     * together: widening only the entry made `(gradient f 1/3)` return
+     * `#(0.666…)` where `(gradient f 0.333…)` returns the bare `0.666…`.
+     */
+    llvm::Value* adPointIsExactScalar(llvm::Value* tagged);
+
+    /** ESH-0394: is this point an EXACT NUMBER (exact int64 / bignum /
+     *  rational)? The gate on the exact tier, and the same question
+     *  `eshkol_taylor_seed_tagged` asks before seeding an exact tower, so the
+     *  codegen route and the runtime seeder cannot disagree. Broader than
+     *  adPointIsExactScalar (which excludes immediate int64), narrower than
+     *  adPointIsScalar (a double is inexact; a dual/tower means an enclosing
+     *  differentiation is live and the exact tier must decline). */
+    llvm::Value* adPointIsExactNumber(llvm::Value* tagged);
+
+    /** ESH-0394: i1 runtime gate for the exact tier — point is exact AND no
+     *  forward pass is live AND no tower pass is live. */
+    llvm::Value* adExactTowerGate(llvm::Value* point_tagged);
+
+    /** ESH-0394: may this (function, point) pair enter the exact tier? Requires
+     *  a resolvable single-parameter body and both that body and the point to
+     *  be pure arithmetic over the Taylor-tower primitive whitelist. */
+    bool adExactTowerEligible(const eshkol_ast* function_ast,
+                              const eshkol_ast* point_ast);
+
+    /** ESH-0394: emit the exact-tier route (tower pass at an exact point, the
+     *  operator's own jet path otherwise), or return nullptr — emitting
+     *  nothing — when the pass is not eligible. */
+    llvm::Value* tryExactTowerRoute(const eshkol_ast* function_ast,
+                                    const eshkol_ast* point_ast, int order,
+                                    const std::function<llvm::Value*()>& jet_arm,
+                                    const char* what);
+
+    /** Shared emitter for the adPointIs* predicates: spill `tagged` to a
+     *  hoisted entry-block slot and call `runtime_fn`, or fold to a constant
+     *  when the value is already a raw (untagged) scalar. */
+    llvm::Value* adPointPredicate(llvm::Value* tagged, const char* runtime_fn,
+                                  bool raw_is_true);
 
     // ESH-0188 (P3): the compile-time-`int depth` seed/extract pair that used
     // to live here (seedDerivativeInput/extractDerivativeResult) was the
@@ -271,6 +361,10 @@ public:
      */
     llvm::Value* gradient(const eshkol_operations_t* op);
 
+    /** ESH-0394: the reverse-mode `gradient` implementation, run whenever the
+     *  exact tier declines. Unchanged from the pre-exact-tier `gradient()`. */
+    llvm::Value* gradientJetPath(const eshkol_operations_t* op);
+
     /**
      * Compute Jacobian matrix: (jacobian func args...)
      * @param op The Jacobian operation AST node
@@ -291,6 +385,11 @@ public:
      * @return Hessian matrix as tensor
      */
     llvm::Value* hessian(const eshkol_operations_t* op);
+
+    /** ESH-0394: the forward-over-forward / matrix `hessian` implementation, run
+     *  whenever the exact tier declines. Unchanged from the pre-exact-tier
+     *  `hessian()`. */
+    llvm::Value* hessianJetPath(const eshkol_operations_t* op);
 
     /**
      * Compute divergence (trace of Jacobian): (divergence func args...)
@@ -906,6 +1005,26 @@ public:
         closure_call_callback_ = callback;
     }
 
+    /** Runtime-closure arity spread for gradients.
+     *
+     * Calls a runtime closure with its own declared number of scalar arguments,
+     * taken from a gradient's dual-element array; arity 0/1 and the variadic
+     * sentinel get the whole point as one vector argument, and an arity above
+     * the supported ceiling raises. The dispatch is emitted once per module,
+     * out of line (getOrCreateGradSpreadHelper in llvm_codegen.cpp) — inlining
+     * one fully expanded closure call per arity at every gradient site cost
+     * ~1.03M lines of stdlib IR and pushed Windows compiles over the CI budget.
+     *
+     * Arguments: (closure, whole-point vector, dual-element array, declared
+     * arity, context).
+     */
+    using GradientSpreadCallCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*,
+                                                        llvm::Value*, llvm::Value*, void*);
+    /** Set the out-of-line gradient arity-spread callback. */
+    void setGradientSpreadCallCallback(GradientSpreadCallCallback callback) {
+        gradient_spread_call_callback_ = callback;
+    }
+
     /** Function arity table — maps function name to parameter count */
     void setFunctionArityTable(std::unordered_map<std::string, uint64_t>* table) {
         function_arity_table_ = table;
@@ -975,6 +1094,7 @@ private:
     int derivative_ho_counter_ = 0;
     void* binding_opaque_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
+    GradientSpreadCallCallback gradient_spread_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_body_ast_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_def_ast_ = nullptr;

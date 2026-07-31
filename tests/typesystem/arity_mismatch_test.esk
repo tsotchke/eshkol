@@ -1,5 +1,6 @@
 ;; Type System Test: Arity mismatch detection
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: expects 2 arguments, got 4
 
 ;; f takes exactly 2 parameters

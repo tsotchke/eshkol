@@ -256,7 +256,8 @@ void vm_run(VM* vm) {
         else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '+'); }
         else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
             if (__builtin_add_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '+'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0); vm_push(vm, number_val(as_number(a) + as_number(b))); } DISPATCH(); }
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
+            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) + as_number_vm(vm, b))); } DISPATCH(); }
     lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1906); }
@@ -266,7 +267,8 @@ void vm_run(VM* vm) {
         else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '-'); }
         else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
             if (__builtin_sub_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '-'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0); vm_push(vm, number_val(as_number(a) - as_number(b))); } DISPATCH(); }
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
+            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) - as_number_vm(vm, b))); } DISPATCH(); }
     lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1907); }
@@ -276,7 +278,8 @@ void vm_run(VM* vm) {
         else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '*'); }
         else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
             if (__builtin_mul_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '*'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0); vm_push(vm, number_val(as_number(a) * as_number(b))); } DISPATCH(); }
+        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
+            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) * as_number_vm(vm, b))); } DISPATCH(); }
     lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1908); }
@@ -296,14 +299,15 @@ void vm_run(VM* vm) {
          * double path below made every bignum division silently produce 0. */
         else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '/'); if (vm->error) goto vm_exit; }
         else {
-        double bd = as_number(b);
+        double bd = as_number_vm(vm, b);
         /* Only EXACT-by-exact-zero is an error.  With any inexact operand this
          * is IEEE-754 division and must yield +nan.0 / ±inf.0 like native —
          * erroring here aborted the run and dropped every later top-level
          * form (tests/vm_parity/corpus/37_float_div_zero.esk). */
         if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
             fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0); vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
+        VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0);
+        vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
@@ -312,29 +316,34 @@ void vm_run(VM* vm) {
             int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
             vm_push(vm, INT_VAL(r)); DISPATCH();
         }
-        double bd = as_number(b);
+        double bd = as_number_vm(vm, b);
         if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        double r = fmod(as_number(a), bd);
+        double r = fmod(as_number_vm(vm, a), bd);
         if (r != 0 && ((r > 0) != (bd > 0))) r += bd;
-        vm_push(vm, number_val(r));
+        vm_push(vm, number_val_contagious(a, b, r));
         DISPATCH();
     }
     lbl_NEG: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
+        /* A rational must negate in the rational domain: falling through to the
+         * double path read the heap pointer as 0.0, so (- 1/3) answered -0. */
+        else if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 335); }
         else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_neg);
             if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
             else vm_push(vm, INT_VAL(-a.as.i)); }
-        else { VM_AD_UNARY(vm, a_sp, ad_neg); vm_push(vm, number_val(-as_number(a))); } DISPATCH(); }
+        else { VM_AD_UNARY(vm, a_sp, ad_neg); vm_push(vm, number_val_contagious1(a, -as_number_vm(vm, a))); } DISPATCH(); }
     lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
+        /* See lbl_NEG: (abs 1/3) answered 0 through the double path. */
+        else if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); }
         else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_abs);
             if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
             else vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); }
-        else { VM_AD_UNARY(vm, a_sp, ad_abs); vm_push(vm, number_val(fabs(as_number(a)))); } DISPATCH(); }
+        else { VM_AD_UNARY(vm, a_sp, ad_abs); vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm, a)))); } DISPATCH(); }
 
     /* --- Comparison --- */
 
@@ -835,6 +844,7 @@ void vm_run(VM* vm) {
         vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
         vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
         vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
+        vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
         vm->n_handlers++;
         DISPATCH();
     }
@@ -961,7 +971,7 @@ vm_exit:
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,307); }
             else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'+');
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val(as_number(a) + as_number(b))); break; }
+            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) + as_number_vm(vm,b))); break; }
         case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
@@ -969,7 +979,7 @@ vm_exit:
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,308); }
             else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'-');
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val(as_number(a) - as_number(b))); break; }
+            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) - as_number_vm(vm,b))); break; }
         case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
@@ -977,7 +987,7 @@ vm_exit:
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,309); }
             else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'*');
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val(as_number(a) * as_number(b))); break; }
+            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) * as_number_vm(vm,b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
@@ -994,10 +1004,10 @@ vm_exit:
             /* See the threaded-dispatch OP_DIV above: bignums need the bignum
              * domain, and only EXACT-by-exact-zero is an error. */
             else if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'/'); }
-            else { double bd = as_number(b);
+            else { double bd = as_number_vm(vm,b);
             if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
                 fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, number_val(as_number(a) / bd)); } break; }
+            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) / bd)); } break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
@@ -1006,45 +1016,49 @@ vm_exit:
                 int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
                 vm_push(vm, INT_VAL(r)); break;
             }
-            double bd = as_number(b);
+            double bd = as_number_vm(vm, b);
             if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
-            double r = fmod(as_number(a), bd);
+            double r = fmod(as_number_vm(vm, a), bd);
             if (r != 0 && ((r > 0) != (bd > 0))) r += bd;
-            vm_push(vm, number_val(r));
+            vm_push(vm, number_val_contagious(a, b, r));
             break;
         }
         case OP_NEG: { Value a = vm_pop(vm);
+            /* See the threaded lbl_NEG: a rational needs the rational domain;
+             * the double path below reads its heap pointer as 0.0. */
+            if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 335); break; }
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(-a.as.i)); break; }
             if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
-            vm_push(vm, number_val(-as_number(a))); break; }
+            vm_push(vm, number_val_contagious1(a, -as_number_vm(vm, a))); break; }
         case OP_ABS: { Value a = vm_pop(vm);
+            if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); break; }
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); break; }
             if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
-            vm_push(vm, number_val(fabs(as_number(a)))); break; }
+            vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm, a)))); break; }
 
         /* Comparison — push proper booleans */
         case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; }
+            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; }
         case OP_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number(a) <  as_number(b))); break; }
+            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; }
         case OP_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number(a) >  as_number(b))); break; }
+            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; }
         case OP_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; }
+            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; }
         case OP_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); break; }
-            vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; }
+            vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; }
         case OP_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }
 
         /* Variables */
@@ -1525,6 +1539,7 @@ vm_exit:
             vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
             vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
             vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
+            vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
             vm->n_handlers++;
             break;
         }
@@ -1612,5 +1627,8 @@ void vm_free(VM* vm) {
     vm_dlopen_close_all(vm);
     heap_destroy(&vm->heap);
     free(vm->code);
+    free(vm->constants);
+    vm->constants = NULL;
+    vm->const_cap = 0;
     free(vm);
 }

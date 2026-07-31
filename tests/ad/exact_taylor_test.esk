@@ -133,3 +133,11 @@
 (display "----") (newline)
 (display "exact-taylor tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
+;; Machine-readable verdict, so this file can gate in CTest. It could not before:
+;; it printed only a count, and no workflow ran it, yet it is the gate on the
+;; exact-coefficient tier that `derivative`/`gradient`/`hessian` now route to at
+;; an exact point (ESH-0394) -- so a regression here would silently become a
+;; regression in those three.
+(if (= nfail 0)
+    (begin (display "PASS: exact-coefficient Taylor tier") (newline))
+    (begin (display "FAIL: exact-coefficient Taylor tier") (newline)))

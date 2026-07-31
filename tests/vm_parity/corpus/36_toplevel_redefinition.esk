@@ -1,0 +1,61 @@
+;; R7RS 5.3.1 -- a later top-level define wins, identically on both substrates.
+;;
+;; "At the top level of a program, a definition (define <variable>
+;;  <expression>) has essentially the same effect as the assignment expression
+;;  (set! <variable> <expression>) if <variable> is bound to a non-syntax
+;;  value."  One location per name, assigned in program order, read when the
+;;  reference is evaluated.
+;;
+;; Native resolved a redefined name at compile time and by namespace rather
+;; than by order; the VM bound each define to a fresh stack slot, so a
+;; procedure defined BEFORE a redefinition captured the old slot and kept
+;; running the old body.  Both are fixed, and this program pins the agreement.
+;;
+;; Numeric output only: the VM prints a procedure as <closure@N> where native
+;; prints its source form, so no procedure is ever displayed here.
+
+;; value then procedure -- the procedure is later, so it wins
+(define a 42)
+(define (a x) (* x 2))
+(display (a 5))
+(newline)
+
+;; procedure then value -- the value is later, so the name reads as a number
+(define (b x) (* x 2))
+(define b 42)
+(display b)
+(newline)
+(display (number? b))
+(newline)
+
+;; procedure then procedure, different arity: no cached signature survives
+(define (c x) (* x 2))
+(define (c x y) (+ x y))
+(display (c 5 7))
+(newline)
+
+;; forward reference: d-caller is defined before d is redefined but invoked
+;; after it, so it must see the new d
+(define (d x) (* x 2))
+(define (d-caller n) (d n))
+(define (d x) (* x 100))
+(display (d-caller 5))
+(newline)
+
+;; program order: the call written between the two definitions sees the first
+(define (e x) (* x 2))
+(define e-before (e 5))
+(define (e x) (* x 100))
+(display e-before)
+(newline)
+(display (e 5))
+(newline)
+
+;; self-recursive redefinition: the redefined base case is the live one
+(define (f n) (if (< n 2) 1 (* n (f (- n 1)))))
+(define f-first (f 5))
+(define (f n) (if (< n 2) 7 (* n (f (- n 1)))))
+(display f-first)
+(newline)
+(display (f 5))
+(newline)

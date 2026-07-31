@@ -820,16 +820,9 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(too_many_dims, matmul_dims_err, matmul_dims_ok);
 
         ctx_.builder().SetInsertPoint(matmul_dims_err);
-        llvm::Function* printf_fn_matmul = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn_matmul = ctx_.lookupFunction("exit");
-        if (printf_fn_matmul && exit_fn_matmul) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: tensor-dot matmul only supports 1D and 2D tensors (got %lld dimensions)\n");
-            ctx_.builder().CreateCall(printf_fn_matmul, {fmt, a_num_dims});
-            ctx_.builder().CreateCall(exit_fn_matmul, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
+        ctx_.emitRaiseFmt(
+            "tensor-dot: only supports 1D and 2D tensors (got %lldD)",
+            {a_num_dims});
 
         ctx_.builder().SetInsertPoint(matmul_dims_ok);
     }
@@ -907,18 +900,11 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(k_match, shape_ok_bb, shape_err_bb);
 
     ctx_.builder().SetInsertPoint(shape_err_bb);
-    {
-        llvm::Function* printf_fn_shape = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn_shape = ctx_.lookupFunction("exit");
-        if (printf_fn_shape && exit_fn_shape) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: matmul inner dimensions mismatch (%lld vs %lld)\n");
-            ctx_.builder().CreateCall(printf_fn_shape, {fmt, a_cols, b_dim0});
-            ctx_.builder().CreateCall(exit_fn_shape, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
-    }
+    // Memory safety, not a diagnostic: the matmul loops below index
+    // B[k * N + j] for k < a_cols. If a_cols exceeds B's row count the read runs
+    // off the end of B's element buffer.
+    ctx_.emitRaiseFmt("tensor-dot: matmul inner dimensions mismatch (%lld vs %lld)",
+                      {a_cols, b_dim0});
 
     ctx_.builder().SetInsertPoint(shape_ok_bb);
 
@@ -1588,6 +1574,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* is_negative = ctx_.builder().CreateICmpSLT(axis_val, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted_axis = ctx_.builder().CreateAdd(axis_val, src_num_dims);
     axis_val = ctx_.builder().CreateSelect(is_negative, adjusted_axis, axis_val);
+    // An axis that does not address a reducible dimension used to reach
+    // eshkol_xla_reduce, which returned NULL, which was packed as a heap
+    // pointer and displayed as `()` — an error that read as an empty result.
+    axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
@@ -1633,6 +1623,13 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     llvm::Value* is_negative = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted = builder.CreateAdd(axis, src_num_dims);
     axis = builder.CreateSelect(is_negative, adjusted, axis);
+    // Validate ONCE, before either lowering below consumes the axis: the AD
+    // path loads `src_dims_ptr[axis]` to size its output (an out-of-range axis
+    // read past the dimensions array, then divided by whatever it found), and
+    // the numeric path let eshkol_xla_reduce return NULL, which was packed as a
+    // heap pointer and displayed as `()`. A rank-1 operand reduced to rank 0
+    // and displayed as `#()`. All three read as an empty result, not an error.
+    axis = checkReduceAxis(axis, src_num_dims, "tensor-reduce-axis");
 
     if (autodiff_ && op_code >= 0 && op_code <= 3) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
@@ -1649,7 +1646,17 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "axis_reduce_ad_tensor");
 
         llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
-        llvm::Value* out_num_dims = builder.CreateSub(src_num_dims, one_i64);
+        // Reducing the sole axis of a rank-1 tensor removes the only dimension.
+        // `rank - 1` was stored unclamped as the output rank, so the result was a
+        // rank-0 tensor that displayed as `#()` even though its single element
+        // held the correct value. Clamp to 1 and write dims[0] = 1 below, so a
+        // complete reduction yields the 1-element tensor that the numeric path
+        // and the VM's vm_tensor_reduce both return.
+        llvm::Value* reduce_to_scalar = builder.CreateICmpULE(src_num_dims, one_i64,
+                                                             "axis_reduce_to_scalar");
+        llvm::Value* out_num_dims = builder.CreateSelect(
+            reduce_to_scalar, one_i64, builder.CreateSub(src_num_dims, one_i64),
+            "axis_reduce_out_rank");
         llvm::Value* dims_bytes = builder.CreateMul(out_num_dims,
             llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
         llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "axis_reduce_ad_dims");
@@ -1693,6 +1700,23 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         builder.CreateBr(dim_cond);
 
         builder.SetInsertPoint(dim_done);
+        // The copy loop above skips the reduced axis, so on a rank-1 operand it
+        // writes nothing and result_dims[0] would stay uninitialized arena bytes.
+        // The clamped output rank claims one dimension, so give it its length.
+        {
+            llvm::Value* wrote_none = builder.CreateICmpEQ(
+                builder.CreateLoad(ctx_.int64Type(), dim_out),
+                llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::BasicBlock* scalar_dim_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "axis_reduce_scalar_dim", current_func);
+            llvm::BasicBlock* dims_ready_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "axis_reduce_dims_ready", current_func);
+            builder.CreateCondBr(wrote_none, scalar_dim_bb, dims_ready_bb);
+            builder.SetInsertPoint(scalar_dim_bb);
+            builder.CreateStore(one_i64, result_dims);
+            builder.CreateBr(dims_ready_bb);
+            builder.SetInsertPoint(dims_ready_bb);
+        }
 
         llvm::Value* inner_stride = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_inner_stride");
         builder.CreateStore(one_i64, inner_stride);

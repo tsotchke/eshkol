@@ -64,6 +64,11 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 | `--strict-types` | Type errors become fatal (default: gradual — warnings only) |
 | `--unsafe` | Skip all type checks |
 
+"Fatal" is enforced, not advisory: under `--strict-types` a program with type
+errors stops before code generation, the command exits **nonzero**, and **no
+output binary is written**. In the default gradual mode the same programs report
+`[WARN] Type warning: …` and compile as before.
+
 ### Search paths
 
 | Flag | Alias | Meaning |

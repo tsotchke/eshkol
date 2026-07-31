@@ -1,23 +1,37 @@
 ; Wave 3 R7RS procedures test
+;
+; The display-only version of this file printed each result next to an
+; "; Expected: ..." comment and never compared the two. The expectations below
+; are exactly those comments, now asserted. They are fixed by R7RS-small:
+;   cond-expand           7.1.1 / 4.2.1 — feature requirements
+;   define-record-type    5.5
+;   case-lambda           4.2.9
+;   make-parameter        4.2.6
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ; === cond-expand ===
+; cond-expand has no value in R7RS (it splices), so each arm asserts directly.
+; Taking the `else` arm IS the failure: the feature requirement did not match.
 (cond-expand
-  (r7rs (display "r7rs"))
-  (else (display "no-r7rs")))
-(display " ")
+  (r7rs (display "PASS: cond-expand matches the r7rs feature id") (newline))
+  (else (display "FAIL: cond-expand did not match feature id r7rs") (newline)))
 (cond-expand
-  (eshkol (display "eshkol"))
-  (else (display "unknown")))
-(display " ")
+  (eshkol (display "PASS: cond-expand matches the eshkol feature id") (newline))
+  (else (display "FAIL: cond-expand did not match feature id eshkol") (newline)))
 (cond-expand
-  ((and r7rs eshkol) (display "both"))
-  (else (display "not-both")))
-(display " ")
+  ((and r7rs eshkol)
+   (display "PASS: cond-expand (and r7rs eshkol)") (newline))
+  (else (display "FAIL: cond-expand (and r7rs eshkol) did not match") (newline)))
 (cond-expand
-  ((not chicken) (display "ok"))
-  (else (display "fail")))
-(newline)
-; Expected: r7rs eshkol both ok
+  ((not chicken) (display "PASS: cond-expand (not chicken)") (newline))
+  (else (display "FAIL: cond-expand (not chicken) did not match") (newline)))
 
 ; === define-record-type ===
 (define-record-type <point>
@@ -27,18 +41,14 @@
   (y point-y set-point-y!))
 
 (define p (make-point 3 4))
-(display (point-x p))
-(display " ")
-(display (point-y p))
-(display " ")
-(display (point? p))
-(newline)
-; Expected: 3 4 #t
+(check "define-record-type field x" 3 (point-x p))
+(check "define-record-type field y" 4 (point-y p))
+(check "define-record-type predicate on an instance" #t (point? p))
+(check "define-record-type predicate on a non-instance" #f (point? 3))
 
 (set-point-y! p 99)
-(display (point-y p))
-(newline)
-; Expected: 99
+(check "define-record-type modifier sets y" 99 (point-y p))
+(check "define-record-type modifier leaves x alone" 3 (point-x p))
 
 ; === case-lambda ===
 (define add-or-inc
@@ -46,19 +56,12 @@
     ((x) (+ x 1))
     ((x y) (+ x y))))
 
-(display (add-or-inc 5))
-(display " ")
-(display (add-or-inc 3 7))
-(newline)
-; Expected: 6 10
+(check "case-lambda 1-arg clause" 6 (add-or-inc 5))
+(check "case-lambda 2-arg clause" 10 (add-or-inc 3 7))
 
 ; === make-parameter / parameterize ===
 (define current-radix (make-parameter 10))
-(display (current-radix))
-(display " ")
-(parameterize ((current-radix 16))
-  (display (current-radix)))
-(display " ")
-(display (current-radix))
-(newline)
-; Expected: 10 16 10
+(check "make-parameter initial value" 10 (current-radix))
+(check "parameterize rebinds inside the body" 16
+       (parameterize ((current-radix 16)) (current-radix)))
+(check "parameterize restores on exit" 10 (current-radix))

@@ -1,5 +1,6 @@
 ;; Type System Test: Backward type inference narrows params from body usage
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: expected Number, got String
 
 ;; concat uses string-append, so a and b should be narrowed to String

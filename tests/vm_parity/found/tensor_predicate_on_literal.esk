@@ -1,0 +1,9 @@
+; FILED: `tensor?` disagrees on a reader literal.
+; native -r : #t  #t   (a numeric #(...) literal IS a tensor natively)
+; vm        : #f  #t   (the VM compiles #(...) to a vector value)
+;
+; Every SIZE and RANK property of literals is identical across substrates (see
+; corpus/37_tensor_literal_generality.esk); this is purely which predicate the
+; literal's runtime representation answers, i.e. operand classification.
+(display (tensor? #(1 2 3))) (newline)
+(display (vector? #(1 2 3))) (newline)

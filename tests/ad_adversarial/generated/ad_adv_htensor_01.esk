@@ -27,6 +27,26 @@
              (display ") ad=") (display ad)
              (display " fd=") (display fd) (newline))))
 
+;; ESH-0393: the exact tier is not an FD comparison — derivative-n/taylor at an
+;; exact seed must come back EXACT, so assert both the exactness tag and the
+;; value. task=#f -> PASS/FAIL; task=string -> XKNOWN on mismatch.
+(define (chk-exact id got expect task)
+  (if (and (exact? got) (= got expect))
+      (begin (set! op-pass (+ op-pass 1))
+             (display "PASS: ") (display id) (newline))
+      (if task
+          (begin (set! op-xknown (+ op-xknown 1))
+                 (display "XKNOWN: ") (display id)
+                 (display " (") (display task)
+                 (display ") got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline))
+          (begin (set! op-fail (+ op-fail 1))
+                 (display "FAIL: ") (display id)
+                 (display " got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline)))))
+
 ;; perturb component i of a Scheme vector by d (fresh copy).
 (define (perturb-vector v i d)
   (let ((n (vector-length v)) (out (make-vector (vector-length v) 0.0)))
@@ -136,19 +156,19 @@
     (row 0 #f)))
 
 ;; probe htensor.quad.v3.hess
-(define (h148 v) (tensor-sum (tensor-mul v v)))
-(define H148 (hessian h148 (vector 1.3 -0.7 0.6)))
-(chk-hess "htensor.quad.v3.hess" H148 h148 (vector 1.3 -0.7 0.6) 3 2e-3 1e-4 #f)
+(define (h184 v) (tensor-sum (tensor-mul v v)))
+(define H184 (hessian h184 (vector 1.3 -0.7 0.6)))
+(chk-hess "htensor.quad.v3.hess" H184 h184 (vector 1.3 -0.7 0.6) 3 2e-3 1e-4 #f)
 
 ;; probe htensor.quad.t3.hess
-(define (h149 v) (tensor-sum (tensor-mul v v)))
-(define H149 (hessian h149 (tensor 3 1.3 -0.7 0.6)))
-(chk-hess "htensor.quad.t3.hess" H149 h149 (vector 1.3 -0.7 0.6) 3 2e-3 1e-4 #f)
+(define (h185 v) (tensor-sum (tensor-mul v v)))
+(define H185 (hessian h185 (tensor 3 1.3 -0.7 0.6)))
+(chk-hess "htensor.quad.t3.hess" H185 h185 (vector 1.3 -0.7 0.6) 3 2e-3 1e-4 #f)
 
 ;; probe htensor.rat.v2.hess
-(define (h150 v) (/ 1.0 (+ 1.0 (tensor-dot v v))))
-(define H150 (hessian h150 (vector 0.8 1.1)))
-(chk-hess "htensor.rat.v2.hess" H150 h150 (vector 0.8 1.1) 2 2e-3 1e-4 #f)
+(define (h186 v) (/ 1.0 (+ 1.0 (tensor-dot v v))))
+(define H186 (hessian h186 (vector 0.8 1.1)))
+(chk-hess "htensor.rat.v2.hess" H186 h186 (vector 0.8 1.1) 2 2e-3 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

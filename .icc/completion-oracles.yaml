@@ -82,6 +82,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["ffi_boundary_fail_open"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'FFI boundary fails closed: an arity error is fatal under -r AND AOT (never a null binding, never a written binary, named diagnostic preserved), and an argument whose type cannot be an address is rejected at every `extern` pointer parameter with a catchable type error instead of being dereferenced'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["jit_repl_clean_exit"]
           event_values: ["PASS"]
         severity: medium
@@ -562,6 +570,26 @@ oracles:
         label: 'ESH-0214e: resident tick loop that mutates persistent state every tick (hash-table-set!/vector-set!/set-cdr!) reclaims transient garbage automatically via a nursery region — AOT flat RSS, correct read-back, clean under ESHKOL_ARENA_POISON=1, within 10x of the with-region baseline'
         action: ./scripts/run_icc_smoke.sh
 
+      # #341 user-reachable region handles. The automatic nursery above cannot
+      # help an AD training step: its static escape analysis disqualifies any
+      # loop body containing a gradient/derivative op, a set! or a tensor-set!,
+      # and a training step trips all three (by design — the nursery targets
+      # pure or structurally-mutating tick loops). region-open / region-close
+      # give the SAME region machinery a non-lexical surface. The gate requires
+      # flat peak RSS across step counts on a 161-parameter MLP doing a
+      # full-batch gradient per step, trained parameters bit-identical to both
+      # the unscoped baseline and the with-region twin, and the whole misuse
+      # matrix (double close, use-after-close, out-of-order cascade, fabricated
+      # tokens, raise + call/cc unwind crossing an open handle, slot reuse,
+      # never-closed) clean on AOT and JIT under ESHKOL_ARENA_POISON=1.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["region_handle_scoped_reclamation"]
+          event_values: ["PASS"]
+        severity: high
+        label: '#341: user-reachable region handles (region-open / region-close / region-open?) keep an AD training loop flat with identical numerics, and every misuse is a clean catchable error or a defined cascade — never a dangling pointer'
+        action: ./scripts/run_icc_smoke.sh
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["reader_fuzz_smoke"]
@@ -908,6 +936,19 @@ oracles:
         severity: medium
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: run_ad_numerics_gate
+
+      # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
+      # Tier 1 networking primitive registers its descriptors against. Real
+      # criterion, not a placeholder: the probe runs the acceptance battery on
+      # JIT and AOT, and the battery asserts the pipe round-trip, a measured
+      # timeout, close-then-use failing closed, and 1000 open/close cycles.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["event_loop_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
+        action: run_icc_smoke
 
       - runtime_event:
           event_kinds: [v1_4_connection]
