@@ -698,7 +698,13 @@ namespace eshkol {
 
 // Forward declarations for static helper functions
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
-static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir = ".");
+// base_dir defaults to the directory of the file currently being compiled —
+// NOT to the process's working directory. The old `= "."` default was the
+// whole of the JIT/AOT divergence: every call site took it, so the in-process
+// JIT never knew which file was doing the require/import/load.
+static std::string resolveModulePath(const std::string& module_name,
+                                     const std::string& base_dir =
+                                         platform::current_requiring_directory());
 
 /**
  * Scoped parser/codegen provenance for nested module loads.
@@ -706,6 +712,12 @@ static std::string resolveModulePath(const std::string& module_name, const std::
  * Requiring a module can recursively require another module. A one-way
  * eshkol_set_source_context() call would leave the caller attributed to the
  * last dependency compiled, so preserve and restore all active source text.
+ *
+ * The same scope also establishes the requiring file for module resolution:
+ * "these forms came from this file" is one fact, and answering it in two
+ * places is exactly how the two lanes drifted apart. Every site that
+ * attributes source text therefore also roots the search path, and no site
+ * can do one without the other.
  */
 class ScopedSourceContext {
 public:
@@ -713,6 +725,7 @@ public:
         : previous_path_(eshkol_get_source_context_path())
         , previous_text_(eshkol_get_source_context_text())
         , previous_parse_path_(eshkol_get_parse_source_context())
+        , requiring_file_(path)
     {
         eshkol_set_source_context(path.c_str(), text.c_str());
     }
@@ -729,6 +742,7 @@ private:
     std::string previous_path_;
     std::string previous_text_;
     std::string previous_parse_path_;
+    platform::ScopedRequiringFile requiring_file_;
 };
 
 /**
@@ -3091,154 +3105,40 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
  * @brief Searches a set of platform-specific candidate paths for the Eshkol `lib` directory (module source root).
  * @return The first existing candidate directory path, or an empty string if none is found.
  */
-// Find the lib directory (matches eshkol-run.cpp find_lib_dir())
+// Find the lib directory. The selection rule itself lives in
+// platform::module_source_root(), shared with the AOT driver, so the two
+// lanes cannot disagree about which tree carries stdlib.esk.
 static std::string findLibDir() {
-    // Prefer the Eshkol installation that actually owns stdlib.esk.  A
-    // release package also contains ../lib for native archives; accepting the
-    // first existing directory therefore selects the archive directory and
-    // makes installed source modules such as agent.regex invisible to the
-    // cache-disabled JIT.  platform::install_module_roots() supplies the
-    // shared precedence — $ESHKOL_LIB_DIR, then the real executable's install
-    // tree, then the cwd, then the system prefixes — so the executable-
-    // relative installed source tree wins over a downstream project's
-    // unrelated lib/ directory.
-    const auto roots = platform::install_module_roots();
-
-    for (const auto& root : roots) {
-        std::error_code ec;
-        if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
-            return root.path.string();
-        }
-    }
-
-    for (const auto& root : roots) {
-        if (root.origin == platform::InstallOrigin::EnvOverride) {
-            continue;
-        }
-        std::error_code ec;
-        if (std::filesystem::is_directory(root.path, ec)) {
-            return root.path.string();
-        }
-    }
-
-    return {};
+    return platform::module_source_root().path.string();
 }
 
 // Global lib directory cache
 static std::string g_lib_dir;
 
-// Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
-// Matches eshkol-run.cpp module resolution logic
 /**
- * @brief Resolves a `(require ...)` module name (or literal `(load ...)` path) to a canonical, existing `.esk` file path.
+ * @brief Resolves a `(require ...)` module name (or a literal `(load ...)` /
+ *        `(import "...")` path) to a canonical, existing `.esk` file path.
  *
- * If @p module_name already looks like a path literal (absolute, `./`,
- * `../`, contains a `/`, or ends in `.esk`), it is used as-is (appending
- * `.esk` only if missing and the bare path does not already exist);
- * otherwise dots are converted to path separators and `.esk` appended (e.g.
- * "core.functional.compose" -> "core/functional/compose.esk"). The resulting
- * relative path is then searched for, in order: @p base_dir, the cached
- * library directory (found via findLibDir(), memoized in g_lib_dir),
- * each colon/semicolon-separated directory in `$ESHKOL_PATH`, and finally a
- * short list of legacy fallback paths.
- * @return The canonicalized absolute path of the first match found, or "" if
- * the module could not be located anywhere.
+ * Delegates in full to platform::resolve_module_source_path(), the resolver
+ * the AOT driver also uses; see its declaration for the search order. @p
+ * base_dir defaults to the directory of the file currently being compiled
+ * (platform::current_requiring_directory()), which every ScopedSourceContext
+ * establishes.
+ * @return The canonicalized absolute path of the first match, or "" if the
+ * module is not on any tier of the search path.
  */
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
-    // PATH-LITERAL DETECTION:
-    //
-    // `(load "...")` strings are stored in module_names verbatim (the
-    // parser used to mangle them into dotted form, but that broke
-    // any path whose directory components contain dots — common on
-    // macOS where $TMPDIR is /var/folders/<hash>.<rand>/T, and on
-    // any project that uses cache dirs like build.v2/).  Treat
-    // anything that looks like a literal path as one and skip the
-    // dot-to-slash rewrite entirely.
-    bool is_path_literal =
-        !module_name.empty() &&
-        (module_name[0] == '/' ||
-         module_name.rfind("./", 0) == 0 ||
-         module_name.rfind("../", 0) == 0 ||
-         module_name.find('/') != std::string::npos ||
-         (module_name.size() > 4 &&
-          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
-
-    std::string path_part;
-    if (is_path_literal) {
-        path_part = module_name;
-        // Add .esk if the user omitted it (and the path doesn't already
-        // point at an existing file as-given).
-        if (path_part.size() < 4 ||
-            path_part.compare(path_part.size() - 4, 4, ".esk") != 0) {
-            // Only append if the bare path doesn't exist; users may load
-            // a file with a non-.esk extension on purpose.
-            if (!std::filesystem::exists(path_part)) {
-                path_part += ".esk";
-            }
-        }
-    } else {
-        // Convert dots to path separators (dotted module name)
-        path_part = module_name;
-        for (char& c : path_part) {
-            if (c == '.') c = '/';
-        }
-        path_part += ".esk";
-    }
-
     // Initialize lib dir if needed
     if (g_lib_dir.empty()) {
         g_lib_dir = findLibDir();
     }
 
-    // Search order (kept identical to eshkol-run.cpp resolve_module_path):
-    // 1. The requiring file's own directory (the program's own sources)
-    // 2. $ESHKOL_PATH — the explicit override, which `-I` flags feed into
-    // 3. The installed library directory (lib/)
-    // The override precedes the install for the same reason ESHKOL_LIB_DIR
-    // precedes every archive location: a search path the user named must not
-    // be silently outranked by a copy that happens to ship with the compiler.
-
-    // Try current directory first
-    std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
-    if (std::filesystem::exists(current_path)) {
-        return std::filesystem::canonical(current_path).string();
-    }
-
-    // Try $ESHKOL_PATH
-    const char* eshkol_path = std::getenv("ESHKOL_PATH");
-    if (eshkol_path) {
-        std::stringstream ss(eshkol_path);
-        std::string search_dir;
-        while (std::getline(ss, search_dir, eshkol_path_separator)) {
-            std::filesystem::path env_path = std::filesystem::path(search_dir) / path_part;
-            if (std::filesystem::exists(env_path)) {
-                return std::filesystem::canonical(env_path).string();
-            }
-        }
-    }
-
-    // Try library directory
-    if (!g_lib_dir.empty()) {
-        std::filesystem::path lib_path = std::filesystem::path(g_lib_dir) / path_part;
-        if (std::filesystem::exists(lib_path)) {
-            return std::filesystem::canonical(lib_path).string();
-        }
-    }
-
-    // Legacy fallback paths
-    std::vector<std::string> fallback_paths = {
-        "lib/" + path_part,
-        path_part,
-        "../lib/" + path_part,
-    };
-
-    for (const auto& p : fallback_paths) {
-        if (std::filesystem::exists(p)) {
-            return std::filesystem::canonical(p).string();
-        }
-    }
-
-    return "";
+    // One resolver, shared with the AOT driver. Everything about the search
+    // order — path-literal detection, the requiring file's directory ahead of
+    // the working directory, $ESHKOL_PATH ahead of the install, the
+    // directory-as-module entry points — is stated once, in
+    // platform::resolve_module_source_path().
+    return platform::resolve_module_source_path(module_name, base_dir, g_lib_dir);
 }
 
 /**
@@ -3644,22 +3544,13 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         if (ast->operation.op == ESHKOL_IMPORT_OP && ast->operation.import_op.path) {
             std::string import_path = ast->operation.import_op.path;
 
-            // Resolve relative paths
-            if (!std::filesystem::path(import_path).is_absolute()) {
-                if (!std::filesystem::exists(import_path)) {
-                    // Try relative to lib/
-                    std::string lib_path = "lib/" + import_path;
-                    if (std::filesystem::exists(lib_path)) {
-                        import_path = lib_path;
-                    }
-                }
-            }
-
-            // Check if already loaded
-            std::string canonical_path;
-            try {
-                canonical_path = std::filesystem::canonical(import_path).string();
-            } catch (...) {
+            // A path-form `import` asks the same question as `require` and
+            // `load`, so it gets the same answer from the same resolver —
+            // rooted at the importing file, then the working directory, then
+            // $ESHKOL_PATH, then the install. The private cwd-plus-"lib/"
+            // rule this replaced was a third dialect of the search path.
+            std::string canonical_path = resolveModulePath(import_path);
+            if (canonical_path.empty()) {
                 std::cerr << "Import file not found: " << import_path << std::endl;
                 return nullptr;
             }

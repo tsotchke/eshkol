@@ -2226,6 +2226,11 @@ static EscapeAnalyzer g_escape_analyzer;
 // Forward declarations
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
 static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
+// Module tree root (lib/), resolved once by find_lib_dir() before any of the
+// require/import/load lanes run. Declared here because process_imports() —
+// which sits above find_lib_dir() — now shares the one resolver and so needs
+// the same lib_dir tier every other lane passes.
+static std::string g_lib_dir;
 static bool g_source_parse_failed = false;
 // ESH-0361: a required module that does not resolve on ANY search path is a hard
 // dependency failure. process_requires() prints "Module '…' not found" and used
@@ -2374,20 +2379,17 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
             // This is an import statement
             std::string import_path = ast.operation.import_op.path;
 
-            // Resolve relative paths
-            std::filesystem::path resolved_path;
-            if (import_path[0] == '/') {
-                // Absolute path
-                resolved_path = import_path;
-            } else {
-                // Relative to base directory
-                resolved_path = std::filesystem::path(base_dir) / import_path;
-            }
-
-            if (!std::filesystem::exists(resolved_path)) {
-                eshkol_error("Import file not found: %s", resolved_path.c_str());
+            // Same search order as `require`/`load` — a path-form `import`
+            // is the same question asked with different syntax, so it goes
+            // through the same resolver rather than a private base_dir-only
+            // rule that answered differently from every other lane.
+            std::string resolved = eshkol::platform::resolve_module_source_path(
+                import_path, base_dir, g_lib_dir);
+            if (resolved.empty()) {
+                eshkol_error("Import file not found: %s", import_path.c_str());
                 continue;
             }
+            std::filesystem::path resolved_path(resolved);
 
             // Load the imported file
             std::vector<eshkol_ast_t> file_asts;
@@ -2634,174 +2636,37 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
 // to source-resolve it and fails. That makes the -r run-cache fall back to the
 // in-process JIT every run. install_module_roots() encodes that order (and
 // puts $ESHKOL_LIB_DIR ahead of it, and the system prefixes last).
+//
+// The selection itself lives in platform::module_source_root() so the
+// in-process JIT cannot drift from it; only the user-facing note about where
+// the tree came from is the driver's business.
 static std::string find_lib_dir()
 {
-    const auto roots = eshkol::platform::install_module_roots();
-
-    // The Eshkol module tree is the one that actually carries stdlib.esk.
-    // Prefer the first root that has it — that check is what keeps a
-    // downstream project's unrelated lib/ (or an archive-only lib/ in a
-    // release package) from being mistaken for the module tree.
-    for (const auto& root : roots) {
-        std::error_code ec;
-        if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
-            eshkol::platform::ResolvedInstallArtifact resolved{
-                root.path.string(), root.origin, root.path};
-            report_artifact_resolution("module source tree", resolved,
-                                       /*verify_version=*/false);
-            return root.path.string();
-        }
+    const auto root = eshkol::platform::module_source_root();
+    if (root.origin == eshkol::platform::InstallOrigin::NotFound) {
+        return {};
     }
 
-    // No root carried stdlib.esk. Fall back to the first directory that at
-    // least exists, so a partial install still resolves user modules — but
-    // never promote $ESHKOL_LIB_DIR here: it names a directory of native
-    // archives, and accepting it as the module root would point (require …)
-    // at a build directory with no .esk files in it.
-    for (const auto& root : roots) {
-        if (root.origin == eshkol::platform::InstallOrigin::EnvOverride) {
-            continue;
-        }
-        std::error_code ec;
-        if (std::filesystem::is_directory(root.path, ec)) {
-            return root.path.string();
-        }
+    std::error_code ec;
+    if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
+        eshkol::platform::ResolvedInstallArtifact resolved{
+            root.path.string(), root.origin, root.path};
+        report_artifact_resolution("module source tree", resolved,
+                                   /*verify_version=*/false);
     }
-
-    return {};
+    return root.path.string();
 }
 
-// Convert symbolic module name to file path
-// e.g., "data.json" -> "lib/data/json.esk"
-//       "core.strings" -> "lib/core/strings.esk"
+// Resolve a module name / path literal to a source file.
 //
-// Path-literal exception: `(load "...")` strings are stored verbatim by
-// the parser since 5992fdb-era fixes; they may legitimately contain
-// dots in directory names (e.g. macOS $TMPDIR=/var/folders/<hash>.<r>/T,
-// or any project cache dir like build.v2/).  Detect path-like strings
-// and skip the dot-to-slash rewrite entirely.
+// Thin forwarder onto platform::resolve_module_source_path(), which is the
+// single authority shared with the in-process JIT. The AOT lane and the JIT
+// lane used to carry separate copies of the search order and disagreed about
+// what a relative `(load "…")` means — see the header for the full contract.
 static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir, const std::string& lib_dir)
 {
-    bool is_path_literal =
-        !module_name.empty() &&
-        (module_name[0] == '/' ||
-         module_name.rfind("./", 0) == 0 ||
-         module_name.rfind("../", 0) == 0 ||
-         module_name.find('/') != std::string::npos ||
-         (module_name.size() > 4 &&
-          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
-
-    std::string path_part;
-    if (is_path_literal) {
-        path_part = module_name;
-        if (path_part.size() < 4 ||
-            path_part.compare(path_part.size() - 4, 4, ".esk") != 0) {
-            if (!std::filesystem::exists(path_part)) {
-                path_part += ".esk";
-            }
-        }
-    } else {
-        // Convert dots to path separators (dotted module name)
-        path_part = module_name;
-        for (char& c : path_part) {
-            if (c == '.') c = '/';
-        }
-        path_part += ".esk";
-    }
-
-    // Search order:
-    // 1. The requiring file's own directory (relative to base_dir)
-    // 2. The cwd / project root
-    // 3. Environment variable $ESHKOL_PATH (colon-separated) — the explicit
-    //    override, which the `-I` flags are merged into
-    // 4. The installed library directory (lib/)
-    //
-    // The program's own sources come first, then the paths the user named
-    // explicitly, then the install. $ESHKOL_PATH ahead of lib/ is the same
-    // rule ESHKOL_LIB_DIR follows for archives: a location the user asked for
-    // must not be silently outranked by a copy that ships with the compiler.
-    // (Before this ordering, `-I mytree` could not override an installed
-    // core.* module at all.)
-
-    // Try current directory first
-    std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
-    if (std::filesystem::exists(current_path)) {
-        return std::filesystem::canonical(current_path).string();
-    }
-
-    // Try the cwd / project root. A dotted module like `src.core.encoder.x` is
-    // rooted at the project, not at the requiring file's directory — so a file in
-    // tests/gates/ that (require src.core...) must resolve against ./src/..., not
-    // tests/gates/src/.... The in-process JIT resolver already searches cwd; match
-    // it here so the AOT path (and thus the -r persistent run-cache) resolves the
-    // SAME modules. Without this, any program whose required user module is found
-    // by the JIT but not by AOT falls back to in-process JIT on every run — slow,
-    // and on arm64 Linux/Windows it also hits the AArch64 Branch26 JIT limit.
-    if (base_dir != ".") {
-        std::filesystem::path cwd_path = std::filesystem::path(".") / path_part;
-        if (std::filesystem::exists(cwd_path)) {
-            return std::filesystem::canonical(cwd_path).string();
-        }
-    }
-
-    // Try $ESHKOL_PATH. Empty segments, non-existent directories, and
-    // files-posing-as-dirs are silently ignored (they can't hold
-    // modules) but flagged in debug mode so "module not found" errors
-    // are easy to trace to a misconfigured path. Known pitfalls:
-    //   ESHKOL_PATH=":x"           → empty leading segment
-    //   ESHKOL_PATH="/does/not/exist" → valid syntax, wrong content
-    //   ESHKOL_PATH="/etc/passwd"  → file instead of directory
-    const char* eshkol_path = std::getenv("ESHKOL_PATH");
-    if (eshkol_path) {
-        std::stringstream ss(eshkol_path);
-        std::string search_dir;
-        while (std::getline(ss, search_dir, eshkol_path_separator)) {
-            if (search_dir.empty()) continue;
-            std::error_code ec;
-            std::filesystem::path dir_path(search_dir);
-            if (!std::filesystem::exists(dir_path, ec)) {
-                eshkol_debug("ESHKOL_PATH entry does not exist: %s", search_dir.c_str());
-                continue;
-            }
-            if (!std::filesystem::is_directory(dir_path, ec)) {
-                eshkol_debug("ESHKOL_PATH entry is not a directory: %s", search_dir.c_str());
-                continue;
-            }
-            std::filesystem::path env_path = dir_path / path_part;
-            if (std::filesystem::exists(env_path, ec)) {
-                return std::filesystem::canonical(env_path, ec).string();
-            }
-        }
-    }
-
-    // Try library directory
-    if (!lib_dir.empty()) {
-        std::filesystem::path lib_path = std::filesystem::path(lib_dir) / path_part;
-        if (std::filesystem::exists(lib_path)) {
-            return std::filesystem::canonical(lib_path).string();
-        }
-        // Directory-as-module: if lib/web.esk doesn't exist, try lib/web/web.esk
-        // This allows (require web) to find lib/web/web.esk as the package entry point
-        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
-        if (std::filesystem::is_directory(dir_module)) {
-            // Try same-name entry point: lib/web/web.esk
-            std::filesystem::path entry = dir_module / (module_name + ".esk");
-            if (std::filesystem::exists(entry)) {
-                return std::filesystem::canonical(entry).string();
-            }
-            // Try index.esk: lib/web/index.esk
-            std::filesystem::path index = dir_module / "index.esk";
-            if (std::filesystem::exists(index)) {
-                return std::filesystem::canonical(index).string();
-            }
-        }
-    }
-
-    return "";  // Not found
+    return eshkol::platform::resolve_module_source_path(module_name, base_dir, lib_dir);
 }
-
-// Global library directory (cached)
-static std::string g_lib_dir;
 
 // Is `module_name` an agent.* module whose native symbols actually live in
 // the optional eshkol-agent-ffi archive (and its libcurl/sqlite3/pcre2/
@@ -4168,6 +4033,15 @@ int main(int argc, char **argv)
     // alike — rather than only the stage it happens to sit next to.
     const unsigned long diagnostics_at_startup = eshkol_diagnostic_error_count();
 
+    // Let the shared module resolver explain a skipped search-path entry under
+    // -d. The resolver cannot call the logger itself — it has to keep linking
+    // standalone (see set_module_search_diagnostic) — so the driver, which is
+    // what owns -d in the first place, supplies the sink.
+    eshkol::platform::set_module_search_diagnostic(
+        [](const char* message, const char* detail) {
+            eshkol_debug("%s: %s", message, detail);
+        });
+
     int ch = 0;
 
     uint8_t debug_mode = 0;
@@ -4698,6 +4572,14 @@ int main(int argc, char **argv)
             if (debug_mode) {
                 eshkol_info("JIT running: %s", filepath.c_str());
             }
+
+            // Tier 1 of the module search path for everything this file
+            // loads. Without it the in-process JIT resolved a relative
+            // `(load "sib.esk")` against the process's working directory
+            // while the AOT lane (and therefore the persistent -r run cache)
+            // resolved it beside the source file — the same command giving
+            // two answers depending only on whether the cache was in play.
+            eshkol::platform::ScopedRequiringFile requiring_file(filepath);
 
             // Set source context so runtime type errors carry a
             // "file:line:col:" prefix (v1.3 source-span errors), matching

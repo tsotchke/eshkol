@@ -198,6 +198,133 @@ InstallArtifactNote describe_install_artifact(std::string_view label,
                                              const ResolvedInstallArtifact& artifact,
                                              bool verify_version = true);
 
+// ---------------------------------------------------------------------------
+// Module source resolution — `(require m)`, `(import "…")`, `(load "…")`
+// ---------------------------------------------------------------------------
+//
+// ONE resolver, used by every execution path of the driver.  `eshkol-run -r`
+// alone reaches the language through two engines — the persistent JIT run
+// cache (which compiles ahead of time) and the in-process LLVM JIT (used
+// whenever the cache is bypassed: `ESHKOL_JIT_CACHE=0`, `-d`, `--dump-ast`,
+// `--dump-ir`, several inputs, or an active
+// `$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`).  While each engine carried its own
+// copy of the search order they disagreed about what a relative `(load "…")`
+// means: the AOT copy resolved it against the requiring FILE's directory, the
+// JIT copy against the process's working directory.  One command, two answers
+// — so the resolver lives here, below both, and neither engine may keep a
+// private copy.
+//
+// The order is the one documented in docs/reference/language/modules.md.
+
+/**
+ * @brief Sink for "why was this search-path entry skipped" diagnostics.
+ * @param message What happened, e.g. "ESHKOL_PATH entry is not a directory".
+ * @param detail  The entry it happened to.
+ */
+using ModuleSearchDiagnostic = void (*)(const char* message, const char* detail);
+
+/**
+ * @brief Install (or clear, with `nullptr`) the module-search diagnostic sink.
+ *
+ * The resolver deliberately does NOT call the logger itself: this translation
+ * unit has to keep linking on its own — `cuda_runtime_link_args_test` links
+ * `platform_runtime.cpp.o` plus a single test TU and nothing else — and a
+ * direct `eshkol_debug()` left an undefined `eshkol_printf` in exactly that
+ * link. Whoever owns the `-d` flag installs the sink instead; with none
+ * installed the entries are skipped silently, which is what a standalone
+ * link needs.
+ */
+void set_module_search_diagnostic(ModuleSearchDiagnostic sink);
+
+/**
+ * @brief Locate the Eshkol module source tree (the directory that carries
+ *        `stdlib.esk` beside the `core/`, `agent/`, … subtrees).
+ *
+ * Prefers the first install_module_roots() entry that actually carries
+ * `stdlib.esk` — that check is what keeps a downstream project's unrelated
+ * `lib/`, or a release package's archive-only `lib/`, from being mistaken for
+ * the module tree.  Falling back, returns the first root that is merely a
+ * directory, never `$ESHKOL_LIB_DIR` (it names a directory of native
+ * archives; accepting it would point `(require …)` at a tree with no `.esk`
+ * files in it).
+ *
+ * @return The resolved root; `origin == InstallOrigin::NotFound` and an empty
+ *         path when no candidate exists.
+ */
+InstallSearchRoot module_source_root();
+
+/**
+ * @brief Resolve a module name or path literal to an existing `.esk` source
+ *        file — the single authority behind `require`, `import` and `load`.
+ *
+ * @p module_name is either a dotted module name (`core.list.transform`, whose
+ * dots become directory separators before `.esk` is appended) or a path
+ * literal — a string that starts with `/`, `./` or `../`, contains a `/`, or
+ * ends in `.esk`.  Path literals are taken verbatim, with no dot-to-slash
+ * rewrite, which is what makes `(load "some/dir.v2/file.esk")` work on a
+ * directory whose name contains a dot (macOS `$TMPDIR` is
+ * `/var/folders/<hash>.<rand>/T`).  A path literal without the extension is
+ * probed both as given and with `.esk` appended, in each tier, so the
+ * extension is optional wherever the file actually lives rather than only in
+ * the working directory.
+ *
+ * Search order (docs/reference/language/modules.md):
+ *   1. @p base_dir — the directory of the file doing the require/import/load;
+ *   2. the process working directory (the project root), so a project-rooted
+ *      dotted name like `src.core.x` resolves against `./src/…`;
+ *   3. `$ESHKOL_PATH` (the `-I` flags are merged into it), highest-priority
+ *      user override, deliberately ahead of the install for the same reason
+ *      `$ESHKOL_LIB_DIR` precedes every archive location;
+ *   4. @p lib_dir, including directory-as-module entry points
+ *      (`<lib>/web/web.esk`, then `<lib>/web/index.esk`);
+ *   5. `lib/…` and `../lib/…` relative to the working directory — the
+ *      build-tree fallback for a layout whose `lib_dir` resolved elsewhere.
+ *
+ * Empty, missing and non-directory `$ESHKOL_PATH` segments are skipped.
+ *
+ * @param module_name Dotted module name or path literal, exactly as written.
+ * @param base_dir    Requiring file's directory; `"."` when there is none.
+ * @param lib_dir     Module tree root, as returned by module_source_root();
+ *                    may be empty.
+ * @return Canonical path of the first match, or an empty string when the
+ *         module is not on any tier.
+ */
+std::string resolve_module_source_path(const std::string& module_name,
+                                       const std::string& base_dir,
+                                       const std::string& lib_dir);
+
+/**
+ * @brief Declare, for the duration of the scope, which source file's forms
+ *        are being compiled — tier 1 of resolve_module_source_path().
+ *
+ * Nested loads stack: while `a/main.esk` loads `a/helper.esk`, which loads
+ * `"util.esk"`, the innermost scope is `a/helper.esk`, so `util.esk` is looked
+ * for beside `helper.esk` — not beside the outermost file and not in the
+ * working directory.  Both engines push the same scopes, which is what makes
+ * their answers identical.
+ *
+ * A pseudo-path (`"<repl>"`, `""`) pushes nothing, leaving resolution rooted
+ * at the working directory — the right answer for an expression typed at the
+ * REPL or passed with `-e`.
+ */
+class ScopedRequiringFile {
+public:
+    explicit ScopedRequiringFile(const std::string& source_path);
+    ~ScopedRequiringFile();
+
+    ScopedRequiringFile(const ScopedRequiringFile&) = delete;
+    ScopedRequiringFile& operator=(const ScopedRequiringFile&) = delete;
+
+private:
+    bool pushed_ = false;
+};
+
+/**
+ * @brief Directory of the innermost active ScopedRequiringFile.
+ * @return That directory, or `"."` when no source file is being compiled.
+ */
+std::string current_requiring_directory();
+
 /**
  * @brief Get the current user's home directory.
  * @return Value of the `HOME` environment variable; on Windows, falls back
