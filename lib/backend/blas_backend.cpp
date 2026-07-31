@@ -1119,10 +1119,20 @@ void* eshkol_xla_reduce(
     for (int64_t i = axis + 1; i < rank; i++) inner *= (int64_t)shape[i];
     int64_t out_total = outer * inner;
 
-    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, rank - 1, (uint64_t)out_total);
+    /* Reducing the sole axis of a rank-1 tensor removes the only dimension.
+     * `rank - 1` was used unclamped, so the result was a rank-0 tensor that
+     * displayed as `#()` even though its single element held the correct sum.
+     * Emit a 1-element rank-1 tensor instead: that is what the full-reduction
+     * branch above returns, what xla_runtime.cpp's copy of this function already
+     * returned (so the two native reduce paths disagreed), and what the VM's
+     * vm_tensor_reduce documents and returns. */
+    uint64_t out_rank = (rank > 1) ? (uint64_t)(rank - 1) : 1u;
+
+    xla_stub_tensor_t* t = arena_allocate_tensor_full(arena, out_rank, (uint64_t)out_total);
     if (!t) return nullptr;
     int d = 0;
     for (int64_t i = 0; i < rank; i++) if (i != axis) t->dimensions[d++] = shape[i];
+    if (d == 0) t->dimensions[0] = 1;
 
     for (int64_t o = 0; o < outer; o++) {
         for (int64_t i = 0; i < inner; i++) {

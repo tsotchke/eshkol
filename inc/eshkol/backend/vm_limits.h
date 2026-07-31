@@ -12,6 +12,15 @@
 #define ESHKOL_VM_HEAP_SIZE 65536
 #endif
 
+/* Upper bound on the growable heap object table. ESHKOL_VM_HEAP_SIZE is only
+ * the INITIAL capacity — heap_alloc() doubles the table on demand up to this
+ * ceiling, so a workload's live-object count (an N-parameter gradient, a large
+ * literal, a long-running agent) is governed by memory rather than by a
+ * compile-time pool size. Reaching the ceiling is reported by name. */
+#ifndef ESHKOL_VM_HEAP_MAX_SIZE
+#define ESHKOL_VM_HEAP_MAX_SIZE 16777216
+#endif
+
 #ifndef ESHKOL_VM_STACK_SIZE
 #define ESHKOL_VM_STACK_SIZE 4096
 #endif
@@ -20,8 +29,15 @@
 #define ESHKOL_VM_MAX_FRAMES 256
 #endif
 
+/* Initial constant-pool capacity. The pool grows on demand (see
+ * vm_ensure_const_cap) up to ESHKOL_VM_MAX_CONSTS_CEILING, so a program's
+ * constant count — dominated by large literals — is not a compile-time cap. */
 #ifndef ESHKOL_VM_MAX_CONSTS
 #define ESHKOL_VM_MAX_CONSTS 4096
+#endif
+
+#ifndef ESHKOL_VM_MAX_CONSTS_CEILING
+#define ESHKOL_VM_MAX_CONSTS_CEILING 4194304
 #endif
 
 #ifndef ESHKOL_VM_MAX_CODE
@@ -30,6 +46,10 @@
 
 #if ESHKOL_VM_HEAP_SIZE <= 0
 #error "ESHKOL_VM_HEAP_SIZE must be positive"
+#endif
+
+#if ESHKOL_VM_HEAP_MAX_SIZE < ESHKOL_VM_HEAP_SIZE
+#error "ESHKOL_VM_HEAP_MAX_SIZE must be >= ESHKOL_VM_HEAP_SIZE"
 #endif
 
 #if ESHKOL_VM_STACK_SIZE <= 0
@@ -42,6 +62,10 @@
 
 #if ESHKOL_VM_MAX_CONSTS <= 0
 #error "ESHKOL_VM_MAX_CONSTS must be positive"
+#endif
+
+#if ESHKOL_VM_MAX_CONSTS_CEILING < ESHKOL_VM_MAX_CONSTS
+#error "ESHKOL_VM_MAX_CONSTS_CEILING must be >= ESHKOL_VM_MAX_CONSTS"
 #endif
 
 #if ESHKOL_VM_MAX_CODE <= 0

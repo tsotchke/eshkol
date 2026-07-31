@@ -1005,6 +1005,26 @@ public:
         closure_call_callback_ = callback;
     }
 
+    /** Runtime-closure arity spread for gradients.
+     *
+     * Calls a runtime closure with its own declared number of scalar arguments,
+     * taken from a gradient's dual-element array; arity 0/1 and the variadic
+     * sentinel get the whole point as one vector argument, and an arity above
+     * the supported ceiling raises. The dispatch is emitted once per module,
+     * out of line (getOrCreateGradSpreadHelper in llvm_codegen.cpp) — inlining
+     * one fully expanded closure call per arity at every gradient site cost
+     * ~1.03M lines of stdlib IR and pushed Windows compiles over the CI budget.
+     *
+     * Arguments: (closure, whole-point vector, dual-element array, declared
+     * arity, context).
+     */
+    using GradientSpreadCallCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*,
+                                                        llvm::Value*, llvm::Value*, void*);
+    /** Set the out-of-line gradient arity-spread callback. */
+    void setGradientSpreadCallCallback(GradientSpreadCallCallback callback) {
+        gradient_spread_call_callback_ = callback;
+    }
+
     /** Function arity table — maps function name to parameter count */
     void setFunctionArityTable(std::unordered_map<std::string, uint64_t>* table) {
         function_arity_table_ = table;
@@ -1074,6 +1094,7 @@ private:
     int derivative_ho_counter_ = 0;
     void* binding_opaque_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
+    GradientSpreadCallCallback gradient_spread_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_body_ast_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_def_ast_ = nullptr;

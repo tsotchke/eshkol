@@ -467,6 +467,46 @@ extern "C" int64_t eshkol_broadcast_copy(
  * @param max_dims  Maximum number of dimensions to extract.
  * @return          Number of dimensions written to `dims_out`.
  */
+/**
+ * @brief Counts the dimensions in a Scheme cons-list shape without reading them.
+ *
+ * Codegen calls this first so it can size the dims array from the shape list
+ * itself. Before it existed, `make-tensor` and `reshape` both allocated a
+ * fixed 16-entry dims array and passed max_dims = 16 to
+ * eshkol_cons_list_to_dims(), which silently dropped every dimension past the
+ * sixteenth — a rank-19 reshape came back rank-16 with the wrong element
+ * count instead of failing. Rank is now governed by the shape.
+ *
+ * @param cons_ptr Head of the cons-list (as an arena_tagged_cons_cell_t*).
+ * @return         Number of cells in the list (0 for a null/empty list).
+ */
+extern "C" int64_t eshkol_cons_list_dim_count(const void* cons_ptr)
+{
+    int64_t count = 0;
+    const arena_tagged_cons_cell_t* current =
+        (const arena_tagged_cons_cell_t*)cons_ptr;
+    while (current != NULL) {
+        count++;
+        uint8_t cdr_type = arena_tagged_cons_get_type(current, true);
+        if (ESHKOL_GET_BASE_TYPE(cdr_type) == ESHKOL_VALUE_NULL) break;
+        uint64_t cdr_ptr = arena_tagged_cons_get_ptr(current, true);
+        if (cdr_ptr == 0) break;
+        current = (const arena_tagged_cons_cell_t*)(uintptr_t)cdr_ptr;
+    }
+    return count;
+}
+
+/**
+ * @brief Number of dimension entries a tensor-shaped shape argument carries,
+ *        i.e. its element count. Companion to eshkol_cons_list_dim_count()
+ *        for the `(reshape t other-tensor-shape)` form.
+ */
+extern "C" int64_t eshkol_tensor_dim_count(const void* tensor_ptr)
+{
+    const eshkol_tensor_t* t = (const eshkol_tensor_t*)tensor_ptr;
+    return t ? (int64_t)t->total_elements : 0;
+}
+
 extern "C" int64_t eshkol_cons_list_to_dims(
     const void* cons_ptr, int64_t* dims_out, int64_t max_dims)
 {
