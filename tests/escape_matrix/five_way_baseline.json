@@ -1,9 +1,9 @@
 {
   "_comment": "P8 axis-6 five-way surface-agreement known gaps; the gate fails on any disagreement key NOT listed here. Shrink-only ratchet. Regenerate with five_way_surface.py --update-baseline.",
   "counts": {
-    "defined": 1749,
+    "defined": 1752,
     "docs": 508,
-    "manifest": 1099,
+    "manifest": 1114,
     "provided": 1321
   },
   "known_disagreements": [
@@ -16,6 +16,8 @@
     "native_missing::_number->string-2",
     "native_missing::_read0",
     "native_missing::_read1",
+    "native_missing::_region-close-list",
+    "native_missing::_region-open",
     "native_missing::_string-append-2",
     "native_missing::_tensor-reduce-max",
     "native_missing::_tensor-reduce-mean",
@@ -23,10 +25,6 @@
     "native_missing::_tensor-reduce-sum",
     "native_missing::_write1",
     "native_missing::_write2",
-    "native_missing::ad-gradient-of",
-    "native_missing::ad-pow",
-    "native_missing::ad-tape-length",
-    "native_missing::ad-value-of",
     "native_missing::adaptive-curvature-step",
     "native_missing::christoffel",
     "native_missing::curvature-gradient",
@@ -536,6 +534,8 @@
     "vm_missing::read-file",
     "vm_missing::read-string",
     "vm_missing::reduce",
+    "vm_missing::region-close",
+    "vm_missing::region-open",
     "vm_missing::remove",
     "vm_missing::remq",
     "vm_missing::remv",
