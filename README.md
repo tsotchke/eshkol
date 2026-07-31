@@ -694,11 +694,12 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   aggregate suite 45/45 suites and 770 individual tests, CTest 139/139, the
   SICP full-book gate 88/88 probes across all five chapters under both `-r` and
   AOT, and the reference-Scheme differential oracle 34/34 AGREE against
-  chibi-scheme 0.12.0. The language surface is 1,091/1,091 — every declared
-  construct earns its row by dispatching or executing in a passing run, with
-  lexical name-presence demoted to a diagnostic that earns no release credit.
-  CTest results are now completion-oracle evidence in their own right, so a red
-  suite turns the release gate red.
+  chibi-scheme 0.12.0. The language-surface gate enforces a monotonic floor of
+  1,091 declared constructs at 100% execution-backed coverage: a construct
+  earns its row by dispatching or executing in a passing run, and lexical
+  name-presence is a diagnostic only, earning no release credit. CTest results
+  are now completion-oracle evidence in their own right, so a red suite turns
+  the release gate red.
 - **Explicit VM scope**: this is not a claim of complete backend parity. The
   951-row ratchet classifies 578 VM-supported entries, 44 justified
   native-only entries, and 329 explicit gaps in
