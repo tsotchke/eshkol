@@ -138,7 +138,7 @@ This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation rele
 - [x] `-B` flag for bytecode emission from eshkol-run
 - [x] VM compiler integration — eshkol_vm.c linked into compiler build
 - [x] Weight matrix transformer — programs as neural network weights (126/126 inline, 123/123 traced, 3-way verified)
-- [x] qLLM bridge — Eshkol↔qLLM tensor conversion with AD integration
+- [x] qLLM bridge — Eshkol↔qLLM tensor conversion with AD integration *(design-era claim; the implementation landed in v1.3.4-evolve, #386/#392 — see below)*
 
 ### GPU Acceleration (Added)
 - [x] Metal SF64/DF64/F32/FP24/FP53 precision tiers
@@ -396,7 +396,7 @@ and `mono-equiv`.
 
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
-- [ ] Non-blocking I/O with event loop (epoll/kqueue)
+- [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
 - [ ] Unix domain sockets for local IPC
 - [ ] HTTP client (built on sockets + TLS)
 - [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
@@ -493,21 +493,21 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 
 ### Quantum Type System
-- [ ] Qubit type with linear resource tracking (no-cloning enforced at compile time)
+- [x] Qubit type with linear resource tracking (no-cloning enforced at compile time) - SHIPPED in v1.3.4-evolve
 - [ ] Quantum register types `qreg<n>` with compile-time dimension
 - [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 
 ### Quantum Operations
-- [ ] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries
-- [ ] Measurement with classical outcome
+- [x] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries - SHIPPED in v1.3.3-evolve
+- [x] Measurement with classical outcome - SHIPPED in v1.3.3-evolve
 - [ ] Circuit compilation and optimization (gate fusion, qubit mapping)
-- [ ] AD integration for variational algorithms (parameter-shift rule)
+- [x] AD integration for variational algorithms - SHIPPED in v1.3.3-evolve (custom-VJP tape nodes carry Moonlab's exact adjoint)
 
 ### Hybrid Classical-Quantum
-- [ ] Variational Quantum Eigensolver (VQE)
+- [x] Variational Quantum Eigensolver (VQE) - SHIPPED in v1.3.3-evolve
 - [ ] Quantum Approximate Optimization Algorithm (QAOA)
-- [ ] Quantum machine learning (parameterized circuits with AD)
-- [ ] Integration with Moonlab quantum simulator
+- [x] Quantum machine learning (parameterized circuits with AD) - SHIPPED in v1.3.3-evolve
+- [x] Integration with Moonlab quantum simulator - SHIPPED in v1.3.3-evolve; pinned to Moonlab v1.2.0 in v1.3.4-evolve
 
 ### Formal Verification
 - [ ] Integration with proof assistants (Lean) for certified compilation
@@ -527,7 +527,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.1.13** | Apr 2026 | Accelerate | Windows ARM64, 16-lane release matrix, VM closure fixes, mobile site |
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
 | **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
-| **v1.3.1 → v1.3.4-evolve** | Jul 2026 | Evolve | **SHIPPED (v1.3 line complete through v1.3.4-evolve).** v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form, shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity |
+| **v1.3.1 → v1.3.4-evolve** | Jul 2026 | Evolve | **SHIPPED (v1.3 line complete through v1.3.4-evolve).** v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form, shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes |
 | **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types *(AD substrate P4/P6/P11 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU *(high-order AD P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs *(sparse high-order AD tensors P12 already delivered in v1.3.0-evolve, ahead of schedule)* |
@@ -584,7 +584,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - [x] Package Manager (eshkol-pkg, TOML manifest) - Complete
 - [x] LSP Server (diagnostics, completion, hover) - Complete
 - [x] VSCode Extension (syntax highlighting, LSP client) - Complete
-- [x] Test Suite (35 suites, 438 tests) - Complete
+- [x] Test Suite (45 suites, 770 tests) - Complete
 
 ### v1.1-accelerate (Complete)
 - [x] XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete

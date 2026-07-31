@@ -1,8 +1,19 @@
 # Eshkol v1.3.4-evolve Test Coverage
 
 **Version**: v1.3.4-evolve
-**Last Updated**: 2026-07-23
+**Last Updated**: 2026-07-31
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
+
+**Release gates, measured on the v1.3.4-evolve cut**: aggregate suite **45/45
+suites and 770 individual tests**; CTest **140/140**, which as of this release
+is completion-oracle evidence rather than advice; executable language coverage
+**1,091/1,091 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
+across all five chapters under both `-r` and AOT; reference-Scheme differential
+oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
+**140/140** over a **951-row** manifest (578 `vm-supported`, 44
+`native-only-justified`, 329 `gap`); qLLM oracle gate **10/10**; ICC readiness
+**100**, verdict `ready`. See [TESTING.md](TESTING.md) for how each gate is run
+and [VM_PARITY.md](VM_PARITY.md) for the parity contract.
 
 **Additional verification**: `scripts/run_all_tests.sh` passes every suite and
 its self-reported individual tests; the v1.2 edge/security suite, the standalone
@@ -17,13 +28,13 @@ and the tensor-matmul VM parity corpus (`31_tensor_matmul`).
 
 ## Test Execution
 
-All 37 suites are orchestrated by `scripts/run_all_tests.sh`, which invokes each
+All 45 suites are orchestrated by `scripts/run_all_tests.sh`, which invokes each
 suite script in sequence, aggregates pass/fail counts, and reports individual
 failing tests at the bottom of its output. Each suite can also be run
 independently.
 
 ```bash
-# Run all 37 suites
+# Run all 45 suites
 ./scripts/run_all_tests.sh
 
 # Run the v1.2 edge/security suite
@@ -54,7 +65,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 15/15 tests | Includes the VM standalone CTest smoke target |
+| `ctest --test-dir build` | 140/140 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash
@@ -62,13 +73,21 @@ Primary test command:
 ```
 
 The release gate also builds and runs `build/test_vm_c_api`, which currently
-passes 81/81 checks, and includes the VM CTest smoke in the 15/15 CTest result.
+passes 81/81 checks, and includes the VM CTest smoke in the 140/140 CTest
+result.
 
 Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (append/ref/substring/upcase/split/join), lists (map/filter/fold/sort/assoc/member), closures (capture/mutation/composition), control flow (call/cc/guard/raise/dynamic-wind/values), automatic differentiation (derivative/gradient via dual numbers), consciousness engine (KB/factor-graph/workspace), and R7RS forms (let/letrec/named-let/do/cond/case-lambda/quasiquote).
 
 ---
 
 ## Test Suite Overview
+
+> **Provenance note.** The per-suite `Tests` counts below are the v1.1-era
+> inventory and have drifted; the **gated** figures are the aggregate ones
+> above (45 suites, 770 individual tests), which `scripts/run_all_tests.sh`
+> reports and the release oracle consumes. Regenerating this column requires a
+> full suite run and is tracked as a follow-up. The suite list itself is
+> current and matches `TEST_SCRIPTS` in `scripts/run_all_tests.sh`.
 
 | # | Suite | Script | Tests | Coverage |
 |---|-------|--------|------:|----------|
@@ -110,7 +129,17 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 | 36 | Numeric | `run_numeric_tests.sh` | 7 | Critical numeric regressions: bignum, rational, rounding, expt, min/max |
 | 37 | v1.2 Edge Cases | `run_v1_2_edge_cases_tests.sh` | 87 | v1.2 compiler/runtime hardening: REPL protocol, module parity, path hardening, arity, atomics, concurrency, Unicode, HTTP, image/ONNX/JSON schema, quasiquote, symbols, streams, subprocesses |
 
-**Total**: 528 self-reported tests across 37 suites.
+| 38 | qLLM Oracle | `run_qllm_oracle_tests.sh` | -- | qLLM bridge differential oracle: five exporters under JIT and AOT against stored golden vectors plus a self-checking finite-difference cross-check. Gate 10/10 on the release cut |
+| 39 | Manifold | `run_manifold_tests.sh` | -- | Riemannian manifold operations: geodesics, exponential/logarithm maps, Frechet mean and its backward pass |
+| 40 | VM Surface | `run_vm_surface_tests.sh` | -- | Self-checking bytecode-VM surface probes: each asserts against R7RS or a closed form inside one run, so a defect shared by native and the VM cannot pass by agreement. Wired as the `vm_surface_regression_suite` criterion |
+| 41 | R7RS | `run_r7rs_tests.sh` | -- | R7RS-small conformance probes beyond the features suite |
+| 42 | Surface Extension | `run_surface_extension_tests.sh` | -- | Newly public language surface, kept in step with the coverage manifest |
+| 43 | FFI | `run_ffi_tests.sh` | -- | Foreign function interface: extern C calls, pointer marshalling, transitive agent-FFI link discovery |
+| 44 | Codegen Opt-Level | `run_codegen_optlevel_tests.sh` | -- | Codegen equivalence across optimisation levels: AOT-O0 vs AOT-O2 vs JIT |
+| 45 | SICP Full-Book Gate | `test_run_sicp_smoke_gate.sh` | 88 | The SICP full-book gate: 88 probes across all five chapters under both `-r` and AOT, zero xfail, zero XPASS |
+
+**Total**: **45 suites, 770 individual tests** on the v1.3.4-evolve cut (the
+gated figure, reported by `scripts/run_all_tests.sh`).
 
 ---
 
@@ -551,6 +580,9 @@ runner scripts but contribute to overall coverage:
 
 ## Coverage by Subsystem
 
+> Same provenance caveat as the suite table: these per-subsystem counts are the
+> v1.1-era inventory. The gated total is 45 suites / 770 tests.
+
 | Subsystem | Suites | Total Tests |
 |-----------|-------:|------------:|
 | Core Language (features, lists, macros, control flow, TCO) | 5 | 170 |
@@ -573,6 +605,8 @@ runner scripts but contribute to overall coverage:
 
 ## See Also
 
+- [Testing and Adversarial Harnesses](TESTING.md) -- how every gate above is run
+- [VM Parity](VM_PARITY.md) -- the bytecode-VM parity ratchet and manifest
 - [V1.1 Scope](V1.1_SCOPE.md) -- Release scope and feature inventory
 - [Feature Matrix](FEATURE_MATRIX.md) -- Implementation status per feature
 - [Architecture](ESHKOL_V1_ARCHITECTURE.md) -- System architecture reference

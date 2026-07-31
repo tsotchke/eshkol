@@ -724,8 +724,8 @@ added Doxygen documentation across every agent-FFI implementation file in
   region-evacuator poison coverage and the corrected `input2` gradient
   gate, and extended with the release's two generative exposure engines
   (the multi-oracle differential harness and the AD-vs-finite-difference
-  adversarial oracle) as permanent release gates. ICC readiness oracle
-  reports 100/100, trace-verified.
+  adversarial oracle) as permanent release gates. The ICC readiness oracle
+  reports a score of 100 with verdict `ready`, trace-verified.
 
 ---
 
@@ -766,7 +766,19 @@ change.
 
 ## Hardening and robustness posture
 
-**v1.3.3-evolve (current release).** Alongside the quantum, post-quantum,
+**v1.3.4-evolve (current release)** continues the posture described below.
+Its second half is a consumer-hardening correctness wave whose organising
+principle is that a wrong answer must not be able to look like a right one: an
+emitted compile-time error now prevents artifact emission and execution, which
+turned a family of silent wrong answers into build failures and exposed the
+rest. Exactness is decided from an operand's runtime tag rather than a result's
+value shape on both engines; differentiation is exact at exact points, survives
+per-iteration nursery reclamation, and no longer returns zeros above gradient
+arity 16; `define-library` and `import` resolve same-unit libraries on all three
+back ends; and `--shared-lib` links a real, C-ABI-correct shared library instead
+of exiting zero with no artifact.
+
+**v1.3.3-evolve.** Alongside the quantum, post-quantum,
 dynamic-parameter, incremental-dataflow, and exact-rational features
 described elsewhere in this sheet, the release ran a silent-wrong-answer
 correctness campaign driven by two new generative exposure engines, both
@@ -974,7 +986,8 @@ link errors.
 - **Browser REPL**: https://eshkol.ai/learn
 - **Licence**: MIT
 - **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
-  (GCC 11+, Clang 14+), Ninja recommended.
+  (GCC 11+ or Clang 14+ — the toolchain the CI matrix builds with; AppleClang
+  on macOS, LLVM 21 ClangCL on Windows), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.
 - **Homebrew tap**: `brew tap tsotchke/eshkol && brew install eshkol`; the
   tap formula carries the computed release SHA-256 after tagging.

@@ -1,8 +1,8 @@
-# Eshkol v1.3.4 Feature Matrix
+# Eshkol v1.3.4-evolve Feature Matrix
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
-This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (37 suites, 528 self-reported tests).
+This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (45 suites, 770 individual tests).
 
 ---
 
@@ -105,7 +105,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Forward-Mode AD** |
 | Dual numbers | Yes | Forward | O(1) overhead/op |
 | Scalar derivatives | Yes | Forward | `derivative` |
-| Higher-order derivatives | Yes | Forward | Nested differentials; every spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact) |
+| Higher-order derivatives | Yes, with one known exception | Forward | Every *well-defined* spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact). **Exception**: the Taylor tower does not nest — `(derivative-n df x k)` over a derivative *closure*, and `derivative-n` of `derivative-n`, silently return `0`. See [KNOWN_ISSUES](KNOWN_ISSUES.md#tracked-open-issues) ("The Taylor tower cannot nest") |
 | Math function support | Yes | Forward | sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow |
 | Dual arithmetic | Yes | Forward | +, -, *, / |
 | `derivative` operator | Yes | Forward | 30+ tests |
@@ -228,7 +228,9 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 |---------|--------|------|-------|
 | **OALR System** |
 | Arena allocation | Yes | Manual | Bump-pointer, O(1) alloc |
-| Lexical regions | Yes | Manual | `with-region` |
+| Lexical regions | Yes | Manual | `with-region`; unwinds correctly through `raise`/`call/cc` as of v1.3.4-evolve |
+| Region handles | Yes | Manual | v1.3.4-evolve (#341): `region-open` / `region-close` / `region-open?`, a non-lexical surface over the same machinery. Generation-counted handles, so every stale token is detectably stale; out-of-order close is a defined cascade. `region-open?` is `vm-supported`; the reclamation itself is native-only |
+| Automatic per-iteration nursery | Yes | Automatic | ESH-0214e: a resident loop that mutates persistent state reclaims per iteration, matching `with-region`. Loop bodies containing a `gradient` op, a `set!` or a `tensor-set!` are excluded by design — scope those with a region handle or `with-region` |
 | Global arena | Yes | Manual | Shared across functions |
 | Region nesting | Yes | Manual | Stack-based |
 | Zero-copy views | Yes | Automatic | reshape, slice, transpose |
@@ -268,7 +270,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Hot code reload | Yes | JIT | LLVM ORC remove() |
 | **Debugging** |
 | Source location tracking | Yes | DWARF | Via `-g` flag |
-| Stack traces | Planned | - | Planned |
+| Stack traces | Yes | Source spans | Source-span diagnostics; `-g` emits DWARF for GDB/LLDB |
 | Breakpoint support | Planned | - | Planned |
 | REPL introspection | Yes | - | `type-of`, `display` |
 
@@ -317,6 +319,10 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Text file writing | Yes | `open-output-file`, `write-line` | Buffered |
 | Binary I/O | Yes | R7RS bytevectors | Full R7RS binary I/O |
 | Port operations | Yes | `close-port`, `eof-object?` | Complete |
+| **Event Loop** |
+| Portable readiness loop | Yes | `make-event-loop`, `event-loop-poll`, `event-loop-close` | v1.3.4-evolve (ESH-0011): kqueue (BSD/macOS), epoll (Linux), IOCP + WSAPoll/PeekNamedPipe (Windows); fail-closed stub on WASM. `vm-supported` |
+| Descriptor registration | Yes | `event-loop-add-fd!`, `event-loop-remove-fd!` | Readiness-style interest bits |
+| Backend introspection | Yes | `event-loop-backend` | Reports the live backend |
 | **Console I/O** |
 | `display` | Yes | - | Homoiconic (shows lambdas) |
 | `newline` | Yes | - | Standard |
@@ -402,7 +408,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Forward-mode derivative | O(1) | Per operation overhead |
 | Reverse-mode gradient (n→1) | O(1) | One backward pass |
 | Jacobian (n→m) | O(m) | m gradient computations |
-| Hessian (n→1) | O(n²) | Numerical finite differences |
+| Hessian (n→1) | O(n²) | Exact: routed through the Taylor tower, identity with `(derivative-n f x 2)` in value and exactness |
 | **List Operations** |
 | cons, car, cdr | O(1) | Pointer operations |
 | length | O(n) | Traversal |
@@ -426,7 +432,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Operating Systems** |
 | Linux | Yes | x86-64, ARM64 | Primary platform |
 | macOS | Yes | x86-64, ARM64 | Full support |
-| Windows | Yes | x86-64 | Native Visual Studio 2022 + ClangCL/LLVM 21 |
+| Windows | Yes | x86-64, ARM64 | Native Visual Studio 2022 + ClangCL/LLVM 21. x86-64 covers Lite, XLA and CUDA. ARM64 builds and passes the hosted `windows-arm64-lite` and `windows-arm64-xla` CI lanes (`windows-11-arm` runners) and ships those two packages; there is no mesh/self-verified ARM64 hardware coverage, and ARM64 CUDA is not advertised because NVIDIA does not ship the required toolkit |
 | FreeBSD | Planned | x86-64 | Planned |
 | **Architectures** |
 | x86-64 | Yes | SSE2+ | AVX/AVX2/AVX-512 supported |
@@ -461,7 +467,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 555+ builtins |
+| API Reference | Yes | Complete | 1,025 builtins across a 1,091-construct declared surface |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -499,8 +505,8 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Early stopping | Yes | Production | Via user code |
 | **Model Operations** |
 | Save/load weights | WIP | - | Via file I/O |
-| Model serialization | Planned | - | Planned |
-| ONNX export | Planned | - | Planned |
+| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`) |
+| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
 | Lazy loading | Planned | - | Planned |
@@ -635,17 +641,17 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Access C globals | Yes | Eshkol → C | extern-var |
 | C calls Eshkol | Planned | C → Eshkol | Planned callback API |
 | **Python Integration** |
-| Call Python from Eshkol | Planned | - | Planned (ctypes/cffi) |
-| Call Eshkol from Python | Planned | - | Planned (wrapper lib) |
-| NumPy interop | Planned | - | Planned (array protocol) |
+| Call Python from Eshkol | Yes | v1.2 | Stable C FFI |
+| Call Eshkol from Python | Yes | v1.2 | pybind11 bindings (`bindings/python/`) |
+| NumPy interop | Yes | v1.2 | Zero-copy array interop |
 | **Data Formats** |
 | JSON | Yes | - | Parse and generate |
 | CSV | Yes | - | Read and write |
 | Base64 | Yes | - | Encode and decode |
-| MessagePack | Planned | - | Planned |
+| MessagePack | Yes | Stable | `lib/core/msgpack.esk`; see `docs/reference/stdlib/msgpack.md` |
 | Protocol Buffers | Planned | - | Planned |
 | **Databases** |
-| SQLite | Planned | - | Planned |
+| SQLite | Yes | v1.2 | `agent.sqlite` FFI module; see `docs/reference/agent/sqlite.md` |
 | PostgreSQL | Planned | - | Planned |
 
 ---
@@ -727,7 +733,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 ### v1.4-connection (Q4 2026)
 
-- **Platform Abstraction**: Cross-platform windows, event system, event loop
+- **Platform Abstraction**: Cross-platform windows and event system (the portable event loop already SHIPPED in v1.3.4-evolve)
 - **Real-Time Audio**: Device management, synthesis, MIDI I/O
 - **Networking**: TCP/UDP sockets with linear resource management
 - **Embedded & Robotics**: GPIO, I2C/SPI/UART, PWM, ADC/DAC, mobile targets
@@ -740,7 +746,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 ### v2.0-starlight (2027+)
 
-- **Quantum Computing**: Qubit types with linear tracking, gates, VQE/QAOA
+- **Quantum Computing**: QAOA and circuit-level optimisation (Qubit types with linear tracking, gates and VQE already SHIPPED in v1.3.3/v1.3.4-evolve)
 - **Formal Verification**: Proof assistant integration, certified compilation
 - **Next-Gen Types**: Session types, algebraic effects, quantitative type theory
 
@@ -750,7 +756,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 ### Production-Ready (v1.1)
 
-- Core language (39 special forms, 555+ builtins)
+- Core language (116 special forms, 1,025 builtins)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -789,7 +795,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 |---------|--------|-------|
 | **Bytecode VM** |
 | 64-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch |
-| 550+ native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
+| 694 native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |
@@ -801,6 +807,9 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Shortest-round-trip number printing | Yes | v1.3.4: `display`/`write`/`number->string` share one portable-C routine with native, byte-identical output (R7RS 6.2.6) |
 | Reverse-mode `gradient` (`op:GRADIENT`) | Yes | v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across `vm-src`/`vm-eskb`; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only |
 | Forward-mode `derivative` (`op:DERIVATIVE`) | Yes / first order | v1.3.4 (ESH-0369): direct `(derivative f x)` and curried `((derivative f) x)` both lower to the same native call with the same `(f, x)`, so they agree exactly with native. First order only — the VM's carrier is a flat dual `{value, tangent}` with a single perturbation, so nested/higher-order differentiation now **raises a catchable error** instead of returning the `0.0` it used to fabricate. Higher-order AD needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower; native-only until a VM jet carrier is built |
+| R7RS module forms (`op:IMPORT` / `op:PROVIDE` / `op:REQUIRE`) | Yes | v1.3.4-evolve (#402): the VM lane previously knew none of `define-library` / `import` / `export`. All three move to `vm-supported` with no new waivers; three latent VM defects were fixed with them (`provide` emitting nothing via a slot shift, a module-loader POP desync, and a fail-open forward reference now refused) |
+| Portable event loop | Yes | v1.3.4-evolve (ESH-0011): `make-event-loop`, `event-loop-poll`, `event-loop-add-fd!`, `event-loop-remove-fd!`, `event-loop-close`, `event-loop-backend` all `vm-supported` |
+| Region handles / `with-region` | Surface yes, reclamation no | `region-open?` is `vm-supported`; `region-open`, `region-close` and `op:WITH_REGION` are `native-only-justified`. The name resolves on both substrates and the handle protocol, its validation and every error message are byte-identical (one shared C implementation), so output parity holds — what is native-only is the reclamation, because the VM heap has no escape evacuator |
 | Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |
@@ -811,7 +820,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Complete | 176/176 tests, zero stubs, zero stdout contamination |
+| VM Production | Complete | Zero stubs, zero stdout contamination; gated by the VM source suite, the 81/81 C-API suite, and the 140/140 VM parity differential |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
@@ -843,7 +852,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 ## Known Limitations
 
-1. **Single GPU dispatch** - One GPU at a time (multi-GPU planned v1.2)
+1. **Single GPU dispatch** - One GPU at a time (multi-GPU not yet scheduled)
 3. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
 4. **Learning curve** - Functional programming + AD concepts require study
 5. **Platform support** - Linux, macOS, and native Windows x64
@@ -874,7 +883,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 - Consciousness engine (logic, inference, workspace)
 - Signal processing library (FFT, filters, window functions)
 - R7RS extensions (call/cc, dynamic-wind, bytevectors)
-- 555+ builtins, 37 test suites, 528 self-reported tests (87/87 v1.2 edge cases)
+- 555+ builtins, 37 test suites, 528 self-reported tests (87/87 v1.2 edge cases) [as of v1.1]
 
 **Codebase**: ~232,000 lines of production C/C++
 
@@ -920,7 +929,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-07-08
-**Document Version**: 1.3.3
+**Last Updated**: 2026-07-31
+**Document Version**: 1.3.4-evolve
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)
