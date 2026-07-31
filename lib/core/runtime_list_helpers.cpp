@@ -410,6 +410,56 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
     return t;
 }
 
+/**
+ * @brief True when @p input is a list or vector at least one of whose elements
+ *        is itself a collection — a nest that describes rank >= 2.
+ *
+ * Companion to eshkol_tensor_from_collection(), and deliberately in the same
+ * translation unit so both answers come from one classifier (coll_classify).
+ * Every tensor operation routes its operand through
+ * eshkol_tensor_operand_checked(), which coerces a FLAT numeric vector to a
+ * rank-1 tensor; this predicate is what tells it that the operand is instead a
+ * nest and belongs to the rank-N walker. Without it, the two spellings of the
+ * same value disagreed:
+ *
+ *     (tensor-shape #(#(1.0 2.0) #(3.0 4.0)))                  => (2 2)
+ *     (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0))) => type error
+ *
+ * because the literal is flattened to a rank-2 tensor by the parser while the
+ * runtime-built value reached the operand check as a vector whose elements are
+ * not numbers.
+ *
+ * Only the top level is inspected: a deeper nest is validated (and a ragged one
+ * rejected) by the walker itself, which is the single place raggedness is
+ * decided. A nest is reported for a nested tensor element too, since
+ * `(vector (tensor 1.0 2.0) (tensor 3.0 4.0))` is the same rank-2 value.
+ */
+bool eshkol_tensor_collection_is_nested(const eshkol_tagged_value_t* input) {
+    if (!input) return false;
+
+    const coll_kind_t kind = coll_classify(input);
+    if (kind == COLL_LIST) {
+        eshkol_tagged_value_t cur = *input;
+        while (tagged_is_cons(&cur)) {
+            const arena_tagged_cons_cell_t* cell =
+                (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            if (!cell) return false;
+            if (coll_classify(&cell->car) != COLL_LEAF) return true;
+            cur = cell->cdr;
+        }
+        return false;
+    }
+    if (kind == COLL_VECTOR) {
+        const int64_t len = coll_vector_length(input);
+        const eshkol_tagged_value_t* elems = coll_vector_elems(input);
+        for (int64_t i = 0; i < len; i++) {
+            if (coll_classify(&elems[i]) != COLL_LEAF) return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 // Extract up to `max_n` scalar doubles from an AD operator input that may be a
 // Scheme vector (HEAP_SUBTYPE_VECTOR, 16-byte tagged elements), a cons list, or
 // a tensor (HEAP_SUBTYPE_TENSOR, 8-byte double bit patterns). Writes them into
