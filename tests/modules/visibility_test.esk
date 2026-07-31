@@ -1,16 +1,21 @@
 ;;; Test module symbol visibility
+;;;
+;;; test/modules/math_utils.esk `(provide double-it square)` and keeps `helper`
+;;; module-private. Both the values of the exported bindings and the fact that
+;;; they are the right bindings are asserted here.
 (require test.modules.math_utils)
 
-(display "Testing exported functions:")
-(newline)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
-(display "  double-it(5) = ")
-(display (double-it 5))
-(newline)
-
-(display "  square(4) = ")
-(display (square 4))
-(newline)
-
-(display "Symbol visibility test passed!")
-(newline)
+;; double-it x = helper x = x + x
+(check "exported double-it(5)" 10 (double-it 5))
+(check "exported double-it(0)" 0 (double-it 0))
+;; square x = x * x
+(check "exported square(4)" 16 (square 4))
+(check "exported square(-3)" 9 (square -3))

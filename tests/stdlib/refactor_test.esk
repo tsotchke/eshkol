@@ -1,84 +1,59 @@
 ;;; Test refactored Eshkol stdlib functions
+;;;
+;;; Expected values are the documented contracts, not current output:
+;;;   find       lib/core/list/query.esk     -- first match, else #f
+;;;   member?    lib/core/list/search.esk    -- #t / #f
+;;;   take/drop  lib/core/list/transform.esk -- (take lst n), n clamped to len
+;;;   remove     builtin, element form       -- removes EVERY equal? match
+;;;   count-if   lib/core/list/query.esk
 (require stdlib)
 
-(display "=== Testing Refactored Stdlib Functions ===")
-(newline)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ;;; Test find
-(display "find even? '(1 3 4 5 6): ")
-(display (find even? '(1 3 4 5 6)))
-(newline)
-
-(display "find even? '(1 3 5): ")
-(display (find even? '(1 3 5)))
-(newline)
+(check "find even? '(1 3 4 5 6)" 4 (find even? '(1 3 4 5 6)))
+(check "find even? '(1 3 5) -- no match is #f" #f (find even? '(1 3 5)))
 
 ;;; Test member?
-(display "member? 3 '(1 2 3 4 5): ")
-(display (member? 3 '(1 2 3 4 5)))
-(newline)
-
-(display "member? 9 '(1 2 3 4 5): ")
-(display (member? 9 '(1 2 3 4 5)))
-(newline)
+(check "member? 3 '(1 2 3 4 5)" #t (member? 3 '(1 2 3 4 5)))
+(check "member? 9 '(1 2 3 4 5)" #f (member? 9 '(1 2 3 4 5)))
 
 ;;; Test length
-(display "length '(1 2 3 4 5): ")
-(display (length '(1 2 3 4 5)))
-(newline)
-
-(display "length '(): ")
-(display (length '()))
-(newline)
+(check "length '(1 2 3 4 5)" 5 (length '(1 2 3 4 5)))
+(check "length '()" 0 (length '()))
 
 ;;; Test last
-(display "last '(1 2 3 4 5): ")
-(display (last '(1 2 3 4 5)))
-(newline)
+(check "last '(1 2 3 4 5)" 5 (last '(1 2 3 4 5)))
 
 ;;; Test last-pair
-(display "last-pair '(1 2 3): ")
-(display (last-pair '(1 2 3)))
-(newline)
+(check "last-pair '(1 2 3)" '(3) (last-pair '(1 2 3)))
 
 ;;; Test take
-(display "take '(1 2 3 4 5) 3: ")
-(display (take '(1 2 3 4 5) 3))
-(newline)
-
-(display "take '(1 2) 5: ")
-(display (take '(1 2) 5))
-(newline)
+(check "take '(1 2 3 4 5) 3" '(1 2 3) (take '(1 2 3 4 5) 3))
+(check "take '(1 2) 5 -- n past the end yields the whole list"
+       '(1 2) (take '(1 2) 5))
+(check "take '(1 2 3) 0" '() (take '(1 2 3) 0))
 
 ;;; Test drop
-(display "drop '(1 2 3 4 5) 2: ")
-(display (drop '(1 2 3 4 5) 2))
-(newline)
+(check "drop '(1 2 3 4 5) 2" '(3 4 5) (drop '(1 2 3 4 5) 2))
 
 ;;; Test append
-(display "append '(1 2 3) '(4 5 6): ")
-(display (append '(1 2 3) '(4 5 6)))
-(newline)
+(check "append '(1 2 3) '(4 5 6)" '(1 2 3 4 5 6) (append '(1 2 3) '(4 5 6)))
 
 ;;; Test reverse
-(display "reverse '(1 2 3 4 5): ")
-(display (reverse '(1 2 3 4 5)))
-(newline)
+(check "reverse '(1 2 3 4 5)" '(5 4 3 2 1) (reverse '(1 2 3 4 5)))
 
 ;;; Test filter
-(display "filter even? '(1 2 3 4 5 6): ")
-(display (filter even? '(1 2 3 4 5 6)))
-(newline)
+(check "filter even? '(1 2 3 4 5 6)" '(2 4 6) (filter even? '(1 2 3 4 5 6)))
 
-;;; Test remove
-(display "remove 3 '(1 2 3 4 3 5): ")
-(display (remove 3 '(1 2 3 4 3 5)))
-(newline)
+;;; Test remove -- element form removes every equal? match, not just the first
+(check "remove 3 '(1 2 3 4 3 5)" '(1 2 4 5) (remove 3 '(1 2 3 4 3 5)))
 
 ;;; Test count-if
-(display "count-if even? '(1 2 3 4 5 6): ")
-(display (count-if even? '(1 2 3 4 5 6)))
-(newline)
-
-(display "=== All Tests Complete ===")
-(newline)
+(check "count-if even? '(1 2 3 4 5 6)" 3 (count-if even? '(1 2 3 4 5 6)))
