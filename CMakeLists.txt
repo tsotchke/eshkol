@@ -4348,6 +4348,55 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+
+    # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
+    # compiler has its own reader and its own module machinery, so the native
+    # front end being fixed proves nothing here: `define-library`, `import`
+    # and `export` were not forms it knew at all, and the file compiled to
+    # bytecode that called an unbound name.  Both VM routes are gated — source
+    # execution here, and the --emit-eskb route through the vm-parity corpus.
+    add_test(
+        NAME define_library_same_unit_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/modules/r7rs_define_library_same_unit_test.esk"
+    )
+    set_tests_properties(define_library_same_unit_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+endif()
+
+# R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
+# defines a library the forms below it can import.  `define-library` used to
+# discard its library name, so `import` had only the filesystem search left and
+# reported a library written three lines above it as a missing module.  Gated
+# on BOTH native lanes: the JIT resolves imports in ReplJITContext::execute()
+# and the AOT lane in process_requires(), two separate call sites that have to
+# agree.  The VM lane is gated next to the standalone VM target above.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/modules/r7rs_define_library_same_unit_test.esk")
+    add_test(
+        NAME define_library_same_unit_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/modules/r7rs_define_library_same_unit_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(define_library_same_unit_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME define_library_same_unit_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/define_library_same_unit_aot' tests/modules/r7rs_define_library_same_unit_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/define_library_same_unit_aot'"
+    )
+    set_tests_properties(define_library_same_unit_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")

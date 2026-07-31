@@ -16,6 +16,7 @@
 #include <eshkol/core/runtime.h>
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "../core/arena_memory.h"  // For runtime function declarations
+#include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -2823,6 +2824,13 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     bool has_provide = false;
 
     for (auto& ast_item : module_asts) {
+        // A module file may itself contain `define-library` forms. Splicing the
+        // file into this compilation unit brings those libraries with it, so
+        // record them — the AOT lane does the same when process_requires()
+        // recurses into a required module, and the two lanes have to agree on
+        // what an `import` can resolve to.
+        eshkol::library_registry::defineFromForm(ast_item);
+
         if (ast_item.type == ESHKOL_OP) {
             // Collect exported symbols from provide
             if (ast_item.operation.op == ESHKOL_PROVIDE_OP) {
@@ -3750,7 +3758,28 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
+
+                // Resolution order, step 1: a library defined by a
+                // `define-library` already executed in this session/compilation
+                // unit. Its bindings are in the top-level environment already,
+                // so importing it loads nothing (R7RS-small 5.6.1).
+                if (const std::set<std::string>* unit_exports =
+                        eshkol::library_registry::exports(module_name)) {
+                    auto& known = module_exports_[module_name];
+                    known.insert(unit_exports->begin(), unit_exports->end());
+                    append_repl_r7rs_prefix_aliases(*ast, i, known, alias_asts);
+                    continue;
+                }
+
                 if (!loadModule(module_name)) {
+                    uint32_t defined_at = 0;
+                    if (eshkol::library_registry::plannedLater(module_name, &defined_at)) {
+                        throw std::runtime_error(
+                            "library '" + module_name + "' is imported above its "
+                            "define-library form (line " + std::to_string(defined_at) +
+                            "); a library must be defined before it is imported "
+                            "(R7RS-small 5.6.1)");
+                    }
                     throw std::runtime_error("required module could not be loaded: " +
                                              module_name);
                 }
@@ -3765,8 +3794,12 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             return nullptr;
         }
 
-        // Handle (provide ...) - just return nil, exports are implicit in REPL
+        // Handle (provide ...) - just return nil, exports are implicit in REPL.
+        // A lowered `define-library` ends in a marker provide carrying the
+        // library name; reaching it establishes the library for every import
+        // evaluated after this point.
         if (ast->operation.op == ESHKOL_PROVIDE_OP) {
+            eshkol::library_registry::define(*ast);
             return nullptr;
         }
     }

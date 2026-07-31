@@ -3955,9 +3955,35 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
     ast.operation.op = ESHKOL_PROVIDE_OP;
     ast.operation.provide_op.num_exports = exports.size();
     ast.operation.provide_op.export_names = new char*[exports.size()];
+    ast.operation.provide_op.library_name = nullptr;
     for (size_t i = 0; i < exports.size(); i++) {
         ast.operation.provide_op.export_names[i] = parser_copy_cstr(exports[i]);
     }
+    return ast;
+}
+
+/**
+ * @brief Builds the marker node that establishes an R7RS library in this compilation unit.
+ *
+ * Identical to a `(provide ...)` node except that it also carries the dotted
+ * library name. `process_requires()` (AOT) and the JIT/REPL require handler
+ * read that name into the frontend library registry
+ * (lib/frontend/library_registry.h), so a later `(import (name ...))` in the
+ * same compilation unit resolves without a filesystem search — which is what
+ * R7RS-small 5.6.1 requires of a library defined before the forms that import
+ * it. Carrying the export list here as well (rather than only on the
+ * per-clause provide) is what lets `(import (prefix (name) p:))` build its
+ * aliases for a same-unit library.
+ *
+ * The node generates no code: every lane strips `ESHKOL_PROVIDE_OP` before
+ * codegen, and codegen itself lowers it to nil.
+ */
+static eshkol_ast_t make_library_definition_ast(const std::string& library_name,
+                                                const std::vector<std::string>& exports,
+                                                uint32_t line,
+                                                uint32_t column) {
+    eshkol_ast_t ast = make_provide_ast(exports, line, column);
+    ast.operation.provide_op.library_name = parser_copy_cstr(library_name);
     return ast;
 }
 
@@ -4298,16 +4324,26 @@ static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& spec
 /**
  * @brief Parses an R7RS `(define-library (name ...) <library-declaration>*)` top-level form into a lowered AST.
  *
- * First parses the parenthesized library name (its joined form is
- * currently unused beyond validation), then iterates the library's
+ * First parses the parenthesized library name, then iterates the library's
  * declaration clauses:
- *  - `(export name...)` becomes a provide/export AST (make_provide_ast());
+ *  - `(export name...)` contributes to the library's export surface;
  *    renamed exports (`(export (old new))`) are not yet supported.
  *  - `(import <import-set>...)` is parsed via parse_r7rs_import_sets() and
  *    lowered to require/alias forms via append_r7rs_import_forms().
  *  - `(begin expr...)` has each contained expression parsed in place via
  *    parse_expression() and appended as-is.
  *  - any other clause name is a parse error (unsupported clause).
+ *
+ * The lowered body is followed by a single library-definition marker
+ * (make_library_definition_ast()) naming the library and listing every
+ * exported symbol. The marker is what makes the library exist for the rest of
+ * the compilation unit: the driver's require handling reads it into the
+ * frontend library registry, so a later `(import (name ...))` resolves to this
+ * library rather than searching the filesystem for a file that was never
+ * written (R7RS-small 5.6.1). Emitting it last — after the body, and after any
+ * `import` clause of this same library — is what keeps the ordering rule
+ * honest: a library is established by its whole `define-library` form, so it
+ * cannot satisfy an import written above it.
  *
  * All lowered forms across the library's clauses are combined into a
  * single AST via make_sequence_or_null_ast().
@@ -4322,8 +4358,8 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
                                  "define-library")) {
         return {.type = ESHKOL_INVALID};
     }
-    (void)library_name;
 
+    std::vector<std::string> library_exports;
     std::vector<eshkol_ast_t> lowered_forms;
     while (true) {
         Token clause_open = tokenizer.nextToken();
@@ -4366,8 +4402,11 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(clause_name, "define-library export expects at least one symbol");
                 return {.type = ESHKOL_INVALID};
             }
-            lowered_forms.push_back(make_provide_ast(exports, clause_name.line,
-                                                     clause_name.column));
+            // Accumulated rather than emitted per clause: R7RS allows several
+            // `export` clauses, and the library's importable surface is their
+            // union, which the single trailing marker carries.
+            library_exports.insert(library_exports.end(),
+                                   exports.begin(), exports.end());
         } else if (clause_name.value == "import") {
             std::vector<R7rsImportSpec> specs;
             if (!parse_r7rs_import_sets(tokenizer, clause_name, &specs)) {
@@ -4396,6 +4435,9 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
             return {.type = ESHKOL_INVALID};
         }
     }
+
+    lowered_forms.push_back(make_library_definition_ast(
+        library_name, library_exports, form_token.line, form_token.column));
 
     return make_sequence_or_null_ast(lowered_forms, form_token.line, form_token.column);
 }
