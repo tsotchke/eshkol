@@ -355,26 +355,37 @@ int main(int argc, char** argv) {
         return fail("embedded VM kept ESKB after argumentful required entry");
     }
 
-    const fs::path duplicate_entry_source = temp_root / "duplicate-entry.esk";
+    // R7RS 5.3.1: a second top-level (define (tick) ...) is an assignment to the
+    // same binding, so this program is legal and `tick` unambiguously denotes the
+    // LATER definition. Admission must therefore SUCCEED with the required entry
+    // present.
+    //
+    // This used to assert the opposite. The rejection was not a policy: the
+    // entry table appended a row per definition, and eskb_load_file() refuses a
+    // module with duplicate function names, so the admission VM failed to load
+    // and every redefining program was locked out of the embedded profile. The
+    // entry table is a name-to-definition index and now holds the definition in
+    // effect (chunk_add_entry replaces a same-named row), which is both what
+    // R7RS requires and what makes the bytecode loadable.
+    const fs::path redefined_entry_source = temp_root / "redefined-entry.esk";
     {
-        std::ofstream source(duplicate_entry_source);
+        std::ofstream source(redefined_entry_source);
         source << "(define (tick) 1)\n";
         source << "(define (tick) 2)\n";
     }
 
-    const fs::path duplicate_required_path = temp_root / "embedded-duplicate-required.eskb";
-    ProcessResult embedded_duplicate_required = run_process_capture(
+    const fs::path redefined_required_path = temp_root / "embedded-redefined-required.eskb";
+    ProcessResult embedded_redefined_required = run_process_capture(
         {run_binary.string(), "--profile", "embedded-vm",
-         "--emit-eskb", duplicate_required_path.string(),
-         "--require-vm-entry-zero-arg", "tick", duplicate_entry_source.string()},
+         "--emit-eskb", redefined_required_path.string(),
+         "--require-vm-entry-zero-arg", "tick", redefined_entry_source.string()},
         temp_root);
-    if (int rc = expect_failure_containing("embedded VM rejects duplicate required entry",
-                                           embedded_duplicate_required,
-                                           "ESKB admission failed for profile embedded-vm")) {
+    if (int rc = expect_success("embedded VM admits a redefined required entry",
+                                embedded_redefined_required)) {
         return rc;
     }
-    if (fs::exists(duplicate_required_path)) {
-        return fail("embedded VM kept ESKB after duplicate required entry");
+    if (!fs::exists(redefined_required_path)) {
+        return fail("embedded VM redefined required-entry ESKB file was not created");
     }
 
     const fs::path captured_entry_source = temp_root / "captured-entry.esk";

@@ -26,6 +26,7 @@
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/types/hott_types.h>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <unordered_map>
@@ -215,6 +216,58 @@ public:
     llvm::Value* emitRegionWriteBarrier(llvm::Value* dst_ptr,
                                         llvm::Value* tagged_value);
 
+    // === Runtime Guard Failure (catchable raise) ===
+
+    /**
+     * Emit a catchable runtime error and terminate the current basic block.
+     *
+     * This is the ONLY sanctioned way to close a guard's failure block.
+     *
+     * A guard must never end in a bare `unreachable`, and must never make its
+     * diagnostic conditional on a function lookup that can fail. The historic
+     * idiom in this backend was
+     *
+     *     llvm::Function* pf = ctx_.lookupFunction("printf");
+     *     llvm::Function* ef = ctx_.lookupFunction("exit");
+     *     if (pf && ef) { ...print...; call exit(1); }
+     *     builder.CreateUnreachable();
+     *
+     * `printf` and `exit` are never registered in this class's function table
+     * (defineFunction is only ever called for eshkol_* runtime helpers,
+     * hash-table, parallel and tensorcore symbols), so both lookups always
+     * returned nullptr, the failure block compiled to a bare `unreachable`, and
+     * LLVM correctly concluded the guarded condition was impossible and DELETED
+     * THE BRANCH. Guards written that way exist in the source and not in the
+     * binary — several were protecting out-of-bounds accesses.
+     *
+     * Raising through the runtime instead keeps the failure block live (the call
+     * has side effects, so the branch cannot be folded away), reports through
+     * the same channel as every other runtime error, and is catchable by
+     * `guard`.
+     *
+     * Leaves the insert point on the (now terminated) failure block; the caller
+     * is responsible for setting the insert point to its success block, exactly
+     * as with the old idiom.
+     *
+     * @param message Diagnostic text. Copied by the runtime.
+     */
+    void emitRaise(const char* message);
+
+    /**
+     * printf-style variant of emitRaise() for diagnostics that need to report a
+     * runtime value (an actual tensor rank, a mismatched dimension, ...).
+     *
+     * The message is rendered with snprintf into a fixed-size entry-block
+     * buffer and then raised, so the formatted text is as informative as the
+     * printf the old dead idiom intended to emit, while still being catchable.
+     *
+     * @param format printf format string (keep the rendering under 256 bytes;
+     *               longer output is truncated, never overflowed).
+     * @param args   Format arguments, already in C-variadic-compatible LLVM
+     *               types (i64 for %lld, i32 for %d, ptr for %s).
+     */
+    void emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value*> args);
+
     // === Global Variables (Arena, AD State) ===
 
     /** Get/set the global arena variable */
@@ -380,6 +433,12 @@ public:
     void setDisplayTensorRecursiveFunc(llvm::Function* func) { display_tensor_recursive_func_ = func; }
 
 private:
+    /**
+     * Shared tail of emitRaise()/emitRaiseFmt(): build an exception carrying
+     * @p message_ptr, raise it, and terminate the block.
+     */
+    void emitRaiseWithMessagePtr(llvm::Value* message_ptr);
+
     // LLVM infrastructure (references, not owned)
     llvm::LLVMContext& context_;
     llvm::Module& module_;

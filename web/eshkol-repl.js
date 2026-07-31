@@ -342,6 +342,10 @@ class EshkolRepl {
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                eshkol_tensor_destination_checked: () => 0,
+                eshkol_tensor_matrix_operand_checked: () => 0,
+                eshkol_tensor_counts_checked: () => {},
+                eshkol_tensor_axis_checked: (axis) => axis,
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
@@ -602,6 +606,71 @@ class EshkolRepl {
                 // handles every value in the browser build; the
                 // binary/unary/seed/extract kernels below are therefore
                 // unreachable stubs.
+                // ESH-0393/0394 AD point classification + coercion. These used to
+                // be inline IR (a bitcast for DOUBLE, SIToFP for everything
+                // else); they became runtime calls so an exact rational/bignum
+                // point -- which is HEAP-tagged, so its data field is a POINTER
+                // -- stops being reinterpreted as a number. They are on the
+                // ORDINARY jet path, so a `() => 0` stub would silently
+                // differentiate every browser program at 0. Implement the
+                // conversion here instead, over the same tagged layout the
+                // region helpers above use: [0]=type, [1]=flags, [8..16]=data.
+                //
+                // The browser build has no bignum/rational and no Taylor tower
+                // (eshkol_is_taylor_tagged reports "not a tower" below), so a
+                // HEAP-tagged point is not a number it can represent: report
+                // "not a number" through `ok` rather than inventing one, which
+                // is what the native build's catchable type error does.
+                eshkol_ad_seed_to_double: (v, okPtr) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const setOk = (n) => { if (dv && okPtr) dv.setInt32(Number(okPtr), n, true); };
+                    if (!dv || !v) { setOk(0); return 0.0; }
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    setOk(1);
+                    if (bt === 2) return dv.getFloat64(p + 8, true);            // DOUBLE
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));   // INT64
+                    if (bt === 6) {                                             // DUAL: primal
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true)); // BOOL/CHAR
+                    setOk(0);
+                    return 0.0;
+                },
+                eshkol_ad_point_to_double: (v, _what) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0.0;
+                    const p = Number(v);
+                    const bt = dv.getUint8(p) & 0x0F;
+                    if (bt === 2) return dv.getFloat64(p + 8, true);
+                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));
+                    if (bt === 6) {
+                        const jet = Number(dv.getBigUint64(p + 8, true));
+                        return jet ? dv.getFloat64(jet, true) : 0.0;
+                    }
+                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true));
+                    return 0.0;
+                },
+                // Scalar-vs-collection: an immediate number (or a dual) is a
+                // scalar. A HEAP point in the browser build is a collection --
+                // the exact heap scalars are the ones it cannot represent.
+                eshkol_ad_point_is_scalar: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    const bt = dv.getUint8(Number(v)) & 0x0F;
+                    return (bt === 1 || bt === 2 || bt === 3 || bt === 4 || bt === 6) ? 1 : 0;
+                },
+                // No bignum/rational in the browser build, so no point is ever an
+                // exact HEAP scalar, and the exact tier is never entered.
+                eshkol_ad_point_is_exact_scalar: () => 0,
+                // ...but an immediate int64 IS an exact number, so answer from
+                // the tag rather than declaring a blanket 0.
+                eshkol_ad_point_is_exact_number: (v) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    return ((dv.getUint8(Number(v)) & 0x0F) === 1) ? 1 : 0;
+                },
                 eshkol_is_taylor_tagged:        () => 0,
                 eshkol_taylor_c0:               () => 0.0,
                 eshkol_taylor_binary_tagged:    () => 0,

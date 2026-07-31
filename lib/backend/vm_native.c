@@ -4446,13 +4446,79 @@ static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
  *   (c) anything else -> clean VM error (vm->error = 1), no fabricated
  *       value, no crash.
  */
+/** @brief Extract a shape / index list of ANY rank into arena-backed storage.
+ *
+ * The fixed `int64_t shape[8]` + vm_extract_shape(..., 8) idiom this replaces
+ * silently dropped every dimension past the eighth, so a rank-9 shape became a
+ * rank-8 tensor with a different element count. The rank is now read from the
+ * list itself: a proper list of dimensions of any length, or a bare number
+ * (rank-1), with no ceiling.
+ *
+ * @param out_ndims receives the dimension count (0 on failure)
+ * @return arena-backed dimensions, or NULL for an empty/unusable shape.
+ */
+static int64_t* vm_extract_shape_dyn(VM* vm, Value shape_val, int* out_ndims) {
+    if (out_ndims) *out_ndims = 0;
+    int64_t n = 0;
+    VmVector* svec = NULL;
+    if (shape_val.type == VAL_PAIR) {
+        Value cur = shape_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            n++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+    } else if (shape_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, shape_val.as.ptr)) {
+        /* A shape/index given as a vector is as valid as a list; the old
+         * vm_extract_shape() fell through to its scalar branch and produced a
+         * rank-1 shape of 0 for it. */
+        svec = (VmVector*)vm->heap.objects[shape_val.as.ptr]->opaque.ptr;
+        n = svec ? (int64_t)svec->len : 0;
+    } else {
+        n = 1;   /* a bare dimension is a rank-1 shape (matches vm_extract_shape) */
+    }
+    if (n <= 0) return NULL;
+    if ((uint64_t)n > SIZE_MAX / sizeof(int64_t)) return NULL;
+    int64_t* dims = (int64_t*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(int64_t));
+    if (!dims) { vm->error = 1; return NULL; }
+    if (svec) {
+        for (int64_t i = 0; i < n; i++) dims[i] = (int64_t)as_number_vm(vm, svec->items[i]);
+    } else if (shape_val.type == VAL_PAIR) {
+        int64_t i = 0;
+        Value cur = shape_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr) && i < n) {
+            dims[i++] = (int64_t)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        n = i;
+    } else {
+        dims[0] = (int64_t)as_number(shape_val);
+    }
+    if (n <= 0) return NULL;
+    if (out_ndims) *out_ndims = (int)n;
+    return dims;
+}
+
 /* #322: measure the row-major (leftmost-spine) shape of a possibly-nested
  * numeric vector, so a nested vector literal like #(#(1 2) #(3 4)) can be
  * coerced to an N-D tensor exactly as the native reader materializes it (a
  * nested numeric literal IS a tensor natively). Walks element[0] down each
  * nesting level, recording each vector length as one dimension. Returns the
- * rank (>= 1), or -1 if it nests deeper than VM_TENSOR_MAX_DIMS. The result
- * is only a candidate shape; vm_vec_fill validates rectangularity. */
+ * rank (>= 1), or -1 on a malformed level. The nesting depth is the literal's
+ * own, so there is no rank ceiling: vm_vec_shape_depth() measures the spine
+ * first and the caller allocates that many dimensions. The result is only a
+ * candidate shape; vm_vec_fill validates rectangularity. */
+static int vm_vec_shape_depth(VM* vm, Value v) {
+    int rank = 0;
+    while (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!vec) return -1;
+        rank++;
+        if (vec->len <= 0) break;   /* empty level: no deeper spine to follow */
+        v = vec->items[0];
+    }
+    return rank;
+}
+
 static int vm_vec_shape(VM* vm, Value v, int64_t* shape, int max_dims) {
     int rank = 0;
     while (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
@@ -4606,22 +4672,31 @@ static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int leve
  *
  * The shape is measured down the leftmost spine, then validated on the way in
  * while filling: a ragged nesting is REJECTED (@p err set) rather than
- * silently truncated or zero-filled. Rank is capped at VM_TENSOR_MAX_DIMS.
+ * silently truncated or zero-filled. Rank is the nesting's own depth — the
+ * spine is measured first and the shape buffer allocated to fit, so there is
+ * no rank ceiling on a nested constructor argument.
  *
  * @return The new tensor, or NULL with *@p err set to a diagnostic.
  */
 static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
-    int64_t shape[VM_TENSOR_MAX_DIMS];
+    /* Pass 1: how deep does the leftmost spine nest? */
+    int depth = 0;
+    for (Value probe = v; vm_tensor_collection_len(vm, probe) >= 0;
+         probe = vm_tensor_collection_at(vm, probe, 0)) {
+        depth++;
+        if (vm_tensor_collection_len(vm, probe) == 0) break;
+    }
+    if (depth <= 0) { if (err) *err = "tensor: not a collection"; return NULL; }
+    int64_t* shape = (int64_t*)vm_alloc(&vm->heap.regions,
+                                        (size_t)depth * sizeof(int64_t));
+    if (!shape) { if (err) *err = "tensor: allocation failed"; return NULL; }
     int rank = 0;
     Value spine = v;
     for (;;) {
         int len = vm_tensor_collection_len(vm, spine);
         if (len < 0) break;                       /* scalar leaf: shape ends */
         if (len == 0) { if (err) *err = "tensor: empty nested collection"; return NULL; }
-        if (rank >= VM_TENSOR_MAX_DIMS) {
-            if (err) *err = "tensor: nesting deeper than 8 dimensions";
-            return NULL;
-        }
+        if (rank >= depth) break;
         shape[rank++] = len;
         spine = vm_tensor_collection_at(vm, spine, 0);
     }
@@ -4685,8 +4760,11 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
         /* #322: a nested numeric vector (#(#(1 2) #(3 4)) ...) coerces to an
          * N-D tensor, mirroring native, where such a reader literal already IS
          * a rank-N tensor. Rectangular required; ragged nesting is an error. */
-        int64_t shape[VM_TENSOR_MAX_DIMS];
-        int rank = vm_vec_shape(vm, v, shape, VM_TENSOR_MAX_DIMS);
+        int depth = vm_vec_shape_depth(vm, v);
+        int64_t* shape = (depth > 0)
+            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)depth * sizeof(int64_t))
+            : NULL;
+        int rank = shape ? vm_vec_shape(vm, v, shape, depth) : -1;
         if (rank >= 2) {
             int64_t total = 1;
             for (int i = 0; i < rank; i++) total *= shape[i];
@@ -4989,7 +5067,116 @@ static double vm_dual_tangent_of(VM* vm, Value v) {
     return 0.0;
 }
 
-#define VM_GRAD_MAX_VARS 64
+/* ── AD point extraction: sized by the data, never by a fixed buffer ──
+ *
+ * Every AD entry point (gradient, jacobian, hessian, divergence, laplacian,
+ * directional-derivative, reverse-gradient) needs the same thing: turn a
+ * Scheme point — a list, a vector, a tensor of any rank, or a bare scalar —
+ * into a flat `double*` of its ACTUAL length, plus N argument slots to call
+ * the differentiated callable with.
+ *
+ * Historically each of those cases open-coded the extraction against a fixed
+ * `double point[64]` and clamped with `n < 64` / `min(total, 64)`. Past 64
+ * parameters the clamp did not fail: it computed the gradient of a truncated
+ * point, called an N-arity closure with 64 arguments (so the remaining
+ * parameters read whatever was on the operand stack), and returned the short
+ * vector as if it were complete. A wrong gradient that looks well-formed is
+ * the worst failure mode an AD system can have, so the buffers are now sized
+ * from the data: an arena allocation out of the VM's active region, whose
+ * lifetime matches the tape's. There is no parameter-count limit left. */
+
+/** @brief Number of scalar components in an AD point value: list length,
+ *         vector length, tensor element count, or 1 for a bare scalar.
+ *         Returns the true count with no clamping. */
+static int64_t vm_ad_point_arity(VM* vm, Value x_val, int* is_collection) {
+    if (is_collection) *is_collection = 1;
+    if (x_val.type == VAL_PAIR) {
+        int64_t n = 0;
+        Value cur = x_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            n++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        return n;
+    }
+    if (x_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        return vec ? (int64_t)vec->len : 0;
+    }
+    if (x_val.type == VAL_TENSOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        return (t && t->data) ? t->total : 0;
+    }
+    if (is_collection) *is_collection = 0;
+    return 1;
+}
+
+/** @brief Flatten an AD point (list | vector | tensor of any rank | scalar)
+ *         into arena-backed storage sized by the point itself.
+ *
+ * Points are classified by runtime value, never by construction form: a
+ * `(vector ...)` point, an `#(...)` literal, a `(list ...)` and an N-D tensor
+ * of the same components all extract identically.
+ *
+ * @param out_n           receives the component count (0 on failure)
+ * @param is_collection   receives 1 for list/vector/tensor, 0 for a scalar
+ * @return The flattened components, or NULL when the point is empty or the
+ *         arena is exhausted (never a truncated prefix).
+ */
+static double* vm_ad_extract_point(VM* vm, Value x_val, int64_t* out_n,
+                                   int* is_collection) {
+    int coll = 0;
+    int64_t n = vm_ad_point_arity(vm, x_val, &coll);
+    if (is_collection) *is_collection = coll;
+    if (out_n) *out_n = 0;
+    if (n <= 0) return NULL;
+    if ((uint64_t)n > SIZE_MAX / sizeof(double)) return NULL;
+
+    double* point = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+    if (!point) { vm->error = 1; return NULL; }
+
+    int64_t i = 0;
+    if (x_val.type == VAL_PAIR) {
+        Value cur = x_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr) && i < n) {
+            point[i++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+    } else if (x_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (vec) for (; i < n && i < (int64_t)vec->len; i++)
+            point[i] = as_number_vm(vm, vec->items[i]);
+    } else if (x_val.type == VAL_TENSOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (t && t->data) for (; i < n && i < t->total; i++) point[i] = t->data[i];
+    } else {
+        point[0] = as_number_vm(vm, x_val);
+        i = 1;
+    }
+    if (out_n) *out_n = i;
+    return point;
+}
+
+/** @brief Arena-allocate @p n argument slots for an AD closure call, sized by
+ *         the point's arity rather than a fixed maximum. */
+static Value* vm_ad_arg_slots(VM* vm, int64_t n) {
+    if (n <= 0) return NULL;
+    if ((uint64_t)n > SIZE_MAX / sizeof(Value)) return NULL;
+    Value* args = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+    if (!args) vm->error = 1;
+    return args;
+}
+
+/** @brief Arena-allocate @p n doubles for an AD result (gradient row,
+ *         Hessian/Jacobian plane) or a numeric staging buffer, sized by the
+ *         data. */
+static double* vm_ad_double_buf(VM* vm, int64_t n) {
+    if (n <= 0) return NULL;
+    if ((uint64_t)n > SIZE_MAX / sizeof(double)) return NULL;
+    double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+    if (!buf) vm->error = 1;
+    return buf;
+}
 
 /** @brief Exact forward-mode gradient of @p f_val at @p x_val.
  *
@@ -5007,37 +5194,11 @@ static double vm_dual_tangent_of(VM* vm, Value v) {
 static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     int arity = vm_closure_arity(vm, f_val);
 
-    double point[VM_GRAD_MAX_VARS];
-    int n = 0;
     int is_collection = 0;
-
-    if (x_val.type == VAL_PAIR) {
-        is_collection = 1;
-        Value cur = x_val;
-        while (cur.type == VAL_PAIR && n < VM_GRAD_MAX_VARS) {
-            point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-    } else if (x_val.type == VAL_VECTOR && x_val.as.ptr >= 0) {
-        is_collection = 1;
-        VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-        if (vec) {
-            n = vec->len < VM_GRAD_MAX_VARS ? vec->len : VM_GRAD_MAX_VARS;
-            for (int i = 0; i < n; i++) point[i] = as_number_vm(vm, vec->items[i]);
-        }
-    } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-        is_collection = 1;
-        VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-        if (t && t->data) {
-            n = (int)(t->total < VM_GRAD_MAX_VARS ? t->total : VM_GRAD_MAX_VARS);
-            for (int i = 0; i < n; i++) point[i] = t->data[i];
-        }
-    } else {
-        point[0] = as_number_vm(vm, x_val);
-        n = 1;
-    }
-
-    if (n == 0) return FLOAT_VAL(0);
+    int64_t point_n = 0;
+    double* point = vm_ad_extract_point(vm, x_val, &point_n, &is_collection);
+    if (!point || point_n <= 0) return FLOAT_VAL(0);
+    int n = (int)point_n;
 
     /* Scalar point → scalar derivative (single dual pass). */
     if (!is_collection && n == 1) {
@@ -5046,7 +5207,8 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         return FLOAT_VAL(vm_dual_tangent_of(vm, result));
     }
 
-    double grads[VM_GRAD_MAX_VARS];
+    double* grads = vm_ad_double_buf(vm, n);
+    if (!grads) return FLOAT_VAL(0);
 
     if (arity == 1) {
         /* Whole-collection loss: pass one vector of dual elements per pass. */
@@ -5068,8 +5230,9 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         }
     } else {
         /* Spread: f takes N scalar args (arity == n, or unknown). */
+        Value* args = vm_ad_arg_slots(vm, n);
+        if (!args) return FLOAT_VAL(0);
         for (int i = 0; i < n; i++) {
-            Value args[VM_GRAD_MAX_VARS];
             for (int j = 0; j < n; j++)
                 args[j] = vm_make_dual_val(vm, point[j], (j == i) ? 1.0 : 0.0);
             Value result = vm_ad_call_closure(vm, f_val, args, n);
@@ -5493,13 +5656,14 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
 /** @brief Three-way compare of two integer-ish values through the bignum
  *         domain (-1/0/1). A float operand compares via double. */
 static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
-    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
-        double x = (a.type == VAL_BIGNUM)
-            ? bignum_to_double((VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)
-            : as_number(a);
-        double y = (b.type == VAL_BIGNUM)
-            ? bignum_to_double((VmBignum*)vm->heap.objects[b.as.ptr]->opaque.ptr)
-            : as_number(b);
+    /* A FLOAT or a RATIONAL operand cannot enter the integer bignum domain:
+     * vm_coerce_bignum() would materialise it from (int64_t)as_number(), which
+     * truncates a flonum and reads a rational's heap pointer as 0. Compare
+     * through doubles instead (as_number_vm covers every numeric tag). */
+    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT ||
+        a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) {
+        double x = as_number_vm(vm, a);
+        double y = as_number_vm(vm, b);
         return (x < y) ? -1 : (x > y) ? 1 : 0;
     }
     VmBignum* ab = vm_coerce_bignum(vm, a);
@@ -6397,9 +6561,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
     case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
     case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
-    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val(floor(as_number_vm(vm,a)))); break; }
-    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val(ceil(as_number_vm(vm,a)))); break; }
-    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(vm_round_half_even(as_number_vm(vm,a)))); break; }
+    /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
+     * not the exact 2 — the integral result shape must not decide the tag. */
+    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
+    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
+    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
     case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
     case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
     case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
@@ -6425,13 +6591,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
     case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da<db?da:db)); break; }
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
+        else if (a.type==VAL_RATIONAL) { vm_push(vm,a); vm_dispatch_native(vm,336); }
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
-        else vm_push(vm, number_val(fabs(as_number(a)))); break; }
+        else vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm,a)))); break; }
     /* modulo, remainder, quotient — first-class closure versions */
     /* Each of the three used to `break` on a zero divisor with a bare
      * vm->error = 1 and NO message.  Combined with the VM's old exit-0 that
@@ -6960,6 +7127,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
         case 331: case 332: case 333: case 334: {
             Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+            /* Classify by the operands' RUNTIME TAGS before entering the exact
+             * int64 rational domain.  The `(int64_t)as_number(...)` seed below
+             * can only represent an exact fixnum, so every other tag has to be
+             * routed first:
+             *
+             *   FLOAT  — R7RS 6.2.2 inexact contagion: the whole operation is
+             *            inexact.  Truncating the flonum into a numerator threw
+             *            it away, so (* 0.5493061443340549 1/3) evaluated
+             *            (* 0 1/3) and answered the exact 0 — and (+ 0.5 1/3)
+             *            answered 1/3.  Every mixed flonum/ratnum + - * / was
+             *            wrong this way, in both operand orders.
+             *   BIGNUM — exact, but a bignum-over-int64 rational is outside
+             *            this VM's numeric tower (VmRational is int64/int64),
+             *            so it takes the same correctly-rounded inexact
+             *            fallback the int64-overflow case below already uses.
+             *            Reading it as a numerator answered 0, which also made
+             *            `(/ 1/3 <bignum>)` a spurious DIVIDE BY ZERO.
+             *            Filed: tests/vm_parity/found/bignum_exact_rational.esk. */
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
+                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+                double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
+                /* Exact-by-exact-zero stays fatal; with an inexact operand a
+                 * zero divisor is IEEE-754 (±inf.0 / +nan.0), as native. */
+                if (fid == 334 && y == 0.0 &&
+                    a_val.type != VAL_FLOAT && b_val.type != VAL_FLOAT) {
+                    fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
+                }
+                double r = (fid == 331) ? x + y : (fid == 332) ? x - y
+                         : (fid == 333) ? x * y : x / y;
+                vm_push(vm, FLOAT_VAL(r)); break;
+            }
             VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
             if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
             if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
@@ -7001,7 +7199,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
                 vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
                 vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
-            } else vm_push(vm, number_val(-as_number(v))); break; }
+            } else vm_push(vm, number_val_contagious1(v, -as_number_vm(vm, v))); break; }
         case 336: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
@@ -7010,7 +7208,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
                 vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
                 vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
-            } else vm_push(vm, number_val(fabs(as_number(v)))); break; }
+            } else vm_push(vm, number_val_contagious1(v, fabs(as_number_vm(vm, v)))); break; }
         case 337: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
@@ -7020,16 +7218,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
                 vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
             } else vm_push(vm, FLOAT_VAL(1.0 / as_number(v))); break; }
-        case 338: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        case 338: case 339: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+            /* Same tag routing as 331-334: a FLOAT or BIGNUM operand cannot be
+             * seeded into an int64 numerator, and truncating it there compared
+             * the wrong value (`(rational<? 0.2 1/3)` compared 0 against 1/3). */
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
+                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+                double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
+                if (fid == 338) vm_push(vm, INT_VAL(x < y ? -1 : x > y ? 1 : 0));
+                else vm_push(vm, BOOL_VAL(x == y));
+                break;
+            }
             VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
             if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
             if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vm_rational_compare(&a_r, &b_r))); break; }
-        case 339: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-            VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
-            if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            vm_push(vm, BOOL_VAL(vm_rational_equal(&a_r, &b_r))); break; }
+            if (fid == 338) vm_push(vm, INT_VAL(vm_rational_compare(&a_r, &b_r)));
+            else vm_push(vm, BOOL_VAL(vm_rational_equal(&a_r, &b_r)));
+            break; }
         case 340: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(vm_rational_to_double(r))); }
             else vm_push(vm, FLOAT_VAL(as_number(v))); break; }
@@ -7393,8 +7598,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
-        /* Create dual number: x + 1ε */
-        VmDual* d = vm_dual_make(&vm->heap.regions, as_number(x_val), 1.0);
+        /* Create dual number: x + 1ε
+         *
+         * ESH-0393: seeded via as_number_vm(), not as_number(). as_number()
+         * knows only the IMMEDIATE tags, so a VAL_RATIONAL point silently
+         * became 0.0 and `(derivative (lambda (x) (* x x)) 1/3)` answered 0 on
+         * the VM where the native backend answers 0.666…. as_number_vm() is
+         * the VM's own heap-aware coercion (it unwraps rationals and duals) and
+         * was already what the gradient primitive used — the AD natives here
+         * were simply inconsistent with it. Same change applies to the
+         * jacobian/hessian/divergence/curl/laplacian/directional-derivative
+         * point and direction reads below. */
+        VmDual* d = vm_dual_make(&vm->heap.regions, as_number_vm(vm, x_val), 1.0);
         if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
         int32_t dptr = heap_alloc(&vm->heap);
         if (dptr < 0) { vm->error = 1; break; }
@@ -7529,22 +7744,29 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * 474: the first-class `tensor` closure passes ONE value, which is
          *      treated as that single argument. */
         Value arg_src = vm_pop(vm);
-        Value args[VM_TENSOR_CTOR_MAX_ARGS];
+        /* The argument list is sized from the CALL: a variadic constructor's
+         * arity must be governed by how many arguments were written, not by a
+         * fixed `Value args[N]` (which clamped the walk and silently dropped
+         * every argument past N). */
         int n_args = 0;
+        Value* args = NULL;
         if (fid == 473) {
+            int64_t n_avail = 0;
+            for (Value c = arg_src; c.type == VAL_PAIR && is_valid_heap_ptr(vm, c.as.ptr);
+                 c = vm->heap.objects[c.as.ptr]->cons.cdr) n_avail++;
+            args = vm_ad_arg_slots(vm, n_avail);
+            if (n_avail > 0 && !args) { vm_raise_error_msg(vm, "tensor: allocation failed"); break; }
             Value cur = arg_src;
-            while (cur.type == VAL_PAIR && n_args < VM_TENSOR_CTOR_MAX_ARGS) {
+            while (cur.type == VAL_PAIR && n_args < (int)n_avail) {
                 args[n_args++] = vm->heap.objects[cur.as.ptr]->cons.car;
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
-            if (cur.type == VAL_PAIR) {
-                vm_raise_error_msg(vm, "tensor: too many arguments");
-                break;
-            }
         } else {
+            args = vm_ad_arg_slots(vm, 1);
+            if (!args) { vm_raise_error_msg(vm, "tensor: allocation failed"); break; }
             args[n_args++] = arg_src;
         }
-        if (n_args == 0) {
+        if (n_args == 0 || !args) {
             vm_raise_error_msg(vm, "tensor: needs at least one argument");
             break;
         }
@@ -7593,8 +7815,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
-        int64_t shape[8]; int n_dims = vm_extract_shape(vm, shape_val, shape, 8);
-        if (n_dims == 0) { vm_push(vm, NIL_VAL); break; }
+        int n_dims = 0;
+        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
+        if (!shape || n_dims == 0) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, t);
@@ -7617,9 +7840,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
             /* Multi-dim index, given as a list or a vector.  Same bounds
              * contract as the flat path above: vm_tensor_ref() answers 0.0 for
-             * a bad rank or an out-of-range index, which fabricates a value. */
-            int64_t indices[8];
-            int nd = vm_extract_shape(vm, idx_val, indices, 8);
+             * a bad rank or an out-of-range index, which fabricates a value.
+             * The index vector is read at its own length, so indexing a
+             * rank-N tensor works for every N. */
+            int nd = 0;
+            int64_t* indices = vm_extract_shape_dyn(vm, idx_val, &nd);
+            if (!indices) { vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector"); break; }
             if (!vm_tensor_indices_in_range(t, indices, nd)) {
                 vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
                 break;
@@ -7641,8 +7867,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-set!");
         if (!t) break;   /* raised: push nothing */
-        int64_t indices[8]; int n = vm_extract_shape(vm, idx_val, indices, 8);
-        if (n == 0) { indices[0] = (int64_t)as_number(idx_val); n = 1; }
+        /* Sized from the index itself, so a rank-N index works for every N; a
+         * bare scalar still becomes a rank-1 index inside the helper, which is
+         * what the fixed `int64_t indices[8]` form did explicitly. */
+        int n = 0;
+        int64_t* indices = vm_extract_shape_dyn(vm, idx_val, &n);
+        if (!indices || n == 0) {
+            vm_raise_error_msg(vm, "tensor-set!: index must be an integer, list or vector");
+            break;
+        }
         /* Bounds contract (#356): an out-of-range write is a catchable error on
          * every substrate.  vm_tensor_set() returns silently instead, so an
          * out-of-range tensor-set! was a NO-OP the program could not detect. */
@@ -7709,8 +7942,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value shape_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
         if (!t) break;   /* raised: push nothing */
-        int64_t shape[8]; int n = vm_extract_shape(vm, shape_val, shape, 8);
-        VmTensor* out = vm_tensor_reshape(&vm->heap.regions, t, shape, n);
+        int n = 0;
+        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        VmTensor* out = shape ? vm_tensor_reshape(&vm->heap.regions, t, shape, n) : NULL;
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -7727,8 +7961,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 417: { /* zeros(shape) */
         Value shape_val = vm_pop(vm);
-        int64_t shape[8]; int n = vm_extract_shape(vm, shape_val, shape, 8);
-        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+        int n = 0;
+        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        if (!shape || n == 0) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_zeros(&vm->heap.regions, shape, n);
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, t);
@@ -7736,8 +7971,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 418: { /* ones(shape) */
         Value shape_val = vm_pop(vm);
-        int64_t shape[8]; int n = vm_extract_shape(vm, shape_val, shape, 8);
-        if (n == 0) { vm_push(vm, NIL_VAL); break; }
+        int n = 0;
+        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n);
+        if (!shape || n == 0) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_ones(&vm->heap.regions, shape, n);
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, t);
@@ -7781,9 +8017,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 423: { /* make-tensor(shape, fill, dtype) */
         Value dtype_val = vm_pop(vm), fill = vm_pop(vm), shape_val = vm_pop(vm);
-        int64_t shape[8]; int n_dims = vm_extract_shape(vm, shape_val, shape, 8);
+        int n_dims = 0;
+        int64_t* shape = vm_extract_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
-        if (n_dims == 0 || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (!shape || n_dims == 0 || !dtype_name) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
         if (!t) { vm_push(vm, NIL_VAL); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
@@ -8007,9 +8244,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
         if (!b) break;   /* raised: push nothing */
 
-        int64_t a_dims[VM_TENSOR_MAX_DIMS], b_dims[VM_TENSOR_MAX_DIMS];
-        for (int i = 0; i < A->n_dims && i < VM_TENSOR_MAX_DIMS; i++) a_dims[i] = A->shape[i];
-        for (int i = 0; i < b->n_dims && i < VM_TENSOR_MAX_DIMS; i++) b_dims[i] = b->shape[i];
+        /* Dimension vectors are sized from the operands, not clipped to a
+         * fixed rank (the old `i < VM_TENSOR_MAX_DIMS` clamp silently handed
+         * the solver a truncated shape). */
+        int64_t* a_dims = (A->n_dims > 0)
+            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)A->n_dims * sizeof(int64_t)) : NULL;
+        int64_t* b_dims = (b->n_dims > 0)
+            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)b->n_dims * sizeof(int64_t)) : NULL;
+        if ((A->n_dims > 0 && !a_dims) || (b->n_dims > 0 && !b_dims)) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        for (int i = 0; i < A->n_dims; i++) a_dims[i] = A->shape[i];
+        for (int i = 0; i < b->n_dims; i++) b_dims[i] = b->shape[i];
 
         /* Solution length is A's leading dimension; the runtime validates that
          * A is a square 2-D matrix and that b's length matches before use. */
@@ -11812,7 +12058,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * Helper: vm_ad_eval_component — call f, extract i-th output component
      * ══════════════════════════════════════════════════════════════════════ */
 
-#define VM_AD_MAX_VARS 64
 
     /* --- Helper: create a dual number Value on the heap --- */
 #define VM_AD_MAKE_DUAL(vm, primal_val, tangent_val, out_val) do { \
@@ -11853,29 +12098,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
         /* Extract point */
-        double point[VM_AD_MAX_VARS];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
+        /* Point extraction is sized by the point (see vm_ad_extract_point):
+         * list, vector, tensor of any rank or scalar, with no arity ceiling. */
+        int64_t point_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
         /* First pass with variable 0 seeded to determine output dimension m */
-        Value probe_args[VM_AD_MAX_VARS];
+        Value* probe_args = vm_ad_arg_slots(vm, n);
+        if (!probe_args) { vm_push(vm, FLOAT_VAL(0)); break; }
         for (int j = 0; j < n; j++) {
             VM_AD_MAKE_DUAL(vm, point[j], (j == 0) ? 1.0 : 0.0, probe_args[j]);
         }
@@ -11903,8 +12136,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!jac_data) { vm_push(vm, NIL_VAL); break; }
             memset(jac_data, 0, (size_t)(m * n) * sizeof(double));
 
+            Value* args = vm_ad_arg_slots(vm, n);
+            if (!args) { vm_push(vm, NIL_VAL); break; }
             for (int i = 0; i < n; i++) {
-                Value args[VM_AD_MAX_VARS];
                 for (int j = 0; j < n; j++) {
                     VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
                 }
@@ -11964,24 +12198,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
 } while(0)
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[VM_AD_MAX_VARS];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
+        /* Point extraction is sized by the point (see vm_ad_extract_point):
+         * list, vector, tensor of any rank or scalar, with no arity ceiling. */
+        int64_t point_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
@@ -12003,9 +12224,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                                                    (size_t)(n * n) * sizeof(double));
             if (!hess_data) { vm_push(vm, NIL_VAL); break; }
 
+            Value* args = vm_ad_arg_slots(vm, n);
+            if (!args) { vm_push(vm, NIL_VAL); break; }
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
-                    Value args[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) {
                         VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
                     }
@@ -12034,31 +12256,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * F: R^n → R^n (vector field), point: list or tensor */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[VM_AD_MAX_VARS];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
+        /* Point extraction is sized by the point (see vm_ad_extract_point):
+         * list, vector, tensor of any rank or scalar, with no arity ceiling. */
+        int64_t point_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
-        /* Sum of ∂Fi/∂xi: for each i, seed variable i, extract component i */
+        /* Sum of ∂Fi/∂xi: for each i, seed variable i, extract component i.
+         * Every per-pass buffer is allocated once at the point's arity. */
         double div = 0;
+        Value* args = vm_ad_arg_slots(vm, n);
+        double* pt_plus = vm_ad_double_buf(vm, n);
+        double* pt_minus = vm_ad_double_buf(vm, n);
+        Value* ap = vm_ad_arg_slots(vm, n);
+        Value* am = vm_ad_arg_slots(vm, n);
+        if (!args || !pt_plus || !pt_minus || !ap || !am) { vm_push(vm, FLOAT_VAL(0)); break; }
         for (int i = 0; i < n; i++) {
-            Value args[VM_AD_MAX_VARS];
             for (int j = 0; j < n; j++) {
                 VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
             }
@@ -12076,14 +12291,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (rt && rt->data && i < (int)rt->total) {
                     /* Tensor element — use finite difference for this component */
                     double fplus, fminus;
-                    double pt_plus[VM_AD_MAX_VARS], pt_minus[VM_AD_MAX_VARS];
                     double h = 1e-7;
                     for (int k = 0; k < n; k++) {
                         pt_plus[k] = point[k] + ((k == i) ? h : 0);
                         pt_minus[k] = point[k] - ((k == i) ? h : 0);
                     }
                     /* F(x + h*ei)[i] */
-                    Value ap[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) ap[k] = FLOAT_VAL(pt_plus[k]);
                     Value rp = vm_ad_call_closure(vm, f_val, ap, n);
                     fplus = 0;
@@ -12092,7 +12305,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         if (tp && tp->data && i < (int)tp->total) fplus = tp->data[i];
                     }
                     /* F(x - h*ei)[i] */
-                    Value am[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) am[k] = FLOAT_VAL(pt_minus[k]);
                     Value rm = vm_ad_call_closure(vm, f_val, am, n);
                     vm->ad_finite_difference_evals += 2;
@@ -12136,7 +12348,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (x_val.type == VAL_PAIR) {
             Value cur = x_val;
             while (cur.type == VAL_PAIR && n < 3) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                 cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             }
         } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
@@ -12178,7 +12390,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else if (rp.type == VAL_PAIR) {
                 Value cur = rp; int idx = 0;
                 while (cur.type == VAL_PAIR && idx < 3) {
-                    fp[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    fp[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                     cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
                 }
             }
@@ -12188,7 +12400,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else if (rm.type == VAL_PAIR) {
                 Value cur = rm; int idx = 0;
                 while (cur.type == VAL_PAIR && idx < 3) {
-                    fm[idx++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+                    fm[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
                     cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
                 }
             }
@@ -12230,30 +12442,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
 } while(0)
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[VM_AD_MAX_VARS];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
+        /* Point extraction is sized by the point (see vm_ad_extract_point):
+         * list, vector, tensor of any rank or scalar, with no arity ceiling. */
+        int64_t point_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
         double laplacian = 0;
+        Value* args = vm_ad_arg_slots(vm, n);
+        if (!args) { vm_push(vm, FLOAT_VAL(0)); break; }
         for (int i = 0; i < n; i++) {
-            Value args[VM_AD_MAX_VARS];
             for (int k = 0; k < n; k++) {
                 VM_HD_MAKE_L(vm, point[k],
                              (k == i) ? 1.0 : 0.0,
@@ -12278,44 +12478,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * Uses a single forward pass with tangent = direction vector */
         Value dir_val = vm_pop(vm), x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[VM_AD_MAX_VARS], dir[VM_AD_MAX_VARS];
-        int n = 0, nd = 0;
-
-        /* Extract point */
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
-
-        /* Extract direction */
-        if (dir_val.type == VAL_PAIR) {
-            Value cur = dir_val;
-            while (cur.type == VAL_PAIR && nd < VM_AD_MAX_VARS) {
-                dir[nd++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (dir_val.type == VAL_TENSOR && dir_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[dir_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                nd = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < nd; i++) dir[i] = t->data[i];
-            }
-        } else {
-            dir[0] = as_number(dir_val);
-            nd = 1;
-        }
+        /* Both the point and the direction are extracted at their true
+         * lengths (see vm_ad_extract_point); a mismatch is still rejected
+         * below, but neither side is ever silently clipped to fit. */
+        int64_t point_n = 0, dir_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        double* dir = vm_ad_extract_point(vm, dir_val, &dir_n, NULL);
+        int n = point ? (int)point_n : 0;
+        int nd = dir ? (int)dir_n : 0;
 
         if (n == 0 || nd != n) {
             vm_push(vm, FLOAT_VAL(0));
@@ -12325,7 +12495,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Single forward pass: seed tangent = direction vector
          * D_v(f)(x) = Σ vi * ∂f/∂xi = tangent when all tangents are vi
          * This is the efficient approach — one pass instead of n+1 */
-        Value args[VM_AD_MAX_VARS];
+        Value* args = vm_ad_arg_slots(vm, n);
+        if (!args) { vm_push(vm, FLOAT_VAL(0)); break; }
         for (int j = 0; j < n; j++) {
             VM_AD_MAKE_DUAL(vm, point[j], dir[j], args[j]);
         }
@@ -12340,7 +12511,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
 #undef VM_AD_MAKE_DUAL
-#undef VM_AD_MAX_VARS
 
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -12421,7 +12591,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 142: { /* add2 — complex-aware */
+    case 142: { /* add2 — complex- and rational-aware */
+        /* The variadic prelude folds with these, so they must dispatch over
+         * exactly the same tag set as the OP_ADD/OP_SUB/OP_MUL opcodes.  A
+         * rational operand had NO branch here and fell through to the double
+         * path, where as_number() reads its heap pointer as 0.0 — so
+         * `(apply + (list 1/3 1.5))` answered 1.5, silently dropping a term. */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
             VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
@@ -12432,10 +12607,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
+            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 331);
         } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'+'); }
         else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
             int64_t r; if (__builtin_add_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'+'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val(as_number(a_val) + as_number(b_val))); }
+        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) + as_number_vm(vm,b_val))); }
         break; }
     case 143: { /* sub2 — complex-aware */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
@@ -12448,10 +12625,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
+            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 332);
         } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'-'); }
         else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
             int64_t r; if (__builtin_sub_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'-'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val(as_number(a_val) - as_number(b_val))); }
+        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) - as_number_vm(vm,b_val))); }
         break; }
     case 144: { /* mul2 — complex-aware */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
@@ -12464,10 +12643,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
+            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 333);
         } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'*'); }
         else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
             int64_t r; if (__builtin_mul_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'*'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val(as_number(a_val) * as_number(b_val))); }
+        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) * as_number_vm(vm,b_val))); }
         break; }
     case 145: { /* div2 — complex- and rational-aware.
                  * The prelude's variadic `/` folds with div2, so this is the
@@ -12497,15 +12678,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             /* At least one operand is INEXACT here, so a zero divisor is
              * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
-            vm_push(vm, number_val(as_number(a_val) / as_number(b_val)));
+            vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) / as_number_vm(vm,b_val)));
         }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
-    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
-    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }  /* > */
-    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; } /* <= */
-    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; } /* >= */
-    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; } /* = */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */
@@ -13049,7 +13230,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 160: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_SYMBOL)); break; } /* symbol? */
     case 161: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CHAR)); break; } /* char? */
-    case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL)); break; } /* exact? */
+    /* exact? must answer for every EXACT tag, not just the two it listed: a
+     * bignum and an i128 are exact integers, so (exact? (expt 10 30)) was #f
+     * on the VM against #t natively. */
+    case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL ||
+                                                           a.type == VAL_BIGNUM || a.type == VAL_I128)); break; } /* exact? */
     case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT)); break; } /* inexact? */
     case 164: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isnan(a.as.f))); break; } /* nan? */
     case 165: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isinf(a.as.f))); break; } /* infinite? */
@@ -14614,10 +14799,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     uint32_t magic, version, ndims;
                     if (fread(&magic, 4, 1, f) == 1 && magic == TENSOR_FILE_MAGIC &&
                         fread(&version, 4, 1, f) == 1 && version == 1 &&
-                        fread(&ndims, 4, 1, f) == 1 && ndims > 0 && ndims <= 8) {
-                        int64_t shape[8];
-                        int ok = 1;
-                        for (uint32_t i = 0; i < ndims; i++) {
+                        fread(&ndims, 4, 1, f) == 1 && ndims > 0) {
+                        /* Rank comes from the file, so the dimension buffer is
+                         * allocated at the file's rank instead of a fixed 8. */
+                        int64_t* shape = (int64_t*)vm_alloc(&vm->heap.regions,
+                                                            (size_t)ndims * sizeof(int64_t));
+                        int ok = shape != NULL;
+                        for (uint32_t i = 0; ok && i < ndims; i++) {
                             if (fread(&shape[i], 8, 1, f) != 1) { ok = 0; break; }
                         }
                         if (ok) {
@@ -14922,33 +15110,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * Single backward pass → O(1) regardless of input dimension. */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[64];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < 64) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < 64 ? t->total : 64);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else if (x_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
-            /* Points are classified by runtime value, never by construction
-             * form: a scheme (vector ...) point must behave exactly like the
-             * equivalent #(...) tensor or list point. */
-            VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (vec) {
-                n = (int)(vec->len < 64 ? vec->len : 64);
-                for (int i = 0; i < n; i++) point[i] = as_number(vec->items[i]);
-            }
-        } else {
-            point[0] = as_number(x_val);
-            n = 1;
-        }
+        /* Points are classified by runtime value, never by construction form:
+         * a scheme (vector ...) point behaves exactly like the equivalent
+         * #(...) tensor or list point, and the buffers are sized by the point
+         * (see vm_ad_extract_point) so a >64-parameter reverse gradient is
+         * differentiated in full rather than on a truncated prefix. */
+        int64_t point_n = 0;
+        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
+        int n = point ? (int)point_n : 0;
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
@@ -14957,8 +15126,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!tape) { vm_push(vm, FLOAT_VAL(0)); break; }
         vm->ad_tape_allocations++;
 
-        int var_nodes[64];
-        Value args[64];
+        int* var_nodes = (int*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(int));
+        Value* args = vm_ad_arg_slots(vm, n);
+        if (!var_nodes || !args) { vm->error = 1; vm_push(vm, FLOAT_VAL(0)); break; }
         for (int i = 0; i < n; i++) {
             var_nodes[i] = ad_var(tape, point[i]);
             args[i] = FLOAT_VAL(point[i]);
@@ -15010,7 +15180,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (n == 1) {
             vm_push(vm, FLOAT_VAL(ad_gradient(tape, var_nodes[0])));
         } else {
-            double grads[64];
+            double* grads = vm_ad_double_buf(vm, n);
+            if (!grads) { vm_push(vm, NIL_VAL); break; }
             for (int i = 0; i < n; i++)
                 grads[i] = ad_gradient(tape, var_nodes[i]);
             int64_t shape[1] = { n };
@@ -15027,14 +15198,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * The count is the top-of-stack and is popped first, so the
                   * element count is exact (no stack-distance heuristic — that
                   * mis-fired on literals like #(2 2 2) where an element value
-                  * equalled its distance from TOS). */
-        double vals[1024];
+                  * equalled its distance from TOS).
+                  *
+                  * The staging buffer is arena-allocated at the literal's own
+                  * length: a literal's member count must be governed by the
+                  * literal, not by how many doubles happen to fit in a fixed
+                  * C array (the previous `double vals[1024]` silently returned
+                  * nil for anything longer). */
         Value count_val = vm_pop(vm);
-        int n = (count_val.type == VAL_INT) ? (int)count_val.as.i
-                                            : (int)as_number(count_val);
-        if (n < 0 || n > 1024) { vm_push(vm, NIL_VAL); break; }
+        int64_t n = (count_val.type == VAL_INT) ? count_val.as.i
+                                                : (int64_t)as_number(count_val);
+        if (n < 0) { vm_push(vm, NIL_VAL); break; }
         if (n > 0) {
-            for (int i = n - 1; i >= 0; i--)
+            double* vals = vm_ad_double_buf(vm, n);
+            if (!vals) { vm_push(vm, NIL_VAL); break; }
+            for (int64_t i = n - 1; i >= 0; i--)
                 vals[i] = as_number(vm_pop(vm));
             int64_t shape[1] = { n };
             VmTensor* t = vm_tensor_from_data(&vm->heap.regions, vals, shape, 1);

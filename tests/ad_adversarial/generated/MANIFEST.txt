@@ -18,6 +18,11 @@ ad_adv_tensor_05.esk 8 24
 ad_adv_tensor_06.esk 8 24
 ad_adv_tensor_07.esk 6 18
 ad_adv_vecpoint_01.esk 3 9
+ad_adv_exactpoint_01.esk 8 24
+ad_adv_exactpoint_02.esk 8 24
+ad_adv_exactpoint_03.esk 8 24
+ad_adv_exactpoint_04.esk 10 24
+ad_adv_exactpoint_05.esk 2 6
 ad_adv_htensor_01.esk 3 22
 ad_adv_htensor_02.esk 3 12
 ad_adv_htensor_03.esk 1 16

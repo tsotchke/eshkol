@@ -1,0 +1,27 @@
+;;; tests/backend/toplevel_redefinition_not_procedure_test.esk
+;;; R7RS 5.3.1, second half of case 2: procedure THEN value.
+;;;
+;;; Lives under tests/backend/ rather than tests/features/ because the correct
+;;; outcome is a non-zero exit, and every scripts/run_*_tests.sh sweep treats a
+;;; non-zero exit as a failing test. It is driven by ctest
+;;; (toplevel_redefinition_not_procedure_{runtime,aot}_smoke), which asserts on
+;;; the diagnostic instead.
+;;;
+;;; (define (g x) ...) followed by (define g 42) leaves g bound to 42, so a
+;;; call must be rejected as "not a procedure". The failure this guards against
+;;; is the silent one: before the fix the call site was bound to the stale
+;;; procedure and quietly ran the old body, so the program computed a result
+;;; from a definition that R7RS says is no longer in effect.
+;;;
+;;; Runs as its own file because the correct outcome is a fatal error, which
+;;; would cut short any checks placed after it.
+
+(define (redefined-to-a-number x) (* x 2))
+(define redefined-to-a-number 42)
+
+(display "before the call")
+(newline)
+(display (redefined-to-a-number 5))
+(newline)
+(display "UNREACHABLE: the call was accepted")
+(newline)

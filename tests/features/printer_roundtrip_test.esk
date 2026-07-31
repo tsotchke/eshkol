@@ -59,8 +59,17 @@
 (check-str "1e308"       1e308               "1e+308")
 (check-str "5e-324"      5e-324              "5e-324")
 
-;; ── Negative zero display convention (preserved) ──
-(check-str "neg zero"    -0.0                "-0")
+;; ── Signed zero ──
+;; Positive zero keeps the integral-double form "0": reading "0" back recovers
+;; the same NUMERIC VALUE (only its exactness changes), exactly like 3.0 => "3".
+;;
+;; Negative zero must NOT. The old "-0" is not a flonum external representation
+;; at all — the reader takes it as the EXACT INTEGER zero, which has no sign, so
+;; both the inexactness and the sign bit were lost and the VALUE itself changed:
+;; (/ 1.0 -0.0) is -inf.0 but (/ 1.0 (string->number "-0")) is +inf.0. It is now
+;; rendered "-0.0", which the reader recovers as an inexact negative zero.
+(check-str "pos zero"    0.0                 "0")
+(check-str "neg zero"    -0.0                "-0.0")
 
 ;; ── Round-trip guarantee across the battery ──
 (check-rt "pi"         3.141592653589793)
@@ -75,6 +84,22 @@
 (check-rt "123456789"  123456789.0)
 (check-rt "-2.5"       -2.5)
 (check-rt "big frac"   0.00010478049866971263)
+
+;; ── Negative zero round-trips as an INEXACT NEGATIVE zero ──
+;; `=` cannot see the difference — (= -0.0 0) and (= -0.0 0.0) are both true —
+;; so check-rt above passes even when the sign is silently dropped. Re-printing
+;; the read-back value is the exact witness, because the three candidates print
+;; differently: the exact integer zero prints "0", +0.0 prints "0", and ONLY an
+;; inexact negative zero prints "-0.0". So a "-0.0" reprint proves the read-back
+;; recovered the sign AND the inexactness; `exact?` states the latter directly.
+;; (The obvious 1/x sign probe is deliberately NOT used here: this same file is
+;; also run on the bytecode VM, which stops on a division by zero.)
+(define nz (string->number (number->string -0.0)))
+(check-str "neg zero reprint" nz "-0.0")
+(if (not (exact? nz))
+    (display "ok   rt neg-zero stays inexact\n")
+    (begin (set! fail-count (+ fail-count 1))
+           (display "error: -0.0 read back EXACT, inexactness lost\n")))
 
 (newline)
 (if (= fail-count 0)

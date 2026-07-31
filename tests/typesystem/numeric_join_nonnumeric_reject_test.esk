@@ -4,6 +4,7 @@
 ;;
 ;; The accumulator is Float64; passing a string on the recursive call must error.
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: [ERROR]
 ;; EXPECT-STDERR: got String
 

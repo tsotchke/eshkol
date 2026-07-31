@@ -4,6 +4,7 @@
 ;; `acc` accepts boolean or vector; passing a string on the recursive call must
 ;; error, since string is neither arm.
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: [ERROR]
 ;; EXPECT-STDERR: got String
 
