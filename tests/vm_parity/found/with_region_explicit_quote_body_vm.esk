@@ -1,0 +1,39 @@
+; FILED: `(with-region (quote name))` — the ONE with-region spelling on which
+; native and the VM disagree, and the only divergence this form has left.
+;
+; The reader is the whole story. The native tokenizer sees TOKEN_QUOTE for the
+; sugar `'name` and keeps that fact, so the native front end can tell the
+; SPECIFIER `'name` apart from a body expression that happens to be the list
+; `(quote name)`. The VM reader (vm_parser.c) lowers both spellings to the same
+; two-element list `(quote name)` and cannot distinguish them, so
+; compile_form_with_region() reads the sole argument as a specifier and the form
+; as having an EMPTY body.
+;
+; native -r : foo   — the body expression `(quote name)` evaluates to the symbol
+; vm        : ()    — "specifier, empty body"; the empty-body branch reports
+;                     `ERROR: with-region requires at least one body expression`
+;                     on stderr and pushes OP_NIL so the caller's balancing
+;                     OP_POP has a value to discard.
+;
+; DEGENERATE BY CONSTRUCTION, which is why the trade is taken rather than fixed:
+; a with-region whose entire body is a quoted symbol allocates nothing, so the
+; region does no work and the form is equivalent to the quote alone. Fixing it
+; would require the VM reader to carry the sugar-vs-explicit distinction the
+; native tokenizer has — a reader change of far wider blast radius than the
+; degenerate form is worth.
+;
+; NOT A REGRESSION OF THE GATED SURFACE: all three DOCUMENTED spellings
+; (anonymous, `'name`, `('name size)`) are value-identical on both substrates
+; and gated by corpus/with_region_lowering.esk.  Before that corpus row the VM
+; mis-lowered the form outright (stranded operands shifted later top-level
+; slots; `('name size)` compiled as a call).
+;
+; PARITY NOTE FOR FUTURE CORPUS AUTHORS: the VM emits a literal `ERROR:` token
+; on stderr for this spelling, and vm_stderr_clean() in scripts/run_vm_parity.sh
+; treats that token as a failed run.  A corpus/ or oos/ file that uses
+; `(with-region (quote name))` will therefore red the gate — use the sugar
+; `'name` spelling, which is gated and agrees.
+;
+; Documented in-code at lib/backend/vm_compiler.c::compile_form_with_region.
+(display (with-region (quote foo)))
+(newline)
