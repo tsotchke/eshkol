@@ -1,0 +1,70 @@
+;; R7RS-small 5.6.1 -- a `define-library` written in this file defines a
+;; library the forms BELOW it can import, with no filesystem search.  Native
+;; and the VM must agree on that, because they resolve imports through two
+;; independent front ends: the native driver consults a compile-time library
+;; registry before resolve_module_path(), and the VM compiler consults its own
+;; per-unit registry before the module loader.  Before both existed, a
+;; single-file program reported the library right above the import as a
+;; missing module.
+;;
+;; Numeric and string output only -- no procedure is ever displayed, since the
+;; VM prints a procedure as <closure@N> where native prints its source form.
+
+(define-library (parity lib_a)
+  (export bump)
+  (begin
+    (define (bump x) (+ x 1))))
+
+(import (parity lib_a))
+
+(display (bump 41))
+(newline)
+
+;; the export surface is the union of every export clause
+(define-library (parity lib_b)
+  (export twice)
+  (export thrice)
+  (begin
+    (define (twice x) (* 2 x))
+    (define (thrice x) (* 3 x))))
+
+(import (parity lib_b))
+
+(display (twice 21))
+(newline)
+(display (thrice 14))
+(newline)
+
+;; a prefix import of a same-unit library builds one alias per export
+(import (prefix (parity lib_b) p-))
+
+(display (p-twice 4))
+(newline)
+(display (p-thrice 4))
+(newline)
+
+;; a rename import introduces the new name and leaves the old one alone
+(import (rename (parity lib_a) (bump bump-renamed)))
+
+(display (bump-renamed 7))
+(newline)
+(display (bump 7))
+(newline)
+
+;; a library of this unit may import another library of the same unit
+(define-library (parity lib_c)
+  (import (parity lib_a))
+  (export via-a)
+  (begin
+    (define (via-a x) (* 10 (bump x)))))
+
+(import (parity lib_c))
+
+(display (via-a 3))
+(newline)
+
+;; the older `require` spelling resolves against the same registry
+(require parity.lib_a)
+
+(display (bump 100))
+(newline)

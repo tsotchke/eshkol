@@ -941,6 +941,13 @@ static int compile_and_run(const char* source) {
      * ungrouped so no slot is pre-registered for them. */
     vm_register_redefined_from_forms(top_exprs, n_top_exprs);
 
+    /* Pass 1c: R7RS-small 5.6.1 — which libraries does this unit define, and
+     * where?  Known before any import is compiled so an import written above
+     * its `define-library` is refused rather than silently satisfied by the
+     * body that gets spliced in below it. */
+    vm_clear_compile_failure();
+    vm_plan_unit_libraries(top_exprs, n_top_exprs);
+
     /* Pass 2: Scan for top-level defines that need boxing.
      * A define needs boxing if its variable is both:
      * (a) captured by a lambda somewhere in the program, AND
@@ -1138,6 +1145,16 @@ static int compile_and_run(const char* source) {
         free_node(top_exprs[i]);
     chunk_emit(&main_chunk, OP_HALT, 0);
 
+    /* A fatal compile-time defect must not produce a running program. The VM's
+     * ordinary diagnostics are warnings, so without this the compiler could
+     * report a defect and still answer — the exact silent-defect shape the
+     * native lanes were fixed out of. */
+    if (vm_compile_failed()) {
+        fprintf(stderr, "ERROR: refusing to run a program that failed to compile\n");
+        chunk_free_arrays(&main_chunk);
+        return 1;
+    }
+
     /* Print bytecode summary + disassemble (skip in WASM / quiet mode) */
 #ifdef ESHKOL_VM_NO_DISASM
     goto skip_disasm;
@@ -1305,6 +1322,11 @@ static void compile_source_to_chunk_with_options(const char* source,
      * binding that source execution no longer has, and the VM parity gate
      * would see vm-eskb diverge from vm-src. */
     vm_prescan_redefined_toplevel_names(source);
+    /* Same reason, for R7RS-small 5.6.1: the libraries this unit defines have
+     * to be known before the first import is compiled, or an import above its
+     * `define-library` would be emitted as if it had resolved. */
+    vm_clear_compile_failure();
+    vm_prescan_unit_libraries(source);
     vm_set_user_locals_base(chunk->n_locals);
 
     src_ptr = source;
@@ -1410,6 +1432,14 @@ static int emit_eskb_with_options(const char* source,
     if (!source || !output_path || !options) return -1;
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     compile_source_to_chunk_with_options(source, &main_chunk, options);
+    /* Never write bytecode for a program that failed to compile: an emitted
+     * .eskb is indistinguishable from a good one once it leaves this process. */
+    if (vm_compile_failed()) {
+        fprintf(stderr, "ERROR: refusing to emit bytecode for a program that "
+                        "failed to compile\n");
+        chunk_free_arrays(&main_chunk);
+        return -1;
+    }
     int result = emit_eskb_from_chunk(&main_chunk, output_path, options);
     chunk_free_arrays(&main_chunk);
     return result;
