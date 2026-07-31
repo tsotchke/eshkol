@@ -127,8 +127,9 @@ results as evidence.
   at an exact point all five operators now run the same Taylor-tower pass
   `derivative-n` runs, so `(derivative f x)` equals `(derivative-n f x 1)` and
   `(hessian f x)` equals `(derivative-n f x 2)` in value **and** in exactness.
-  `(derivative (lambda (x) (* x x x)) 1/3)` is `1/3`, exact, where it used to
-  be `0.6666666666666666` at best. The tier keeps `+ - * /` and
+  `(derivative (lambda (x) (* x x x)) 1/3)` is `1/3` with `exact?` true, where
+  the operators previously either crashed or, once the crash was fixed,
+  returned only the nearest `double`. The tier keeps `+ - * /` and
   non-negative-integer `expt` exact and demotes to f64 at the first
   transcendental, per R7RS exactness contagion.
 - **Gradients through loop-filled vectors are correct again.** `(gradient f x)`

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "sheaf_attention_ee",
-  "eshkol_version": "1.3.3",
+  "eshkol_version": "1.3.4",
   "generator": "tests/qllm_oracle/sheaf_ee_step.esk",
   "reference": "python/qllm/torch_geometric.py::sheaf_attention_ee",
   "formula": "w_ij = cos(Q_i,K_j)+eps on kept upper-triangular edges, symmetrised; V_new = V - dt*(deg*V - w V)",
