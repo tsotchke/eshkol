@@ -135,6 +135,31 @@ void eshkol_set_freestanding_codegen(int enabled);
 int eshkol_get_freestanding_codegen(void);
 
 /*
+ * Emit platform-C-ABI export thunks for the next generated LIBRARY module.
+ * Must be set before eshkol_generate_llvm_ir_library().
+ *
+ * Eshkol's internal calling convention returns and passes
+ * `eshkol_tagged_value_t` as an LLVM first-class struct, which the backend
+ * flattens into one register per field — NOT how a C compiler passes the same
+ * 16-byte struct.  When this is enabled, every exported top-level function
+ * additionally gets a thunk under its own name that speaks the platform C ABI
+ * (register pair, or sret/by-pointer on Windows x64) and forwards to the
+ * unwrapped body, which moves to `<name>__eshkol_internal_abi`.
+ *
+ * Enable this ONLY for a linked shared library that a C host will dlopen.
+ * A relocatable `--shared-lib -c` object is consumed by other Eshkol modules
+ * that call with the internal convention and must stay unwrapped.
+ */
+void eshkol_set_shared_library_exports(int enabled);
+
+/**
+ * @brief Query whether C-ABI export thunks are enabled for the next generated
+ *        library module.
+ * @return Non-zero if shared-library export thunks are enabled, 0 otherwise.
+ */
+int eshkol_get_shared_library_exports(void);
+
+/*
  * Write LLVM IR to a file in textual format
  * @param module LLVM module reference
  * @param filename Output filename (should end with .ll)
@@ -372,6 +397,8 @@ void eshkol_repl_clear_last_value(void);
 #define eshkol_get_optimization_level() (0)
 #define eshkol_set_freestanding_codegen(enabled) do {} while(0)
 #define eshkol_get_freestanding_codegen() (0)
+#define eshkol_set_shared_library_exports(enabled) do {} while(0)
+#define eshkol_get_shared_library_exports() (0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_object(module, filename) (-1)
 #define eshkol_compile_llvm_ir_to_bitcode(module, filename) (-1)

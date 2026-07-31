@@ -4053,7 +4053,12 @@ eshkol-run input.esk -o output
 
 #### Library Compilation
 ```bash
+# Library-mode object, for linking into other Eshkol modules
 eshkol-run --shared-lib input.esk -o library.o
+
+# Loadable shared library with platform-C-ABI exports, for a C/Python host
+# (writes libmylib.dylib / libmylib.so / mylib.dll)
+eshkol-run --shared-lib input.esk -o mylib
 ```
 
 #### IR Dump

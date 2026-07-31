@@ -2252,7 +2252,14 @@ static void print_help(int x = 0)
         "\t    depfile listing the entry source plus every file transitively\n"
         "\t    reached via (load …)/(import …)/(require …), so a build system\n"
         "\t    (e.g. ninja DEPFILE) recompiles the object when any of them change.\n"
-        "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
+        "\t--shared-lib:[-s] = Links a loadable shared library (.dylib/.so/.dll)\n"
+        "\t    with no `main` and LinkOnceODR linkage on every definition. Its\n"
+        "\t    exported functions use the platform C ABI for tagged values, so a\n"
+        "\t    host can dlopen it, call `__eshkol_lib_init__(arena)` once, then\n"
+        "\t    call them as declared in <eshkol/eshkol.h>. Add -c (or name a\n"
+        "\t    `-o <path>.o`) to stop at the library-mode object instead, which\n"
+        "\t    is what a build system linking Eshkol objects wants; that object\n"
+        "\t    keeps Eshkol's internal convention and is not C-callable.\n"
         "\t-fPIC = Accepted for build-system compatibility.\n"
         "\t-I DIR = Add a source/module search path.\n"
         "\t-D NAME[=VALUE] = Accepted for build-system compatibility.\n"
@@ -2484,6 +2491,66 @@ static eshkol::platform::ResolvedInstallArtifact resolve_runtime_archive(
             eshkol::platform::static_library_name("eshkol-runtime"),
             eshkol::platform::static_library_name("eshkol-static"),
         });
+}
+
+// ─── --shared-lib artifact naming ──────────────────────────────────────────
+//
+// `--shared-lib` promises a shared library (docs/API_REFERENCE.md: "Compile as
+// shared library (LinkOnceODR linkage)").  Historically it only ever raised
+// `compile_only`, so the driver wrote `<name>.o` + `<name>.bc` and exited 0 —
+// a documented capability that silently produced no library at all.  The flag
+// now links a real, loadable shared library; the relocatable-object flavour
+// (which the precompiled-stdlib build and cmake/EshkolCompile.cmake want) is
+// selected by ALSO passing -c/--compile-only/--emit-object, or by naming an
+// output that already ends in `.o`.
+//
+// Returns true when the request is for the object flavour.
+static bool shared_lib_object_flavour_requested(bool object_output_requested,
+                                                const char* requested_output)
+{
+    if (object_output_requested) {
+        return true;
+    }
+    if (requested_output && *requested_output) {
+        const std::filesystem::path path(requested_output);
+        if (path.extension() == ".o" || path.extension() == ".obj") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Build the platform-native shared-library path for a --shared-lib build.
+// `libfns.dylib` / `libfns.so` / `fns.dll` from `-o fns`; an output that
+// already carries the platform suffix is honoured verbatim so callers can
+// name the artifact exactly.
+static std::string shared_library_output_path(const char* requested_output,
+                                              const std::string& module_name)
+{
+    const std::string prefix = ESHKOL_HOST_SHARED_LIBRARY_PREFIX;
+    const std::string suffix = ESHKOL_HOST_SHARED_LIBRARY_SUFFIX;
+
+    std::filesystem::path path = (requested_output && *requested_output)
+                                     ? std::filesystem::path(requested_output)
+                                     : std::filesystem::path(module_name);
+
+    std::string name = path.filename().string();
+    if (name.empty()) {
+        name = module_name;
+    }
+
+    const bool already_suffixed =
+        !suffix.empty() && name.size() > suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    if (!already_suffixed) {
+        if (!prefix.empty() && name.rfind(prefix, 0) != 0) {
+            name = prefix + name;
+        }
+        name += suffix;
+    }
+
+    const auto parent = path.parent_path();
+    return parent.empty() ? name : (parent / name).generic_string();
 }
 
 // Check if any AST contains a require for stdlib or core.* modules.
@@ -3979,6 +4046,13 @@ int main(int argc, char **argv)
     uint8_t dump_ir = 0;
     uint8_t compile_only = 0;
     uint8_t shared_lib = 0;
+    // True only when the user asked for a relocatable OBJECT explicitly
+    // (-c/--compile-only/--emit-object).  --shared-lib also raises
+    // compile_only (library codegen has always routed through the object
+    // emitter), so compile_only alone can no longer tell "the user wants an
+    // object" from "the user wants a shared library".  Keep the user's real
+    // request separate — it selects the artifact --shared-lib produces.
+    uint8_t object_output_requested = 0;
     uint8_t wasm_output = 0;
     uint8_t no_stdlib = 0;
     uint8_t strict_types = 0;
@@ -4030,10 +4104,14 @@ int main(int argc, char **argv)
             break;
         case 'c':
             compile_only = 1;
+            object_output_requested = 1;
             break;
         case 's':
             shared_lib = 1;
-            compile_only = 1;  // Library mode implies compile to object file
+            // Library-mode codegen is emitted through the object writer; the
+            // shared-library link (when one is requested) consumes that
+            // object.  See the emit_shared_library resolution below.
+            compile_only = 1;
             break;
         case 'w':
             wasm_output = 1;
@@ -4128,6 +4206,7 @@ int main(int argc, char **argv)
         }
         case 259:
             compile_only = 1;
+            object_output_requested = 1;
             break;
         case 'f':
             /* Accept -fPIC/-f PIC for build-system compatibility. LLVM object
@@ -4239,6 +4318,69 @@ int main(int argc, char **argv)
         embedded_vm_profile = resolved.embedded_vm;
         eshkol_set_target(resolved.target_triple);
         eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
+    }
+
+    // ─── --shared-lib: which artifact? ─────────────────────────────────────
+    //
+    // `--shared-lib` used to raise compile_only and stop there, so the flag
+    // that documents itself as "Compile as shared library" wrote a `.o`/`.bc`
+    // pair and exited 0 with no library anywhere — a silent non-delivery of a
+    // documented capability.  Resolve the request explicitly:
+    //
+    //   --shared-lib -c / --emit-object / -o <name>.o  → library-mode OBJECT
+    //                                                    (precompiled stdlib,
+    //                                                     EshkolCompile.cmake)
+    //   --shared-lib (anything else)                   → linked SHARED LIBRARY
+    //
+    // `--shared-lib --wasm` is the contradiction the profile resolver already
+    // rejects for `--profile hosted-wasm`; reject the bare flag pair the same
+    // way instead of quietly emitting one of the two.
+    bool emit_shared_library = false;
+    std::string shared_library_path;
+    std::string shared_library_temp_object;
+    if (shared_lib) {
+        if (wasm_output) {
+            fprintf(stderr, "--shared-lib cannot be combined with --wasm\n");
+            return 1;
+        }
+        emit_shared_library =
+            !shared_lib_object_flavour_requested(object_output_requested != 0, output);
+        if (emit_shared_library) {
+            // The module is still emitted through the object writer; the link
+            // step below turns that object into the shared library, so the
+            // object-only short circuit must not fire.
+            compile_only = 0;
+
+            // A LINKED shared library is called by a C host across the real
+            // platform ABI, so its exported functions need the platform C
+            // calling convention for `eshkol_tagged_value_t` rather than
+            // Eshkol's internal first-class-struct convention — the two are
+            // not the same and the difference silently corrupted every return
+            // value and every tagged argument. See
+            // eshkol_set_shared_library_exports().
+            //
+            // Deliberately NOT set for the relocatable object flavour: those
+            // objects are linked into other Eshkol modules that call with the
+            // internal convention (the precompiled stdlib, and
+            // cmake/EshkolCompile.cmake consumers).
+            eshkol_set_shared_library_exports(1);
+        }
+    }
+
+    // -g on a JIT path has no artifact to carry DWARF: `-r`/`-e`/the REPL
+    // execute in memory and eshkol_enable_debug_info() is only reached on the
+    // AOT codegen path.  Say so instead of accepting the flag and doing
+    // nothing — a silently-ignored debug flag is indistinguishable from a
+    // debugger that cannot find the source.  JIT DWARF (ORC
+    // registerJITEventListener / GDBRegistrationListener) is tracked as a
+    // build item; it is not implemented here.
+    if (debug_info && (run_mode || eval_expr)) {
+        eshkol_warn(
+            "-g/--debug-info has no effect under %s: the JIT executes in "
+            "memory and emits no DWARF. Build an artifact instead "
+            "(`eshkol-run -g -o <out> <file.esk>`) and debug that with "
+            "lldb/gdb.",
+            run_mode ? "-r/--run" : "-e/--eval");
     }
 
     if (!required_vm_entries.empty() && !vm_only_profile) {
@@ -5172,6 +5314,46 @@ int main(int argc, char **argv)
                 eshkol_dispose_llvm_module(llvm_module);
                 return 1;
             }
+        } else if (emit_shared_library) {
+            // --shared-lib: emit the library-mode module to a relocatable
+            // object, then hand it to the shared link below.  The library is
+            // self-contained (it carries the Eshkol runtime archive) so a host
+            // can dlopen()/LoadLibrary() it with no further link arguments:
+            // dlsym `__eshkol_lib_init__`, call it with an arena
+            // (`get_global_arena()` is exported by the library itself), then
+            // call the exported Eshkol functions.
+            const std::string library_path =
+                shared_library_output_path(output, module_name);
+            shared_library_path = library_path;
+            const std::string temp_obj = library_path + ".tmp.o";
+
+            eshkol_info("Compiling shared-library object: %s", temp_obj.c_str());
+            auto esh0103_t_shared0 = esh0103_now();
+            if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
+                eshkol_error("Shared library object compilation failed");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
+            esh0103_report("emit-object", esh0103_t_shared0, esh0103_now());
+            shared_library_temp_object = temp_obj;
+            compiled_files.push_back(strdup(temp_obj.c_str()));
+            output = strdup(library_path.c_str());
+
+            // ESH-0215 parity with the object path: a build system driving
+            // `--shared-lib --emit-depfile` needs the same prerequisite list.
+            if (depfile_path) {
+                if (source_files.empty()) {
+                    eshkol_error("--emit-depfile requires a source file");
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                if (!writeDepfile(depfile_path, library_path, source_files[0],
+                                  include_paths)) {
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                eshkol_info("Wrote depfile: %s", depfile_path);
+            }
         } else if (!compile_only) {
             // Default behavior: compile to executable
             // If we have object files to link (like stdlib.o), compile to temp .o first
@@ -5265,9 +5447,23 @@ int main(int argc, char **argv)
     if (!compiled_files.empty() && output && !compile_only && !wasm_output) {
         std::vector<std::string> link_args;
         link_args.push_back(eshkol::platform::cxx_compiler());
+        if (emit_shared_library) {
+            // A shared library is position-independent and has no entry point,
+            // so -fPIE (and the main-executable-only flags further down) do not
+            // apply.  Object emission already uses Reloc::PIC_.
 #ifndef _WIN32
-        link_args.emplace_back("-fPIE");
+            link_args.emplace_back("-fPIC");
 #endif
+#ifdef __APPLE__
+            link_args.emplace_back("-dynamiclib");
+#else
+            link_args.emplace_back("-shared");
+#endif
+        } else {
+#ifndef _WIN32
+            link_args.emplace_back("-fPIE");
+#endif
+        }
 
         // Add all object files
         for (const auto &compiled_file : compiled_files) {
@@ -5402,6 +5598,11 @@ int main(int argc, char **argv)
 // link path already does this; the path here for pre-compiled
 // .o inputs (the common `eshkol-run file.esk -o exe` flow) was
 // missing the Darwin branch.
+        // -stack_size / /STACK / -z stack-size configure a MAIN EXECUTABLE's
+        // thread-0 stack; ld warns and ignores them for a dylib/so, so the
+        // shared-library link skips them.  A host that dlopen()s the library
+        // owns its own stack sizing.
+        if (!emit_shared_library) {
 #ifdef _WIN32
         link_args.emplace_back("-fuse-ld=lld");
 #ifdef __MINGW32__
@@ -5425,6 +5626,25 @@ int main(int argc, char **argv)
         link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
+        } else {
+#ifdef _WIN32
+            link_args.emplace_back("-fuse-ld=lld");
+#elif defined(__APPLE__)
+            // Record the library's own leaf name so a consumer can relocate it
+            // beside its host and resolve it through @rpath; dlopen() by path
+            // works regardless.
+            link_args.emplace_back(
+                "-Wl,-install_name,@rpath/" +
+                std::filesystem::path(shared_library_path).filename().string());
+#elif defined(__linux__)
+            link_args.emplace_back(
+                "-Wl,-soname," +
+                std::filesystem::path(shared_library_path).filename().string());
+#  if defined(__aarch64__) || defined(__arm64__)
+            link_args.emplace_back("-fuse-ld=lld");
+#  endif
+#endif
+        }
 
         // Add output
         link_args.emplace_back("-o");
@@ -5460,6 +5680,13 @@ int main(int argc, char **argv)
                 std::remove(file.c_str());
             }
         }
+        // The shared-library scratch object is named after the library, not
+        // after an mkstemp template, so remove it explicitly (on failure too —
+        // a stale .tmp.o must never be mistaken for the artifact).
+        if (!shared_library_temp_object.empty()) {
+            std::error_code temp_object_ec;
+            std::filesystem::remove(shared_library_temp_object, temp_object_ec);
+        }
 
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it
@@ -5484,6 +5711,32 @@ int main(int argc, char **argv)
             warn_if_link_archive_recently_modified(link_args);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return link_failure_exit;
+        }
+
+        // A zero exit status from the linker is not proof of delivery: report
+        // the artifact only after it is on disk, and treat "linker said OK but
+        // wrote nothing" as the failure it is rather than exiting 0 with no
+        // output.  This is the shape of failure --shared-lib itself used to
+        // have.
+        {
+            std::error_code artifact_ec;
+            if (!std::filesystem::is_regular_file(output, artifact_ec)) {
+                eshkol_error("Link reported success but no artifact was written "
+                             "at '%s'", output);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return link_failure_exit;
+            }
+        }
+
+        if (emit_shared_library) {
+            eshkol_info("Successfully created shared library: %s", output);
+            fprintf(stderr,
+                    "[eshkol-run] created shared library '%s'. Load it "
+                    "(dlopen/LoadLibrary), call `__eshkol_lib_init__(arena)` "
+                    "once, then call its exported functions.\n",
+                    output);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+            return 0;
         }
 
         eshkol_info("Successfully created executable: %s", output);
