@@ -1,0 +1,17 @@
+; R7RS 6.2.6 (`/`): "It is an error if any argument other than the first is an
+; exact zero." An INEXACT zero is NOT an error — it is ordinary IEEE-754
+; division, so the result is an infinity or a NaN, and inexactness is
+; contagious, so a BIGNUM over an inexact zero is an inexact infinity.
+;
+; Native was the wrong side here (was found/bignum_div_inexact_zero_native.esk,
+; promoted to the corpus by the fix): the bignum runtime's mixed-mode division
+; carried a `(rd != 0.0) ? ld / rd : 0.0` guard, so the dividend was dropped
+; entirely and the answer was a silent exact 0 — the worst possible shape for
+; a numeric defect, since 0 is a plausible value.
+;
+; The exact-zero divisor stays fatal on both substrates and is gated by
+; tests/vm_parity/fatal/exact_div_zero.esk and fatal/bignum_div_zero.esk.
+(display (/ (expt 2 100) 0.0)) (newline)
+(display (/ (- (expt 2 100)) 0.0)) (newline)
+(display (/ (expt 2 100) 2.0)) (newline)
+(display (/ 0.0 0.0)) (newline)
