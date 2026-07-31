@@ -78,6 +78,16 @@ It emits `PASSED/FAILED <nodeid>` lines plus `kind:"vm_parity"` JSON-L
 events into `scripts/icc_traces/vm_parity.jsonl`, consumed by the
 `vm-parity` target in `.icc/completion-oracles.yaml`.
 
+### Naming a new `corpus/` file
+
+The `NN_` prefix is **ordering only** — the gate globs the directory and does
+not read the number, and duplicates already exist (`31_`, `36_`, `42_`) from
+branches that picked the same next slot in parallel. So: pick a number that is
+free on master **and** on every open branch that adds a corpus file
+(`git ls-tree --name-only origin/<branch> tests/vm_parity/corpus/`), and never
+assume "highest + 1" is yours. A collision is an add/add conflict at merge time,
+and renumbering then means chasing every reference to the old name.
+
 ### Normalization — why newlines are stripped
 
 The VM's `display` appends a newline after every call
