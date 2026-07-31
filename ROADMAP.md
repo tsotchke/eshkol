@@ -396,7 +396,7 @@ and `mono-equiv`.
 
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
-- [ ] Non-blocking I/O with event loop (epoll/kqueue)
+- [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
 - [ ] Unix domain sockets for local IPC
 - [ ] HTTP client (built on sockets + TLS)
 - [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
@@ -493,21 +493,21 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 
 ### Quantum Type System
-- [ ] Qubit type with linear resource tracking (no-cloning enforced at compile time)
+- [x] Qubit type with linear resource tracking (no-cloning enforced at compile time) - SHIPPED in v1.3.4-evolve
 - [ ] Quantum register types `qreg<n>` with compile-time dimension
 - [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 
 ### Quantum Operations
-- [ ] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries
-- [ ] Measurement with classical outcome
+- [x] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries - SHIPPED in v1.3.3-evolve
+- [x] Measurement with classical outcome - SHIPPED in v1.3.3-evolve
 - [ ] Circuit compilation and optimization (gate fusion, qubit mapping)
-- [ ] AD integration for variational algorithms (parameter-shift rule)
+- [x] AD integration for variational algorithms - SHIPPED in v1.3.3-evolve (custom-VJP tape nodes carry Moonlab's exact adjoint)
 
 ### Hybrid Classical-Quantum
-- [ ] Variational Quantum Eigensolver (VQE)
+- [x] Variational Quantum Eigensolver (VQE) - SHIPPED in v1.3.3-evolve
 - [ ] Quantum Approximate Optimization Algorithm (QAOA)
-- [ ] Quantum machine learning (parameterized circuits with AD)
-- [ ] Integration with Moonlab quantum simulator
+- [x] Quantum machine learning (parameterized circuits with AD) - SHIPPED in v1.3.3-evolve
+- [x] Integration with Moonlab quantum simulator - SHIPPED in v1.3.3-evolve; pinned to Moonlab v1.2.0 in v1.3.4-evolve
 
 ### Formal Verification
 - [ ] Integration with proof assistants (Lean) for certified compilation
@@ -584,7 +584,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - [x] Package Manager (eshkol-pkg, TOML manifest) - Complete
 - [x] LSP Server (diagnostics, completion, hover) - Complete
 - [x] VSCode Extension (syntax highlighting, LSP client) - Complete
-- [x] Test Suite (35 suites, 438 tests) - Complete
+- [x] Test Suite (45 suites, 770 tests) - Complete
 
 ### v1.1-accelerate (Complete)
 - [x] XLA Backend (StableHLO/MLIR + LLVM-direct) - Complete

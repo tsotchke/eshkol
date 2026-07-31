@@ -1,6 +1,6 @@
 # Eshkol Examples
 
-Fourteen runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
+Twenty runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
 
 ```bash
 # Compile and run any example in one command:

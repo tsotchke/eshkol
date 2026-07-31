@@ -5,9 +5,9 @@ Eshkol's correctness is defended by two layers of automated tests:
 1. **Functional gates** — shell-driven suites in `scripts/` that build the
    compiler and run corpora of `.esk` programs under both execution paths
    (`-r` JIT and AOT). The flagship is the **SICP full-book gate**.
-2. **Adversarial harnesses** — five permanent harnesses introduced in
-   v1.3.0-evolve whose job is to *find* bugs, not just confirm known-good
-   behavior. Each emits [ICC](https://github.com/tsotchke) trace events that a
+2. **Adversarial harnesses** — the permanent pillars introduced in
+   v1.3.0-evolve and extended since, whose job is to *find* bugs, not just
+   confirm known-good behavior. Each emits [ICC](https://github.com/tsotchke) trace events that a
    readiness oracle consumes, so a green release requires them to pass.
 
 Every root-cause fix ships with a dedicated regression gate wired into the
@@ -57,6 +57,15 @@ renamed or configured out.
 To gate a new pillar: give it CTest entries with a shared name prefix, add one
 `CTEST_GATE_GROUPS` line, and add one `runtime_event` criterion with
 `event_kinds: [ctest]` under `eshkol-compiler-readiness`.
+
+Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
+`ctest_suite_green` whole-suite roll-up plus the
+`fixed_point_exact_accumulation_gate`, `exact_input_ad_identity_gate`,
+`runtime_closure_arity_spread_gate` and `define_library_same_unit_gate` groups —
+and three read the sibling harnesses that judge the same cut:
+`vm_surface_regression_suite` (kind `vm_surface`), `vm_parity_gate` (kind
+`vm_parity`) and `event_loop_works` (kind `eshkol_smoke`). Measured on the
+v1.3.4-evolve cut, CTest is **140/140**.
 
 ---
 
@@ -157,6 +166,11 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
+Measured on the v1.3.4-evolve cut: the differential is **140/140** and the
+manifest is **951 rows — 578 `vm-supported`, 44 `native-only-justified`, 329
+`gap`**, of which 17 are verified behavioral divergences with reproducible
+programs under `tests/vm_parity/found/`.
+
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
 ```
@@ -179,8 +193,6 @@ native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught
 Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
 (`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
 
-> The VM parity harness lands with the v1.3.0-evolve release (PR #118); the
-> other four harnesses are already on `master`.
 
 ## P8 — escape-closure pillar
 
@@ -261,3 +273,11 @@ definitions in `.icc/completion-oracles.yaml` map required event kinds/names to
 release gates (e.g. `stress-budget`, `ad-oracle`). A release is "ready" only
 when the required oracles report their green verdicts, which is how the
 adversarial layer is enforced rather than merely available.
+
+On the v1.3.4-evolve cut the oracle reports a score of **100** with verdict
+**`ready`**. The gate figures behind it, all measured on that cut: aggregate
+suite **45/45** suites and **770** individual tests; CTest **140/140**;
+executable language coverage **1,091/1,091** (100.0%, floor PASS); SICP
+full-book **88/88** probes under both `-r` and AOT; reference-Scheme
+differential **34/34 AGREE** against chibi-scheme 0.12.0; VM parity
+differential **140/140**; qLLM oracle gate **10/10**.
