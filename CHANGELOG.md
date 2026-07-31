@@ -649,6 +649,59 @@ across every new-feature family).
   both JS glue files are now mandatory rather than skipped-with-a-warning, since
   a stub present in only one still breaks the other.
 
+- **A named-let loop procedure used as a first-class value SIGSEGVed.** R7RS
+  4.2.4 defines `(let loop ((v init) …) body)` as a letrec binding, so `loop` is
+  an ordinary value that may be stored, returned or passed on, and it keeps the
+  bindings its body closed over. But a named-let loop function's signature
+  carries one capture *pointer* per captured free variable (the per-call capture
+  design that makes concurrent invocations race-free) and is deliberately not the
+  closure ABI, so a first-class reference used to fall through to the generic
+  function-table path and yield the bare function pointer. Calling the leaked
+  procedure then entered the loop function with its capture parameters filled
+  from whatever the closure dispatcher happened to pass, and the first read of a
+  captured variable dereferenced that as a capture cell — a wild-pointer crash on
+  both JIT and AOT, not a wrong answer. A first-class reference now materialises a
+  real closure whose environment holds the address of each shared capture cell,
+  with a lazily emitted per-loop trampoline forwarding those cells as the pointer
+  arguments the loop function expects. The cells are the arena storage a
+  set!-mutated capture already gets, so a leaked procedure keeps reading and
+  writing the same storage the loop wrote through and it outlives the enclosing
+  frame. Regression tests: `tests/features/namedlet_escaped_closure_test.esk`
+  (15 checks over six escape shapes, green under `-r` and AOT) and
+  `tests/vm_parity/corpus/47_namedlet_escaped_closure.esk`, which gates the two
+  shapes the VM can express across native, `vm-src` and `vm-eskb`.
+- **A nested collection meant different things depending on how it was
+  written.** A rectangular nested vector *literal* is flattened into a
+  higher-rank tensor literal by the parser, so it never reached the shared
+  tensor-operand check as a nest; the identical value built at run time did, and
+  was rejected. `(tensor-shape #(#(1.0 2.0) #(3.0 4.0)))` was `(2 2)` while
+  `(tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))` was a type error —
+  one operation, two answers, decided by construction form rather than by value.
+  The operand check now classifies a nest by value and routes it to the same
+  rank-N walker `(tensor X)` uses, which makes every tensor operation accept a
+  runtime-built nest of lists and/or vectors at any rank and extent. Nothing
+  about what either value *is* changed: `(vector (vector 1 2) (vector 3 4))`
+  remains an R7RS vector of two vectors and `#(#(1 2) #(3 4))` remains Eshkol's
+  rank-2 tensor literal; only the tensor-coercion question now has one answer.
+- **A ragged nested vector literal could not be written at all, though the
+  identical runtime-built value works.** The parser reported a *parse*
+  diagnostic for a nest whose sub-shapes disagree and returned an invalid node.
+  Once compile diagnostics became fatal, that diagnostic refuses the whole
+  translation unit — `(define v #(#(1.0 2.0) #(3.0)))` is a hard compile failure
+  even where the program never asks for a tensor — while
+  `(vector (vector 1.0 2.0) (vector 3.0))` compiles and runs. (Before
+  diagnostics were fatal the same invalid node was worse rather than better:
+  `(tensor-shape #(#(1.0 2.0) #(3.0)))` silently answered `()`,
+  `(tensor-shape #(#(1.0 2.0) 3.0))` answered `(2)`, and binding the literal and
+  then reading it dereferenced the hole the invalid node left behind.) A
+  non-rectangular nest cannot be a tensor, but it is a perfectly ordinary nested
+  vector, so the parser now lowers one to `(vector <sub-literal> …)` and lets the
+  value-based walker rule on it: a catchable error naming the mismatch, raised at
+  the operation that demanded a tensor, and the literal remains a nameable nested
+  vector in the meantime. That leaves exactly one raggedness check in the
+  language rather than one per spelling. Gated by
+  `tests/vm_parity/corpus/46_tensor_literal_spellings.esk` and
+  `tests/features/tensor_nested_literal_spellings_test.esk`.
 - **A compiler could link a stale *system* runtime archive in preference to its
   own, and `ESHKOL_LIB_DIR` could not override it.** `find_runtime_library()`
   searched name-major: every location for `libeshkol-runtime.a` — including

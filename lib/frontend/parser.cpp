@@ -10552,40 +10552,68 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
 
     // Check if ALL elements are tensor_ops with identical shapes → nested vector flattening
     bool all_sub_tensors = true;
+    bool any_sub_tensor = false;
     for (auto& elem : elements) {
-        if (elem.type != ESHKOL_OP || elem.operation.op != ESHKOL_TENSOR_OP) {
+        if (elem.type == ESHKOL_OP && elem.operation.op == ESHKOL_TENSOR_OP) {
+            any_sub_tensor = true;
+        } else {
             all_sub_tensors = false;
-            break;
         }
     }
 
-    if (all_sub_tensors && elements.size() > 0) {
-        // Verify all sub-tensors have the same shape
-        uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
-        uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
-        uint64_t sub_total = elements[0].operation.tensor_op.total_elements;
-        bool shapes_match = true;
-
-        for (size_t i = 1; i < elements.size(); i++) {
+    // A nest whose sub-shapes do not all agree cannot be a tensor. Decide that
+    // here so both the ragged case (`#(#(1 2) #(3))`) and the mixed case
+    // (`#(#(1 2) 3)`) take the same exit as the runtime-built spelling below.
+    bool sub_shapes_match = all_sub_tensors;
+    if (all_sub_tensors) {
+        const uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
+        const uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
+        for (size_t i = 1; i < elements.size() && sub_shapes_match; i++) {
             if (elements[i].operation.tensor_op.num_dimensions != sub_ndim) {
-                eshkol_error( "nested vector dimension mismatch: element 0 has %llu dimensions, element %zu has %llu",
-                    (unsigned long long)sub_ndim, i,
-                    (unsigned long long)elements[i].operation.tensor_op.num_dimensions);
-                ast.type = ESHKOL_INVALID;
-                return ast;
+                sub_shapes_match = false;
+                break;
             }
             for (uint64_t d = 0; d < sub_ndim; d++) {
                 if (elements[i].operation.tensor_op.dimensions[d] != sub_dims[d]) {
-                    eshkol_error( "nested vector shape mismatch at dimension %llu: element 0 has %llu, element %zu has %llu",
-                        (unsigned long long)d, (unsigned long long)sub_dims[d], i,
-                        (unsigned long long)elements[i].operation.tensor_op.dimensions[d]);
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
+                    sub_shapes_match = false;
+                    break;
                 }
             }
         }
+    }
 
-        if (shapes_match) {
+    // NON-RECTANGULAR NEST: build the value, do not flatten and do not fail the
+    // parse.  `#(#(1.0 2.0) #(3.0))` and `#(#(1.0 2.0) 3.0)` describe no tensor,
+    // so the only honest answer is the one the runtime already gives the
+    // identical runtime-built value: a catchable error naming the mismatch, from
+    // eshkol_tensor_from_collection, at the operation that asked for a tensor.
+    //
+    // This used to raise a *parse* diagnostic and return ESHKOL_INVALID, which
+    // was both uncatchable and not fatal: `(tensor-shape #(#(1.0 2.0) #(3.0)))`
+    // silently answered `()` and kept running, and binding the literal and then
+    // reading it (`(define v #(#(1.0 2.0) #(3.0)))` … `(vector-length v)`)
+    // dereferenced the hole the invalid node left behind and SIGSEGVed.
+    //
+    // Lowering the nest to `(vector <sub-literal> ...)` keeps ONE
+    // raggedness check for the whole language — the value-based walker — so the
+    // literal and the runtime-built spelling of the same value cannot disagree,
+    // and it matches the bytecode VM, which also treats the ragged literal as an
+    // ordinary nested vector value and only complains when a tensor is demanded.
+    // Rectangular nests are untouched: they keep the compile-time flattening
+    // that makes `#(#(1 2) #(3 4))` Eshkol's rank-2 tensor literal.
+    if (any_sub_tensor && !sub_shapes_match) {
+        return make_parser_call_ast("vector", elements,
+                                    elements[0].line, elements[0].column);
+    }
+
+    if (all_sub_tensors && elements.size() > 0) {
+        // Every sub-tensor has the same shape (checked above), so the nest is
+        // rectangular and flattens into one higher-rank tensor literal.
+        uint64_t sub_ndim = elements[0].operation.tensor_op.num_dimensions;
+        uint64_t* sub_dims = elements[0].operation.tensor_op.dimensions;
+        uint64_t sub_total = elements[0].operation.tensor_op.total_elements;
+
+        {
             // Flatten into N+1 dimensional tensor
             // #(#(1 2) #(3 4)) with sub_dims=[2] → dims=[2, 2], elements=[1, 2, 3, 4]
             uint64_t outer_count = elements.size();

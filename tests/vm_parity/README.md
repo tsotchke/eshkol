@@ -61,7 +61,7 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (47 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (57 programs inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
@@ -79,6 +79,16 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 It emits `PASSED/FAILED <nodeid>` lines plus `kind:"vm_parity"` JSON-L
 events into `scripts/icc_traces/vm_parity.jsonl`, consumed by the
 `vm-parity` target in `.icc/completion-oracles.yaml`.
+
+### Naming a new `corpus/` file
+
+The `NN_` prefix is **ordering only** — the gate globs the directory and does
+not read the number, and duplicates already exist (`31_`, `36_`, `42_`) from
+branches that picked the same next slot in parallel. So: pick a number that is
+free on master **and** on every open branch that adds a corpus file
+(`git ls-tree --name-only origin/<branch> tests/vm_parity/corpus/`), and never
+assume "highest + 1" is yours. A collision is an add/add conflict at merge time,
+and renumbering then means chasing every reference to the old name.
 
 ### Normalization — why newlines are stripped
 
@@ -143,12 +153,9 @@ the VM to match a native bug; native codegen is not VM-owned):
 
 | repro | divergence |
 |---|---|
-| `namedlet_escaped_closure_native_segv.esk` | calling a leaked named-let procedure SIGSEGVs natively |
 | `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
 | `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
 | `tensor_ref_component_oob_native.esk` | component past its dimension fabricates natively when the flat offset fits |
-| `tensor_vector_built_nested_native.esk` | a runtime-BUILT nested vector is rejected natively; the identical literal is accepted |
-| `tensor_ragged_literal_native.esk` | a ragged literal fabricates `()` natively instead of raising |
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
@@ -156,13 +163,20 @@ in the VM, move its repro into `corpus/` and flip the manifest row to
 `vm-supported` — the gate then guards the fix forever. The mirror rule holds
 for the native side: when native is repaired, the repro is **promoted out of
 `found/`** into `corpus/` in the same change, so the table above never claims
-a defect the compiler no longer has.
+a defect the compiler no longer has. Retiring the file is part of the fix, not
+follow-up work — a `found/` entry asserting a divergence that no longer
+reproduces is worse than no entry at all, because it tells the next reader to
+expect a bug that is gone.
 
 Retired this way so far — `bignum_div_inexact_zero_native.esk` →
 `corpus/53_bignum_inexact_zero_division.esk`, `do_set_param_native.esk` →
-`corpus/51_do_body_set_mutation.esk`, and `float_remainder_modulo_native.esk`
-→ `corpus/50_flonum_integer_division.esk`. (`corpus/52` was claimed by
-`#394`'s `52_numeric_tag_dispatch.esk` on master; this file was renumbered
+`corpus/51_do_body_set_mutation.esk`, `float_remainder_modulo_native.esk`
+→ `corpus/50_flonum_integer_division.esk`, `namedlet_escaped_closure_native_segv.esk`
+plus its VM-side counterpart `namedlet_escaped_closure_vm_routes.esk` →
+`corpus/47_namedlet_escaped_closure.esk`, and
+`tensor_vector_built_nested_native.esk` + `tensor_ragged_literal_native.esk` →
+`corpus/46_tensor_literal_spellings.esk`. (`corpus/52` was claimed by
+`#394`'s `52_numeric_tag_dispatch.esk` on master; files were renumbered
 to the next free slot when the branches merged.)
 
 ## Regenerating

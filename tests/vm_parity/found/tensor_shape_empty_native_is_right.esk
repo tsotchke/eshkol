@@ -1,0 +1,52 @@
+; FILED AGAINST THE VM: `(tensor-shape #())` — native is the correct side here.
+;
+; `#()` is a rank-1 tensor of extent 0 (lib/frontend/parser.cpp parse_vector_body:
+; "Empty vector: #() -> 1D tensor with 0 elements"), so its shape is `(0)`: one
+; dimension, whose length is zero. Native answers that. The VM answers an empty
+; VECTOR — not a shape this language produces anywhere else. (It used to answer
+; the empty LIST; the tensor rework that landed as #383 changed the VM's answer
+; from `()` to `#()`, which moves the divergence but does not close it.)
+;
+;   (tensor-shape #(1.0 2.0))              native (2)   vm (2)      ; agree
+;   (tensor-shape #())                     native (0)   vm #()      ; diverge
+;   (pair? (tensor-shape #()))             native #t    vm #f
+;   (vector? (tensor-shape #()))           native #f    vm #t
+;   (length (tensor-shape #()))            native 1     vm 0
+;   (tensor-shape (make-tensor (list 0) 1.0))
+;                                          native (0)   vm  <no tensor-length/make path>
+;
+; Measured on 2026-07-31 against master 6bd24b76 + this branch; native and VM
+; both print the four rows this file ends with:
+;   native: (2) (0) (#t #f) 1
+;   vm    : (2) #() (#f #t) 0
+;
+; Three independent reasons native is right:
+;
+;   1. RETURN TYPE. `tensor-shape` returns a LIST of dimensions — `(3)`, `(2 3)`,
+;      `(2 2 2)` — and the VM produces a list for every non-empty tensor too. Its
+;      answer for the empty tensor alone is not a one-element list, so
+;      `(car (tensor-shape t))` and `(length (tensor-shape t))` work for every
+;      tensor except one. `(length (tensor-shape t))` is the tensor's rank
+;      natively for all t; on the VM it is the rank for all t except `#()`, where
+;      it silently answers 0.
+;
+;   2. RANK IS INFORMATION. `()` as a shape means rank 0 — a scalar. `#()` is not
+;      a scalar; it has one dimension whose extent happens to be zero. Collapsing
+;      "rank 1, extent 0" to "rank 0" discards the rank, and there is then no way
+;      to tell `#()` from a genuine 0-dimensional tensor.
+;
+;   3. PRIOR ART. numpy, the model this operator follows, gives
+;      `np.array([]).shape == (0,)` — a one-element tuple, not an empty one.
+;      docs/API_REFERENCE.md documents shapes as lists throughout.
+;
+; So no native change was made for this case. The VM should return the
+; one-element list `(0)`; then this file can move into corpus/.
+
+(display (tensor-shape #(1.0 2.0)))
+(newline)
+(display (tensor-shape #()))
+(newline)
+(display (list (pair? (tensor-shape #())) (vector? (tensor-shape #()))))
+(newline)
+(display (length (tensor-shape #())))
+(newline)

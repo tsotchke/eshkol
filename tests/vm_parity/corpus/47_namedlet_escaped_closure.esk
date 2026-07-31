@@ -1,0 +1,58 @@
+; A named-let loop procedure is an ordinary value, on every substrate.
+;
+; R7RS 4.2.4 defines `(let loop ((v init) ...) body)` as a letrec binding, so
+; `loop` may be stored, returned or passed on, and the procedure that escapes
+; keeps the bindings its body closed over. Both escape shapes below must give the
+; same answer under native `-r`, native AOT, `vm-src` and `vm-eskb`.
+;
+; THIS ENTRY EXISTS BECAUSE THEY USED TO DISAGREE, ON BOTH SIDES.
+;
+; NATIVE crashed. A named-let loop function's signature carries one capture
+; POINTER per captured free variable — the per-call capture design that keeps
+; concurrent invocations race-free — and is deliberately not the closure ABI, so
+; a first-class reference fell through to the generic function-table path and
+; yielded the bare function pointer. Calling the leaked procedure entered the
+; loop function with its capture parameters filled from whatever the closure
+; dispatcher happened to pass, and the first read of a captured variable
+; dereferenced that as a capture cell:
+;
+;     native -r    "2|" then fatal SIGSEGV
+;     native AOT   "2|" then fatal SIGSEGV, same fault address
+;     vm-src       2|2|ALIVE                                (the VM was right)
+;
+; A first-class reference now materialises a real closure whose environment
+; holds the address of each shared capture cell, with a per-loop trampoline
+; forwarding those cells as the pointer arguments the loop function expects. The
+; cells are arena storage, so the leaked procedure keeps reading and writing what
+; the loop wrote through and it outlives the enclosing frame.
+;
+; THE VM had its own half, on the other axis: the compiled-bytecode route lost a
+; loop procedure stored in a GLOBAL that the source route kept, and neither VM
+; route could call one held in a LET-BOUND cell — both `ERROR: calling
+; non-function ... argc=1 type=3`. Both are closed, so the contract is gated on
+; all four axes here rather than filed.
+;
+; Native-only depth (six escape shapes, 15 checks) lives in
+; tests/features/namedlet_escaped_closure_test.esk; this entry pins the two
+; shapes the VM can express, so a regression on either substrate reds the gate.
+
+; ---- escape through a global cell ----
+(define g #f)
+(define (f)
+  (let ((acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! g loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))))
+(display (f))
+(display "|")
+(display (g 5))
+(display "|ALIVE")
+(newline)
+
+; ---- escape through a let-bound cell ----
+(define (probe)
+  (let ((esc #f) (acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! esc loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))
+    (esc 5)))
+(display (probe))
+(newline)

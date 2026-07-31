@@ -27,6 +27,16 @@ void eshkol_type_error_with_operand(const char* proc_name,
 extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
                                  const char* fmt, ...);
 
+/* Value-based nested-collection classification and coercion. Both live in
+ * lib/core/runtime_list_helpers.cpp beside the shared rank-N walker, so there is
+ * exactly one place that decides what shape a nest has and whether it is
+ * rectangular. Declared here rather than via runtime.h to keep this
+ * freestanding-adjacent translation unit's include surface small; ABI-stable
+ * symbols. */
+bool eshkol_tensor_collection_is_nested(const eshkol_tagged_value_t* input);
+void* eshkol_tensor_from_collection(arena_t* arena,
+                                    const eshkol_tagged_value_t* input);
+
 /*
  * Centralized, type-checked tensor-operand unpack (ESH-0069).
  *
@@ -38,7 +48,19 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
  *       -> return its data pointer unchanged (zero-copy, hot path).
  *   (b) operand is a homogeneous numeric vector (HEAP_SUBTYPE_VECTOR whose every
  *       element is an int64 or double) -> coerce to a fresh 1-D tensor.
- *   (c) operand is a homogeneous numeric proper list (every car an int64 or a
+ *   (c) operand is a NEST — a list or vector at least one of whose elements is
+ *       itself a list, vector or tensor -> coerce to the rank-N tensor its shape
+ *       describes, through the same value-based walker `(tensor X)` uses. A
+ *       ragged or otherwise non-rectangular nest raises there. Without this, one
+ *       operation answered differently for two spellings of one value:
+ *       `(tensor-shape #(#(1.0 2.0) #(3.0 4.0)))` was `(2 2)` (the parser
+ *       flattens a rectangular nested literal into a rank-2 tensor literal)
+ *       while `(tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))` was a
+ *       type error, because the runtime-built value arrived here as a vector
+ *       whose elements are not numbers. Tested FIRST, before (b) and (d): a nest
+ *       is also a vector or a list, so the flat numeric scans below would reject
+ *       it as heterogeneous before its shape was ever considered.
+ *   (d) operand is a homogeneous numeric proper list (every car an int64 or a
  *       double, in either the HEAP_SUBTYPE_CONS or the legacy CONS_PTR tag
  *       form) -> coerce to a fresh 1-D tensor, exactly as `(tensor '(1 2 3))`
  *       does. A numeric collection means the same thing to a tensor op whichever
@@ -47,7 +69,7 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
  *       classification, which normalizes a list point to a vector. Accepting the
  *       vector spelling and rejecting the list would be an arbitrary
  *       distinction.
- *   (d) anything else (int, string, bool, null, improper/non-numeric list,
+ *   (e) anything else (int, string, bool, null, improper/non-numeric list,
  *       non-numeric/heterogeneous vector, …) -> raise a clean, catchable type
  *       error via eshkol_type_error_with_operand and never touch the struct.
  *
@@ -62,6 +84,18 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
 void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                                     const char* op_name) {
     if (val) {
+        /* A NEST goes to the shared rank-N walker before any of the flat cases
+         * below, so a runtime-built nested collection denotes the same tensor as
+         * the identical nested literal. Checked first because a nest is also a
+         * vector/list and would otherwise be rejected by the flat numeric scan.
+         * The walker raises for a ragged or non-rectangular nest. */
+        if (eshkol_tensor_collection_is_nested(val)) {
+            void* t = eshkol_tensor_from_collection(get_global_arena(), val);
+            if (t) return t;
+            eshkol_type_error_with_operand(
+                op_name, "tensor or rectangular nested collection", val);
+            return nullptr;  /* not reached */
+        }
         /* Consolidated HEAP_PTR form: dispatch on the object-header subtype. */
         if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
