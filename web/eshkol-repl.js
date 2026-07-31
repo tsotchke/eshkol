@@ -86,6 +86,25 @@ class EshkolRepl {
     }
 
     /**
+     * Write a tagged #f into a struct-return out-parameter slot.
+     *
+     * The tagged layout is {u8 type, u8 flags, u16 reserved, u32 pad, u64 data}
+     * = 16 bytes; type 3 with data 0 is #f (SYS_TYPE_BOOL in
+     * lib/core/system_builtins.c). The older degradation stubs below are
+     * written `() => {}`, which leaves the caller's slot holding whatever was
+     * on the stack — harmless for a value nobody reads, wrong for one the
+     * program branches on. Anything that must FAIL CLOSED writes a real #f.
+     *
+     * @param {number} ptr - Pointer to the 16-byte out slot
+     */
+    writeFalse(ptr) {
+        if (!this.memory || !ptr) return;
+        const view = new Uint8Array(this.memory.buffer, ptr, 16);
+        view.fill(0);
+        view[0] = 3;
+    }
+
+    /**
      * Write a string to WASM memory (caller must ensure space)
      * @param {string} str - JavaScript string
      * @param {number} ptr - Pointer to write location
@@ -707,6 +726,21 @@ class EshkolRepl {
                 eshkol_exception_add_irritant_ptr: () => {},
                 eshkol_parallel_map_sret:          () => {},
                 eshkol_builtin_file_rename:        () => {},
+
+                // ESH-0011 portable event loop. No file descriptors exist in the
+                // browser sandbox, so there is nothing for a readiness
+                // multiplexer to watch and the whole surface fails closed with
+                // #f — the same degradation make-pipe / fd-write / fd-close
+                // already use here. Native builds get kqueue / epoll / IOCP; see
+                // lib/core/event_loop.c. `event-loop-backend` answers "none" so
+                // a program can detect the situation instead of guessing.
+                eshkol_builtin_make_event_loop:       (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_add_fd:     (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_remove_fd:  (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_poll:       (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_close:      (out) => this.writeFalse(out),
+                eshkol_builtin_event_loop_backend:    (out) => this.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},
