@@ -29,6 +29,37 @@ cmake --build build --target eshkol-run stdlib -j
 
 ---
 
+## The CTest gate
+
+`scripts/run_ctest_gate.sh` runs the CTest suite and turns its verdicts into
+oracle evidence. Until it existed, no completion-oracle criterion anywhere
+consumed a CTest *result* — the only `ctest` mentions in
+`.icc/completion-oracles.yaml` were `action:` strings, and the `test_evidence`
+criteria are index-level ("the tests exist and are runnable"). A pillar could
+therefore ship with a perfectly good CTest gate and still be unmeasured by the
+target that judges the release cut.
+
+```bash
+BUILD_DIR=build scripts/run_ctest_gate.sh
+```
+
+It writes `scripts/icc_traces/ctest_gate.jsonl`: one `kind:"ctest"` event per
+test, one per named **group**, the `ctest_suite_green` roll-up, and the
+canonical `kind:"test_result"` events the ICC architecture invariants read.
+
+A *group* is a regex over test names with its own roll-up event, so one
+criterion gates a whole pillar and stays correct as tests are added to it. The
+groups are declared in `CTEST_GATE_GROUPS` at the top of the script. **A group
+whose regex matches no configured test is reported `ABSENT` and fails the
+gate** — a pillar cannot quietly stop being covered because its tests were
+renamed or configured out.
+
+To gate a new pillar: give it CTest entries with a shared name prefix, add one
+`CTEST_GATE_GROUPS` line, and add one `runtime_event` criterion with
+`event_kinds: [ctest]` under `eshkol-compiler-readiness`.
+
+---
+
 ## SICP full-book gate
 
 `scripts/run_sicp_smoke.sh` runs the corpus in `tests/sicp/` — 88 probes across
@@ -128,6 +159,17 @@ symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
+```
+
+**Self-checking half.** `scripts/run_vm_surface_tests.sh` compiles every
+`tests/vm/*_surface_regression.esk` probe to `.eskb` and executes it on the
+standalone VM. Unlike the differential above, each probe asserts against R7RS
+(or a closed form) *inside one run*, so a defect **shared** by native and the
+VM cannot pass by agreement. Trace kind: `vm_surface`
+(`vm_surface_regression_suite` is the whole-suite verdict).
+
+```bash
+BUILD_DIR=build scripts/run_vm_surface_tests.sh
 ```
 
 **WASM substrate.** `scripts/run_wasm_differential.sh` extends the parity
