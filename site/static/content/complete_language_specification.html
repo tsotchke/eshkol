@@ -1,6 +1,6 @@
 <h1 id="eshkol-language---complete-technical-specification">Eshkol
 Language - Complete Technical Specification</h1>
-<p><strong>Version:</strong> v1.3.3 <strong>Generated:</strong>
+<p><strong>Version:</strong> v1.3.4 <strong>Generated:</strong>
 2026-07-08 <strong>Status:</strong> Comprehensive implementation
 documentation from source code</p>
 <hr />
@@ -3920,8 +3920,28 @@ Automatic handler cleanup</p>
 <code>provide</code>)</p>
 <hr />
 <h2 id="version-information">26. Version Information</h2>
-<p><strong>Current Version:</strong> v1.3.3</p>
-<p><strong>Version History:</strong> - v1.3.1 - Robustness for
+<p><strong>Current Version:</strong> v1.3.4</p>
+<p><strong>Version History:</strong> - v1.3.4-evolve -
+Consumer-hardening correctness wave: automatic per-iteration memory
+reclamation that matches explicit <code>with-region</code>, race-free
+<code>parallel-map</code>, exact gradients through every callable form
+and at exact (rational/bignum) points, R7RS-correct exactness contagion
+on both the native and bytecode-VM numeric paths, same-unit
+<code>define-library</code>/<code>import</code> resolution on all three
+back ends, an emitted error diagnostic that prevents artifact emission,
+a portable event-loop primitive, a fixed-point/i128 exact-accumulation
+engine, and the high-precision numerics wave (Ozaki-II exact and
+reduced-precision GEMM tiers, mixed-precision <code>linear-solve</code>,
+native <code>i128</code>). See <a
+href="../CHANGELOG.md">CHANGELOG.md</a>. - v1.3.3-evolve - Opt-in
+differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum
+cryptography, <code>core.dbsp</code> incremental dataflow, real
+<code>make-parameter</code>/<code>parameterize</code> dynamic
+parameters, and bignum-capable exact rationals. See <a
+href="../CHANGELOG.md">CHANGELOG.md</a>. - v1.3.2-evolve - Thread-safe
+regions and deeper region-escape evacuation (ESH-0214d subtype
+coverage), plus the nine-cluster architectural research ADRs. See <a
+href="../CHANGELOG.md">CHANGELOG.md</a>. - v1.3.1 - Robustness for
 long-running, resident programs: per-iteration arena reclamation for
 define-loops guarded by a catch-all handler, an iterative reader so
 large persisted structures load without native stack overflow, and

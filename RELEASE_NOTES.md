@@ -13,6 +13,26 @@ linear solver, and a native 128-bit integer type — lands alongside a Moonlab
 v1.2.0 quantum pin, full hosted-VM tensor-matmul parity, and a round-tripping
 numeric printer, over a hardened toolchain and a broadened assurance surface.
 
+The second half of the cycle is a consumer-hardening correctness wave, and it
+has one organising principle: a wrong answer must not be able to look like a
+right one. The change that made the rest possible is that an emitted
+compile-time error now prevents artifact emission and execution — the compiler
+used to diagnose a program and then build and run it anyway. That turned a
+family of silent wrong answers into build failures, and the wave that followed
+fixed them at the root. Exactness is now decided from an operand's runtime tag
+rather than from a result's value shape, both on the native flonum
+integer-division family and across the bytecode VM's numeric surface.
+Automatic differentiation answers exactly at exact points, survives
+per-iteration nursery reclamation, and no longer returns zeros above gradient
+arity 16. `define-library` and `import` resolve same-unit libraries on all
+three back ends, including a VM lane that previously knew none of those forms.
+`--shared-lib` links a real, C-ABI-correct shared library instead of exiting
+zero with no artifact. Alongside those corrections the release adds a portable
+event loop, a fixed-point and `i128` exact-accumulation engine, the qLLM bridge
+implementation its documented backward rules had been waiting for, embedding
+and Fréchet-mean backward passes, and a release gate that finally reads CTest
+results as evidence.
+
 ## Highlights
 
 ### Automatic memory reclamation matches explicit regions
@@ -80,6 +100,151 @@ numeric printer, over a hardened toolchain and a broadened assurance surface.
   node-pointer array now grows from the tape's owning arena, so it is reclaimed
   with the region at `region_pop` instead of accreting residual memory each step.
 
+### A diagnosed program no longer builds and runs
+
+- **An emitted error diagnostic prevents artifact emission and execution.** The
+  compiler used to print `ERROR: …` and then emit, link and run a binary
+  anyway, so a diagnosed program produced a wrong answer instead of a failed
+  build. This is the mechanism that kept the rest of this release's defects
+  quiet: each of them was reported at compile time, and every report was
+  ignored. Reporting an error is one call at any of 805 sites; propagating one
+  is a return path through every enclosing frame, and the codegen frames
+  recover by substituting a placeholder and carrying on. All 805 sites funnel
+  through four logging primitives, so an authoritative error state now lives in
+  one place and every path contributes to it. Downstream, this converted a
+  family of silent wrong answers into build failures — including several fixed
+  in this release, which is how they were found.
+
+### Differentiation is exact at exact points, and survives automatic reclamation
+
+- **`derivative`, `gradient` and `hessian` at exact points.** At a rational or
+  bignum point these three used to return garbage — an exact number is
+  HEAP-tagged, so its data field holds a pointer, and every AD entry point
+  reinterpreted that field as a number, differentiating at the object's
+  address. One authority per question now dispatches on the runtime tag, and
+  refuses a non-numeric point with a catchable type error rather than inventing
+  a number for it. With the crash gone, the exactness gap behind it closed too:
+  at an exact point all five operators now run the same Taylor-tower pass
+  `derivative-n` runs, so `(derivative f x)` equals `(derivative-n f x 1)` and
+  `(hessian f x)` equals `(derivative-n f x 2)` in value **and** in exactness.
+  `(derivative (lambda (x) (* x x x)) 1/3)` is `1/3` with `exact?` true, where
+  the operators previously either crashed or, once the crash was fixed,
+  returned only the nearest `double`. The tier keeps `+ - * /` and
+  non-negative-integer `expt` exact and demotes to f64 at the first
+  transcendental, per R7RS exactness contagion.
+- **Gradients through loop-filled vectors are correct again.** `(gradient f x)`
+  returned a silently wrong gradient whenever `f` filled a vector with
+  `vector-set!` inside a loop and then selected a component: the derivative was
+  attributed to the last element written, for every element read. Primal values
+  stayed exact and stderr was empty, so a row-by-row Jacobian — the standard
+  idiom — came out uniform garbage while looking plausible. The per-iteration
+  nursery introduced by the reclamation work above resets its arena on each
+  back edge, and the write barrier that must promote escapees did not recognise
+  a dual number as pointer-carrying, so the tangent was recycled underneath the
+  computation. The barrier, the `with-region` escape path and the nursery
+  recycle now share one predicate, and tape-retained AD nodes allocate from the
+  tape's owning arena.
+- **Gradient arity above 16 works, rather than returning zeros.** A gradient of
+  a closure reached as a value had its argument spread clamped at 16, so a
+  declared arity of 17 to 32 crashed, silently produced an all-zero gradient,
+  or raised a type error. The spread is now emitted once per module out of
+  line, with the arity dispatch done by the closure dispatcher's own runtime
+  argument-count switch, so the ceiling of 32 is real. The out-of-line form is
+  also smaller than what preceded the widening, which restores compile times on
+  Windows, where the linkage the inline spread used cannot be discarded.
+- **Embedding and Fréchet-mean backward passes.** Two rules that previously
+  refused outright now compute. The embedding adjoint is a scatter-add;
+  duplicate indices accumulate and unselected rows are bitwise zero, both
+  asserted directly because both have failure modes that stay the right shape
+  and magnitude. The weighted Fréchet (Karcher) mean on the Poincaré ball is
+  differentiated by implicit differentiation of its optimality condition rather
+  than by unrolling the solver.
+
+### Exactness across the numeric tower
+
+- **The bytecode VM kept inexactness.** The VM decided a numeric result's
+  domain from its *value* rather than from its operands' tags, so
+  `(/ (- 2.0 1.0) (+ 2.0 1.0))` answered the exact `1/3` where native answered
+  `0.3333333333333333`: any integral-valued double collapsed to an exact
+  integer, in both the runtime constructor and the constant folder.
+  Independently, the rational natives truncated a flonum operand into an int64
+  numerator, so `(* 0.5493061443340549 1/3)` evaluated `(* 0 1/3)` and answered
+  the exact 0. Exactness is now decided from operand tags throughout, and the
+  folder folds by the parser's literal exactness flags. Divergent native-vs-VM
+  numeric combinations drop from 79 to 20, and the remainder — bignum-over-
+  bignum rationals the VM's rational type cannot represent — are answered as a
+  correctly-rounded inexact value and recorded as a justified parity row rather
+  than left silent.
+- **Native flonum integer division follows R7RS 6.2.6.** `modulo` and
+  `remainder` had no flonum path, so both operands went through the int64
+  unpack and the answer was the remainder of two IEEE-754 *bit patterns*
+  (`(modulo 5.5 2.0)` returned `6192449487634432`); `remainder` also called the
+  C library's round-to-nearest `remainder()`, a different function from
+  Scheme's truncated one. `quotient`'s double path narrowed to int64 and packed
+  the result exact, so it broke contagion by construction and saturated to a
+  single plausible-looking constant past 2^63 — the same constant it returned
+  for division by `0.0`. The floor-division family was int64-only, so
+  `floor-remainder` disagreed with the `modulo` that R7RS defines it to equal.
+  All of these are fixed, a zero divisor now raises uniformly across the
+  family including the mixed-bignum route, and `(/ (expt 2 100) 0.0)` is
+  `+inf.0` rather than `0`.
+
+### Modules
+
+- **`define-library` and `import` resolve libraries defined in the same file,
+  on all three back ends.** `define-library` validated its library name and
+  discarded it, so `import` had nothing to consult but a filesystem search that
+  can only find a library living in some *other* file — and reported
+  `Module 'smoke.v1_3' not found` about a library written one line above.
+  R7RS-small 5.6.1 defines a library by its form and lets the forms that follow
+  import it, so a unit's own libraries now come first in the resolution order,
+  ahead of precompiled stdlib modules and the search path. A library becomes
+  resolvable by being processed rather than by living in a particular file, so
+  an import placed *above* its `define-library` still fails, now with a
+  diagnostic naming the line the library is defined on. The bytecode VM was the
+  real gap: it knew none of `define-library`, `import` or `export`, and
+  compiled such a program into bytecode that warned about undefined variables
+  and then died at run time, while the same file ran on JIT and AOT. Three
+  latent VM defects were fixed with it, including a `provide` that emitted
+  nothing and left a stray `OP_POP` discarding a live value — shifting every
+  later binding down a slot.
+
+### New runtime capability
+
+- **A portable event loop.** `make-event-loop`, `event-loop-add-fd!`,
+  `event-loop-remove-fd!`, `event-loop-poll`, `event-loop-close` and
+  `event-loop-backend` wrap kqueue on macOS and BSD, epoll on Linux and
+  Android, and IOCP on Windows, with a fail-closed stub on WebAssembly. Exactly
+  one backend is compiled in, and the portable half — handle registry, argument
+  validation, generation-tagged handles, result coalescing — is shared by every
+  backend and by the bytecode VM, so there is no native/VM parity surface to
+  maintain separately. Verified with a pipe round-trip inside its timeout, an
+  idle poll that waits its budget and returns rather than hanging, and 1,000
+  sequential open/close cycles that never exhaust the descriptor table.
+- **A fixed-point and `i128` exact-accumulation engine.** `esk_i128`, a
+  parametric `fixed<W,F>` with explicit per-operation rounding, and a
+  block-scaled `dot_exact` reduction over an i128 accumulator, for reductions
+  that must be bit-exact regardless of summation order. 200 shuffles of 4,096
+  elements and 50 matmul contraction orders are byte-identical under the exact
+  path, while an f64 control drifts about 1.5e-06 between orderings on the same
+  inputs — and the exact path measured *faster* than an f64 double-double
+  baseline (13.6 GB/s against 4.3 GB/s), so exactness is not paid for in
+  throughput here. `ESHKOL_FIXED_POINT_ENGINE` is ON by default and forced OFF
+  on MSVC and ClangCL, which lack the `__int128` ABI it relies on. The
+  `eshkol-fixedpoint` shared library is self-contained C11 over libc and libm,
+  so it is consumable without the rest of the toolchain.
+- **The qLLM bridge is implemented.** Its header declared 17 functions and the
+  generated API documentation reported them all documented, but none was
+  defined anywhere in the tree — while the bridge's *backward* half had already
+  shipped, with exact gradient rules for 11 of 13 tensor AD node types
+  compiled into the runtime and unreachable, because nothing ever created a
+  node of those types. All 17 are now implemented and record canonical AD tape
+  nodes, so those rules run. Where a backward rule cannot differentiate a shape
+  exactly the forward refuses rather than recording a node whose gradient would
+  be wrong. `ESHKOL_QLLM_ENABLED` is opt-in and OFF by default, and turning it
+  on without a discoverable library is a configure-time error rather than a
+  silent no-op.
+
 ### High-precision numerics
 
 - **Ozaki-II exact DGEMM** recovers full-f64 `C = A*B` from reduced-precision
@@ -137,6 +302,30 @@ numeric printer, over a hardened toolchain and a broadened assurance surface.
 
 ### Toolchain and packaging
 
+- **`--shared-lib` links a real, C-ABI-correct shared library.** The documented
+  flag raised `--compile-only`, wrote an object and a bitcode file, and exited
+  zero with no library anywhere. Making it link exposed why it could never have
+  worked as documented: LLVM's calling convention for a first-class-struct
+  return is not the platform C calling convention for the same struct, so a C
+  caller compiled against the public header read the tagged value's flags byte
+  as the payload. Library-mode codegen now emits a platform-C-ABI thunk per
+  exported top-level function — `[2 x i64]` on AArch64, x86-64 SysV, riscv64,
+  ppc64le and loongarch64, `sret` plus by-pointer on Windows x64, and a
+  diagnostic refusal on 32-bit targets, which neither shape models. The
+  relocatable `--shared-lib -c` object, which other Eshkol modules call with
+  the internal convention, stays unwrapped. Separately, the runtime archives
+  are now position-independent: a `thread_local` compiled non-PIC took the
+  local-exec TLS model, so on ELF hosts the library could not be produced at
+  all.
+- **The browser WASM glue is complete, and the checked-in artifacts are
+  current.** `eshkol_write_value`, `eshkol_write_value_to_port` and
+  `eshkol_builtin_arena_used` had no `env` import stubs in the browser glue,
+  so programs reaching them failed to instantiate; the gap was verified by
+  compiling a program that reaches those symbols and diffing the module's real
+  imports against the glue, rather than by trusting the import scanner. Both
+  checked-in artifacts (`eshkol-site.wasm`, `eshkol-vm.wasm`) are regenerated
+  from current source through their canonical recipes, closing WASM
+  differential failures against the release tree.
 - **Transitive FFI-link discovery, with fatal link failures under `-r`.** Native
   agent-FFI link requirements now propagate through the full transitive
   `(load …)` / `(import …)` / `(require …)` source closure, so a dependency
@@ -170,6 +359,38 @@ numeric printer, over a hardened toolchain and a broadened assurance surface.
   is now gated against native rather than only checked for a valid binary;
   divergences are tracked per file (EXCLUDED / XFAIL, with an unexpected match
   failing the gate).
+- **CTest results are release-gate evidence.** No completion-oracle criterion
+  consumed a CTest result at all — the test-evidence criteria were index-level
+  ("the tests exist and are runnable"), so a red CTest run could not turn the
+  release gate red, and a pillar could ship with a perfectly good CTest gate
+  that the target judging the cut never looked at. `scripts/run_ctest_gate.sh`
+  now emits per-test, per-group and whole-suite trace events, and a group whose
+  regex matches no configured test is reported ABSENT and **fails** the gate,
+  so a pillar cannot quietly stop being covered because its tests were renamed
+  or configured out. Eight criteria are wired, covering the fixed-point engine,
+  the exact-input AD identity tier, the runtime-closure arity spread, same-unit
+  `define-library`, the self-checking VM surface suite, VM parity and the event
+  loop.
+- **Display-only tests assert.** A recurring test shape — `display` the
+  computed values, print an unconditional pass banner, and leave the expected
+  values in a comment — meant the harness saw exit 0 and the comparison the
+  comment described was never written. The first wave of that sweep is in this
+  release; each test it turns red is a previously hidden defect.
+- **Two harness defects that produced false verdicts are fixed.** The
+  toolchain-fingerprint guard tried the BSD `stat -f` format before the GNU
+  `stat -c` one; on GNU coreutils `-f` means `--file-system`, so the
+  "fingerprint" was free-block and inode counters and every green Linux run was
+  declared `INVALID RUN` (exit 3). And the stale-directory prune globbed an
+  unmatched pattern into `du`, which under `set -euo pipefail` killed the
+  calling suite silently — which is what made the language-coverage floor read
+  as a false red when it was in fact green.
+- **The five-way surface baseline is re-anchored.** The P8 axis-6 ratchet is
+  shrink-only, and current master produces the same disagreement count with a
+  different set — four AD entries resolved, four region-handle entries appeared
+  — which a shrink-only ratchet cannot absorb. The four new entries record a
+  genuine, pre-existing cross-backend naming asymmetry between the VM's
+  `_region-open` and the native `region-open`; it stays open as a tracked build
+  item rather than being resolved by editing the baseline.
 
 ---
 

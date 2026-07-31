@@ -383,8 +383,12 @@ eshkol/
 
 v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve (arbitrary-order
 AD, full R7RS conformance, closure/TCO/memory hardening) are **complete**, and
-v1.3.3 has landed further robustness for long-running, resident programs plus
-comprehensive C-API documentation. We welcome contributions for upcoming releases:
+v1.3.1 through v1.3.4-evolve have landed further robustness for long-running,
+resident programs, an opt-in differentiable quantum stack, and a
+consumer-hardening correctness wave (automatic per-iteration reclamation,
+race-free `parallel-map`, exact gradients through every callable form, R7RS
+exactness contagion on both engines). We welcome contributions for upcoming
+releases:
 
 ### Immediate Priorities (v1.4-connection - July 2026)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close

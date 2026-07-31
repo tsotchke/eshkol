@@ -18,7 +18,7 @@ it carries.
 | Project | Eshkol |
 | Version | v1.3.4-evolve |
 | Builds on | v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 23 July 2026 |
+| Release date | 31 July 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -987,7 +987,7 @@ link errors.
 @software{eshkol2026,
   title    = {Eshkol: A Programming Language for Mathematical Computing},
   author   = {tsotchke},
-  version  = {1.3.3-evolve},
+  version  = {1.3.4-evolve},
   year     = {2026},
   url      = {https://github.com/tsotchke/eshkol}
 }

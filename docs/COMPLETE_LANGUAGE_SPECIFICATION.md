@@ -1,6 +1,6 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.3
+**Version:** v1.3.4
 **Generated:** 2026-07-08
 **Status:** Comprehensive implementation documentation from source code
 
@@ -4131,9 +4131,26 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.3
+**Current Version:** v1.3.4
 
 **Version History:**
+- v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
+  memory reclamation that matches explicit `with-region`, race-free
+  `parallel-map`, exact gradients through every callable form and at exact
+  (rational/bignum) points, R7RS-correct exactness contagion on both the native
+  and bytecode-VM numeric paths, same-unit `define-library`/`import` resolution
+  on all three back ends, an emitted error diagnostic that prevents artifact
+  emission, a portable event-loop primitive, a fixed-point/i128
+  exact-accumulation engine, and the high-precision numerics wave (Ozaki-II
+  exact and reduced-precision GEMM tiers, mixed-precision `linear-solve`,
+  native `i128`). See [CHANGELOG.md](../CHANGELOG.md).
+- v1.3.3-evolve - Opt-in differentiable quantum computing (Moonlab VQE/CHSH),
+  ML-KEM post-quantum cryptography, `core.dbsp` incremental dataflow, real
+  `make-parameter`/`parameterize` dynamic parameters, and bignum-capable exact
+  rationals. See [CHANGELOG.md](../CHANGELOG.md).
+- v1.3.2-evolve - Thread-safe regions and deeper region-escape evacuation
+  (ESH-0214d subtype coverage), plus the nine-cluster architectural research
+  ADRs. See [CHANGELOG.md](../CHANGELOG.md).
 - v1.3.1 - Robustness for long-running, resident programs: per-iteration
   arena reclamation for define-loops guarded by a catch-all handler, an
   iterative reader so large persisted structures load without native stack

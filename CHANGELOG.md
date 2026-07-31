@@ -5,7 +5,7 @@ All notable changes to Eshkol will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.4-evolve] - 2026-07-23
+## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
 long-duration resident workloads is fixed at the architectural root: automatic
@@ -25,6 +25,23 @@ a round-tripping numeric printer. It also hardens the toolchain (transitive
 FFI-link discovery with fatal link failures, Homebrew-compatible
 system-dependency builds) and the assurance surface (dynamic edge coverage
 across every new-feature family).
+
+The second half of the cycle is a consumer-hardening correctness wave, and its
+organising principle is that a wrong answer must not be able to look like a
+right one. An emitted compile-time error now prevents artifact emission and
+execution, which turned a family of silent wrong answers into build failures
+and exposed the rest: exactness is now decided by an operand's runtime tag
+rather than by a result's value shape, on the native flonum integer-division
+family and on the bytecode VM's whole numeric surface; automatic
+differentiation answers exactly at exact points, survives per-iteration nursery
+reclamation, and no longer produces zeros above gradient arity 16;
+`define-library` and `import` resolve same-unit libraries on all three back
+ends; and `--shared-lib` links a real, C-ABI-correct shared library instead of
+exiting zero with no artifact. Alongside those corrections the release adds a
+portable event loop (kqueue / epoll / IOCP), a fixed-point and `i128`
+exact-accumulation engine, the qLLM bridge implementation that its documented
+backward rules were waiting for, embedding and Fréchet-mean backward passes,
+and a release gate that finally reads CTest results as oracle evidence.
 
 ### Added
 
@@ -307,6 +324,109 @@ across every new-feature family).
   earlier PES). Adds differentiable quantum-chemistry examples (five programs)
   and an arbitrary-order-AD H2 vibrational-frequency example.
   (`docs/design/MOONLAB_INTEGRATION.md`, `examples/`)
+
+- **Portable event loop (ESH-0011).** A new event-loop primitive —
+  `make-event-loop`, `event-loop-add-fd!`, `event-loop-remove-fd!`,
+  `event-loop-poll`, `event-loop-close`, `event-loop-backend` — wrapping kqueue
+  on macOS/BSD, epoll on Linux/Android, and IOCP (plus WSAPoll /
+  `PeekNamedPipe` readiness) on Windows, with a fail-closed stub on
+  WebAssembly. Exactly one platform backend is compiled in, selected in
+  `CMakeLists.txt` the same way the GPU layer selects its `gpu_memory`
+  implementation. The portable half — handle registry, argument validation,
+  generation-tagged handles, result coalescing — lives in
+  `lib/core/event_loop.c` and is shared by every backend *and* by the bytecode
+  VM, so there is no native/VM parity surface to maintain separately.
+  Verified: a pipe read/write round-trip completing inside its timeout, an idle
+  poll that waits its budget and returns rather than hanging, and 1,000
+  sequential open/close cycles that never exhaust the descriptor table (the
+  macOS default limit is 256, so a leak would fail long before 1,000).
+  (`lib/core/event_loop.c`, `lib/core/event_loop_*.c`)
+
+- **Fixed-point / `i128` exact-accumulation engine.** A fully additive module:
+  `esk_i128`, a parametric `fixed<W,F>` with explicit per-operation rounding,
+  and a block-scaled `dot_exact` reduction over an i128 accumulator. Its
+  purpose is order-independent bit-exact reduction — the same reduction over
+  the same elements produces byte-identical results regardless of summation
+  order, which an f64 accumulator cannot guarantee. Measured: 200 shuffles ×
+  4,096 elements and 50 matmul contraction orders are byte-identical under the
+  exact path, while an f64 control drifts about 1.5e-06 between orderings on
+  the same inputs; and the exact path is *faster* than an f64 double-double
+  baseline (13.6 GB/s vs 4.3 GB/s), so exactness is not a throughput trade-off
+  here. Standalone suite 84/84. `ESHKOL_FIXED_POINT_ENGINE` defaults ON and is
+  forced OFF on MSVC/ClangCL, which lack the GCC/Clang `__int128` ABI the
+  engine relies on. The `eshkol-fixedpoint` shared library is a self-contained
+  C11 module depending only on libc and libm — no LLVM, no `eshkol-static` — so
+  it is consumable independently of the rest of the toolchain.
+  (`lib/math/fixed_point/`, `tests/fixed_point/`)
+
+- **The qLLM bridge is implemented, not just declared.**
+  `inc/eshkol/bridge/qllm_bridge.h` declared 17 functions and
+  `docs/api/bridge/qllm_bridge.md` reported all 20 of its symbols documented,
+  but **none of the 17 was defined anywhere in the tree**. The consequence ran
+  deeper than a missing entry point: the bridge's *backward* half already
+  shipped — `lib/bridge/tensor_backward.cpp` implements exact gradient rules
+  for 11 of 13 tensor AD node types and is compiled into the main library —
+  and was unreachable, because nothing ever created a node of those types. All
+  17 functions are now implemented in `lib/bridge/qllm_bridge.cpp`: each
+  computes the forward value and, when a tape is supplied, records a node of
+  the canonical `ad_node_type_t` with the exact input wiring the matching
+  backward rule reads, so those gradient rules now run. Where a backward rule
+  cannot differentiate a shape exactly, the forward **refuses** rather than
+  recording a node whose gradient would be wrong (matmul is 2-D only; softmax
+  takes only the axis its rule normalises over) — exact AD or an explicit
+  error, never a silent zero. Lifecycle is a real `dlopen` resolving a known
+  qLLM entry point, so `ready()` reports a fact. `ESHKOL_QLLM_ENABLED` is a new
+  CMake option, OFF by default per `docs/SDNC.md` §13; ON without a
+  discoverable library is a configure-time `FATAL_ERROR` naming
+  `ESHKOL_QLLM_ROOT`, because an explicit opt-in that silently does nothing is
+  worse than no option at all. A new `lib/backend/sdnc_isa.h` makes the SDNC
+  ISA, state-vector layout and type tags a single source shared by producer and
+  consumer, closing a live divergence: the producer emitted `OP_SWAP = 83`
+  while the consumer's private copy stopped at `OP_COUNT = 83` and rejected
+  that opcode outright — a drift across a file format, where a renumbering
+  changes behaviour silently instead of failing to link. New ctest:
+  `qllm_bridge_gradcheck`.
+
+- **Embedding backward pass and Fréchet-mean derivative.** Two backward rules
+  that previously refused outright. The embedding forward `y[i,:] =
+  W[idx[i],:]` is a gather, so its adjoint is the scatter-add `dW[idx[i],:] +=
+  dy[i,:]`; `tensor_embedding_backward` could not compute it because the lookup
+  indices were not on the AD node at all. The node contract now carries them
+  (`input1` = weights, `input2` = the index node, `params = [num_indices,
+  d_model, vocab_size]`), and the two properties that carry correctness are
+  asserted directly: duplicate indices **accumulate** (assigning instead is the
+  classic scatter-add bug, and it under-counts every repeated token), and
+  unselected rows are **bitwise** zero (the adjoint of a gather is genuinely
+  sparse). The integer-valued index operand gets no gradient — left untouched
+  rather than seeded with a zero that would read as "differentiated, came out
+  zero" — and a missing, fractional, or out-of-range index raises instead of
+  scattering into the wrong row. The weighted Fréchet (Karcher) mean on the
+  Poincaré ball gets its derivative by implicit differentiation of the
+  first-order optimality condition rather than by unrolling the solver. Fixed
+  on the way: `eshkol_tensor_backward_dispatch` bracketed each node's backward
+  in a scope on the **global** arena, and `arena_pop_scope` rewinds over
+  everything allocated since the push — including the destination gradient
+  buffers allocated lazily from that same arena on first accumulation, which
+  the upstream node then read back as reclaimed memory. Temporaries now get
+  their own arena: two lifetimes, two arenas, and no allocation site needs to
+  know whether a backward scope is open above it.
+
+- **CTest results are completion-oracle evidence.** No oracle criterion
+  anywhere consumed a CTest result: the only `ctest` mentions in
+  `.icc/completion-oracles.yaml` were `action:` strings, and the nine
+  `test_evidence` criteria were index-level ("the tests exist and are
+  runnable"), not execution-backed — so a red CTest run could not turn the
+  release gate red. `scripts/run_ctest_gate.sh` now runs CTest, parses the
+  per-test verdicts, and emits `kind: "ctest"` and `kind: "test_result"` trace
+  events, with a roll-up per named group and one for the whole suite. **A group
+  whose regex matches no configured test is reported ABSENT and fails the
+  gate**, so a pillar cannot quietly stop being covered because its tests were
+  renamed or configured out. Eight criteria are wired under
+  `eshkol-compiler-readiness`, including the fixed-point engine, the
+  exact-input AD identity tier, the runtime-closure arity spread, same-unit
+  `define-library`, the self-checking VM surface suite, VM parity, and the
+  event loop — several of which had shipped into this cut with a working CTest
+  gate that the release target never looked at.
 
 ### Changed
 
@@ -985,6 +1105,294 @@ across every new-feature family).
   `if`/`cond` is no longer rejected as a double-use by the branch sum-counting —
   so valid conditional linear gates type-check. Externally contributed.
   (`lib/types/type_checker.cpp`)
+
+#### Automatic differentiation
+
+- **`gradient` returned a silently wrong gradient whenever the function filled
+  a vector with `vector-set!` inside a loop.** The derivative was attributed to
+  the *last* element written, for every element read. Primal values stayed
+  exact, the compiler exited 0 and stderr was empty, so a Jacobian assembled
+  row by row — the standard idiom — came out uniform garbage while looking
+  entirely plausible:
+
+  ```scheme
+  (define (vscale v s)
+    (let* ((n (vector-length v)) (o (make-vector n 0.0)))
+      (let loop ((i 0))
+        (if (< i n) (begin (vector-set! o i (* (vector-ref v i) s)) (loop (+ i 1)))))
+      o))
+  (gradient (lambda (v) (vector-ref (vscale v 3.0) 0)) (vector 0.6 -0.8))
+  ;; before: #(0 3)        after: #(3 0)
+  ```
+
+  Root cause, found by bisecting 94 commits: the iter-scope partial-reclamation
+  work (ESH-0214e, above) gives such a loop a nursery `arena_reset()` per
+  tail-call back edge, and the write barrier that must promote escapees tested
+  `ESHKOL_IS_ANY_PTR_TYPE`, which **excludes** `DUAL_NUMBER` — a dual number is
+  tagged in the immediate block but its data field addresses a headerless
+  16-byte `{value, derivative}` pair in the nursery. The reset recycled it, the
+  same address was reallocated on the next iteration, the primal survived and
+  the tangent was silently corrupted. Fixed at the root with one shared
+  "carries an arena pointer" predicate consulted by the write barrier, the
+  `with-region` escape path and the nursery recycle alike (headerless payloads
+  — dual and complex — get flat forwarded copies); tape-retained AD nodes now
+  allocate from the tape's owning arena; and `evac_kind_for` reports
+  live-interior-graph AD nodes in **every** build, not only instrumented ones.
+
+- **`derivative`, `gradient` and `hessian` returned garbage at exact
+  (rational or bignum) points, and lost exactness where the tower keeps it.**
+  An exact rational or bignum is an ordinary number that happens to be
+  HEAP-tagged, so its tagged data field holds a *pointer*. Every AD entry point
+  turned its point into a double by *reinterpreting* that field, choosing the
+  reinterpretation from the shapes it expected rather than from the tag the
+  value actually carries — so the compiler differentiated at the rational
+  object's **address**. `SIToFP` over a pointer yields a value of heap
+  magnitude, a bitcast yields a denormal near 5e-314, and failing the scalar
+  test routed the point down the *collection* path, where the rational object
+  was dereferenced as `[dims][rank][elems]` (SIGSEGV). One authority per
+  question now dispatches on the runtime tag —
+  `eshkol_ad_seed_to_double` / `eshkol_ad_point_to_double` convert int64,
+  double, bignum, rational, a jet's primal and a tower's `c[0]`, and **refuse**
+  a non-numeric point with a catchable type error instead of inventing a number
+  for it; `eshkol_ad_point_is_scalar` decides scalar-versus-collection once for
+  every operator. Fixing that produced a correct *double*, which exposed the
+  second half: the Taylor carrier `derivative-n` uses can hold exact
+  coefficients and nothing routed the other operators to it, so
+  `(derivative f 1/3)` answered `0.6666666666666666` where
+  `(derivative-n f 1/3 1)` answered `2/3`. At an exact point the operators now
+  run the same Taylor-tower pass, so the contract is an identity in value *and*
+  in exactness — `(derivative f x)` = `(derivative-n f x 1)`,
+  `(hessian f x)` = `(derivative-n f x 2)` — keeping `+ - * /` and
+  non-negative-integer `expt` exact and demoting to f64 at the first
+  transcendental, per R7RS exactness contagion.
+
+- **A gradient of a runtime closure with declared arity 17-32 crashed, silently
+  returned all zeros, or raised a type error.** Reaching a closure as a value —
+  through a wrapper, a parameter or a variable — means its argument count is
+  known only at run time, and the spread that supplies those arguments was
+  clamped by a `MAX_CALL_ARGS_LIMIT` of 16, so the declared ceiling above 16
+  was fictional. The spread is now emitted **once per module, out of line**
+  (`__eshkol_ad_gradient_spread_call`, internal linkage), with the arity
+  dispatch performed by the closure dispatcher's own runtime argument-count
+  switch rather than a second per-arity one layered on top, and the variadic
+  rest list built by a single runtime loop instead of an unrolled cons chain
+  per arm. The ceiling of 32 is now real, and every existing call site without
+  the new descriptor emits byte-identical IR. The out-of-line form is also
+  substantially *smaller* than what preceded the arity widening — the shipped
+  `stdlib.bc` is 6,004,048 bytes against 6,654,064 before — which restores
+  Windows compile times, where COFF cannot discard the weak-linkage expansion
+  that the inline spread multiplied at every gradient site.
+
+#### Numeric tower and exactness
+
+- **The bytecode VM decided a numeric result's exactness from its *value*
+  rather than from its operands' tags, so inexact arithmetic silently became
+  exact.**
+
+  ```
+  (/ (- 2.0 1.0) (+ 2.0 1.0))                        VM 1/3  native 0.3333333333333333
+  (* 0.5493061443340549 (/ (- 2.0 1.0) (+ 2.0 1.0)))  VM 0    native 0.1831020481113516
+  ```
+
+  `number_val()` collapsed any integral-valued double to the exact `VAL_INT`,
+  and the compile-time constant folder repeated the same value-shape test on
+  folded literals, so `(- 2.0 1.0)` produced the exact integer 1 and
+  `(+ 2.0 1.0)` the exact 3 — after which `OP_DIV` correctly divided two exact
+  integers and answered `1/3`. R7RS 6.2.2 requires inexactness to be
+  contagious: an inexact computation must not change numeric domain because an
+  intermediate landed on an integer. Fixed at the constructor —
+  `number_val_contagious()` decides exactness from the operand tags and is used
+  by every arithmetic opcode and numeric builtin — and the folder now folds by
+  the parser's literal exactness flags, declining to fold an exact literal it
+  cannot represent (an integer wider than `int64`) rather than silently making
+  it inexact. Independently, the rational-domain natives built both operands as
+  `{(int64_t)as_number(v), 1}`, which can only carry an exact fixnum: a flonum
+  was **truncated into the numerator**, so `(* 0.5493061443340549 1/3)`
+  evaluated `(* 0 1/3)` and answered the exact 0, and `(+ 0.5 1/3)` answered
+  `1/3`. Every mixed flonum/ratnum `+ - * /` was wrong, in both operand orders.
+  Divergent native-versus-VM numeric combinations drop from 79 to 20; the
+  remainder are bignum-over-bignum rationals not representable in the VM's
+  rational type, now answered as a correctly-rounded inexact value and recorded
+  as a justified parity row rather than left silent.
+
+- **Native flonum `modulo`, `remainder`, `quotient` and the floor-division
+  family were wrong across the board.** These are the native side of R7RS
+  6.2.6, and a VM-parity differential sweep proved native was the wrong side:
+
+  | expression | before | after |
+  |---|---|---|
+  | `(modulo 5.5 2.0)` | `6192449487634432` | `1.5` |
+  | `(modulo 5.0 3)` | `0` | `2.0` |
+  | `(remainder 5.5 2.0)` | `-0.5` | `1.5` |
+  | `(remainder 7.0 2.0)` | `-1.0` | `1.0` |
+  | `(exact? (quotient 7.0 2.0))` | `#t` | `#f` |
+  | `(quotient 1e20 3.0)` | `9223372036854774784` | `3.3333333333333332e19` |
+  | `(quotient 5.0 0.0)` | `9223372036854774784` | raises |
+  | `(remainder 5.5 0.0)` | `+nan.0` | raises |
+  | `(/ (expt 2 100) 0.0)` | `0` | `+inf.0` |
+  | `(floor-remainder 7.0 2.0)` | `7881299347898368` | `1.0` |
+  | `(floor-quotient (expt 2 100) 3)` | `1745178066` | exact |
+
+  `modulo` and `remainder` had no flonum path at all, so both operands went
+  through the int64 unpack and the result was the `SRem` of two IEEE-754 bit
+  patterns; `remainder` additionally called the C library's `remainder()`,
+  which is IEEE round-to-**nearest**, a different function from Scheme's
+  truncated one. `quotient`'s double path `FPToSI`'d the truncated quotient
+  into an int64 and packed it **exact**, breaking contagion by construction and
+  saturating to one constant past 2^63 — a plausible integer is the worst shape
+  a wrong answer can take, and `(quotient 5.0 0.0)` returned that same
+  constant. `modulo` and `remainder` now have a flonum path built on `frem`
+  (which is exactly C's `fmod`), `quotient` keeps its value as a double, the
+  floor-division family is representation-polymorphic so `floor-remainder`
+  genuinely **is** `modulo` as R7RS defines it, and a zero divisor raises
+  uniformly across all of them including the mixed-bignum route. Fixed
+  alongside: assignment conversion's `set!` scan had no case for `do` and never
+  descended into cons-cell subtrees, so `(set! n …)` in a `do` body reported
+  `variable 'n' is not mutable` and lost the assignment.
+
+#### Language, modules and diagnostics
+
+- **A compile-time error did not stop the build.** The compiler printed
+  `ERROR: …` and then emitted, linked and *ran* a binary anyway, so a diagnosed
+  program produced a wrong answer instead of a failed build. This is the
+  mechanism that made this release's other defects silent: every one of them
+  was reported at compile time, and every report was ignored. Reporting an
+  error is one call at any of 805 sites across `lib/` and `exe/`, while
+  propagating one is a return path through every enclosing frame — and the
+  codegen frames recover by substituting a placeholder value and carrying on.
+  All 805 sites funnel through four primitives in `lib/core/logger.cpp`, so an
+  authoritative error tally now lives in one place and every path increments it
+  for free; an emitted error-severity diagnostic prevents artifact emission and
+  execution.
+
+- **`define-library` validated its library name and threw it away, so an
+  `import` could not see a library defined in the same file.**
+
+  ```scheme
+  (define-library (smoke v1_3) (export greet)
+    (begin (define (greet who) (string-append "hi " who))))
+  (import (smoke v1_3))
+  (greet "world")
+  ```
+
+  reported `Module 'smoke.v1_3' not found` about a library written one line
+  above the import, because `import` had nothing to consult but a filesystem
+  search that can only ever find a library living in some *other* file.
+  R7RS-small 5.6.1 defines a library by its `define-library` form and lets the
+  forms that follow import it, so the unit's own libraries now come first in
+  the resolution order — libraries established earlier in this compilation
+  unit, then precompiled stdlib modules, then the search path — on all three
+  back ends. Because a library becomes resolvable by being *processed* rather
+  than by living in a particular file, the ordering rule falls out rather than
+  being special-cased: an import above its `define-library` still fails, now
+  with a diagnostic naming the line the library is defined on. The VM lane was
+  the real gap — it knew none of `define-library`, `import` or `export`, and
+  compiled the program above into bytecode that warned about five undefined
+  variables and then died at run time calling a non-function, while the same
+  file ran on JIT and AOT. Three latent VM defects were fixed with it:
+  `(provide …)` emitted nothing at all, so the `OP_POP` after a form that bound
+  nothing discarded a **live** value and shifted every later binding down a
+  slot; the module loader compiled a required file's top-level forms without
+  that POP discipline, desynchronising `n_locals` from the real stack depth;
+  and a compile-time defect flag now stops both VM drivers, so
+  `compile_and_run()` refuses to execute and the ESKB emitter refuses to write
+  bytecode rather than leaving the process looking like it produced a good
+  artifact.
+
+#### Driver, linking and browser targets
+
+- **`--shared-lib` never linked a shared library, and exited 0 anyway.** The
+  documented capability raised `--compile-only`, wrote `<name>.o` and
+  `<name>.bc`, and exited zero with no library anywhere. Making it link exposed
+  why it could never have worked as documented: LLVM's calling convention for a
+  first-class-struct return is not the platform C calling convention for the
+  same struct. `eshkol_tagged_value_t` is 16 bytes passed internally as an LLVM
+  struct of five fields, which the backend flattens into one return register
+  *per field* — so a C caller compiled against the public header followed AAPCS,
+  read the first two registers, and got the flags byte masquerading as the
+  payload; with two tagged parameters the flattened fields overflow the
+  argument registers outright. Library-mode codegen now emits, for each
+  exported top-level function, a thunk that owns the exported name and speaks
+  the platform C ABI, forwarding to the unwrapped body: `[2 x i64]` in and out
+  on AArch64, x86-64 SysV, riscv64, ppc64le and loongarch64, `sret` plus
+  by-pointer on Windows x64, and a diagnostic refusal on 32-bit targets, which
+  neither shape models. Only the *linked-library* flavour gets thunks; the
+  relocatable `--shared-lib -c` object is linked into other Eshkol modules that
+  call with the internal convention and stays unwrapped. A second defect
+  surfaced with it: the runtime archives were not position-independent, so a
+  `thread_local` in `runtime_autodiff.cpp` got the local-exec TLS model and the
+  library could not be produced at all on ELF (`relocation R_X86_64_TPOFF32 …
+  can not be used when making a shared object`). `POSITION_INDEPENDENT_CODE`
+  now applies to the object libraries feeding `libeshkol-runtime.a` and
+  `libeshkol-agent-ffi.a` — on the object libraries, not the archives, where it
+  would have been a silent no-op that looked like a fix.
+
+- **The browser WASM glue was missing import stubs, so programs reaching them
+  failed to instantiate.** `eshkol_write_value`, `eshkol_write_value_to_port`
+  (the explicit-port form of `write`) and `eshkol_builtin_arena_used` had no
+  `env` import stubs in either `web/eshkol-repl.js` or
+  `site/static/eshkol-runtime.js`. Verified the authoritative way — by
+  compiling a program that reaches those symbols with `--wasm` and diffing the
+  module's real `env` imports against the glue, rather than trusting the import
+  scanner. The environment-independent half of the execution-backed coverage
+  gate also moves into the fast `surface-manifest` job, making it a **required**
+  check so a deliberately broken policy floor or deficit ratchet can no longer
+  hide behind a `continue-on-error` lane.
+
+- **The checked-in browser artifacts were stale against the release tree.**
+  `site/static/eshkol-vm.wasm` was last rebuilt on 25 July and the WASM
+  differential caught `42_iota_srfi1` and `52_numeric_tag_dispatch` failing
+  against it once those corpus files landed. Both checked-in artifacts are
+  regenerated from the current source through their canonical recipes —
+  `eshkol-site.wasm` 226,764 bytes, `eshkol-vm.wasm` 708,844 bytes (was
+  696,657) — with the pandoc-rendered documentation fragments under
+  `site/static/content/` refreshed to match current docs.
+
+#### Test harness and release gates
+
+- **Every green Linux test run was reported as an invalid run.** The
+  toolchain-fingerprint guard in `scripts/lib/test_isolation.sh` tried
+  `stat -f '%z %m'` before `stat -c '%s %Y'`. On BSD/macOS `-f` is the format
+  flag and this is correct; on GNU coreutils `-f` is `--file-system` and takes
+  no argument, so the "fingerprint" became free-block and inode counters, which
+  change between samples — declaring `INVALID RUN: the compiler binary changed
+  during this run` (exit 3) on fully passing runs. This had made every Linux
+  lane's job conclusion non-informative since the isolation guard landed, on
+  any branch, and plausibly accounts for much of the project's recorded
+  "unreliable Linux runner" history. GNU is tried first now, with the BSD form
+  as the fallback.
+
+- **A test suite could die silently when its temp root was already clean.**
+  `eshkol_test_isolation_prune_stale` globbed `"$root"/eshkol-test.*` straight
+  into `du`; with zero matching directories the glob stays a literal unmatched
+  pattern, `du` exits non-zero, and under a caller's `set -euo pipefail` that
+  status is fatal for the assignment — with `2>/dev/null` swallowing the
+  diagnostic, so there was no visible error at all. This is what killed
+  `run_language_coverage.sh` (exit 1, zero output), making the
+  `language_surface_coverage_floor` probe read as a false red when the coverage
+  floor was in fact green. Fixed by returning early when there is nothing to
+  prune, in both the count-based sweep and the size-based loop, which can drain
+  to zero *inside* the loop and re-glob an empty root on the next pass.
+
+- **The five-way surface baseline is re-anchored for the region-handle
+  rename.** The P8 axis-6 baseline is a shrink-only ratchet, and current master
+  produces the same disagreement count (640) with a different *set*: four
+  `ad-*` entries resolved and four `region-open`/`region-close` entries
+  appeared, a 4-for-4 swap a shrink-only ratchet cannot absorb, so the gate
+  read FAIL with nothing regressed. The four new entries record a genuine,
+  pre-existing cross-backend naming asymmetry — the VM dispatch table registers
+  `_region-open` / `_region-close-list` while the native backend registers
+  `region-open` / `region-close` — which stays open as a tracked build item
+  rather than being resolved by editing the baseline.
+
+- **A stale test reference became a build failure once diagnostics were
+  fatal.** `tests/lists/stdlib_display_test.esk` displayed a symbol named
+  `div`, which is defined nowhere: the division wrapper in
+  `core.operators.arithmetic` was renamed `div` to `divide` because a function
+  named `div` is emitted as a weak external that collides with libc's
+  `div(int,int)` and corrupts the 16-byte tagged-value ABI. The test predated
+  the rename and had been silently doing nothing; it now uses the real
+  spelling.
 
 ### Documentation
 
