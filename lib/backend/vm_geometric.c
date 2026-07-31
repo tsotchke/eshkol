@@ -351,8 +351,47 @@ static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
             for (int k = 0; k < dim; k++) best_mu[k] = mu[k];
         }
 
+        /* ---- Acceptance needs THREE consecutive sub-tolerance iterates ------
+         * One sample is not evidence, and neither, on every platform, are two.
+         * Near the boundary the residual has an evaluation noise floor of its
+         * own — the ambient logs are formed by cancellation, so |F| cannot be
+         * resolved below roughly lambda_mu times the rounding error of the log
+         * terms. Once the iterate is inside that floor, successive iterations
+         * resample rounding noise, and if the loop is allowed to keep drawing,
+         * a draw eventually cancels below the bar by luck and the gate passes a
+         * mean that is not stationary. Measured on two points 1e-9 inside the
+         * boundary: the residual oscillated between 2.4e-7 and 4.9e-6 for 131
+         * iterations and then produced a single 9.86e-10 draw, which a
+         * one-sample test accepted; the accepted mean was wrong by 3.0e-8, two
+         * orders worse than the bar it had just passed.
+         *
+         * Two consecutive draws closes that case but is not architecture-
+         * independent: at x0 = 1 - 1e-7 (two points, weights 2:1) one platform's
+         * f64 rounding trajectory through this same plateau produces exactly two
+         * consecutive sub-tolerance noise draws where another platform's does
+         * not, because the dot-product and atanh/tanh evaluations that feed the
+         * residual are not required by IEEE 754 to round identically across
+         * targets (FMA contraction availability, in particular, differs between
+         * baseline aarch64 and baseline x86-64). A criterion whose accept/refuse
+         * verdict depends on which CPU it runs on is wrong regardless of which
+         * side happens to be "right" on any one machine, so the fix is not to
+         * chase a platform-specific threshold — it is to demand a streak long
+         * enough that two independent platforms' noise floors are both
+         * exceedingly unlikely to satisfy it by chance, which squares again with
+         * a third independent draw.
+         *
+         * A genuine fixed point survives the retest: the iteration is locally
+         * contracting there, so the next iterate is at least as good, and a
+         * well-inside-the-ball mean (case 6a below) reaches a residual many
+         * orders under tolerance long before the loop reaches the stall cap, so
+         * three consecutive sub-tolerance samples cost it nothing. The
+         * machine-exact case is accepted by the moved == 0 path instead, which
+         * is a stronger witness than any residual sample: the iteration
+         * literally cannot move. Combined with the stagnation break below,
+         * three consecutive draws removes the lottery rather than shortening
+         * it. */
         if (resid_rel <= VM_FRECHET_RESID_TOL) {
-            if (++confirm >= 2) break;      /* accepted below, at best_mu */
+            if (++confirm >= 3) break;      /* accepted below, at best_mu */
         } else {
             confirm = 0;
         }
