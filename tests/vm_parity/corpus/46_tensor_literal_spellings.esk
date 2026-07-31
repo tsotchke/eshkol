@@ -23,9 +23,17 @@
 ; The operand check now classifies a nest by value and routes it to the same
 ; rank-N walker `(tensor X)` uses, so the spellings cannot diverge again.
 ;
-; The last two blocks pin the other half of the contract: coercing a nest to a
-; tensor must not change what the nest IS. `(vector (vector …) …)` stays an
+; The last three blocks pin the rest of the contract. Coercing a nest to a
+; tensor must not change what the nest IS: `(vector (vector …) …)` stays an
 ; ordinary R7RS vector of vectors, and a flat collection still coerces to rank 1.
+; And a nest that CANNOT be a tensor must fail the same way in either spelling —
+; a clean, CATCHABLE error naming the mismatch, raised at the operation that
+; demanded the tensor rather than at the reader. That row used to disagree three
+; ways: the VM set a fatal `vm->error` no `guard` could intercept, native
+; fabricated `()` and kept running, and once compile diagnostics became fatal
+; the literal spelling stopped compiling at all while the identical
+; runtime-built value ran. All four axes agree now, so it is gated here instead
+; of filed.
 
 ; ---- rank 2, both spellings ----
 (display (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))) (newline)
@@ -50,3 +58,15 @@
 ; ---- a flat collection still coerces to rank 1, both spellings ----
 (display (tensor-shape (vector 1.0 2.0 3.0))) (newline)
 (display (tensor-shape #(1.0 2.0 3.0))) (newline)
+
+; ---- a ragged nest raises CATCHABLY, in either spelling ----
+(display (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) #(3.0))))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref #(#(1.0 2.0) #(3.0)) 0 0))) (newline)
+(display (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) 3.0)))) (newline)
+(display (guard (e (#t "caught"))
+           (tensor-shape (vector (vector 1.0 2.0) (vector 3.0))))) (newline)
+
+; ---- a ragged literal is still a nameable, readable nested vector ----
+(define ragged #(#(1.0 2.0) #(3.0)))
+(display (vector-length ragged)) (newline)
+(display (vector-length (vector-ref ragged 0))) (newline)

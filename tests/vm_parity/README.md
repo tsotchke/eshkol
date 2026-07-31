@@ -61,7 +61,7 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (30 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (54 programs inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
@@ -152,17 +152,20 @@ the VM to match a native bug; native codegen is not VM-owned):
 | `bignum_div_inexact_zero_native.esk` | `(/ <bignum> 0.0)` → native `0`, VM `+inf.0` |
 | `do_set_param_native.esk` | `set!` of a parameter from a `do` body is dropped natively |
 | `float_remainder_modulo_native.esk` | non-integral float `remainder`/`modulo` → native garbage |
-| `namedlet_escaped_closure_native_segv.esk` | calling a leaked named-let procedure SIGSEGVs natively |
 | `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
 | `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
 | `tensor_ref_component_oob_native.esk` | component past its dimension fabricates natively when the flat offset fits |
-| `tensor_vector_built_nested_native.esk` | a runtime-BUILT nested vector is rejected natively; the identical literal is accepted |
-| `tensor_ragged_literal_native.esk` | a ragged literal fabricates `()` natively instead of raising |
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
-each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
-in the VM, move its repro into `corpus/` and flip the manifest row to
-`vm-supported` — the gate then guards the fix forever.
+each is referenced from its `PARITY.tsv` gap row. When a divergence is closed —
+in the VM **or** in native codegen, the table above is only about which side was
+wrong — move its repro into `corpus/` and flip the manifest row to
+`vm-supported`; the gate then guards the fix forever. A `found/` file that
+states a divergence which no longer reproduces is worse than no file at all, so
+retiring one is part of the fix, not follow-up work. Recently promoted this way:
+the escaped named-let procedure (native SIGSEGV plus both VM-route holes) into
+`corpus/47_namedlet_escaped_closure.esk`, and the runtime-built and ragged
+nested-collection rows into `corpus/46_tensor_literal_spellings.esk`.
 
 ## Regenerating
 

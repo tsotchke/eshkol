@@ -39,11 +39,14 @@
 ;; set!s, so a leaked procedure keeps reading and writing the same storage the
 ;; loop wrote through, and that storage outlives the enclosing frame.
 ;;
-;; NOTE: native-only by design. The bytecode VM cannot yet call a leaked loop
-;; procedure through the compiled-bytecode (.eskb) route at all, and cannot call
-;; one held in a LET-bound cell on either VM route — filed in
-;; tests/vm_parity/found/namedlet_escaped_closure_vm_routes.esk — so this
-;; contract is not yet gateable in the VM parity corpus.
+;; SCOPE: this file is the native-only DEPTH — six escape shapes, JIT and AOT,
+;; several of which the bytecode VM cannot express. The two shapes the VM can
+;; express (escape through a global cell, escape through a let-bound cell) are
+;; gated across all four axes in
+;; tests/vm_parity/corpus/47_namedlet_escaped_closure.esk. When this branch was
+;; cut the VM still lost a leaked loop procedure on the .eskb route and on both
+;; routes through a let-bound cell, so those two shapes were filed rather than
+;; gated; both VM holes have since closed and the file was promoted.
 
 (define fail-count 0)
 

@@ -620,8 +620,10 @@ across every new-feature family).
   arguments the loop function expects. The cells are the arena storage a
   set!-mutated capture already gets, so a leaked procedure keeps reading and
   writing the same storage the loop wrote through and it outlives the enclosing
-  frame. Regression test: `tests/features/namedlet_escaped_closure_test.esk`
-  (15 checks over six escape shapes, green under `-r` and AOT).
+  frame. Regression tests: `tests/features/namedlet_escaped_closure_test.esk`
+  (15 checks over six escape shapes, green under `-r` and AOT) and
+  `tests/vm_parity/corpus/47_namedlet_escaped_closure.esk`, which gates the two
+  shapes the VM can express across native, `vm-src` and `vm-eskb`.
 - **A nested collection meant different things depending on how it was
   written.** A rectangular nested vector *literal* is flattened into a
   higher-rank tensor literal by the parser, so it never reached the shared

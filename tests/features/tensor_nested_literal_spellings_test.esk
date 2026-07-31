@@ -37,10 +37,12 @@
 ;; failing the parse, so the literal and the runtime-built spelling of the same
 ;; value are ruled on by the same code.
 ;;
-;; The agreeing rows are gated across substrates in
-;; tests/vm_parity/corpus/46_tensor_literal_spellings.esk. This file additionally pins the
-;; rows the bytecode VM cannot express yet: a CATCHABLE ragged error (the VM's is
-;; fatal on master), list/vector mixtures, and rank beyond 3.
+;; The rows every substrate agrees on — including the CATCHABLE ragged error in
+;; both spellings — are gated across all four axes in
+;; tests/vm_parity/corpus/46_tensor_literal_spellings.esk. This file is the
+;; native-only DEPTH the corpus entry cannot carry: list/vector mixtures,
+;; nested tensors as elements, rank beyond 3, and the full 28-check sweep under
+;; both -r and AOT.
 
 (define fail-count 0)
 
