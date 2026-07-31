@@ -824,6 +824,32 @@ the checker narrows its view of <code>expr</code> to
 as <code>expr</code>.</p>
 <pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)</code></pre>
+<p><code>&lt;type&gt;</code> may be any parenthesised type form, or any
+<strong>bare type name the type system knows</strong> — spelled
+case-insensitively. That is a guarantee, not a list to maintain by hand:
+the parser and the type environment are driven from one canonical
+registry, so a name that resolves to a type is always spellable here and
+in <code>x : &lt;type&gt;</code> annotations. The registry covers the
+numeric tower (<code>number</code>,
+<code>integer</code>/<code>int</code>, the sized
+<code>i8</code>…<code>u64</code>/<code>isize</code>/<code>usize</code>
+spellings, <code>bigint</code>, <code>natural</code>,
+<code>rational</code>,
+<code>real</code>/<code>float</code>/<code>double</code>/<code>float64</code>/<code>float32</code>,
+<code>complex</code>), text (<code>string</code>/<code>str</code>,
+<code>char</code>/<code>character</code>, <code>symbol</code>), the
+other ground types (<code>boolean</code>/<code>bool</code>,
+<code>null</code>/<code>nil</code>, <code>any</code>/<code>value</code>,
+<code>nothing</code>/<code>never</code>), containers and constructors
+written bare (<code>list</code>, <code>vector</code>,
+<code>tensor</code>, <code>pair</code>, <code>procedure</code>,
+<code>closure</code>, <code>hash-table</code>,
+<code>ptr</code>/<code>pointer</code>), the autodiff types
+(<code>dual</code>, <code>ad-node</code>), and the linear resources
+(<code>handle</code>, <code>buffer</code>, <code>stream</code>,
+<code>qubit</code>). A bare container name leaves its element type
+unspecified; the parenthesised form (<code>(vector real)</code>) pins
+it.</p>
 <h4 id="predicate-guarded-narrowing">3.6.7 Predicate-Guarded
 Narrowing</h4>
 <p>Inside a branch guarded by a type predicate, the checker narrows the
@@ -3850,7 +3876,12 @@ passes</li>
 <h4 id="standard-compilation">Standard Compilation</h4>
 <pre class="bash"><code>eshkol-run input.esk -o output</code></pre>
 <h4 id="library-compilation">Library Compilation</h4>
-<pre class="bash"><code>eshkol-run --shared-lib input.esk -o library.o</code></pre>
+<pre class="bash"><code># Library-mode object, for linking into other Eshkol modules
+eshkol-run --shared-lib input.esk -o library.o
+
+# Loadable shared library with platform-C-ABI exports, for a C/Python host
+# (writes libmylib.dylib / libmylib.so / mylib.dll)
+eshkol-run --shared-lib input.esk -o mylib</code></pre>
 <h4 id="ir-dump">IR Dump</h4>
 <pre class="bash"><code>eshkol-run --dump-ir input.esk  # Produces input.ll</code></pre>
 <h4 id="ast-dump">AST Dump</h4>

@@ -1404,12 +1404,17 @@ backed by the existing runtime helper
 <strong>shortest decimal string that reads back as the identical
 <code>double</code></strong> (R7RS 6.2.6): no digits are lost and none
 are fabricated. Integral doubles print without a trailing
-<code>.0</code>. The native compiler and the bytecode VM share one
+<code>.0</code>; negative zero is the one exception and prints
+<code>-0.0</code>, because <code>-0</code> would read back as the
+<em>exact</em> integer zero and lose both the inexactness and the
+observable sign. The native compiler and the bytecode VM share one
 conversion routine, so their output is byte-identical.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(number-&gt;string 42)         ; =&gt; &quot;42&quot;
 (string-&gt;number &quot;3.14&quot;)     ; =&gt; 3.14
-(number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;</code></pre>
+(number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;
+(number-&gt;string 3.0)        ; =&gt; &quot;3&quot;      (integral double, still inexact)
+(number-&gt;string -0.0)       ; =&gt; &quot;-0.0&quot;   (sign and inexactness both survive)</code></pre>
 <hr />
 <h2 id="file-io">File &amp; I/O</h2>
 <h3 id="port-operations">Port Operations</h3>
@@ -5791,7 +5796,9 @@ eshkol-run -r &lt;file.esk&gt;         (JIT run file)</code></pre>
 <tr>
 <td><code>--shared-lib</code></td>
 <td><code>-s</code></td>
-<td>Compile as shared library (LinkOnceODR linkage)</td>
+<td>Link a loadable shared library
+(<code>.dylib</code>/<code>.so</code>/<code>.dll</code>); add
+<code>-c</code> for a relocatable object instead</td>
 </tr>
 <tr>
 <td><code>--wasm</code></td>
@@ -5860,6 +5867,94 @@ eshkol-run -r &lt;file.esk&gt;         (JIT run file)</code></pre>
 
 ;; Dump LLVM IR for debugging
 ;; $ eshkol-run --dump-ir program.esk -o program</code></pre>
+<h4 id="shared-lib-the-two-flavours"><code>--shared-lib</code>: the two
+flavours</h4>
+<table>
+<colgroup>
+<col style="width: 54%" />
+<col style="width: 45%" />
+</colgroup>
+<thead>
+<tr>
+<th>Invocation</th>
+<th>Artifact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--shared-lib</code></td>
+<td>Linked shared library: <code>libNAME.dylib</code> /
+<code>libNAME.so</code> / <code>NAME.dll</code></td>
+</tr>
+<tr>
+<td><code>--shared-lib -c</code>,
+<code>--shared-lib --emit-object</code>,
+<code>--shared-lib -o NAME.o</code></td>
+<td>Relocatable object with library linkage (no <code>main</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The linked library is self-contained: it carries the Eshkol runtime,
+so a host needs no further link arguments.</p>
+<pre class="c"><code>/* $ eshkol-run mylib.esk --shared-lib -o mylib   -&gt;  libmylib.dylib */
+void*  h    = dlopen(&quot;./libmylib.dylib&quot;, RTLD_NOW);
+void (*init)(void*) = dlsym(h, &quot;__eshkol_lib_init__&quot;);
+void* (*arena)(void) = dlsym(h, &quot;get_global_arena&quot;);
+init(arena());                       /* once, before any exported call */
+
+eshkol_tagged_value_t (*f)(eshkol_tagged_value_t) = dlsym(h, &quot;my-function&quot;);
+eshkol_tagged_value_t r = f(eshkol_make_int64(41, true));</code></pre>
+<h4 id="shared-library-export-abi">Shared-library export ABI</h4>
+<p>Every top-level <code>(define (f ...) ...)</code> in a linked shared
+library is exported under its source name with the <strong>platform C
+ABI</strong> for <code>eshkol_tagged_value_t</code>: declare it in C
+exactly as it reads in the header and call it directly. Both directions
+are covered – return values and tagged arguments passed by value.</p>
+<p>This is a boundary contract, not the internal one. Eshkol’s internal
+calling convention passes a tagged value as an LLVM first-class struct,
+which the backend flattens into one register per field; that is not how
+a C compiler passes the same 16-byte struct. The exported name is
+therefore a thunk that speaks the C ABI, and the unwrapped body remains
+available under <code>&lt;name&gt;__eshkol_internal_abi</code> for
+tooling and debuggers. Per platform:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 66%" />
+</colgroup>
+<thead>
+<tr>
+<th>Target</th>
+<th>Exported shape</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AArch64 (AAPCS64), x86-64 SysV, riscv64, ppc64le, loongarch64 –
+macOS, Linux, and Windows on ARM64</td>
+<td>16-byte value in the first two general-purpose registers
+(<code>x0:x1</code>, <code>rax:rdx</code>)</td>
+</tr>
+<tr>
+<td>Windows x64 (Microsoft ABI)</td>
+<td>Hidden <code>sret</code> pointer for the return, tagged arguments by
+pointer to a caller-owned temporary – what MSVC/clang-cl generate for
+the same declaration</td>
+</tr>
+<tr>
+<td>32-bit targets</td>
+<td>Not supported for the linked flavour: the return is via memory but
+arguments are by value on the stack. <code>--shared-lib</code> reports
+this and writes no artifact; use <code>--shared-lib -c</code> and link
+the object yourself.</td>
+</tr>
+</tbody>
+</table>
+<p>The relocatable object flavour keeps the <strong>internal</strong>
+convention on every symbol, because those objects are linked into other
+Eshkol modules (the precompiled standard library,
+<code>cmake/EshkolCompile.cmake</code> consumers) that call with it. Do
+not dlopen a <code>--shared-lib -c</code> object and call it from C.</p>
 <hr />
 <h3 id="eshkol-repl-interactive-repl"><code>eshkol-repl</code> –
 Interactive REPL</h3>
