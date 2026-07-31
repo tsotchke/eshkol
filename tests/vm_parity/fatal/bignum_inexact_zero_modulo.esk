@@ -4,6 +4,6 @@
 ; that hit a zero divisor produced a number and carried on.
 ;
 ; `/` is deliberately NOT part of this: an inexact zero divisor there is
-; ordinary IEEE-754 division, gated by corpus/52_bignum_inexact_zero_division.esk.
+; ordinary IEEE-754 division, gated by corpus/53_bignum_inexact_zero_division.esk.
 (display (modulo (expt 2 100) 0.0))
 (display "MUST-NOT-PRINT")

@@ -159,9 +159,11 @@ for the native side: when native is repaired, the repro is **promoted out of
 a defect the compiler no longer has.
 
 Retired this way so far — `bignum_div_inexact_zero_native.esk` →
-`corpus/52_bignum_inexact_zero_division.esk`, `do_set_param_native.esk` →
+`corpus/53_bignum_inexact_zero_division.esk`, `do_set_param_native.esk` →
 `corpus/51_do_body_set_mutation.esk`, and `float_remainder_modulo_native.esk`
-→ `corpus/50_flonum_integer_division.esk`.
+→ `corpus/50_flonum_integer_division.esk`. (`corpus/52` was claimed by
+`#394`'s `52_numeric_tag_dispatch.esk` on master; this file was renumbered
+to the next free slot when the branches merged.)
 
 ## Regenerating
 

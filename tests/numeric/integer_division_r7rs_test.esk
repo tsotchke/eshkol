@@ -10,7 +10,7 @@
 ;     C library's IEEE-754 round-to-NEAREST remainder() instead of the
 ;     TRUNCATED remainder, and `modulo` had no flonum path at all (it took the
 ;     SRem of two IEEE-754 bit patterns).
-;   * bignum_div_inexact_zero_native.esk (-> corpus/52) — a bignum divided by
+;   * bignum_div_inexact_zero_native.esk (-> corpus/53) — a bignum divided by
 ;     an INEXACT zero answered 0 instead of an infinity.
 ; Plus floor-quotient / floor-remainder / floor/, which were int64-only and
 ; therefore disagreed with the `modulo` they are DEFINED to equal.
