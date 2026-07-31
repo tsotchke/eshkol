@@ -49,6 +49,92 @@
   clean `jacobian` diagnostic for a vector-valued one, instead of dropping the
   tangent or dereferencing a non-AD value (#338).
 
+### Resolved in the v1.3.4-evolve correctness wave
+
+The second half of the cycle was a consumer-hardening correctness wave whose
+organising principle is that a wrong answer must not be able to look like a
+right one. The change that made the rest findable is listed first.
+
+- **A diagnosed program built and ran anyway.** The compiler printed
+  `ERROR: …` and then emitted, linked and executed a binary regardless, so a
+  diagnosed program produced a wrong answer instead of a failed build. An
+  emitted error diagnostic now prevents artifact emission and execution. This
+  converted a family of silent wrong answers into build failures — which is how
+  most of the entries below were found.
+- **`derivative`, `gradient` and `hessian` returned garbage at exact points.**
+  At a rational or bignum point the operators produced garbage, `#()`, or a
+  SIGSEGV, and lost exactness where the Taylor tower keeps it. They now route
+  through the same Taylor-tower pass as `derivative-n`, with the contract being
+  identity in **value and exactness**: `(derivative f x)` equals
+  `(derivative-n f x 1)` and `(hessian f x)` equals `(derivative-n f x 2)`. The
+  tier demotes on the first transcendental, matching R7RS exactness contagion.
+  The inexact path is proven unchanged. (#393)
+- **`gradient` was silently wrong when a loop filled a vector with
+  `vector-set!`.** Loops containing `vector-set!` get a per-iteration nursery
+  reset, and the write barrier that must promote escapees excluded dual numbers
+  (a headerless 16-byte payload in the nursery). The nursery recycled the dual;
+  the same address was reallocated on the next iteration; the primal survived
+  and the **tangent was silently corrupted**. One shared "carries an arena
+  pointer" predicate now governs the barrier, the `with-region` escape and the
+  nursery recycle, and tape-retained AD nodes allocate from the tape's owning
+  arena. (#396)
+- **Gradients of runtime closures with declared arity 17–32 crashed, returned
+  all zeros, or raised a type error.** The declared ceiling was 32 but a
+  `MAX_CALL_ARGS_LIMIT=16` clamp made everything above 16 undefined. The arity
+  spread is now outlined into one shared per-module helper that pins the whole
+  declared range. (#398)
+- **The bytecode VM decided exactness from a result's *value* rather than its
+  operands' tags,** so inexact arithmetic silently became exact. Exactness is
+  now decided by operand tag on the VM's whole numeric surface. (#394)
+- **Native flonum `modulo`, `remainder`, `quotient` and the floor-division
+  family were wrong across the board.** The double path converted through
+  `int64` and packed the result **exact**, so `(quotient 7.0 2.0)` reported
+  `exact? #t`; a `1e20` clamp constant leaked out and division by `0.0`
+  returned the clamp. Results now stay double, and a zero divisor raises
+  uniformly across `quotient` / `remainder` / `modulo`, including the mixed
+  bignum route.
+- **`iota` silently ignored its `start` and `step` arguments.** The stdlib
+  defined it as strictly 1-argument while callers were already writing
+  `(iota 5 1)` and `(iota 5 0 2)`; codegen discarded the extra arguments, so
+  both returned `(0 1 2 3 4)` with no error. Both SRFI-1 forms now work, and
+  passing too many arguments is a fatal arity error rather than a silent drop
+  (ESH-0362).
+- **`define-library` could not see a library defined in the same file.** The
+  form validated its library name and threw it away, so a same-unit `import`
+  failed. Fixed at the root on **all three** engines. The VM lane was the real
+  gap — it knew none of `define-library` / `import` / `export` — and three
+  latent VM defects were fixed with it: `provide` emitted nothing (slot shift),
+  the module loader desynchronised its POP, and a fail-open forward reference is
+  now refused instead of silently mis-binding. (#402)
+- **`--shared-lib` never linked a shared library, and exited 0 anyway.** It now
+  produces a real, C-ABI-correct shared library in both directions, with the
+  `[2 x i64]` register pair and the Windows sret convention handled, and refuses
+  32-bit targets loudly. (#377)
+- **`with-region` was mis-lowered on the bytecode VM, two independent ways, and
+  returned an untagged value on native.** (#380)
+- **A named-let loop procedure used as a first-class value SIGSEGVed.** Escaped
+  named-let closures now get real capture cells; nested tensor literals coerce.
+  Both VM routes now hold a loop procedure escaped through a global or a
+  let-bound cell. (#381)
+- **`(load …)` and module resolution diverged between the JIT, AOT and import
+  paths.** Four private copies of the resolver are unified behind one
+  `platform::resolve_module_source_path`, and the requiring-file is owned by a
+  scoped source context so the facts cannot drift. The documented search order
+  (file directory, then project root / CWD, then `-I` / `ESHKOL_PATH`, then the
+  bundled `lib`) is now the code's only order. (#407)
+- **Non-local exits leaked regions.** A `raise` / `guard` or a `call/cc` escape
+  crossing an open region now closes it after deep-promoting the in-flight
+  value, and restores the allocation-routing slot before any arena is freed.
+  This also fixes `with-region`, which previously leaked its region on a `raise`
+  out of the body. (#341)
+- **The `stdlib_display` test division and two harness defects that produced
+  false verdicts.** The toolchain-fingerprint guard tried BSD `stat -f` before
+  GNU `stat -c`; on GNU coreutils `-f` means `--file-system`, so every green
+  Linux run was declared `INVALID RUN`. And the stale-directory prune globbed an
+  unmatched pattern into `du`, which under `set -euo pipefail` killed the
+  calling suite silently — the cause of a false red on the language-coverage
+  floor.
+
 ## Resolved in v1.1 (Previously Listed as Planned)
 
 - `eval` — Dynamic code evaluation via REPL JIT
@@ -109,8 +195,28 @@ The HoTT type system supports dependent types for tensor shape verification at c
 ### Top-level mutual recursion grouping
 Top-level mutual recursion requires consecutive function defines. Interleaved non-define expressions break groups, causing forward references to fail. Workaround: place all mutually recursive defines together without intervening expressions.
 
-### Tensor nested syntax not supported in VM parser
-`#((1 2) (3 4))` nested tensor syntax is not supported in the bytecode VM parser. Use flat tensors with `reshape` in the native compiler instead.
+### Tensor nested syntax
+Resolved in v1.3.4-evolve, and the direction of the remaining asymmetry is the
+opposite of what this entry used to claim. A nested collection is now
+classified **by value** rather than by how it was spelled, so every tensor
+operation accepts a runtime-built nest of lists and/or vectors at any rank, and
+`#(#(1.0 2.0) #(3.0 4.0))` remains the rank-2 tensor literal it always was.
+A ragged nest is no longer a parse-time refusal of the whole translation unit;
+it lowers to an ordinary nested vector and raises one catchable error at the
+operation that demanded a tensor. `tensor` and `matmul` are `vm-supported` in
+`tests/vm_parity/PARITY.tsv`. Where the two engines still differ on the
+`(tensor <rectangular nested collection>)` constructor, the manifest is the
+authority — consult the row rather than this page.
+
+### Region handles and `with-region` on the VM
+The surface is shared; the reclamation is not. `region-open?` is
+`vm-supported`, and `region-open` / `region-close` / `op:WITH_REGION` are
+`native-only-justified` because the name resolves on both substrates and the
+handle protocol, its validation and every error message are byte-identical (one
+shared C implementation). A VM program using regions computes the same answer
+as native — it simply does not get the memory back, because the region arena,
+the allocation-slot hijack and the escape promotion are native-arena constructs
+and the VM heap has no escape evacuator.
 
 ### Reverse-mode gradient on the VM
 `gradient` now runs on the bytecode VM at full parity with native codegen
@@ -133,9 +239,46 @@ REPL path in the meantime.
 ## Tracked Open Issues
 
 Edge-case findings surfaced by the adversarial-testing harnesses (see
-[TESTING.md](TESTING.md)). Each has a minimal repro and a ledger entry under
-`.swarm/tasks/ESH-*.json`. None block ordinary use; all are also listed in the
-[CHANGELOG](../CHANGELOG.md) Known Issues section.
+[TESTING.md](TESTING.md)). Each has a minimal repro; the older ones carry a
+ledger entry under `.swarm/tasks/ESH-*.json`, and the items filed during the
+v1.3.4-evolve correctness wave are tracked as build items for v1.3.5. None
+block ordinary use.
+
+**Found during the v1.3.4-evolve correctness wave (new, honest knowns)**
+
+- **AD ignores function shadowing — silent wrong answer.** A parameter that
+  shadows a global function name is differentiated as the *global*, not as the
+  shadowing binding: a case whose correct derivative is `4` answers `6`. This
+  affects inexact points as well as exact ones. It is why the new exact-input
+  differentiation tier (#393) uses a whitelist — a body may mention only its own
+  parameter — rather than accepting arbitrary bodies. Silent-wrong class; the
+  highest-priority open AD defect.
+- **The Taylor tower cannot nest.** `derivative-n` applied to the result of
+  `derivative-n` silently returns `0` where the jet path gives the correct
+  value. Every *well-defined* single-level route is exact; see the
+  derivative-closure entry under **Automatic differentiation** below, which is
+  the same root cause seen from the closure side. Closing it needs a
+  "differentiate a tower" runtime step inside the emitted derivative wrapper.
+- **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
+  `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
+  is complete and bit-identical on both engines. Generic `+` / `*` over `i128`
+  values is not wired on **either** side: native is fatal and the VM answers a
+  wrong value. Use the `i128-*` operators; `i128` deliberately lives off the
+  numeric tower and never auto-promotes, so this is a missing opcode branch
+  rather than a tower-contagion question.
+- **The VM lane ignores a path-literal `(load "x.esk")`.** After the
+  load-path unification (#407) the native, JIT and AOT paths share one resolver.
+  The VM lane still resolves only the CWD `lib/<dotted>` form and silently
+  ignores a path literal. Tracked for v1.3.5; use the dotted module form on the
+  VM in the meantime.
+- **The attention backward pass is open.** The embedding and Fréchet-mean
+  backward passes landed this release with gradient checks; attention's backward
+  pass is not yet closed out.
+- **qLLM oracle exporters can crash under the in-process JIT on macOS.** In
+  traced or coverage-instrumented contexts under load, the qLLM oracle's
+  exporters can crash on the in-process JIT lane. This is an **advisory** lane:
+  the AOT lane is unaffected, the exported values are unaffected, and the
+  release gate is 10/10. Under investigation.
 
 **Automatic differentiation**
 - Vector gradient-of-gradient silently returns zeros — use nested scalar
@@ -236,11 +379,14 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 936 rows —
-  562 `vm-supported`, 45 `native-only-justified`, 329 `gap`, of which 17 are
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 951 rows —
+  578 `vm-supported`, 44 `native-only-justified`, 329 `gap`, of which 17 are
   verified behavioral divergences with reproducible programs under
   `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
-  `op:DERIVATIVE` moved to `vm-supported` this release (#337).
+  `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
+  `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
+  `define-library` fix (#402) — with no new waivers. The differential gate is
+  140/140 on the release cut.
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
   `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
   (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`

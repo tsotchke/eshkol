@@ -1,19 +1,18 @@
 <h1
-id="eshkol-v1.3.4-evolve-resident-correctness-automatic-memory-that-matches-explicit-regions-race-free-parallel-map-exact-gradients-through-every-callable-and-round-tripping-floats">Eshkol
-v1.3.4-evolve — resident correctness: automatic memory that matches
-explicit regions, race-free parallel-map, exact gradients through every
-callable, and round-tripping floats</h1>
+id="eshkol-v1.3.4-evolve-resident-correctness-and-a-wrong-answer-that-can-no-longer-look-like-a-right-one">Eshkol
+v1.3.4-evolve — resident correctness, and a wrong answer that can no
+longer look like a right one</h1>
 <p><strong>Run an Eshkol daemon for 100,000 ticks and its memory stays
-flat. That is v1.3.4-evolve in one line: every defect that long-duration
-resident workloads surfaced, fixed at the architectural root. A loop
-that mutates persistent state every tick now reclaims memory on its own,
-matching explicit <code>with-region</code> byte for byte.
-<code>parallel-map</code> is race-free for closures that allocate and
-return collections. Gradients are exact through every callable form —
-indirect, wrapped, curried — with no finite-difference fallback in the
-gradient path. Printed floats round-trip to the identical
-<code>double</code> (R7RS 6.2.6). The strict type checker finally
-accepts idiomatic dynamic-but-validated code, through a checked
+flat. That is the first half of v1.3.4-evolve in one line: every defect
+that long-duration resident workloads surfaced, fixed at the
+architectural root. A loop that mutates persistent state every tick now
+reclaims memory on its own, matching explicit <code>with-region</code>
+byte for byte. <code>parallel-map</code> is race-free for closures that
+allocate and return collections. Gradients are exact through every
+callable form — indirect, wrapped, curried — with no finite-difference
+fallback in the gradient path. Printed floats round-trip to the
+identical <code>double</code> (R7RS 6.2.6). The strict type checker
+finally accepts idiomatic dynamic-but-validated code, through a checked
 <code>(the &lt;type&gt; expr)</code> ascription and predicate-guarded
 narrowing. High-precision numerics land too: Ozaki-II exact and
 reduced-precision GEMM tiers, a mixed-precision linear solver, and a
@@ -21,13 +20,33 @@ native 128-bit integer type. Moonlab is pinned to v1.2.0 for quantum
 natural gradients, hosted-VM tensor-matmul parity is complete, and a
 linear <code>Qubit</code> type turns no-cloning into a type
 error.</strong></p>
+<p><strong>The second half is a consumer-hardening correctness wave, and
+it has one organising principle: a wrong answer must not be able to look
+like a right one. The change that made the rest findable is that an
+emitted compile-time error now prevents artifact emission and execution
+— the compiler used to diagnose a program and then build and run it
+anyway. That turned a family of silent wrong answers into build
+failures, and the wave that followed fixed them at the root: exactness
+is now decided from an operand’s runtime tag rather than from a result’s
+value shape, on both the native flonum integer-division family and the
+bytecode VM’s whole numeric surface; differentiation answers exactly at
+exact points, survives per-iteration nursery reclamation, and no longer
+returns zeros above gradient arity 16; <code>define-library</code> and
+<code>import</code> resolve same-unit libraries on all three back ends;
+and <code>--shared-lib</code> links a real, C-ABI-correct shared library
+instead of exiting zero with no artifact. Alongside those corrections
+the release adds a portable event loop (kqueue / epoll / IOCP), a
+fixed-point and <code>i128</code> exact-accumulation engine, the qLLM
+bridge implementation its documented backward rules had been waiting
+for, embedding and Fréchet-mean backward passes, and a release gate that
+finally reads CTest results as evidence.</strong></p>
 <p>Eshkol is R7RS Scheme compiled to native code through LLVM 21.
 Automatic differentiation is a compiler primitive, not a tracing
 library. The line between a research demo and a daemon you can walk away
 from is correctness that survives long-duration, resident, and parallel
 workloads. This release is that line.</p>
 <ul>
-<li><p><strong>Automatic memory reclamation matches explicit
+<li><strong>Automatic memory reclamation matches explicit
 regions.</strong> This closes the ESH-0214 memory-management series.
 Take a resident tick loop that mutates persistent state every iteration
 — a knowledge base, a workspace, a growing list. It used to reclaim
@@ -45,8 +64,8 @@ minor collection made deterministic, with no tracing pause. That same
 tick loop now sits flat at 34 MB, byte-for-byte identical to its
 explicit <code>with-region</code> twin. <code>with-region</code> is
 still there for scratch regions. You just no longer need it to get flat
-RSS.</p></li>
-<li><p><strong>Race-free <code>parallel-map</code> for collection-valued
+RSS.</li>
+<li><strong>Race-free <code>parallel-map</code> for collection-valued
 closures.</strong> Map a closure whose body uses per-iteration scope
 reclamation — an internal named-let loop, or a builtin such as
 <code>memv</code>. Cross the parallel threshold and it could hand back
@@ -54,24 +73,24 @@ dangling or overlapping structure. On a pool worker over the shared
 thread-safe arena, scope reclamation now degrades to commit-only:
 allocations are retained, and the shared scope stack is never rewound.
 Results match serial <code>map</code>. ThreadSanitizer reports zero
-arena data races where it previously reported dozens.</p></li>
-<li><p><strong>Exact gradients through every callable form.</strong>
-Reach <code>(gradient f point)</code> through a function parameter or a
+arena data races where it previously reported dozens.</li>
+<li><strong>Exact gradients through every callable form.</strong> Reach
+<code>(gradient f point)</code> through a function parameter or a
 wrapper, or curry it as <code>((gradient f) point)</code>. Both now come
 back byte-identical to the direct call, for scalar multi-argument,
 vector, and non-polynomial losses. The operator recovers the callable’s
 arity from its closure metadata instead of assuming a single tensor
 argument, so a multi-parameter scalar loss no longer gets misdispatched.
 Nothing in the gradient path falls back to finite differences. Every
-form is exact reverse-mode AD.</p></li>
-<li><p><strong>Round-tripping floats.</strong> <code>display</code>,
+form is exact reverse-mode AD.</li>
+<li><strong>Round-tripping floats.</strong> <code>display</code>,
 <code>write</code>, and <code>number-&gt;string</code> emit the shortest
 decimal that reads back as the identical <code>double</code> (R7RS
 6.2.6). Integral doubles keep the no-<code>.0</code> form. The native
 compiler and the bytecode VM share one portable-C routine, so their
 output is byte-identical. <code>(sqrt 2.0)</code> prints
-<code>1.4142135623730951</code>.</p></li>
-<li><p><strong>Strict-mode types that accept idiomatic code.</strong> A
+<code>1.4142135623730951</code>.</li>
+<li><strong>Strict-mode types that accept idiomatic code.</strong> A
 checked <code>(the &lt;type&gt; expr)</code> ascription asserts a type
 to the checker as a trusted assertion, and costs nothing at runtime.
 Predicate-guarded narrowing teaches the checker that a value tested by
@@ -81,53 +100,144 @@ cancelled at <code>set!</code>. Sum-type annotations are honored on
 named-let parameters. A numeric-tower join gives recursive accumulators
 their least-upper-bound numeric type. A linear <code>Qubit</code> type
 enforces use-exactly-once on declared linear parameters, which turns the
-no-cloning guarantee into a type error rather than a
-convention.</p></li>
-<li><p><strong>High-precision numerics.</strong> Ozaki-II recovers
-full-f64 <code>C = A*B</code> out of reduced-precision tensor cores. It
-is certified against an independent CPU f64 reference, and against the
-new native 128-bit integer path. A CUDA INT8 tier and a Metal
+no-cloning guarantee into a type error rather than a convention.</li>
+<li><strong>High-precision numerics.</strong> Ozaki-II recovers full-f64
+<code>C = A*B</code> out of reduced-precision tensor cores. It is
+certified against an independent CPU f64 reference, and against the new
+native 128-bit integer path. A CUDA INT8 tier and a Metal
 reduced-precision fully-GPU fast tier are both opt-in and default off.
 <code>linear-solve</code> is a full-f64 dense solver with a
 mixed-precision iterative-refinement fast path. That path certifies a
-full-f64 residual, and drops back to a plain-f64 LU when it
-cannot.</p></li>
-<li><p><strong>Quantum and VM parity.</strong> Moonlab is pinned to
-v1.2.0. The pin brings <code>vqe_compute_qgt</code> (quantum geometric
-tensor / quantum natural gradient) and a smooth first-principles H2/LiH
+full-f64 residual, and drops back to a plain-f64 LU when it cannot.</li>
+<li><strong>Quantum and VM parity.</strong> Moonlab is pinned to v1.2.0.
+The pin brings <code>vqe_compute_qgt</code> (quantum geometric tensor /
+quantum natural gradient) and a smooth first-principles H2/LiH
 potential-energy surface. The H2 equilibrium oracle at 0.735 Å is
 updated to <code>-1.142200155381</code> Ha. Hosted-VM tensor matmul
 parity is complete: <code>arange</code> in 1/2/3-argument forms,
 nested-literal tensor operands, and multi-dimensional
-<code>tensor-ref</code>/<code>tensor-set!</code>.</p></li>
-<li><p><strong>Every declared executable surface has evidence, and the
+<code>tensor-ref</code>/<code>tensor-set!</code>.</li>
+</ul>
+<h2 id="the-correctness-wave">The correctness wave</h2>
+<p>The first half of the cycle fixed what resident workloads surfaced.
+The second half fixed what <em>nobody</em> had surfaced, because the
+compiler had been hiding it.</p>
+<ul>
+<li><strong>A diagnosed program no longer builds and runs.</strong> The
+compiler used to print <code>ERROR: …</code> and then emit, link and
+execute a binary anyway, so a diagnosed program produced a wrong answer
+instead of a failed build. This is the mechanism that kept the rest of
+this release’s defects quiet: each of them was reported at compile time,
+and every report was ignored. Reporting an error is one call at any of
+805 sites; propagating one is a return path through every enclosing
+frame. All 805 sites now funnel through four logging primitives, so an
+authoritative error state lives in one place and every path contributes
+to it. Downstream, this converted a family of silent wrong answers into
+build failures — including several fixed in this release, which is how
+they were found.</li>
+<li><strong>Exactness is decided by an operand’s tag, not by a result’s
+shape.</strong> Native flonum <code>modulo</code>,
+<code>remainder</code>, <code>quotient</code> and the floor-division
+family were wrong across the board: the double path converted through
+<code>int64</code> and packed the result <em>exact</em>, so
+<code>(quotient 7.0 2.0)</code> reported <code>exact? #t</code>; a
+<code>1e20</code> clamp constant leaked into results and division by
+<code>0.0</code> returned the clamp. Independently, the bytecode VM
+decided a numeric result’s exactness from its value rather than from its
+operands’ tags, so inexact arithmetic silently became exact across the
+VM’s whole numeric surface. Both are fixed at the root, and a zero
+divisor now raises uniformly across <code>quotient</code> /
+<code>remainder</code> / <code>modulo</code> on every route.</li>
+<li><strong>Differentiation is exact at exact points, and survives
+automatic reclamation.</strong> At a rational or bignum point,
+<code>derivative</code>, <code>gradient</code> and <code>hessian</code>
+returned garbage, <code>#()</code>, or a SIGSEGV. They now route through
+the same Taylor-tower pass as <code>derivative-n</code>, with identity
+in value <em>and</em> exactness: <code>(derivative f x)</code> equals
+<code>(derivative-n f x 1)</code>, <code>(hessian f x)</code> equals
+<code>(derivative-n f x 2)</code>, and the tier demotes on the first
+transcendental. Separately, a loop that filled a vector with
+<code>vector-set!</code> produced a silently corrupted gradient: the
+per-iteration nursery recycled a dual number the write barrier failed to
+recognise, so the primal survived and the tangent was quietly wrong. One
+shared “carries an arena pointer” predicate now governs the write
+barrier, the <code>with-region</code> escape and the nursery recycle.
+And a gradient of a runtime closure with declared arity 17–32 crashed,
+returned all zeros, or raised a type error — the declared ceiling was 32
+but an internal clamp of 16 made everything above it undefined.</li>
+<li><strong>Modules, and a shared library that is actually a shared
+library.</strong> <code>define-library</code> validated its library name
+and threw it away, so an <code>import</code> could not see a library
+defined in the same file. Fixed on all three back ends — and the VM lane
+was the real gap, since it knew none of <code>define-library</code> /
+<code>import</code> / <code>export</code>; three latent VM defects were
+fixed with it. <code>op:IMPORT</code>, <code>op:PROVIDE</code> and
+<code>op:REQUIRE</code> move to <code>vm-supported</code> with no new
+waivers. <code>--shared-lib</code> never linked a shared library and
+exited 0 anyway; it now produces a real, C-ABI-correct one. Module and
+<code>(load …)</code> resolution ran from four private copies of the
+same resolver on the JIT, AOT and import paths; they are unified behind
+one implementation whose search order is the documented one.</li>
+<li><strong>New capability alongside the corrections.</strong> A
+portable event loop over kqueue / epoll / IOCP, fail-closed on WASM. A
+fixed-point and <code>i128</code> exact-accumulation engine with
+order-independent, bit-exact reductions. The qLLM bridge implementation
+its documented backward rules had been waiting for, plus embedding and
+Fréchet-mean backward passes with gradient checks. User-reachable region
+handles — <code>region-open</code> / <code>region-close</code> /
+<code>region-open?</code> — for loop shapes where a lexical block is
+awkward, with a generation-counted handle so every stale token is
+detectably stale.</li>
+<li><strong>The release gate reads CTest.</strong> No completion-oracle
+criterion consumed a CTest result at all, so a red CTest run could not
+turn the release gate red. CTest now emits per-test, per-group and
+whole-suite trace events, and a group whose regex matches no configured
+test is reported ABSENT and <strong>fails</strong> the gate — a pillar
+cannot quietly stop being covered because its tests were renamed or
+configured out.</li>
+</ul>
+<h2 id="evidence">Evidence</h2>
+<ul>
+<li><strong>Every declared executable surface has evidence, and the
 evidence is execution-backed.</strong> The language-surface manifest is
-1,078/1,078. Every one of the 1,078 declared constructs earned its row
+1,091/1,091. Every one of the 1,091 declared constructs earned its row
 by running: it dispatched or executed in a passing run. Lexical
 name-presence no longer counts — it is a diagnostic now, and earns no
-release credit. The surface was honestly re-baselined upward from 1,056,
-as the <code>i128</code> tower, <code>linear-solve</code>, and the
-string/pointer conversions landed as new core builtins. The coverage
-floor and deficit ledger are ratcheted to 1,078, so nobody can walk the
-number back quietly.</p></li>
-<li><p><strong>VM results are explicit, not overstated.</strong> The
-parity manifest is 936 rows: 562 <code>vm-supported</code>, 45
+release credit. The surface was honestly re-baselined upward across the
+cycle, from 1,056, as the <code>i128</code> tower,
+<code>linear-solve</code>, the string/pointer conversions, the portable
+event loop and the region-handle surface landed as new core builtins.
+The coverage floor and deficit ledger are ratcheted to 1,091, so nobody
+can walk the number back quietly.</li>
+<li><strong>The gates, measured on the release cut.</strong> The
+aggregate suite is 45/45 suites and 770 individual tests. CTest is
+140/140, and as of this release it is completion-oracle evidence rather
+than advice. The SICP full-book gate is 88/88 probes across all five
+chapters under both <code>-r</code> and AOT. The reference-Scheme
+differential oracle is 34/34 AGREE against chibi-scheme 0.12.0. The VM
+parity differential is 140/140. The qLLM oracle gate is 10/10. ICC
+readiness reports 100, verdict <code>ready</code>.</li>
+<li><strong>VM results are explicit, not overstated.</strong> The parity
+manifest is 951 rows: 578 <code>vm-supported</code>, 44
 <code>native-only-justified</code>, and 329 <code>gap</code>. Of those
 gaps, 17 are verified behavioral divergences with reproducible programs.
 <code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> move to
 <code>vm-supported</code> this release, so <code>gradient</code> now
-runs on the bytecode VM byte-identically to native. Higher-order nesting
-stays native-only. This is not a claim of complete backend parity.
+runs on the bytecode VM byte-identically to native, and the R7RS module
+forms follow. Higher-order nesting stays native-only, and region
+<em>reclamation</em> stays native-only even though the region surface,
+its validation and its error messages are byte-identical on both
+substrates. This is not a claim of complete backend parity.
 <code>PARITY.tsv</code> separately ratchets intentionally native-only
 facilities and known VM gaps, so unsupported behavior cannot masquerade
-as success.</p></li>
-<li><p><strong>Release packages are portable and honestly
+as success.</li>
+<li><strong>Release packages are portable and honestly
 labelled.</strong> The release payload is 15 platform packages plus
 <code>SHA256SUMS.txt</code>: 16 published files. Linux and Windows
 x64/ARM64, plus macOS x64/ARM64, cover the Lite and XLA tiers. Real CUDA
 packages cover Linux x64/ARM64 and Windows x64. Windows ARM64 CUDA is
 not advertised, because NVIDIA does not provide the required supported
-toolkit.</p></li>
+toolkit.</li>
 </ul>
 <p>Full engineering detail lives in <a
 href="CHANGELOG.md">CHANGELOG.md</a>. The user-facing summary and gate
@@ -136,140 +246,10 @@ complete AD walkthrough is the <a
 href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
 guide</a>, and the memory model is documented in <a
 href="docs/reference/runtime/memory-model.md">docs/reference/runtime/memory-model.md</a>.
-Every claim above is tied to shipped code and an executable gate.
-<strong>Eshkol v1.3.4-evolve is a resident-correctness release: every
-defect surfaced by long-duration resident workloads is fixed at the
-architectural root. Automatic per-iteration memory reclamation now
-matches explicit <code>with-region</code> even for loops that mutate
-persistent state every tick; <code>parallel-map</code> is race-free for
-closures that allocate and return collections; gradients are exact
-through every callable form — indirect, wrapped, and curried, with no
-finite-difference fallback in the gradient path; printed floats
-round-trip to the identical <code>double</code> (R7RS 6.2.6); and the
-strict type checker accepts idiomatic dynamic-but-validated code via a
-checked <code>(the &lt;type&gt; expr)</code> ascription and
-predicate-guarded narrowing. The release also lands the high-precision
-numerics wave — Ozaki-II exact and reduced-precision GEMM tiers, a
-mixed-precision linear solver, and a native 128-bit integer type — a
-Moonlab v1.2.0 quantum pin with quantum-natural-gradient support, full
-hosted-VM tensor-matmul parity, and a linear <code>Qubit</code>
-type.</strong></p>
-<p>Eshkol is R7RS Scheme compiled to native code through LLVM 21, with
-automatic differentiation as a compiler primitive rather than a tracing
-library. v1.3.4-evolve is about the property that separates a research
-demo from something you can leave running as a daemon: correctness that
-holds over long-duration, resident, and parallel workloads.</p>
-<ul>
-<li><p><strong>Automatic memory reclamation matches explicit
-regions.</strong> This closes the ESH-0214 memory-management series. A
-resident tick/daemon loop that mutates persistent state on every
-iteration — a knowledge base, a workspace, a growing list — used to get
-no per-iteration reclamation at all (the static escape analysis rejected
-any loop body containing a persistent mutation) and leaked one
-iteration’s transient garbage forever: about 3,366 bytes per tick,
-roughly 355 MB over 100,000 ticks. Such a loop is now lowered with a
-per-loop nursery region reusing the same deep-transitive
-escape-promotion path <code>with-region</code> uses: each iteration’s
-allocations land in the nursery, the existing structural write barriers
-promote any persistent-mutation escapee out at the store, each tail-call
-back edge promotes the loop-carried out-values and resets the nursery,
-and the loop exit escapes the result and tears the nursery down — a
-deterministic generational minor collection with no tracing pause. The
-same tick loop is now flat at 34 MB, byte-for-byte identical to its
-explicit <code>with-region</code> twin. <code>with-region</code> remains
-available for scratch regions but is no longer required to get flat
-RSS.</p></li>
-<li><p><strong>Race-free <code>parallel-map</code> for collection-valued
-closures.</strong> A closure mapped in parallel whose body used
-per-iteration scope reclamation — an internal named-let loop, or a
-builtin such as <code>memv</code> — could return dangling or overlapping
-structure once the input crossed the parallel threshold. On a pool
-worker operating on the shared thread-safe arena, scope reclamation now
-degrades to commit-only (allocations are retained; the shared scope
-stack is never rewound), so results are identical to serial
-<code>map</code>. ThreadSanitizer reports zero arena data races where it
-previously reported dozens.</p></li>
-<li><p><strong>Exact gradients through every callable form.</strong>
-<code>(gradient f point)</code> reached through a function parameter or
-wrapper, and the curried <code>((gradient f) point)</code>, are now
-byte-identical to the direct call for scalar multi-argument, vector, and
-non-polynomial losses. The operator recovers the callable’s arity from
-its closure metadata instead of assuming a single tensor argument, so a
-multi-parameter scalar loss is no longer misdispatched. There is no
-finite-difference fallback anywhere in the gradient path — every form is
-exact reverse-mode AD.</p></li>
-<li><p><strong>Round-tripping floats.</strong> <code>display</code>,
-<code>write</code>, and <code>number-&gt;string</code> emit the shortest
-decimal that reads back as the identical <code>double</code> (R7RS
-6.2.6). Integral doubles keep the no-<code>.0</code> form. The native
-compiler and the bytecode VM share one portable-C routine, so their
-output is byte-identical. <code>(sqrt 2.0)</code> prints
-<code>1.4142135623730951</code>.</p></li>
-<li><p><strong>Strict-mode types that accept idiomatic code.</strong> A
-checked <code>(the &lt;type&gt; expr)</code> ascription asserts a type
-to the checker as a trusted assertion and is a pure runtime no-op;
-predicate-guarded narrowing teaches the checker that a value tested by
-one of eight type predicates is that type inside the guarded branch
-(honored across <code>if</code> and <code>and</code>, cancelled at
-<code>set!</code>); sum-type annotations are honored on named-let
-parameters; and a numeric-tower join gives recursive accumulators their
-least-upper-bound numeric type. A linear <code>Qubit</code> type
-enforces use-exactly-once on declared linear parameters, giving quantum
-registers a no-cloning guarantee at the type level.</p></li>
-<li><p><strong>High-precision numerics.</strong> Ozaki-II recovers
-full-f64 <code>C = A*B</code> from reduced-precision tensor cores,
-certified against an independent CPU f64 reference and against the new
-native 128-bit integer path; a CUDA INT8 tier and a Metal
-reduced-precision fully-GPU fast tier are both opt-in and default off.
-<code>linear-solve</code> is a full-f64 dense solver with a
-mixed-precision iterative-refinement fast path that certifies a full-f64
-residual and falls back to a plain-f64 LU when it cannot.</p></li>
-<li><p><strong>Quantum and VM parity.</strong> Moonlab is pinned to
-v1.2.0, adding <code>vqe_compute_qgt</code> (quantum geometric tensor /
-quantum natural gradient) and a smooth first-principles H2/LiH
-potential-energy surface; the H2 equilibrium oracle at 0.735 Å is
-updated to <code>-1.142200155381</code> Ha. Hosted-VM tensor matmul
-parity is complete: <code>arange</code> in 1/2/3-argument forms,
-nested-literal tensor operands, and multi-dimensional
-<code>tensor-ref</code>/<code>tensor-set!</code>.</p></li>
-<li><p><strong>Every declared executable surface has evidence, and the
-evidence is execution-backed.</strong> The language-surface manifest is
-1,078/1,078: every one of the 1,078 declared constructs is proven by
-runtime execution evidence — it dispatched or executed in a passing run
-— rather than by lexical name-presence, which is now only a diagnostic
-and earns no release credit. The surface was honestly re-baselined
-upward from 1,056 as the <code>i128</code> tower,
-<code>linear-solve</code>, and the string/pointer conversions landed as
-new core builtins, and the coverage floor and deficit ledger are
-ratcheted to 1,078 so the number cannot be walked back
-silently.</p></li>
-<li><p><strong>VM results are explicit, not overstated.</strong> The
-parity manifest is 936 rows — 562 <code>vm-supported</code>, 45
-<code>native-only-justified</code>, and 329 <code>gap</code>, of which
-17 are verified behavioral divergences with reproducible programs.
-<code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> move to
-<code>vm-supported</code> this release, so <code>gradient</code> runs on
-the bytecode VM byte-identically to native; higher-order nesting stays
-native-only. This is not a claim of complete backend parity:
-<code>PARITY.tsv</code> separately ratchets intentionally native-only
-facilities and known VM gaps so unsupported behavior cannot masquerade
-as success.</p></li>
-<li><p><strong>Release packages are portable and honestly
-labelled.</strong> The release payload is 15 platform packages plus
-<code>SHA256SUMS.txt</code>: 16 published files. Linux and Windows
-x64/ARM64 plus macOS x64/ARM64 cover Lite and XLA; real CUDA packages
-cover Linux x64/ARM64 and Windows x64. Windows ARM64 CUDA is not
-advertised, because NVIDIA does not provide the required supported
-toolkit.</p></li>
-</ul>
-<p>Full engineering detail lives in <a
-href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and gate
-matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the
-complete AD walkthrough is the <a
-href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
-guide</a>; the memory model is documented in <a
-href="docs/reference/runtime/memory-model.md">docs/reference/runtime/memory-model.md</a>.
-Every claim above is tied to shipped code and an executable gate.</p>
+Known limitations, including the ones this release’s own hardening
+surfaced, are in <a
+href="docs/KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a>. Every claim above
+is tied to shipped code and an executable gate.</p>
 <hr />
 <h1
 id="eshkol-v1.3.3-evolve-quantum-circuits-you-can-differentiate-post-quantum-crypto-and-incremental-dataflow">Eshkol

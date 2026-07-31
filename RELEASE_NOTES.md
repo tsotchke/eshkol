@@ -33,6 +33,19 @@ implementation its documented backward rules had been waiting for, embedding
 and Fréchet-mean backward passes, and a release gate that finally reads CTest
 results as evidence.
 
+**Release Date**: July 31, 2026
+
+**Release gates** (all measured on the release cut): aggregate suite 45/45
+suites and 770 individual tests; CTest 140/140, which as of this release is
+itself completion-oracle evidence rather than advice; executable language
+coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
+across all five chapters under both `-r` and AOT; reference-Scheme differential
+oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 140/140;
+qLLM oracle gate 10/10; ICC readiness 100, verdict `ready`. The VM parity
+manifest is 951 rows — 578 `vm-supported`, 44 `native-only-justified`, 329
+`gap`, of which 17 are verified behavioral divergences with reproducible
+programs under `tests/vm_parity/found/`.
+
 ## Highlights
 
 ### Automatic memory reclamation matches explicit regions
@@ -352,7 +365,11 @@ results as evidence.
 - **Coverage-floor hardening.** The executable language-surface manifest is
   regenerated for the new VM special forms and the coverage floor is enforced
   across the new-feature families, so a newly public surface cannot ship without
-  executable evidence.
+  executable evidence. The surface and the floor are both **1,091**, at
+  **1,091/1,091 (100.0%) execution-backed** coverage: a construct earns its row
+  only by dispatching or executing in a passing run, lexical name-presence is a
+  diagnostic that earns no release credit, and the monotonic deficit ledger
+  refuses to record a larger deficit without an explicit override.
 - **WASM execute-and-diff differential lane.** A new lane builds the VM
   WebAssembly module from current source, executes the VM-supported corpus under
   Node, and byte-diffs its output against native `eshkol-run -r`, so WASM output
