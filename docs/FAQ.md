@@ -130,7 +130,7 @@ This is transparent to user code — the same expression compiles to different b
 
 - macOS (Apple Silicon ARM64, Intel x86_64)
 - Linux (x86_64, ARM64)
-- Windows (native x86_64 and ARM64 via Visual Studio 2022 + LLVM 21; CUDA packages are x86_64-only)
+- Windows (native x86_64 and ARM64 via Visual Studio 2022 + LLVM 21). x86_64 is covered by the Lite, XLA and CUDA lanes; ARM64 builds and passes the hosted `windows-arm64-lite` and `windows-arm64-xla` CI lanes and ships those two packages, with no mesh/self-verified ARM64 hardware coverage behind them. CUDA packages are x86_64-only.
 - WebAssembly (browser)
 
 ### Can I deploy Eshkol programs as standalone binaries?

@@ -558,14 +558,19 @@ native + VM</td>
 </tr>
 <tr>
 <td>Higher-order derivatives</td>
-<td>Yes</td>
+<td>Yes, with one known exception</td>
 <td>Forward</td>
-<td>Nested differentials; every spelling agrees —
+<td>Every <em>well-defined</em> spelling agrees —
 <code>(derivative-n f x k)</code>, the nested-lambda form, and the
 curried form <code>(define df (derivative f))</code> …
 <code>(derivative df)</code> / <code>(derivative (derivative f))</code>
 (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders
-1-3 are exact)</td>
+1-3 are exact). <strong>Exception</strong>: the Taylor tower does not
+nest — <code>(derivative-n df x k)</code> over a derivative
+<em>closure</em>, and <code>derivative-n</code> of
+<code>derivative-n</code>, silently return <code>0</code>. See <a
+href="KNOWN_ISSUES.md#tracked-open-issues">KNOWN_ISSUES</a> (“The Taylor
+tower cannot nest”)</td>
 </tr>
 <tr>
 <td>Math function support</td>
@@ -2319,8 +2324,14 @@ opener</td>
 <tr>
 <td>Windows</td>
 <td>Yes</td>
-<td>x86-64</td>
-<td>Native Visual Studio 2022 + ClangCL/LLVM 21</td>
+<td>x86-64, ARM64</td>
+<td>Native Visual Studio 2022 + ClangCL/LLVM 21. x86-64 covers Lite, XLA
+and CUDA. ARM64 builds and passes the hosted
+<code>windows-arm64-lite</code> and <code>windows-arm64-xla</code> CI
+lanes (<code>windows-11-arm</code> runners) and ships those two
+packages; there is no mesh/self-verified ARM64 hardware coverage, and
+ARM64 CUDA is not advertised because NVIDIA does not ship the required
+toolkit</td>
 </tr>
 <tr>
 <td>FreeBSD</td>

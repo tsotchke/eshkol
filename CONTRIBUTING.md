@@ -41,10 +41,15 @@ We expect all contributors to adhere to our Code of Conduct. Please be respectfu
 To set up your development environment for Eshkol, you'll need:
 
 1. **C/C++ Compiler**
-   - GCC 9.0+ or Clang 10.0+
-   - On macOS: `brew install gcc` or use the default Clang
+   - A C17 + C++20 compiler — the standards `CMakeLists.txt` enforces
+     (`CMAKE_C_STANDARD 17`, `CMAKE_CXX_STANDARD 20`)
+   - GCC 11+ or Clang 14+ — the toolchain the CI matrix actually builds with
+     (the `ubuntu-22.04` / `ubuntu-22.04-arm` runners' defaults). Older
+     compilers are untested and not supported
+   - On macOS: the default AppleClang (macOS 14 / macOS 15 runners)
    - On Linux: `sudo apt install build-essential`
-   - On Windows: Visual Studio 2022 with Desktop development for C++ and Clang tools
+   - On Windows: Visual Studio 2022 with Desktop development for C++ and
+     LLVM 21 ClangCL
 
 2. **CMake**
    - Version 3.14 or higher

@@ -986,7 +986,8 @@ link errors.
 - **Browser REPL**: https://eshkol.ai/learn
 - **Licence**: MIT
 - **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
-  (GCC 11+, Clang 14+), Ninja recommended.
+  (GCC 11+ or Clang 14+ — the toolchain the CI matrix builds with; AppleClang
+  on macOS, LLVM 21 ClangCL on Windows), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.
 - **Homebrew tap**: `brew tap tsotchke/eshkol && brew install eshkol`; the
   tap formula carries the computed release SHA-256 after tagging.

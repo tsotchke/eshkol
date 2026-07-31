@@ -105,7 +105,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Forward-Mode AD** |
 | Dual numbers | Yes | Forward | O(1) overhead/op |
 | Scalar derivatives | Yes | Forward | `derivative` |
-| Higher-order derivatives | Yes | Forward | Nested differentials; every spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact) |
+| Higher-order derivatives | Yes, with one known exception | Forward | Every *well-defined* spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact). **Exception**: the Taylor tower does not nest — `(derivative-n df x k)` over a derivative *closure*, and `derivative-n` of `derivative-n`, silently return `0`. See [KNOWN_ISSUES](KNOWN_ISSUES.md#tracked-open-issues) ("The Taylor tower cannot nest") |
 | Math function support | Yes | Forward | sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow |
 | Dual arithmetic | Yes | Forward | +, -, *, / |
 | `derivative` operator | Yes | Forward | 30+ tests |
@@ -432,7 +432,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Operating Systems** |
 | Linux | Yes | x86-64, ARM64 | Primary platform |
 | macOS | Yes | x86-64, ARM64 | Full support |
-| Windows | Yes | x86-64 | Native Visual Studio 2022 + ClangCL/LLVM 21 |
+| Windows | Yes | x86-64, ARM64 | Native Visual Studio 2022 + ClangCL/LLVM 21. x86-64 covers Lite, XLA and CUDA. ARM64 builds and passes the hosted `windows-arm64-lite` and `windows-arm64-xla` CI lanes (`windows-11-arm` runners) and ships those two packages; there is no mesh/self-verified ARM64 hardware coverage, and ARM64 CUDA is not advertised because NVIDIA does not ship the required toolkit |
 | FreeBSD | Planned | x86-64 | Planned |
 | **Architectures** |
 | x86-64 | Yes | SSE2+ | AVX/AVX2/AVX-512 supported |

@@ -245,7 +245,9 @@ eshkol_vm.c linked into compiler build</label></li>
 — programs as neural network weights (126/126 inline, 123/123 traced,
 3-way verified)</label></li>
 <li><label><input type="checkbox" checked="" />qLLM bridge — Eshkol↔︎qLLM
-tensor conversion with AD integration</label></li>
+tensor conversion with AD integration <em>(design-era claim; the
+implementation landed in v1.3.4-evolve, #386/#392 — see
+below)</em></label></li>
 </ul>
 <h3 id="gpu-acceleration-added">GPU Acceleration (Added)</h3>
 <ul class="task-list">
@@ -823,7 +825,14 @@ printing, checked <code>(the &lt;type&gt; expr)</code> ascription +
 predicate narrowing, linear <code>Qubit</code>, high-precision numerics
 (Ozaki-II exact/fast GEMM, mixed-precision <code>linear-solve</code>,
 <code>i128</code>), Moonlab v1.2.0 (QGT/QNG), full hosted-VM
-tensor-matmul parity</td>
+tensor-matmul parity. Plus the consumer-hardening correctness wave:
+fatal compile diagnostics, tag-decided exactness on both engines,
+exact-point differentiation, same-unit <code>define-library</code> on
+all three back ends, a real <code>--shared-lib</code> (#377), the
+portable event loop, the fixed-point/<code>i128</code> accumulation
+engine, region handles, <strong>the qLLM bridge implementation
+(#386/#392 — the completion the v1.1 line above claimed early)</strong>,
+and embedding/Fréchet-mean backward passes</td>
 </tr>
 <tr>
 <td><strong>v1.4</strong></td>
