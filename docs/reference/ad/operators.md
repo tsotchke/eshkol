@@ -1,7 +1,7 @@
 # Automatic Differentiation — Operator Reference
 
 Every operator, signature, accepted point type, binding form, and capture rule
-below is verified by running it on the v1.3.0 compiler. Outputs are pasted
+below is verified by running it on the v1.3.4 compiler. Outputs are pasted
 exactly as printed by `eshkol-run` (JIT `-r` and AOT agree unless noted). Open
 cells are marked with their ledger id — see
 [support-matrix.md](support-matrix.md).
@@ -43,22 +43,21 @@ Forward mode (4-component Taylor jet). Best for one input / many outputs.
 
 ```scheme
 (derivative (lambda (x) (* x x)) 3.0)       ;; => 6
-(derivative (lambda (x) (sin (* x x))) 1.0) ;; => 1.0806
+(derivative (lambda (x) (sin (* x x))) 1.0) ;; => 1.0806046117362795
 ```
 
-`display` prints doubles at reduced precision (≈5 significant figures), so the
-second result shows as `1.0806` (the full value is 2·cos(1) ≈ 1.08060461).
+`display` prints the **shortest decimal string that reads back as the identical
+double** (R7RS 6.2.6), so the second result shows every digit that is there:
+`1.0806046117362795` is 2·cos(1) to the last bit. See
+[numeric-tower.md](../language/numeric-tower.md) for the printing contract.
 
-> **Not supported (returns `0`).** A **vector- or tensor-valued** function
-> (ℝ → ℝⁿ) does *not* differentiate componentwise under `derivative` on this
-> build — it silently returns `0`:
->
-> ```scheme
-> (derivative (lambda (x) (vector (* x x) (* x x x))) 2.0)  ;; => 0  (NOT #(4 12))
-> ```
->
-> Take per-component derivatives with separate scalar `derivative` calls, or
-> use `jacobian` for a vector-valued map of a vector point.
+A **vector- or tensor-valued** function (ℝ → ℝⁿ) differentiates componentwise:
+
+```scheme
+(derivative (lambda (x) (vector (* x x) (* x x x))) 2.0)  ;; => #(4 12)
+```
+
+`jacobian` remains the operator for a vector-valued map of a *vector* point.
 
 Second derivative by nesting two `derivative` calls (two perturbation slots,
 exact — see architecture):
@@ -133,9 +132,10 @@ prints with `#(…)` and inner rows print as bare `(…)` — `#((6 0) (0 8))` i
 ;; => #((2 1) (1 0))
 ```
 
-> Open cell **ESH-0095**: `hessian` (and `laplacian`) **SIGSEGV** when the
-> point is a `tensor`/`#(…)` literal instead of a `vector`. Use `(vector …)`
-> points for second-order operators. See support-matrix.md.
+Every point form gives the same answer: `(vector 1.0 2.0)`, `(tensor 1.0 2.0)`
+and `#(1.0 2.0)` all return `#((2 1) (1 0))` for the second example. Points are
+classified by their runtime value rather than by the AST node that produced
+them (#343, closing ESH-0095). See support-matrix.md.
 
 ---
 
@@ -151,7 +151,8 @@ prints with `#(…)` and inner rows print as bare `(…)` — `#((6 0) (0 8))` i
 ;; => 4
 ```
 
-> Same open cell **ESH-0095**: SIGSEGV on `tensor`/`#(…)` points; use vectors.
+`laplacian` shares the fixed `hessian` path (it is the trace of the Hessian),
+so it too accepts `vector`, `tensor` and `#(…)` points interchangeably.
 
 ---
 
@@ -221,15 +222,15 @@ for the full rule table.
 
 | Point form | Layout | `gradient`/`jacobian`/`divergence`/`curl` | `hessian`/`laplacian` |
 |------------|--------|-------------------------------------------|-----------------------|
-| `(vector 1.0 2.0)` | 16-byte tagged values | ✅ | ✅ |
-| `#(1.0 2.0)` literal (tensor) | 8-byte doubles | ✅ | ❌ SIGSEGV (**ESH-0095**) |
-| `(tensor 1.0 2.0)` | 8-byte doubles | ✅ | ❌ SIGSEGV (**ESH-0095**) |
-| scalar `3.0` | double | ✅ (1-D) | — |
-| multi-param via `(list …)` | cons list | ✅ (first-order ops) | — |
+| `(vector 1.0 2.0)` | 16-byte tagged values | Yes | Yes |
+| `#(1.0 2.0)` literal (tensor) | 8-byte doubles | Yes | Yes |
+| `(tensor 1.0 2.0)` | 8-byte doubles | Yes | Yes |
+| scalar `3.0` | double | Yes (1-D) | Yes (1-D) |
+| multi-param via `(list …)` | cons list | Yes (first-order ops) | — |
 
-First-order operators accept both `vector` and `tensor` points (verified
-against the [AD oracle](support-matrix.md) matrix). Second-order operators are
-only safe on `vector` points until ESH-0095 lands. See
+First- and second-order operators both accept `vector`, `tensor` and `#(…)`
+points (verified against the [AD oracle](support-matrix.md) matrix, which runs
+every operator on every point form). See
 [../tensors/creation.md](../tensors/creation.md) for the vector-vs-tensor
 distinction.
 

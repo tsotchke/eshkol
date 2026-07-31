@@ -173,8 +173,10 @@ Merge each half independently.
 ```
 ```
 4
-3
+7
 ```
+The merge takes the per-replica maximum of each half independently, so the
+merged counter is `positive{a:5, b:3} − negative{a:1} = 7`.
 
 ## OR-set (observed-remove set)
 

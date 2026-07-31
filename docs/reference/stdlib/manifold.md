@@ -79,9 +79,9 @@ Euclidean is the L2 norm of `a−b`.
 (display (manifold-distance (make-spherical-manifold 3)  a b)) (newline)
 ```
 ```
-0.761342
-0.360555
-1.4289
+0.7613421083415903
+0.36055512754639896
+1.4288992721907328
 ```
 
 Edge case: `(manifold-distance m x x)` returns `0.0` (and for spherical, points with
@@ -102,7 +102,7 @@ great-circle `cos/sin` formula; Euclidean is `base + v`. A near-zero tangent ret
 (display (vector-ref (manifold-exp-map H a v) 0)) (newline)
 ```
 ```
-0.150424
+0.15042424407613583
 ```
 
 ### `(manifold-log-map m base p)`
@@ -119,7 +119,7 @@ with `base`.
 (display (vector-ref (manifold-log-map H a (manifold-exp-map H a v)) 0)) (newline)
 ```
 ```
-0.05
+0.049999999999999975
 ```
 
 ### `(manifold-parallel-transport m base-a base-b v)`
@@ -137,7 +137,7 @@ the transported vector.
 (display (vector-ref (manifold-parallel-transport H a b v) 0)) (newline)
 ```
 ```
-0.0473684
+0.04736842105263158
 ```
 
 Note: the source comments this as a first-order approximation for encoder use; exact
@@ -181,7 +181,7 @@ g_ij = λ(x)²·δ_ij, where λ = 1 (euclidean), 2/(1−‖x‖²) (hyperbolic),
 (display (metric-component H #(0.1 0.2 0.0) 0 0)) (newline)
 ```
 ```
-4.43213
+4.432132963988919
 ```
 
 ### `(manifold-metric m x)`
@@ -194,7 +194,7 @@ materialized in parallel via `parallel-map`.
 (display (vector-ref (vector-ref (manifold-metric H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-4.43213
+4.432132963988919
 ```
 
 ### `(manifold-metric-inverse m x)`
@@ -207,7 +207,7 @@ layout.
 (display (vector-ref (vector-ref (manifold-metric-inverse H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-0.225625
+0.22562500000000002
 ```
 
 ### `(christoffel-symbol m x i j k)`
@@ -223,7 +223,7 @@ Symmetric in the lower indices i,j. Zero everywhere for Euclidean. Argument orde
 (display (christoffel-symbol (make-euclidean-manifold 3) #(0.1 0.2 0.0) 0 1 0)) (newline)
 ```
 ```
-0.210526
+0.21052631578947367
 0
 ```
 
@@ -249,7 +249,7 @@ Single Ricci-tensor entry. Einstein form for constant curvature: Ric_ij = K·(n�
 (display (ricci-component H #(0.1 0.2 0.0) 0 0)) (newline)  ; -1*2*g_00
 ```
 ```
--8.86427
+-8.864265927977838
 ```
 
 ### `(manifold-ricci m x)`
@@ -261,7 +261,7 @@ Full n×n Ricci tensor at `x` as a vector of row-vectors.
 (display (vector-ref (vector-ref (manifold-ricci H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
--8.86427
+-8.864265927977838
 ```
 
 ### `(riemann-component m x i j k l)`
@@ -274,7 +274,7 @@ R_ijkl = K·(g_ik·g_jl − g_il·g_jk). Takes four lower indices i,j,k,l.
 (display (riemann-component H #(0.1 0.2 0.0) 0 1 0 1)) (newline)  ; = -λ⁴
 ```
 ```
--19.6438
+-19.643802610477202
 ```
 
 ## Known issues
@@ -293,11 +293,14 @@ does not crash but produces a **wrong** result:
 (display (manifold-distance H (vector 0.1 0.2 0.0) (vector 0.3 -0.1 0.0))) (newline)
 ```
 ```
-0.251314
-0.761342
+1.2698734918134071
+0.7613421083415903
 ```
 
-The correct distance is `0.761342`; the list form silently returns `0.251314`. This is
+The correct distance is `0.7613421083415903`. The list form reinterprets a cons
+chain through the vector layout, so what it returns is **whatever the adjacent
+heap words happen to hold** — it is not a stable wrong number, and re-running
+the same program prints a different one. This is
 the same "no type error on non-vector/non-tensor geometric input" class tracked by
 [ESH-0069](../../../.swarm/tasks/ESH-0069.json) (*"Tensor ops SIGSEGV on non-tensor
 (vector) input instead of raising a type error"* — here it is silent-wrong rather than a

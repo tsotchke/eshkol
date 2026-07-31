@@ -541,7 +541,10 @@ exp log log10 log2 sqrt pow
 
 ;; List utilities
 (iota n)                  ;; (0 1 ... n-1)
-(iota-from n start)       ;; (start start+1 ... start+n-1)
+(iota n start)            ;; SRFI-1: n elements from start
+(iota n start step)       ;; SRFI-1: n elements, given step
+(iota-from n start)       ;; same as (iota n start)
+(iota-step n start step)  ;; same as (iota n start step)
 (repeat n x)              ;; n copies of x
 (sort lst less?)          ;; merge sort
 (partition pred lst)      ;; split by predicate

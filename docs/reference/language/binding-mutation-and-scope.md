@@ -86,11 +86,12 @@ Unhandled exception: user exception
 The call hit the builtin `raise` (which threw), not the user procedure. Choose a
 different name (e.g. `raise*`) until this is fixed.
 
-### Known issue — top-level names colliding with libc symbols (ESH-0092)
+### Top-level names that look like libc symbols (ESH-0092 / ESH-0103, closed)
 
-Top-level `define`d globals are emitted as raw C symbols. A top-level name that
-matches a libc symbol corrupts that symbol. The program can appear to work and
-then crash at teardown.
+Top-level globals no longer collide with the C symbols of the host runtime. A
+global may be named `free`, `log`, `read`, `write`, `open`, `time` or `exit`;
+it is an ordinary Eshkol binding, its `set!` sticks, and the process exits
+cleanly:
 
 ```scheme
 (define free 0)
@@ -99,11 +100,8 @@ then crash at teardown.
 ```
 ```
 1
-
-[Eshkol] fatal signal: SIGBUS (bus error) — terminating; …
 ```
-The displayed value `1` is correct, but the process dies with SIGBUS because
-`free` aliases libc's `free`. The related **ESH-0103** covers a global named `log`
-whose `set!` is silently lost on cached-JIT/AOT. Avoid libc names
-(`free`, `log`, `read`, `write`, `open`, `time`, `exit`, …) for top-level globals;
-locals inside a `let`/`lambda` are unaffected.
+Verified for each of those names on both the JIT (`-r`) and an AOT binary. The
+earlier symptoms — a SIGBUS at teardown (**ESH-0092**) and a `set!` on a global
+named `log` silently lost under cached-JIT/AOT (**ESH-0103**) — no longer
+reproduce.

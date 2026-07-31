@@ -170,9 +170,12 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   reclaim without a per-step region.
 
 **Recursion depth**
-- Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
-  stdlib `sort`/`length`/`filter` are non-tail-recursive and fail on very large
-  inputs (ESH-0098, ESH-0101, ESH-0108). Mutual tail calls ARE now proper R7RS
+- The stdlib list operations that used to fail on very large inputs no longer
+  do. `sort` is an iterative vector merge sort (ESH-0098 resolved): 1,000,000
+  reversed elements sort in 176 MB peak RSS, 5,000,000 in 848 MB, on the JIT and
+  AOT alike. `length` and `filter` complete on 1,000,000-element lists
+  (ESH-0108 resolved). Deep non-tail user recursion reaches at least 270k frames
+  without a diagnostic-free death. Mutual tail calls ARE now proper R7RS
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
   resolved (2026-07-04). The remaining exception is a higher-order tail call that
   forwards a stack-allocated closure argument, which falls back to a bounded call.

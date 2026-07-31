@@ -156,7 +156,7 @@ kept in lowest terms.
 ```
 ```
 (3 4 2 -3)
-4 1.41421
+4 1.4142135623730951
 ```
 `(round 2.5)` ⇒ `2`: rounding is round-half-to-even (banker's rounding).
 

@@ -1807,7 +1807,10 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 ---
 
 #### `read-line`, `write-line`
-**Syntax**: `(read-line port)`, `(write-line port str)`
+**Syntax**: `(read-line port)`, `(write-line str [port])`
+
+`write-line` takes the string first and the port second; the port is optional
+and defaults to standard output.
 
 **Examples**:
 ```scheme
@@ -1815,7 +1818,7 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 (define line (read-line in))  ; Returns string or EOF
 
 (define out (open-output-file "out.txt"))
-(write-line out "Hello, World!")
+(write-line "Hello, World!" out)
 ```
 
 ---
