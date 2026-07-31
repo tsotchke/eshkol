@@ -3254,6 +3254,40 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Runtime-closure gradient arity spread (the #398 retro-catch).
+    #
+    # The spread is emitted once per module, out of line; before that it was
+    # inlined per gradient site and clamped at the closure dispatcher's static
+    # argument arm count, so arity 17-32 reached through a wrapper was SIGSEGV /
+    # a silent all-zero gradient / a type error -- every one of them inside the
+    # declared ceiling of 32. The test was executed ONLY by
+    # scripts/run_autodiff_tests.sh's glob, which emits no ICC trace and is
+    # referenced by no oracle criterion, so the retro-catch had no gate teeth.
+    # It is a CTest gate here, and scripts/run_ctest_gate.sh rolls it up into
+    # the `runtime_closure_arity_spread_gate` event the release oracle reads.
+    # The pre-fix build DIES at check 19 rather than printing a FAIL, which is
+    # why the summary line -- not the absence of "FAIL:" -- is the pass anchor.
+    add_test(
+        NAME runtime_closure_arity_spread_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/runtime_closure_arity_spread_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(runtime_closure_arity_spread_runtime_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: runtime-closure gradient arity spread"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME runtime_closure_arity_spread_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/runtime_closure_arity_spread_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/runtime_closure_arity_spread_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/runtime_closure_arity_spread_aot'"
+    )
+    set_tests_properties(runtime_closure_arity_spread_aot_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: runtime-closure gradient arity spread"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Tensor-operand and checkpoint-resume hardening.
     #
     # (1) `embedding` reinterpreted its index/weight operands as tensors without

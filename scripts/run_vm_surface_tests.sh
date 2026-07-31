@@ -37,6 +37,27 @@ run_guarded() { # seconds command...
         "$1" "${@:2}"
 }
 
+# ICC evidence.  These probes are the SELF-CHECKING half of the VM surface:
+# each asserts against R7RS (or against a closed form) inside one run, so
+# unlike the native-vs-VM differential in scripts/run_vm_parity.sh a defect
+# SHARED by both back ends cannot pass here by agreement.  That is why the
+# release oracle reads this trace as well as the parity one — most visibly for
+# the 549-check numeric tag-dispatch probe, whose whole point is that an
+# integral-valued flonum must not come back exact.
+TRACE_DIR="$ROOT_DIR/scripts/icc_traces"
+TRACE_FILE="$TRACE_DIR/vm_surface.jsonl"
+mkdir -p "$TRACE_DIR"
+: "${TRACE_FILE:?}"
+: > "$TRACE_FILE"
+
+emit_event() { # name PASS|FAIL snippet
+    python3 -c '
+import json, sys
+print(json.dumps({"kind": "vm_surface", "name": sys.argv[1], "value": sys.argv[2],
+                  "snippet": sys.argv[3], "confidence": 0.95}, ensure_ascii=False))
+' "$1" "$2" "$3" >> "${TRACE_FILE:?}"
+}
+
 echo "========================================="
 echo "  Eshkol VM Extended Surface Tests"
 echo "========================================="
@@ -47,6 +68,7 @@ if [ ! -x "$ESHKOL_RUN" ] || [ ! -x "$VM" ]; then
 fi
 
 passed=0
+failed=0
 for relative in "${TESTS[@]}"; do
     source_file="$ROOT_DIR/$relative"
     stem="$(basename "$relative" .esk)"
@@ -54,21 +76,41 @@ for relative in "${TESTS[@]}"; do
     output="$RUN_DIR/$stem.out"
     printf "Testing %-54s " "$stem"
     "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$module" "$source_file" \
-        >"$RUN_DIR/$stem.compile.out" 2>&1
+        >"$RUN_DIR/$stem.compile.out" 2>&1 || true
+    verdict=PASS
+    detail="self-checking VM surface probe green"
     if ! ESHKOL_VM_NO_DISASM=1 run_guarded 20 "$VM" "$module" >"$output" 2>&1; then
-        echo "FAIL"
-        tail -80 "$output"
-        exit 1
+        verdict=FAIL
+        detail="$(tail -c 200 "$output")"
+    elif grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|ERROR:|unhandled native call' "$output"; then
+        verdict=FAIL
+        detail="$(grep -Em3 '(^|[[:space:]:])FAIL([[:space:]:]|$)|ERROR:|unhandled native call' "$output" | tr '\n' ' ')"
     fi
-    if grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|ERROR:|unhandled native call' "$output"; then
+    emit_event "$stem" "$verdict" "$detail"
+    if [ "$verdict" = "PASS" ]; then
+        echo "PASS"
+        echo "PASSED $relative::vm-surface"
+        passed=$((passed + 1))
+    else
+        # Every probe runs: the trace is the evidence, and stopping at the
+        # first failure would report one defect and hide the rest.
         echo "FAIL"
+        echo "FAILED $relative::vm-surface — $detail"
         tail -80 "$output"
-        exit 1
+        failed=$((failed + 1))
     fi
-    echo "PASS"
-    passed=$((passed + 1))
 done
 
 echo ""
 echo "Passed: $passed"
-echo "Failed: 0"
+echo "Failed: $failed"
+
+if [ "$failed" -eq 0 ]; then
+    emit_event "vm_surface_regression_suite" PASS \
+        "$passed/$passed VM extended-surface probes green (tests/vm/*_surface_regression.esk, compiled to .eskb and executed on the standalone VM)"
+else
+    emit_event "vm_surface_regression_suite" FAIL \
+        "$failed of $((passed + failed)) VM extended-surface probes failed"
+fi
+echo "Trace written: $TRACE_FILE"
+[ "$failed" -eq 0 ] || exit 1
