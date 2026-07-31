@@ -13,20 +13,29 @@ gets introduced on the host side and the WASM build silently picks it up
 as an `env` import, but the JS glue is never updated — the website then
 fails with `function import requires a callable` at instantiation.
 
+Both glue files are mandatory and each is diffed against the FULL import set:
+a stub added to only one of them still breaks the other, so a missing file is a
+hard failure, never a skip.
+
 Usage:
     scripts/check_wasm_imports.py [--build-dir build] [--server PATH]
+    scripts/check_wasm_imports.py --selftest     # scanner regression suite only
 
 Exit:
     0  every WASM env import has a matching JS env stub
     1  one or more imports missing
-    2  no .wasm produced (toolchain / build issue) — neutral fail
+    2  no .wasm produced (toolchain / build issue), a required JS glue file
+       missing, or the scanner's own self-test failed — neutral fail
 
 Notes:
     - The WASM binary parser is intentionally minimal: it walks only the
       header + import section, so it works on any well-formed wasm32 file
       regardless of whether the rest of the module is reachable.
-    - JS env extraction uses a brace-matched scan around `env: {`, so it
-      handles nested object literals (DOM bridge etc.) correctly.
+    - JS env extraction TOKENIZES the glue (comments, the three string
+      flavours, `${…}` substitutions and regex literals) and then brace-matches
+      over the token stream, so nested object literals contribute no keys and
+      no comment or literal can desynchronise the scan.  selftest_extractor()
+      pins that behaviour and runs before every verdict.
     - Smoke programs deliberately exercise different feature surfaces
       (symbols, arena, AD, tensors, parameters) so each unique import
       gets at least one chance to appear in the WASM output.
@@ -148,91 +157,363 @@ def parse_env_imports(wasm_path: Path) -> set[str]:
 
 
 # --------------------------------------------------------------------------- #
-#  JS env-key extractor — brace-matched scan around `env: {`
+#  JS env-key extractor — token-based scan around `env: {`
 # --------------------------------------------------------------------------- #
+#
+# WHY A TOKENIZER AND NOT REGEXES.  The previous extractor matched braces and
+# quote characters with a character scan that did not know where comments were.
+# Two things in the real glue files broke it:
+#
+#   * an apostrophe inside a `//` comment ("WASM can't longjmp out of host
+#     frames") opened a phantom string literal, after which the scan skipped
+#     every `{`/`}` until the next apostrophe.  Skipping an unmatched brace
+#     desynchronises the depth counter, so the `env: { … }` block ended in the
+#     wrong place — the extractor then reported keys it had simply stopped
+#     reading as MISSING.  A gate that names a symbol that is right there in
+#     the file trains people to ignore it.
+#   * a regex literal containing backticks or braces
+#     (`html.replace(/`([^`]+)`/g, …)`) desynchronises it the same way.
+#
+# So the scan must know JS lexical structure: line comments, block comments,
+# the three string flavours (including `${…}` substitutions, which nest), and
+# regex literals.  That is what _tokenize does; extract_env_keys then walks a
+# token stream where a brace is always a real brace.  selftest_extractor()
+# below pins both failure directions with fixtures, and main() runs it before
+# trusting any result, so this scanner can never again go quietly wrong.
 
 
-_KEY_RE = re.compile(r"^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:")
-_LINE_COMMENT_RE = re.compile(r"//.*$")
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_IDENT_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+_NUM_RE = re.compile(r"[0-9][0-9A-Za-z_.]*")
+
+# After these tokens a `/` starts a REGEX literal, not a division: a regex can
+# only appear where an expression may start.  (`}` is treated as
+# regex-permitting — a block close — because `}` / division is vanishingly rare
+# and misreading a regex as division is the damaging direction.)
+_REGEX_OK_KEYWORDS = frozenset({
+    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+    "do", "else", "case", "throw", "yield", "await",
+})
+
+
+class _Tok:
+    """One JS token: kind in {ident, num, string, regex, punct}."""
+
+    __slots__ = ("kind", "text", "pos")
+
+    def __init__(self, kind: str, text: str, pos: int):
+        self.kind = kind
+        self.text = text
+        self.pos = pos
+
+    def is_punct(self, ch: str) -> bool:
+        return self.kind == "punct" and self.text == ch
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<{self.kind} {self.text!r} @{self.pos}>"
+
+
+def _scan_string(js: str, i: int) -> int:
+    """Index just past the string/template literal starting at `js[i]`.
+
+    Handles backslash escapes and, for templates, `${…}` substitutions — which
+    may themselves contain strings and further nested templates.
+    """
+    quote = js[i]
+    n = len(js)
+    i += 1
+    while i < n:
+        ch = js[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i + 1
+        if quote == "`" and ch == "$" and i + 1 < n and js[i + 1] == "{":
+            # Substitution: balance braces, recursing through nested literals.
+            i += 2
+            depth = 1
+            while i < n and depth:
+                c = js[i]
+                if c in "\"'`":
+                    i = _scan_string(js, i)
+                    continue
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                i += 1
+            continue
+        i += 1
+    return n  # unterminated — treat the remainder as literal
+
+
+def _scan_regex(js: str, i: int) -> int:
+    """Index just past the regex literal starting at `js[i]` (a `/`)."""
+    n = len(js)
+    i += 1
+    in_class = False
+    while i < n:
+        ch = js[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "\n":
+            return i  # unterminated regex; do not run past the line
+        if in_class:
+            if ch == "]":
+                in_class = False
+        elif ch == "[":
+            in_class = True
+        elif ch == "/":
+            i += 1
+            while i < n and js[i].isalpha():  # flags
+                i += 1
+            return i
+        i += 1
+    return n
+
+
+def _tokenize(js: str) -> list[_Tok]:
+    """Tokenize JS well enough to find object-literal keys.
+
+    Comments are dropped.  Strings, templates and regex literals become single
+    opaque tokens, so no character inside one can be mistaken for structure.
+    """
+    toks: list[_Tok] = []
+    i = 0
+    n = len(js)
+    while i < n:
+        ch = js[i]
+        if ch in " \t\r\n\f\v":
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and js[i + 1] == "/":
+            while i < n and js[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and js[i + 1] == "*":
+            close = js.find("*/", i + 2)
+            i = n if close < 0 else close + 2
+            continue
+        if ch in "\"'`":
+            end = _scan_string(js, i)
+            toks.append(_Tok("string", js[i:end], i))
+            i = end
+            continue
+        if ch == "/":
+            prev = toks[-1] if toks else None
+            regex_ok = (
+                prev is None
+                or (prev.kind == "ident" and prev.text in _REGEX_OK_KEYWORDS)
+                or (prev.kind == "punct" and prev.text not in (")", "]"))
+            )
+            if regex_ok:
+                end = _scan_regex(js, i)
+                toks.append(_Tok("regex", js[i:end], i))
+                i = end
+                continue
+            toks.append(_Tok("punct", ch, i))
+            i += 1
+            continue
+        m = _IDENT_RE.match(js, i)
+        if m:
+            toks.append(_Tok("ident", m.group(0), i))
+            i = m.end()
+            continue
+        m = _NUM_RE.match(js, i)
+        if m:
+            toks.append(_Tok("num", m.group(0), i))
+            i = m.end()
+            continue
+        toks.append(_Tok("punct", ch, i))
+        i += 1
+    return toks
+
+
+def _string_token_value(text: str) -> str | None:
+    """The contents of a simple quoted key token, or None if it is not one."""
+    if len(text) < 2 or text[0] not in "\"'" or text[-1] != text[0]:
+        return None
+    inner = text[1:-1]
+    return inner if _IDENT_RE.fullmatch(inner) else None
 
 
 def extract_env_keys(js_text: str) -> set[str]:
     """Find every `env: { … }` block in the JS text and return the set of keys
     defined directly inside it (depth-1 only, so nested object literals don't
-    contribute)."""
-    text = _BLOCK_COMMENT_RE.sub(" ", js_text)
+    contribute).
+
+    A key is an identifier or quoted name that (a) sits at brace depth 1 of the
+    block, (b) is preceded by the block's `{` or by a `,`, and (c) is followed
+    by `:`.  Requiring the `{`/`,` anchor is what keeps a ternary's `… ? a : b`
+    inside a property VALUE from being harvested as a property NAME.
+    """
+    toks = _tokenize(js_text)
     keys: set[str] = set()
 
-    for env_match in re.finditer(r"\benv\s*:\s*\{", text):
-        start = env_match.end()
+    for idx in range(len(toks) - 2):
+        if not (toks[idx].kind == "ident" and toks[idx].text == "env"):
+            continue
+        if not (toks[idx + 1].is_punct(":") and toks[idx + 2].is_punct("{")):
+            continue
         depth = 1
-        i = start
-        in_str = None
-        while i < len(text) and depth > 0:
-            ch = text[i]
-            if in_str:
-                if ch == "\\":
-                    i += 2
-                    continue
-                if ch == in_str:
-                    in_str = None
-                i += 1
-                continue
-            if ch in ('"', "'", "`"):
-                in_str = ch
-                i += 1
-                continue
-            if ch == "{":
+        j = idx + 3
+        anchored = True  # right after `{`, a key may start here
+        while j < len(toks) and depth > 0:
+            tok = toks[j]
+            if tok.is_punct("{"):
                 depth += 1
-            elif ch == "}":
+            elif tok.is_punct("}"):
                 depth -= 1
                 if depth == 0:
                     break
-            i += 1
-
-        block = text[start:i]
-        # Strip line comments line-by-line.
-        clean_lines = [_LINE_COMMENT_RE.sub("", ln) for ln in block.splitlines()]
-
-        # We want only depth-1 keys, including comma-separated entries on the
-        # same physical line (e.g. `sin: Math.sin, cos: Math.cos`).  Flatten
-        # nested object/function bodies to spaces, then scan top-level entries.
-        d = 0
-        in_str = None
-        top_level_chars: list[str] = []
-        for ln in clean_lines:
-            j = 0
-            while j < len(ln):
-                ch = ln[j]
-                if in_str:
-                    if ch == "\\":
-                        top_level_chars.extend("  ")
-                        j += 2
-                        continue
-                    if ch == in_str:
-                        in_str = None
-                    top_level_chars.append(" ")
-                elif ch in ('"', "'", "`"):
-                    in_str = ch
-                    top_level_chars.append(" ")
-                elif ch == "{":
-                    d += 1
-                    top_level_chars.append(" ")
-                elif ch == "}":
-                    d -= 1
-                    top_level_chars.append(" ")
-                elif d == 0:
-                    top_level_chars.append(ch)
-                else:
-                    top_level_chars.append(" ")
-                j += 1
-            top_level_chars.append("\n")
-
-        top_level = "".join(top_level_chars)
-        for m in re.finditer(r"(?:^|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:", top_level, re.MULTILINE):
-            keys.add(m.group(1))
+            elif depth == 1:
+                if tok.is_punct(","):
+                    anchored = True
+                    j += 1
+                    continue
+                if anchored and j + 1 < len(toks) and toks[j + 1].is_punct(":"):
+                    name = (
+                        tok.text
+                        if tok.kind == "ident"
+                        else _string_token_value(tok.text)
+                        if tok.kind == "string"
+                        else None
+                    )
+                    if name:
+                        keys.add(name)
+                anchored = False
+            j += 1
     return keys
+
+
+# --------------------------------------------------------------------------- #
+#  Self-test — the gate on the gate
+# --------------------------------------------------------------------------- #
+
+
+# Every fixture below is a (description, js, expected-keys) triple.  They pin
+# the constructs that have desynchronised character-scanning extractors in this
+# file's history, plus the plain cases, so a future "simplification" that
+# reintroduces the bug fails here instead of in a CI run six weeks later.
+_SELFTEST_FIXTURES: list[tuple[str, str, set[str]]] = [
+    (
+        "plain keys, one per line",
+        "const x = { env: { alpha: () => 0,\n  beta: () => 1,\n } };",
+        {"alpha", "beta"},
+    ),
+    (
+        "several keys on one line",
+        "const x = { env: { sin: Math.sin, cos: Math.cos } };",
+        {"sin", "cos"},
+    ),
+    (
+        "apostrophe inside a // comment must not open a string",
+        "const x = { env: {\n"
+        "  before: () => 0,\n"
+        "  // Continuations — WASM can't longjmp out of host frames\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"before", "after"},
+    ),
+    (
+        # THE REPORTED DEFECT, minimised. The apostrophe in "can't" opened a
+        # phantom string; the next real quote closed it, so the `}` inside
+        # `'}'` was read as code, closed the env block early, and every key
+        # after this line was reported MISSING though present.
+        "apostrophe in a // comment followed by a brace-bearing string",
+        "const x = { env: {\n"
+        "  before: () => 0,\n"
+        "  // Continuations — WASM can't longjmp out of host frames\n"
+        "  fmt: () => '}',\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"before", "fmt", "after"},
+    ),
+    (
+        "unbalanced brace inside a // comment must not shift depth",
+        "const x = { env: {\n"
+        "  before: () => 0,\n"
+        "  // the closing } of this comment is not code\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"before", "after"},
+    ),
+    (
+        "regex literal containing backticks and braces",
+        "const x = { env: {\n"
+        "  before: (s) => s.replace(/`([^`]+)`/g, '<code>'),\n"
+        "  braces: (s) => s.replace(/[{}]/g, ''),\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"before", "braces", "after"},
+    ),
+    (
+        "template literal with a ${…} substitution",
+        "const x = { env: {\n"
+        "  before: (n) => { throw new Error(`bad ${n} value}`); },\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"before", "after"},
+    ),
+    (
+        "nested object literal contributes no keys",
+        "const x = { env: {\n"
+        "  outer: new WebAssembly.Global({ value: 'i32', mutable: false }, 0),\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"outer", "after"},
+    ),
+    (
+        "ternary in a value is not a key",
+        "const x = { env: { pick: (a) => a ? left : right, after: () => 0 } };",
+        {"pick", "after"},
+    ),
+    (
+        "block comment mentioning env: { is not a second block",
+        "/* env: { ghost: 0 } */\nconst x = { env: { real: () => 0 } };",
+        {"real"},
+    ),
+    (
+        "string containing a // sequence is not a comment",
+        "const x = { env: {\n"
+        "  url: () => 'http://example.invalid/x',\n"
+        "  after: () => 0,\n"
+        "} };",
+        {"url", "after"},
+    ),
+    (
+        "quoted key",
+        "const x = { env: { 'quoted': () => 0, plain: () => 1 } };",
+        {"quoted", "plain"},
+    ),
+    (
+        "division is not a regex",
+        "const x = { env: { half: (n) => n / 2, after: () => 0 } };",
+        {"half", "after"},
+    ),
+]
+
+
+def selftest_extractor() -> list[str]:
+    """Run the extractor fixtures.  Returns a list of failure descriptions."""
+    failures: list[str] = []
+    for name, js, expected in _SELFTEST_FIXTURES:
+        got = extract_env_keys(js)
+        if got != expected:
+            failures.append(
+                f"{name}: expected {sorted(expected)}, got {sorted(got)}"
+            )
+
+    # Direction 2 of the gate proof, at unit scale: a key that is absent must
+    # be reported absent.  (The whole-file version is in the CI step; this is
+    # the assertion that the comparison itself can still fail.)
+    present = extract_env_keys("const x = { env: { kept: () => 0 } };")
+    if "removed" in present:
+        failures.append("absent key reported present")
+    if "kept" not in present:
+        failures.append("present key reported absent")
+    return failures
 
 
 # --------------------------------------------------------------------------- #
@@ -311,7 +592,26 @@ def main() -> int:
     ap.add_argument("--strict", action="store_true",
                     help="Also fail if the JS provides keys that no WASM import requested "
                          "(catches stale stubs).")
+    ap.add_argument("--selftest", action="store_true",
+                    help="Only run the env-key extractor self-test and exit "
+                         "(no build, no WASM compile).")
     args = ap.parse_args()
+
+    # The extractor's own regression suite runs FIRST, unconditionally. If the
+    # scanner is broken, every verdict it produces afterwards is worthless —
+    # either a phantom red naming a symbol that is present, or a silent green.
+    # Failing here is a hard tooling failure (exit 2), not a content failure.
+    extractor_failures = selftest_extractor()
+    if extractor_failures:
+        print("error: env-key extractor self-test FAILED — refusing to report a "
+              "verdict from a broken scanner:", file=sys.stderr)
+        for f in extractor_failures:
+            print(f"  {f}", file=sys.stderr)
+        return 2
+    if args.selftest:
+        print(f"OK — env-key extractor self-test passed "
+              f"({len(_SELFTEST_FIXTURES)} fixtures).")
+        return 0
 
     eshkol_run = args.build_dir / "eshkol-run"
 
@@ -368,15 +668,27 @@ def main() -> int:
         return 2
 
     # Collect JS env keys from every glue file.
+    #
+    # BOTH files are mandatory, and each is checked against the FULL import set
+    # independently: the lite lane instantiates the site runtime and the REPL
+    # from separate glue, so a stub added to only one of them still breaks the
+    # other with `function import requires a callable`. A silently-skipped file
+    # would turn that into a green run, so a missing file is a hard failure
+    # rather than a warning.
     js_provided: dict[Path, set[str]] = {}
+    missing_files = [js for js in JS_FILES if not js.exists()]
+    if missing_files:
+        for js in missing_files:
+            print(f"error: required JS glue file not found: {js}", file=sys.stderr)
+        print("error: every file in JS_FILES must be present — both the site "
+              "runtime and the REPL glue provide the `env` imports and both are "
+              "instantiated by the lite lane.", file=sys.stderr)
+        return 2
     for js in JS_FILES:
-        if not js.exists():
-            print(f"warning: {js} not found, skipping", file=sys.stderr)
-            continue
         js_provided[js] = extract_env_keys(js.read_text())
 
     if not js_provided:
-        print("error: no JS glue files found", file=sys.stderr)
+        print("error: no JS glue files configured", file=sys.stderr)
         return 2
 
     # Cross-check.
