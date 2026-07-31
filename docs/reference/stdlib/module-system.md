@@ -59,7 +59,8 @@ For each resolved `path_part`, the loader tries, in order:
    like `src.core.x` resolves against `./src/...`;
 3. each colon-separated (`;` on Windows) entry of `$ESHKOL_PATH`, which the
    `-I` flags are merged into. Empty segments, missing directories, and
-   non-directory entries are silently skipped. `$ESHKOL_PATH` precedes the
+   non-directory entries are skipped (flagged only in debug mode).
+   `$ESHKOL_PATH` precedes the
    install for the same reason `$ESHKOL_LIB_DIR` precedes every archive
    location: a location you asked for must not be outranked by a copy that
    ships with the compiler;

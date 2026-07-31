@@ -8,6 +8,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/build_config.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 
 #include <algorithm>
 #include <array>
@@ -884,7 +885,19 @@ std::string resolve_module_source_path(const std::string& module_name,
             if (search_dir.empty()) continue;
             std::error_code ec;
             std::filesystem::path dir(search_dir);
-            if (!std::filesystem::is_directory(dir, ec) || ec) continue;
+            // Flagged in debug mode so a "module not found" is easy to trace
+            // back to a misconfigured path. Known pitfalls:
+            //   ESHKOL_PATH=":x"              → empty leading segment
+            //   ESHKOL_PATH="/does/not/exist" → valid syntax, wrong content
+            //   ESHKOL_PATH="/etc/passwd"     → a file, not a directory
+            if (!std::filesystem::exists(dir, ec) || ec) {
+                eshkol_debug("ESHKOL_PATH entry does not exist: %s", search_dir.c_str());
+                continue;
+            }
+            if (!std::filesystem::is_directory(dir, ec) || ec) {
+                eshkol_debug("ESHKOL_PATH entry is not a directory: %s", search_dir.c_str());
+                continue;
+            }
             if (auto found = probe_module_dir(dir, candidates); !found.empty()) {
                 return found;
             }
