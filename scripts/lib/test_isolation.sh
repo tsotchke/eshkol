@@ -108,6 +108,13 @@ eshkol_test_isolation_prune_stale() {
     local count
     count=$(find "$root" -maxdepth 1 -type d -name 'eshkol-test.*' 2>/dev/null | wc -l | tr -d ' ')
     [ -n "$count" ] || return 0
+    # Nothing to prune in an empty root. Without this, every glob below
+    # ("$root"/eshkol-test.*) stays a literal, unmatched pattern, and the
+    # commands it feeds (du, ls) exit non-zero on that literal path. Under a
+    # caller's `set -euo pipefail` that non-zero status is fatal, so an empty
+    # temp root silently kills the *calling* test suite instead of just
+    # finding nothing to prune.
+    [ "$count" -gt 0 ] || return 0
     if [ "$count" -gt "$max_dirs" ]; then
         # ls -dt sorts newest first; tail past the cap is the overflow.
         # shellcheck disable=SC2012
@@ -129,6 +136,13 @@ eshkol_test_isolation_prune_stale() {
     local min_age total oldest
     min_age="${ESHKOL_TEST_TMP_MIN_AGE_MIN:-120}"
     while :; do
+        # Same hazard as the count-sweep guard above, reachable from inside
+        # this loop: each iteration deletes one directory, so a set that
+        # started non-empty can drain to zero before the loop exits. Recheck
+        # before the glob-into-du call below rather than trusting the $count
+        # captured before the loop started.
+        count=$(find "$root" -maxdepth 1 -type d -name 'eshkol-test.*' 2>/dev/null | wc -l | tr -d ' ')
+        [ -n "$count" ] && [ "$count" -gt 0 ] || return 0
         total=$(du -sm -- "$root"/eshkol-test.* 2>/dev/null | awk '{s+=$1} END {print s+0}')
         [ -n "$total" ] || return 0
         [ "$total" -le "$max_mb" ] && return 0
