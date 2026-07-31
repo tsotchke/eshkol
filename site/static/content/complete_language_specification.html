@@ -824,6 +824,32 @@ the checker narrows its view of <code>expr</code> to
 as <code>expr</code>.</p>
 <pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)</code></pre>
+<p><code>&lt;type&gt;</code> may be any parenthesised type form, or any
+<strong>bare type name the type system knows</strong> — spelled
+case-insensitively. That is a guarantee, not a list to maintain by hand:
+the parser and the type environment are driven from one canonical
+registry, so a name that resolves to a type is always spellable here and
+in <code>x : &lt;type&gt;</code> annotations. The registry covers the
+numeric tower (<code>number</code>,
+<code>integer</code>/<code>int</code>, the sized
+<code>i8</code>…<code>u64</code>/<code>isize</code>/<code>usize</code>
+spellings, <code>bigint</code>, <code>natural</code>,
+<code>rational</code>,
+<code>real</code>/<code>float</code>/<code>double</code>/<code>float64</code>/<code>float32</code>,
+<code>complex</code>), text (<code>string</code>/<code>str</code>,
+<code>char</code>/<code>character</code>, <code>symbol</code>), the
+other ground types (<code>boolean</code>/<code>bool</code>,
+<code>null</code>/<code>nil</code>, <code>any</code>/<code>value</code>,
+<code>nothing</code>/<code>never</code>), containers and constructors
+written bare (<code>list</code>, <code>vector</code>,
+<code>tensor</code>, <code>pair</code>, <code>procedure</code>,
+<code>closure</code>, <code>hash-table</code>,
+<code>ptr</code>/<code>pointer</code>), the autodiff types
+(<code>dual</code>, <code>ad-node</code>), and the linear resources
+(<code>handle</code>, <code>buffer</code>, <code>stream</code>,
+<code>qubit</code>). A bare container name leaves its element type
+unspecified; the parenthesised form (<code>(vector real)</code>) pins
+it.</p>
 <h4 id="predicate-guarded-narrowing">3.6.7 Predicate-Guarded
 Narrowing</h4>
 <p>Inside a branch guarded by a type predicate, the checker narrows the
@@ -853,9 +879,12 @@ level.</p>
 Modules</h4>
 <p><strong>Syntax:</strong></p>
 <pre class="scheme"><code>(require module.name ...)</code></pre>
-<p><strong>Module Resolution:</strong> 1. Current directory 2.
-<code>lib/</code> directory 3. <code>$ESHKOL_PATH</code> directories 4.
-System library paths</p>
+<p><strong>Module Resolution:</strong> 1. The requiring file’s own
+directory 2. The project root (current directory) 3. <code>-I</code>
+directories and <code>$ESHKOL_PATH</code> — the explicit override 4. The
+installed <code>lib/</code> directory: beside the running compiler
+first, then the system prefixes
+(<code>&lt;prefix&gt;/share/eshkol/lib</code>)</p>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(require stdlib)
 (require core.functional.compose)
@@ -2336,10 +2365,11 @@ reverse-mode tape described in 8.2.</p>
 <h4 id="search-order">Search Order:</h4>
 <ol type="1">
 <li>Current directory (relative to source file)</li>
-<li><code>lib/</code> directory</li>
-<li><code>$ESHKOL_PATH</code> environment variable
-(colon-separated)</li>
-<li>System library paths</li>
+<li>The project root (the process’s working directory)</li>
+<li><code>$ESHKOL_PATH</code> (colon-separated; <code>-I</code>
+directories are appended to it)</li>
+<li>The installed <code>lib/</code> directory — located beside the
+running compiler first, then in the system prefixes</li>
 </ol>
 <h4 id="path-conversion">Path Conversion:</h4>
 <ul>
@@ -2576,7 +2606,7 @@ attribute:</p>
 (trampoline (lambda () (t-fact 1000 1)))  ; Constant stack</code></pre>
 <h3 id="internal-defines">12.5 Internal Defines</h3>
 <p>Function bodies can contain internal definitions, which are
-automatically transformed to <code>letrec</code>:</p>
+automatically transformed to <code>letrec*</code>:</p>
 <pre class="scheme"><code>(define (outer x)
   (define (helper y) (+ y 1))
   (define z 10)
@@ -2584,9 +2614,36 @@ automatically transformed to <code>letrec</code>:</p>
 
 ; Transformed to:
 (define (outer x)
-  (letrec ((helper (lambda (y) (+ y 1)))
-           (z 10))
+  (letrec* ((helper (lambda (y) (+ y 1)))
+            (z 10))
     (+ x (helper z))))</code></pre>
+<p><strong>Interspersed defines.</strong> R7RS §5.3.3 places internal
+definitions at the beginning of a body. Eshkol also accepts them
+interspersed among body expressions (matching Racket/MIT/Guile/Chez),
+under these rules:</p>
+<ol type="1">
+<li>Every internal define’s <strong>name</strong> joins one
+<code>letrec*</code> binding set, so all internal names share a single
+mutually visible recursive scope. Mutual recursion works regardless of
+the order the functions are written in.</li>
+<li>A <strong>function</strong> define’s lambda is created in the
+<code>letrec*</code> head. A body expression may therefore call a
+function whose <code>define</code> appears later.</li>
+<li>A <strong>value</strong> define’s initializer is evaluated
+<strong>at its own source position</strong>, not up front. Body
+expressions and value-define initializers execute in the order they are
+written.</li>
+</ol>
+<pre class="scheme"><code>(define (outer)
+  (define v (make-vector 2 0.0))     ; leading define
+  (define (fill!) (vector-set! v 0 1.0) (vector-set! v 1 2.0))
+  (fill!)                            ; runs here
+  (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
+  (tensor-data t))                   ; =&gt; #(1 2)</code></pre>
+<p>Reading a value define’s variable <strong>before</strong> its source
+position yields the unset slot rather than the eventual value; as in
+Racket and R6RS, that is a program error, not a supported forward
+reference.</p>
 <hr />
 <h2 id="runtime-architecture">13. Runtime Architecture</h2>
 <h3 id="tagged-value-system">13.1 Tagged Value System</h3>
@@ -3819,7 +3876,12 @@ passes</li>
 <h4 id="standard-compilation">Standard Compilation</h4>
 <pre class="bash"><code>eshkol-run input.esk -o output</code></pre>
 <h4 id="library-compilation">Library Compilation</h4>
-<pre class="bash"><code>eshkol-run --shared-lib input.esk -o library.o</code></pre>
+<pre class="bash"><code># Library-mode object, for linking into other Eshkol modules
+eshkol-run --shared-lib input.esk -o library.o
+
+# Loadable shared library with platform-C-ABI exports, for a C/Python host
+# (writes libmylib.dylib / libmylib.so / mylib.dll)
+eshkol-run --shared-lib input.esk -o mylib</code></pre>
 <h4 id="ir-dump">IR Dump</h4>
 <pre class="bash"><code>eshkol-run --dump-ir input.esk  # Produces input.ll</code></pre>
 <h4 id="ast-dump">AST Dump</h4>

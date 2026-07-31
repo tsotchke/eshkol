@@ -1404,12 +1404,17 @@ backed by the existing runtime helper
 <strong>shortest decimal string that reads back as the identical
 <code>double</code></strong> (R7RS 6.2.6): no digits are lost and none
 are fabricated. Integral doubles print without a trailing
-<code>.0</code>. The native compiler and the bytecode VM share one
+<code>.0</code>; negative zero is the one exception and prints
+<code>-0.0</code>, because <code>-0</code> would read back as the
+<em>exact</em> integer zero and lose both the inexactness and the
+observable sign. The native compiler and the bytecode VM share one
 conversion routine, so their output is byte-identical.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(number-&gt;string 42)         ; =&gt; &quot;42&quot;
 (string-&gt;number &quot;3.14&quot;)     ; =&gt; 3.14
-(number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;</code></pre>
+(number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;
+(number-&gt;string 3.0)        ; =&gt; &quot;3&quot;      (integral double, still inexact)
+(number-&gt;string -0.0)       ; =&gt; &quot;-0.0&quot;   (sign and inexactness both survive)</code></pre>
 <hr />
 <h2 id="file-io">File &amp; I/O</h2>
 <h3 id="port-operations">Port Operations</h3>
@@ -1697,8 +1702,21 @@ bignums when they exceed int64 range</li>
 bignums)</li>
 <li><code>(bitwise-not a)</code> — Bitwise complement</li>
 <li><code>(arithmetic-shift a n)</code> — Shift left (positive n) or
-right (negative n)</li>
-<li><code>(bit-count n)</code> — Population count</li>
+right (negative n). A left shift that overflows int64 promotes to an
+exact bignum, so <code>(arithmetic-shift 1 64)</code> is
+<code>18446744073709551616</code></li>
+<li><code>(bit-shift-left a n)</code> — Left shift; identical to
+<code>(arithmetic-shift a n)</code></li>
+<li><code>(bit-shift-right a n)</code> — Arithmetic (sign-propagating)
+right shift; identical to <code>(arithmetic-shift a (- n))</code></li>
+<li><code>(bit-count n)</code>, <code>(popcount n)</code> — Population
+count (synonyms). For <code>n &gt;= 0</code> this is the number of 1
+bits. Because a negative integer’s two’s-complement bit string is
+infinite, negative <code>n</code> follows the width-independent R6RS
+<code>bitwise-bit-count</code> convention
+<code>-1 - (bit-count (bitwise-not n))</code>, so
+<code>(popcount -1)</code> is <code>-1</code>. The rule never mentions a
+word width, so int64 and bignum operands agree</li>
 </ul>
 <h3 id="rational-numbers">Rational Numbers</h3>
 <p>Exact fractions with automatic simplification.</p>
@@ -3281,11 +3299,13 @@ small steps (fine-tuning near the optimum). All schedulers return the
 adjusted learning rate as a scalar — they do not modify any state.</p>
 <h4 id="cosine-annealing-lr"><code>cosine-annealing-lr</code></h4>
 <p><strong>Syntax:</strong>
-<code>(cosine-annealing-lr step total base-lr)</code> → Number</p>
-<p>Cosine annealing: η_t = base-lr · 0.5 · (1 + cos(π · step /
-total)).</p>
-<p>Smoothly decays from <code>base-lr</code> to approximately 0 over
-<code>total</code> steps following a cosine curve. The gradual decay
+<code>(cosine-annealing-lr base-lr min-lr step total)</code> →
+Number</p>
+<p>Cosine annealing: η_t = min-lr + 0.5 · (base-lr − min-lr) · (1 +
+cos(π · step / total)).</p>
+<p>Smoothly decays from <code>base-lr</code> to <code>min-lr</code> over
+<code>total</code> steps following a cosine curve (pass <code>0.0</code>
+for <code>min-lr</code> to decay to approximately 0). The gradual decay
 avoids the abrupt drops of step-based schedules.</p>
 <p><strong>Use case:</strong> Standard for transformer training (BERT,
 GPT).</p>
@@ -3293,7 +3313,7 @@ GPT).</p>
 href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="step-decay-lr"><code>step-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
-<code>(step-decay-lr step size γ base-lr)</code> → Number</p>
+<code>(step-decay-lr base-lr γ step size)</code> → Number</p>
 <p>Step decay: η_t = base-lr · γ^⌊step/size⌋.</p>
 <p>Reduces the learning rate by factor γ every <code>size</code> steps.
 Common values: γ = 0.1, size = 30 epochs.</p>
@@ -3302,7 +3322,7 @@ Common values: γ = 0.1, size = 30 epochs.</p>
 href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="linear-warmup-lr"><code>linear-warmup-lr</code></h4>
 <p><strong>Syntax:</strong>
-<code>(linear-warmup-lr step warmup base-lr)</code> → Number</p>
+<code>(linear-warmup-lr base-lr step warmup)</code> → Number</p>
 <p>Linear warmup: η_t = base-lr · min(step / warmup, 1).</p>
 <p>Ramps the learning rate linearly from 0 to <code>base-lr</code> over
 <code>warmup</code> steps. After warmup completes, returns
@@ -3317,7 +3337,7 @@ transformer training.</p>
 href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="exponential-decay-lr"><code>exponential-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
-<code>(exponential-decay-lr step γ base-lr)</code> → Number</p>
+<code>(exponential-decay-lr base-lr γ step)</code> → Number</p>
 <p>Exponential decay: η_t = base-lr · γ^step.</p>
 <p>Continuous exponential decay — more aggressive than step decay as it
 reduces every step.</p>
@@ -3329,8 +3349,8 @@ Example</h4>
 <pre class="scheme"><code>;; Warmup for 1000 steps, then cosine decay for 9000 steps
 (define (lr-schedule step)
   (if (&lt; step 1000)
-    (linear-warmup-lr step 1000 0.001)
-    (cosine-annealing-lr (- step 1000) 9000 0.001)))
+    (linear-warmup-lr 0.001 step 1000)
+    (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
 (lr-schedule 0)       ; =&gt; 0.0 (start of warmup)
 (lr-schedule 500)     ; =&gt; 0.0005 (mid-warmup)
@@ -3544,6 +3564,22 @@ by indexing into the weight matrix.</p>
 <p><strong>Shapes:</strong> - indices: (batch, seq) — integer token IDs
 - weights: (vocab_size, d_model) — embedding matrix - Output: (batch,
 seq, d_model)</p>
+<p><strong>Operand forms.</strong> <code>indices</code> may be a tensor,
+a <code>#(...)</code> literal, a Scheme vector (however it was built —
+literal, <code>(vector …)</code>, <code>make-vector</code> +
+<code>vector-set!</code>, or received through a parameter), or a numeric
+list. All spellings produce identical results; the operand is classified
+by its runtime value, not by how it was written. The same holds for
+every other tensor operand in the transformer family
+(<code>scaled-dot-attention</code>, <code>multi-head-attention</code>,
+<code>rotary-embedding</code>, <code>padding-mask</code>,
+<code>feed-forward</code>, <code>softmax</code>).</p>
+<p><strong>Fails closed.</strong> <code>weights</code> must be rank 2,
+and every index must satisfy <code>0 &lt;= i &lt; vocab_size</code>. A
+wrong rank, an out-of-range or negative index, or a non-numeric operand
+raises a catchable Eshkol condition (observable to <code>guard</code> /
+<code>with-exception-handler</code>); none of them reads outside the
+weight buffer.</p>
 <p><strong>Implementation:</strong> <code>embedding</code> in <a
 href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="transformer-example">Transformer Example</h4>
@@ -3608,8 +3644,8 @@ systems compose into a complete neural network training pipeline.</p>
 
          ;; Learning rate schedule
          (lr (if (&lt; step 1000)
-               (linear-warmup-lr step 1000 0.001)
-               (cosine-annealing-lr (- step 1000) 9000 0.001))))
+               (linear-warmup-lr 0.001 step 1000)
+               (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000))))
 
     ;; Gradient clipping
     (clip-grad-norm! (car grads) 1.0)
@@ -5760,7 +5796,9 @@ eshkol-run -r &lt;file.esk&gt;         (JIT run file)</code></pre>
 <tr>
 <td><code>--shared-lib</code></td>
 <td><code>-s</code></td>
-<td>Compile as shared library (LinkOnceODR linkage)</td>
+<td>Link a loadable shared library
+(<code>.dylib</code>/<code>.so</code>/<code>.dll</code>); add
+<code>-c</code> for a relocatable object instead</td>
 </tr>
 <tr>
 <td><code>--wasm</code></td>
@@ -5829,6 +5867,94 @@ eshkol-run -r &lt;file.esk&gt;         (JIT run file)</code></pre>
 
 ;; Dump LLVM IR for debugging
 ;; $ eshkol-run --dump-ir program.esk -o program</code></pre>
+<h4 id="shared-lib-the-two-flavours"><code>--shared-lib</code>: the two
+flavours</h4>
+<table>
+<colgroup>
+<col style="width: 54%" />
+<col style="width: 45%" />
+</colgroup>
+<thead>
+<tr>
+<th>Invocation</th>
+<th>Artifact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--shared-lib</code></td>
+<td>Linked shared library: <code>libNAME.dylib</code> /
+<code>libNAME.so</code> / <code>NAME.dll</code></td>
+</tr>
+<tr>
+<td><code>--shared-lib -c</code>,
+<code>--shared-lib --emit-object</code>,
+<code>--shared-lib -o NAME.o</code></td>
+<td>Relocatable object with library linkage (no <code>main</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The linked library is self-contained: it carries the Eshkol runtime,
+so a host needs no further link arguments.</p>
+<pre class="c"><code>/* $ eshkol-run mylib.esk --shared-lib -o mylib   -&gt;  libmylib.dylib */
+void*  h    = dlopen(&quot;./libmylib.dylib&quot;, RTLD_NOW);
+void (*init)(void*) = dlsym(h, &quot;__eshkol_lib_init__&quot;);
+void* (*arena)(void) = dlsym(h, &quot;get_global_arena&quot;);
+init(arena());                       /* once, before any exported call */
+
+eshkol_tagged_value_t (*f)(eshkol_tagged_value_t) = dlsym(h, &quot;my-function&quot;);
+eshkol_tagged_value_t r = f(eshkol_make_int64(41, true));</code></pre>
+<h4 id="shared-library-export-abi">Shared-library export ABI</h4>
+<p>Every top-level <code>(define (f ...) ...)</code> in a linked shared
+library is exported under its source name with the <strong>platform C
+ABI</strong> for <code>eshkol_tagged_value_t</code>: declare it in C
+exactly as it reads in the header and call it directly. Both directions
+are covered – return values and tagged arguments passed by value.</p>
+<p>This is a boundary contract, not the internal one. Eshkol’s internal
+calling convention passes a tagged value as an LLVM first-class struct,
+which the backend flattens into one register per field; that is not how
+a C compiler passes the same 16-byte struct. The exported name is
+therefore a thunk that speaks the C ABI, and the unwrapped body remains
+available under <code>&lt;name&gt;__eshkol_internal_abi</code> for
+tooling and debuggers. Per platform:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 66%" />
+</colgroup>
+<thead>
+<tr>
+<th>Target</th>
+<th>Exported shape</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AArch64 (AAPCS64), x86-64 SysV, riscv64, ppc64le, loongarch64 –
+macOS, Linux, and Windows on ARM64</td>
+<td>16-byte value in the first two general-purpose registers
+(<code>x0:x1</code>, <code>rax:rdx</code>)</td>
+</tr>
+<tr>
+<td>Windows x64 (Microsoft ABI)</td>
+<td>Hidden <code>sret</code> pointer for the return, tagged arguments by
+pointer to a caller-owned temporary – what MSVC/clang-cl generate for
+the same declaration</td>
+</tr>
+<tr>
+<td>32-bit targets</td>
+<td>Not supported for the linked flavour: the return is via memory but
+arguments are by value on the stack. <code>--shared-lib</code> reports
+this and writes no artifact; use <code>--shared-lib -c</code> and link
+the object yourself.</td>
+</tr>
+</tbody>
+</table>
+<p>The relocatable object flavour keeps the <strong>internal</strong>
+convention on every symbol, because those objects are linked into other
+Eshkol modules (the precompiled standard library,
+<code>cmake/EshkolCompile.cmake</code> consumers) that call with it. Do
+not dlopen a <code>--shared-lib -c</code> object and call it from C.</p>
 <hr />
 <h3 id="eshkol-repl-interactive-repl"><code>eshkol-repl</code> –
 Interactive REPL</h3>
