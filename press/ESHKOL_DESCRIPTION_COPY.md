@@ -242,11 +242,12 @@ Each item below cites the file or measurement that grounds the claim.
   and the bytecode VM) and an AD-vs-finite-difference adversarial oracle (147
   probes / 436 component checks across 21 generated files under JIT and AOT; a
   zero AD gradient where finite differences are nonzero is a hard failure).
-  Release gates green on the v1.3.3-evolve SHA: ICC readiness oracle 100/100
-  (trace-verified); the aggregate suite 44/44 suites and 716/716 tests; SICP
-  full-book gate 88/88 probes across all five chapters under both `-r` and
-  AOT; reference-Scheme differential oracle 34/34 AGREE. See
-  *docs/TESTING.md*.
+  Release gates green on the v1.3.4-evolve cut: the aggregate suite 45/45
+  suites and 770 individual tests; CTest 139/139, which as of this release is
+  itself completion-oracle evidence rather than advice; SICP full-book gate
+  88/88 probes across all five chapters under both `-r` and AOT;
+  reference-Scheme differential oracle 34/34 AGREE against chibi-scheme
+  0.12.0. See *docs/TESTING.md*.
 
 - **Binary Lambda Calculus (`core.blc`, v1.3.2-evolve).** A pure-Eshkol
   implementation of John Tromp's BLC: De Bruijn-indexed terms as homoiconic
