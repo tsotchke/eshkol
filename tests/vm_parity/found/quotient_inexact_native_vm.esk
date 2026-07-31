@@ -1,0 +1,29 @@
+; FILED: `quotient` with an inexact operand — the VM is the wrong side, in
+; three separate ways. Native was equally wrong until the fix that added
+; corpus/50; with native correct, the VM's behaviour became visible.
+;
+;                                        native -r              vm
+;   (quotient 7.0 2.0)                   3                      3
+;   (exact? (quotient 7.0 2.0))          #f                     #t   <- contagion
+;   (quotient 1e20 3.0)                  33333333333333330000   3074457345618258602
+;   (quotient (expt 2 100) 2.0)          6.338253001141147e+29  633825300114114700748351602688
+;   (remainder 5.5 0.0)                  raises                 +nan.0
+;
+; The VM converts the truncated quotient into an int64 and packs it exact, so
+; it loses inexactness AND wraps for any magnitude past 2^63 — 1e20/3 is
+; 3.33e19, not 3.07e18. Same root as found/modulo_inexact_collapsed_vm.esk
+; (the VAL_INT collapse family). The zero-divisor row is the fourth: every
+; other representation and both other members of the trio raise on both
+; substrates, and only the VM's pure-double `remainder` still answers a value.
+;
+; Only the first line agrees, which is why none of this can live in corpus/50.
+(display (quotient 7.0 2.0))
+(newline)
+(display (exact? (quotient 7.0 2.0)))
+(newline)
+(display (quotient 1e20 3.0))
+(newline)
+(display (quotient (expt 2 100) 2.0))
+(newline)
+(display (remainder 5.5 0.0))
+(newline)

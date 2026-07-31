@@ -1,0 +1,49 @@
+; R7RS 6.2.6 integer division with an INEXACT operand — exactness contagion
+; plus the two sign conventions:
+;   modulo    -> result has the sign of the DIVISOR   (floored remainder)
+;   remainder -> result has the sign of the DIVIDEND  (truncated remainder)
+; An integral flonum IS an integer per R7RS ((integer? 7.0) is #t), so every
+; line below must agree with its exact-integer counterpart in
+; corpus/26_int_division.esk.
+;
+; Native was the wrong side here — the divergence filed as
+; found/float_remainder_modulo_native.esk, retired by this file:
+; `remainder` called the C library's remainder(), which is IEEE-754
+; round-to-NEAREST remainder — a different function — and `modulo` had no
+; flonum path at all, so both operands went through the int64 unpack and it
+; returned the SRem of two IEEE-754 bit patterns.
+;
+; NOT gated here, because the corpus compares PRINTED OUTPUT and this
+; divergence is invisible to it (filed as found/modulo_inexact_collapsed_vm.esk,
+; the VM is the wrong side):
+;   (exact? (modulo 5.0 3))  — native #f (contagion), VM #t. Both print `2`,
+;                              so only `exact?` separates them, and the VM
+;                              cannot be asked that here without reddening the
+;                              gate on a defect this change does not own.
+; The exactness half IS asserted natively, in
+; tests/numeric/integer_division_r7rs_test.esk.
+(display (modulo 5.5 2.0)) (newline)
+(display (remainder 5.5 2.0)) (newline)
+(display (remainder 7.0 2.0)) (newline)
+(display (modulo 7.0 2.0)) (newline)
+(display (remainder -7.0 3.0)) (newline)
+(display (modulo -7.0 3.0)) (newline)
+(display (remainder 7.0 -3.0)) (newline)
+(display (modulo 7.0 -3.0)) (newline)
+(display (remainder -7.0 -3.0)) (newline)
+(display (modulo -7.0 -3.0)) (newline)
+(display (modulo 5 2.0)) (newline)
+(display (remainder 5 2.0)) (newline)
+(display (modulo 5.0 2)) (newline)
+(display (remainder 5.0 2)) (newline)
+; Mixed representation with a NON-integral quotient — the pair the gate
+; reported as native `(modulo 5.0 3)` = 0 and `(remainder 5.0 3)` = -1. Both
+; are diagnostic of the two distinct defects: 0 is SRem(bit-pattern-of-5.0, 3)
+; (the bit pattern happens to be divisible by 3), and -1 is IEEE-754
+; round-to-nearest remainder(5.0, 3.0) = 5 - 3*2.
+(display (modulo 5.0 3)) (newline)
+(display (remainder 5.0 3)) (newline)
+(display (modulo -5.0 3)) (newline)
+(display (remainder -5.0 3)) (newline)
+(display (modulo 5.0 -3)) (newline)
+(display (remainder 5.0 -3)) (newline)
