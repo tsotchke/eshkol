@@ -624,9 +624,13 @@ across every new-feature family).
   unwind path dispatches promotion on, so it was a latent memory-safety hazard
   as well as a wrong value. All three axes (native, `vm-src`, `vm-eskb`) now
   agree and are gated permanently by
-  `tests/vm_parity/corpus/with_region_lowering.esk`. VM-side *reclamation*
-  remains absent and is documented as such: the VM heap still has no escape
-  evacuator, the same boundary a VM `region-close` declares.
+  `tests/vm_parity/corpus/with_region_lowering.esk`. One undocumented spelling
+  does not agree and is filed rather than fixed: `(with-region (quote name))`
+  with no other body, where the VM reader's collapse of `'name` and
+  `(quote name)` into one node makes the sole argument look like a specifier
+  (`tests/vm_parity/found/with_region_explicit_quote_body_vm.esk`). VM-side
+  *reclamation* remains absent and is documented as such: the VM heap still has
+  no escape evacuator, the same boundary a VM `region-close` declares.
 
 - **`scripts/check_wasm_imports.py` could report present WASM stubs as
   missing.** The `env: { … }` key scanner matched braces and quotes with a

@@ -2087,7 +2087,12 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
      * `(quote name)`, so a with-region whose SOLE body expression is literally
      * `(quote name)` is read here as "specifier, empty body" — a degenerate
      * form with no use (its value is a symbol and its body allocates nothing).
-     * Every documented spelling agrees on both substrates. */
+     * That one undocumented spelling is therefore the ONE place this form
+     * diverges from native (native yields the symbol, the VM the empty-body
+     * diagnostic plus `()`); it is filed as a verified divergence in
+     * tests/vm_parity/found/with_region_explicit_quote_body_vm.esk and on the
+     * op:WITH_REGION row of tests/vm_parity/PARITY.tsv. Every DOCUMENTED
+     * spelling agrees on both substrates (corpus/with_region_lowering.esk). */
     int body_start = 1;
     Node* spec = node->children[1];
     if (is_quoted_symbol(spec)) {
