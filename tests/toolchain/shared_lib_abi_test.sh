@@ -206,6 +206,14 @@ static void* need(void* handle, const char* name) {
 }
 
 int main(int argc, char** argv) {
+    /* Unbuffered: this harness calls into a freshly dlopened library across a
+     * hand-written ABI boundary, so a crash is a REPORTABLE OUTCOME, not an
+     * accident. With the default block buffering on a pipe, a segfault takes
+     * every line printed so far down with it and the log shows only that the
+     * process died -- which of the calls died is exactly what you need to
+     * know, and exactly what you lose. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     if (argc < 2) { printf("usage: abi_harness <library>\n"); return 2; }
 
     void* handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
