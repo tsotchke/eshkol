@@ -6,6 +6,24 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "examples"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,7 +56,7 @@ print_examples_banner() {
 BUILD_DIR="${BUILD_DIR:-build}"
 
 cleanup_example_artifacts() {
-    rm -f a.out a.out.tmp.o
+    eshkol_test_reset_bin
 }
 
 run_log_has_runtime_error() {
@@ -102,7 +120,7 @@ print_empty_examples_summary() {
 }
 
 # Output directory for logs
-LOG_DIR="/tmp/eshkol_examples_test"
+LOG_DIR="$ESHKOL_TEST_TMPDIR/logs"
 mkdir -p "$LOG_DIR"
 
 print_examples_banner
@@ -143,9 +161,9 @@ for test_file in examples/*.esk; do
     run_log="$LOG_DIR/${test_name%.esk}_run.log"
 
     # Try to compile
-    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" > "$compile_log" 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" -o "$ESHKOL_TEST_BIN" > "$compile_log" 2>&1; then
         # Compilation succeeded, try to run
-        if ./a.out > "$run_log" 2>&1; then
+        if "$ESHKOL_TEST_BIN" > "$run_log" 2>&1; then
             exit_code=$?
             # Check if there were any errors in output
             if run_log_has_runtime_error "$run_log"; then
@@ -254,8 +272,12 @@ echo ""
 # Clean up
 cleanup_example_artifacts
 
-# Exit with appropriate code
-if [ $COMPILE_FAIL -eq 0 ] && [ $RUNTIME_FAIL -eq 0 ]; then
+# Exit with appropriate code.
+#
+# RUNTIME_ERROR counts here too. It is counted in TOTAL_TESTS, printed as its
+# own failure category and listed in the failure report, but was excluded from
+# the exit status — so a run that printed runtime errors still returned success.
+if [ $COMPILE_FAIL -eq 0 ] && [ $RUNTIME_FAIL -eq 0 ] && [ $RUNTIME_ERROR -eq 0 ]; then
     exit 0
 else
     exit 1

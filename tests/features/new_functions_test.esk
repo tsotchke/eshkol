@@ -1,66 +1,56 @@
 ; Test new builtin functions
+;
+; Every expected value below is fixed by the documented contract of the
+; procedure, not by current output:
+;   iota          lib/core/list/generate.esk -- (iota 5) => (0 1 2 3 4),
+;                 (iota 5 1) => (1 2 3 4 5), (iota 5 0 2) => (0 2 4 6 8)
+;   reduce        fold-left with an initial value
+;   sort          ascending / descending by the supplied comparator
+;   unzip         lib/core/list/transform.esk -- ((a b c) (1 2 3))
+;   compose       (compose f g) x = f (g x)
+;   boolean?      R7RS 6.3
+;   procedure?    R7RS 6.10
 (require stdlib)
 
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
+
 ; Test iota - generate range
-(display "Testing iota:")
-(newline)
-(display (iota 5))
-(newline)
-(display (iota 5 1))  ; start at 1
-(newline)
-(display (iota 5 0 2))  ; step by 2
-(newline)
+(check "(iota 5)" '(0 1 2 3 4) (iota 5))
+(check "(iota 5 1) starts at 1" '(1 2 3 4 5) (iota 5 1))
+(check "(iota 5 0 2) steps by 2" '(0 2 4 6 8) (iota 5 0 2))
 
 ; Test reduce - fold left
-(display "Testing reduce:")
-(newline)
-(display (reduce + 0 '(1 2 3 4 5)))  ; sum = 15
-(newline)
-(display (reduce * 1 '(1 2 3 4 5)))  ; product = 120
-(newline)
+(check "(reduce + 0 '(1 2 3 4 5)) sum" 15 (reduce + 0 '(1 2 3 4 5)))
+(check "(reduce * 1 '(1 2 3 4 5)) product" 120 (reduce * 1 '(1 2 3 4 5)))
+(check "(reduce + 0 '()) is the seed" 0 (reduce + 0 '()))
 
 ; Test sort with comparison function
-(display "Testing sort:")
-(newline)
-(display (sort '(3 1 4 1 5 9 2 6) <))  ; ascending
-(newline)
-(display (sort '(3 1 4 1 5 9 2 6) >))  ; descending
-(newline)
+(check "(sort ... <) ascending" '(1 1 2 3 4 5 6 9) (sort '(3 1 4 1 5 9 2 6) <))
+(check "(sort ... >) descending" '(9 6 5 4 3 2 1 1) (sort '(3 1 4 1 5 9 2 6) >))
 
 ; Test unzip
-(display "Testing unzip:")
-(newline)
-(display (unzip '((a 1) (b 2) (c 3))))
-(newline)
+(check "(unzip '((a 1) (b 2) (c 3)))"
+       '((a b c) (1 2 3))
+       (unzip '((a 1) (b 2) (c 3))))
 
 ; Test compose
-(display "Testing compose:")
-(newline)
 (define add1 (lambda (x) (+ x 1)))
 (define double (lambda (x) (* x 2)))
 (define add1-then-double (compose double add1))
-(display (add1-then-double 5))  ; (5+1)*2 = 12
-(newline)
+(check "compose: double(add1(5)) = (5+1)*2" 12 (add1-then-double 5))
 
 ; Test boolean?
-(display "Testing boolean?:")
-(newline)
-(display (boolean? #t))  ; true
-(newline)
-(display (boolean? #f))  ; true
-(newline)
-(display (boolean? 42))  ; false
-(newline)
+(check "(boolean? #t)" #t (boolean? #t))
+(check "(boolean? #f)" #t (boolean? #f))
+(check "(boolean? 42)" #f (boolean? 42))
 
 ; Test procedure?
-(display "Testing procedure?:")
-(newline)
-(display (procedure? +))  ; true
-(newline)
-(display (procedure? (lambda (x) x)))  ; true
-(newline)
-(display (procedure? 42))  ; false
-(newline)
-
-(display "All tests completed!")
-(newline)
+(check "(procedure? +)" #t (procedure? +))
+(check "(procedure? (lambda (x) x))" #t (procedure? (lambda (x) x)))
+(check "(procedure? 42)" #f (procedure? 42))

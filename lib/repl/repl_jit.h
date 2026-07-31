@@ -28,6 +28,7 @@ namespace llvm {
 
 // C interface
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>  // eshkol_diagnostic_error_count() for the JIT gate
 
 namespace eshkol {
 
@@ -171,6 +172,38 @@ public:
      */
     void incrementEvalCounter() { ++eval_counter_; }
 
+    /**
+     * Marks the span of one compilation unit for the JIT-execution gate in
+     * addModule().
+     *
+     * addModule() is the single door through which compiled code enters the
+     * JIT and therefore becomes reachable by execution. It refuses to open
+     * that door if compiling the unit reported an error diagnostic — but to
+     * tell "this unit reported an error" from "an earlier, already-handled
+     * unit did", it needs to know where the unit began. Constructing this
+     * guard records that point; destroying it restores the enclosing unit's,
+     * so a module load nested inside a batch cannot narrow the outer unit's
+     * span and hide its own failures from the outer gate.
+     *
+     * Declared here rather than in the .cpp because it touches a private
+     * member; construct one at the top of any function that compiles a unit
+     * and then hands the result to addModule().
+     */
+    class CompilationUnit {
+    public:
+        explicit CompilationUnit(ReplJITContext& ctx)
+            : ctx_(ctx), enclosing_(ctx.diagnostics_at_unit_start_) {
+            ctx_.diagnostics_at_unit_start_ = eshkol_diagnostic_error_count();
+        }
+        ~CompilationUnit() { ctx_.diagnostics_at_unit_start_ = enclosing_; }
+
+        CompilationUnit(const CompilationUnit&) = delete;
+        CompilationUnit& operator=(const CompilationUnit&) = delete;
+
+    private:
+        ReplJITContext& ctx_;
+        unsigned long enclosing_;
+    };
 
 private:
     // LLVM ORC JIT instance (using LLJIT for simplicity)
@@ -178,6 +211,10 @@ private:
 
     // Evaluation counter for generating unique function names
     int eval_counter_;
+
+    // Error-diagnostic tally as of the start of the compilation unit currently
+    // being compiled; see CompilationUnit above and the gate in addModule().
+    unsigned long diagnostics_at_unit_start_ = 0;
 
     // Symbol table mapping names to JIT addresses
     // Used to track user-defined variables and functions

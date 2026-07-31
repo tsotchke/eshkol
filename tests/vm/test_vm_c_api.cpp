@@ -1921,21 +1921,44 @@ void test_profile_limits(void) {
           "profile exposes compiled stack limit");
     CHECK(limits.max_frames == ESHKOL_VM_MAX_FRAMES,
           "profile exposes compiled frame limit");
-    CHECK(limits.max_constants == ESHKOL_VM_MAX_CONSTS,
+    CHECK(limits.max_constants == ESHKOL_VM_MAX_CONSTS_CEILING,
           "profile exposes compiled constant limit");
     CHECK(limits.max_instructions == ESHKOL_VM_MAX_CODE,
           "profile exposes compiled instruction limit");
     CHECK(eshkol_vm_get_profile_limits(nullptr) == -1,
           "profile limit query rejects null output");
 
+    /* The constant pool grows on demand, so exceeding its INITIAL capacity is
+     * not an error any more — it is the case that used to run OP_CONST against
+     * uninitialized slots, because the copy-in loops clamped at the initial
+     * size while still advertising the chunk's full constant count. A chunk
+     * just past that size must now load and run. */
     const std::vector<Instr> halt_code = {{OP_HALT, 0}};
-    EskbBuffer too_many_consts =
+    EskbBuffer grown_consts =
+        make_profile_validation_chunk(static_cast<size_t>(ESHKOL_VM_MAX_CONSTS) + 1,
+                                      0,
+                                      halt_code);
+    EshkolVmHandle* grown_vm =
+        eshkol_vm_load_chunk(grown_consts.data, grown_consts.len);
+    CHECK(grown_vm != nullptr,
+          "load ESKB chunk past the initial constant-pool capacity");
+    if (grown_vm) {
+        CHECK(eshkol_vm_run(grown_vm) == 0,
+              "run ESKB chunk past the initial constant-pool capacity");
+        eshkol_vm_destroy(grown_vm);
+    }
+    eskb_buf_free(&grown_consts);
+
+    /* Past the ceiling the module is still rejected; that bound is what the
+     * profile advertises. */
+    EskbBuffer over_ceiling_consts =
         make_profile_validation_chunk(static_cast<size_t>(limits.max_constants) + 1,
                                       0,
                                       halt_code);
-    CHECK(eshkol_vm_load_chunk(too_many_consts.data, too_many_consts.len) == nullptr,
-          "reject ESKB chunk over constant-pool profile limit");
-    eskb_buf_free(&too_many_consts);
+    CHECK(eshkol_vm_load_chunk(over_ceiling_consts.data,
+                               over_ceiling_consts.len) == nullptr,
+          "reject ESKB chunk over the constant-pool ceiling");
+    eskb_buf_free(&over_ceiling_consts);
 
     const std::vector<Instr> invalid_opcode_code = {{OP_INVALID, 0}};
     EskbBuffer invalid_opcode =

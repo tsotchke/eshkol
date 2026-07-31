@@ -330,8 +330,10 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
  *                    any plausible tag (0..63).
  * @return 1 if @p bits is a live node in @p arena matching @p expect_type, else 0.
  */
-int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type) {
-    if (bits == 0 || !arena) return 0;
+/* Residency-then-tag test against ONE arena. Never dereferences a candidate the
+ * arena does not own (see eshkol_ad_node_probe's contract above). */
+static int ad_node_resident_in(const arena_t* arena, uint64_t bits, int32_t expect_type) {
+    if (!arena) return 0;
     /* A node allocated with an object header has that header 8 bytes below the
      * payload, so require room for both before touching anything. */
     const void* candidate = (const void*)(uintptr_t)bits;
@@ -346,7 +348,63 @@ int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_typ
     return (expect_type < 0 || type == expect_type) ? 1 : 0;
 }
 
+int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type) {
+    if (bits == 0) return 0;
+    /* Probe the arena the recording tape's nodes actually live in FIRST (see
+     * eshkol_ad_home_arena): while a nursery/region is active, the caller's
+     * "current arena" is that nursery, but a tape-retained node is deliberately
+     * allocated OUTSIDE it. Probing only the caller's arena there would classify
+     * a live node pointer as an f64 bit pattern and silently drop the whole
+     * subgraph's gradient. Both candidates are residency-verified before any
+     * load, so checking two arenas is no weaker than checking one. */
+    const arena_t* home = eshkol_ad_home_arena((arena_t*)arena);
+    if (ad_node_resident_in(home, bits, expect_type)) return 1;
+    if (home != arena && ad_node_resident_in(arena, bits, expect_type)) return 1;
+    return 0;
+}
+
+/**
+ * @brief The arena a tape-retained AD node must be allocated from.
+ *
+ * INVARIANT (the tape-lifetime rule): an object the AD tape holds a pointer to
+ * lives exactly as long as the tape. `arena_tape_add_node` is a store into
+ * persistent state — the tape header and its `nodes` array, which live in
+ * `tape->owner_arena` — so a node allocated from a shorter-lived arena is a
+ * lifetime error AT THE POINT OF ALLOCATION, not something a later barrier can
+ * repair. #341 established this rule for the tape's pointer ARRAY (it grows from
+ * `owner_arena`); this closes the other half of it for the NODES.
+ *
+ * Concretely: ESH-0214e runs an escape-analysed loop body inside a nursery
+ * region and `arena_reset()`s that nursery at every TCO back edge. AD nodes
+ * created in the body were allocated from the nursery (generated code reads
+ * `__global_arena`, which region entry points at the nursery arena) while the
+ * tape recording them lived outside it. The tape append is not one of the six
+ * barriered mutation channels ESH-0214e's soundness argument enumerates, so
+ * nothing promoted those nodes out; the reset then recycled them and the next
+ * iteration reallocated at the same bump-pointer addresses. Every earlier node's
+ * `input1`/`input2` therefore resolved to the LAST iteration's subgraph, and a
+ * reverse sweep returned that iteration's row for every output component —
+ * silently, with correct primal values (a node's `value` is copied inline).
+ *
+ * Resolving through the recording tape keeps ESH-0214e's reclamation intact for
+ * the case it was built for: a `gradient` call made INSIDE the loop body creates
+ * its tape in the nursery too, so `owner_arena` IS the nursery and the whole
+ * differentiation is still reclaimed at the back edge.
+ *
+ * @param fallback The caller's current allocation arena, used when no tape is
+ *                 recording (forward-mode / non-AD allocation).
+ * @return `__current_ad_tape->owner_arena` when a tape is recording, else @p fallback.
+ */
+arena_t* eshkol_ad_home_arena(arena_t* fallback) {
+    const ad_tape_t* tape = __current_ad_tape;
+    if (tape && tape->owner_arena) return tape->owner_arena;
+    return fallback;
+}
+
 ad_node_t* arena_allocate_ad_node(arena_t* arena) {
+    /* Tape-lifetime rule: a tape-retained node never lives in a shorter-lived
+     * arena than the tape (see eshkol_ad_home_arena). */
+    arena = eshkol_ad_home_arena(arena);
     if (!arena) {
         eshkol_error("Cannot allocate AD node: null arena");
         return nullptr;
@@ -391,6 +449,9 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
  * @return      Pointer to the node payload (past the header), or nullptr on failure.
  */
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
+    /* Tape-lifetime rule: a tape-retained node never lives in a shorter-lived
+     * arena than the tape (see eshkol_ad_home_arena). */
+    arena = eshkol_ad_home_arena(arena);
     if (!arena) {
         eshkol_error("Cannot allocate AD node with header: null arena");
         return nullptr;
@@ -443,6 +504,9 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
  * @return      Pointer to the first element of the array, or nullptr on failure.
  */
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
+    /* Tape-lifetime rule: a tape-retained node never lives in a shorter-lived
+     * arena than the tape (see eshkol_ad_home_arena). */
+    arena = eshkol_ad_home_arena(arena);
     if (!arena || count == 0) {
         eshkol_error("Invalid parameters for batch AD node allocation");
         return nullptr;

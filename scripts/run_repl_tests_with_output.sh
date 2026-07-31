@@ -12,6 +12,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 source "$SCRIPT_DIR/test_output_helpers.sh"
+# Shared honest-detection helpers (eshkol_test_output_has_failure et al).
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$SCRIPT_DIR/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
 
 # Colors for output
 RED='\033[0;31m'
@@ -117,7 +131,10 @@ run_test_verbose() {
         SEGFAULT_TESTS+=("$test_name")
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true
-    elif grep -q "error:" "$output_file" 2>/dev/null; then
+    # `error:` alone is a compiler diagnostic, not a verdict: these
+    # programs print their own FAIL lines and exit 0, so scan for
+    # failure markers too — anywhere on the line, not just column 0.
+    elif eshkol_test_output_has_failure "$output_file" 'error:'; then
         echo "FINAL STATUS: RUNTIME ERROR" >> "$output_file"
         echo -e "${RED}  ❌ RUNTIME ERROR${NC}"
         FAILED_TESTS+=("$test_name")

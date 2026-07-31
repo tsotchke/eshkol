@@ -370,6 +370,167 @@ double eshkol_taylor_c0(const eshkol_tagged_value_t* tv) {
     return tagged_scalar_value(tv);
 }
 
+/* ── AD seed / evaluation-point coercion (ESH-0393) ───────────────────────
+ *
+ * The forward jet and the reverse tape both carry a RAW DOUBLE per component,
+ * so every AD entry point has to turn its evaluation point into a double at
+ * the boundary. Doing that by REINTERPRETING the tagged value's data field --
+ * `SIToFP` for "anything that isn't a double", or a plain bitcast for
+ * "anything at all" -- classifies by what the caller EXPECTED rather than by
+ * what the value IS. An exact rational or bignum is HEAP-tagged, so its data
+ * field holds a POINTER: SIToFP turns it into the object's ADDRESS (a value of
+ * heap magnitude, e.g. 1.0e10) and a bitcast turns it into a denormal near
+ * 5e-314. Either way the substrate then differentiates a fabricated number.
+ *
+ * This is the single authority on that coercion. It dispatches on the value's
+ * RUNTIME TAG and converts every numeric representation Eshkol has -- int64,
+ * double, bignum, rational, forward jet, Taylor tower -- to the double it
+ * actually denotes. `*ok` reports whether the value was a number at all, so
+ * the caller can raise instead of inventing one; a non-numeric HEAP object
+ * (a vector, a string, a closure, ...) is exactly the misread this function
+ * exists to stop, and is never coerced.
+ *
+ * Immediates whose data field genuinely holds an integer (BOOL, CHAR) keep
+ * the historical widening: they are not the pointer-misread family, and the
+ * jet path has always accepted them.
+ */
+double eshkol_ad_seed_to_double(const eshkol_tagged_value_t* v, int32_t* ok) {
+    if (ok) *ok = 1;
+    if (!v) { if (ok) *ok = 0; return 0.0; }
+
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+
+    /* Inexact and immediate-exact scalars: the data field is the number. */
+    if (bt == ESHKOL_VALUE_DOUBLE) return v->data.double_val;
+    if (bt == ESHKOL_VALUE_INT64)  return (double)v->data.int_val;
+
+    /* A forward jet reaching an entry point is a NESTED differentiation's
+     * point; its primal is the value being differentiated at. */
+    if (bt == ESHKOL_VALUE_DUAL_NUMBER && v->data.ptr_val != 0)
+        return ((const double*)(uintptr_t)v->data.ptr_val)[0];
+
+    /* Heap numerics: exact rational / bignum, or a Taylor tower's c[0]. */
+    if (bt == ESHKOL_VALUE_HEAP_PTR && v->data.ptr_val != 0) {
+        const eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+        if (hdr) {
+            switch (hdr->subtype) {
+                case HEAP_SUBTYPE_RATIONAL:
+                    return eshkol_rational_to_double((void*)(uintptr_t)v->data.ptr_val);
+                case HEAP_SUBTYPE_BIGNUM:
+                    return eshkol_bignum_to_double(
+                        (eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
+                case HEAP_SUBTYPE_TAYLOR:
+                    return tagged_scalar_value(v);
+                default:
+                    break;      /* not a number -- fall through to the refusal */
+            }
+        }
+        if (ok) *ok = 0;
+        return 0.0;
+    }
+
+    /* BOOL / CHAR and other immediates with an integral data field. */
+    if (bt == ESHKOL_VALUE_BOOL || bt == ESHKOL_VALUE_CHAR)
+        return (double)v->data.int_val;
+
+    if (ok) *ok = 0;
+    return 0.0;
+}
+
+/* Companion classifier: is this evaluation point a SCALAR (an f: R→R point)
+ * rather than a collection (an f: R^n→R point)?
+ *
+ * Every multivariate AD entry point has to make this choice before it can seed
+ * anything, and each did it by enumerating the tags it expected a scalar to
+ * have -- DOUBLE, INT64, sometimes DUAL_NUMBER. An exact rational or bignum is
+ * a perfectly ordinary scalar that happens to be HEAP-tagged, so it failed
+ * every enumeration and was routed down the COLLECTION path, where its object
+ * was then dereferenced as [dims][rank][elems]: `(gradient f 1/3)` returned
+ * `#()` and `(hessian f 1/3)` segfaulted. Deciding it here keeps the answer in
+ * one place for all of them. */
+int32_t eshkol_ad_point_is_scalar(const eshkol_tagged_value_t* v) {
+    if (!v) return 0;
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt == ESHKOL_VALUE_DOUBLE || bt == ESHKOL_VALUE_INT64 ||
+        bt == ESHKOL_VALUE_DUAL_NUMBER || bt == ESHKOL_VALUE_BOOL ||
+        bt == ESHKOL_VALUE_CHAR)
+        return 1;
+    if (bt == ESHKOL_VALUE_HEAP_PTR && v->data.ptr_val != 0) {
+        const eshkol_object_header_t* hdr =
+            ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+        if (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||
+                    hdr->subtype == HEAP_SUBTYPE_BIGNUM  ||
+                    hdr->subtype == HEAP_SUBTYPE_TAYLOR))
+            return 1;
+    }
+    return 0;
+}
+
+/* Narrow companion: is this point an EXACT HEAP scalar (rational or bignum)?
+ *
+ * Deliberately NOT the same question as eshkol_ad_point_is_scalar: it excludes
+ * DUAL_NUMBER and Taylor towers. Some entry points classify a dual point
+ * separately (a dual point means an enclosing differentiation is live), so the
+ * `INT64 | DOUBLE` tests those operators use must be widened by exactly the
+ * exact-heap-numeric case and nothing else -- otherwise widening the entry
+ * classification would silently re-route nested AD as well.
+ *
+ * Both the ENTRY branch (which promotes a scalar point) and the EXIT unwrap
+ * (which returns a bare scalar rather than a 1-vector for a scalar point) must
+ * be widened together: widening only the entry made `(gradient f 1/3)` return
+ * `#(0.666…)` where `(gradient f 0.333…)` returns `0.666…`. */
+int32_t eshkol_ad_point_is_exact_scalar(const eshkol_tagged_value_t* v) {
+    if (!v) return 0;
+    if ((uint8_t)(v->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0)
+        return 0;
+    const eshkol_object_header_t* hdr =
+        ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+    return (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||
+                    hdr->subtype == HEAP_SUBTYPE_BIGNUM)) ? 1 : 0;
+}
+
+/* Is this evaluation point an EXACT NUMBER -- an R7RS-exact integer (immediate
+ * int64 or heap bignum) or an exact rational?
+ *
+ * This is the gate on the EXACT TIER: `derivative`/`gradient`/`hessian` carry a
+ * raw double per jet/tape component and can only answer exactly by routing the
+ * pass through the Taylor tower, which is the compiler's one exact AD carrier
+ * (eshkol_taylor_alloc_exact). The tower is seeded exact for exactly the points
+ * this predicate accepts -- eshkol_taylor_seed_tagged makes the same
+ * tagged_is_exact_number() decision -- so the two agree by construction: the
+ * codegen never routes a pass to the exact tier that the seeder would then
+ * demote to COEFF_F64.
+ *
+ * Deliberately broader than eshkol_ad_point_is_exact_scalar (which answers only
+ * about HEAP exact scalars, for entry classifications that already enumerate
+ * INT64) and deliberately narrower than eshkol_ad_point_is_scalar: a DOUBLE is
+ * inexact, and a DUAL_NUMBER or a Taylor tower means an enclosing
+ * differentiation is already live, which the exact tier must decline. */
+int32_t eshkol_ad_point_is_exact_number(const eshkol_tagged_value_t* v) {
+    if (!v) return 0;
+    return tagged_is_exact_number(v) ? 1 : 0;
+}
+
+/* Raise-on-refusal wrapper: the shape the codegen calls, so an AD entry point
+ * never has to branch on `ok` in IR. `what` names the operator for the
+ * diagnostic (e.g. "derivative", "gradient"). */
+extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
+double eshkol_ad_point_to_double(const eshkol_tagged_value_t* v, const char* what) {
+    int32_t ok = 0;
+    double d = eshkol_ad_seed_to_double(v, &ok);
+    if (!ok) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                             "%s: evaluation point is not a number "
+                             "(tagged type %u)",
+                             what ? what : "autodiff",
+                             v ? (unsigned)(v->type & 0x0F) : 0u);
+        return 0.0;    /* not reached */
+    }
+    return d;
+}
+
 /* ----------------------------------------------------------------------- */
 /* recurrences (operate on raw coefficient arrays, n = K+1 entries)         */
 /* ----------------------------------------------------------------------- */

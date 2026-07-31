@@ -1,28 +1,34 @@
 ; Basic macro tests for Eshkol
 ; Tests the define-syntax/syntax-rules system
+;
+; Each case asserts the value the expansion must produce. The expectations are
+; the arithmetic the macro template denotes -- they were already written into
+; the prompt strings of the display-only version of this file.
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ; Test 1: Simple transformation macro
 (define-syntax double
   (syntax-rules ()
     ((double x) (* x 2))))
 
-(display "Test 1: double macro - (double 5) = ")
-(display (double 5))
-(newline)
+(check "double macro: (double 5) = 5*2" 10 (double 5))
 
 ; Test 2: Macro with two arguments
 (define-syntax my-add
   (syntax-rules ()
     ((my-add a b) (+ a b))))
 
-(display "Test 2: my-add macro - (my-add 3 4) = ")
-(display (my-add 3 4))
-(newline)
+(check "my-add macro: (my-add 3 4)" 7 (my-add 3 4))
 
 ; Test 3: Nested macro calls
-(display "Test 3: Nested - (double (my-add 2 3)) = ")
-(display (double (my-add 2 3)))
-(newline)
+(check "nested macros: (double (my-add 2 3)) = (2+3)*2" 10 (double (my-add 2 3)))
 
 ; Test 4: Macro with literal keyword
 (define-syntax when
@@ -30,9 +36,8 @@
     ((when test body)
      (if test body #f))))
 
-(display "Test 4: when macro - (when #t 42) = ")
-(display (when #t 42))
-(newline)
+(check "when macro, true test" 42 (when #t 42))
+(check "when macro, false test" #f (when #f 42))
 
 ; Test 5: unless macro
 (define-syntax unless
@@ -40,9 +45,9 @@
     ((unless test body)
      (if test #f body))))
 
-(display "Test 5: unless macro - (unless #f 99) = ")
-(display (unless #f 99))
-(newline)
+(check "unless macro, false test" 99 (unless #f 99))
+(check "unless macro, true test" #f (unless #t 99))
 
-(display "All macro tests passed!")
-(newline)
+; Argument expressions must be substituted, not re-evaluated into the wrong
+; place: (double (+ 1 2)) must be (* (+ 1 2) 2) = 6, never (* 1 2) or (+ 1 4).
+(check "double macro over a compound argument" 6 (double (+ 1 2)))

@@ -1,13 +1,38 @@
 ;; Type System Test: expression-level checked cast (the <type> <expr>) (item 3).
 ;;
-;; `v` is declared string-or-number (a heterogeneous slot). At this call site we
-;; know it holds a string, so `(the string v)` asserts that to the checker,
-;; letting it satisfy the string parameter of needs-string. The cast is a pure
-;; runtime no-op — it evaluates exactly to v. Without it, passing the sum-typed
-;; value to a string parameter reports "expected String, got (+ String Number)".
+;; Part 1 — the cast does its job. `v` is declared string-or-number (a
+;; heterogeneous slot). At this call site we know it holds a string, so
+;; `(the string v)` asserts that to the checker, letting it satisfy the string
+;; parameter of needs-string. The cast is a pure runtime no-op — it evaluates
+;; exactly to v. Without it, passing the sum-typed value to a string parameter
+;; reports "expected String, got (+ String Number)".
+;;
+;; Part 2 — EVERY accepted type name is spellable in the cast. This fixture
+;; used to test `(the string v)` and nothing else, which is precisely why the
+;; gate missed that `(the number 3)` was a PARSE error: the parser kept its own
+;; allow-list of bare type names, and that list omitted `number`, `pair`,
+;; `vector`, `procedure`, `list`, `tensor`, `complex` and `rational`, so the
+;; form silently degraded into a call to an undefined function named `the`
+;; ("Unknown function: the" + "Undefined variable: number") — while `number`
+;; was simultaneously one of the eight advertised narrowing predicates.
+;;
+;; The bare names below are the canonical registry in lib/types/hott_types.cpp
+;; (eshkol::hott::builtinTypeSpellings()), now the single source of truth for
+;; the parser AND the type environment. scripts/run_typesystem_tests.sh
+;; additionally derives the list straight from that table and compiles a
+;; generated ascription per entry, so a name added there cannot escape coverage
+;; even if this fixture is not updated alongside it.
+;;
+;; `the` is an UNCHECKED trust boundary, so the values below are chosen for
+;; plausibility, not enforcement — what is under test is that every name is
+;; recognised as a type and resolves to a real type instead of degrading.
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: [ERROR]
 ;; EXPECT-NO-STDERR: [WARN]
+;; EXPECT-NO-STDERR: error:
+;; EXPECT-NO-STDERR: Unknown function: the
+;; EXPECT-NO-STDERR: Undefined variable
 
 (define (needs-string (s : string)) (string-length s))
 
@@ -16,3 +41,102 @@
 
 (display (name-length "hello"))   ;; runtime: the-cast is a no-op, length = 5
 (newline)
+
+;; ---------------------------------------------------------------------------
+;; Part 2: every bare type name in the canonical registry.
+;; ---------------------------------------------------------------------------
+
+(define (identity-fn x) x)
+
+;; Numeric tower
+(display (the number 3))       (newline)
+(display (the integer 3))      (newline)
+(display (the int 3))          (newline)
+(display (the i8 3))           (newline)
+(display (the int8 3))         (newline)
+(display (the i16 3))          (newline)
+(display (the int16 3))        (newline)
+(display (the i32 3))          (newline)
+(display (the int32 3))        (newline)
+(display (the i64 3))          (newline)
+(display (the int64 3))        (newline)
+(display (the isize 3))        (newline)
+(display (the u8 3))           (newline)
+(display (the uint8 3))        (newline)
+(display (the u16 3))          (newline)
+(display (the uint16 3))       (newline)
+(display (the u32 3))          (newline)
+(display (the uint32 3))       (newline)
+(display (the u64 3))          (newline)
+(display (the uint64 3))       (newline)
+(display (the usize 3))        (newline)
+(display (the natural 3))      (newline)
+(display (the nat 3))          (newline)
+(display (the bigint 3))       (newline)
+(display (the rational 3))     (newline)
+(display (the real 1.5))       (newline)
+(display (the float 1.5))      (newline)
+(display (the double 1.5))     (newline)
+(display (the float64 1.5))    (newline)
+(display (the float32 1.5))    (newline)
+(display (the complex 1.5))    (newline)
+
+;; Text
+(display (the string "s"))     (newline)
+(display (the str "s"))        (newline)
+(display (the char #\a))       (newline)
+(display (the character #\a))  (newline)
+(display (the symbol 'sym))    (newline)
+
+;; Other ground types
+(display (the boolean #t))     (newline)
+(display (the bool #t))        (newline)
+(display (the null '()))       (newline)
+(display (the nil '()))        (newline)
+(display (the any 3))          (newline)
+(display (the value 3))        (newline)
+(display (the nothing 3))      (newline)
+(display (the never 3))        (newline)
+
+;; Containers and constructors, written bare
+(display (the list (list 1 2)))     (newline)
+(display (the vector (vector 1 2))) (newline)
+(display (the tensor 3))            (newline)
+(display (the pair (cons 1 2)))     (newline)
+(display ((the procedure identity-fn) 7)) (newline)
+(display ((the closure identity-fn) 8))   (newline)
+(display (the hash-table 3))        (newline)
+(display (the hashtable 3))         (newline)
+(display (the ptr 3))               (newline)
+(display (the pointer 3))           (newline)
+
+;; Autodiff
+(display (the dual 1.5))            (newline)
+(display (the dual-number 1.5))     (newline)
+(display (the ad-node 1.5))         (newline)
+(display (the adnode 1.5))          (newline)
+
+;; Linear resources
+(display (the handle 3))            (newline)
+(display (the buffer 3))            (newline)
+(display (the stream 3))            (newline)
+(display (the qubit 3))             (newline)
+
+;; Type names are case-insensitive, matching the type environment's lookup.
+(display (the Number 3))            (newline)
+(display (the STRING "s"))          (newline)
+(display (the Pair (cons 1 2)))     (newline)
+
+;; ---------------------------------------------------------------------------
+;; Part 3: parenthesised type forms keep working alongside the bare names.
+;; ---------------------------------------------------------------------------
+
+(display (the (list integer) (list 1 2)))          (newline)
+(display (the (vector real) (vector 1.5 2.5)))     (newline)
+(display (the (tensor real) 3))                    (newline)
+(display (the (pair integer string) (cons 1 "a"))) (newline)
+(display (the (ptr integer) 3))                    (newline)
+(display ((the (-> integer integer) identity-fn) 9)) (newline)
+(display (the (+ string number) "either"))         (newline)
+(display (the (* integer string) (cons 1 "a")))    (newline)
+(display (the (forall (a) a) 3))                   (newline)

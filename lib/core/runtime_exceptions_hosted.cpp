@@ -804,6 +804,16 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         eshkol_unwind_dynamic_wind(g_exception_handler_stack->wind_mark);
         eshkol_promise_eval_unwind_to(
             g_exception_handler_stack->promise_mark);
+        // #341: close every region opened after the handler was installed — an
+        // open `region-open` handle or a `with-region` body the raise is jumping
+        // out of. The raised value is passed as the in-flight value so it is
+        // deep-promoted out of each region before that region's arena is freed;
+        // without this the handler would receive a pointer into freed memory
+        // (and the allocation slot would still point at the dead arena).
+        // The exception STRUCT itself needs no promotion: exceptions are
+        // allocated from __repl_shared_arena, which region entry never hijacks.
+        eshkol_region_unwind_to(g_exception_handler_stack->region_mark,
+                                &g_raised_tagged_value, 1);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -847,6 +857,7 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     handler->jmp_buf_ptr = jmp_buf_ptr;
     handler->wind_mark = g_dynamic_wind_stack;
     handler->promise_mark = eshkol_promise_eval_mark();
+    handler->region_mark = eshkol_region_mark();  // #341
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
 }

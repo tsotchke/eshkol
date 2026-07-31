@@ -6,6 +6,7 @@
 ;; real, the recursive argument must unify with the accumulator at their numeric
 ;; join instead of erroring "expected Float64, got Number".
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: [ERROR]
 ;; EXPECT-NO-STDERR: [WARN]
 

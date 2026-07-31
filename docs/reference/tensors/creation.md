@@ -51,6 +51,30 @@ t                               ;; => #(1 2 3)
 `shape`-dimensional. Reshape a flat tensor into higher rank with
 `tensor-reshape` (see [operations.md](operations.md)).
 
+### From a nested collection
+
+`(tensor X)` on a single collection argument takes its shape from the value's
+own nesting, whatever built it — lists, vectors, or a mix, to any rank up to 8:
+
+```scheme
+(tensor (list 1.0 2.0 3.0))                        ;; => #(1 2 3)        shape (3)
+(tensor (list (list 1.0 2.0) (list 3.0 4.0)))      ;; => #((1 2) (3 4))  shape (2 2)
+(tensor #(#(1 2) #(3 4)))                          ;; => #((1 2) (3 4))  shape (2 2)
+(tensor (list (vector 1.0 2.0) (vector 3.0 4.0)))  ;; => #((1 2) (3 4))  shape (2 2)
+(tensor (list (list (list 1.0 2.0) (list 3.0 4.0)) ;; rank 3
+              (list (list 5.0 6.0) (list 7.0 8.0)))) ;; shape (2 2 2)
+```
+
+The nest must be **rectangular** — every sub-collection at the same depth needs
+the same length, and a given depth is either all numbers or all sub-collections.
+A ragged nest is not a tensor and raises a catchable error rather than producing
+a wrong shape:
+
+```scheme
+(guard (e (#t 'not-rectangular))
+  (tensor (list (list 1.0 2.0) (list 3.0 4.0 5.0))))   ;; => not-rectangular
+```
+
 ## Creating vectors
 
 ```scheme

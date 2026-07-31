@@ -176,6 +176,16 @@ set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
 set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.22" CACHE STRING
     "Newest TensorCore public ABI covered by Eshkol release gates")
 
+# The qLLM tensor backend is opt-in, matching docs/SDNC.md §13: the default
+# build of eshkol-qllm-run uses the portable C reference matmul and has no
+# external dependency; -DUSE_QLLM additionally links the qLLM NEON/Metal
+# backend for an accelerated benchmark. Turning this ON is what defines
+# USE_QLLM for that target (see the eshkol-qllm-run section below).
+option(ESHKOL_QLLM_ENABLED
+       "Link the external qLLM NEON/Metal tensor backend into eshkol-qllm-run (defines USE_QLLM)" OFF)
+set(ESHKOL_QLLM_ROOT "" CACHE PATH
+    "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
+
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
 # the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
 # SHA (rather than the mutable v1.1.0-rc name) for reproducible builds.  At the
@@ -1765,6 +1775,15 @@ if(NOT APPLE)
             "this host. Install libssl-dev (Debian/Ubuntu), openssl-devel "
             "(Fedora/RHEL), or the platform equivalent.")
     endif()
+
+    # ESH-0011: lib/core/event_loop_iocp.c calls WSAStartup/WSAPoll/getsockopt
+    # for the socket half of its readiness path, so every AOT-linked user
+    # program on Windows needs Winsock in its base runtime closure — the
+    # event-loop builtins are in the always-linked hosted runtime, not the
+    # optional agent-FFI archive.
+    if(WIN32)
+        eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
 endif()
 
 # Moonlab's QRNG/PQC wrappers are compiled into the ordinary hosted runtime,
@@ -1860,6 +1879,13 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
 # weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
 # These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+
+# ESH-0011: exactly one event-loop backend is compiled, chosen below the same
+# way GPU_SOURCES picks gpu_memory.mm / gpu_memory_cuda.cpp / gpu_memory_stub.cpp.
+# file(GLOB_RECURSE) would otherwise sweep all four in and every backend symbol
+# would be multiply defined. lib/core/event_loop.c (the portable half) has no
+# underscore suffix, so it deliberately stays in the glob.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/event_loop_[a-z]+\\.c$")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
@@ -1990,6 +2016,34 @@ message(STATUS
   "code=${ESHKOL_VM_MAX_CODE}"
 )
 
+# ─────────────────────────────────────────────────────────────────────
+# ESH-0011 portable event loop: select the one platform backend.
+#
+# Readiness-style surface (kqueue/epoll shape). The Windows file owns a real
+# completion port but derives readiness from WSAPoll/PeekNamedPipe — see the
+# header comment in lib/core/event_loop_iocp.c for the adaptation and its
+# limits. Emscripten has no descriptors at all, so it gets the fail-closed
+# stub and `(make-event-loop n)` returns #f there.
+# ─────────────────────────────────────────────────────────────────────
+if(EMSCRIPTEN)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (no descriptors on this target)")
+elseif(WIN32)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_iocp.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "IOCP + WSAPoll/PeekNamedPipe readiness")
+elseif(APPLE OR CMAKE_SYSTEM_NAME MATCHES "BSD|DragonFly")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_kqueue.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "kqueue")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME MATCHES "Android")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_epoll.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "epoll")
+else()
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (unrecognised platform)")
+endif()
+list(APPEND LIB_SRC ${ESHKOL_EVENT_LOOP_SRC})
+message(STATUS "Event-loop backend: ${ESHKOL_EVENT_LOOP_BACKEND} (${ESHKOL_EVENT_LOOP_SRC})")
+
 # Image I/O (native platform/system codec backends)
 list(APPEND LIB_SRC lib/core/image_io.c)
 set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
@@ -2078,7 +2132,20 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
+  # ESH-0011 event loop: hosted, not core — it is nothing but OS calls. Must
+  # live in this list rather than only in LIB_SRC, because the event-loop
+  # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
+  # every AOT/JIT user link resolves against that archive alone.
+  lib/core/event_loop.c
 )
+
+# The selected event-loop backend is appended rather than listed above because
+# tests/toolchain/runtime_core_boundary_test.cpp parses that set() block
+# TEXTUALLY and requires every line to name a file that exists — a
+# ${VARIABLE} reference inside the block reads as a missing source. Appending
+# here (before the REMOVE_ITEM below) still keeps it out of
+# ESHKOL_NON_RUNTIME_SRC, so it is compiled exactly once.
+list(APPEND ESHKOL_RUNTIME_HOSTED_SRC ${ESHKOL_EVENT_LOOP_SRC})
 
 list(REMOVE_ITEM LIB_SRC
   ${ESHKOL_RUNTIME_CORE_SRC}
@@ -2099,6 +2166,10 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 )
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
+  # Forward half of the Eshkol <-> qLLM bridge (inc/eshkol/bridge/qllm_bridge.h).
+  # Creates the AD_NODE_TENSOR_* / geometric nodes that lib/bridge/tensor_backward.cpp
+  # already knows how to differentiate; without it those backward rules are unreachable.
+  lib/bridge/qllm_bridge.cpp
   lib/bridge/tensor_backward.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
@@ -2368,8 +2439,9 @@ if(APPLE)
     target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
     target_link_libraries(eshkol-static PUBLIC "-framework Security")
 elseif(WIN32)
-    target_link_libraries(eshkol-runtime PUBLIC bcrypt)
-    target_link_libraries(eshkol-static PUBLIC bcrypt)
+    # ws2_32: Winsock for the socket half of lib/core/event_loop_iocp.c (ESH-0011).
+    target_link_libraries(eshkol-runtime PUBLIC bcrypt ws2_32)
+    target_link_libraries(eshkol-static PUBLIC bcrypt ws2_32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
@@ -3039,6 +3111,95 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # R7RS 5.3.1: a later top-level define wins. The regression covers, on both
+    # the JIT and the AOT lane: value-then-procedure, procedure-then-value,
+    # procedure-then-procedure at the same and at a different arity, a forward
+    # reference from a body compiled before the redefinition (tail and non-tail),
+    # a call written between the two definitions seeing the earlier one, and a
+    # self-recursive redefinition. Before the fix the first case died with
+    # "variable 'g' is not a procedure", the forward references froze on the
+    # first definition, and the intervening call ran the later one.
+    add_test(
+        NAME toplevel_redefinition_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(toplevel_redefinition_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot'"
+    )
+    set_tests_properties(toplevel_redefinition_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
+
+    # R7RS 5.3.1, the other direction: once a procedure name has been redefined
+    # to a number, calling it must be REJECTED, not silently dispatched to the
+    # stale procedure. The program is expected to die, so the shell swallows the
+    # exit status and the assertion is on the diagnostic; UNREACHABLE is printed
+    # only if the call was accepted.
+    add_test(
+        NAME toplevel_redefinition_not_procedure_runtime_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_not_procedure_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+
+    # Tape-retained AD nodes vs. per-iteration reclamation.
+    #
+    # ESH-0214e runs an escape-analysed loop body inside a nursery region that is
+    # arena_reset() at every TCO back edge. AD nodes created in the body were
+    # allocated from that nursery while the tape recording them lived outside it,
+    # so the reset recycled them and the next iteration reallocated at the same
+    # addresses — every earlier node's parents resolved to the FINAL iteration's
+    # subgraph. Reverse-mode gradients through a vector filled by vector-set! in
+    # a loop therefore returned the row for the last element written, for every
+    # element read, with exact primals and exit 0. Pins the minimal shape, a
+    # composed vector field against its closed-form Jacobian, and row-index
+    # sensitivity through a mutable selector, on both the JIT and AOT lanes.
+    add_test(
+        NAME tape_nursery_attribution_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tape_nursery_attribution_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tape_nursery_attribution_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot'"
+    )
+    set_tests_properties(tape_nursery_attribution_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Tensor-operand and checkpoint-resume hardening.
     #
     # (1) `embedding` reinterpreted its index/weight operands as tensors without
@@ -3181,6 +3342,81 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Every tensor operand is classified by its runtime tag before the op reads
+    # the struct: a 1-D data operand accepts a numeric vector/list and coerces,
+    # an operand written in place and a matrix operand reject a collection, and
+    # an axis that addresses no reducible dimension raises. Before this, each of
+    # these was a SIGSEGV or a fabricated value — see the test header for the
+    # measured before-values. Gated in both JIT and AOT.
+    add_test(
+        NAME tensor_operand_classification_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/tensor_operand_classification_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tensor_operand_classification_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
+    # boundary coercion used to reinterpret the tagged data field, so a
+    # HEAP-tagged exact rational/bignum point was differentiated at its own
+    # ADDRESS (heap-magnitude garbage), read as a ~5e-314 denormal, or
+    # misclassified as a COLLECTION and dereferenced as [dims][rank][elems]
+    # (`(gradient f 1/3)` => #(), `(hessian f 1/3)` => SIGSEGV). The gate is that
+    # an exact seed never disagrees with the SAME operator at
+    # (exact->inexact point) -- which no fabricated seed can satisfy, whatever
+    # its magnitude -- while derivative-n/taylor keep the exact tier. BOTH lanes:
+    # the JIT and AOT differ in how the point literal reaches codegen.
+    add_test(
+        NAME exact_point_ad_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_point_ad_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_point_ad_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot'"
+    )
+    set_tests_properties(exact_point_ad_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
+    # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
+    # regression in it is a regression in all three. It was unwired -- nothing in
+    # CTest or any workflow ran it, and tests/ad/ is not globbed by
+    # scripts/run_autodiff_tests.sh (which globs tests/autodiff/ only) -- so it
+    # gates here now, in BOTH lanes.
+    add_test(
+        NAME exact_taylor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_taylor_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot'"
+    )
+    set_tests_properties(exact_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -3192,6 +3428,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "TEST: Empty collection edge cases"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Runtime guards across the tensor/complex/AD surface must raise catchably
+    # rather than being optimized away. Two of these cases were hard SIGSEGVs and
+    # one returned a matrix fabricated from out-of-bounds reads, so the
+    # `fatal signal` clause in FAIL_REGULAR_EXPRESSION is load-bearing here.
+    add_test(
+        NAME codegen_guard_raise_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/codegen_guard_raise_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(codegen_guard_raise_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "error:|LLVM module verification failed|fatal signal")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/v1_3_smoke_features_test.esk")
         add_test(
             NAME v1_3_smoke_features_runtime_smoke
@@ -3216,6 +3467,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # ESH-0011 portable event loop. Registered on EVERY platform, Windows
+    # included: the IOCP backend must be exercised, not merely compiled, and
+    # `make-pipe` now works there so the pipe round-trip is genuinely runnable.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk")
+        add_test(
+            NAME v1_3_event_loop_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_event_loop_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
@@ -3265,6 +3532,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 180
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh")
+        # ESH-0362 / ESH-0363 (found during FFI-boundary hardening): the two
+        # fail-open cells at the interpreter and the FFI boundary must stay
+        # closed on BOTH paths. An arity error is fatal under -r AND AOT (no
+        # null binding, no binary written); a wrong-typed pointer argument
+        # raises a catchable type error instead of being dereferenced; and the
+        # correctly-called spawn family still runs a real child end to end.
+        # See lib/backend/llvm_codegen.cpp (arity sites + emitFfiPointerArgGuard
+        # + replSlotArityMismatch) and lib/agent/subprocess.esk.
+        add_test(
+            NAME ffi_boundary_fail_open_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(ffi_boundary_fail_open_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: ffi_boundary_fail_open_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND
@@ -4192,6 +4480,33 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     endif()
 endif()
 
+# ===== qLLM bridge end-to-end gate ===========================================
+# Proves the bridge is wired in the only way that counts: a real computation
+# runs through the forward entry points in lib/bridge/qllm_bridge.cpp, is
+# backpropagated through the backward rules in lib/bridge/tensor_backward.cpp
+# (which shipped compiled but unreachable, because nothing created an
+# AD_NODE_TENSOR_* node for them), and the gradients are checked against
+# central finite differences of the same forward. Also covers the float32
+# interop round-trip and the bridge lifecycle.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_gradcheck_test.cpp")
+    add_executable(qllm_bridge_gradcheck_test
+        tests/bridge/qllm_bridge_gradcheck_test.cpp)
+    target_compile_features(qllm_bridge_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
+    set_tests_properties(qllm_bridge_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 7 passed, 0 failed"
+    )
+endif()
+
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
 # `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
 # weight_matrices tool) and executes Eshkol bytecode by running the transformer
@@ -4209,6 +4524,51 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
     set_target_properties(eshkol-qllm-run PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
     )
+
+    # Optional accelerated path. docs/SDNC.md §13: "The default build uses the
+    # portable C reference matmul (no external dependency); `-DUSE_QLLM`
+    # additionally links the qLLM NEON/Metal tensor backend for an accelerated
+    # benchmark." So OFF by default is what the documentation promises — the
+    # accelerated path is an opt-in, not a regression when absent.
+    #
+    # Before this option existed, USE_QLLM was guarded code that no target and
+    # no script could ever define: four #ifdef sites reachable only by editing
+    # the source or hand-driving the compiler. The option is what makes the
+    # documented `-DUSE_QLLM` build actually selectable.
+    if(ESHKOL_QLLM_ENABLED)
+        find_path(ESHKOL_QLLM_INCLUDE_DIR
+            NAMES semiclassical_qllm/tensor.h
+            HINTS ${ESHKOL_QLLM_ROOT}/include $ENV{QLLM_ROOT}/include
+        )
+        find_library(ESHKOL_QLLM_LIBRARY
+            NAMES semiclassical_qllm
+            HINTS ${ESHKOL_QLLM_ROOT}/build/lib ${ESHKOL_QLLM_ROOT}/lib
+                  $ENV{QLLM_ROOT}/build/lib $ENV{QLLM_ROOT}/lib
+        )
+        if(NOT ESHKOL_QLLM_INCLUDE_DIR OR NOT ESHKOL_QLLM_LIBRARY)
+            # Fail loudly: silently falling back to the C path would make an
+            # explicit -DESHKOL_QLLM_ENABLED=ON build quietly not do the thing
+            # it was asked to do.
+            message(FATAL_ERROR
+                "ESHKOL_QLLM_ENABLED=ON but libsemiclassical_qllm was not found.\n"
+                "  Set -DESHKOL_QLLM_ROOT=<path> (expects <path>/include/semiclassical_qllm/"
+                "tensor.h and <path>/build/lib or <path>/lib), or set QLLM_ROOT in the "
+                "environment.\n"
+                "  headers: ${ESHKOL_QLLM_INCLUDE_DIR}\n  library: ${ESHKOL_QLLM_LIBRARY}")
+        endif()
+        target_compile_definitions(eshkol-qllm-run PRIVATE USE_QLLM)
+        target_include_directories(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_INCLUDE_DIR})
+        target_link_libraries(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_LIBRARY})
+        if(APPLE)
+            # The qLLM backend dispatches to Metal on Apple platforms.
+            target_link_libraries(eshkol-qllm-run PRIVATE
+                "-framework Metal" "-framework Foundation")
+        endif()
+        message(STATUS "  qLLM:      ENABLED (USE_QLLM; ${ESHKOL_QLLM_LIBRARY})")
+    else()
+        message(STATUS "  qLLM:      DISABLED (portable C reference matmul; "
+                       "-DESHKOL_QLLM_ENABLED=ON to link the qLLM tensor backend)")
+    endif()
 endif()
 
 # ===== SDNC de-risking experiment: differentiable external memory head ========
@@ -4264,6 +4624,81 @@ if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/xla_code
         target_link_libraries(xla_codegen_test PRIVATE "-framework Accelerate")
     else()
         target_link_options(xla_codegen_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+endif()
+
+# ===== Fixed-Point / i128 / Exact-Accumulation Engine =====
+# The standalone shared library is the delivery surface for portable-reference
+# consumers; it deliberately has no LLVM/eshkol-static dependency.
+set(_ESHKOL_FIXED_POINT_ENGINE_DEFAULT ON)
+if(ESHKOL_USING_MSVC)
+    # MSVC and ClangCL do not expose the GCC/Clang __int128 ABI used by this
+    # engine. Keep that unsupported path honest and default-off.
+    set(_ESHKOL_FIXED_POINT_ENGINE_DEFAULT OFF)
+endif()
+option(ESHKOL_FIXED_POINT_ENGINE
+    "Build the standalone libeshkol-fixedpoint exact-arithmetic engine"
+    ${_ESHKOL_FIXED_POINT_ENGINE_DEFAULT})
+unset(_ESHKOL_FIXED_POINT_ENGINE_DEFAULT)
+
+if(ESHKOL_FIXED_POINT_ENGINE AND ESHKOL_USING_MSVC)
+    message(FATAL_ERROR
+        "ESHKOL_FIXED_POINT_ENGINE requires a compiler with the GCC/Clang __int128 ABI; "
+        "MSVC/ClangCL is not supported yet")
+endif()
+
+if(ESHKOL_FIXED_POINT_ENGINE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/fixed_point/eshkol_fixed_point.c")
+    add_library(eshkol-fixedpoint SHARED
+        lib/math/fixed_point/eshkol_fixed_point.c)
+    set_target_properties(eshkol-fixedpoint PROPERTIES
+        C_STANDARD 11
+        C_STANDARD_REQUIRED YES
+        OUTPUT_NAME "eshkol-fixedpoint"
+        VERSION "${PROJECT_VERSION}"
+        SOVERSION "${PROJECT_VERSION_MAJOR}"
+        PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/fixed_point/eshkol_fixed_point.h")
+    target_include_directories(eshkol-fixedpoint PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/math/fixed_point>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/eshkol>)
+    target_link_libraries(eshkol-fixedpoint PRIVATE m)
+    install(TARGETS eshkol-fixedpoint
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT FixedPoint
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT FixedPoint
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT FixedPoint
+        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol COMPONENT FixedPoint)
+endif()
+
+# --- Fixed-point / i128 / exact-accumulation suite (additive; self-contained C,
+#     no LLVM/eshkol-static dependency — it only compiles the new engine module). ---
+if(ESHKOL_BUILD_TESTS AND NOT ESHKOL_USING_MSVC AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/fixed_point/eshkol_fixed_point.c")
+    foreach(fp_test test_i128 test_fixed test_dot_exact)
+        add_executable(fixedpoint_${fp_test}
+            tests/fixed_point/${fp_test}.c
+            lib/math/fixed_point/eshkol_fixed_point.c)
+        set_target_properties(fixedpoint_${fp_test} PROPERTIES
+            C_STANDARD 11 C_STANDARD_REQUIRED YES)
+        target_include_directories(fixedpoint_${fp_test} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/math/fixed_point
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_point)
+        target_link_libraries(fixedpoint_${fp_test} PRIVATE m)
+        add_test(NAME fixedpoint_${fp_test} COMMAND fixedpoint_${fp_test})
+    endforeach()
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_point/test_runner_failures.sh")
+        add_test(NAME fixedpoint_runner_failures
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_point/test_runner_failures.sh")
+    endif()
+    if(TARGET eshkol-fixedpoint AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_point/test_shared_abi.c")
+        add_executable(fixedpoint_test_shared_abi
+            tests/fixed_point/test_shared_abi.c)
+        set_target_properties(fixedpoint_test_shared_abi PROPERTIES
+            C_STANDARD 11 C_STANDARD_REQUIRED YES)
+        target_include_directories(fixedpoint_test_shared_abi PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_point)
+        target_link_libraries(fixedpoint_test_shared_abi PRIVATE eshkol-fixedpoint)
+        add_test(NAME fixedpoint_test_shared_abi COMMAND fixedpoint_test_shared_abi)
     endif()
 endif()
 

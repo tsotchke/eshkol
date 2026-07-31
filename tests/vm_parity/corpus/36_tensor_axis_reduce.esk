@@ -1,0 +1,64 @@
+; VM<->native parity for the AXIS form of the tensor reductions.
+;
+; Reducing the sole axis of a rank-1 tensor is a COMPLETE reduction and yields a
+; 1-element tensor. The VM has always done this — vm_tensor_reduce documents "a
+; 1D input reduces to a 1-element tensor rather than a 0-dim one" — while native
+; stored `rank - 1` unclamped as the output rank and produced a rank-0 tensor
+; that displayed as `#()`. The single element held the correct value, so this
+; read as "the tensor was empty" rather than as an error, and the two substrates
+; silently disagreed. This file gates the agreement.
+;
+; Every value is read back either as a reduction RESULT tensor (which displays
+; #(...) identically on both backends) or as a scalar via tensor-ref, so the
+; pre-existing vector-vs-tensor display-format quirk is not exercised here.
+;
+; NOTE the one form deliberately absent: the 1-ARGUMENT `(tensor-sum t)` still
+; disagrees (native returns the scalar 10, the VM returns #(10)). That predates
+; and is independent of the axis work — the 1-argument lowering is a separate
+; code path — so gating it here would only pin a known-red case.
+
+; --- rank-1: reducing axis 0 is a complete reduction -> 1-element tensor ---
+(define t4 (reshape (vector 1.0 2.0 3.0 4.0) 4))
+(display (tensor-sum t4 0)) (newline)                  ; #(10)
+(display (tensor-mean t4 0)) (newline)                 ; #(2.5)
+(display (tensor-max t4 0)) (newline)                  ; #(4)
+(display (tensor-min t4 0)) (newline)                  ; #(1)
+
+; the result really is rank 1 with a single element, not a rank-0 tensor
+(display (tensor-shape (tensor-sum t4 0))) (newline)   ; (1)
+(display (tensor-ref (tensor-sum t4 0) 0)) (newline)   ; 10
+
+; negative axis normalizes to 0 on a rank-1 operand and reduces the same way
+(display (tensor-sum t4 -1)) (newline)                 ; #(10)
+(display (tensor-mean t4 -1)) (newline)                ; #(2.5)
+
+; --- rank-1 built from a literal rather than reshape ---
+(define lit4 #(2.0 4.0 6.0 8.0))
+(display (tensor-sum lit4 0)) (newline)                ; #(20)
+(display (tensor-mean lit4 0)) (newline)               ; #(5)
+
+; --- rank-2: the ordinary case, one axis reduced and one kept ---
+(define m23 (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(display (tensor-sum m23 0)) (newline)                 ; #(5 7 9)
+(display (tensor-sum m23 1)) (newline)                 ; #(6 15)
+(display (tensor-sum m23 -1)) (newline)                ; #(6 15)
+(display (tensor-mean m23 0)) (newline)                ; #(2.5 3.5 4.5)
+(display (tensor-max m23 0)) (newline)                 ; #(4 5 6)
+(display (tensor-min m23 1)) (newline)                 ; #(1 4)
+(display (tensor-shape (tensor-sum m23 0))) (newline)  ; (3)
+(display (tensor-ref (tensor-sum m23 1) 1)) (newline)  ; 15
+
+; --- reducing a rank-2 tensor twice lands on the 1-element tensor ---
+(display (tensor-sum (tensor-sum m23 0) 0)) (newline)  ; #(21)
+(display (tensor-ref (tensor-sum (tensor-sum m23 1) 0) 0)) (newline) ; 21
+
+; --- rank-3, both interior and edge axes ---
+(define c222 (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 2 2 2))
+(display (tensor-sum c222 0)) (newline)                ; #((6 8) (10 12))
+(display (tensor-sum c222 1)) (newline)                ; #((4 6) (12 14))
+(display (tensor-sum c222 2)) (newline)                ; #((3 7) (11 15))
+(display (tensor-shape (tensor-sum c222 1))) (newline) ; (2 2)
+
+; --- a rank-1 tensor produced BY a reduction reduces again to 1 element ---
+(define once (tensor-sum c222 0))
+(display (tensor-sum (tensor-sum once 0) 0)) (newline) ; #(36)

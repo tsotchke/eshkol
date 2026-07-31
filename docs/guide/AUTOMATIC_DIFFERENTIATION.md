@@ -702,7 +702,46 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 | `directional-derivative` | ℝⁿ→ℝ | `(directional-derivative f pt dir)` | ∇f·dir |
 
 Points are vectors (`#(…)` or `(vector …)`). Exact seeds (integer/rational)
-yield exact `derivative-n`/`taylor` results for polynomial/rational functions.
+yield exact `derivative-n`/`taylor` results for polynomial/rational functions,
+and exact `derivative`/`gradient`/`hessian` results at a scalar point.
+
+### Exact vs inexact seeds, per operator
+
+`derivative-n` and `taylor` carry exact coefficients (section 3), and
+`derivative`, `gradient` and `hessian` reach the **same exact tier** at an exact
+point by running the same tower pass:
+
+```scheme
+(derivative (lambda (x) (* x x)) 1/3)       ;; => 2/3     (exact? => #t)
+(gradient   (lambda (x) (* x x x)) 2/5)     ;; => 12/25   (exact? => #t)
+(hessian    (lambda (x) (expt x 4)) 1/3)    ;; => 4/3     (exact? => #t)
+(derivative (lambda (x) (exp x)) 1/3)       ;; => 1.3956… (exact? => #f, demoted)
+```
+
+| Seed | `derivative-n` / `taylor` | `derivative`, `gradient`, `hessian` (scalar point) | the remaining operators above |
+|---|---|---|---|
+| exact integer `3` | exact | **exact** | `3.0`, coerced once → inexact |
+| exact rational `1/3` | exact (`2/3`) | **exact** (`2/3`) | `0.333…`, coerced once → inexact |
+| bignum | exact | **exact** | nearest double, coerced once → inexact |
+| double | f64 tower | unchanged | unchanged |
+| non-numeric | catchable type error | catchable type error | catchable type error |
+
+The exact tier is an **identity with the tower** — `(derivative f x)` equals
+`(derivative-n f x 1)` and `(hessian f x)` equals `(derivative-n f x 2)` at an
+exact scalar `x`, in value and in exactness — and where an operator still coerces,
+the contract remains that **an exact seed never disagrees with the same operator
+applied at `(exact->inexact point)`**. An inexact point is never promoted. Gated
+by `tests/ad/exact_point_ad_test.esk` (JIT + AOT) and the `exactpoint`
+adversarial family.
+
+The exact route defers to the (unchanged) jet path when the body is not pure
+tower arithmetic, when the function cannot be resolved, or when another
+differentiation is already live — including a nested differentiation, since a
+tower cannot nest as the outer pass. Vector-point `gradient`/`hessian` and the
+remaining operators need one tower pass per component and are build items. See
+[../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
+for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot
+express an exact seed yet.
 
 `gradient` is exact reverse-mode AD **however the callable is reached** — named
 directly, passed in through a function parameter, wrapped, or applied in curried

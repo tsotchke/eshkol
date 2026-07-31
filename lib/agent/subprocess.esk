@@ -49,31 +49,90 @@
 ;; stdin immediately).
 (define PROCESS_SPAWN_STDIN_NULL 1)
 
+;; ----------------------------------------------------------------------------
+;; Positional-argument guards
+;;
+;; Every spawn entry point takes `cwd` as a REQUIRED POSITIONAL argument, and
+;; several take a timeout in the next position. Supplying the timeout where cwd
+;; belongs — (run-argv-capture argv 5000) — used to reach the C layer as a
+;; `const char*` built from the integer, i.e. a dereference of address 0x1388.
+;; The codegen FFI boundary now rejects that with a named type error, but the
+;; error it can raise names the -raw extern and the argument POSITION; these
+;; guards run first so the message names the PARAMETER the caller actually got
+;; wrong. Both are catchable (`guard` / `with-exception-handler`).
+;;
+;; `#f` stays legal for cwd: it is how the C layer is told "inherit the parent's
+;; working directory" (a NULL cwd means no chdir before exec).
+;; ----------------------------------------------------------------------------
+
+;; `error` renders only its message, not its irritants, so name the offending
+;; value's type inside the message itself — otherwise the report ends at "got".
+(define (process-describe-value v)
+  (cond ((string? v)  "a string")
+        ((number? v)  (string-append "the number " (number->string v)))
+        ((symbol? v)  "a symbol")
+        ((null? v)    "the empty list")
+        ((pair? v)    "a list")
+        ((procedure? v) "a procedure")
+        ((eq? v #t)   "#t")
+        ((eq? v #f)   "#f")
+        (else         "a value of another type")))
+
+(define (process-check-cwd! who cwd)
+  "Validate a positional `cwd` argument. cwd must be a string (a directory
+   path) or #f to inherit the caller's working directory."
+  (unless (or (string? cwd) (eq? cwd #f))
+    (error (string-append who
+                          ": `cwd` must be a string path or #f, but got "
+                          (process-describe-value cwd)
+                          ". `cwd` is the REQUIRED SECOND positional argument, "
+                          "not a timeout — a timeout goes in the THIRD position, "
+                          "e.g. (" who " arg \".\" 5000)."))))
+
+(define (process-check-timeout! who timeout-ms)
+  "Validate a positional millisecond timeout argument."
+  (unless (number? timeout-ms)
+    (error (string-append who ": `timeout-ms` must be a number of milliseconds, but got "
+                          (process-describe-value timeout-ms) "."))))
+
 (define (process-spawn command cwd)
   "Spawn a legacy command string. Returns process handle or #f on failure.
-   command: shell-compatible command string. The runtime layer may bypass the
-   platform shell for simple commands where direct argv execution is equivalent.
-   cwd: working directory."
+   Arity: exactly 2 arguments, both positional and required.
+     1. command   — shell-compatible command string. The runtime layer may
+                    bypass the platform shell for simple commands where direct
+                    argv execution is equivalent.
+     2. cwd       — working directory as a string, or #f to inherit the
+                    caller's. REQUIRED: there is no default and no optional
+                    tail; `(process-spawn cmd)` is an arity error."
   (capability-require! 'subprocess command)
+  (process-check-cwd! "process-spawn" cwd)
   (process-spawn-raw command cwd #f 0))
 
 (define (process-spawn-nostdin command cwd)
   "Spawn a legacy command string with stdin redirected to /dev/null. Faster than
    process-spawn + process-close-stdin when the caller never writes
-   to stdin (hot path for run-command-capture)."
+   to stdin (hot path for run-command-capture).
+   Arity: exactly 2 arguments — (command cwd), both required, as process-spawn."
   (capability-require! 'subprocess command)
+  (process-check-cwd! "process-spawn-nostdin" cwd)
   (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-spawn-shell command cwd)
-  "Spawn a command through the platform shell. Returns process handle."
+  "Spawn a command through the platform shell. Returns process handle.
+   Arity: exactly 2 arguments, both positional and required.
+     1. command   — command line interpreted by the platform shell.
+     2. cwd       — working directory string, or #f to inherit. REQUIRED."
   (capability-require! 'subprocess command)
   (capability-require! 'shell command)
+  (process-check-cwd! "process-spawn-shell" cwd)
   (process-spawn-shell-raw command cwd 0))
 
 (define (process-spawn-shell-nostdin command cwd)
-  "Spawn a shell command with stdin redirected to /dev/null."
+  "Spawn a shell command with stdin redirected to /dev/null.
+   Arity: exactly 2 arguments — (command cwd), both required."
   (capability-require! 'subprocess command)
   (capability-require! 'shell command)
+  (process-check-cwd! "process-spawn-shell-nostdin" cwd)
   (process-spawn-shell-raw command cwd PROCESS_SPAWN_STDIN_NULL))
 
 (define (process-owned-c-string->string buf)
@@ -109,13 +168,19 @@
 ;; the native side which calls execvp. No shell means no injection —
 ;; prefer this over process-spawn when the arguments are user-controlled.
 (define (process-spawn-argv argv cwd)
-  "Spawn a process without a shell. argv is a list: (program arg1 arg2 ...).
-   Returns process handle or #f on failure. Safe against shell injection."
+  "Spawn a process without a shell. Returns process handle or #f on failure.
+   Safe against shell injection.
+   Arity: exactly 2 arguments, both positional and required.
+     1. argv      — list of strings: (program arg1 arg2 ...).
+     2. cwd       — working directory string, or #f to inherit the caller's.
+                    REQUIRED: `(process-spawn-argv argv)` is an arity error, not
+                    a call that defaults cwd."
   (cond
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
      (capability-require! 'subprocess argv)
+     (process-check-cwd! "process-spawn-argv" cwd)
      (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
@@ -128,12 +193,14 @@
 ;; PROCESS_SPAWN_STDIN_NULL above.
 (define (process-spawn-argv-nostdin argv cwd)
   "Spawn an argv list without a shell, with stdin wired to /dev/null.
-   Faster than process-spawn-argv + process-close-stdin."
+   Faster than process-spawn-argv + process-close-stdin.
+   Arity: exactly 2 arguments — (argv cwd), both required, as process-spawn-argv."
   (cond
     ((null? argv) #f)
     ((not (list? argv)) #f)
     (else
      (capability-require! 'subprocess argv)
+     (process-check-cwd! "process-spawn-argv-nostdin" cwd)
      (process-argv-check-args argv)
      (let loop ((rest (cdr argv)) (packed (car argv)))
        (if (null? rest)
@@ -142,43 +209,56 @@
                  (string-append packed "\t" (car rest))))))))
 
 (define (process-write-stdin proc data)
-  "Write data to process stdin. Returns bytes written or -1 on error."
+  "Write data to a process's stdin. Returns bytes written or -1 on error.
+   Arity: exactly 2 arguments — (proc data), both required.
+     1. proc — handle from a process-spawn* call.
+     2. data — string to write; its full length is sent."
   (process-write-stdin-raw proc data (string-length data)))
 
 (define (process-close-stdin proc)
-  "Close process stdin (signal EOF)."
+  "Close a process's stdin (signal EOF). Arity: exactly 1 argument — (proc)."
   (process-close-stdin-raw proc))
 
 (define (process-read-stdout proc max-bytes)
-  "Read available stdout. Returns string or empty string.
+  "Read available stdout. Returns a string (empty when nothing is available).
+   Arity: exactly 2 arguments — (proc max-bytes), both required.
    The native buffer is copied into Eshkol space and freed before return."
   (process-owned-c-string->string
     (process-read-all-stdout-raw proc max-bytes #f)))
 
 (define (process-read-stderr proc max-bytes)
-  "Read available stderr. Returns string or empty string.
+  "Read available stderr. Returns a string (empty when nothing is available).
+   Arity: exactly 2 arguments — (proc max-bytes), both required.
    The native buffer is copied into Eshkol space and freed before return."
   (process-owned-c-string->string
     (process-read-all-stderr-raw proc max-bytes #f)))
 
 (define (process-read-all-stdout proc max-bytes)
-  "Read all stdout until EOF. Returns string."
+  "Read all stdout until EOF. Returns a string.
+   Arity: exactly 2 arguments — (proc max-bytes), both required."
   (process-read-stdout proc max-bytes))
 
 (define (process-read-all-stderr proc max-bytes)
-  "Read all stderr until EOF. Returns string."
+  "Read all stderr until EOF. Returns a string.
+   Arity: exactly 2 arguments — (proc max-bytes), both required."
   (process-read-stderr proc max-bytes))
 
 (define (process-wait proc timeout-ms)
-  "Wait for process to exit. Returns: 0=exited, 1=timeout, -1=error."
+  "Wait for a process to exit. Returns 0=exited, 1=timeout, -1=error.
+   Arity: exactly 2 arguments, both positional and required.
+     1. proc       — handle from a process-spawn* call.
+     2. timeout-ms — milliseconds to wait, as a number. REQUIRED: there is no
+                     default and no blocking-forever form."
+  (process-check-timeout! "process-wait" timeout-ms)
   (process-wait-raw proc timeout-ms))
 
 (define (process-running? proc)
-  "Check if process is still running."
+  "True while the child is still running. Arity: exactly 1 argument — (proc)."
   (= (process-running-raw proc) 1))
 
 (define (process-exit-code proc)
-  "Get exit code. Only valid after process-wait returns 0."
+  "Exit code of the child. Only valid after process-wait returned 0.
+   Arity: exactly 1 argument — (proc)."
   (process-exit-code-raw proc))
 
 (define (process-pid proc)
@@ -191,11 +271,14 @@
   (process-pid-raw proc))
 
 (define (process-kill proc . signal)
-  "Kill process. Default signal is SIGTERM (15)."
+  "Kill a process. Arity: 1 or 2 arguments — (proc [signal]).
+     1. proc   — handle from a process-spawn* call (required).
+     2. signal — OPTIONAL signal number; default 15 (SIGTERM)."
   (process-kill-raw proc (if (null? signal) 15 (car signal))))
 
 (define (process-destroy proc)
-  "Free all process resources. Terminates and reaps the child if still running."
+  "Free all resources held by a process handle, terminating and reaping the
+   child if it is still running. Arity: exactly 1 argument — (proc)."
   (process-destroy-raw proc))
 
 ;; ============================================================================
@@ -203,10 +286,17 @@
 ;; ============================================================================
 
 (define (run-command command . rest)
-  "Run a command and wait for completion.
-   Args: command [cwd] [timeout-ms]. Returns: exit code (integer)."
+  "Run a command through the shell and wait for completion.
+   Arity: 1 to 3 arguments — command [cwd] [timeout-ms].
+     1. command    — command line string (required).
+     2. cwd        — OPTIONAL working directory string (or #f); default \".\".
+                     This is the SECOND positional — a timeout here is an error.
+     3. timeout-ms — OPTIONAL milliseconds; default 30000.
+   Returns the child's exit code (integer), or -1 on spawn failure/timeout."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (_cwd-ok (process-check-cwd! "run-command" cwd))
+         (_to-ok (process-check-timeout! "run-command" timeout-ms))
          (proc (process-spawn-shell command cwd)))
     (if (not proc)
         -1
@@ -223,11 +313,19 @@
               code))))))
 
 (define (run-command-capture command . rest)
-  "Run a command and capture stdout/stderr.
-   Args: command [cwd] [timeout-ms] [max-output]. Returns: alist."
+  "Run a command through the shell and capture stdout/stderr.
+   Arity: 1 to 4 arguments — command [cwd] [timeout-ms] [max-output].
+     1. command    — command line string (required).
+     2. cwd        — OPTIONAL working directory string (or #f); default \".\".
+                     SECOND positional — a timeout here is an error.
+     3. timeout-ms — OPTIONAL milliseconds; default 30000.
+     4. max-output — OPTIONAL byte cap per stream; default 4194304.
+   Returns an alist: ((exit-code . n) (stdout . s) (stderr . s))."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
          (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
+         (_cwd-ok (process-check-cwd! "run-command-capture" cwd))
+         (_to-ok (process-check-timeout! "run-command-capture" timeout-ms))
          ;; stdin is never written to in run-command-capture — wire
          ;; it straight to /dev/null in the child and skip the pipe().
          ;; Drops per-call syscall count by a pipe + 2 closes; the
@@ -260,10 +358,17 @@
 
 (define (run-argv argv . rest)
   "Run an argv list (program + args) to completion without a shell.
-   argv: (program arg1 arg2 ...). Safe against shell injection.
-   Args: argv [cwd] [timeout-ms]. Returns exit code."
+   Safe against shell injection.
+   Arity: 1 to 3 arguments — argv [cwd] [timeout-ms].
+     1. argv       — list of strings (program arg1 arg2 ...) (required).
+     2. cwd        — OPTIONAL working directory string (or #f); default \".\".
+                     SECOND positional — a timeout here is an error.
+     3. timeout-ms — OPTIONAL milliseconds; default 30000.
+   Returns the child's exit code, or -1 on spawn failure/timeout."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
+         (_cwd-ok (process-check-cwd! "run-argv" cwd))
+         (_to-ok (process-check-timeout! "run-argv" timeout-ms))
          (proc (process-spawn-argv-nostdin argv cwd)))
     (if (not proc)
         -1
@@ -278,12 +383,22 @@
             code)))))
 
 (define (run-argv-capture argv . rest)
-  "Run argv list and capture stdout/stderr without a shell.
-   argv: (program arg1 arg2 ...). Safe against shell injection.
-   Args: argv [cwd] [timeout-ms] [max-output]. Returns alist."
+  "Run an argv list and capture stdout/stderr without a shell.
+   Safe against shell injection.
+   Arity: 1 to 4 arguments — argv [cwd] [timeout-ms] [max-output].
+     1. argv       — list of strings (program arg1 arg2 ...) (required).
+     2. cwd        — OPTIONAL working directory string (or #f); default \".\".
+                     SECOND positional. Passing the timeout here — e.g.
+                     (run-argv-capture argv 5000) — is a type error, NOT a
+                     timeout: use (run-argv-capture argv \".\" 5000).
+     3. timeout-ms — OPTIONAL milliseconds; default 30000.
+     4. max-output — OPTIONAL byte cap per stream; default 4194304.
+   Returns an alist: ((exit-code . n) (stdout . s) (stderr . s))."
   (let* ((cwd (if (> (length rest) 0) (list-ref rest 0) "."))
          (timeout-ms (if (> (length rest) 1) (list-ref rest 1) 30000))
          (max-output (if (> (length rest) 2) (list-ref rest 2) 4194304))
+         (_cwd-ok (process-check-cwd! "run-argv-capture" cwd))
+         (_to-ok (process-check-timeout! "run-argv-capture" timeout-ms))
          ;; stdin-null fast path — wire the child's stdin straight to
          ;; /dev/null instead of creating a pipe we won't use. Saves
          ;; ~100 us per call on the benchmark hot loop.
