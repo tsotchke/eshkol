@@ -444,6 +444,191 @@ class Gen:
                                section="vecpoint")
 
     # ======================================================================
+    # family: exactpoint  (ESH-0393 — EXACT evaluation points at the jet/tape
+    #                      entry points)
+    # ======================================================================
+    def gen_exactpoint(self):
+        """Differentiate at an EXACT point and check against FD at the double.
+
+        The jet and the tape carry a raw double per component, so every AD entry
+        point coerces its point at the boundary. That coercion used to
+        REINTERPRET the tagged data field, which is correct only for an
+        immediate: an exact rational or bignum is HEAP-tagged, so its data field
+        is a POINTER and the substrate differentiated at the object's ADDRESS
+        (`(derivative (lambda (x) (* x x)) 1/3)` => 1.0e10, heap magnitude) or at
+        a ~5e-314 denormal, or the point was misclassified as a COLLECTION and
+        its object read as [dims][rank][elems].
+
+        The oracle is the whole point of this family: AD is evaluated at the
+        EXACT point, FD at `(exact->inexact <same point>)`. A fabricated seed --
+        an address, a denormal or a silent zero -- cannot agree with a finite
+        difference taken at the value the point actually denotes, whatever its
+        magnitude. Exact and inexact seeds must name the same derivative.
+        """
+        # Exact rationals with well-conditioned doubles, plus one bignum and one
+        # small exact integer (the immediate case, which must not regress).
+        #
+        # `fd` marks the points a finite difference can actually resolve. At a
+        # bignum point (~1.2e20) every representable step satisfies x + h == x in
+        # double precision, so the FD stencil is identically 0 and would fail a
+        # CORRECT derivative. The exact-vs-inexact-seed comparison below is the
+        # controlling oracle at every magnitude and is applied to all points; FD
+        # is added only where it is meaningful.
+        points = [
+            ("rat13",  "1/3",                     True),
+            ("rat25",  "2/5",                     True),
+            ("rat34",  "3/4",                     True),
+            ("rat78",  "7/8",                     True),
+            ("big",    "123456789012345678901",   False),
+            ("int3",   "3",                        True),
+        ]
+
+        for tag, p, use_fd in points:
+            u = self.uid()
+            px = f"(exact->inexact {p})"
+            lines = [f"(define (fx{u} x) (+ (* 1.5 x) (* x x) (* 0.5 x x x)))"]
+
+            # -- derivative at a scalar exact point ------------------------
+            # The controlling oracle: the SAME operator at the inexact seed.
+            # A fabricated seed (heap address, ~5e-314 denormal, silent zero)
+            # cannot agree with it, at any magnitude.
+            lines.append(f"(define ad{u} (derivative fx{u} {p}))")
+            lines.append(f"(define ai{u} (derivative fx{u} {px}))")
+            pid = f"exactpoint.{tag}.derivative"
+            lines.append(self.chk(pid, f"ad{u}", f"ai{u}", ATOL1, RTOL1,
+                                  xc=self.xc_for(pid)))
+            nchk = 1
+            if use_fd:
+                lines.append(f"(define fd{u} {self.fd1_scalar(f'fx{u}', px)})")
+                pidf = f"exactpoint.{tag}.derivative-fd"
+                lines.append(self.chk(pidf, f"ad{u}", f"fd{u}", ATOL1, RTOL1,
+                                      xc=self.xc_for(pidf)))
+                nchk += 1
+
+            # An exact point reached through a VARIABLE: exact only at runtime,
+            # so this cannot be answered by constant folding.
+            lines.append(f"(define pv{u} {p})")
+            lines.append(f"(define adv{u} (derivative fx{u} pv{u}))")
+            pidv = f"exactpoint.{tag}.derivative-var"
+            lines.append(self.chk(pidv, f"adv{u}", f"ai{u}", ATOL1, RTOL1,
+                                  xc=self.xc_for(pidv)))
+            nchk += 1
+
+            # -- gradient at a bare exact scalar point ---------------------
+            # `is_scalar` enumerated INT64/DOUBLE, so an exact heap scalar was
+            # routed down the collection path; the ENTRY and EXIT classifications
+            # must also agree on the return SHAPE (a bare scalar, not #(x)) —
+            # comparing against the inexact seed's result asserts both.
+            lines.append(f"(define gs{u} (gradient fx{u} {p}))")
+            lines.append(f"(define gi{u} (gradient fx{u} {px}))")
+            pidg = f"exactpoint.{tag}.gradient-scalar"
+            lines.append(self.chk(pidg, f"gs{u}", f"gi{u}", ATOL1, RTOL1,
+                                  xc=self.xc_for(pidg)))
+            nchk += 1
+
+            self.add("exactpoint", pid, lines, nchk, xc=self.xc_for(pid))
+
+            # -- collection point forms, one probe per constructor ----------
+            # (vector …) and (list …) both reach the tape. #(…) and (tensor …)
+            # are NOT covered: those literal constructors drop an exact rational
+            # to 0 before AD ever sees the point (`(display (tensor 1/3))` =>
+            # #(0)), which is a tensor-literal defect, not an AD one.
+            for ctor in ("vector", "list"):
+                u2 = self.uid()
+                lines2 = [f"(define (fv{u2} v) "
+                          f"(+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))"]
+                lines2.append(f"(define g{u2} (gradient fv{u2} ({ctor} {p})))")
+                lines2.append(f"(define gr{u2} (gradient fv{u2} ({ctor} {px})))")
+                pid2 = f"exactpoint.{tag}.gradient-{ctor}"
+                lines2.append(self.chk(pid2, f"(vector-ref g{u2} 0)",
+                                       f"(vector-ref gr{u2} 0)", ATOL1, RTOL1,
+                                       xc=self.xc_for(pid2)))
+                n2 = 1
+                if use_fd:
+                    pid2f = f"exactpoint.{tag}.gradient-{ctor}-fd"
+                    lines2.append(f"(chk-grad \"{pid2f}\" g{u2} fv{u2} "
+                                  f"(vector {px}) {RTOL1} {H2} "
+                                  f"{self._xc_arg(pid2f)})")
+                    n2 += 1
+                self.add("exactpoint", pid2, lines2, n2, xc=self.xc_for(pid2))
+
+            # -- MIXED vector: exact rational, double, exact integer ---------
+            # Each slot is coerced independently, so one misread slot cannot
+            # hide behind its neighbours.
+            u3 = self.uid()
+            lines3 = [f"(define (fm{u3} v) (+ (* (vref v 0) (vref v 0)) "
+                      f"(* 2.0 (vref v 1) (vref v 1)) "
+                      f"(* 0.5 (vref v 2) (vref v 2))))"]
+            lines3.append(f"(define gm{u3} (gradient fm{u3} (vector {p} 0.5 2)))")
+            lines3.append(f"(define gn{u3} (gradient fm{u3} (vector {px} 0.5 2.0)))")
+            pid3 = f"exactpoint.{tag}.gradient-mixed"
+            n3 = 0
+            for slot in (0, 1, 2):
+                pid3s = f"{pid3}-slot{slot}"
+                lines3.append(self.chk(pid3s, f"(vector-ref gm{u3} {slot})",
+                                       f"(vector-ref gn{u3} {slot})",
+                                       ATOL1, RTOL1, xc=self.xc_for(pid3s)))
+                n3 += 1
+            if use_fd:
+                pid3f = f"{pid3}-fd"
+                lines3.append(f"(chk-grad \"{pid3f}\" gm{u3} fm{u3} "
+                              f"(vector {px} 0.5 2.0) {RTOL1} {H2} "
+                              f"{self._xc_arg(pid3f)})")
+                n3 += 1
+            self.add("exactpoint", pid3, lines3, n3, xc=self.xc_for(pid3))
+
+            # -- second-order and the remaining multivariate operators ------
+            # x^4 so the second derivative DEPENDS on the point (12x^2); x^2
+            # would give the constant 2 and pass even with a fabricated seed.
+            u4 = self.uid()
+            lines4 = [f"(define (fq{u4} v) (* (vref v 0) (vref v 0) "
+                      f"(vref v 0) (vref v 0)))"]
+            lines4.append(f"(define hs{u4} "
+                          f"(vector-ref (vector-ref (hessian fq{u4} (vector {p})) 0) 0))")
+            lines4.append(f"(define hi{u4} "
+                          f"(vector-ref (vector-ref (hessian fq{u4} (vector {px})) 0) 0))")
+            pid4 = f"exactpoint.{tag}.hessian"
+            lines4.append(self.chk(pid4, f"hs{u4}", f"hi{u4}", ATOL2, RTOL2,
+                                   xc=self.xc_for(pid4)))
+            lines4.append(f"(define lp{u4} (laplacian fq{u4} (vector {p})))")
+            lines4.append(f"(define li{u4} (laplacian fq{u4} (vector {px})))")
+            pid5 = f"exactpoint.{tag}.laplacian"
+            lines4.append(self.chk(pid5, f"lp{u4}", f"li{u4}", ATOL2, RTOL2,
+                                   xc=self.xc_for(pid5)))
+            lines4.append(f"(define dd{u4} "
+                          f"(directional-derivative fq{u4} (vector {p}) (vector 1)))")
+            lines4.append(f"(define di{u4} "
+                          f"(directional-derivative fq{u4} (vector {px}) (vector 1)))")
+            pid6 = f"exactpoint.{tag}.directional-derivative"
+            lines4.append(self.chk(pid6, f"dd{u4}", f"di{u4}", ATOL1, RTOL1,
+                                   xc=self.xc_for(pid6)))
+            n4 = 3
+            if use_fd:
+                lines4.append(f"(define hfd{u4} (fd-diag fq{u4} (vector {px}) 0 {H2}))")
+                pid4f = f"exactpoint.{tag}.hessian-fd"
+                lines4.append(self.chk(pid4f, f"hs{u4}", f"hfd{u4}", ATOL2, RTOL2,
+                                       xc=self.xc_for(pid4f)))
+                lines4.append(f"(define dfd{u4} (fd-comp fq{u4} (vector {px}) 0 {H2}))")
+                pid6f = f"exactpoint.{tag}.directional-derivative-fd"
+                lines4.append(self.chk(pid6f, f"dd{u4}", f"dfd{u4}", ATOL1, RTOL1,
+                                       xc=self.xc_for(pid6f)))
+                n4 += 2
+            self.add("exactpoint", pid4, lines4, n4, xc=self.xc_for(pid4))
+
+            # -- derivative-n / taylor keep the EXACT tier ------------------
+            # Not an FD comparison: these must come back EXACT, so assert the
+            # exactness tag and the exact value. This is the tier
+            # docs/guide/AUTOMATIC_DIFFERENTIATION.md section 3 documents, and
+            # it must not degrade when the entry-point coercion changes.
+            u5 = self.uid()
+            lines5 = [f"(define (fs{u5} x) (* x x))"]
+            lines5.append(f"(define dn{u5} (derivative-n fs{u5} {p} 1))")
+            pid7 = f"exactpoint.{tag}.derivative-n-exact"
+            lines5.append(f"(chk-exact \"{pid7}\" dn{u5} (* 2 {p}) "
+                          f"{self._xc_arg(pid7)})")
+            self.add("exactpoint", pid7, lines5, 1, xc=self.xc_for(pid7))
+
+    # ======================================================================
     # family: htensor  (higher-order over tensor ops, ESH-0095 shape)
     # ======================================================================
     def gen_htensor(self):
@@ -485,6 +670,7 @@ class Gen:
         self.gen_gofg()
         self.gen_tensor()
         self.gen_vecpoint()
+        self.gen_exactpoint()
         self.gen_htensor()
         return self.probes
 
@@ -527,6 +713,26 @@ PRELUDE = r""";; GENERATED by tests/ad_adversarial/gen_ad_adversarial.py — DO 
              (display " (") (display task)
              (display ") ad=") (display ad)
              (display " fd=") (display fd) (newline))))
+
+;; ESH-0393: the exact tier is not an FD comparison — derivative-n/taylor at an
+;; exact seed must come back EXACT, so assert both the exactness tag and the
+;; value. task=#f -> PASS/FAIL; task=string -> XKNOWN on mismatch.
+(define (chk-exact id got expect task)
+  (if (and (exact? got) (= got expect))
+      (begin (set! op-pass (+ op-pass 1))
+             (display "PASS: ") (display id) (newline))
+      (if task
+          (begin (set! op-xknown (+ op-xknown 1))
+                 (display "XKNOWN: ") (display id)
+                 (display " (") (display task)
+                 (display ") got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline))
+          (begin (set! op-fail (+ op-fail 1))
+                 (display "FAIL: ") (display id)
+                 (display " got=") (display got)
+                 (display " exact?=") (display (exact? got))
+                 (display " expect=") (display expect) (newline)))))
 
 ;; perturb component i of a Scheme vector by d (fresh copy).
 (define (perturb-vector v i d)
@@ -670,7 +876,7 @@ def write_files(probes, outdir):
         by_section.setdefault(p["section"], []).append(p)
 
     for section in ("scalar", "field", "gofg", "tensor", "vecpoint",
-                    "htensor"):
+                    "exactpoint", "htensor"):
         plist = by_section.get(section, [])
         chunk, nchk, idx = [], 0, 0
         for p in plist:

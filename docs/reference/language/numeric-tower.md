@@ -180,24 +180,32 @@ contagion): exact + inexact → inexact.
 1
 ```
 
-## Known issue — rationals degrade near the bignum boundary (ESH-0105)
+## Known issue — rationals degrade near the bignum boundary on the VM (ESH-0105)
 
-Exact rational arithmetic silently loses exactness — or returns a wrong value —
-once a **bignum** operand is involved, instead of producing an exact result or
-signalling an error.
+The native back end carries exact rationals with bignum components and produces
+the exact result:
 
 ```scheme
-(display (* 1/3 99999999999999999999)) (newline)   ; expected 33333333333333333333
-(display (+ 1/3 (expt 10 30))) (newline)            ; expected 3000…0001/3
-(display (/ 1 (expt 10 19))) (newline)              ; expected exact 1/10000000000000000000
+(display (* 1/3 99999999999999999999)) (newline)   ; 33333333333333333333
+(display (+ 1/3 (expt 10 30))) (newline)            ; 3000…0001/3
+(display (/ 1 (expt 10 19))) (newline)              ; 1/10000000000000000000
 ```
+
+The **bytecode VM** cannot: its rational is an `int64` numerator over an `int64`
+denominator, so a bignum combined with a rational has no exact representation
+there and falls back to the correctly-rounded inexact double.
+
 ```
-0
-1000000000000000000000000000000
+33333333333333330000
+1e+30
 1e-19
 ```
-Observed: `(* 1/3 <bignum>)` returns `0`; `(+ 1/3 <bignum>)` drops the fraction;
-`(/ 1 (expt 10 19))` degrades to an inexact double (`1e-19`) whereas
-`(/ 1 (expt 10 18))` is still an exact rational. Keep rational computations within
-the fixnum range for exact results, or convert deliberately with
-`exact->inexact` when you want doubles.
+
+Within the fixnum range the VM is exact and agrees with native, including mixed
+exact/inexact arithmetic (`(* 0.5 1/3)` is `0.16666666666666666` on both). Keep
+rational computations inside the fixnum range if you need the VM to stay exact,
+or convert deliberately with `exact->inexact` when you want doubles.
+
+Closing the gap needs bignum components in the VM's rational representation;
+tracked with `tests/vm_parity/found/bignum_rational_mixed.esk` and
+`tests/vm_parity/found/bignum_exact_rational.esk`.
