@@ -1,22 +1,38 @@
 ;; Test parallel-for-each functionality
 ;; Tests parallel side-effect iteration
+;;
+;; parallel-for-each is run for effect, so the observable is the SET of effects,
+;; not the return value. Each case accumulates its effects and asserts them:
+;; visiting every element exactly once is the contract, and the empty-list case
+;; must apply the procedure zero times.
 
-(display "=== Parallel For-Each Tests ===") (newline)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
-;; Test 1: parallel-for-each with display (side effects)
-(display "parallel-for-each display: ")
-(parallel-for-each (lambda (x) (display x) (display " ")) (list 1 2 3 4 5))
-(newline)
+;; Test 1: every element is visited exactly once. Summing is order-independent,
+;; so this pins "visited once each" without over-specifying scheduling order.
+(define seen-sum 0)
+(parallel-for-each (lambda (x) (set! seen-sum (+ seen-sum x))) (list 1 2 3 4 5))
+(check "parallel-for-each visits 1..5 exactly once (sum)" 15 seen-sum)
 
-;; Test 2: parallel-for-each returns void/unspecified
-(define result (parallel-for-each (lambda (x) (* x 2)) (list 1 2 3)))
-(display "parallel-for-each return: ")
-(display result)
-(newline)
+;; Test 2: the procedure is applied for effect even when it returns a value.
+(define doubled-sum 0)
+(define result
+  (parallel-for-each (lambda (x) (set! doubled-sum (+ doubled-sum (* x 2))))
+                     (list 1 2 3)))
+(check "parallel-for-each applies the procedure to every element" 12 doubled-sum)
 
-;; Test 3: parallel-for-each with empty list (no-op)
-(parallel-for-each (lambda (x) (display "should not print")) '())
-(display "parallel-for-each empty: OK")
-(newline)
+;; Test 3: parallel-for-each with empty list must apply the procedure 0 times
+(define empty-calls 0)
+(parallel-for-each (lambda (x) (set! empty-calls (+ empty-calls 1))) '())
+(check "parallel-for-each over '() applies the procedure 0 times" 0 empty-calls)
 
-(display "=== Parallel For-Each Tests Complete ===") (newline)
+;; Test 4: single-element list -- the degenerate split
+(define one-calls 0)
+(parallel-for-each (lambda (x) (set! one-calls (+ one-calls x))) (list 7))
+(check "parallel-for-each over a 1-element list" 7 one-calls)
