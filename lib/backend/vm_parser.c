@@ -747,6 +747,22 @@ static int add_local(FuncChunk* c, const char* name) {
  *        the chunk's shared code array) in @p c's entry table, growing it
  *        as needed. Validates argument ranges (0-255 params/upvalues,
  *        non-empty name, valid offset/length) before recording.
+ *
+ * The table is a name-to-definition INDEX (it backs --require-vm-entry and the
+ * ESKB named-function section), so a name may appear at most once. R7RS 5.3.1
+ * makes a later top-level define of an existing name an assignment to the same
+ * binding, so when the same name is registered twice the later registration
+ * REPLACES the earlier: the index has to name the definition that is in effect,
+ * exactly as the binding does.
+ *
+ * Appending instead produced two same-named entries. The writer accepted them
+ * and eskb_write_file_with_functions() emitted both, but eskb_load_file()
+ * rejects a module with duplicate function names outright, so any program with
+ * a redefined top-level procedure serialized to bytecode that would not load:
+ * "ERROR: invalid ESKB payload". Executable code is unaffected either way --
+ * the named entries are slices of the "main" function, which carries the whole
+ * chunk, so replacing an entry drops an index row and no instructions.
+ *
  * @return 0 on success, -1 on invalid arguments or allocation failure.
  */
 static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
@@ -755,6 +771,16 @@ static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
     if (!c || !name || !name[0] || code_offset < 0 || code_len <= 0) return -1;
     if (n_params < 0 || n_params > 255) return -1;
     if (n_locals < 0 || n_upvalues < 0 || n_upvalues > 255) return -1;
+    for (int i = 0; i < c->n_entries; i++) {
+        if (c->entries[i].name && strcmp(c->entries[i].name, name) == 0) {
+            c->entries[i].n_params = n_params;
+            c->entries[i].n_locals = n_locals;
+            c->entries[i].n_upvalues = n_upvalues;
+            c->entries[i].code_offset = code_offset;
+            c->entries[i].code_len = code_len;
+            return 0;
+        }
+    }
     if (c->n_entries >= c->entry_cap) {
         int new_cap = c->entry_cap * 2;
         ChunkEntry* new_entries =

@@ -1,5 +1,6 @@
 ;; Type System Test: a qubit is linear — cloning it is rejected (no-cloning)
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: linear variable 'q' was consumed more than once
 
 ;; The Qubit type carries TYPE_FLAG_LINEAR: a qubit must be used exactly once.

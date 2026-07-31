@@ -260,8 +260,11 @@ static int run_compiled_chunk(FuncChunk* chunk) {
         vm->code[i].operand = chunk->code[i].operand;
     }
 
-    /* Transfer constants */
-    for (int i = 0; i < chunk->n_constants && i < MAX_CONSTS; i++) {
+    /* Transfer constants. The pool is grown to the chunk's full count: the
+     * old `i < MAX_CONSTS` clamp dropped the tail while still advertising
+     * n_constants, so OP_CONST past the pool read uninitialized memory. */
+    if (!vm_ensure_const_cap(vm, chunk->n_constants)) { vm_free(vm); return 1; }
+    for (int i = 0; i < chunk->n_constants; i++) {
         vm->constants[i] = chunk->constants[i];
     }
     vm->n_constants = chunk->n_constants;
@@ -901,6 +904,10 @@ static int compile_and_run(const char* source) {
     }
 
     /* stack_depth synced via n_locals */
+    /* Everything registered so far belongs to the builtin preamble and the
+     * Scheme prelude; user definitions start here (R7RS 5.3.1 redefinition
+     * may only reassign a location the user program itself created). */
+    vm_set_user_locals_base(main_chunk.n_locals);
     src_ptr = source;
 
     /* TWO-PASS COMPILATION:
@@ -920,6 +927,13 @@ static int compile_and_run(const char* source) {
         if (n_top_exprs < MAX_TOP_EXPRS)
             top_exprs[n_top_exprs++] = expr;
     }
+
+    /* Pass 1b: R7RS §5.3.1 — which top-level names does the program define
+     * more than once?  Must be known before Pass 3 compiles any body, because
+     * a redefinition assigns to the name's existing location instead of
+     * binding a new one, and the grouping below has to leave those defines
+     * ungrouped so no slot is pre-registered for them. */
+    vm_register_redefined_from_forms(top_exprs, n_top_exprs);
 
     /* Pass 2: Scan for top-level defines that need boxing.
      * A define needs boxing if its variable is both:
@@ -964,12 +978,22 @@ static int compile_and_run(const char* source) {
         && (e)->children[1]->n_children >= 1 \
         && (e)->children[1]->children[0]->type == N_SYMBOL)
 
+    /* R7RS §5.3.1: a name defined more than once at top level must NOT join a
+     * mutual-recursion group. The group path pre-registers a NIL local for
+     * every member before compiling any of them, which is indistinguishable
+     * from "this name already has a location" and would make the group's own
+     * first definition look like a redefinition of itself. Leaving those
+     * defines ungrouped sends each through the single-form path, where the
+     * first binds the location and the rest assign to it. */
+    #define IS_GROUPABLE_FUNC_DEFINE(e) (IS_FUNC_DEFINE(e) \
+        && !vm_is_redefined_toplevel_name((e)->children[1]->children[0]->symbol))
+
     /* Pass 3: Compile with boxing + letrec-style groups for mutual recursion */
     int expr_i = 0;
     while (expr_i < n_top_exprs) {
         /* Detect groups of consecutive function defines (size >= 2) */
         int group_start = expr_i;
-        while (expr_i < n_top_exprs && IS_FUNC_DEFINE(top_exprs[expr_i])) expr_i++;
+        while (expr_i < n_top_exprs && IS_GROUPABLE_FUNC_DEFINE(top_exprs[expr_i])) expr_i++;
         int group_size = expr_i - group_start;
 
         if (group_size >= 2) {
@@ -993,6 +1017,10 @@ static int compile_and_run(const char* source) {
              * compile_form_define will add_local (creating slot group_base+group_size+gi).
              * The closure lands at that slot. Then we copy it to the pre-registered slot
              * and pop the extra. */
+            /* Slots for every group member are pre-registered above, so the
+             * R7RS 5.3.1 redefinition rule must stay out of this window (see
+             * IS_GROUPABLE_FUNC_DEFINE and vm_redefinition_target_slot). */
+            g_vm_predeclared_group_depth++;
             for (int gi = 0; gi < group_size; gi++) {
                 int locals_before = main_chunk.n_locals;
                 compile_expr(&main_chunk, top_exprs[group_start + gi], 0);
@@ -1005,6 +1033,7 @@ static int compile_and_run(const char* source) {
                 /* We can't easily un-add a local, so just leave it. The pre-registered
                  * slot has the correct value. The extra slot is dead but harmless. */
             }
+            g_vm_predeclared_group_depth--;
 
             /* Remove duplicate locals created by compile_form_define.
              * Reset n_locals to group_base + group_size so resolve_local
@@ -1051,7 +1080,7 @@ static int compile_and_run(const char* source) {
         }
 
         /* Compile non-define expressions until next define group */
-        while (expr_i < n_top_exprs && !IS_FUNC_DEFINE(top_exprs[expr_i])) {
+        while (expr_i < n_top_exprs && !IS_GROUPABLE_FUNC_DEFINE(top_exprs[expr_i])) {
             Node* expr = top_exprs[expr_i];
             /* Check for simple value define with boxing */
             int do_box = 0;
@@ -1090,6 +1119,7 @@ static int compile_and_run(const char* source) {
             expr_i++;
         }
     }
+    #undef IS_GROUPABLE_FUNC_DEFINE
     #undef IS_FUNC_DEFINE
 
     /* Free repatch arrays */
@@ -1261,7 +1291,16 @@ static void compile_source_to_chunk_with_options(const char* source,
         }
     }
 
-    /* Compile user source */
+    /* Compile user source.
+     *
+     * R7RS 5.3.1: this emitter compiles form-by-form, so the redefined
+     * top-level names have to be pre-scanned from the source before the first
+     * body is compiled — otherwise the ESKB bytecode would keep the stale
+     * binding that source execution no longer has, and the VM parity gate
+     * would see vm-eskb diverge from vm-src. */
+    vm_prescan_redefined_toplevel_names(source);
+    vm_set_user_locals_base(chunk->n_locals);
+
     src_ptr = source;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
@@ -1271,6 +1310,7 @@ static void compile_source_to_chunk_with_options(const char* source,
         if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
         free_node(expr);
     }
+    vm_clear_redefined_toplevel_names();
     chunk_emit(chunk, OP_HALT, 0);
 }
 
@@ -1467,7 +1507,8 @@ static ReplSession* repl_session_create(void) {
     rs->vm->code_len = rs->chunk.code_len;
     for (int i = 0; i < rs->chunk.code_len; i++)
         rs->vm->code[i] = rs->chunk.code[i];
-    for (int i = 0; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+    if (!vm_ensure_const_cap(rs->vm, rs->chunk.n_constants)) return NULL;
+    for (int i = 0; i < rs->chunk.n_constants; i++)
         rs->vm->constants[i] = rs->chunk.constants[i];
     rs->vm->n_constants = rs->chunk.n_constants;
 
@@ -1553,7 +1594,8 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->code[i] = rs->chunk.code[i];
 
     /* Update VM constants */
-    for (int i = const_start; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+    if (!vm_ensure_const_cap(rs->vm, rs->chunk.n_constants)) return;
+    for (int i = const_start; i < rs->chunk.n_constants; i++)
         rs->vm->constants[i] = rs->chunk.constants[i];
     rs->vm->n_constants = rs->chunk.n_constants;
 
@@ -1615,7 +1657,10 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     out->heap_objects = ESHKOL_VM_HEAP_SIZE;
     out->stack_slots = ESHKOL_VM_STACK_SIZE;
     out->max_frames = ESHKOL_VM_MAX_FRAMES;
-    out->max_constants = ESHKOL_VM_MAX_CONSTS;
+    /* The constant pool's INITIAL capacity is ESHKOL_VM_MAX_CONSTS; it grows on
+     * demand, so the figure a profile must advertise as its limit is the
+     * ceiling the growth stops at. */
+    out->max_constants = ESHKOL_VM_MAX_CONSTS_CEILING;
     out->max_instructions = ESHKOL_VM_MAX_CODE;
     return 0;
 }
@@ -1675,7 +1720,8 @@ static int eshkol_vm_validate_stack_operand(int32_t operand) {
 
 static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     if (!mod) return -1;
-    if (mod->n_constants < 0 || mod->n_constants > ESHKOL_VM_MAX_CONSTS) return -1;
+    /* The pool grows on demand; the ceiling is the profile bound. */
+    if (mod->n_constants < 0 || mod->n_constants > ESHKOL_VM_MAX_CONSTS_CEILING) return -1;
     if (mod->code_len <= 0 || mod->code_len > ESHKOL_VM_MAX_CODE) return -1;
     if (mod->n_functions <= 0 || !mod->functions) return -1;
     if (!mod->opcodes || !mod->operands) return -1;
@@ -1763,7 +1809,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
 static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
                                                 int reject_string_constants) {
     if (!vm || !mod) return -1;
-    if (mod->n_constants < 0 || mod->n_constants > MAX_CONSTS) return -1;
+    if (mod->n_constants < 0) return -1;
+    if (!vm_ensure_const_cap(vm, mod->n_constants)) return -1;
 
     for (int i = 0; i < mod->n_constants; i++) {
         switch (mod->const_types[i]) {

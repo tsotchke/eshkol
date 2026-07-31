@@ -4973,46 +4973,38 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 Value* clo_arity = ctx_.builder().CreateZExt(
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
 
-                const int GRAD_MAX_ARITY = 8;
-                BasicBlock* gcall_default = BasicBlock::Create(ctx_.context(), "grad_call_vec", current_func);
-                BasicBlock* gcall_merge = BasicBlock::Create(ctx_.context(), "grad_call_merge", current_func);
+                /* Arity of a RUNTIME closure is only known at run time, so the
+                 * point has to be spread into that many scalar arguments by a
+                 * dispatch on the arity. The ceiling was 8, and arity 9+ fell
+                 * into the vectorized default: an arity-12 loss reached through
+                 * a wrapper (e.g. (define (gwrap f p) (gradient f p))) was
+                 * called with ONE vector argument, so it produced nothing at all
+                 * while the same loss called directly by name was correct. The
+                 * ceiling is now GRAD_MAX_ARITY (32) and anything above it
+                 * raises a named error instead of silently taking the vector
+                 * path.
+                 *
+                 * The dispatch itself is emitted ONCE PER MODULE, out of line —
+                 * getOrCreateGradSpreadHelper() in llvm_codegen.cpp, which also
+                 * documents why: inlining one fully expanded closure call per
+                 * arity here cost ~1.03M lines of stdlib IR across the six
+                 * gradient sites (2.7x the whole stdlib) and, because Windows
+                 * cannot discard weak_any stdlib definitions, +92s of opt/llc on
+                 * every user compile. The helper owns the ceiling, the raise and
+                 * the arity-0/1/variadic vector form. */
+                if (!gradient_spread_call_callback_) {
+                    eshkol_error("gradient: runtime-closure arity spread helper not configured");
+                    return nullptr;
+                }
                 // ESH-0093: the callee body runs one forward level deeper
                 adPertLevelStore(ctx_.builder().CreateAdd(rt_pert_level,
                     ConstantInt::get(ctx_.int64Type(), 1)));
-                SwitchInst* gcall_sw = ctx_.builder().CreateSwitch(clo_arity, gcall_default, GRAD_MAX_ARITY);
-
-                std::vector<std::pair<BasicBlock*, Value*>> gcall_variants;
-                for (int k = 1; k <= GRAD_MAX_ARITY; k++) {
-                    BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
-                        "grad_call_a" + std::to_string(k), current_func);
-                    gcall_sw->addCase(ConstantInt::get(ctx_.int64Type(), k), case_bb);
-                    ctx_.builder().SetInsertPoint(case_bb);
-                    std::vector<Value*> cargs;
-                    if (k == 1) {
-                        cargs.push_back(dual_vec_tagged);  // vectorized single-arg function
-                    } else {
-                        for (int j = 0; j < k; j++) {
-                            Value* ep = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dual_elems_typed,
-                                ConstantInt::get(ctx_.int64Type(), j));
-                            cargs.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), ep));
-                        }
-                    }
-                    Value* r = closure_call_callback_(closure_val, cargs, "autodiff", callback_context_);
-                    BasicBlock* cexit = ctx_.builder().GetInsertBlock();  // closure call may add blocks
-                    ctx_.builder().CreateBr(gcall_merge);
-                    gcall_variants.push_back({cexit, r});
+                Value* call_result = gradient_spread_call_callback_(closure_val, dual_vec_tagged,
+                    dual_elems_typed, clo_arity, callback_context_);
+                if (!call_result) {
+                    eshkol_error("gradient: failed to call runtime closure");
+                    return nullptr;
                 }
-                // Default (arity 0 / variadic / unreadable): vectorized fallback.
-                ctx_.builder().SetInsertPoint(gcall_default);
-                Value* gdef_r = closure_call_callback_(closure_val,
-                    std::vector<Value*>{dual_vec_tagged}, "autodiff", callback_context_);
-                BasicBlock* gdef_exit = ctx_.builder().GetInsertBlock();
-                ctx_.builder().CreateBr(gcall_merge);
-                gcall_variants.push_back({gdef_exit, gdef_r});
-
-                ctx_.builder().SetInsertPoint(gcall_merge);
-                PHINode* call_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), gcall_variants.size());
-                for (auto& cv : gcall_variants) call_result->addIncoming(cv.second, cv.first);
 
                 // ESH-0093: pop the perturbation level
                 adPertLevelStore(rt_pert_level);
@@ -7641,10 +7633,6 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Any HEAP_PTR or CALLABLE is a valid vector type (tensor or vector)
     Value* output_has_vector_type = ctx_.builder().CreateOr(output_is_heap_ptr, output_is_callable);
 
-    // CRITICAL FIX: Create null tagged value BEFORE branching (for PHI node dominance)
-    Value* null_jac_tagged = tagged_.packInt64(
-        ConstantInt::get(ctx_.int64Type(), 0), true);
-
     // Create blocks for validation flow
     BasicBlock* output_valid_block = BasicBlock::Create(ctx_.context(), "jac_output_valid", current_func);
     BasicBlock* output_invalid_block = BasicBlock::Create(ctx_.context(), "jac_output_invalid", current_func);
@@ -7652,33 +7640,26 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     ctx_.builder().CreateCondBr(output_has_vector_type, output_valid_block, output_invalid_block);
 
-    // Invalid output: Generate runtime code to extract and report actual type value
+    // Invalid output: raise. This block is only reached for genuinely invalid
+    // types (NULL, INT64, DOUBLE, CONS_PTR), i.e. `jacobian` applied to a
+    // function that is not vector-valued, and it cannot produce a Jacobian at
+    // all — the output dimension m is read from the test call's result.
+    //
+    // The diagnostic used to be emitted only `if (printf_func_for_error)` after
+    // ctx_.lookupFunction("printf"), which never resolves (printf is not in this
+    // function table), so the block fell straight through to the PHI and
+    // `(jacobian scalar-fn v)` returned the exact integer 0 with no message at
+    // all — indistinguishable from a real result in downstream arithmetic. The
+    // mirror-image case on the gradient side (a vector-valued function passed to
+    // `gradient`) already reports and terminates, so this now does too, and
+    // points at the operator that does accept this shape.
     ctx_.builder().SetInsertPoint(output_invalid_block);
-    // This block now only reached for genuinely invalid types (NULL, INT64, DOUBLE, CONS_PTR)
-    Function* printf_func_for_error = ctx_.lookupFunction("printf");
-    if (printf_func_for_error) {
-        // Create alloca for type value at function entry to ensure dominance
-        IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
-        Function* func = ctx_.builder().GetInsertBlock()->getParent();
-        if (func && !func->empty()) {
-            BasicBlock& entry = func->getEntryBlock();
-            ctx_.builder().SetInsertPoint(&entry, entry.begin());
-        }
-        Value* type_storage = ctx_.builder().CreateAlloca(ctx_.int8Type(), nullptr, "invalid_type");
-        ctx_.builder().restoreIP(saved_ip);
-
-        // Store the runtime type value and extend to int for printf
-        ctx_.builder().CreateStore(output_base_type, type_storage);
-        Value* type_val = ctx_.builder().CreateLoad(ctx_.int8Type(), type_storage);
-        Value* type_as_int = ctx_.builder().CreateZExt(type_val, ctx_.int32Type());
-
-        // Print error with actual runtime type value (provides better debugging!)
-        ctx_.builder().CreateCall(printf_func_for_error, {
-            ctx_.internString("Jacobian ERROR: function returned non-vector type %d (expected 6=TENSOR, 5=AD_TENSOR, or 4=VECTOR_PTR)\n"),
-            type_as_int
-        });
-    }
-    ctx_.builder().CreateBr(jac_return_block);
+    Value* jac_type_as_int = ctx_.builder().CreateZExt(output_base_type, ctx_.int64Type());
+    ctx_.emitRaiseFmt(
+        "jacobian: function returned a non-vector value (runtime type %lld); "
+        "jacobian is defined for vector-valued functions (R^n -> R^m). "
+        "Use gradient for scalar-valued functions.",
+        {jac_type_as_int});
 
     // Valid output: Handle both tensor and Scheme vector formats
     ctx_.builder().SetInsertPoint(output_valid_block);
@@ -8141,10 +8122,10 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_result = tagged_.packPtr(jac_result_int, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(jac_return_block);
 
-    // Merge null and valid results
+    // Single surviving predecessor: the invalid-output block now raises instead
+    // of merging a null result in here.
     ctx_.builder().SetInsertPoint(jac_return_block);
-    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "jac_result");
-    result_phi->addIncoming(null_jac_tagged, output_invalid_block);
+    PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 1, "jac_result");
     result_phi->addIncoming(jac_result, jac_convert_exit);
 
     return result_phi;

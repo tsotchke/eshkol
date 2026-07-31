@@ -1,6 +1,16 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+/* Element count above which a `#(...)` / `(vector ...)` literal is built by
+ * allocate-then-fill (constant operand-stack depth) instead of by pushing every
+ * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
+ * is one instruction per element and comfortably inside the operand stack;
+ * above it the literal's size must not be limited by the stack, so the fill
+ * form is used. */
+#ifndef VM_VEC_LITERAL_STACK_CHUNK
+#define VM_VEC_LITERAL_STACK_CHUNK 256
+#endif
+
 /**
  * @brief Compile node->children[first..last] as a sequence of operands left
  *        on the stack, registering each pushed result as an anonymous local
@@ -25,6 +35,178 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * closure.arity, which vm_closure_arity() reports to `gradient`. */
 #define VM_PACK_FUNC_ARITY(pc, arity) \
     ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
+
+/* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
+ *
+ * "At the top level of a program, a definition
+ *      (define <variable> <expression>)
+ *  has essentially the same effect as the assignment expression
+ *      (set! <variable> <expression>)
+ *  if <variable> is bound to a non-syntax value."
+ *
+ * The VM binds each top-level define to a fresh stack slot, and resolve_local()
+ * scans backwards, so a *later* reference already found the later definition.
+ * What it could not do is update an *earlier* one: a procedure defined before
+ * the redefinition captured the first definition's slot as an upvalue, so
+ * calling it after the redefinition still ran the old body.
+ *
+ * Top-level captures are already by reference — compile_form_define() and
+ * compile_form_lambda_2() convert every is_local upvalue of a top-level
+ * closure into an open (stack-slot) upvalue via native call 151, precisely so
+ * a later `set!` is visible. A redefinition is a `set!`, so assigning to the
+ * existing slot instead of adding a second one gives R7RS semantics for free.
+ *
+ * This is restricted to names the *user program* defines more than once
+ * (registered below from a pre-scan of the source). Applying it to any name
+ * that merely already resolves would also capture the builtin preamble and
+ * the Scheme prelude, whose slots are pre-registered before user code is
+ * compiled: a user `(define (car x) ...)` would then rebind the slot the
+ * prelude's own `map`/`fold` read through, letting user code break the
+ * standard library. Native keeps the stdlib in a separately compiled object
+ * where that cannot happen, so matching it here also preserves parity.
+ */
+#define VM_MAX_REDEFINED_NAMES 128
+static char g_vm_redefined_names[VM_MAX_REDEFINED_NAMES][128];
+static int  g_vm_n_redefined = 0;
+
+/** @brief Forget every registered redefined top-level name. */
+static void vm_clear_redefined_toplevel_names(void) {
+    g_vm_n_redefined = 0;
+}
+
+/** @brief Register @p name as defined more than once at the program's top
+ *         level (idempotent; silently ignored past the table capacity, which
+ *         only costs the old stale-binding behaviour). */
+static void vm_add_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return;
+    if (g_vm_n_redefined >= VM_MAX_REDEFINED_NAMES) return;
+    strncpy(g_vm_redefined_names[g_vm_n_redefined], name, 127);
+    g_vm_redefined_names[g_vm_n_redefined][127] = 0;
+    g_vm_n_redefined++;
+}
+
+/** @return 1 if @p name is defined more than once at the top level of the
+ *          program being compiled. */
+static int vm_is_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return 0;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return 1;
+    return 0;
+}
+
+/** @return the name a top-level `define` form binds — `x` for both
+ *          `(define x v)` and `(define (x . args) body)` — or NULL if @p e is
+ *          not a define form. */
+static const char* vm_define_bound_name(Node* e) {
+    if (!e || e->type != N_LIST || e->n_children < 2) return NULL;
+    if (e->children[0]->type != N_SYMBOL) return NULL;
+    if (strcmp(e->children[0]->symbol, "define") != 0) return NULL;
+    Node* target = e->children[1];
+    if (target->type == N_SYMBOL) return target->symbol;
+    if (target->type == N_LIST && target->n_children >= 1 &&
+        target->children[0]->type == N_SYMBOL) {
+        return target->children[0]->symbol;
+    }
+    return NULL;
+}
+
+/** @brief Register every name that @p n top-level @p forms define more than
+ *         once (R7RS §5.3.1). Replaces any previous registration. */
+static void vm_register_redefined_from_forms(Node** forms, int n) {
+    vm_clear_redefined_toplevel_names();
+    if (!forms) return;
+
+    char seen[VM_MAX_REDEFINED_NAMES * 4][128];
+    int n_seen = 0;
+    for (int i = 0; i < n; i++) {
+        const char* name = vm_define_bound_name(forms[i]);
+        if (!name) continue;
+        int already = 0;
+        for (int s = 0; s < n_seen; s++)
+            if (strcmp(seen[s], name) == 0) { already = 1; break; }
+        if (already) {
+            vm_add_redefined_toplevel_name(name);
+        } else if (n_seen < (int)(sizeof(seen) / sizeof(seen[0]))) {
+            strncpy(seen[n_seen], name, 127);
+            seen[n_seen][127] = 0;
+            n_seen++;
+        }
+    }
+}
+
+/** @brief Same as vm_register_redefined_from_forms() for a driver that has no
+ *         parsed top-level array — parses @p source into a throw-away AST just
+ *         to count the definitions. The parser has no registration side
+ *         effects (macros are expanded during compilation, not parsing), so
+ *         reading the source twice is safe. */
+static void vm_prescan_redefined_toplevel_names(const char* source) {
+    vm_clear_redefined_toplevel_names();
+    if (!source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+
+    Node* forms[VM_MAX_REDEFINED_NAMES * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+
+    vm_register_redefined_from_forms(forms, n_forms);
+
+    for (int i = 0; i < n_forms; i++) free_node(forms[i]);
+    src_ptr = saved_src;
+}
+
+/* First stack slot that belongs to the user program: every slot below it was
+ * created by emit_builtin_preamble() or by the Scheme prelude. A redefinition
+ * may only assign to a location the user program itself created — otherwise the
+ * FIRST user definition of a name that happens to collide with a builtin (and
+ * is then redefined) would overwrite the preamble's own closure slot, letting
+ * user code rebind what the prelude's map/fold read through. Native keeps its
+ * stdlib in a separately compiled object where that cannot happen; the
+ * watermark keeps the VM matching it. */
+static int g_vm_user_locals_base = 0;
+
+/** @brief Mark @p n_locals as the boundary between prelude and user slots. */
+static void vm_set_user_locals_base(int n_locals) {
+    g_vm_user_locals_base = n_locals > 0 ? n_locals : 0;
+}
+
+/* The group-compilation driver in compile_and_run() pre-registers a NIL local
+ * per member of a mutually-recursive define group before compiling any of
+ * them, so inside a group `resolve_local` finds a slot that no definition has
+ * run yet. Suppress the redefinition rule for that window. */
+static int g_vm_predeclared_group_depth = 0;
+
+/** @return the existing top-level slot a redefinition of @p name must assign
+ *          to, or -1 when this define should create a new binding.
+ *
+ * A heap-boxed target (set!-mutated *and* captured, so its slot holds a
+ * 1-element vector) is declined: assigning into the box means emitting
+ * GET_LOCAL/CONST before the value, which would leave two untracked values
+ * under the value's own compile-time stack accounting. Such a name would have
+ * to be redefined *and* set!-mutated *and* captured; declining leaves it on
+ * the previous behaviour rather than risking mis-tracked slots. */
+static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
+    if (!c || c->enclosing != NULL) return -1;          /* top level only */
+    if (g_vm_predeclared_group_depth > 0) return -1;
+    if (!vm_is_redefined_toplevel_name(name)) return -1;
+
+    int slot = resolve_local(c, name);
+    if (slot < 0) return -1;
+    if (slot < g_vm_user_locals_base) return -1;   /* prelude/builtin location */
+    for (int li = c->n_locals - 1; li >= 0; li--) {
+        if (c->locals[li].slot == slot && c->locals[li].boxed) return -1;
+    }
+    return slot;
+}
 
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
@@ -1214,7 +1396,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     (void)head; (void)tail;
     if (node->children[1]->type == N_SYMBOL) {
         /* Simple variable definition */
+        int redef_slot = vm_redefinition_target_slot(c, node->children[1]->symbol);
         compile_expr(c, node->children[2], 0);
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: assign to the name's existing location, so every
+             * closure that already captured that slot sees the new value.
+             * SET_LOCAL consumes the value; push NIL in its place so the
+             * caller's "this define added no local, POP its result"
+             * bookkeeping still balances. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
         add_local(c, node->children[1]->symbol);
         return;
     }
@@ -1223,7 +1416,11 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         Node* sig = node->children[1];
         char* fname = sig->children[0]->symbol;
 
-        int func_slot = add_local(c, fname);
+        /* R7RS §5.3.1: a redefinition reuses the name's existing location
+         * rather than binding a new one, so the body below also resolves the
+         * name to that slot. */
+        int redef_slot = vm_redefinition_target_slot(c, fname);
+        int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
@@ -1361,6 +1558,13 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                     g_n_repatch++;
                 }
             }
+        }
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: store the new procedure into the name's existing
+             * location. Must come after the open-upvalue conversion above,
+             * which needs the closure on the stack top. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
         }
         chunk_free_arrays(&func);
         return;
@@ -2183,10 +2387,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* If all operands are compile-time constants, evaluate at compile time */
     if (node->type == N_LIST && node->n_children >= 3) {
         if (head->type == N_SYMBOL) {
-            int all_const = 1, all_int = 1;
+            /* The fold's numeric domain is decided by the literals' EXACTNESS
+             * TAGS (parser: is_int = exact int64 literal, is_inexact = written
+             * in float syntax), never by the folded value's shape.  Folding
+             * `(- 2.0 1.0)` to the exact integer 1 because 1.0 happens to be
+             * integral let the following `/` divide exactly and produce 1/3
+             * where R7RS 6.2.2 requires 0.3333333333333333. */
+            int all_const = 1, all_int = 1, any_inexact = 0;
             for (int i = 1; i < node->n_children; i++) {
                 if (node->children[i]->type != N_NUMBER) { all_const = 0; break; }
                 if (!node->children[i]->is_int) all_int = 0;
+                if (node->children[i]->is_inexact) any_inexact = 1;
             }
             int is_add = strcmp(head->symbol, "+") == 0;
             int is_sub = strcmp(head->symbol, "-") == 0;
@@ -2215,7 +2426,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     return;
                 }
                 /* overflow → leave to runtime */
-            } else if (all_const) {
+            } else if (all_const && any_inexact) {
                 double result = 0;
                 int folded = 0;
                 if (is_add) {
@@ -2238,19 +2449,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                  * lets it produce an exact rational (or int), or a float, based
                  * on the actual operand types. */
                 if (folded) {
-                    /* Preserve a negative zero as INEXACT, exactly as the
-                     * runtime's number_val() does: IEEE-754 makes
-                     * (* -1.0 0.0) = -0.0, and the integer collapse treats
-                     * -0.0 == 0, so folding it discarded the sign bit and the
-                     * VM printed 0 where native prints -0. */
-                    int negative_zero = (result == 0.0 && signbit(result));
-                    int ci = chunk_add_const(c,
-                        (!negative_zero && result == (int64_t)result && fabs(result) < 1e15)
-                        ? INT_VAL((int64_t)result) : FLOAT_VAL(result));
+                    /* At least one operand was written in inexact syntax, so
+                     * the folded constant is INEXACT — unconditionally.  The
+                     * old value-shape test emitted INT_VAL whenever the result
+                     * was integral, which is how (- 2.0 1.0) reached the
+                     * runtime as the exact 1 and made (/ 1 3) exact; it also
+                     * flattened a folded -0.0 to the exact 0. */
+                    int ci = chunk_add_const(c, FLOAT_VAL(result));
                     if (ci >= 0) chunk_emit(c, OP_CONST, ci);
                     return;
                 }
             }
+            /* all_const but neither all-exact-int64 nor any-inexact: the
+             * operands are exact literals this fold cannot represent (an
+             * integer literal wider than int64).  Folding them through a
+             * double would silently make an exact result inexact, so leave
+             * them to the runtime, whose ops promote to the bignum domain. */
         }
     }
 
@@ -2354,6 +2568,33 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * and every vector consumer silently disagree with the native backend. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
+        /* OP_VEC_CREATE consumes its elements off the operand stack, so the
+         * direct form needs n_elems stack slots — which made a literal's member
+         * count a function of ESHKOL_VM_STACK_SIZE (a #(...) of a few thousand
+         * numbers died with "STACK OVERFLOW" partway through pushing it).
+         * A literal's size must be governed by the literal, so past a
+         * threshold the vector is allocated once and filled slot by slot at
+         * CONSTANT stack depth: the element count is then bounded only by the
+         * growable code and constant arrays, not by the operand stack. */
+        if (n_elems > VM_VEC_LITERAL_STACK_CHUNK) {
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+            chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+            int saved_locals = c->n_locals;
+            add_local(c, "__vec_literal__");
+            for (int i = 1; i < node->n_children; i++) {
+                chunk_emit(c, OP_DUP, 0);                                   /* vec */
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1)));/* idx */
+                int elem_locals = c->n_locals;
+                add_local(c, "__vec_literal_idx__");
+                compile_expr(c, node->children[i], 0);                      /* val */
+                c->n_locals = elem_locals;
+                chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+                chunk_emit(c, OP_POP, 0);       /* drop the nil */
+            }
+            c->n_locals = saved_locals;
+            return;
+        }
         for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
         chunk_emit(c, OP_VEC_CREATE, n_elems);
         return;

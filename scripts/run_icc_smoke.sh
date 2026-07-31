@@ -220,6 +220,14 @@ probe transitive_load_agent_ffi_link "transitive (load) agent-FFI link + fatal -
     'out=$(bash "$REPO_ROOT/tests/toolchain/transitive_ffi_link_test.sh" "$ESHKOL_RUN" 2>&1) || { printf "%s\n" "$out"; exit 1; }
      printf "%s" "$out" | grep -q "PASS: transitive_ffi_link_test"'
 
+# FFI-boundary fail-open closure (ESH-0362 / ESH-0363). An arity error is fatal
+# under -r AND AOT (no null binding, no binary written, named diagnostic kept);
+# a wrong-typed pointer argument raises a catchable type error instead of being
+# dereferenced as an address; correctly-called spawns still run a real child.
+probe ffi_boundary_fail_open "arity errors fatal; FFI pointer args type-checked" \
+    'out=$(bash "$REPO_ROOT/tests/toolchain/ffi_boundary_fail_open_test.sh" "$ESHKOL_RUN" 2>&1) || { printf "%s\n" "$out"; exit 1; }
+     printf "%s" "$out" | grep -q "PASS: ffi_boundary_fail_open_test"'
+
 # Optional release-readiness evidence from an XLA-enabled build.  The default
 # lite build deliberately omits xla_codegen_test, so release coordinators pass
 # XLA_BUILD_DIR when certifying the full backend surface.  The integration test

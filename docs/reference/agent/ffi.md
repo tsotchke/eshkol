@@ -63,8 +63,52 @@ At the FFI boundary the compiler unboxes/reboxes automatically:
 - integer params ← `unpackInt64FromTaggedValue`
 - `double`/`f64` params ← `unpackDoubleFromTaggedValue`
 - `ptr` params ← int payload → `IntToPtr` (a **string** is passed as the raw
-  pointer to its NUL-terminated payload)
+  pointer to its NUL-terminated payload), **after** the pointer-argument type
+  guard below
 - boolean ← truncated to `i1`
+
+### Pointer arguments are type-checked at the boundary
+
+The `ptr` conversion above reinterprets the tagged value's 64-bit payload as an
+address. On its own that means a **number** passed where a `ptr` belongs becomes
+a pointer literally equal to that number, and the C callee faults on it — a
+misplaced `5000` produced `SIGSEGV at address 0x1388` with no diagnostic. As of
+v1.3.4, codegen emits a check ahead of that conversion for every parameter an
+`extern` declared `ptr` / `string` / `char*`, and a value that provably cannot be
+an address raises a **catchable** type error naming the extern, the argument
+position and the declared type:
+
+```
+FFI type error in process-spawn-argv-flags-raw (C symbol qllm_process_spawn_argv_flags):
+argument 2 is declared `ptr` and requires a string or pointer handle,
+but got the integer 5000
+```
+
+It is an `ESHKOL_EXCEPTION_TYPE_ERROR`, so `guard` / `with-exception-handler`
+can intercept it; uncaught, it exits nonzero instead of faulting.
+
+What is **rejected**: numbers, characters, symbols, `#t`, dual numbers, complex
+numbers, logic variables — the immediate tags that cannot denote memory.
+
+What is **accepted**: strings, bytevectors and every other heap object; opaque
+handles returned by a `ptr`-returning extern; callables; `'()`; and `#f`, which
+is how Eshkol spells a NULL pointer argument (`(process-spawn-raw command cwd #f
+0)` passes a NULL `envp`).
+
+The check is a denylist of immediate tags rather than an allowlist of pointer
+tags on purpose: Eshkol's type byte also carries the multimedia resource tags,
+the deprecated pointer aliases and the port flag bits, so an allowlist that
+missed one would reject a legitimate pointer. The tradeoff is that an exotic tag
+encoding may slip through unchecked — never that a working call breaks.
+
+Two scopes do **not** get the guard, because neither has the hosted error
+runtime to raise into: `--freestanding` objects and `wasm32` targets.
+
+Guards emitted at the boundary do not replace validating your own wrapper's
+parameters: the boundary error can only name the `-raw` extern and an argument
+*position*, whereas a check in the wrapper names the parameter the caller
+actually got wrong. `lib/agent/subprocess.esk` does both — see
+`process-check-cwd!` there.
 
 **Return values (C → Eshkol):**
 
@@ -245,3 +289,57 @@ lib/core/memory_store.esk header comment and docs/reference/agent/ffi.md).
 Only fixed-arity externs are portable; wrap this function behind a
 fixed-arity C shim instead.
 ```
+
+## `agent.subprocess` arities — `cwd` is positional and required
+
+The spawn family's signatures are fixed-arity with `cwd` in the **second**
+position. There is no optional tail and no default: omitting `cwd` is an arity
+error, and passing a timeout in its place is a type error. Both are reported now;
+before v1.3.4 the first bound the result to null and kept running, and the second
+dereferenced the timeout as an address.
+
+| Procedure | Arity | Positions |
+|-----------|-------|-----------|
+| `process-spawn` | exactly 2 | `command` `cwd` |
+| `process-spawn-shell` | exactly 2 | `command` `cwd` |
+| `process-spawn-argv` | exactly 2 | `argv` `cwd` |
+| `process-wait` | exactly 2 | `handle` `timeout-ms` |
+| `process-write-stdin` | exactly 2 | `handle` `data` |
+| `process-read-stdout` / `process-read-stderr` | exactly 2 | `handle` `max-bytes` |
+| `process-read-all-stdout` / `process-read-all-stderr` | exactly 2 | `handle` `max-bytes` |
+| `process-running?` / `process-exit-code` / `process-pid` / `process-close-stdin` / `process-destroy` | exactly 1 | `handle` |
+| `process-kill` | 1 or 2 | `handle` `[signal]` (default 15) |
+| `run-command` | 1 to 3 | `command` `[cwd]` `[timeout-ms]` |
+| `run-command-capture` | 1 to 4 | `command` `[cwd]` `[timeout-ms]` `[max-output]` |
+| `run-argv` | 1 to 3 | `argv` `[cwd]` `[timeout-ms]` |
+| `run-argv-capture` | 1 to 4 | `argv` `[cwd]` `[timeout-ms]` `[max-output]` |
+
+`cwd` accepts a directory path string, or `#f` to inherit the caller's working
+directory. Defaults for the bracketed optionals: `cwd` `"."`, `timeout-ms`
+`30000`, `max-output` `4194304` bytes per stream.
+
+The `run-*` convenience wrappers take their optionals **positionally**, so the
+timeout is always the THIRD argument:
+
+```scheme
+;; WRONG — 5000 lands in cwd. Raises:
+;;   run-argv-capture: `cwd` must be a string path or #f, but got the number 5000.
+(run-argv-capture (list "/bin/echo" "hi") 5000)
+
+;; RIGHT — cwd explicit, timeout third
+(run-argv-capture (list "/bin/echo" "hi") "." 5000)
+```
+
+And the fixed-arity spawns require `cwd`:
+
+```scheme
+;; WRONG — arity error at compile time:
+;;   Arity mismatch: process-spawn-argv expects 2 arguments but got 1
+(define h (process-spawn-argv (list "echo" "hi")))
+
+;; RIGHT
+(define h (process-spawn-argv (list "echo" "hi") "."))
+```
+
+An arity mismatch is a **compile-time** failure: no binary is written under
+`-o`, and `-r` exits nonzero without running the program.

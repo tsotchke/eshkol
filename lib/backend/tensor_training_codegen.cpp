@@ -52,12 +52,13 @@ llvm::Value* TensorCodegen::sgdStep(const eshkol_operations_t* op) {
     // Get params tensor
     llvm::Value* params_tagged = codegenAST(&op->call_op.variables[0]);
     if (!params_tagged) return nullptr;
-    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
+    llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "sgd-step",
+                                  TensorOperandMode::RequireTensor);
 
     // Get grads tensor
     llvm::Value* grads_tagged = codegenAST(&op->call_op.variables[1]);
     if (!grads_tagged) return nullptr;
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "sgd-step");
 
     // Get learning rate
     llvm::Value* lr_tagged = codegenAST(&op->call_op.variables[2]);
@@ -76,7 +77,8 @@ llvm::Value* TensorCodegen::sgdStep(const eshkol_operations_t* op) {
 
         llvm::Value* velocity_tagged = codegenAST(&op->call_op.variables[4]);
         if (!velocity_tagged) return nullptr;
-        velocity_ptr = tagged_.unpackPtr(velocity_tagged);
+        velocity_ptr = unpackTensorOperandChecked(velocity_tagged, "sgd-step",
+                           TensorOperandMode::RequireTensor);
     }
 
     // Get tensor dimensions
@@ -203,11 +205,14 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adam-step",
+                                  TensorOperandMode::RequireTensor);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adam-step");
     llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
-    llvm::Value* m_ptr = tagged_.unpackPtr(m_tagged);
-    llvm::Value* v_ptr = tagged_.unpackPtr(v_tagged);
+    llvm::Value* m_ptr = unpackTensorOperandChecked(m_tagged, "adam-step",
+                             TensorOperandMode::RequireTensor);
+    llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adam-step",
+                             TensorOperandMode::RequireTensor);
     llvm::Value* t = tagged_.unpackInt64(t_tagged);
     llvm::Value* t_double = builder.CreateSIToFP(t, ctx_.doubleType());
 
@@ -371,7 +376,8 @@ llvm::Value* TensorCodegen::zeroGrad(const eshkol_operations_t* op) {
 
     llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
     if (!tensor_tagged) return nullptr;
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "zero-grad!",
+                                  TensorOperandMode::RequireTensor);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 1);
@@ -429,7 +435,8 @@ llvm::Value* TensorCodegen::clipGradNorm(const eshkol_operations_t* op) {
     llvm::Value* max_norm_tagged = codegenAST(&op->call_op.variables[1]);
     if (!grads_tagged || !max_norm_tagged) return nullptr;
 
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "clip-grad-norm!",
+                                 TensorOperandMode::RequireTensor);
     llvm::Value* max_norm = tagged_.unpackDouble(max_norm_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -554,10 +561,12 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
 
     if (!params_tagged || !grads_tagged || !lr_tagged || !v_tagged) return nullptr;
 
-    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "rmsprop-step",
+                                  TensorOperandMode::RequireTensor);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "rmsprop-step");
     llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
-    llvm::Value* v_ptr = tagged_.unpackPtr(v_tagged);
+    llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "rmsprop-step",
+                             TensorOperandMode::RequireTensor);
 
     llvm::Value* alpha = llvm::ConstantFP::get(ctx_.doubleType(), 0.99);
     llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-8);
@@ -685,11 +694,14 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
     if (!params_tagged || !grads_tagged || !lr_tagged || !m_tagged || !v_tagged || !t_tagged)
         return nullptr;
 
-    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adamw-step",
+                                  TensorOperandMode::RequireTensor);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adamw-step");
     llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
-    llvm::Value* m_ptr = tagged_.unpackPtr(m_tagged);
-    llvm::Value* v_ptr = tagged_.unpackPtr(v_tagged);
+    llvm::Value* m_ptr = unpackTensorOperandChecked(m_tagged, "adamw-step",
+                             TensorOperandMode::RequireTensor);
+    llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adamw-step",
+                             TensorOperandMode::RequireTensor);
     llvm::Value* t = tagged_.unpackInt64(t_tagged);
     llvm::Value* t_double = builder.CreateSIToFP(t, ctx_.doubleType());
 
@@ -831,10 +843,12 @@ llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
     llvm::Value* accum_tagged = codegenAST(&op->call_op.variables[3]);
     if (!params_tagged || !grads_tagged || !lr_tagged || !accum_tagged) return nullptr;
 
-    llvm::Value* params_ptr = tagged_.unpackPtr(params_tagged);
-    llvm::Value* grads_ptr = tagged_.unpackPtr(grads_tagged);
+    llvm::Value* params_ptr = unpackTensorOperandChecked(params_tagged, "adagrad-step",
+                                  TensorOperandMode::RequireTensor);
+    llvm::Value* grads_ptr = unpackTensorOperandChecked(grads_tagged, "adagrad-step");
     llvm::Value* lr = tagged_.unpackDouble(lr_tagged);
-    llvm::Value* accum_ptr = tagged_.unpackPtr(accum_tagged);
+    llvm::Value* accum_ptr = unpackTensorOperandChecked(accum_tagged, "adagrad-step",
+                                 TensorOperandMode::RequireTensor);
 
     llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
     if (op->call_op.num_vars >= 5) {
@@ -913,7 +927,7 @@ llvm::Value* TensorCodegen::checkGradHealth(const eshkol_operations_t* op) {
     llvm::Value* tensor_tagged = codegenAST(&op->call_op.variables[0]);
     if (!tensor_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "check-grad-health");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* total_ptr = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
@@ -988,7 +1002,8 @@ llvm::Value* TensorCodegen::xavierUniform(const eshkol_operations_t* op) {
     llvm::Value* fan_out_tagged = codegenAST(&op->call_op.variables[2]);
     if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "xavier-uniform!",
+                                  TensorOperandMode::RequireTensor);
     llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
     llvm::Value* fan_out = taggedNumericToDouble(ctx_, tagged_, fan_out_tagged);
 
@@ -1059,7 +1074,8 @@ llvm::Value* TensorCodegen::xavierNormal(const eshkol_operations_t* op) {
     llvm::Value* fan_out_tagged = codegenAST(&op->call_op.variables[2]);
     if (!tensor_tagged || !fan_in_tagged || !fan_out_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "xavier-normal!",
+                                  TensorOperandMode::RequireTensor);
     llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
     llvm::Value* fan_out = taggedNumericToDouble(ctx_, tagged_, fan_out_tagged);
 
@@ -1152,7 +1168,8 @@ llvm::Value* TensorCodegen::kaimingUniform(const eshkol_operations_t* op) {
     llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "kaiming-uniform!",
+                                  TensorOperandMode::RequireTensor);
     llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -1218,7 +1235,8 @@ llvm::Value* TensorCodegen::kaimingNormal(const eshkol_operations_t* op) {
     llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "kaiming-normal!",
+                                  TensorOperandMode::RequireTensor);
     llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -1308,7 +1326,8 @@ llvm::Value* TensorCodegen::lecunNormal(const eshkol_operations_t* op) {
     llvm::Value* fan_in_tagged = codegenAST(&op->call_op.variables[1]);
     if (!tensor_tagged || !fan_in_tagged) return nullptr;
 
-    llvm::Value* tensor_ptr = tagged_.unpackPtr(tensor_tagged);
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_tagged, "lecun-normal!",
+                                  TensorOperandMode::RequireTensor);
     llvm::Value* fan_in = taggedNumericToDouble(ctx_, tagged_, fan_in_tagged);
 
     llvm::StructType* tensor_type = ctx_.tensorType();
