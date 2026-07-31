@@ -17,6 +17,24 @@ compiler, while a project's own sources always come first. See
 [environment variables](../runtime/environment-variables.md#resolution-precedence)
 for the same rule applied to the native artifacts.
 
+The search runs top to bottom and the first match wins, so the two rules that
+matter most are independent: a program that lives beside its helpers keeps
+finding them wherever you run it from (step 1), and a project-rooted spelling
+like `(load "tests/fixtures/dep.esk")` keeps working from the project root
+(step 2).
+
+This order is a property of the **language**, not of how you happen to run the
+program. `eshkol-run` chooses among several execution engines — a persistent
+JIT run cache, an in-process JIT (used whenever the cache is bypassed: `-d`,
+`--dump-ast`, `--dump-ir`, several input files, or an active
+`$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`), an AOT compile, and the VM — and every
+one of them resolves `require`, `import` and `load` through the same resolver,
+`eshkol::platform::resolve_module_source_path`. A program cannot load different
+files because of which engine ran it. The `load_path_engine_parity_test` CTest
+gate holds every engine to identical output on the same source, with a
+same-named decoy planted in the working directory so a lane that regressed to
+cwd-rooted resolution fails on a different answer rather than a missing file.
+
 ## `provide` / `require`
 
 ```

@@ -30,7 +30,11 @@ A consumer pulls the module in with `(require <module-name>)`:
 
 ## Module-name → file resolution
 
-`resolve_module_path` (eshkol-run.cpp) maps a dotted module name to a file:
+`eshkol::platform::resolve_module_source_path` (`lib/core/platform_runtime.cpp`,
+declared in `inc/eshkol/platform_runtime.h`) maps a dotted module name to a
+file. It is the single authority: the AOT driver, the in-process JIT and the
+persistent `-r` run cache all call it, so no execution engine can resolve a
+module differently from another.
 
 - **Dotted names** have each `.` rewritten to `/` and `.esk` appended:
   - `core.strings`   → `lib/core/strings.esk`
@@ -48,19 +52,28 @@ A consumer pulls the module in with `(require <module-name>)`:
 
 For each resolved `path_part`, the loader tries, in order:
 
-1. the requiring file's directory (`base_dir`);
-2. the current working directory / project root (so a project-rooted module
-   like `src.core.x` resolves against `./src/...`, matching the JIT resolver);
-3. the library directory `lib/` (auto-discovered relative to the `eshkol-run`
-   binary and the cwd);
-4. **directory-as-module**: if `lib/web.esk` is absent, `lib/web/web.esk` then
-   `lib/web/index.esk` are tried, so `(require web)` can find a package entry
-   point;
-5. each colon-separated (`;` on Windows) entry of `$ESHKOL_PATH`. Empty
-   segments, missing directories, and non-directory entries are silently
-   skipped (flagged only in debug mode).
+1. the requiring file's directory (`base_dir`) — the directory of the file that
+   wrote the `require`/`import`/`load`, so a program keeps finding its own
+   helpers no matter which directory you run it from;
+2. the current working directory / project root, so a project-rooted module
+   like `src.core.x` resolves against `./src/...`;
+3. each colon-separated (`;` on Windows) entry of `$ESHKOL_PATH`, which the
+   `-I` flags are merged into. Empty segments, missing directories, and
+   non-directory entries are skipped (flagged only in debug mode).
+   `$ESHKOL_PATH` precedes the
+   install for the same reason `$ESHKOL_LIB_DIR` precedes every archive
+   location: a location you asked for must not be outranked by a copy that
+   ships with the compiler;
+4. the library directory `lib/` (auto-discovered relative to the `eshkol-run`
+   binary and the cwd), including **directory-as-module**: if `lib/web.esk` is
+   absent, `lib/web/web.esk` then `lib/web/index.esk` are tried, so
+   `(require web)` can find a package entry point;
+5. `lib/…` and `../lib/…` relative to the working directory — the build-tree
+   fallback for a layout whose module root resolved elsewhere.
 
-The first match wins and its canonical path is used.
+The first match wins and its canonical path is used. A path literal written
+without the `.esk` extension is probed both as written and with the extension
+appended, in every tier.
 
 ## `(require stdlib)` vs individual modules
 
