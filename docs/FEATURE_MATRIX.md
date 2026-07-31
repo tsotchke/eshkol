@@ -450,8 +450,8 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Tool | Status | Purpose | Notes |
 |------|--------|---------|-------|
 | **Compiler Tools** |
-| `eshkol-compile` | Yes | Ahead-of-time compiler | Produces executables |
-| `eshkol-run` | Yes | Script runner | Compile + execute |
+| `eshkol-run` (AOT mode, `eshkol-run in.esk -o out`) | Yes | Ahead-of-time compiler | Produces executables |
+| `eshkol-run` (JIT mode, `eshkol-run -r`) | Yes | Script runner | Compile + execute |
 | `eshkol-repl` | Yes | Interactive shell | JIT-based with stdlib |
 | `eshkol-pkg` | Yes | Package manager | Registry support |
 | `eshkol-lsp` | Yes | Language server | IDE integration |

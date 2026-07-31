@@ -31,9 +31,9 @@ The R7RS-small standard defines 244 standard procedures and ~30 special forms. E
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
 **Implementation references:**
-- Parser: [parser.cpp](lib/frontend/parser.cpp) (8,368 lines)
-- Code generation: [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) (33,999 lines)
-- Type checker: [type_checker.cpp](lib/types/type_checker.cpp) (2,048 lines)
+- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (8,368 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (33,999 lines)
+- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (2,048 lines)
 
 ---
 
@@ -691,7 +691,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](lib/frontend/macro_expander.cpp), 861 lines).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 861 lines).
 
 ```scheme
 ;; Pattern-based macros
@@ -793,7 +793,7 @@ Full R7RS 6.9 bytevector support:
 
 Eshkol implements proper tail calls as required by R7RS. Functions in tail position are compiled to loop-back branches rather than recursive calls, preventing stack overflow.
 
-**Implementation:** The `TailCallContext` in [binding_codegen.h](inc/eshkol/backend/binding_codegen.h) tracks whether a call is in tail position. When TCO is active, `codegenCall` emits a branch back to the function entry point instead of a call instruction.
+**Implementation:** The `TailCallContext` in [binding_codegen.h](../../inc/eshkol/backend/binding_codegen.h) tracks whether a call is in tail position. When TCO is active, `codegenCall` emits a branch back to the function entry point instead of a call instruction.
 
 ```scheme
 ;; This runs in O(1) stack space

@@ -47,6 +47,10 @@ This directory indexes Eshkol's architecture documentation.
 - Native freestanding and VM freestanding architecture
 - BSP contracts and downstream kernel handoff
 
+### TensorCore Integration
+
+**[TensorCore compiler-adapter ownership](tensorcore-adapter.md)** - ownership boundary between Eshkol and the TensorCore integration: AST/IR lowering, LLVM declarations, calling conventions, and packaging live in Eshkol; public C ABI, status/dtype/backend values, buffers, kernels, transports, and device discovery live in TensorCore.
+
 ## See Also
 
 - [API Reference](../API_REFERENCE.md) - Complete function reference

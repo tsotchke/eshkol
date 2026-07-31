@@ -1468,7 +1468,7 @@ real code.
 
 **Source**: [`lib/core/data/base64.esk`](../lib/core/data/base64.esk) (the
 standard base64 primitives, pure Eshkol) plus the base64url variants from
-[`lib/core/url.esk`](../lib/core/url.esk:185-214) built on top.
+[`lib/core/url.esk`](../lib/core/url.esk) built on top.
 **Auto-loaded**: yes, via `(require stdlib)` (which pulls in both
 `core.data.base64` and `core.url`).
 **Direct import**: `(require core.data.base64)` and/or `(require core.url)`.

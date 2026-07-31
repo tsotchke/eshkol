@@ -190,11 +190,11 @@ Eshkol v1.1 ships with over 555 built-in functions. They span arithmetic, math, 
 
 **GPU:** `gpu-matmul`, `gpu-elementwise`, `gpu-reduce`, `gpu-softmax`, `gpu-transpose`
 
-**Signal Processing:** `fft`, `ifft`, `convolve`, `fir-filter`, `iir-filter`, `butterworth-lowpass`, `window-hamming`, `window-hann`
+**Signal Processing:** `fft`, `ifft`, `convolve`, `fir-filter`, `iir-filter`, `butterworth-lowpass`, `hamming-window`, `hann-window`
 
 **Consciousness Engine:** `unify`, `walk`, `make-substitution`, `make-fact`, `make-kb`, `kb-assert!`, `kb-query`, `make-factor-graph`, `fg-add-factor!`, `fg-infer!`, `fg-update-cpt!`, `free-energy`, `expected-free-energy`, `make-workspace`, `ws-register!`, `ws-step!`
 
-**Web Platform:** `web-create-element`, `web-set-text`, `web-add-event-listener`, `web-canvas-*`
+**Web Platform:** `web-create-element`, `web-set-text-content`, `web-add-event-listener`, `web-canvas-*`
 
 ---
 
@@ -816,8 +816,8 @@ Eshkol v1.1 includes a built-in signal processing library for spectral analysis,
 ```scheme
 ;; Apply window functions before FFT to reduce spectral leakage
 (define n 1024)
-(define hamming-win (window-hamming n))
-(define hann-win (window-hann n))
+(define hamming-win (hamming-window n))
+(define hann-win (hann-window n))
 
 (define windowed-signal (tensor-mul signal hamming-win))
 (define spectrum (fft windowed-signal))
@@ -869,13 +869,13 @@ eshkol-run program.esk --wasm -o program.wasm
 ```scheme
 ;; Create and manipulate DOM elements
 (define heading (web-create-element "h1"))
-(web-set-text heading "Hello from Eshkol!")
+(web-set-text-content heading "Hello from Eshkol!")
 
 (define button (web-create-element "button"))
-(web-set-text button "Click me")
+(web-set-text-content button "Click me")
 (web-add-event-listener button "click"
   (lambda (event)
-    (web-set-text heading "Clicked!")))
+    (web-set-text-content heading "Clicked!")))
 ```
 
 ### Canvas API

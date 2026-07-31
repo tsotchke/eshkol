@@ -407,8 +407,8 @@ for the full walkthrough.
 (ifft spectrum)                ;; Inverse FFT
 
 ;; Window functions
-(window-hamming n)             ;; Hamming window of size n
-(window-hann n)                ;; Hann window of size n
+(hamming-window n)             ;; Hamming window of size n
+(hann-window n)                ;; Hann window of size n
 
 ;; Convolution
 (convolve signal kernel)       ;; linear convolution
@@ -430,15 +430,18 @@ for the full walkthrough.
 
 ;; DOM manipulation
 (web-create-element tag)           ;; create element
-(web-set-text elem text)           ;; set text content
+(web-set-text-content elem text)   ;; set text content
 (web-add-event-listener elem event handler)  ;; attach handler
 
 ;; Canvas API
-(web-canvas-create w h)            ;; create canvas
-(web-canvas-clear canvas)          ;; clear canvas
-(web-canvas-fill-rect canvas x y w h color)
-(web-canvas-stroke-circle canvas cx cy r color)
-(web-canvas-draw-text canvas text x y color)
+(define ctx (web-get-context-2d canvas))    ;; get 2D drawing context
+(web-canvas-clear-rect ctx x y w h)          ;; clear a rect
+(web-canvas-fill-style ctx color)
+(web-canvas-fill-rect ctx x y w h)
+(web-canvas-begin-path ctx)
+(web-canvas-arc ctx cx cy r 0 6.283185)       ;; circle via full-turn arc
+(web-canvas-stroke ctx)
+(web-canvas-fill-text ctx text x y)           ;; draw text
 (web-request-animation-frame callback)
 ```
 

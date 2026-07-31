@@ -50,7 +50,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
 | Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
 | Parser | 8,368 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
-| Memory manager | 6,186 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp)) |
+| Memory manager | 6,186 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h)) |
 | Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |
 | Test suite | 528 self-reported tests across 37 suites (0 failures) |
 
@@ -107,7 +107,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) (6,186 lines)
+**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h) (6,186 lines)
 
 ### Core Principles
 
@@ -1159,7 +1159,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt:1) (281 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (281 lines)
 
 ### Requirements
 
@@ -1263,7 +1263,7 @@ Each test verifies:
 These features are **designed but not implemented**. See roadmap documents for details:
 
 - **Native Quantum Types**: Qubit, qreg, quantum gates (design in `QUANTUM_STOCHASTIC_COMPUTING_ARCHITECTURE.md`)
-  - **What IS implemented**: Quantum RNG ([`lib/quantum/quantum_rng.c`](../lib/quantum/quantum_rng.c:1))
+  - **What IS implemented**: Quantum RNG ([`lib/quantum/quantum_rng.c`](../lib/quantum/quantum_rng.c))
 
 - **Multimedia**: Windows, graphics, audio, GPIO (design in `MULTIMEDIA_SYSTEM_ARCHITECTURE.md`)
 
@@ -1273,7 +1273,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 **Note**: Logic programming, previously listed as unimplemented, shipped in v1.1 as part of the Consciousness Engine (see [v1.1 Architecture Extensions](#v11-architecture-extensions)).
 
-**See**: [`ROADMAP.md`](ROADMAP.md) for future releases.
+**See**: [`ROADMAP.md`](../ROADMAP.md) for future releases.
 
 ---
 
@@ -1283,7 +1283,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 - [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (1,912 lines)
 - [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (33,999 lines)
-- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.cpp) - Memory manager (6,186 lines)
+- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h) - Memory manager (6,186 lines)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (8,368 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (2,048 lines)
 - [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (3,382 lines)
@@ -1341,14 +1341,14 @@ Eshkol v1.1 provides an optional XLA compilation path for tensor-heavy workloads
 Two GPU backends provide hardware-accelerated tensor operations:
 
 **Metal (Apple Silicon)**:
-- [`gpu_memory.mm`](../lib/backend/gpu/gpu_memory.mm:1): Objective-C++ Metal API integration
+- [`gpu_memory.mm`](../lib/backend/gpu/gpu_memory.mm): Objective-C++ Metal API integration
 - Software float64 (SF64) emulation — Metal lacks native float64 support
 - [`metal_softfloat.h`](../lib/backend/gpu/metal_softfloat.h): IEEE 754 double-precision arithmetic in Metal shading language
 - Shader source embedded at build time; no runtime file I/O
 
 **CUDA**:
 - [`gpu_memory_cuda.cpp`](../lib/backend/gpu/gpu_memory_cuda.cpp): CUDA API integration
-- [`gpu_cuda_kernels.cu`](../lib/backend/gpu/gpu_cuda_kernels.cu:1): Native float64 kernels, cuBLAS for matrix operations
+- [`gpu_cuda_kernels.cu`](../lib/backend/gpu/gpu_cuda_kernels.cu): Native float64 kernels, cuBLAS for matrix operations
 - [`gpu_memory_stub.cpp`](../lib/backend/gpu/gpu_memory_stub.cpp): No-op stub for builds without GPU support
 
 **Cost-Model Dispatch**:
