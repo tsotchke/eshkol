@@ -19,11 +19,33 @@
 
 (define (gwrap f p) (gradient f p))
 
+; Checks are counted as well as printed. The pre-fix build does not print a
+; FAIL — it DIES at check 19 — so a gate that only looks for "FAIL:" would read
+; a truncated run as green. The trailing summary is the anchor that proves the
+; whole spread was walked.
+(define arity-spread-checks 0)
+(define arity-spread-failures 0)
+
 (define (check name got want)
-  (display (if (< (abs (- got want)) 1e-9) "PASS" "FAIL"))
+  (set! arity-spread-checks (+ arity-spread-checks 1))
+  (if (< (abs (- got want)) 1e-9)
+      (display "PASS")
+      (begin (set! arity-spread-failures (+ arity-spread-failures 1))
+             (display "FAIL")))
   (display ": ") (display name)
   (display " expected ") (display want)
   (display " got ") (display got)
+  (newline))
+
+(define (arity-spread-summary)
+  (if (= arity-spread-failures 0)
+      (begin (display "PASS: runtime-closure gradient arity spread, ")
+             (display arity-spread-checks)
+             (display " checks"))
+      (begin (display "FAIL: runtime-closure gradient arity spread, ")
+             (display arity-spread-failures)
+             (display " of ") (display arity-spread-checks)
+             (display " checks wrong")))
   (newline))
 
 ; --- plain closures, arity 2 .. 32 (the spread's whole range) ---
@@ -128,3 +150,5 @@
 (define gtimes (gwrap times (list 2.0 5.0)))
 (check "builtin * as loss: grad[0]" (vector-ref gtimes 0) 5.0)
 (check "builtin * as loss: grad[1]" (vector-ref gtimes 1) 2.0)
+
+(arity-spread-summary)
