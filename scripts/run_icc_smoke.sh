@@ -689,6 +689,33 @@ probe p8_escape_matrix_green \
     'P8 escape-closure pillar (CI subset): AD binding-form + indirection sweeps, property oracles, parallel-map concurrency fuzz, native-vs-VM arity ratchet, five-way surface agreement, toolchain fault-injection, workload flat-RSS — every axis retro-catches a 2026-07 reported bug class; green with no NEW divergence/masking/regression' \
     'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_p8_escape.sh --quick --build-dir "$BUILD_DIR_PATH" >/dev/null 2>&1'
 
+# ───────────────────────────────────────────────────────────────────
+# ESH-0011 — portable event loop (v1.4 async foundation).
+#
+# Runs the acceptance battery on BOTH native substrates so the probe covers the
+# compile-and-link path (-r/JIT) and the standalone-binary path (AOT). The
+# battery itself asserts the pipe round-trip, a measured timeout (neither a
+# spin nor a hang passes), close-then-use failing closed, and 1000 open/close
+# cycles proving the kernel descriptor is released.
+#
+# Backend under test is whichever CMake selected for the host: kqueue on
+# Darwin/BSD, epoll on Linux, IOCP+WSAPoll/PeekNamedPipe on Windows. The test
+# prints the name so the trace snippet says what actually ran.
+# ───────────────────────────────────────────────────────────────────
+probe event_loop_works \
+    'ESH-0011 portable event loop (kqueue/epoll/IOCP): (make-event-loop 64) yields a handle, a pipe read+write round-trips through event-loop-poll inside the timeout, an idle poll waits its budget and returns instead of hanging, a closed handle fails closed, and 1000 open/close cycles never exhaust the descriptor table — green on JIT and AOT' \
+    'cd "$REPO_ROOT";
+     out=$("$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk -L"$BUILD_DIR_PATH" 2>&1) || exit 1;
+     echo "$out" | grep -q "PASS: event_loop_test" || exit 1;
+     echo "$out" | grep -qE "^FAIL:" && exit 1;
+     bin=$(mktemp "${TMPDIR:-/tmp}/eshkol-event-loop.XXXXXX");
+     "$ESHKOL_RUN" tests/v1_3_edge_cases/event_loop_test.esk -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     aot=$("$bin" 2>&1); rc=$?; rm -f "$bin";
+     [ $rc -eq 0 ] || exit 1;
+     echo "$aot" | grep -q "PASS: event_loop_test" || exit 1;
+     echo "$aot" | grep -qE "^FAIL:" && exit 1;
+     exit 0'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"

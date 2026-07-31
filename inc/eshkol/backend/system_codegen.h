@@ -444,6 +444,27 @@ public:
     llvm::Value* semverSatisfies(const eshkol_operations_t* op);
     /** @brief (make-pipe) — create a pipe. @return A pair of read/write file descriptors. */
     llvm::Value* makePipe(const eshkol_operations_t* op);
+    /**
+     * @name ESH-0011 portable event loop (kqueue / epoll / IOCP)
+     *
+     * Readiness-style multiplexer over descriptors. The loop is identified by a
+     * generation-tagged integer handle, so nothing arena-resident owns a kernel
+     * descriptor — see inc/eshkol/core/event_loop.h.
+     * @{
+     */
+    /** @brief (make-event-loop max-events) — create a loop for up to @p max-events descriptors. @return An integer handle, or #f where the platform has no event loop. */
+    llvm::Value* makeEventLoop(const eshkol_operations_t* op);
+    /** @brief (event-loop-add-fd! loop fd events) — watch @p fd for interest bits 1=read / 2=write. @return #t; raises on a closed loop. */
+    llvm::Value* eventLoopAddFd(const eshkol_operations_t* op);
+    /** @brief (event-loop-remove-fd! loop fd) — stop watching @p fd. @return #t, or #f if it was not registered. */
+    llvm::Value* eventLoopRemoveFd(const eshkol_operations_t* op);
+    /** @brief (event-loop-poll loop timeout-ms) — wait for readiness. @return A list of (fd . events) pairs, empty on timeout. */
+    llvm::Value* eventLoopPoll(const eshkol_operations_t* op);
+    /** @brief (event-loop-close loop) — release the underlying kqueue/epoll/completion port. @return #t, or #f if already closed. */
+    llvm::Value* eventLoopClose(const eshkol_operations_t* op);
+    /** @brief (event-loop-backend) — name of the compiled-in backend: "kqueue", "epoll", "iocp" or "none". */
+    llvm::Value* eventLoopBackend(const eshkol_operations_t* op);
+    /** @} */
     /** @brief (fd-write fd data) — write raw bytes to a file descriptor. @return Bytes written. */
     llvm::Value* fdWrite(const eshkol_operations_t* op);
     /** @brief (make-line-reader fd) — create a buffered line reader over a file descriptor. */

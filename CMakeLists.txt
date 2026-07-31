@@ -1775,6 +1775,15 @@ if(NOT APPLE)
             "this host. Install libssl-dev (Debian/Ubuntu), openssl-devel "
             "(Fedora/RHEL), or the platform equivalent.")
     endif()
+
+    # ESH-0011: lib/core/event_loop_iocp.c calls WSAStartup/WSAPoll/getsockopt
+    # for the socket half of its readiness path, so every AOT-linked user
+    # program on Windows needs Winsock in its base runtime closure — the
+    # event-loop builtins are in the always-linked hosted runtime, not the
+    # optional agent-FFI archive.
+    if(WIN32)
+        eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
 endif()
 
 # Moonlab's QRNG/PQC wrappers are compiled into the ordinary hosted runtime,
@@ -1870,6 +1879,13 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
 # weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
 # These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+
+# ESH-0011: exactly one event-loop backend is compiled, chosen below the same
+# way GPU_SOURCES picks gpu_memory.mm / gpu_memory_cuda.cpp / gpu_memory_stub.cpp.
+# file(GLOB_RECURSE) would otherwise sweep all four in and every backend symbol
+# would be multiply defined. lib/core/event_loop.c (the portable half) has no
+# underscore suffix, so it deliberately stays in the glob.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/event_loop_[a-z]+\\.c$")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
@@ -2000,6 +2016,34 @@ message(STATUS
   "code=${ESHKOL_VM_MAX_CODE}"
 )
 
+# ─────────────────────────────────────────────────────────────────────
+# ESH-0011 portable event loop: select the one platform backend.
+#
+# Readiness-style surface (kqueue/epoll shape). The Windows file owns a real
+# completion port but derives readiness from WSAPoll/PeekNamedPipe — see the
+# header comment in lib/core/event_loop_iocp.c for the adaptation and its
+# limits. Emscripten has no descriptors at all, so it gets the fail-closed
+# stub and `(make-event-loop n)` returns #f there.
+# ─────────────────────────────────────────────────────────────────────
+if(EMSCRIPTEN)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (no descriptors on this target)")
+elseif(WIN32)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_iocp.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "IOCP + WSAPoll/PeekNamedPipe readiness")
+elseif(APPLE OR CMAKE_SYSTEM_NAME MATCHES "BSD|DragonFly")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_kqueue.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "kqueue")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME MATCHES "Android")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_epoll.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "epoll")
+else()
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (unrecognised platform)")
+endif()
+list(APPEND LIB_SRC ${ESHKOL_EVENT_LOOP_SRC})
+message(STATUS "Event-loop backend: ${ESHKOL_EVENT_LOOP_BACKEND} (${ESHKOL_EVENT_LOOP_SRC})")
+
 # Image I/O (native platform/system codec backends)
 list(APPEND LIB_SRC lib/core/image_io.c)
 set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
@@ -2088,7 +2132,20 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
+  # ESH-0011 event loop: hosted, not core — it is nothing but OS calls. Must
+  # live in this list rather than only in LIB_SRC, because the event-loop
+  # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
+  # every AOT/JIT user link resolves against that archive alone.
+  lib/core/event_loop.c
 )
+
+# The selected event-loop backend is appended rather than listed above because
+# tests/toolchain/runtime_core_boundary_test.cpp parses that set() block
+# TEXTUALLY and requires every line to name a file that exists — a
+# ${VARIABLE} reference inside the block reads as a missing source. Appending
+# here (before the REMOVE_ITEM below) still keeps it out of
+# ESHKOL_NON_RUNTIME_SRC, so it is compiled exactly once.
+list(APPEND ESHKOL_RUNTIME_HOSTED_SRC ${ESHKOL_EVENT_LOOP_SRC})
 
 list(REMOVE_ITEM LIB_SRC
   ${ESHKOL_RUNTIME_CORE_SRC}
@@ -2382,8 +2439,9 @@ if(APPLE)
     target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
     target_link_libraries(eshkol-static PUBLIC "-framework Security")
 elseif(WIN32)
-    target_link_libraries(eshkol-runtime PUBLIC bcrypt)
-    target_link_libraries(eshkol-static PUBLIC bcrypt)
+    # ws2_32: Winsock for the socket half of lib/core/event_loop_iocp.c (ESH-0011).
+    target_link_libraries(eshkol-runtime PUBLIC bcrypt ws2_32)
+    target_link_libraries(eshkol-static PUBLIC bcrypt ws2_32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
@@ -3409,6 +3467,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # ESH-0011 portable event loop. Registered on EVERY platform, Windows
+    # included: the IOCP backend must be exercised, not merely compiled, and
+    # `make-pipe` now works there so the pipe round-trip is genuinely runnable.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk")
+        add_test(
+            NAME v1_3_event_loop_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_event_loop_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")

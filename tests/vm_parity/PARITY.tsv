@@ -234,6 +234,11 @@ eqv?	gap	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
 error	vm-supported	raises a catchable condition and keeps its text on stderr; it used to set a fatal vm->error that no `guard` could intercept and printed the message onto the program's stdout (corpus/41_tensor_literals.esk)
 eval	gap	eval/environment reflection has no VM binding
 even?	vm-supported	
+event-loop-add-fd!	vm-supported	ESH-0011: the VM dispatches to the same lib/core/event_loop.c the native backends call, so handles, interest bits and the raise-on-closed-handle contract are identical - no parity gap
+event-loop-backend	vm-supported	ESH-0011: reports the compiled-in backend name (kqueue/epoll/iocp/none); "none" on the Emscripten VM, where descriptors do not exist
+event-loop-close	vm-supported	ESH-0011: idempotent-observable - closes the kernel object and returns #t, or #f for an already-closed handle, identically on both surfaces
+event-loop-poll	vm-supported	ESH-0011: returns ((fd . events) ...) built in kernel order, empty list on timeout, on both surfaces
+event-loop-remove-fd!	vm-supported	ESH-0011: #t when the descriptor was watched, #f when it was not, on both surfaces
 exact	gap	no VM name binding
 exact->inexact	vm-supported	
 exact-integer?	gap	no VM name binding
@@ -449,6 +454,7 @@ make-hash-table	vm-supported
 make-kb	vm-supported	
 make-line-reader	vm-supported	
 make-lru-cache	vm-supported	
+make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where the platform has no event loop, raise on an out-of-range max-events
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
 make-polar	vm-supported	

@@ -5,6 +5,17 @@ extern int64_t eshkol_linear_solve(
     int64_t b_ndim, const int64_t* b_dims,
     const double* A, const double* b, double* x);
 
+/* ESH-0011 portable event loop. The VM calls exactly the same
+ * lib/core/event_loop.c the JIT/AOT backends do — one implementation, one set
+ * of semantics, so there is no native-vs-VM parity gap to justify.
+ *
+ * Guarded for Emscripten: the wasm VM (lib/backend/vm_wasm_repl.c) is built as
+ * a standalone unity without lib/core, and the browser sandbox has no file
+ * descriptors, so the whole surface degrades to #f there — the same
+ * degradation make-pipe / fd-write / fd-close already use. */
+#ifndef ESHKOL_VM_WASM
+#include "eshkol/core/event_loop.h"
+#endif
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -9834,6 +9845,134 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)fd_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+     * ESH-0011 portable event loop — IDs 2220-2225.
+     *
+     * These forward straight to lib/core/event_loop.c, so handles, interest
+     * bits, poll results and the error contract are byte-identical to the
+     * JIT/AOT backends. The contract mirrored here:
+     *   • make-event-loop → integer handle, or #f where no loop exists
+     *   • use of a closed handle raises catchably (fails closed)
+     *   • close of an already-closed handle → #f (observable, not fatal)
+     *   • poll timeout → '(), not #f
+     * ═══════════════════════════════════════════════════════════════ */
+    case 2220: { /* make-event-loop(max-events) → handle or #f */
+        Value max_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        int64_t requested = (int64_t)as_number(max_val);
+        if (requested <= 0 || requested > ESHKOL_EVENT_LOOP_MAX_EVENTS) {
+            vm_raise_error_msg(vm, "make-event-loop: max-events out of range");
+            break;
+        }
+        int64_t handle = eshkol_event_loop_open_handle((int)requested);
+        vm_push(vm, handle > 0 ? INT_VAL(handle) : BOOL_VAL(0));
+#else
+        (void)max_val;
+        vm_push(vm, BOOL_VAL(0));
+#endif
+        break;
+    }
+    case 2221: { /* event-loop-add-fd!(loop, fd, events) → #t */
+        Value events_val = vm_pop(vm), fd_val = vm_pop(vm), loop_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        eshkol_event_loop_t* loop =
+            eshkol_event_loop_from_handle((int64_t)as_number(loop_val));
+        if (!loop) {
+            vm_raise_error_msg(vm, "event-loop-add-fd!: not an open event loop");
+            break;
+        }
+        int fd = (int)as_number(fd_val);
+        int events = (int)as_number(events_val);
+        if (fd < 0) {
+            vm_raise_error_msg(vm, "event-loop-add-fd!: not a file descriptor");
+            break;
+        }
+        if ((events & ESHKOL_EVENT_ALL) == 0) {
+            vm_raise_error_msg(vm, "event-loop-add-fd!: interest mask must "
+                                   "include 1 (read) and/or 2 (write)");
+            break;
+        }
+        if (eshkol_event_loop_add(loop, fd, events, (uint64_t)fd)
+                != ESHKOL_EVENT_LOOP_OK) {
+            vm_raise_error_msg(vm, "event-loop-add-fd!: the platform cannot "
+                                   "watch that descriptor");
+            break;
+        }
+        vm_push(vm, BOOL_VAL(1));
+#else
+        (void)events_val; (void)fd_val; (void)loop_val;
+        vm_push(vm, BOOL_VAL(0));
+#endif
+        break;
+    }
+    case 2222: { /* event-loop-remove-fd!(loop, fd) → #t or #f */
+        Value fd_val = vm_pop(vm), loop_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        eshkol_event_loop_t* loop =
+            eshkol_event_loop_from_handle((int64_t)as_number(loop_val));
+        if (!loop) {
+            vm_raise_error_msg(vm, "event-loop-remove-fd!: not an open event loop");
+            break;
+        }
+        int rc = eshkol_event_loop_remove(loop, (int)as_number(fd_val));
+        /* ENOENT is an answer, not a failure: not-watched is the asked-for state. */
+        vm_push(vm, BOOL_VAL(rc == ESHKOL_EVENT_LOOP_OK));
+#else
+        (void)fd_val; (void)loop_val;
+        vm_push(vm, BOOL_VAL(0));
+#endif
+        break;
+    }
+    case 2223: { /* event-loop-poll(loop, timeout-ms) → ((fd . events) ...) */
+        Value timeout_val = vm_pop(vm), loop_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        eshkol_event_loop_t* loop =
+            eshkol_event_loop_from_handle((int64_t)as_number(loop_val));
+        if (!loop) {
+            vm_raise_error_msg(vm, "event-loop-poll: not an open event loop");
+            break;
+        }
+        const eshkol_event_t* events = NULL;
+        int n = 0;
+        if (eshkol_event_loop_poll(loop, (int)as_number(timeout_val), &events, &n)
+                != ESHKOL_EVENT_LOOP_OK) {
+            vm_raise_error_msg(vm, "event-loop-poll: operating system error");
+            break;
+        }
+        /* Built back-to-front so the list preserves the kernel's order. */
+        Value list = NIL_VAL;
+        for (int i = n - 1; i >= 0; --i) {
+            Value entry = vm_cons_value(vm, INT_VAL((int64_t)events[i].fd),
+                                        INT_VAL((int64_t)events[i].events));
+            list = vm_cons_value(vm, entry, list);
+        }
+        vm_push(vm, list);
+#else
+        (void)timeout_val; (void)loop_val;
+        vm_push(vm, BOOL_VAL(0));
+#endif
+        break;
+    }
+    case 2224: { /* event-loop-close(loop) → #t, or #f if already closed */
+        Value loop_val = vm_pop(vm);
+#ifndef ESHKOL_VM_WASM
+        vm_push(vm, BOOL_VAL(eshkol_event_loop_close_handle(
+                                 (int64_t)as_number(loop_val))
+                             == ESHKOL_EVENT_LOOP_OK));
+#else
+        (void)loop_val;
+        vm_push(vm, BOOL_VAL(0));
+#endif
+        break;
+    }
+    case 2225: { /* event-loop-backend() → backend name string */
+#ifndef ESHKOL_VM_WASM
+        vm_push(vm, vm_string_value(vm, eshkol_event_loop_backend_name(), -1));
+#else
+        vm_push(vm, vm_string_value(vm, "none", -1));
+#endif
         break;
     }
     case 1989: { /* make-lru-cache(max-size) → cache or #f */

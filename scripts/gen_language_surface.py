@@ -273,6 +273,10 @@ def categorize(name):
         return "hash"
     if n.startswith("unix-socket"):
         return "ffi_system"
+    # ESH-0011 event loop — same family as make-pipe / fd-write / fd-close
+    # below: descriptor plumbing over a kernel multiplexer.
+    if n == "make-event-loop" or n.startswith("event-loop-"):
+        return "ffi_system"
     # gpu compute
     if n.startswith("gpu-"):
         return "tensor_ad"

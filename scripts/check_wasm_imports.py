@@ -63,6 +63,14 @@ SMOKE_PROGRAMS = {
     "match_guard":
         "(guard (cond ((string? cond) (display cond) (newline)))"
         "  (raise \"caught\"))",
+    # ESH-0011: the event-loop surface emits env imports of its own, and the
+    # browser has no descriptors for it to watch. Compiling it here is what
+    # proves the fail-closed JS stubs in both glue files are actually declared,
+    # rather than discovering it when the lite lane breaks.
+    "event_loop":
+        "(define l (make-event-loop 4))"
+        " (display (if l (event-loop-backend) \"no-event-loop\")) (newline)"
+        " (if l (event-loop-close l) #f)",
 }
 
 
