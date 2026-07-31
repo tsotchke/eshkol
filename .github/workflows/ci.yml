@@ -41,6 +41,20 @@ jobs:
   # slowest lane to report — four separate changes have burned a full matrix
   # cycle discovering a one-second staleness error there. This job answers the
   # same question in well under a minute, on every pull request.
+  #
+  # The execution-backed coverage gate itself (scripts/language_coverage.py,
+  # gated on tests/coverage/coverage_policy.json + execution_deficit.json) only
+  # runs to completion inside quantum-macos, because computing FRESH runtime
+  # evidence needs a full build (native + VM + the opt-in Moonlab/quantum
+  # corpus). But a slice of that gate's assurance — the policy floor never
+  # trailing the manifest, the deficit ratchet being monotonic, the gate
+  # actually being able to go red — needs none of that: it is pure Python
+  # driven by synthetic evidence plus the three committed JSON files already
+  # checked out above. scripts/test_language_coverage_gate.py is exactly that
+  # slice (see its module docstring: "Build-free regression guard"). Running
+  # it here, in a required job, closes the gap where an advisory
+  # continue-on-error lane was the ONLY place these guards could ever fail a
+  # PR.
   surface-manifest:
     name: surface-manifest
     runs-on: ubuntu-22.04
@@ -57,6 +71,22 @@ jobs:
             exit 1
           fi
           echo "manifest is current"
+
+      # Build-free coverage-gate guards: policy floor never trails the live
+      # manifest, the execution_deficit.json ratchet is monotonic (may shrink,
+      # never grow), and — via TheGateCanActuallyFail — the real gate CLI
+      # (scripts/language_coverage.py) is driven against the real committed
+      # policy/ledger with synthetic full-surface and one-construct-missing
+      # evidence, proving it reports 0 on a clean pass and nonzero (naming the
+      # lost construct) on a regression. None of this needs a compiler, an
+      # eshkol-run binary, or -DESHKOL_QUANTUM_ENABLED — it is pure Python
+      # over the checked-out repo, so it belongs in the fast required job
+      # rather than only inside the advisory quantum-macos lane.
+      - name: Build-free coverage-gate guards (policy floor / deficit ratchet / manifest consistency)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/test_language_coverage_gate.py -v
 
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative
@@ -180,6 +210,12 @@ jobs:
           mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
           ./scripts/run_all_tests.sh
 
+      # The build-free half of this gate (policy floor / deficit ratchet /
+      # "can the gate actually go red" self-test) now also runs, unconditional
+      # and required, in the surface-manifest job. What stays here is the part
+      # that genuinely needs this environment: FRESH execution evidence from
+      # the just-built native + VM + Moonlab/quantum corpus is what the deficit
+      # ratchet below is evaluated against.
       - name: Enforce execution-backed language coverage (deficit ratchet, no lexical credit)
         shell: bash
         env:
