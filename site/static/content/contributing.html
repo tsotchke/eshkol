@@ -59,12 +59,16 @@ Setup</h3>
 <ol type="1">
 <li><strong>C/C++ Compiler</strong>
 <ul>
-<li>GCC 9.0+ or Clang 10.0+</li>
-<li>On macOS: <code>brew install gcc</code> or use the default
-Clang</li>
+<li>A C17 + C++20 compiler — the standards <code>CMakeLists.txt</code>
+enforces (<code>CMAKE_C_STANDARD 17</code>,
+<code>CMAKE_CXX_STANDARD 20</code>)</li>
+<li>GCC 11+ or Clang 14+ — the toolchain the CI matrix actually builds
+with (the <code>ubuntu-22.04</code> / <code>ubuntu-22.04-arm</code>
+runners’ defaults). Older compilers are untested and not supported</li>
+<li>On macOS: the default AppleClang (macOS 14 / macOS 15 runners)</li>
 <li>On Linux: <code>sudo apt install build-essential</code></li>
 <li>On Windows: Visual Studio 2022 with Desktop development for C++ and
-Clang tools</li>
+LLVM 21 ClangCL</li>
 </ul></li>
 <li><strong>CMake</strong>
 <ul>
@@ -372,7 +376,7 @@ effectively:</p>
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (35 suites by feature)
+├── tests/                  # Test suite (45 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests
