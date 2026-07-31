@@ -1,0 +1,166 @@
+;;; poincare_retract.esk — golden gradient vectors for qLLM's radial clip of
+;;; a Poincare-ball update back inside the ball.
+;;;
+;;; Reference: python/qllm/torch_geometric.py::poincare_retract
+;;;     z            = x + step
+;;;     n2           = |z|^2
+;;;     max_norm_sq  = (1 - eps) / c
+;;;     scale        = sqrt(max_norm_sq / clamp_min(n2, eps))   if n2 > max_norm_sq
+;;;                  = 1                                        otherwise
+;;;     out          = z * scale
+;;;
+;;; The `torch.where` selector is not differentiable: gradient flows only
+;;; through the branch actually taken. Inside the ball the Jacobian is exactly
+;;; the identity; on the clipped branch it is the tangential projector
+;;; sqrt(M)/|z| * (I - z z^T / |z|^2). Both are exported.
+
+(load "qllm_oracle_lib.esk")
+
+;;; ----------------------------------------------------------------------
+;;; The primitive
+;;; ----------------------------------------------------------------------
+
+(define (poincare-retract x step c eps)
+  (let* ((z (vadd x step))
+         (n2 (vnorm2 z))
+         (max-norm-sq (/ (- 1.0 eps) c))
+         (scale (if (> n2 max-norm-sq)
+                    (sqrt (/ max-norm-sq (clamp-min n2 eps)))
+                    1.0)))
+    (vscale z scale)))
+
+;;; ----------------------------------------------------------------------
+;;; Globals (never captured from a local parameter inside an AD lambda)
+;;; ----------------------------------------------------------------------
+
+(define *PR-C* 1.0)
+(define *PR-EPS* 1e-6)
+(define *PR-X* (vector 0.0 0.0))
+(define *PR-STEP* (vector 0.0 0.0))
+
+(define (pr-proj-x v)
+  (vector-ref (poincare-retract v *PR-STEP* *PR-C* *PR-EPS*) *ORACLE-ROW*))
+
+(define (pr-proj-step v)
+  (vector-ref (poincare-retract *PR-X* v *PR-C* *PR-EPS*) *ORACLE-ROW*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic seed points
+;;; ----------------------------------------------------------------------
+
+(define DIR2 (vector 0.6 -0.8))
+(define DIR4 (vector 0.5 0.5 -0.5 0.5))
+(define DIR8 (vector 0.25 -0.25 0.5 0.25 -0.5 0.25 0.5 -0.25))
+
+(define SDIR2 (vector 0.8 0.6))
+(define SDIR4 (vector 0.5 -0.5 0.5 0.5))
+(define SDIR8 (vector -0.25 0.5 0.25 -0.5 0.25 0.25 -0.25 0.5))
+
+(define (dir-for d) (if (= d 2) DIR2 (if (= d 4) DIR4 DIR8)))
+(define (sdir-for d) (if (= d 2) SDIR2 (if (= d 4) SDIR4 SDIR8)))
+
+;; step-mode 0 = a fixed off-axis seed direction (barely changes |z|)
+;; step-mode 1 = radial, straight out along x (this is what trips the clip)
+(define (make-step d mode slen x)
+  (if (= mode 1) (vwith-norm x slen) (vwith-norm (sdir-for d) slen)))
+
+;; (dim curvature |x|*sqrt(c) |step| step-mode expect-clipped label)
+;; Cases straddle the clip threshold deliberately, and each one asserts which
+;; branch it actually took — a mislabelled case would otherwise export the
+;; identity Jacobian under a "clipped" name.
+(define CASES
+  (vector (vector 2 1.0 0.5   0.10 0 #f "d2.c1.interior")
+          (vector 2 1.0 0.9   0.05 0 #f "d2.c1.interior_near_edge")
+          (vector 2 1.0 0.99  0.05 1 #t "d2.c1.clipped_just_over")
+          (vector 2 1.0 0.999 0.50 1 #t "d2.c1.clipped_hard")
+          (vector 2 1.0 0.5   2.00 1 #t "d2.c1.clipped_far_outside")
+          (vector 4 1.0 0.9   0.05 0 #f "d4.c1.interior_near_edge")
+          (vector 4 1.0 0.99  0.20 1 #t "d4.c1.clipped")
+          (vector 4 0.5 0.99  0.30 1 #t "d4.c0p5.clipped")
+          (vector 8 1.0 0.5   0.10 0 #f "d8.c1.interior")
+          (vector 8 1.0 0.999 0.30 1 #t "d8.c1.clipped")
+          (vector 8 2.0 0.9   0.20 1 #t "d8.c2.clipped")))
+
+;;; ----------------------------------------------------------------------
+;;; Run
+;;; ----------------------------------------------------------------------
+
+(json-open "poincare_retract.json")
+(json-header "poincare_retract"
+             "tests/qllm_oracle/poincare_retract.esk"
+             "python/qllm/torch_geometric.py::poincare_retract"
+             "z = x + step; scale = sqrt(((1-eps)/c) / clamp_min(|z|^2, eps)) if |z|^2 > (1-eps)/c else 1; out = z * scale")
+
+(define NCASES (vector-length CASES))
+
+(let loop ((ci 0))
+  (if (< ci NCASES)
+      (let* ((spec (vector-ref CASES ci))
+             (d (vector-ref spec 0))
+             (c (vector-ref spec 1))
+             (u (vector-ref spec 2))
+             (slen (vector-ref spec 3))
+             (eps 1e-6)
+             (mode (vector-ref spec 4))
+             (expect-clipped (vector-ref spec 5))
+             (x (vwith-norm (dir-for d) (/ u (sqrt c))))
+             (step (make-step d mode slen x))
+             (label (string-append "poincare_retract." (vector-ref spec 6))))
+        (set! *PR-C* c)
+        (set! *PR-EPS* eps)
+        (set! *PR-X* x)
+        (set! *PR-STEP* step)
+
+        (let* ((out (poincare-retract x step c eps))
+               (z (vadd x step))
+               (n2 (vnorm2 z))
+               (max-norm-sq (/ (- 1.0 eps) c))
+               (clipped (> n2 max-norm-sq))
+               (jx (jac-rows-ad pr-proj-x x d))
+               (js (jac-rows-ad pr-proj-step step d))
+               (fdbest (fd-best-rel-diff pr-proj-x x d jx))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkv-num "curvature" c) (jo ",") (jnl)
+          (jo "      ") (jkv-num "eps" eps) (jo ",") (jnl)
+          (jo "      ") (jkv-num "max_norm_sq" max-norm-sq) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "clipped" clipped) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{")
+          (jkv-vec "x" x) (jo ", ") (jkv-vec "step" step) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ")
+          (jkv-num "z_norm_sq" n2) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_x" jx) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_step" js) (jnl)
+          (jo "      },") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+
+          ;; d out/d x and d out/d step must be identical: the map depends on
+          ;; x and step only through z = x + step.
+          (chk label
+               (and (< (mat-rel-diff jx js) 1e-15)
+                    (eq? clipped expect-clipped))
+               (string-append (if clipped "clipped" "identity-branch")
+                              (if (eq? clipped expect-clipped) "" " BRANCH-MISMATCH")
+                              " |z|^2=" (number->string n2)
+                              " fd_best_rel=" (number->string fd-rel)
+                              " at h=" (number->string fd-h)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))

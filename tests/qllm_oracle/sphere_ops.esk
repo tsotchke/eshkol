@@ -1,0 +1,234 @@
+;;; sphere_ops.esk — golden gradient vectors for qLLM's unit-sphere factor.
+;;;
+;;; Reference: python/qllm/torch_geometric.py
+;;;     sphere_project(x, grad) = grad - <grad, x> x
+;;;     sphere_retract(x, step) = (x + step) / |x + step|,
+;;;                               row left at x when |x + step| <= eps
+;;;
+;;; sphere_project is bilinear, so its two Jacobians are exact by inspection
+;;; and finite differences behave; it is here as the CONTROL for the
+;;; hyperbolic cases, which is why the FD columns matter.
+
+(load "qllm_oracle_lib.esk")
+
+;;; ----------------------------------------------------------------------
+;;; The primitives
+;;; ----------------------------------------------------------------------
+
+(define (sphere-project x g)
+  (vsub g (vscale x (vdot g x))))
+
+(define (sphere-retract x step eps)
+  (let* ((z (vadd x step))
+         (n (vnorm z)))
+    (if (> n eps) (vscale z (/ 1.0 (clamp-min n eps))) x)))
+
+;;; ----------------------------------------------------------------------
+;;; Globals
+;;; ----------------------------------------------------------------------
+
+(define *S-EPS* 1e-12)
+(define *S-X* (vector 0.0 0.0))
+(define *S-G* (vector 0.0 0.0))
+(define *S-STEP* (vector 0.0 0.0))
+
+(define (sp-proj-x v) (vector-ref (sphere-project v *S-G*) *ORACLE-ROW*))
+(define (sp-proj-g v) (vector-ref (sphere-project *S-X* v) *ORACLE-ROW*))
+(define (sr-proj-x v)
+  (vector-ref (sphere-retract v *S-STEP* *S-EPS*) *ORACLE-ROW*))
+(define (sr-proj-step v)
+  (vector-ref (sphere-retract *S-X* v *S-EPS*) *ORACLE-ROW*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic seed points (x on the unit sphere, as the manifold requires)
+;;; ----------------------------------------------------------------------
+
+(define DIR2 (vector 0.6 -0.8))
+(define DIR4 (vector 0.5 0.5 -0.5 0.5))
+(define DIR8 (vector 0.25 -0.25 0.5 0.25 -0.5 0.25 0.5 -0.25))
+
+(define GRAD2 (vector 0.4 -0.6))
+(define GRAD4 (vector 0.4 -0.6 0.25 0.125))
+(define GRAD8 (vector 0.4 -0.6 0.25 0.125 -0.75 0.5 0.0625 -0.3125))
+
+(define SDIR2 (vector 0.8 0.6))
+(define SDIR4 (vector 0.5 -0.5 0.5 0.5))
+(define SDIR8 (vector -0.25 0.5 0.25 -0.5 0.25 0.25 -0.25 0.5))
+
+(define (dir-for d) (if (= d 2) DIR2 (if (= d 4) DIR4 DIR8)))
+(define (grad-for d) (if (= d 2) GRAD2 (if (= d 4) GRAD4 GRAD8)))
+(define (sdir-for d) (if (= d 2) SDIR2 (if (= d 4) SDIR4 SDIR8)))
+
+;; step-mode 0 = off-axis seed direction; -1 = exactly -x, which drives
+;; |x + step| to 0 so the eps guard fires and the branch actually taken is
+;; out = x, whose exact Jacobian is the identity, NOT the quotient rule.
+(define (make-step d mode slen x)
+  (if (= mode -1) (vscale x -1.0) (vwith-norm (sdir-for d) slen)))
+
+;; sphere_project does not read `step`, so it gets its own dimension-only
+;; case list rather than emitting duplicate entries per step variant.
+(define PROJ-CASES (vector (vector 2 "d2") (vector 4 "d4") (vector 8 "d8")))
+
+;; (dim |step| step-mode expect-guard label) — |x| is always 1.
+(define CASES
+  (vector (vector 2 0.1   0  #f "d2.small_step")
+          (vector 2 1.0   0  #f "d2.unit_step")
+          (vector 4 0.1   0  #f "d4.small_step")
+          (vector 4 0.75  0  #f "d4.large_step")
+          (vector 8 0.1   0  #f "d8.small_step")
+          (vector 8 2.0   0  #f "d8.overshoot")
+          (vector 2 0.0  -1  #t "d2.eps_guard_z_is_zero")
+          (vector 4 0.0  -1  #t "d4.eps_guard_z_is_zero")))
+
+;;; ----------------------------------------------------------------------
+;;; sphere_project
+;;; ----------------------------------------------------------------------
+
+(json-open "sphere_project.json")
+(json-header "sphere_project"
+             "tests/qllm_oracle/sphere_ops.esk"
+             "python/qllm/torch_geometric.py::sphere_project"
+             "out = grad - <grad, x> * x")
+
+(define NCASES (vector-length CASES))
+(define NPROJ (vector-length PROJ-CASES))
+
+(let loop ((ci 0))
+  (if (< ci NPROJ)
+      (let* ((spec (vector-ref PROJ-CASES ci))
+             (d (vector-ref spec 0))
+             (x (vwith-norm (dir-for d) 1.0))
+             (g (grad-for d))
+             (label (string-append "sphere_project." (vector-ref spec 1))))
+        (set! *S-X* x)
+        (set! *S-G* g)
+        (let* ((out (sphere-project x g))
+               (jx (jac-rows-ad sp-proj-x x d))
+               (jg (jac-rows-ad sp-proj-g g d))
+               (fdbest (fd-best-rel-diff sp-proj-x x d jx))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{")
+          (jkv-vec "x" x) (jo ", ") (jkv-vec "grad" g) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ")
+          (jkv-num "dot_grad_x" (vdot g x)) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_x" jx) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_grad" jg) (jnl)
+          (jo "      },") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+          ;; Tangency: the projected gradient is orthogonal to x on the sphere.
+          (chk label
+               (and fd-usable (< (fabs (vdot out x)) 1e-14))
+               (string-append "<out,x>=" (number->string (vdot out x))
+                              " fd_best_rel=" (number->string fd-rel)
+                              " at h=" (number->string fd-h)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+;;; ----------------------------------------------------------------------
+;;; sphere_retract
+;;; ----------------------------------------------------------------------
+
+(json-open "sphere_retract.json")
+(json-header "sphere_retract"
+             "tests/qllm_oracle/sphere_ops.esk"
+             "python/qllm/torch_geometric.py::sphere_retract"
+             "z = x + step; out = z / clamp_min(|z|, eps) when |z| > eps, else x")
+
+(let loop ((ci 0))
+  (if (< ci NCASES)
+      (let* ((spec (vector-ref CASES ci))
+             (d (vector-ref spec 0))
+             (slen (vector-ref spec 1))
+             (mode (vector-ref spec 2))
+             (expect-guard (vector-ref spec 3))
+             (x (vwith-norm (dir-for d) 1.0))
+             (step (make-step d mode slen x))
+             (eps 1e-12)
+             (label (string-append "sphere_retract." (vector-ref spec 4))))
+        (set! *S-X* x)
+        (set! *S-STEP* step)
+        (set! *S-EPS* eps)
+        (let* ((out (sphere-retract x step eps))
+               (z (vadd x step))
+               (zn (vnorm z))
+               (guarded (<= zn eps))
+               (jx (jac-rows-ad sr-proj-x x d))
+               (js (jac-rows-ad sr-proj-step step d))
+               (jx-finite (mat-all-finite? jx))
+               (js-finite (mat-all-finite? js))
+               (fdbest (fd-best-rel-diff sr-proj-x x d jx))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkv-num "eps" eps) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "eps_guard_taken" guarded) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{")
+          (jkv-vec "x" x) (jo ", ") (jkv-vec "step" step) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ")
+          (jkv-num "z_norm" zn) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_x" jx) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_step" js) (jo ",") (jnl)
+          (jo "        ") (jkv-bool "d_out_d_x_all_finite" jx-finite) (jo ",") (jnl)
+          (jo "        ") (jkv-bool "d_out_d_step_all_finite" js-finite) (jnl)
+          (jo "      },") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+          ;; The retraction lands on the sphere and its Jacobian annihilates
+          ;; the radial direction: J z = 0 for the normalisation branch.
+          ;;
+          ;; At z = x + step = 0 the eps guard makes the FORWARD value finite
+          ;; (out = x) but the point is a genuine singularity of the map: any
+          ;; perturbation h of x pushes |z| above eps, so the other branch
+          ;; returns h/|h|, which has no limit. d out/d x is therefore
+          ;; legitimately non-finite there and this exporter asserts that
+          ;; rather than papering over it, while d out/d step stays finite
+          ;; (identically zero) because out = x never reads step — the
+          ;; asymmetry is real. The torch reference carries the same hazard:
+          ;; z.norm() at z = 0 yields a NaN gradient through torch.where no
+          ;; matter what clamp_min does to the denominator. A central
+          ;; difference at h = 0.01, by contrast, reports a clean 0.0 and
+          ;; declares success — which is why the FD column cannot be the gate
+          ;; for this case.
+          (chk label
+               (and (< (fabs (- (vnorm out) 1.0)) 1e-14)
+                    (eq? guarded expect-guard)
+                    js-finite
+                    (eq? jx-finite (not expect-guard)))
+               (string-append "|out|=" (number->string (vnorm out))
+                              (if guarded " EPS-GUARD" "")
+                              (if jx-finite "" " d_out_d_x=NONFINITE-AT-SINGULARITY")
+                              (if (eq? guarded expect-guard) "" " BRANCH-MISMATCH")
+                              " fd_best_rel=" (number->string fd-rel)
+                              " at h=" (number->string fd-h)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))

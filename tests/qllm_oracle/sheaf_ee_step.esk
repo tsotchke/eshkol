@@ -1,0 +1,305 @@
+;;; sheaf_ee_step.esk — golden gradient vectors for one explicit-Euler sheaf
+;;; diffusion step (FIXED_ORIENT restriction), at S = 3, d = 2.
+;;;
+;;; Reference: python/qllm/torch_geometric.py::sheaf_attention_ee, which is
+;;; itself matched to build_per_head_sheaf() / head_cosine() in
+;;; qLLM src/model/sheaf_attention.c. For one (batch, head):
+;;;
+;;;   for i < j only:
+;;;     w_raw[i][j] = (Q_i . K_j) / (|Q_i| |K_j| + eps)      [0 if denom <= eps]
+;;;     selected    = w_raw > edge_threshold and w_raw > eps
+;;;     w_upper     = w_raw + eps if selected else 0
+;;;   w    = w_upper + w_upper^T
+;;;   deg_i = sum_j w[i][j]
+;;;   (L V)_i = deg_i V_i - sum_j w[i][j] V_j
+;;;   V_new  = V - dt * L V
+;;;
+;;; Q, K, V are [S, d] flattened row-major into length S*d vectors, because
+;;; Eshkol's `gradient` takes a flat vector point. Index (i, k) is i*d + k.
+;;;
+;;; Three Jacobians are exported — d V_new / d V, / d Q and / d K. Those are
+;;; exactly the three backwards the C sheaf attention has to produce, and the
+;;; Q/K ones are where the edge selector's non-differentiability lives: an
+;;; edge that falls below eps or below edge_threshold contributes no gradient
+;;; at all, and a finite difference that pushes an edge across the threshold
+;;; sees a step change instead of a derivative.
+
+(load "qllm_oracle_lib.esk")
+
+(define SHEAF-S 3)
+(define SHEAF-D 2)
+(define SHEAF-N 6)          ; S * d
+
+;;; ----------------------------------------------------------------------
+;;; Row helpers over the flat [S, d] layout
+;;; ----------------------------------------------------------------------
+
+(define (row-of m i)
+  (let ((o (make-vector SHEAF-D 0.0)))
+    (let loop ((k 0))
+      (if (< k SHEAF-D)
+          (begin (vector-set! o k (vector-ref m (+ (* i SHEAF-D) k)))
+                 (loop (+ k 1)))))
+    o))
+
+;;; ----------------------------------------------------------------------
+;;; The primitive
+;;; ----------------------------------------------------------------------
+
+;; Symmetrised edge-weight matrix, returned flat as S*S with index i*S + j.
+(define (sheaf-edge-weights q k eps edge-threshold)
+  (let ((w (make-vector (* SHEAF-S SHEAF-S) 0.0)))
+    (let iloop ((i 0))
+      (if (< i SHEAF-S)
+          (begin
+            (let jloop ((j (+ i 1)))
+              (if (< j SHEAF-S)
+                  (begin
+                    (let* ((qi (row-of q i))
+                           (kj (row-of k j))
+                           (denom (+ (* (vnorm qi) (vnorm kj)) eps))
+                           (w-raw (if (> denom eps) (/ (vdot qi kj) denom) 0.0))
+                           (selected (and (> w-raw edge-threshold) (> w-raw eps)))
+                           (wij (if selected (+ w-raw eps) 0.0)))
+                      (vector-set! w (+ (* i SHEAF-S) j) wij)
+                      (vector-set! w (+ (* j SHEAF-S) i) wij))
+                    (jloop (+ j 1)))))
+            (iloop (+ i 1)))))
+    w))
+
+;; deg_i = sum_j w[i][j]
+(define (sheaf-deg w i)
+  (let dloop ((j 0) (acc 0.0))
+    (if (>= j SHEAF-S) acc
+        (dloop (+ j 1) (+ acc (vector-ref w (+ (* i SHEAF-S) j)))))))
+
+;; (w V)_i,kk = sum_j w[i][j] V_j,kk
+(define (sheaf-wv w vv i kk)
+  (let sloop ((j 0) (acc 0.0))
+    (if (>= j SHEAF-S) acc
+        (sloop (+ j 1)
+               (+ acc (* (vector-ref w (+ (* i SHEAF-S) j))
+                         (vector-ref vv (+ (* j SHEAF-D) kk))))))))
+
+;; One explicit-Euler entry: V_i,kk - dt * (deg_i V_i,kk - (w V)_i,kk)
+(define (sheaf-ee-entry w vv i kk dt)
+  (let* ((vi (vector-ref vv (+ (* i SHEAF-D) kk)))
+         (diff (- (* (sheaf-deg w i) vi) (sheaf-wv w vv i kk))))
+    (- vi (* diff dt))))
+
+(define (sheaf-ee-step q k v dt eps edge-threshold n-steps)
+  (let ((w (sheaf-edge-weights q k eps edge-threshold)))
+    (let step-loop ((s 0) (out v))
+      (if (>= s n-steps)
+          out
+          (let ((nxt (make-vector SHEAF-N 0.0)))
+            (let iloop ((i 0))
+              (if (< i SHEAF-S)
+                  (begin
+                    (let kloop ((kk 0))
+                      (if (< kk SHEAF-D)
+                          (begin
+                            (vector-set! nxt (+ (* i SHEAF-D) kk)
+                                         (sheaf-ee-entry w out i kk dt))
+                            (kloop (+ kk 1)))))
+                    (iloop (+ i 1)))))
+            (step-loop (+ s 1) nxt))))))
+
+;;; ----------------------------------------------------------------------
+;;; Globals
+;;; ----------------------------------------------------------------------
+
+(define *SH-DT* 0.04)
+(define *SH-EPS* 1e-6)
+(define *SH-THRESH* -1.0)
+(define *SH-STEPS* 1)
+(define *SH-Q* (vzeros SHEAF-N))
+(define *SH-K* (vzeros SHEAF-N))
+(define *SH-V* (vzeros SHEAF-N))
+
+;; Holds the triple-B edge-weight vector from the edge_threshold = -1.0 case so
+;; the edge_threshold = 0.0 case can assert they are bit-identical.
+(define *SH-THR-NEG1-W* #f)
+
+(define (sh-proj-v p)
+  (vector-ref (sheaf-ee-step *SH-Q* *SH-K* p *SH-DT* *SH-EPS* *SH-THRESH* *SH-STEPS*)
+              *ORACLE-ROW*))
+(define (sh-proj-q p)
+  (vector-ref (sheaf-ee-step p *SH-K* *SH-V* *SH-DT* *SH-EPS* *SH-THRESH* *SH-STEPS*)
+              *ORACLE-ROW*))
+(define (sh-proj-k p)
+  (vector-ref (sheaf-ee-step *SH-Q* p *SH-V* *SH-DT* *SH-EPS* *SH-THRESH* *SH-STEPS*)
+              *ORACLE-ROW*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic Q/K/V triples, hardcoded (no RNG anywhere).
+;;;
+;;; FINDING recorded by these cases. The reference selector is
+;;;
+;;;   selected = tri & (w_raw > edge_threshold) & (w_raw > epsilon)
+;;;
+;;; in BOTH sheaf_attention_ee and _build_sheaf_edge_weights. The second
+;;; conjunct dominates the first for every edge_threshold <= epsilon, so the
+;;; documented default edge_threshold = -1.0 is INOPERATIVE: a negative-cosine
+;;; edge is always dropped by the epsilon guard, never kept. The sheaf
+;;; Laplacian therefore cannot become indefinite through this path, and
+;;; edge_threshold only does anything once it is raised above epsilon. The
+;;; triple-B pair of cases asserts that -1.0 and 0.0 produce bit-identical
+;;; Jacobians; the QA thr=0.9 case shows the threshold working when it is set
+;;; somewhere it can bite.
+;;; ----------------------------------------------------------------------
+
+;; Triple A — cosines (0,1)=0.9417, (0,2)=0.4706, (1,2)=0.9418: all three
+;; upper-triangular edges active, so w has 6 nonzero entries after
+;; symmetrisation.
+(define QA (vector  1.0  0.25  0.5   0.75   0.25 -0.5))
+(define KA (vector  0.5 -0.25  0.75  0.5    0.25  1.0))
+(define VA (vector  1.0 -0.5   0.25  0.75  -0.25  0.5))
+
+;; Triple B — cosines (0,1)=0.8320, (0,2)=-0.8944, (1,2)=0.8682. The negative
+;; (0,2) edge is dropped by the epsilon guard at BOTH edge_threshold = -1.0
+;; and 0.0, leaving 4 entries either way.
+(define QB (vector  1.0  0.0  -0.5   0.75   0.25 -0.5))
+(define KB (vector  0.5 -0.25  0.75  0.5   -0.5   0.25))
+(define VB (vector  0.5  0.25 -0.5   1.0    0.75 -0.25))
+
+;; (Q K V dt eps edge-threshold n-steps expect-active-entries label)
+(define CASES
+  (vector (vector QA KA VA 0.04 1e-6 -1.0 1 6 "all_edges_active.dt0p04")
+          (vector QA KA VA 0.25 1e-6 -1.0 1 6 "all_edges_active.dt0p25")
+          (vector QA KA VA 0.04 1e-6 -1.0 2 6 "all_edges_active.two_steps")
+          (vector QA KA VA 0.04 1e-6  0.9 1 4 "threshold_above_eps_prunes_weak_edge")
+          (vector QB KB VB 0.04 1e-6 -1.0 1 4 "negative_cosine_dropped_by_eps_guard.thr_neg1")
+          (vector QB KB VB 0.04 1e-6  0.0 1 4 "negative_cosine_dropped_by_eps_guard.thr_zero")))
+
+;; Are all Jacobian columns belonging to row `r` of the [S, d] operand zero?
+;; The upper-triangular builder reads Q_i only for i < j and K_j only for
+;; j > i, so Q's LAST row and K's FIRST row never enter any edge and must
+;; receive exactly zero gradient. A C backward that writes anything there is
+;; wrong, and this is the cheapest place to catch it.
+(define (rows-block-all-zero jac r)
+  (let ((n (vector-length jac)))
+    (let iloop ((i 0) (ok #t))
+      (if (>= i n) ok
+          (let ((row (vector-ref jac i)))
+            (let jloop ((kk 0) (o ok))
+              (if (>= kk SHEAF-D) (iloop (+ i 1) o)
+                  (jloop (+ kk 1)
+                         (and o (= (vector-ref row (+ (* r SHEAF-D) kk)) 0.0))))))))))
+
+;;; ----------------------------------------------------------------------
+;;; Run
+;;; ----------------------------------------------------------------------
+
+(json-open "sheaf_ee_step.json")
+(json-header "sheaf_attention_ee"
+             "tests/qllm_oracle/sheaf_ee_step.esk"
+             "python/qllm/torch_geometric.py::sheaf_attention_ee"
+             "w_ij = cos(Q_i,K_j)+eps on kept upper-triangular edges, symmetrised; V_new = V - dt*(deg*V - w V)")
+
+(define NCASES (vector-length CASES))
+
+(let loop ((ci 0))
+  (if (< ci NCASES)
+      (let* ((spec (vector-ref CASES ci))
+             (q (vector-ref spec 0))
+             (k (vector-ref spec 1))
+             (v (vector-ref spec 2))
+             (dt (vector-ref spec 3))
+             (eps (vector-ref spec 4))
+             (thr (vector-ref spec 5))
+             (nst (vector-ref spec 6))
+             (expect-active (vector-ref spec 7))
+             (label (string-append "sheaf_attention_ee." (vector-ref spec 8))))
+        (set! *SH-Q* q)
+        (set! *SH-K* k)
+        (set! *SH-V* v)
+        (set! *SH-DT* dt)
+        (set! *SH-EPS* eps)
+        (set! *SH-THRESH* thr)
+        (set! *SH-STEPS* nst)
+
+        (let* ((out (sheaf-ee-step q k v dt eps thr nst))
+               (w (sheaf-edge-weights q k eps thr))
+               (n-active (let cloop ((idx 0) (acc 0))
+                           (if (>= idx (* SHEAF-S SHEAF-S)) acc
+                               (cloop (+ idx 1)
+                                      (if (= (vector-ref w idx) 0.0) acc (+ acc 1))))))
+               (jv (jac-rows-ad sh-proj-v v SHEAF-N))
+               (jq (jac-rows-ad sh-proj-q q SHEAF-N))
+               (jk (jac-rows-ad sh-proj-k k SHEAF-N))
+               (fdv (fd-best-rel-diff sh-proj-v v SHEAF-N jv))
+               (fdq (fd-best-rel-diff sh-proj-q q SHEAF-N jq))
+               (fdv-rel (vector-ref fdv 0))
+               (fdq-rel (vector-ref fdq 0))
+               (fdq-h (vector-ref fdq 1))
+               (fd-usable (and (< fdv-rel 1e-6) (< fdq-rel 1e-6))))
+
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "seq_len" SHEAF-S) (jo ",") (jnl)
+          (jo "      ") (jkv-int "head_dim" SHEAF-D) (jo ",") (jnl)
+          (jo "      ") (jkv-str "layout" "row_major_flat_index_i_times_d_plus_k") (jo ",") (jnl)
+          (jo "      ") (jkv-num "diffusion_dt" dt) (jo ",") (jnl)
+          (jo "      ") (jkv-num "epsilon" eps) (jo ",") (jnl)
+          (jo "      ") (jkv-num "edge_threshold" thr) (jo ",") (jnl)
+          (jo "      ") (jkv-int "n_steps" nst) (jo ",") (jnl)
+          (jo "      ") (jkv-int "active_edge_entries" n-active) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "q_last_row_gradient_is_zero"
+                                  (rows-block-all-zero jq (- SHEAF-S 1))) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "k_first_row_gradient_is_zero"
+                                  (rows-block-all-zero jk 0)) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{")
+          (jkv-vec "Q" q) (jo ", ") (jkv-vec "K" k) (jo ", ")
+          (jkv-vec "V" v) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "V_new" out) (jo ", ")
+          (jkv-vec "edge_weights_flat" w) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{") (jnl)
+          (jo "        ") (jkv-mat "d_Vnew_d_V" jv) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_Vnew_d_Q" jq) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_Vnew_d_K" jk) (jnl)
+          (jo "      },") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_rel_diff_d_Vnew_d_V" fdv-rel) (jo ", ")
+          (jkv-num "best_rel_diff_d_Vnew_d_Q" fdq-rel) (jo ", ")
+          (jkv-num "best_step_d_Vnew_d_Q" fdq-h) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+
+          ;; The V-Jacobian of one Euler step is I - dt*L with L symmetric, so
+          ;; it must be symmetric too. That is a structural invariant of the
+          ;; sheaf Laplacian and it catches an asymmetric edge builder, which
+          ;; is the classic FIXED_ORIENT transcription bug.
+          ;; edge_threshold inoperative below eps: stash the thr=-1 weights and
+          ;; require the thr=0 run to reproduce them exactly.
+          (if (and (= thr -1.0) (= nst 1) (eq? q QB))
+              (set! *SH-THR-NEG1-W* w))
+          (chk label
+               (and (< fdv-rel 1e-6)
+                    (= n-active expect-active)
+                    (if (and (= thr 0.0) (eq? q QB))
+                        (< (vec-rel-diff w *SH-THR-NEG1-W*) 1e-300)
+                        #t)
+                    (rows-block-all-zero jq (- SHEAF-S 1))
+                    (rows-block-all-zero jk 0)
+                    (if (= nst 1) (< (mat-rel-diff jv (transpose-rows jv)) 1e-14) #t))
+               (string-append "active_edges=" (number->string n-active)
+                              "/" (number->string expect-active)
+                              (if (and (= thr 0.0) (eq? q QB))
+                                  " thr_change_had_no_effect=yes" "")
+                              " Q_last_row_grad_zero="
+                              (if (rows-block-all-zero jq (- SHEAF-S 1)) "yes" "NO")
+                              " K_first_row_grad_zero="
+                              (if (rows-block-all-zero jk 0) "yes" "NO")
+                              " fd_rel_V=" (number->string fdv-rel)
+                              " fd_rel_Q=" (number->string fdq-rel)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))

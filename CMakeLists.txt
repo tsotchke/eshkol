@@ -3869,6 +3869,45 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_deep_equal_test COMMAND runtime_deep_equal_test)
 endif()
 
+# Embedding-lookup backward (ESH-0230): exact indexed scatter-add against both a
+# closed form and central finite differences, including the duplicate-index
+# accumulation the pre-ESH-0230 stub got wrong, and the gradient-buffer lifetime
+# across the dispatcher's arena scope.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_embedding_backward_gradcheck_test.cpp")
+    add_executable(tensor_embedding_backward_gradcheck_test
+        tests/backend/tensor_embedding_backward_gradcheck_test.cpp)
+    target_compile_features(tensor_embedding_backward_gradcheck_test PRIVATE cxx_std_17)
+    target_include_directories(tensor_embedding_backward_gradcheck_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(tensor_embedding_backward_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(tensor_embedding_backward_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(tensor_embedding_backward_gradcheck_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME tensor_embedding_backward_gradcheck
+             COMMAND tensor_embedding_backward_gradcheck_test)
+    set_tests_properties(tensor_embedding_backward_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "0 failed")
+endif()
+
+# Frechet (Karcher) mean backward: the implicit derivative at the converged fixed
+# point, against central finite differences of an independently written forward,
+# plus the residual gate that refuses to report a derivative away from it.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/frechet_mean_backward_gradcheck_test.cpp")
+    add_executable(frechet_mean_backward_gradcheck_test
+        tests/backend/frechet_mean_backward_gradcheck_test.cpp)
+    target_compile_features(frechet_mean_backward_gradcheck_test PRIVATE cxx_std_17)
+    target_include_directories(frechet_mean_backward_gradcheck_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(frechet_mean_backward_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(frechet_mean_backward_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(frechet_mean_backward_gradcheck_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME frechet_mean_backward_gradcheck
+             COMMAND frechet_mean_backward_gradcheck_test)
+    set_tests_properties(frechet_mean_backward_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "0 failed")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_arena_core_test.cpp")
     add_executable(runtime_arena_core_test tests/core/runtime_arena_core_test.cpp)
     target_compile_features(runtime_arena_core_test PRIVATE cxx_std_17)

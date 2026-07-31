@@ -548,7 +548,7 @@ Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, 
 | Normalization | batch norm, layer norm | `eshkol_backward_batchnorm`, `eshkol_backward_layernorm` |
 | Linear algebra | matmul | `eshkol_backward_matmul` |
 | Attention | single-head | `tensor_attention_backward` — **stub in v1.2** (see Known limitations below) |
-| Embedding | embedding lookup | `tensor_embedding_backward` — **stub in v1.2** (see Known limitations below) |
+| Embedding | embedding lookup | `tensor_embedding_backward` — exact indexed scatter-add |
 
 **Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
 
@@ -566,14 +566,148 @@ for multi-head with backprop through (W_Q, W_K, W_V, W_O) — ships in
 v1.3-evolve as part of the attention-codegen rewrite. Training attention
 layers under v1.2 will not converge correctly.
 
-**Embedding backward** is still a stub as of v1.3.0-evolve
-(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`).
-It scatters the upstream gradient into row 0 of the weight tensor only,
-because the lookup-index tensor is not yet threaded through the AD-node
-shape. A one-shot stderr warning fires on first invocation. The full
-indexed scatter — `dW[idx[i]] += dy[i]` over the lookup-index vector —
-is tracked as `ESH-0230` (`.swarm/tasks/ESH-0230.json`); no target
-release is committed until the index-tensor threading lands.
+**Embedding backward** is the exact indexed scatter-add
+(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`, ESH-0230).
+The forward `y[i,:] = W[idx[i],:]` is a gather, so its adjoint is
+`dW[idx[i],:] += dy[i,:]`. Two properties of that adjoint are load-bearing and
+are asserted by `ctest -R tensor_embedding_backward_gradcheck`:
+
+- **Duplicate indices accumulate.** A weight row looked up *k* times receives
+  the sum of all *k* upstream rows. Assigning instead of accumulating is the
+  classic scatter-add bug and it under-counts every repeated token — the common
+  case in real text — while leaving the gradient the right shape and order of
+  magnitude.
+- **Unselected rows are exactly zero.** The adjoint of a gather is genuinely
+  sparse; a rule that spreads the upstream gradient across other rows is wrong,
+  not approximate.
+
+The lookup indices reach the rule through the AD node itself: `input1` is the
+weight node `[vocab_size, d_model]`, `input2` is the index node whose
+`tensor_value` holds the `num_indices` f64 lookup indices, and `params` carries
+`[num_indices, d_model, vocab_size]`. Because the index operand is
+integer-valued the map is piecewise constant in it, so `input2` receives no
+gradient — its `tensor_gradient` is deliberately left untouched rather than
+seeded with a zero that would read as "differentiated, came out zero". A missing
+index operand, a fractional index, or an index outside `[0, vocab_size)` each
+raise rather than scatter into the wrong row.
+
+Historical note: before ESH-0230 this rule had no way to see the indices. It
+originally scattered everything into row 0 (a wrong gradient behind a one-shot
+stderr warning), and was later changed to refuse outright. Both are gone.
+
+**Fréchet mean backward — implicit differentiation, and a mandatory residual
+gate.** The weighted Fréchet (Karcher) mean on the Poincaré ball is not given by
+a formula. It is the minimiser of the weighted variance, equivalently the
+solution of the stationarity condition
+
+```
+F(mu; X, w) = sum_i w_i log_mu(x_i) = 0
+```
+
+so there are two different things one could differentiate: the mathematical
+object `mu*(X, w)` defined by that condition, or the fixed-point iteration that
+approximates it. **They are not the same function.** The unrolled derivative
+carries the iteration's transient, and depends on the starting point and the
+iteration count — neither of which is a property of the Fréchet mean. The
+derivative of the mathematical object is the implicit one, so
+`tensor_frechet_mean_backward` (`lib/bridge/tensor_backward.cpp`) differentiates
+the condition:
+
+```
+A dmu + sum_j (dF/dx_j) dx_j + sum_j (dF/dw_j) dw_j = 0,   A = dF/dmu
+```
+
+giving, in reverse mode from an upstream `g = dL/dmu`, one linear solve
+regardless of the number of points:
+
+```
+solve A^T z = g
+dL/dx_j = -w_j (d log_mu(x_j)/d x_j)^T z
+dL/dw_j = -<log_mu(x_j), z>
+```
+
+The two Jacobian blocks come from differentiating
+`log_mu(x) = k(mu) * phi(|u|) * u` with `u = (-mu) (+)_c x` through Möbius
+addition; both blocks are produced from one shared set of intermediates so a sign
+error cannot survive in one while the other checks out.
+
+**The residual gate is not optional.** Every line above assumes `F(mu*) = 0`. At
+a point that has not converged the implicit function theorem does not apply, and
+the formulas still return a smooth, plausible, wrong vector — the worst failure
+class available, because nothing downstream can distinguish it from a gradient.
+The rule therefore recomputes the stationarity residual from the retained `mu*`,
+points and weights, and refuses when it is not at the fixed point. Recomputing
+rather than trusting a residual stored by the forward is deliberate: a stored
+residual can be stale with respect to the operands actually on the node. The bar
+is
+
+```
+lambda_mu |F| <= tol * sum_i w_i * (1 + lambda_mu * max_i |log_mu(x_i)|),
+lambda_mu = 2 / (1 - c |mu|^2)
+```
+
+relative to the terms being cancelled, with an absolute floor, because a purely
+relative bar divides by rounding noise in the most exact case available (every
+point coincident with the mean, so every log is zero).
+
+**Both sides of that bar are measured in Riemannian units, and that is not
+cosmetic.** The logs are stored in ambient ball coordinates; the tangent space at
+`mu` carries the conformal metric `lambda_mu^2 <.,.>`, so the invariant length of
+a tangent vector `v` is `lambda_mu |v|`. The factor cancels out of the relative
+term but *not* out of the floor — and the floor is the whole reason the bar is not
+purely relative. Scaled in ambient coordinates, `lambda_mu` diverges at the ball
+boundary, every `|log|` collapses toward zero, the floor swamps the relative term,
+and the bar degenerates to `|F|_ambient <= tol * sum_i w_i`, which a mean wrong by
+a whole unit of hyperbolic distance satisfies comfortably. Measured, not feared:
+with the ambient scale the forward accepted means wrong by `8.8e-8` (points
+`1e-9` inside the boundary) and `7.6e-6` (points one ulp inside) as converged, and
+the backward would then have differentiated them. In Riemannian units the `1` is
+one unit of hyperbolic distance, so the floor still protects the coincident-point
+case while the relative term stays live near the boundary. The forward
+(`vm_frechet_mean_compute`, `lib/backend/vm_geometric.c`) applies the identical
+scale at the identical default tolerance: the forward's gate is what makes the
+backward's gate satisfiable, so the two must not drift apart.
+
+Because the derivative is only available at a converged fixed point, the
+`frechet-mean` forward is computed in **f64**, in both the portable and the
+linked-library build. An fp32 mean carries `|mu - mu*| ~ 1e-7` and so a
+stationarity residual around `1e-7` relative — two orders above the `1e-9` gate
+— which would make the exact derivative unavailable by construction. The forward
+also gates its own convergence and raises a catchable Scheme error rather than
+returning a near-answer that would be laundered into a wrong gradient
+(`tests/vm/frechet_mean_surface_regression.esk`).
+
+**Where f64 runs out, the forward refuses.** Ambient ball coordinates cannot
+resolve hyperbolic position near the boundary: `u = (-mu) (+)_c x` is formed by
+cancellation, so a `mu` and an `x` more than roughly 19 units of hyperbolic
+distance apart drive `|u|` to `1` in f64 even though both are strictly interior
+points, and `artanh` then has no value. The log map used to clamp to `1 - 1e-15`
+and hand back a fabricated magnitude of ~17.6, which the iteration converged on
+and reported as success; it now reports that no finite log exists and the caller
+raises. Two further honesty gates go with it: the iterate must stay strictly
+inside the ball (on the boundary `k = (1 - c|mu|^2)/sqrt(c)` is zero, so every log
+evaluates to zero and a zero residual would not mean stationarity), and
+acceptance requires **two consecutive** sub-tolerance iterates rather than one.
+The last is not defensive padding — the residual has an evaluation noise floor of
+its own near the boundary, and on points `1e-9` inside it the residual oscillated
+between `2.4e-7` and `4.9e-6` for 131 iterations before producing a single
+`9.86e-10` draw by rounding luck, which a one-sample test accepted; the accepted
+mean was wrong by `3.0e-8`. A run whose residual stops improving is now declared
+stagnant and refused, and the reported mean is the best iterate seen rather than
+the last. Net effect, measured on points at `+/-x0` with weights `2:1`, whose mean
+has the closed form `tanh(artanh(x0)/3)`: accepted out to `x0 = 1 - 1e-6` with
+relative error `8e-16` to `2.3e-12`, and refused from `x0 = 1 - 1e-7` inward,
+where it previously returned wrong answers of up to `7.4e-5`.
+
+Verified by `ctest -R frechet_mean_backward_gradcheck`: the implicit gradient
+against central finite differences of an independently written forward converged
+to the last bit (`3.8e-11` on the points, `6.9e-12` on the weights, against a
+`1e-6` bar), the Euclidean `K = 0` limit against its closed form, a check that
+the implicit answer genuinely *differs* from the one-step-unrolled one (by
+`7.8e-2`, so the choice above is a real decision and not a restatement), a check
+that measures both candidate residual scales on one near-boundary triple and
+asserts the ambient one would have passed (`9.7e-12`) where the Riemannian one
+does not (`7.6e-8`), and seven refusal paths.
 
 **Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
 
