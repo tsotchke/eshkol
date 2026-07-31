@@ -113,6 +113,7 @@ TEST_SCRIPTS=(
     "run_types_tests.sh"
     "run_typesystem_tests.sh"
     "run_autodiff_tests.sh"
+    "run_qllm_oracle_tests.sh"
     "run_manifold_tests.sh"
     "run_ml_tests.sh"
     "run_neural_tests.sh"

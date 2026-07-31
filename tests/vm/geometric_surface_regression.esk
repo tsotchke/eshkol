@@ -3,6 +3,13 @@
 ;; and their portable fallback must consume the right number of arguments.
 
 (define t (make-tensor '(2) 0.0))
+;; frechet-mean is the only op here whose arguments have a domain: the weights
+;; must sum to something positive, or the Riemannian center of mass is undefined
+;; and the op raises (a catchable error) rather than returning a number. `t` is
+;; all zeros, so it cannot serve as the weight vector — give it real points and
+;; weights. Still an arity/resolution probe, just with in-domain arguments.
+(define frechet-pts (make-tensor '(2 2) 0.1))
+(define frechet-w (make-tensor '(2) 1.0))
 (define m (make-euclidean-manifold 2))
 (define h (make-hyperbolic-manifold 2 -1.0))
 (define s (make-spherical-manifold 2))
@@ -18,7 +25,7 @@
 (mobius-add t t -1.0)
 (mobius-scalar-mul 0.5 t -1.0)
 (poincare-distance t t -1.0)
-(frechet-mean t t -1.0)
+(frechet-mean frechet-pts frechet-w -1.0)
 (great-circle-distance t t)
 (slerp t t 0.5)
 (spherical-exp t t)
