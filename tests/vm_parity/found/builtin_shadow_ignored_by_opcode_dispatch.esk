@@ -1,0 +1,44 @@
+;; VERIFIED DIVERGENCE — a top-level define that shadows a builtin is ignored
+;; by the VM when that builtin is lowered to a dedicated opcode.
+;;
+;; R7RS 5.3.1 makes a top-level identifier redefinable, and there is nothing
+;; special about a name the implementation happens to use for a builtin: a
+;; user's top-level (define (car x) ...) is a definition of `car`, and every
+;; subsequent reference must resolve to it.
+;;
+;; Native honours this. The parser maps some builtin names to dedicated OP tags
+;; for a direct C-runtime call, which used to swallow user definitions of those
+;; names; codegen now checks user scope first and routes the call through
+;; codegenCall when the user has a same-named define (audit Bug G, see
+;; userShadowableOps / hasUserShadow in lib/backend/llvm_codegen.cpp). So on
+;; native both lines below print the user's answer.
+;;
+;; The VM's compiler has the same premature-binding decision and no equivalent
+;; check: compile_form()'s dispatch chain recognises `car` by spelling and emits
+;; the OP_CAR opcode before local resolution ever runs, so the user's define is
+;; never consulted. Names the VM resolves by lookup instead of by opcode --
+;; `length` here -- do honour the shadow, which is why this is a partial
+;; divergence rather than a missing feature.
+;;
+;; EXPECTED (native, and what R7RS requires):
+;;   111
+;;   222
+;; ACTUAL (VM):
+;;   9      <- builtin car ran; the user's definition was dropped
+;;   222
+;;
+;; Fixing it means giving the VM compiler the same user-scope check native has:
+;; the head symbol of a call must be looked up in the user's top-level defines
+;; before the opcode dispatch chain claims it. That is a change to the whole
+;; dispatch chain rather than to one form, and it needs its own differential
+;; run over the corpus, so it is filed rather than folded into the R7RS 5.3.1
+;; redefinition fix -- which is about *which* definition of a name wins, and is
+;; verified on both substrates by corpus/36_toplevel_redefinition.esk.
+
+(define (car x) 111)
+(define (length x) 222)
+
+(display (car (list 9 8 7)))
+(newline)
+(display (length (list 9 8 7)))
+(newline)

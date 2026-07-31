@@ -431,6 +431,9 @@ static void vm_model_tensor_load(VM* vm) {
 
     uint64_t dims[VM_TENSOR_MAX_DIMS];
     if (ndims > VM_TENSOR_MAX_DIMS) {
+        fprintf(stderr, "ERROR: model-load: tensor rank %u exceeds the model-file "
+                        "rank limit (VM_TENSOR_MAX_DIMS=%d)\n",
+                ndims, (int)VM_TENSOR_MAX_DIMS);
         free(data);
         vm_push(vm, NIL_VAL);
         return;

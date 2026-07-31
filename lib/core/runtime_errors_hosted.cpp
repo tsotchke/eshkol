@@ -276,4 +276,83 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                  eshkol_format_value_type_tag(val));
 }
 
+/* Wrong-type argument at an `extern` pointer parameter (ESH-0363).
+ *
+ * Emitted by codegen on the rejecting branch of the FFI pointer-argument guard,
+ * immediately before the IntToPtr it protects. The message has to be enough to
+ * find the mistake without a debugger, so it names the extern, the argument
+ * POSITION (positional-argument confusion is what produces this error in
+ * practice), the declared parameter type, and renders the offending value —
+ * seeing `got the integer 5000` next to a parameter declared `ptr` identifies a
+ * misplaced timeout immediately, where `SIGSEGV at 0x1388` did not.
+ *
+ * Raised through eshkol_runtime_fatal(), so `guard`/`with-exception-handler` can
+ * catch it as a type error and an uncaught one exits nonzero — never a fault at
+ * a synthesised address. */
+void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
+                                       const char* real_symbol,
+                                       int32_t arg_position,
+                                       const char* declared_type,
+                                       uint8_t observed_type,
+                                       uint64_t observed_bits) {
+    eshkol_tagged_value_t observed;
+    observed.type = observed_type;
+    observed.flags = 0;
+    observed.reserved = 0;
+    observed.data.int_val = (int64_t)observed_bits;
+
+    const char* observed_name = eshkol_format_value_type_tag(observed);
+
+    /* Render the value itself for the tags this guard actually rejects. */
+    char value_text[128];
+    switch (observed_type) {
+        case ESHKOL_VALUE_INT64:
+            std::snprintf(value_text, sizeof(value_text), "the integer %lld",
+                          (long long)(int64_t)observed_bits);
+            break;
+        case ESHKOL_VALUE_DOUBLE: {
+            double d;
+            std::memcpy(&d, &observed_bits, sizeof(d));
+            std::snprintf(value_text, sizeof(value_text), "the number %g", d);
+            break;
+        }
+        case ESHKOL_VALUE_BOOL:
+            std::snprintf(value_text, sizeof(value_text), "%s",
+                          observed_bits ? "#t" : "#f");
+            break;
+        case ESHKOL_VALUE_CHAR:
+            std::snprintf(value_text, sizeof(value_text), "a character");
+            break;
+        default:
+            std::snprintf(value_text, sizeof(value_text), "a %s", observed_name);
+            break;
+    }
+
+    const char* name = extern_name && extern_name[0] ? extern_name : "<extern>";
+    const char* declared = declared_type && declared_type[0] ? declared_type : "ptr";
+    const bool distinct_symbol = real_symbol && real_symbol[0] &&
+                                 std::strcmp(real_symbol, name) != 0;
+
+    char prefix[320];
+    eshkol_format_error_location_prefix(prefix, sizeof(prefix));
+
+    if (distinct_symbol) {
+        eshkol_error("%sFFI type error in %s (C symbol %s): argument %d is declared "
+                     "`%s` and requires a string or pointer handle, but got %s",
+                     prefix, name, real_symbol, (int)arg_position, declared, value_text);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                             "%sFFI type error in %s (C symbol %s): argument %d is declared "
+                             "`%s` and requires a string or pointer handle, but got %s",
+                             prefix, name, real_symbol, (int)arg_position, declared, value_text);
+    } else {
+        eshkol_error("%sFFI type error in %s: argument %d is declared `%s` and requires "
+                     "a string or pointer handle, but got %s",
+                     prefix, name, (int)arg_position, declared, value_text);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+                             "%sFFI type error in %s: argument %d is declared `%s` and requires "
+                             "a string or pointer handle, but got %s",
+                             prefix, name, (int)arg_position, declared, value_text);
+    }
+}
+
 }  // extern "C"

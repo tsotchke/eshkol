@@ -44,7 +44,7 @@ llvm::Value* TensorCodegen::makeDataloader(const eshkol_operations_t* op) {
     // Get data tensor
     llvm::Value* data_tagged = codegenAST(&op->call_op.variables[0]);
     if (!data_tagged) return nullptr;
-    llvm::Value* data_ptr = tagged_.unpackPtr(data_tagged);
+    llvm::Value* data_ptr = unpackTensorOperandChecked(data_tagged, "make-dataloader");
 
     // Get batch size
     llvm::Value* batch_size_tagged = codegenAST(&op->call_op.variables[1]);
@@ -546,7 +546,7 @@ llvm::Value* TensorCodegen::trainTestSplit(const eshkol_operations_t* op) {
     // Get data tensor
     llvm::Value* data_tagged = codegenAST(&op->call_op.variables[0]);
     if (!data_tagged) return nullptr;
-    llvm::Value* data_ptr = tagged_.unpackPtr(data_tagged);
+    llvm::Value* data_ptr = unpackTensorOperandChecked(data_tagged, "train-test-split");
 
     // Get ratio
     llvm::Value* ratio_tagged = codegenAST(&op->call_op.variables[1]);

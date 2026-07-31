@@ -1627,5 +1627,8 @@ void vm_free(VM* vm) {
     vm_dlopen_close_all(vm);
     heap_destroy(&vm->heap);
     free(vm->code);
+    free(vm->constants);
+    vm->constants = NULL;
+    vm->const_cap = 0;
     free(vm);
 }

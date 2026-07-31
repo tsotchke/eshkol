@@ -143,72 +143,270 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
     return vec;
 }
 
-// Build a 1-D tensor from a single (tensor X) argument: a list or Scheme vector
-// is unpacked element-by-element (numpy-like), an existing tensor is returned
-// as-is, and any scalar becomes a 1-element tensor. Without this, (tensor (list
-// 1 2 3)) made a 1-element tensor whose sole element was the list pointer's bits
-// reinterpreted as a double (garbage). Returns the tensor pointer or nullptr.
+// ── (tensor X) collection unpacking ──────────────────────────────────────────
+//
+// A single-argument `(tensor X)` classifies X by its RUNTIME VALUE, not by the
+// form that produced it: a scalar becomes a 1-element tensor, an existing
+// tensor passes through, and any nest of lists / Scheme vectors becomes the
+// N-dimensional tensor its shape describes. `(tensor #(#(1 2) #(3 4)))` already
+// built a 2x2 because the PARSER flattens nested `#(...)` literals at compile
+// time; the runtime path below is what makes the same true when the nesting is
+// only known dynamically — `(tensor (list (list 1 2) (list 3 4)))`.
+//
+// Before this, the runtime walked exactly ONE level: every element of the outer
+// list was coerced with "HEAP_PTR -> 0.0", so a list of lists silently became a
+// rank-1 tensor of zeros (displayed `#(0 0)`) and the shape was lost. A
+// subsequent rank-2 `(tensor-ref t 0 0)` then indexed a rank-1 tensor and read
+// past its 1-entry dimensions array. Ragged or otherwise non-rectangular nests
+// cannot be a tensor at all, so those raise a clean catchable error instead of
+// fabricating a wrong shape.
+
+#define ESHKOL_TENSOR_COLLECTION_MAX_DIMS 8
+
+/** @brief What role a tagged value plays inside a `(tensor X)` nest. */
+typedef enum {
+    COLL_LEAF = 0,  /**< a scalar element (or a non-collection heap object) */
+    COLL_LIST,      /**< a cons list — one tensor dimension */
+    COLL_VECTOR,    /**< a Scheme vector — one tensor dimension */
+    COLL_TENSOR     /**< a tensor — contributes ALL of its own dimensions */
+} coll_kind_t;
+
+static coll_kind_t coll_classify(const eshkol_tagged_value_t* v) {
+    if (!v) return COLL_LEAF;
+    if (tagged_is_cons(v)) return COLL_LIST;
+    if (v->type == ESHKOL_VALUE_HEAP_PTR && v->data.ptr_val) {
+        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_VECTOR) return COLL_VECTOR;
+        if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) return COLL_TENSOR;
+    }
+    return COLL_LEAF;
+}
+
+/** @brief Number of elements in a cons list (stops at any non-cons tail). */
+static int64_t coll_list_length(const eshkol_tagged_value_t* v) {
+    int64_t n = 0;
+    eshkol_tagged_value_t cur = *v;
+    while (tagged_is_cons(&cur)) {
+        n++;
+        cur = ((arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+    }
+    return n;
+}
+
+/** @brief Scheme vector layout is [length:8][16-byte tagged elements]. */
+static int64_t coll_vector_length(const eshkol_tagged_value_t* v) {
+    int64_t len = *(const int64_t*)(uintptr_t)v->data.ptr_val;
+    return len < 0 ? 0 : len;
+}
+
+static const eshkol_tagged_value_t* coll_vector_elems(const eshkol_tagged_value_t* v) {
+    return (const eshkol_tagged_value_t*)((const char*)(uintptr_t)v->data.ptr_val
+                                          + sizeof(int64_t));
+}
+
+static const eshkol_tensor_t* coll_as_tensor(const eshkol_tagged_value_t* v) {
+    return (const eshkol_tensor_t*)(uintptr_t)v->data.ptr_val;
+}
+
+/** @brief Coerce a leaf to the double the tensor stores.
+ *
+ * A non-collection HEAP_PTR (bignum, rational, string, …) yields 0.0 rather
+ * than its pointer bits reinterpreted as a double, matching the pre-existing
+ * convention on every other tensor ingest path (P2). */
+static double coll_leaf_double(const eshkol_tagged_value_t* e) {
+    if (e->type == ESHKOL_VALUE_DOUBLE) return e->data.double_val;
+    if (e->type == ESHKOL_VALUE_HEAP_PTR) return 0.0;
+    return (double)e->data.int_val;
+}
+
+static void coll_raise(const char* message) {
+    eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, message));
+}
+
+/**
+ * @brief Read the tensor shape a nest describes by descending its FIRST child.
+ *
+ * Each list/vector level contributes one dimension; a nested tensor contributes
+ * all of its own. Siblings are NOT inspected here — coll_fill() validates that
+ * every sibling matches this shape, which is what turns a ragged nest into a
+ * clean error rather than a silently wrong tensor.
+ *
+ * @return false if the nest is deeper than ESHKOL_TENSOR_COLLECTION_MAX_DIMS.
+ */
+static bool coll_discover_shape(const eshkol_tagged_value_t* input,
+                                uint64_t* dims, int* ndim, int max_dims) {
+    eshkol_tagged_value_t node = *input;
+    for (;;) {
+        const coll_kind_t k = coll_classify(&node);
+        if (k == COLL_LEAF) return true;
+
+        if (k == COLL_TENSOR) {
+            const eshkol_tensor_t* t = coll_as_tensor(&node);
+            for (uint64_t d = 0; t && d < t->num_dimensions; d++) {
+                if (*ndim >= max_dims) return false;
+                dims[(*ndim)++] = t->dimensions ? t->dimensions[d] : 0;
+            }
+            return true;
+        }
+
+        const int64_t len = (k == COLL_LIST) ? coll_list_length(&node)
+                                             : coll_vector_length(&node);
+        if (*ndim >= max_dims) return false;
+        dims[(*ndim)++] = (uint64_t)len;
+        if (len == 0) return true;  // empty level: nothing deeper to measure
+
+        // Descend into child 0. Copy through a temporary first: `node` is both
+        // the source we read the child out of and the destination.
+        eshkol_tagged_value_t child;
+        if (k == COLL_LIST) {
+            child = ((arena_tagged_cons_cell_t*)(uintptr_t)node.data.ptr_val)->car;
+        } else {
+            child = coll_vector_elems(&node)[0];
+        }
+        node = child;
+    }
+}
+
+/**
+ * @brief Flatten a nest into @p elements in row-major order, validating shape.
+ *
+ * @param level Depth of @p node in the nest; `level == ndim` means this node
+ *              must be a scalar leaf.
+ * @return false if the nest is ragged / mixes scalars with sub-collections at
+ *         the same depth (an error has already been raised).
+ */
+static bool coll_fill(const eshkol_tagged_value_t* node,
+                      const uint64_t* dims, int ndim, int level,
+                      int64_t* elements, uint64_t* pos, uint64_t total) {
+    const coll_kind_t k = coll_classify(node);
+
+    if (level == ndim) {
+        if (k != COLL_LEAF) {
+            coll_raise("tensor: nested list/vector is not rectangular — a "
+                       "sub-collection appears where a number was expected");
+            return false;
+        }
+        if (*pos >= total) return true;  // defensive: never write past the buffer
+        const double d = coll_leaf_double(node);
+        std::memcpy(&elements[(*pos)++], &d, sizeof(double));
+        return true;
+    }
+
+    if (k == COLL_TENSOR) {
+        // A nested tensor supplies every remaining dimension at once.
+        const eshkol_tensor_t* t = coll_as_tensor(node);
+        const int remaining = ndim - level;
+        if (!t || (int)t->num_dimensions != remaining || !t->dimensions || !t->elements) {
+            coll_raise("tensor: nested tensor element does not have the same "
+                       "shape as its siblings");
+            return false;
+        }
+        for (int d = 0; d < remaining; d++) {
+            if (t->dimensions[d] != dims[level + d]) {
+                coll_raise("tensor: nested tensor element does not have the "
+                           "same shape as its siblings");
+                return false;
+            }
+        }
+        for (uint64_t i = 0; i < t->total_elements && *pos < total; i++) {
+            elements[(*pos)++] = t->elements[i];  // already double bit patterns
+        }
+        return true;
+    }
+
+    if (k == COLL_LEAF) {
+        coll_raise("tensor: nested list/vector is not rectangular — a number "
+                   "appears where a sub-collection was expected");
+        return false;
+    }
+
+    const int64_t len = (k == COLL_LIST) ? coll_list_length(node)
+                                         : coll_vector_length(node);
+    if ((uint64_t)len != dims[level]) {
+        coll_raise("tensor: nested list/vector is ragged — every "
+                   "sub-collection at the same depth must have the same length");
+        return false;
+    }
+
+    if (k == COLL_LIST) {
+        eshkol_tagged_value_t cur = *node;
+        for (int64_t i = 0; i < len && tagged_is_cons(&cur); i++) {
+            arena_tagged_cons_cell_t* cell =
+                (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            const eshkol_tagged_value_t car = cell->car;
+            if (!coll_fill(&car, dims, ndim, level + 1, elements, pos, total)) return false;
+            cur = cell->cdr;
+        }
+        return true;
+    }
+
+    const eshkol_tagged_value_t* elems = coll_vector_elems(node);
+    for (int64_t i = 0; i < len; i++) {
+        if (!coll_fill(&elems[i], dims, ndim, level + 1, elements, pos, total)) return false;
+    }
+    return true;
+}
+
+// Build a tensor from a single (tensor X) argument: a nest of lists and/or
+// Scheme vectors is unpacked into the N-dimensional tensor its shape describes
+// (numpy-like), an existing tensor is returned as-is, and any scalar becomes a
+// 1-element tensor. Without this, (tensor (list 1 2 3)) made a 1-element tensor
+// whose sole element was the list pointer's bits reinterpreted as a double
+// (garbage), and (tensor (list (list 1 2) (list 3 4))) made a rank-1 tensor of
+// zeros. Returns the tensor pointer, or nullptr on allocation failure; a
+// non-rectangular nest raises a catchable error and does not return.
 void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
     if (!arena || !input) return nullptr;
 
-    if (input->type == ESHKOL_VALUE_HEAP_PTR && input->data.ptr_val) {
-        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)input->data.ptr_val);
-        if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
-            return (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
-        }
-        if (hdr && hdr->subtype == HEAP_SUBTYPE_VECTOR) {
-            char* v = (char*)(uintptr_t)input->data.ptr_val;
-            int64_t len = *(int64_t*)v;
-            if (len < 0) len = 0;
-            const eshkol_tagged_value_t* elems =
-                (const eshkol_tagged_value_t*)(v + sizeof(int64_t));
-            eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, (uint64_t)len);
-            if (!t) return nullptr;
-            if (t->dimensions) t->dimensions[0] = (uint64_t)len;
-            for (int64_t i = 0; i < len; i++) {
-                const eshkol_tagged_value_t* e = &elems[i];
-                double d = (e->type == ESHKOL_VALUE_DOUBLE) ? e->data.double_val
-                         : (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
-                         : (double)e->data.int_val;
-                std::memcpy(&t->elements[i], &d, sizeof(double));
-            }
-            return t;
-        }
+    const coll_kind_t kind = coll_classify(input);
+
+    if (kind == COLL_TENSOR) {
+        return (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
     }
 
-    if (tagged_is_cons(input)) {
-        int64_t n = 0;
-        eshkol_tagged_value_t cur = *input;
-        while (tagged_is_cons(&cur)) {
-            n++;
-            cur = ((arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
-        }
-        eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, (uint64_t)n);
+    if (kind == COLL_LEAF) {
+        // Scalar -> 1-element tensor.
+        eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
         if (!t) return nullptr;
-        if (t->dimensions) t->dimensions[0] = (uint64_t)n;
-        cur = *input;
-        int64_t i = 0;
-        while (tagged_is_cons(&cur) && i < n) {
-            arena_tagged_cons_cell_t* cell =
-                (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
-            const eshkol_tagged_value_t* e = &cell->car;
-            double d = (e->type == ESHKOL_VALUE_DOUBLE) ? e->data.double_val
-                     : (e->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
-                     : (double)e->data.int_val;
-            std::memcpy(&t->elements[i++], &d, sizeof(double));
-            cur = cell->cdr;
-        }
+        if (t->dimensions) t->dimensions[0] = 1;
+        const double d = coll_leaf_double(input);
+        std::memcpy(&t->elements[0], &d, sizeof(double));
         return t;
     }
 
-    // Scalar -> 1-element tensor.
-    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
+    uint64_t dims[ESHKOL_TENSOR_COLLECTION_MAX_DIMS];
+    int ndim = 0;
+    if (!coll_discover_shape(input, dims, &ndim,
+                             ESHKOL_TENSOR_COLLECTION_MAX_DIMS)) {
+        coll_raise("tensor: nested list/vector nests deeper than 8 dimensions");
+        return nullptr;
+    }
+    if (ndim == 0) {
+        // Unreachable: the leaf and tensor cases returned above, so the input
+        // is a list or vector and contributed at least one dimension.
+        coll_raise("tensor: cannot determine a shape for the given collection");
+        return nullptr;
+    }
+
+    uint64_t total = 1;
+    for (int i = 0; i < ndim; i++) {
+        if (dims[i] != 0 && total > UINT64_MAX / dims[i]) {
+            coll_raise("tensor: nested list/vector shape overflows");
+            return nullptr;
+        }
+        total *= dims[i];
+    }
+
+    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)ndim, total);
     if (!t) return nullptr;
-    if (t->dimensions) t->dimensions[0] = 1;
-    double d = (input->type == ESHKOL_VALUE_DOUBLE) ? input->data.double_val
-             : (input->type == ESHKOL_VALUE_HEAP_PTR) ? 0.0
-             : (double)input->data.int_val;
-    std::memcpy(&t->elements[0], &d, sizeof(double));
+    if (t->dimensions) {
+        for (int i = 0; i < ndim; i++) t->dimensions[i] = dims[i];
+    }
+
+    uint64_t pos = 0;
+    if (total > 0 && !coll_fill(input, dims, ndim, 0, t->elements, &pos, total)) {
+        return nullptr;  // coll_fill already raised
+    }
     return t;
 }
 

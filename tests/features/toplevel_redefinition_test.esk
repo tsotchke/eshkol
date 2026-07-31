@@ -1,0 +1,160 @@
+;;; tests/features/toplevel_redefinition_test.esk
+;;; R7RS 5.3.1 -- A LATER TOP-LEVEL DEFINE WINS.
+;;;
+;;; R7RS 5.3.1: "At the top level of a program, a definition
+;;;     (define <variable> <expression>)
+;;;  has essentially the same effect as the assignment expression
+;;;     (set! <variable> <expression>)
+;;;  if <variable> is bound to a non-syntax value.  However, if <variable> is
+;;;  not bound [...] the definition will bind <variable> to a new location
+;;;  before performing the assignment."
+;;;
+;;; So a top-level name denotes exactly ONE location, every definition of it
+;;; assigns to that location in program order, and a reference resolves the
+;;; location when it is evaluated -- not when it is compiled.
+;;;
+;;; Eshkol resolved a redefined name at compile time, and by namespace rather
+;;; than by program order: a procedure definition became an LLVM function
+;;; reached through function_table / the <name>_func symbol-table key, a value
+;;; definition became a tagged_value global reached through symbol_table, and
+;;; the two were never reconciled. The measured consequences, all fixed here:
+;;;
+;;;   * (define g 42) then (define (g x) ...) dropped the procedure entirely --
+;;;     the call site read the variable, which only ever held 42, so (g 5)
+;;;     died with "variable 'g' is not a procedure".
+;;;   * a body compiled between two procedure definitions froze on whichever
+;;;     version had been through codegenFunctionDefinition first, because that
+;;;     pass rewrites symbol_table[<name>_func] as a side effect of generating
+;;;     each body -- so a caller defined before the redefinition kept calling
+;;;     the OLD body forever.
+;;;   * conversely a call at top level saw the LAST definition regardless of
+;;;     its own position, so a call written between the two definitions ran the
+;;;     later one.
+;;;   * on the VM, a procedure defined before the redefinition captured the
+;;;     first definition's stack slot as an upvalue and kept the old body.
+;;;   * (display <name>) short-circuited to the name-keyed <name>_sexpr side
+;;;     table and printed a stale definition's source -- printing a procedure
+;;;     body for a name now bound to a number.
+;;;
+;;; Discovered because a file bound one name both as a tensor and as a
+;;; trampoline step procedure; the second definition never took effect and the
+;;; trampoline returned the tensor instead of its numeric sum.
+;;;
+;;; Everything here is numeric so the assertions hold identically on the JIT,
+;;; AOT and VM substrates (the VM prints procedures as <closure@N> where native
+;;; prints their source form, so no procedure is ever displayed).
+
+(define failures 0)
+
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "  ok   ") (display label) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label)
+             (display " expected ") (display expected)
+             (display " got ") (display actual) (newline))))
+
+;;; ---------------------------------------------------------------------
+;;; Case 1 -- value, then procedure.
+;;; The procedure is the later definition, so it wins: (r1 5) is 10, not a
+;;; "not a procedure" error against the stale 42.
+;;; ---------------------------------------------------------------------
+(define r1 42)
+(define (r1 x) (* x 2))
+(check "case 1: value then procedure -- procedure wins" 10 (r1 5))
+
+;;; ---------------------------------------------------------------------
+;;; Case 2 -- procedure, then value.
+;;; The value is the later definition, so the name reads as the number. The
+;;; other half of this case -- that CALLING it now fails as "not a procedure"
+;;; instead of silently running the old body -- is a fatal error and so lives
+;;; in tests/backend/toplevel_redefinition_not_procedure_test.esk.
+;;; ---------------------------------------------------------------------
+(define (r2 x) (* x 2))
+(define r2 42)
+(check "case 2: procedure then value -- value wins" 42 r2)
+(check "case 2: the binding really is a number" #t (number? r2))
+(check "case 2: the binding is not a procedure" #f (procedure? r2))
+(check "case 2: usable as a number" 43 (+ r2 1))
+
+;;; ---------------------------------------------------------------------
+;;; Case 3a -- procedure, then procedure, same arity.
+;;; ---------------------------------------------------------------------
+(define (r3 x) (* x 2))
+(define (r3 x) (* x 10))
+(check "case 3a: same arity -- second body runs" 50 (r3 5))
+
+;;; ---------------------------------------------------------------------
+;;; Case 3b -- procedure, then procedure, DIFFERENT arity.
+;;; The sharper case: an arity signature cached from the first definition must
+;;; not survive into the second definition's call sites.
+;;; ---------------------------------------------------------------------
+(define (r4 x) (* x 2))
+(define (r4 x y) (+ x y))
+(check "case 3b: different arity -- second signature is live" 12 (r4 5 7))
+
+;;; ---------------------------------------------------------------------
+;;; Case 4 -- forward reference across the redefinition.
+;;; r5-caller is defined BEFORE r5 is redefined but INVOKED after it. R7RS
+;;; top-level bindings resolve at call time, so it must see the new r5.
+;;; Tail position and non-tail position are separate lowerings; both are
+;;; checked, because both froze on the first definition.
+;;; ---------------------------------------------------------------------
+(define (r5 x) (* x 2))
+(define (r5-caller n) (r5 n))
+(define (r5 x) (* x 100))
+(check "case 4: forward reference, tail call" 500 (r5-caller 5))
+
+(define (r6 x) (* x 2))
+(define (r6-caller n) (+ 0 (r6 n)))
+(define (r6 x) (* x 100))
+(check "case 4: forward reference, non-tail call" 500 (r6-caller 5))
+
+;;; ---------------------------------------------------------------------
+;;; Program order -- a reference between the two definitions sees the EARLIER
+;;; one. This is the same requirement read from the other side: resolution
+;;; follows the location's history, so it is not enough for the last define to
+;;; win everywhere.
+;;; ---------------------------------------------------------------------
+(define (r7 x) (* x 2))
+(define r7-before (r7 5))
+(define (r7 x) (* x 100))
+(define r7-after (r7 5))
+(check "order: call before the redefinition sees the first body" 10 r7-before)
+(check "order: call after the redefinition sees the second body" 500 r7-after)
+
+;;; ---------------------------------------------------------------------
+;;; Self-recursive redefinition -- the second definition's own recursion must
+;;; reach a live definition and terminate, and the redefined base case must be
+;;; the one that runs.
+;;; ---------------------------------------------------------------------
+(define (r8 n) (if (< n 2) 1 (* n (r8 (- n 1)))))
+(define r8-first (r8 5))
+(define (r8 n) (if (< n 2) 7 (* n (r8 (- n 1)))))
+(define r8-second (r8 5))
+(check "recursion: first definition's base case" 120 r8-first)
+(check "recursion: redefined base case, 5*4*3*2*7" 840 r8-second)
+
+;;; ---------------------------------------------------------------------
+;;; The shape that surfaced the defect: one name bound first to a collection
+;;; and then to a trampoline step procedure, driven through a trampoline. The
+;;; trampoline must return the numeric sum, not the collection.
+;;; ---------------------------------------------------------------------
+(define (local-trampoline thunk)
+  (let loop ((v (thunk)))
+    (if (procedure? v) (loop (v)) v)))
+
+(define t-step (list 1 2 3))
+(define (t-step n acc)
+  (if (= n 0)
+      acc
+      (lambda () (t-step (- n 1) (+ acc n)))))
+(check "trampoline over a re-bound name: sum(500)"
+       125250
+       (local-trampoline (lambda () (t-step 500 0))))
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: r7rs-toplevel-redefinition") (newline))
+    (begin (display "FAIL: r7rs-toplevel-redefinition ")
+           (display failures) (display " failing checks") (newline)))
