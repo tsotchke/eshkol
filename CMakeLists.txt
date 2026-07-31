@@ -216,10 +216,27 @@ if(ESHKOL_QUANTUM_ENABLED)
 
     FetchContent_Declare(moonlab
         GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
-        # Moonlab v1.2.0: adds MOONLAB_API vqe_compute_qgt (QNG/QGT, needed by the
-        # quantum-chemistry examples) and the smooth first-principles H2/LiH PES.
-        # Pinned by the tag's commit SHA; ABI frozen per the Moonlab release note.
-        GIT_TAG e441957b22698ce93ad4868d585ac7ca3baa281f
+        # Moonlab v1.2.0 (the real tagged release, 2026-07-30 -- the previous
+        # comment here calling e441957b "v1.2.0" was written ahead of any actual
+        # Moonlab tag; no Moonlab tag ever pointed at e441957b). 84 commits ahead
+        # of the prior pin: exact analytic QGT for all three ansatz types
+        # (hardware-efficient/UCCSD/symmetry-preserving, replacing central-
+        # difference state derivatives), a UCCSD particle-number-preserving
+        # double-excitation fix + corrected LiH Hartree-Fock reference,
+        # additive-only vqe_optimizer_t hyperparameters (beta1/beta2/epsilon/
+        # qng_regularization) and pauli_hamiltonian_t hf_reference fields, ELF
+        # NODELETE shared-library residency, and POVM/entropy-pool hardening.
+        # None of it touches the signatures Eshkol links: vqe_compute_qgt,
+        # vqe_compute_energy, vqe_solver_create, vqe_gradient_at_parameters,
+        # vqe_exact_ground_state_energy, vqe_solve, moonlab_vqe_gradient,
+        # moonlab_qrng_bytes/moonlab_next_u64, or the ML-KEM (crypto/mlkem/*)
+        # entry points -- none of the ML-KEM sources changed in this range.
+        # Pinned by the tag's peeled commit SHA (the v1.2.0 *tag object* itself
+        # is f8e552759b19dc459b093b9ff4abaacaa22befbb; git peels it to this
+        # commit automatically, but this repo's convention -- and FetchContent's
+        # own ref-cache comparison -- wants the resolved commit, not the tag
+        # object). ABI additive-only per the Moonlab release note.
+        GIT_TAG 4bf83a6c47e7f1c53db14fcb2a61053499fd82df
         GIT_SHALLOW FALSE
     )
     FetchContent_MakeAvailable(moonlab)
