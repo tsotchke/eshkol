@@ -603,6 +603,6 @@ eshkol-run [options] file.esk
 -l LIB              Link library
 -L PATH             Library path
 -n, --no-stdlib     Skip stdlib
---shared-lib        Compile as library (LinkOnceODR)
+--shared-lib        Link a shared library (C-ABI exports; add -c for an object)
 --wasm       WebAssembly output
 ```

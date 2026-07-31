@@ -2297,6 +2297,56 @@ if(TARGET eshkol-xla-runtime-obj)
     eshkol_target_llvm_includes(eshkol-xla-runtime-obj)
 endif()
 
+# ── Position independence for the generated-program runtime ────────────────
+#
+# `libeshkol-runtime.a` is linked into `--shared-lib` output, and an ELF linker
+# REFUSES a non-PIC object in a `-shared` link ("relocation R_X86_64_32S ...
+# can not be used when making a shared object; recompile with -fPIC").  So
+# position independence is not an optimization choice here: it is a property
+# the artifact must have for a documented capability to work at all.  macOS
+# hid this because Mach-O codegen is position-independent by default; both
+# Linux lite lanes caught it.
+#
+# The property is set on the OBJECT libraries, not on the `eshkol-runtime`
+# archive below.  That is the load-bearing detail: the archive only aggregates
+# `$<TARGET_OBJECTS:...>`, and compile flags come from the target that does the
+# compiling, so POSITION_INDEPENDENT_CODE on the STATIC target would be a
+# silent no-op.
+#
+# SCOPE — deliberately these targets rather than a global
+# CMAKE_POSITION_INDEPENDENT_CODE.  Only the runtime (and the agent-FFI
+# archive, set where it is defined) is ever consumed by a `-shared` link;
+# ESHKOL_NON_RUNTIME_SRC — the LLVM backend, parser and REPL that make up the
+# rest of `eshkol-static` — is linked only into the eshkol-run/eshkol-repl
+# executables, so compiling it PIC would pay the cost with no beneficiary.
+#
+# Accepted consequence: these objects are also members of `eshkol-static`, so
+# the compiler's own runtime half becomes PIC too.  The alternative — a second,
+# PIC-only copy of the runtime archive — was rejected: it doubles runtime
+# compile time and adds a permanent second artifact to build, install, discover
+# (resolve_runtime_archive) and ship, to avoid a cost that is small on x86-64
+# global-data access and already largely paid, since these objects are linked
+# into executables built -fPIE and most Linux distributions default to PIE.
+set(ESHKOL_RUNTIME_PIC_OBJ_TARGETS
+    eshkol-runtime-core-obj
+    eshkol-runtime-hosted-obj
+    eshkol-backend-runtime-obj
+    eshkol-runtime-support-obj
+)
+foreach(_eshkol_pic_target IN ITEMS
+    eshkol-vm-unity-obj
+    eshkol-gpu-runtime-obj
+    eshkol-xla-runtime-obj
+)
+    if(TARGET ${_eshkol_pic_target})
+        list(APPEND ESHKOL_RUNTIME_PIC_OBJ_TARGETS ${_eshkol_pic_target})
+    endif()
+endforeach()
+foreach(_eshkol_pic_target IN LISTS ESHKOL_RUNTIME_PIC_OBJ_TARGETS)
+    set_target_properties(${_eshkol_pic_target} PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+endforeach()
+
 set(ESHKOL_RUNTIME_OBJECTS
   $<TARGET_OBJECTS:eshkol-runtime-core-obj>
   $<TARGET_OBJECTS:eshkol-runtime-hosted-obj>
@@ -2523,7 +2573,11 @@ add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
-          $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+          # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
+          # linked into every user binary and loaded by the REPL JIT, so this
+          # edge wants a relocatable object, not the loadable shared library
+          # `--shared-lib` produces on its own.
+          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
@@ -3576,6 +3630,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 900
                 PASS_REGULAR_EXPRESSION "PASS: debug_info_emission_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/shared_lib_abi_test.sh")
+        # `--shared-lib` promises a library a C host can dlopen and call. Eshkol's
+        # internal calling convention returns eshkol_tagged_value_t as an LLVM
+        # first-class struct of five fields, which the backend flattens into one
+        # register per field -- NOT the platform C ABI for the same 16-byte
+        # struct. Every exported return value and every tagged argument was
+        # therefore corrupted (a function returning 42 handed the caller the
+        # flags byte, 16). Asserts the boundary through two independent
+        # consumers -- a clang harness using the real public struct and python
+        # ctypes -- at -O0 and -O2, in both the return and argument directions,
+        # with a negative control that must observe the corruption on the
+        # unwrapped internal-convention symbol.
+        add_test(
+            NAME shared_lib_abi_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/shared_lib_abi_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(shared_lib_abi_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: shared_lib_abi_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND
@@ -5165,6 +5246,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
 
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
+
+        # A program that requires an agent module links this archive alongside
+        # libeshkol-runtime.a, including when the output is a `--shared-lib`
+        # shared object — so it needs the same position independence, for the
+        # same ELF reason.  Its bundled third-party dependencies
+        # (eshkol-agent-sqlite3, eshkol-agent-tree-sitter-grammars, Yoga) already
+        # set this; the Eshkol-owned half was the gap.
+        set_target_properties(eshkol-agent-ffi PROPERTIES
+            POSITION_INDEPENDENT_CODE ON)
 
         if(APPLE)
             target_compile_options(eshkol-agent-ffi PRIVATE

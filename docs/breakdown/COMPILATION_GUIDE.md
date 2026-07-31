@@ -281,7 +281,7 @@ Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 | `--compile-only` | `-c` | Compile to object file only (no linking) |
 | `--emit-object` | | Alias for `--compile-only`; intended for build-system integrations |
-| `--shared-lib` | `-s` | Compile as a shared library |
+| `--shared-lib` | `-s` | Link a loadable shared library; add `-c`/`--emit-object` for a library-mode object instead |
 | `-fPIC` | | Accepted for build-system compatibility when emitting objects |
 | `-I <dir>` | | Add a source/module search path for `load` and `require` resolution |
 | `-D NAME[=VALUE]` | | Accepted for build-system compatibility; defines are not source semantics yet |
@@ -333,7 +333,11 @@ This contract is intentionally CMake-friendly:
 - `--emit-object` is accepted as an alias for `--compile-only`.
 - `-o build/foo.o` creates exactly `build/foo.o`; Eshkol does not append a
   second `.o` suffix.
-- `--shared-lib` emits library-style code with no generated `main`.
+- `--shared-lib` emits library-style code with no generated `main`. Paired with
+  `--emit-object` (as above) it stops at the object and keeps Eshkol's internal
+  calling convention, which is what a build system linking Eshkol objects
+  wants. On its own it links a loadable shared library whose exports use the
+  platform C ABI instead.
 - `-I dir` extends Eshkol's module/source search path.
 - `-D NAME[=VALUE]` is accepted for compatibility with existing build rules,
   but preprocessor-style defines are not part of Eshkol source semantics yet.
