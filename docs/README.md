@@ -15,7 +15,7 @@ pages and lets them fan out to their siblings.
 - [QUICKSTART](QUICKSTART.md) — 15-minute hands-on tutorial (lists to closures to tensors to gradients)
 - [Tutorials index](tutorials/README.md) — all 27 tutorials, from first program through full projects
 - [First 5 Minutes](tutorials/00_FIRST_5_MINUTES.md) — install, hello world, five wow moments
-- [Examples](../examples/README.md) — thirteen runnable programs (AD, parallelism, consciousness engine, streaming, simulation)
+- [Examples](../examples/README.md) — twenty runnable programs (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry)
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions
 - [Getting Started (breakdown)](breakdown/GETTING_STARTED.md) — installation and first programs, implementation-level detail
 - [Overview](breakdown/OVERVIEW.md) — design philosophy and competitive positioning, start here for "why Eshkol"
@@ -25,13 +25,13 @@ pages and lets them fan out to their siblings.
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.4-evolve
-- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet, 555+ builtins
+- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,025-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
-- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (58 modules, 638 symbols)
+- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (61 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
-- [Design Document](DESIGN.md) — v1.3.0-evolve design document
+- [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
 - [Feature Matrix](FEATURE_MATRIX.md) — implementation status table
-- [Known Issues](KNOWN_ISSUES.md) — current limitations and v1.3+ items
+- [Known Issues](KNOWN_ISSUES.md) — current limitations and tracked open items
 - [Scheme Compatibility](breakdown/SCHEME_COMPATIBILITY.md) — R7RS compliance and migration guide
 - [Function Composition](breakdown/FUNCTION_COMPOSITION.md) — closures, lambda registry, mutable captures
 - [Long-Running Loops](LONG_RUNNING_LOOPS.md) — tail-call and loop behaviour for long-lived processes
@@ -59,7 +59,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 64-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 951 rows (578 `vm-supported`, 44 `native-only-justified`, 329 `gap`), differential 140/140
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`
@@ -143,7 +143,7 @@ pages and lets them fan out to their siblings.
 
 ## Design and Internals
 
-- [Architecture deep-dives index](breakdown/README.md) — per-subsystem technical breakdowns (37 docs): compiler architecture, type system, memory management, closures, AD, consciousness engine, ML, signal processing, GPU, parallel computing, exact arithmetic, continuations, XLA, bytecode VM, module system, REPL JIT, web platform, package manager, developer tools, and more
+- [Architecture deep-dives index](breakdown/README.md) — per-subsystem technical breakdowns (36 docs): compiler architecture, type system, memory management, closures, AD, consciousness engine, ML, signal processing, GPU, parallel computing, exact arithmetic, continuations, XLA, bytecode VM, module system, REPL JIT, web platform, package manager, developer tools, and more
 - [Components documentation index](components/README.md) — component-level implementation pointers (parser, macro expander, type checker, and more)
 - [Master Architecture](ESHKOL_V1_ARCHITECTURE.md) — comprehensive technical architecture from the full codebase analysis
 - [Compiler Architecture (breakdown)](breakdown/COMPILER_ARCHITECTURE.md) — LLVM backend, 21 specialized codegen modules, JIT system
@@ -160,7 +160,7 @@ pages and lets them fan out to their siblings.
 ## Testing and Quality Gates
 
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 140/140
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):
@@ -176,8 +176,8 @@ Adversarial-campaign pillar harnesses (`tests/`):
 
 Engineering reports (`docs/reports/`) — see the [reports directory index](reports/README.md) for scope; individual reports:
 
-- [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable
-- [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a)
+- [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable (88/88 probes)
+- [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a): 34/34 AGREE against chibi-scheme 0.12.0
 - [Sanitizer Fuzz Report](reports/SANITIZER_FUZZ_REPORT.md)
 - [Metamorphic Report](reports/METAMORPHIC_REPORT.md) — P7c property-style harness results
 - [Sweep Gate Report](reports/SWEEP_GATE_REPORT.md) — full gate matrix re-verification

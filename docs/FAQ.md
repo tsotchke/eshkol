@@ -110,7 +110,7 @@ Eshkol compiles to native machine code via LLVM. Arithmetic and tensor operation
 
 ### Does Eshkol use garbage collection?
 
-No. Eshkol uses Ownership-Aware Lexical Regions (OALR) — arena-based allocation where memory is freed deterministically at scope boundaries. This provides microsecond-scale worst-case guarantees suitable for real-time systems. As of v1.3.4, a resident tick/daemon loop reclaims its per-iteration garbage automatically — even when it mutates persistent state every iteration — so RSS stays flat without any explicit `with-region` annotation (`with-region` remains available for scratch regions but is no longer required).
+No. Eshkol uses Ownership-Aware Lexical Regions (OALR) — arena-based allocation where memory is freed deterministically at scope boundaries. This provides microsecond-scale worst-case guarantees suitable for real-time systems. As of v1.3.4, a resident tick/daemon loop reclaims its per-iteration garbage automatically — even when it mutates persistent state every iteration — so RSS stays flat without any explicit `with-region` annotation (`with-region` remains available for scratch regions but is no longer required). One deliberate exclusion: a loop body containing a `gradient` op, a `set!` or a `tensor-set!` is disqualified from the automatic nursery by design, and an AD training step trips all three — scope those steps with `with-region` or a `region-open`/`region-close` handle.
 
 ### How does GPU dispatch work?
 
@@ -143,4 +143,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,500+ lines compiled to a 220,306-byte (about 215 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,650+ lines compiled to a 226,764-byte (about 221 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.

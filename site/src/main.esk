@@ -406,7 +406,7 @@
           (web-add-class sub "hero-sub"))
 
         ;; Proof strip: four release-gate numbers, one canonical form each
-        (let ((proof (create-text "p" "1,078 / 1,078 executable language surface   ·   8 differential operators   ·   zero GC   ·   936 parity rows, published" left)))
+        (let ((proof (create-text "p" "1,091 / 1,091 executable language surface   ·   8 differential operators   ·   zero GC   ·   951 parity rows, published" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -611,7 +611,7 @@
 
       (render-feature-card grid
         "Complete executable evidence"
-        "1,078 of 1,078 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,078, so the count can only grow.")
+        "1,091 of 1,091 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,091, so the count can only grow.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -624,7 +624,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "936 parity rows, published: 562 VM-supported, 45 native-only by design, 329 gaps. 17 of those gaps are verified behavioral divergences, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB, and the hosted VM surface passes 53/53.")
+        "951 parity rows, published: 578 VM-supported, 44 native-only by design, 329 gaps. 17 of those gaps are verified behavioral divergences, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 140/140 across native LLVM, VM source, and emitted ESKB.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -641,7 +641,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest 76/76, the 44-suite aggregate, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100/100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest 140/140, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
 
     section))
 

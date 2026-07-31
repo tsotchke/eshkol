@@ -139,6 +139,8 @@ ESHKOL_VM_NO_DISASM=1 ./test_vm
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
+# CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
+# or the bundle can diverge from the checked-in artifact.
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
   -s EXPORTED_RUNTIME_METHODS=&#39;[&quot;ccall&quot;,&quot;cwrap&quot;]&#39; \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
@@ -410,22 +412,24 @@ consumer-hardening correctness wave (automatic per-iteration
 reclamation, race-free <code>parallel-map</code>, exact gradients
 through every callable form, R7RS exactness contagion on both engines).
 We welcome contributions for upcoming releases:</p>
-<h3 id="immediate-priorities-v1.4-connection---july-2026">Immediate
-Priorities (v1.4-connection - July 2026)</h3>
+<h3 id="immediate-priorities-v1.4-connection">Immediate Priorities
+(v1.4-connection)</h3>
 <ol type="1">
 <li><strong>TCP/UDP Sockets</strong>: Linear resource types with
 guaranteed close</li>
 <li><strong>TLS/SSL</strong>: Via system libraries</li>
-<li><strong>Non-Blocking I/O</strong>: Event loop (epoll/kqueue)</li>
 <li><strong>HTTP Client</strong>: Built on sockets + TLS</li>
 <li><strong>Linear Types for Handles</strong>:
 <code>open -&gt; borrowed -&gt; closed</code> with compile-time
 tracking</li>
 <li><strong>Debugger</strong>: REPL step-through with breakpoints +
 variable inspection</li>
-<li><strong>Documentation Generator</strong>: <code>eshkol-doc</code>
-from docstrings</li>
 </ol>
+<p>Already delivered ahead of this list: the portable event loop (kqueue
+/ epoll / IOCP) shipped in v1.3.4-evolve, <code>eshkol-doc</code>
+shipped in v1.3.2-evolve, and the linear-type machinery landed in
+v1.3.4-evolve as the linear <code>Qubit</code> type — extending it to
+handles is what remains.</p>
 <h3 id="near-term-v1.5-intelligence---august-2026">Near-Term
 (v1.5-intelligence - August 2026)</h3>
 <ol type="1">

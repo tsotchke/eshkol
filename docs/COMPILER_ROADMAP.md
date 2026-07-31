@@ -21,11 +21,21 @@ research-grade Noesis.
 
 ---
 
-## Current status (verified 2026-05-20)
+## Current status (verified 2026-07-31)
 
 **Branch**: `master`
-**Last shipped release**: v1.2.1-scale (2026-05-20)
-**Base release**: v1.2.0-scale (2026-05-01).
+**Last shipped release**: v1.3.4-evolve (2026-07-31)
+**Base release**: v1.3.3-evolve (2026-07-16).
+**Status**: v1.3.4-evolve cut — a resident-correctness release followed by a
+consumer-hardening correctness wave. Release gates measured on the cut:
+aggregate suite 45/45 suites and 770 tests, CTest 140/140, executable language
+coverage 1,091/1,091 (100.0%), SICP 88/88, reference differential 34/34 AGREE
+vs chibi-scheme 0.12.0, VM parity 140/140, ICC readiness 100 (`ready`).
+
+The v1.2.x record below is retained as the history of that milestone.
+
+### v1.2.1-scale closeout (historical, 2026-05-20)
+
 **Status**: v1.2.1-scale closeout complete — all M0 audit blockers cleared.
 
 Delivered in the v1.2.x closeout:
