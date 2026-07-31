@@ -20,6 +20,7 @@
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
 #include <string>
+#include <unordered_set>
 
 namespace eshkol {
 
@@ -494,6 +495,32 @@ public:
     void setDisplayValueFunc(llvm::Function* func) {
         display_value_func_ = func;
     }
+
+    /**
+     * Share the set of top-level names that are defined more than once in
+     * this compilation unit (R7RS 5.3.1 redefinition).
+     *
+     * `display` normally short-circuits a bare variable to the `<name>_sexpr`
+     * global so a procedure prints its source form. That side table is keyed
+     * by name only, with no notion of which definition is current, so for a
+     * redefined name it prints a stale definition -- including printing a
+     * procedure body for a name now bound to a number. Those names skip the
+     * short-circuit and display the runtime value, which reaches the same
+     * source form through the lambda registry keyed by the live function
+     * pointer.
+     */
+    void setRedefinedTopLevelNames(const std::unordered_set<std::string>* names) {
+        redefined_toplevel_names_ = names;
+    }
+
+    /** @return true if @p name is redefined at top level (see above). */
+    bool isRedefinedTopLevelName(const std::string& name) const {
+        return redefined_toplevel_names_ &&
+               redefined_toplevel_names_->find(name) != redefined_toplevel_names_->end();
+    }
+
+private:
+    const std::unordered_set<std::string>* redefined_toplevel_names_ = nullptr;
 };
 
 } // namespace eshkol

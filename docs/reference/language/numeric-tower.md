@@ -40,6 +40,13 @@ Conversions: `exact->inexact` (a.k.a. `inexact`), `inexact->exact` (a.k.a. `exac
 > **Display convention:** an inexact value with no fractional part prints without a
 > decimal point — `(+ 1.0 2)` prints `3`, and `(+ 1/2 0.5)` prints `1` — but it is
 > still inexact (`(inexact? (+ 1/2 0.5))` ⇒ `#t`).
+>
+> **Negative zero is the one exception:** `-0.0` prints `-0.0`, not `-0`. `-0`
+> would read back as the *exact* integer zero, which has no sign, so both the
+> inexactness and the sign bit would be lost — and the sign is observable
+> (`(/ 1.0 -0.0)` ⇒ `-inf.0`, `(/ 1.0 0.0)` ⇒ `+inf.0`). Positive zero prints
+> `0` like every other integral-valued double, since reading `0` back recovers
+> the same numeric value.
 
 > **Shortest round-trip printing (R7RS 6.2.6):** `display`, `write`, and
 > `number->string` emit the **shortest decimal string that reads back as the

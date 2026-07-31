@@ -34,13 +34,26 @@ cat > "$mod_file" <<'ESK'
 (provide pub-fn)
 (define pub-fn (lambda () 'public))
 ;; Private extern + private function that uses it. Pre-fix: crash here.
-;; strlen takes one argument. Call it with one: this fixture exists to exercise
-;; the symbol-rename pass over a private extern, not to compile an ill-formed
-;; call. It previously passed zero arguments, so every run printed
+;;
+;; The extern's signature must MATCH the C symbol's: codegen already declares
+;; `strlen` itself (i64 strlen(ptr)), and the extern-conflict path reuses that
+;; declaration rather than creating a second one — so the reused 1-parameter
+;; shape is what a call site sees. This fixture used to declare
+;; `(extern void some-c-helper :real strlen)` and call it with zero arguments;
+;; the 0-vs-1 mismatch was quietly padded with a null argument until arity
+;; errors became fatal (ESH-0362), which turned this fixture — not the behavior
+;; it guards — into the failure. Declaring the real signature keeps the guard
+;; (a private extern plus a private define that references it, in a precompiled
+;; module) exactly as it was.
+;;
+;; Same defect ESH-0373 records from the driver side: every run printed
 ;; "error: Arity mismatch: some-c-helper expects 1 arguments but got 0" and the
-;; driver emitted a binary anyway -- the test asserted rc=0 and went green off a
-;; diagnosed program.
-(extern void some-c-helper :real strlen)
+;; driver emitted a binary anyway, so this test asserted rc=0 and went green off
+;; a diagnosed program. Declaring `ptr` here — rather than leaving the parameter
+;; list empty and depending on the reuse path to supply the shape — states the
+;; one-argument contract the call site below already honours, so the fixture is
+;; well-formed whether or not the declaration is reused.
+(extern i64 some-c-helper ptr :real strlen)
 (define (priv-helper) (some-c-helper "x"))
 ESK
 use_file="$tmp_dir/extern_rename_test_use.esk"

@@ -1,5 +1,6 @@
 ;; Type System Test: Type errors detected inside nested expressions
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: Type error:
 
 ;; Type checker must synthesize args of display/begin to find nested errors

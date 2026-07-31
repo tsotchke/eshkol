@@ -9,7 +9,9 @@
 #include <eshkol/types/hott_types.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
+#include <cctype>
 #include <functional>
+#include <map>
 #include <stdexcept>
 
 namespace eshkol::hott {
@@ -141,6 +143,11 @@ void TypeEnvironment::initializeBuiltinTypes() {
     registerBuiltinType(BigInt.id, "BigInt", Universe::U0, TYPE_FLAG_EXACT,
                         RuntimeRep::Pointer, Integer);  // Heap-allocated arbitrary precision
 
+    // Exact rationals: R7RS exact non-integer ratios, stored as heap
+    // numerator/denominator pairs (HEAP_SUBTYPE_RATIONAL, core/rational.h).
+    registerBuiltinType(Rational.id, "Rational", Universe::U0, TYPE_FLAG_EXACT,
+                        RuntimeRep::Pointer, Number);
+
     // Real branch: inexact numbers
     registerBuiltinType(Real.id, "Real", Universe::U0, 0,
                         RuntimeRep::Float64, Number);
@@ -228,54 +235,132 @@ void TypeEnvironment::initializeBuiltinTypes() {
     registerBuiltinType(Subtype.id, "<:", Universe::U2, TYPE_FLAG_PROOF,
                         RuntimeRep::Erased);
 
-    // ===== Add common aliases =====
-    name_to_id_["int"] = Int64;
-    name_to_id_["i8"] = Int8;
-    name_to_id_["int8"] = Int8;
-    name_to_id_["i16"] = Int16;
-    name_to_id_["int16"] = Int16;
-    name_to_id_["i32"] = Int32;
-    name_to_id_["int32"] = Int32;
-    name_to_id_["i64"] = Int64;
-    name_to_id_["int64"] = Int64;
-    name_to_id_["integer"] = Int64;
-    name_to_id_["isize"] = ISize;
-    name_to_id_["u8"] = UInt8;
-    name_to_id_["uint8"] = UInt8;
-    name_to_id_["u16"] = UInt16;
-    name_to_id_["uint16"] = UInt16;
-    name_to_id_["u32"] = UInt32;
-    name_to_id_["uint32"] = UInt32;
-    name_to_id_["u64"] = UInt64;
-    name_to_id_["uint64"] = UInt64;
-    name_to_id_["usize"] = USize;
-    name_to_id_["float"] = Float64;
-    name_to_id_["float64"] = Float64;
-    name_to_id_["double"] = Float64;
-    name_to_id_["float32"] = Float32;
-    name_to_id_["string"] = String;
-    name_to_id_["str"] = String;
-    name_to_id_["bool"] = Boolean;
-    name_to_id_["boolean"] = Boolean;
-    name_to_id_["char"] = Char;
-    name_to_id_["number"] = Number;
-    name_to_id_["natural"] = Natural;
-    name_to_id_["nat"] = Natural;
-    name_to_id_["real"] = Real;
-    name_to_id_["list"] = List;
-    name_to_id_["vector"] = Vector;
-    name_to_id_["tensor"] = Tensor;
-    name_to_id_["ptr"] = Pointer;
-    name_to_id_["pointer"] = Pointer;
-    name_to_id_["null"] = Null;
-    name_to_id_["nil"] = Null;
-    name_to_id_["symbol"] = Symbol;
+    // ===== Bare type-name spellings =====
+    // Driven from the ONE canonical registry (builtinTypeSpellings()) rather
+    // than a hand-written list here. The parser resolves the same registry, so
+    // every name a program may spell is a name this environment can resolve —
+    // the two can no longer drift apart (see the registry's own comment).
+    for (const auto& spelling : builtinTypeSpellings()) {
+        if (spelling.id.id == BuiltinTypes::Invalid.id) {
+            continue;  // Spelling with a dedicated HoTT kind but no type node.
+        }
+        name_to_id_[spelling.name] = spelling.id;
+    }
+}
 
-    // Autodiff type aliases
-    name_to_id_["dual"] = DualNumber;
-    name_to_id_["dual-number"] = DualNumber;
-    name_to_id_["ad-node"] = ADNode;
-    name_to_id_["adnode"] = ADNode;
+/**
+ * @brief The one canonical registry of bare type-name spellings.
+ *
+ * Ordering is documentation only: numeric tower, text, other ground types,
+ * containers and constructors, autodiff, resources. Every entry whose `id` is
+ * not Invalid is registered into TypeEnvironment::name_to_id_ by
+ * initializeBuiltinTypes() above.
+ */
+const std::vector<BuiltinTypeSpelling>& builtinTypeSpellings() {
+    using namespace BuiltinTypes;
+    static const std::vector<BuiltinTypeSpelling> table = {
+        // ----- Numeric tower -----
+        {"number",      HOTT_TYPE_NUMBER,  Number},
+        {"integer",     HOTT_TYPE_INTEGER, Int64},
+        {"int",         HOTT_TYPE_INTEGER, Int64},
+        {"i8",          HOTT_TYPE_VAR,     Int8},
+        {"int8",        HOTT_TYPE_VAR,     Int8},
+        {"i16",         HOTT_TYPE_VAR,     Int16},
+        {"int16",       HOTT_TYPE_VAR,     Int16},
+        {"i32",         HOTT_TYPE_VAR,     Int32},
+        {"int32",       HOTT_TYPE_VAR,     Int32},
+        {"i64",         HOTT_TYPE_INTEGER, Int64},
+        {"int64",       HOTT_TYPE_INTEGER, Int64},
+        {"isize",       HOTT_TYPE_VAR,     ISize},
+        {"u8",          HOTT_TYPE_VAR,     UInt8},
+        {"uint8",       HOTT_TYPE_VAR,     UInt8},
+        {"u16",         HOTT_TYPE_VAR,     UInt16},
+        {"uint16",      HOTT_TYPE_VAR,     UInt16},
+        {"u32",         HOTT_TYPE_VAR,     UInt32},
+        {"uint32",      HOTT_TYPE_VAR,     UInt32},
+        {"u64",         HOTT_TYPE_VAR,     UInt64},
+        {"uint64",      HOTT_TYPE_VAR,     UInt64},
+        {"usize",       HOTT_TYPE_VAR,     USize},
+        {"natural",     HOTT_TYPE_VAR,     Natural},
+        {"nat",         HOTT_TYPE_VAR,     Natural},
+        {"bigint",      HOTT_TYPE_VAR,     BigInt},
+        {"rational",    HOTT_TYPE_VAR,     Rational},
+        {"real",        HOTT_TYPE_REAL,    Real},
+        {"float",       HOTT_TYPE_REAL,    Float64},
+        {"double",      HOTT_TYPE_REAL,    Float64},
+        {"float64",     HOTT_TYPE_REAL,    Float64},
+        {"float32",     HOTT_TYPE_VAR,     Float32},
+        {"complex",     HOTT_TYPE_VAR,     Complex},
+
+        // ----- Text -----
+        {"string",      HOTT_TYPE_STRING,  String},
+        {"str",         HOTT_TYPE_STRING,  String},
+        {"char",        HOTT_TYPE_CHAR,    Char},
+        {"character",   HOTT_TYPE_CHAR,    Char},
+        {"symbol",      HOTT_TYPE_SYMBOL,  Symbol},
+
+        // ----- Other ground types -----
+        {"boolean",     HOTT_TYPE_BOOLEAN, Boolean},
+        {"bool",        HOTT_TYPE_BOOLEAN, Boolean},
+        {"null",        HOTT_TYPE_NULL,    Null},
+        {"nil",         HOTT_TYPE_NULL,    Null},
+        {"any",         HOTT_TYPE_ANY,     Value},
+        {"value",       HOTT_TYPE_ANY,     Value},
+        // `nothing`/`never` is the bottom type: a HoTT kind with no type node,
+        // so it carries Invalid and is never registered as a name.
+        {"nothing",     HOTT_TYPE_NOTHING, Invalid},
+        {"never",       HOTT_TYPE_NOTHING, Invalid},
+
+        // ----- Containers and constructors, written bare (element type
+        // ----- unspecified; `(vector integer)` is the parameterised form) -----
+        {"list",        HOTT_TYPE_VAR,     List},
+        {"vector",      HOTT_TYPE_VAR,     Vector},
+        {"tensor",      HOTT_TYPE_VAR,     Tensor},
+        {"pair",        HOTT_TYPE_VAR,     Pair},
+        {"procedure",   HOTT_TYPE_VAR,     Function},
+        {"closure",     HOTT_TYPE_VAR,     Closure},
+        {"hash-table",  HOTT_TYPE_VAR,     HashTable},
+        {"hashtable",   HOTT_TYPE_VAR,     HashTable},
+        {"ptr",         HOTT_TYPE_VAR,     Pointer},
+        {"pointer",     HOTT_TYPE_VAR,     Pointer},
+
+        // ----- Autodiff -----
+        {"dual",        HOTT_TYPE_VAR,     DualNumber},
+        {"dual-number", HOTT_TYPE_VAR,     DualNumber},
+        {"ad-node",     HOTT_TYPE_VAR,     ADNode},
+        {"adnode",      HOTT_TYPE_VAR,     ADNode},
+
+        // ----- Linear resources -----
+        {"handle",      HOTT_TYPE_VAR,     Handle},
+        {"buffer",      HOTT_TYPE_VAR,     Buffer},
+        {"stream",      HOTT_TYPE_VAR,     Stream},
+        {"qubit",       HOTT_TYPE_VAR,     Qubit},
+    };
+    return table;
+}
+
+const BuiltinTypeSpelling* lookupBuiltinTypeSpelling(const std::string& name) {
+    // Spellings are stored lowercase; type names are case-insensitive in
+    // Eshkol source (`Integer` and `integer` denote the same type), which is
+    // also what TypeEnvironment::lookupType() assumes.
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    static const std::map<std::string, const BuiltinTypeSpelling*> index = [] {
+        std::map<std::string, const BuiltinTypeSpelling*> m;
+        for (const auto& spelling : builtinTypeSpellings()) {
+            m[spelling.name] = &spelling;
+        }
+        return m;
+    }();
+
+    auto it = index.find(lower);
+    return (it != index.end()) ? it->second : nullptr;
+}
+
+bool isBuiltinTypeName(const std::string& name) {
+    return lookupBuiltinTypeSpelling(name) != nullptr;
 }
 
 /**

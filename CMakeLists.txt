@@ -3053,6 +3053,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # R7RS 5.3.1: a later top-level define wins. The regression covers, on both
+    # the JIT and the AOT lane: value-then-procedure, procedure-then-value,
+    # procedure-then-procedure at the same and at a different arity, a forward
+    # reference from a body compiled before the redefinition (tail and non-tail),
+    # a call written between the two definitions seeing the earlier one, and a
+    # self-recursive redefinition. Before the fix the first case died with
+    # "variable 'g' is not a procedure", the forward references froze on the
+    # first definition, and the intervening call ran the later one.
+    add_test(
+        NAME toplevel_redefinition_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(toplevel_redefinition_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot'"
+    )
+    set_tests_properties(toplevel_redefinition_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
+
+    # R7RS 5.3.1, the other direction: once a procedure name has been redefined
+    # to a number, calling it must be REJECTED, not silently dispatched to the
+    # stale procedure. The program is expected to die, so the shell swallows the
+    # exit status and the assertion is on the diagnostic; UNREACHABLE is printed
+    # only if the call was accepted.
+    add_test(
+        NAME toplevel_redefinition_not_procedure_runtime_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_not_procedure_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+
     # Tape-retained AD nodes vs. per-iteration reclamation.
     #
     # ESH-0214e runs an escape-analysed loop body inside a nursery region that is
@@ -3228,6 +3284,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Every tensor operand is classified by its runtime tag before the op reads
+    # the struct: a 1-D data operand accepts a numeric vector/list and coerces,
+    # an operand written in place and a matrix operand reject a collection, and
+    # an axis that addresses no reducible dimension raises. Before this, each of
+    # these was a SIGSEGV or a fabricated value — see the test header for the
+    # measured before-values. Gated in both JIT and AOT.
+    add_test(
+        NAME tensor_operand_classification_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/tensor_operand_classification_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tensor_operand_classification_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
     # boundary coercion used to reinterpret the tagged data field, so a
     # HEAP-tagged exact rational/bignum point was differentiated at its own
@@ -3297,6 +3370,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "TEST: Empty collection edge cases"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Runtime guards across the tensor/complex/AD surface must raise catchably
+    # rather than being optimized away. Two of these cases were hard SIGSEGVs and
+    # one returned a matrix fabricated from out-of-bounds reads, so the
+    # `fatal signal` clause in FAIL_REGULAR_EXPRESSION is load-bearing here.
+    add_test(
+        NAME codegen_guard_raise_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/codegen_guard_raise_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(codegen_guard_raise_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "error:|LLVM module verification failed|fatal signal")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/v1_3_smoke_features_test.esk")
         add_test(
             NAME v1_3_smoke_features_runtime_smoke
@@ -3370,6 +3458,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 180
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh")
+        # ESH-0362 / ESH-0363 (found during FFI-boundary hardening): the two
+        # fail-open cells at the interpreter and the FFI boundary must stay
+        # closed on BOTH paths. An arity error is fatal under -r AND AOT (no
+        # null binding, no binary written); a wrong-typed pointer argument
+        # raises a catchable type error instead of being dereferenced; and the
+        # correctly-called spawn family still runs a real child end to end.
+        # See lib/backend/llvm_codegen.cpp (arity sites + emitFfiPointerArgGuard
+        # + replSlotArityMismatch) and lib/agent/subprocess.esk.
+        add_test(
+            NAME ffi_boundary_fail_open_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(ffi_boundary_fail_open_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: ffi_boundary_fail_open_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND

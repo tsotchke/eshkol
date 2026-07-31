@@ -123,7 +123,7 @@ cadr	vm-supported
 call-with-input-file	gap	port/file IO surface missing in VM
 call-with-output-file	gap	port/file IO surface missing in VM
 call-with-port	gap	port/file IO surface missing in VM
-car	vm-supported	
+car	vm-supported	the operation is verified; a user top-level (define (car x) ...) shadowing it is IGNORED because compile_form() claims the spelling for OP_CAR before local resolution, where native routes to the user's define (audit Bug G) — R7RS 5.3.1 shadowing gap, needs the user-scope check ahead of the whole VM dispatch chain (found/builtin_shadow_ignored_by_opcode_dispatch.esk)
 causal-mask	gap	ml faculty has no VM fid coverage
 cbrt	gap	no VM name binding
 cdaar	vm-supported	

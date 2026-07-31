@@ -1,5 +1,6 @@
 ;; Type System Test: Strict mode detects type mismatch
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: Type error: argument 1
 ;; EXPECT-STDERR: expected Number, got String
 

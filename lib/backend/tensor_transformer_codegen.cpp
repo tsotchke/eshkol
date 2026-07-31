@@ -2394,7 +2394,11 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
 
     // Guard: FFN requires a rank-2 first weight matrix. Was printf+exit on
     // rank >= 2 (uncatchable, and rank 3+ silently misread d_ff); now an exact
-    // rank check raising a catchable condition.
+    // rank check raising a catchable condition. The guard-sweep's inline
+    // emitRaiseFmt form is deliberately NOT used here: this site's guard is
+    // already the catchable idiom, and emitRankGuard's exact-equality predicate
+    // additionally closes the rank-3 misread that a `>= 2` test let through.
+    // Same shared helper as the ten sibling shape guards in this file.
     emitRankGuard(w1_ndim, 2,
                   "feed-forward: W1 must be a rank-2 (d-model, d-ff) matrix",
                   "ffn_w1rank");
@@ -2889,7 +2893,9 @@ llvm::Value* TensorCodegen::embedding(const eshkol_operations_t* op) {
     // Guard: embedding requires a rank-2 weight matrix. This used to accept any
     // rank >= 2 and then read dims[1] as d_model, silently misinterpreting a 3-D
     // operand; and it reported failure with printf+exit, which no handler can
-    // catch. Both are now a catchable error on an exact rank check.
+    // catch. Both are now a catchable error on an exact rank check — see the
+    // feed-forward guard above for why the exact predicate is kept in preference
+    // to the guard-sweep's `>= 2` inline form.
     emitRankGuard(w_ndim, 2,
                   "embedding: weights must be a rank-2 (vocab-size, d-model) matrix",
                   "emb_wrank");

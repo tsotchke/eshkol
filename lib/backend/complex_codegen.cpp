@@ -103,8 +103,8 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
  *
  * Loads the global arena pointer (declaring it as an external global if not
  * already present in the module), allocates 16 bytes from it, and emits a
- * null-check on the allocation: on failure it prints an error and calls
- * `exit(1)`; on success it stores the complex struct to the new heap slot
+ * null-check on the allocation: on failure it raises a catchable runtime error;
+ * on success it stores the complex struct to the new heap slot
  * and packs the resulting pointer as a tagged value with the
  * ESHKOL_VALUE_COMPLEX type tag.
  *
@@ -142,17 +142,11 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
         llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_.context(), 0)), "alloc_null");
     ctx_.builder().CreateCondBr(is_null, alloc_fail_bb, alloc_ok_bb);
 
-    // Fail path: print error and exit
+    // Fail path: raise a catchable OOM error. The success path stores the
+    // complex struct straight into this pointer, so a dropped check is a store
+    // through null.
     ctx_.builder().SetInsertPoint(alloc_fail_bb);
-    llvm::Function* printf_func = ctx_.lookupFunction("printf");
-    llvm::Function* exit_func = ctx_.lookupFunction("exit");
-    if (printf_func && exit_func) {
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
-            "Error: arena allocation failed for complex number (16 bytes)\n");
-        ctx_.builder().CreateCall(printf_func, {err_msg});
-        ctx_.builder().CreateCall(exit_func, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_.context()), 1)});
-    }
-    ctx_.builder().CreateUnreachable();
+    ctx_.emitRaise("complex number: arena allocation failed (16 bytes)");
 
     // Success path: continue
     ctx_.builder().SetInsertPoint(alloc_ok_bb);
