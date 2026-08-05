@@ -9,6 +9,7 @@
 #include "eshkol/backend/cpu_features.h"
 #include "eshkol/logger.h"
 #include <cstdlib>
+#include <chrono>
 
 // Forward declarations for arena allocation (avoid full include to prevent type conflicts with XLA stubs)
 extern "C" {
@@ -69,6 +70,7 @@ struct CostModelParams {
     // Calibration state
     bool calibrated = false;
     int sample_count = 0;
+    double blas_peak_measured = 0.0;  // high-water achieved GFLOP/s from real GEMMs
 };
 
 static CostModelParams g_cost_model;
@@ -109,9 +111,12 @@ inline DispatchCost estimate_matmul_cost(uint64_t M, uint64_t K, uint64_t N) {
 
     auto& p = g_cost_model;
 
-    // BLAS: good for medium-large matrices, has fixed overhead
+    // BLAS: good for medium-large matrices, has fixed overhead.  Once a real GEMM
+    // has been timed, use the measured peak instead of the compiled-in M-series
+    // default -- the hardcoded 1100 is 2.7x too high on, e.g., a GB10 (~405).
+    double blas_peak = p.calibrated ? p.blas_peak_measured : p.blas_peak_gflops;
     double blas_efficiency = std::min(1.0, elements / p.blas_efficiency_scale);
-    double blas_compute = flops / (p.blas_peak_gflops * blas_efficiency * 1e9) * 1e9;
+    double blas_compute = flops / (blas_peak * blas_efficiency * 1e9) * 1e9;
     double blas_ns = p.blas_overhead_ns + blas_compute;
 
     // GPU: high overhead but massive parallelism for large matrices
@@ -256,6 +261,7 @@ void matmul(const double* A, const double* B, double* C,
     // Simple C = A * B (no transpose, alpha=1, beta=0)
     // A is M x K, B is K x N, C is M x N
     // All row-major
+    auto _t0 = std::chrono::steady_clock::now();
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
                 1.0,  // alpha
@@ -263,6 +269,19 @@ void matmul(const double* A, const double* B, double* C,
                 B, static_cast<int>(N),   // ldb = N for row-major B[K][N]
                 0.0,  // beta
                 C, static_cast<int>(N));  // ldc = N for row-major C[M][N]
+    // Self-calibrate the cost model's BLAS peak from this real GEMM.  Achieved
+    // FLOP/s is the estimate, not a floor, so the high-water replaces the
+    // compiled-in default the moment a real matmul runs on this hardware.
+    double _ns = std::chrono::duration<double, std::nano>(
+                     std::chrono::steady_clock::now() - _t0).count();
+    if (_ns > 0.0) {
+        double _gflops = (2.0 * M * K * N) / _ns;  // 2MKN flops / ns == GFLOP/s
+        if (_gflops > g_cost_model.blas_peak_measured) {
+            g_cost_model.blas_peak_measured = _gflops;
+            g_cost_model.calibrated = true;
+        }
+        g_cost_model.sample_count++;
+    }
 }
 
 // Matmul backward: given C = A @ B, accumulate gradients dA and dB
