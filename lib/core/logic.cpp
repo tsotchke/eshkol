@@ -635,6 +635,22 @@ extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
 
             return current;
         }
+
+        /* Structural unification of cons cells — step 5 of the documented
+         * algorithm: unify the cars, then unify the cdrs under the resulting
+         * substitution.  Without it a nested pattern such as
+         * `(kb-query kb '(edge (node a) ?to))` could only match by pointer
+         * identity, so a sub-list argument never unified. */
+        if (h1->subtype == HEAP_SUBTYPE_CONS && h2->subtype == HEAP_SUBTYPE_CONS) {
+            const eshkol_tagged_value_t* c1 =
+                (const eshkol_tagged_value_t*)(uintptr_t)w1.data.ptr_val;
+            const eshkol_tagged_value_t* c2 =
+                (const eshkol_tagged_value_t*)(uintptr_t)w2.data.ptr_val;
+            eshkol_substitution_t* after_car =
+                eshkol_unify(arena, &c1[0], &c2[0], subst);
+            if (!after_car) return NULL;
+            return eshkol_unify(arena, &c1[1], &c2[1], after_car);
+        }
     }
 
     /* No other cases match -> failure */
@@ -704,22 +720,21 @@ static eshkol_fact_t* fact_from_datum(arena_t* arena,
                                       const eshkol_tagged_value_t* datum,
                                       int depth);
 
-/** @brief Convert one list element into a fact argument, turning a nested
- *         list into a nested fact so structural unification reaches inside. */
+/**
+ * @brief Convert one list element into a fact argument.
+ *
+ * A nested list stays a LIST: unification recurses through cons cells
+ * (eshkol_unify step 5 in API_REFERENCE), so nested patterns unify
+ * structurally without a second representation, and a variable bound to a
+ * sub-term walks back out as the ordinary list the caller wrote.
+ */
 static eshkol_tagged_value_t fact_arg_from_datum(arena_t* arena,
                                                  const eshkol_tagged_value_t* el,
                                                  int depth) {
+    (void)arena; (void)depth;
     eshkol_tagged_value_t out;
     memset(&out, 0, sizeof(out));
     if (!el) { out.type = ESHKOL_VALUE_NULL; return out; }
-    if (depth < FACT_FROM_DATUM_MAX_DEPTH && ESHKOL_IS_CONS_COMPAT(*el)) {
-        eshkol_fact_t* nested = fact_from_datum(arena, el, depth + 1);
-        if (nested) {
-            out.type = ESHKOL_VALUE_HEAP_PTR;
-            out.data.ptr_val = (uint64_t)(uintptr_t)nested;
-            return out;
-        }
-    }
     return canonicalize_logic_var(*el);
 }
 
@@ -1271,12 +1286,83 @@ extern "C" void eshkol_display_value_opts(const eshkol_tagged_value_t* value,
                                            eshkol_display_opts_t* opts);
 extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file);
 
+/* One term formatter for the whole logic surface: substitutions, facts and
+ * the sub-lists inside them all print through eshkol_display_logic_term(),
+ * so a bound value reads the same wherever it appears.  Before this, a
+ * compound binding printed as an opaque `#<heap:0>`. */
+static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file);
+
+/** @brief Print a cons chain as `(a b c)` (or `(a . b)` when improper),
+ *         so a variable bound to a sub-term reads back as the list it
+ *         came from. */
+static void eshkol_display_logic_list(const eshkol_tagged_value_t* tv, void* file) {
+    FILE* f = file ? (FILE*)file : stdout;
+    fprintf(f, "(");
+    const eshkol_tagged_value_t* cur = tv;
+    const eshkol_tagged_value_t* car = NULL;
+    const eshkol_tagged_value_t* cdr = NULL;
+    bool first = true;
+    int guard = 0;
+    while (cons_parts(cur, &car, &cdr) && guard++ < 4096) {
+        if (!first) fprintf(f, " ");
+        first = false;
+        eshkol_display_logic_term(car, file);
+        cur = cdr;
+    }
+    if (cur && cur->type != ESHKOL_VALUE_NULL) {
+        fprintf(f, " . ");
+        eshkol_display_logic_term(cur, file);
+    }
+    fprintf(f, ")");
+}
+
+/** @brief Print one term of the logic surface (a substitution binding, a fact
+ *         argument, or a list element). */
+static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file) {
+    FILE* f = file ? (FILE*)file : stdout;
+    if (!t) { fprintf(f, "()"); return; }
+    switch (t->type) {
+        case ESHKOL_VALUE_INT64:
+            fprintf(f, "%lld", (long long)t->data.int_val);
+            break;
+        case ESHKOL_VALUE_DOUBLE:
+            eshkol_fprint_double(f, t->data.double_val);
+            break;
+        case ESHKOL_VALUE_BOOL:
+            fprintf(f, "%s", t->data.int_val ? "#t" : "#f");
+            break;
+        case ESHKOL_VALUE_LOGIC_VAR:
+            eshkol_display_logic_var(t->data.int_val, file);
+            break;
+        case ESHKOL_VALUE_NULL:
+            fprintf(f, "()");
+            break;
+        case ESHKOL_VALUE_HEAP_PTR:
+            if (t->data.ptr_val) {
+                eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)t->data.ptr_val);
+                if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
+                    fprintf(f, "%s", (const char*)(uintptr_t)t->data.ptr_val);
+                } else if (header->subtype == HEAP_SUBTYPE_FACT) {
+                    eshkol_display_fact(
+                        (const eshkol_fact_t*)(uintptr_t)t->data.ptr_val, file);
+                } else if (header->subtype == HEAP_SUBTYPE_CONS) {
+                    eshkol_display_logic_list(t, file);
+                } else {
+                    fprintf(f, "#<heap:%d>", header->subtype);
+                }
+            } else {
+                fprintf(f, "()");
+            }
+            break;
+        default:
+            fprintf(f, "#<type:%d>", t->type);
+            break;
+    }
+}
+
 /**
  * @brief Print a substitution as `{var -> term, var -> term, ...}` (or `{}` if @p s is NULL).
- * Each bound term is formatted per its tagged type: integers, doubles (via
- * eshkol_fprint_double()), booleans as `#t`/`#f`, nested logic variables,
- * `()` for NULL, interned symbol strings, or a generic `#<heap:N>`/`#<type:N>`
- * placeholder otherwise.
+ * Each bound term is formatted by eshkol_display_logic_term().
  * @param file Destination FILE*, or NULL to write to stdout.
  */
 extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
@@ -1299,47 +1385,7 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
             fprintf(f, "?_%llu", (unsigned long long)ids[i]);
         }
         fprintf(f, " -> ");
-
-        /* Display the bound term */
-        const eshkol_tagged_value_t* term = &terms[i];
-        switch (term->type) {
-            case ESHKOL_VALUE_INT64:
-                fprintf(f, "%lld", (long long)term->data.int_val);
-                break;
-            case ESHKOL_VALUE_DOUBLE:
-                eshkol_fprint_double(f, term->data.double_val);
-                break;
-            case ESHKOL_VALUE_BOOL:
-                fprintf(f, "%s", term->data.int_val ? "#t" : "#f");
-                break;
-            case ESHKOL_VALUE_LOGIC_VAR:
-                eshkol_display_logic_var(term->data.int_val, file);
-                break;
-            case ESHKOL_VALUE_NULL:
-                fprintf(f, "()");
-                break;
-            case ESHKOL_VALUE_HEAP_PTR:
-                if (term->data.ptr_val) {
-                    eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)term->data.ptr_val);
-                    if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
-                        fprintf(f, "%s", (const char*)term->data.ptr_val);
-                    } else if (header->subtype == HEAP_SUBTYPE_FACT) {
-                        /* A nested pattern binds a variable to a compound
-                         * term; print it as the list it was read from
-                         * rather than as an opaque #<heap:13>. */
-                        eshkol_display_fact(
-                            (const eshkol_fact_t*)(uintptr_t)term->data.ptr_val, file);
-                    } else {
-                        fprintf(f, "#<heap:%d>", header->subtype);
-                    }
-                } else {
-                    fprintf(f, "()");
-                }
-                break;
-            default:
-                fprintf(f, "#<type:%d>", term->type);
-                break;
-        }
+        eshkol_display_logic_term(&terms[i], file);
     }
 
     fprintf(f, "}");
@@ -1351,8 +1397,7 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
  * Prints `(fact)` if @p fact is NULL.  A fact with an unset (0) predicate is
  * one built from a datum list with no ground head — `'(1 2 3)`, `'(?x b)` —
  * so it prints as the plain list `(1 2 3)` it came from, with no predicate
- * slot.  Arguments use the same per-type formatting as
- * eshkol_display_substitution().
+ * slot.  Arguments are formatted by eshkol_display_logic_term().
  * @param file Destination FILE*, or NULL to write to stdout.
  */
 extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
@@ -1363,49 +1408,14 @@ extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     }
 
     fprintf(f, "(");
-
-    /* Display predicate */
     if (fact->predicate) {
         fprintf(f, "%s", (const char*)fact->predicate);
     }
 
-    /* Display arguments */
     const eshkol_tagged_value_t* args = FACT_ARGS(fact);
     for (uint32_t i = 0; i < fact->arity; i++) {
         if (i > 0 || fact->predicate) fprintf(f, " ");
-        const eshkol_tagged_value_t* arg = &args[i];
-        switch (arg->type) {
-            case ESHKOL_VALUE_INT64:
-                fprintf(f, "%lld", (long long)arg->data.int_val);
-                break;
-            case ESHKOL_VALUE_DOUBLE:
-                eshkol_fprint_double(f, arg->data.double_val);
-                break;
-            case ESHKOL_VALUE_BOOL:
-                fprintf(f, "%s", arg->data.int_val ? "#t" : "#f");
-                break;
-            case ESHKOL_VALUE_LOGIC_VAR:
-                eshkol_display_logic_var(arg->data.int_val, file);
-                break;
-            case ESHKOL_VALUE_NULL:
-                fprintf(f, "()");
-                break;
-            case ESHKOL_VALUE_HEAP_PTR:
-                if (arg->data.ptr_val) {
-                    eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)arg->data.ptr_val);
-                    if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
-                        fprintf(f, "%s", (const char*)arg->data.ptr_val);
-                    } else {
-                        fprintf(f, "#<heap:%d>", header->subtype);
-                    }
-                } else {
-                    fprintf(f, "()");
-                }
-                break;
-            default:
-                fprintf(f, "#<type:%d>", arg->type);
-                break;
-        }
+        eshkol_display_logic_term(&args[i], file);
     }
 
     fprintf(f, ")");

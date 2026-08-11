@@ -1,0 +1,99 @@
+;; 54_logic_var_kb_query.esk — logic variables and knowledge-base query.
+;;
+;; Task #100 ("Bug A"): the logic-variable representation was split three
+;; ways, so the documented `(kb-query kb '(parent alice ?child))` matched
+;; nothing on any substrate. This row pins the converged contract on native
+;; and on the VM (and, through the same corpus, in WASM):
+;;
+;;   - a ?-prefixed token is a logic variable bare AND inside quoted data;
+;;   - `logic-var?` answers for both spellings and for nothing else;
+;;   - `kb-query` returns a list of SUBSTITUTIONS in KB insertion order;
+;;   - a pattern may be a datum list or a fact, and both make-fact spellings
+;;     build the same fact;
+;;   - `unify` takes (t1 t2 subst), unifies structurally, and fails the
+;;     occurs check;
+;;   - `walk` resolves binding chains and returns a sub-term as a list.
+;;
+;; VALUES, not just absence of a crash: every line below prints a binding, a
+;; count or a resolved term.
+
+;; -- the predicate ---------------------------------------------------------
+(display (logic-var? ?x))   (newline)   ; #t
+(display (logic-var? '?x))  (newline)   ; #t
+(display (logic-var? 'x))   (newline)   ; #f
+(display (logic-var? "?x")) (newline)   ; #f
+(display (logic-var? 42))   (newline)   ; #f
+
+;; -- the documented quoted-list query --------------------------------------
+(define kb (make-kb))
+(kb-assert! kb (make-fact '(parent alice bob)))
+(kb-assert! kb (make-fact '(parent bob charlie)))
+(kb-assert! kb (make-fact '(parent alice diana)))
+
+(display (kb-query kb '(parent alice ?child)))   (newline)
+(display (length (kb-query kb '(parent alice ?child)))) (newline)
+(display (walk ?child (car (kb-query kb '(parent alice ?child))))) (newline)
+(display (kb-query kb '(parent ?p bob)))         (newline)
+(display (kb-query kb '(parent eve ?child)))     (newline)
+(display (null? (kb-query kb '(sibling ?a ?b)))) (newline)
+(display (length (kb-query kb '(parent alice bob)))) (newline)
+(display (length (kb-query kb '(parent alice)))) (newline)
+
+;; -- both fact spellings, and a fact pattern -------------------------------
+(define kb2 (make-kb))
+(kb-assert! kb2 (make-fact 'likes 'alice 'math))
+(kb-assert! kb2 (make-fact '(likes alice physics)))
+(kb-assert! kb2 (make-fact 'likes 'bob 'music))
+(display (kb-count kb2)) (newline)
+(display (kb-query kb2 '(likes alice ?what))) (newline)
+(display (kb-query kb2 (make-fact 'likes 'alice ?what))) (newline)
+(display (make-fact 'p 'a 'b)) (newline)
+(display (make-fact '(p a b))) (newline)
+
+;; -- two variables in one pattern ------------------------------------------
+(define kb3 (make-kb))
+(kb-assert! kb3 (make-fact '(color sky blue)))
+(kb-assert! kb3 (make-fact '(color grass green)))
+(display (kb-query kb3 '(color ?obj ?col))) (newline)
+
+;; -- nested patterns unify structurally ------------------------------------
+(define kb4 (make-kb))
+(kb-assert! kb4 (make-fact '(edge (node a) (node b))))
+(kb-assert! kb4 (make-fact '(edge (node b) (node c))))
+(display (kb-query kb4 '(edge (node a) ?to))) (newline)
+(display (walk ?to (car (kb-query kb4 '(edge (node a) ?to))))) (newline)
+(display (walk ?from (car (kb-query kb4 '(edge (node ?from) (node c)))))) (newline)
+(display (length (kb-query kb4 '(edge (node a) (node c))))) (newline)
+
+;; -- unify and walk --------------------------------------------------------
+(define s1 (unify ?v 42 (make-substitution)))
+(display s1) (newline)
+(display (walk ?v s1)) (newline)
+(display (substitution? s1)) (newline)
+
+(define c1 (unify ?a1 ?b1 (make-substitution)))
+(define c2 (unify ?b1 99 c1))
+(display (walk ?a1 c2)) (newline)
+(display (walk ?unbound c2)) (newline)
+(display (walk 42 c2)) (newline)
+
+(display (unify 42 99 (make-substitution))) (newline)
+(display (unify 'red 'blue (make-substitution))) (newline)
+(display (make-substitution)) (newline)
+
+(define fu (unify (make-fact 'parent ?ma 'bob)
+                  (make-fact 'parent 'alice ?mb)
+                  (make-substitution)))
+(display fu) (newline)
+(display (walk ?ma fu)) (newline)
+(display (walk ?mb fu)) (newline)
+
+;; occurs check: binding a variable into a term containing itself must fail
+(display (unify ?occ (list ?occ) (make-substitution))) (newline)
+(display (unify ?occ2 (list 'f (list 'g ?occ2)) (make-substitution))) (newline)
+(display (substitution? (unify ?occ3 (list 'f 'g) (make-substitution)))) (newline)
+
+;; -- external representations ----------------------------------------------
+(display ?x) (newline)
+(display '?x) (newline)
+(display '(parent alice ?child)) (newline)

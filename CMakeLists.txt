@@ -3017,6 +3017,36 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # Task #100 ("Bug A") guard: the logic-variable representation was split
+    # three ways (KB matcher wanted a "?"-string, unify wanted a raw int id,
+    # logic-var? wanted a heap object nothing built), and a quoted ?x compiles
+    # to a SYMBOL — so the documented `(kb-query kb '(parent alice ?child))`
+    # matched nothing on ANY substrate. This asserts query RESULTS (bindings
+    # returned, multi-solution, no-match, nested patterns, occurs check), not
+    # merely that the program runs. VM/WASM parity for the same contract is
+    # carried by tests/vm_parity/corpus/54_logic_var_kb_query.esk.
+    # Verified on both -r (JIT) and AOT — the AOT half also pins the
+    # name<->id registry surviving the compile/run process boundary.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/logic_var_kb_query_test.esk")
+        add_test(
+            NAME logic_var_kb_query_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/logic_var_kb_query_test.esk"
+        )
+        set_tests_properties(logic_var_kb_query_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: logic variables and kb-query hold one contract"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME logic_var_kb_query_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/logic_var_kb_query_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/logic_var_kb_query_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/logic_var_kb_query_aot'"
+        )
+        set_tests_properties(logic_var_kb_query_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: logic variables and kb-query hold one contract"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # The internal-define ordering contract itself. tests/parser/ is otherwise
     # only run by scripts/run_parser_tests.sh, which judges a test by its exit
     # code — this file used to print its results and an unconditional pass
