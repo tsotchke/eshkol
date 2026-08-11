@@ -274,11 +274,6 @@ block ordinary use.
 - **The attention backward pass is open.** The embedding and Fréchet-mean
   backward passes landed this release with gradient checks; attention's backward
   pass is not yet closed out.
-- **qLLM oracle exporters can crash under the in-process JIT on macOS.** In
-  traced or coverage-instrumented contexts under load, the qLLM oracle's
-  exporters can crash on the in-process JIT lane. This is an **advisory** lane:
-  the AOT lane is unaffected, the exported values are unaffected, and the
-  release gate is 10/10. Under investigation.
 
 **Automatic differentiation**
 - Vector gradient-of-gradient silently returns zeros — use nested scalar
