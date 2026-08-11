@@ -4384,13 +4384,17 @@ static int vm_logic_text_of(VM* vm, Value value, const char** out_text,
  * @brief THE logic-variable predicate for the VM.
  *
  * A value is a logic variable when it is
- *   - a `?`-prefixed symbol   — `?x`, `'?x`, `'(parent alice ?child)`;
- *   - a `?`-prefixed string   — the pre-existing KB spelling, kept so
- *     KBs written against it (and `kb-load`ed data) keep working;
+ *   - a `?`-prefixed SYMBOL — `?x`, `'?x`, `'(parent alice ?child)`, or a
+ *     symbol produced at runtime by `read` / `string->symbol` / `kb-load`;
  *   - a HEAP_LOGIC_VAR heap object — reserved for a first-class VM
  *     logic-variable object; recognised here so the type stays live.
  *
- * The bare name (`?` included) is what gets interned, so `?x` denotes the
+ * A `?`-prefixed STRING is deliberately NOT a logic variable: `"?x"` is a
+ * string, and the native runtime treats it as one.  (The old KB matcher
+ * accepted only that spelling, which is precisely why the documented
+ * symbol spelling never matched.)
+ *
+ * The name — `?` included — is what gets interned, so `?x` denotes the
  * same variable however it was spelled.
  *
  * @return 1 and, if @p out_id is non-NULL, the interned variable id.
@@ -4408,6 +4412,7 @@ static int vm_logic_var_id_of(VM* vm, Value value, uint64_t* out_id) {
     }
 
     if (!vm_logic_text_of(vm, value, &text, &len, &kind)) return 0;
+    if (kind != VM_TERM_KIND_SYMBOL) return 0;
     if (len < 2 || text[0] != '?') return 0;
 
     if (out_id) {

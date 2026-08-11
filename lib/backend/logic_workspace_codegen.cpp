@@ -44,6 +44,9 @@ using llvm::PointerType;
 using llvm::Type;
 using llvm::BasicBlock;
 using llvm::PHINode;
+using llvm::Module;
+using llvm::GlobalVariable;
+using llvm::GlobalValue;
 
 LogicWorkspaceCodegen::LogicWorkspaceCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx), tagged_(tagged) {}
@@ -116,8 +119,65 @@ Value* LogicWorkspaceCodegen::loadResult(Value* slot, const char* name) {
 
 Value* LogicWorkspaceCodegen::codegenLogicVar(const eshkol_operations_t* op) {
     // Pack logic variable as tagged value: type=ESHKOL_VALUE_LOGIC_VAR, data=var_id
+    //
+    // The id must be resolved AT RUNTIME, not baked in as the compile-time
+    // constant.  The name<->id registry (eshkol_make_logic_var) is process
+    // global, and for an AOT binary — or a `-r` run served from the persistent
+    // JIT object cache — the process that runs the program is not the process
+    // that compiled it.  A baked id then names nothing, so every variable
+    // printed as `?_0`, `?_1` … instead of `?x`, `?y`, and the same program
+    // displayed differently under `-r` (in-process JIT) than after `-o`.
+    // Interning the NAME at runtime makes the representation self-describing
+    // and identical on every execution route.  The id is cached in a private
+    // global so a `?x` in a hot loop interns once.
     uint64_t var_id = op->logic_var_op.var_id;
+    const char* name = op->logic_var_op.name;
+
+    auto& builder = ctx_.builder();
     Value* var_id_val = ConstantInt::get(ctx_.int64Type(), var_id);
+
+    if (name && *name && builder.GetInsertBlock()) {
+        Module* mod = &ctx_.module();
+        Function* fn = builder.GetInsertBlock()->getParent();
+        std::string cache_name = std::string("__eshkol_logic_var_id.") + name;
+        GlobalVariable* cache = mod->getNamedGlobal(cache_name);
+        if (!cache) {
+            cache = new GlobalVariable(
+                *mod, ctx_.int64Type(), /*isConstant=*/false,
+                GlobalValue::PrivateLinkage,
+                ConstantInt::get(ctx_.int64Type(), (uint64_t)-1), cache_name);
+        }
+
+        FunctionType* mk_type = FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        Function* mk_fn = mod->getFunction("eshkol_make_logic_var");
+        if (!mk_fn) {
+            mk_fn = Function::Create(mk_type, Function::ExternalLinkage,
+                                     "eshkol_make_logic_var", mod);
+        }
+
+        BasicBlock* intern_bb = BasicBlock::Create(ctx_.context(), "lv_intern", fn);
+        BasicBlock* done_bb   = BasicBlock::Create(ctx_.context(), "lv_done", fn);
+
+        Value* cached = builder.CreateLoad(ctx_.int64Type(), cache, "lv_cached");
+        Value* unset = builder.CreateICmpEQ(
+            cached, ConstantInt::get(ctx_.int64Type(), (uint64_t)-1), "lv_unset");
+        BasicBlock* entry_bb = builder.GetInsertBlock();
+        builder.CreateCondBr(unset, intern_bb, done_bb);
+
+        builder.SetInsertPoint(intern_bb);
+        Value* name_ptr = builder.CreateGlobalStringPtr(name, "lv_name");
+        Value* fresh = builder.CreateCall(mk_fn, {name_ptr}, "lv_fresh");
+        builder.CreateStore(fresh, cache);
+        builder.CreateBr(done_bb);
+
+        builder.SetInsertPoint(done_bb);
+        PHINode* phi = builder.CreatePHI(ctx_.int64Type(), 2, "lv_id");
+        phi->addIncoming(cached, entry_bb);
+        phi->addIncoming(fresh, intern_bb);
+        var_id_val = phi;
+    }
+
     Value* type_val = ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_LOGIC_VAR);
     Value* flags_val = ConstantInt::get(ctx_.int8Type(), 0);
     return tagged_.packInt64WithTypeAndFlags(var_id_val, type_val, flags_val);

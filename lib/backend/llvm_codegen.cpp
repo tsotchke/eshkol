@@ -33091,6 +33091,15 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
+            case ESHKOL_LOGIC_VAR_OP:
+                // A ?-prefixed token is a logic variable wherever it appears,
+                // INCLUDING inside a quoted datum: `'?x` and `'(parent alice
+                // ?child)` carry the same variable that a bare `?x` does.
+                // Falling through to the default arm used to make quoted logic
+                // variables evaluate to `()`, which is why the documented
+                // `(kb-query kb '(parent alice ?child))` never matched.
+                return logic_workspace_->codegenLogicVar(op);
+
             case ESHKOL_LAMBDA_OP: {
                 // MEMOIZATION FIX: Check if this lambda was already compiled and has an S-expression global
                 // This prevents exponential IR generation for deeply nested lambdas
@@ -39963,10 +39972,23 @@ private:
 
         Value* val = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
 
-        // Extract type field and compare to ESHKOL_VALUE_LOGIC_VAR
-        Value* type_field = builder->CreateExtractValue(val, {0}, "lv_type");
-        Value* is_lv = builder->CreateICmpEQ(type_field,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_LOGIC_VAR), "is_logic_var");
+        // Delegate to eshkol_logic_var_id_of() — THE logic-variable predicate.
+        // Inlining a type-byte compare here made `logic-var?` disagree with
+        // unification and the KB matcher about what a logic variable is: a
+        // ?-prefixed SYMBOL (what a quoted ?x, or a symbol from read /
+        // string->symbol / kb-load, arrives as) answered #f while the same
+        // value bound as a variable in a query.
+        Value* val_slot = builder->CreateAlloca(tagged_value_type, nullptr, "lv_arg");
+        builder->CreateStore(val, val_slot);
+        FunctionType* pred_type = FunctionType::get(
+            builder->getInt1Ty(), {builder->getPtrTy(), builder->getPtrTy()}, false);
+        Function* pred_fn = module->getFunction("eshkol_logic_var_id_of");
+        if (!pred_fn) {
+            pred_fn = Function::Create(pred_type, Function::ExternalLinkage,
+                                       "eshkol_logic_var_id_of", module.get());
+        }
+        Value* is_lv = builder->CreateCall(pred_fn,
+            {val_slot, ConstantPointerNull::get(builder->getPtrTy())}, "is_logic_var");
         return packBoolToTaggedValue(is_lv);
     }
 
