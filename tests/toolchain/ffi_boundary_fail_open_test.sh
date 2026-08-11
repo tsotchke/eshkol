@@ -26,7 +26,8 @@
 # Asserted here: exit status, the preserved diagnostic wording, the ABSENCE of a
 # written binary on the AOT arity cell, that no cell dies by SIGNAL (128+n, and
 # specifically never 139/SIGSEGV), that the type error is catchable by `guard`,
-# and that a correctly-called spawn still runs /bin/echo and captures its output.
+# and that a correctly-called spawn still runs `echo` (PATH-searched via execvp,
+# portable to hosts without /bin/echo, e.g. NixOS) and captures its output.
 #
 # Self-contained: synthesizes its own fixtures.
 
@@ -103,7 +104,7 @@ ESK
 wrong_type="$tmp/ffi_wrong_type.esk"
 cat > "$wrong_type" <<'ESK'
 (require agent.subprocess)
-(define r (run-argv-capture (list "/bin/echo" "hi") 5000))
+(define r (run-argv-capture (list "echo" "hi") 5000))
 (display r) (newline)
 ESK
 
@@ -113,7 +114,7 @@ catchable="$tmp/ffi_catchable.esk"
 cat > "$catchable" <<'ESK'
 (require agent.subprocess)
 (display (guard (e (#t "caught"))
-           (run-argv-capture (list "/bin/echo" "hi") 5000)
+           (run-argv-capture (list "echo" "hi") 5000)
            "not-reached"))
 (newline)
 ESK
@@ -204,22 +205,22 @@ done
 happy="$tmp/ffi_happy.esk"
 cat > "$happy" <<'ESK'
 (require agent.subprocess)
-(define r (run-argv-capture (list "/bin/echo" "hello-ffi-guard") "."))
+(define r (run-argv-capture (list "echo" "hello-ffi-guard") "."))
 (display "exit=") (display (cdr (assq 'exit-code r))) (newline)
 (display "out=") (display (cdr (assq 'stdout r)))
-(define h (process-spawn-argv (list "/bin/echo" "spawned") "."))
+(define h (process-spawn-argv (list "echo" "spawned") "."))
 (display "spawn-ok=") (display (if (process-running? h) "yes" (if h "yes" "no"))) (newline)
 (process-wait h 10000)
 (process-destroy h)
 ;; #f in a pointer position is LEGAL — it is how Eshkol spells a NULL pointer
 ;; argument. process-spawn passes a NULL envp through a `ptr` parameter, and #f
 ;; for cwd means "inherit the caller's". The guard must not reject either.
-(define h2 (process-spawn "/bin/echo envp-null-ok" "."))
+(define h2 (process-spawn "echo envp-null-ok" "."))
 (process-close-stdin h2)
 (process-wait h2 10000)
 (display (process-read-all-stdout h2 4096))
 (process-destroy h2)
-(define h3 (process-spawn-argv (list "/bin/echo" "cwd-null-ok") #f))
+(define h3 (process-spawn-argv (list "echo" "cwd-null-ok") #f))
 (process-wait h3 10000)
 (display (process-read-all-stdout h3 4096))
 (process-destroy h3)
@@ -339,7 +340,7 @@ echo "  ok: -r bare-extern accepts a string and #f (NULL) in ptr params"
 log="$tmp/happy_r.log"
 ec="$(run "$log" "$ESHKOL_RUN" -r "$happy")"
 [ "$ec" -eq 0 ] || fail "-r correct-arity spawn regressed (exit $ec): $(head -10 "$log" | tr '\n' ' ')"
-grep -q "exit=0" "$log" || fail "-r correct-arity spawn: /bin/echo did not report exit 0"
+grep -q "exit=0" "$log" || fail "-r correct-arity spawn: echo did not report exit 0"
 grep -q "hello-ffi-guard" "$log" || fail "-r correct-arity spawn did not capture child stdout"
 grep -q "spawn-ok=yes" "$log" || fail "-r correct-arity process-spawn-argv returned no handle"
 grep -q "envp-null-ok" "$log" || fail "-r process-spawn with a NULL envp (#f in a ptr param) was rejected"
@@ -355,7 +356,7 @@ if [ "$ec" -eq 0 ] && [ -x "$happy_bin" ]; then
     ec="$(run "$log" "$happy_bin")"
     [ "$ec" -eq 0 ] || fail "AOT correct-arity spawn regressed (exit $ec): $(head -10 "$log" | tr '\n' ' ')"
     grep -q "hello-ffi-guard" "$log" || fail "AOT correct-arity spawn did not capture child stdout"
-    echo "  ok: AOT correct-arity spawn ran /bin/echo and captured its output"
+    echo "  ok: AOT correct-arity spawn ran echo and captured its output"
 else
     echo "  skip: AOT link unavailable here (build exit $ec) — -r positive control already asserted"
 fi

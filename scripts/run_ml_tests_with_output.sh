@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # ML Test Suite with Full Output Capture
 # Shows complete compilation and runtime output for all tests

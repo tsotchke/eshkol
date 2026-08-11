@@ -158,7 +158,7 @@ probe subprocess_argv_safe "process-spawn-argv runs argv directly" \
     'tmp=$(mktemp).esk;
      cat > "$tmp" <<EOF
 (require agent.subprocess)
-(let ((p (process-spawn-argv (list "/bin/echo" "hello;world|pipe") ".")))
+(let ((p (process-spawn-argv (list "echo" "hello;world|pipe") ".")))
   (process-wait p 5000)
   ;; If the shell were invoked, the ; and | would split commands. argv-safe
   ;; spawn passes the whole string verbatim as one argument.
@@ -172,7 +172,7 @@ probe subprocess_pid_exposed "process-pid returns a real OS PID > 0" \
     'tmp=$(mktemp).esk;
      cat > "$tmp" <<EOF
 (require agent.subprocess)
-(let ((p (process-spawn-argv (list "/bin/sleep" "0.05") ".")))
+(let ((p (process-spawn-argv (list "sleep" "0.05") ".")))
   (let ((pid (process-pid p)))
     (process-wait p 5000)
     (process-destroy p)

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ESH-0076: capability-denied runtime operations must be distinguishable from
 # ordinary absent values while preserving the existing false/null return shape.
 

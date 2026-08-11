@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # error_line_marker_test.sh — verify that compile-time error markers
 # point at the actual source line/column.
 #

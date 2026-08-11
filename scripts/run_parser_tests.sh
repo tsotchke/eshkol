@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Parser Test Suite
 # Runs all parser tests and reports results

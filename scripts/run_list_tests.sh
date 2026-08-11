@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Systematic Test Suite Validation Script
 # Runs all tests and reports results

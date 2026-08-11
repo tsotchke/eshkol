@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # System Test Suite (Hash Tables, File I/O, etc.)
 # Runs all system-level tests

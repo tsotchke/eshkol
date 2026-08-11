@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Optimization Algorithms Test Suite
 # Tests gradient descent, Adam, L-BFGS, conjugate gradient

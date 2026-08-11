@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Stdlib Test Suite
 # Runs all stdlib tests and reports results

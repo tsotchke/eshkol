@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Execute deterministic high-risk extension suites that were previously
 # committed but not wired into the complete CI harness.
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # error_diagnostic_is_fatal_test.sh — an emitted error diagnostic must prevent
 # artifact emission and execution, and must exit non-zero.
 #

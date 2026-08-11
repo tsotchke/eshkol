@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # load_path_with_dots_test.sh — regression for the resolveModulePath
 # bug where directory components containing dots were silently mangled.
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol XLA/StableHLO Integration Test Suite
 # Tests XLA backend dispatch and tensor operations

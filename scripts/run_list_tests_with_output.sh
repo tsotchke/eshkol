@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Test Suite Validation Script with Output Capture
 # Runs all tests and saves their output for verification

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run Eshkol performance benchmarks
 # Usage: ./scripts/run_benchmarks.sh [benchmark_name]
 

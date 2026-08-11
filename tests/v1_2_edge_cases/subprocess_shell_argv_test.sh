@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # subprocess_shell_argv_test.sh — explicit shell vs argv process semantics.
 
 set -u
@@ -11,7 +11,12 @@ if [ ! -x "$RUN" ]; then
     exit 0
 fi
 
-if [ ! -x /bin/sh ] || [ ! -x /bin/echo ] || [ ! -x /bin/sleep ] || [ ! -x /bin/kill ]; then
+# /bin/sh is POSIX-guaranteed (present even on hosts, like NixOS, whose /bin
+# is otherwise empty); echo/sleep/kill only need to be PATH-searchable, since
+# argv-mode spawns below use bare names and go through execvp(), not an
+# absolute path.
+if [ ! -x /bin/sh ] || ! command -v echo >/dev/null 2>&1 \
+   || ! command -v sleep >/dev/null 2>&1 || ! command -v kill >/dev/null 2>&1; then
     echo "SKIP: POSIX shell tools unavailable"
     exit 0
 fi
@@ -73,10 +78,10 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
   (run-command-capture "echo hidden >/dev/null; echo visible" "." 5000 4096))
 
 (define argv-result
-  (run-argv-capture (list "/bin/echo" "literal;not-shell") "." 5000 4096))
+  (run-argv-capture (list "echo" "literal;not-shell") "." 5000 4096))
 
 (define argv-metachars
-  (run-argv-capture (list "/bin/echo" "literal|pipe" "literal>redir" "exit 42")
+  (run-argv-capture (list "echo" "literal|pipe" "literal>redir" "exit 42")
                     "." 5000 4096))
 
 (define legacy-simple
@@ -132,7 +137,7 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
       -999))
 
 (define timeout-proc
-  (process-spawn-argv (list "/bin/sleep" "5") "."))
+  (process-spawn-argv (list "sleep" "5") "."))
 
 (define timeout-pid
   (if timeout-proc (process-pid timeout-proc) 0))
@@ -160,10 +165,10 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
       (= timeout-exit-code 137)))
 
 (define argv-timeout-result
-  (run-argv-capture (list "/bin/sleep" "5") "." 100 4096))
+  (run-argv-capture (list "sleep" "5") "." 100 4096))
 
 (define destroy-proc
-  (process-spawn-argv (list "/bin/sleep" "30") "."))
+  (process-spawn-argv (list "sleep" "30") "."))
 
 (define destroy-pid
   (if destroy-proc (process-pid destroy-proc) 0))
@@ -173,7 +178,7 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 
 (define destroy-kill-check
   (if (> destroy-pid 0)
-      (run-argv-capture (list "/bin/kill" "-0" (number->string destroy-pid))
+      (run-argv-capture (list "kill" "-0" (number->string destroy-pid))
                         "." 5000 4096)
       (list (cons 'exit-code -999)
             (cons 'stdout "")

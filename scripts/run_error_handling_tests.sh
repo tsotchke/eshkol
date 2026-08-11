@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Error Handling Test Suite
 # Tests exception handling: guard, with-exception-handler, raise

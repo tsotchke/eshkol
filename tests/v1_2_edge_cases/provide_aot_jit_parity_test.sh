@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # provide_aot_jit_parity_test.sh — Bug Z regression (filed 2026-04-30,
 # closed by Eshkol 1235e0a).
 #
