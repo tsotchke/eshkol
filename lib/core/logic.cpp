@@ -1044,8 +1044,16 @@ extern "C" void eshkol_unify_tagged(arena_t* arena,
         result->type = ESHKOL_VALUE_HEAP_PTR;
         result->data.ptr_val = (uint64_t)unified;
     } else {
-        /* Unification failed — return NULL (which displays as #f) */
-        result->type = ESHKOL_VALUE_NULL;
+        /* Unification failed.  API_REFERENCE: "(unify t1 t2 s) -> Substitution
+         * | #f".  This used to return tagged NULL with a comment claiming it
+         * "displays as #f" — it displays as `()`, which is TRUE in Scheme, so
+         * `(if (unify a b s) ...)` took the success branch on failure.  Return
+         * the boolean the contract promises.  (kb-query's no-match result stays
+         * `()`: that one really is an empty list of solutions.) */
+        result->type = ESHKOL_VALUE_BOOL;
+        result->flags = 0;
+        result->reserved = 0;
+        result->data.raw_val = 0;
     }
 }
 
