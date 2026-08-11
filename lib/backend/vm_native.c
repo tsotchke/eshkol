@@ -4749,6 +4749,47 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
  * @return Flat doubles, valid until the enclosing region pops (the tensor case
  *         aliases the tensor's own storage), or NULL when the count is 0.
  */
+#define VM_FG_SEQ_MAX_DEPTH 16   /* nesting guard; a factor-graph operand is
+                                  * shape at most, never a deep structure */
+
+/** @brief Leaf count of @p v flattened row-major (-1 if it is not numeric
+ *         data at all). Nesting is shape, exactly as it is for a tensor. */
+static int vm_fg_seq_count(VM* vm, Value v, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH) return -1;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return (t && t->data) ? (int)t->total : -1;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) {                                   /* scalar leaf */
+        if (v.type == VAL_INT || v.type == VAL_FLOAT ||
+            v.type == VAL_RATIONAL || v.type == VAL_BIGNUM) return 1;
+        return -1;
+    }
+    int total = 0;
+    for (int i = 0; i < len; i++) {
+        int sub = vm_fg_seq_count(vm, vm_tensor_collection_at(vm, v, i), depth + 1);
+        if (sub < 0) return -1;
+        total += sub;
+    }
+    return total;
+}
+
+/** @brief Row-major flatten of @p v into @p out (bounded by @p cap). */
+static void vm_fg_seq_fill(VM* vm, Value v, double* out, int cap, int* pos, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH || *pos >= cap) return;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || !t->data) return;
+        for (int i = 0; i < (int)t->total && *pos < cap; i++) out[(*pos)++] = t->data[i];
+        return;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) { out[(*pos)++] = as_number_vm(vm, v); return; }
+    for (int i = 0; i < len && *pos < cap; i++)
+        vm_fg_seq_fill(vm, vm_tensor_collection_at(vm, v, i), out, cap, pos, depth + 1);
+}
+
 static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
     if (out_n) *out_n = 0;
     if (v.type == VAL_NIL) return NULL;              /* '() — no elements */
@@ -4761,40 +4802,18 @@ static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
         return t->data;
     }
 
-    /* Proper list: walked once (vm_tensor_collection_at is O(i) per element). */
-    if (v.type == VAL_PAIR) {
-        int len = vm_tensor_collection_len(vm, v);
-        if (len <= 0) return NULL;
-        double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)len * sizeof(double));
-        if (!buf) return NULL;
-        Value cur = v;
-        int i = 0;
-        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr) && i < len) {
-            buf[i++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        if (i == 0) return NULL;
-        if (out_n) *out_n = i;
-        return buf;
-    }
-
-    int len = vm_tensor_collection_len(vm, v);
-    if (len < 0) {                                   /* bare scalar operand */
-        if (v.type != VAL_INT && v.type != VAL_FLOAT &&
-            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM) return NULL;
-        double* one = (double*)vm_alloc(&vm->heap.regions, sizeof(double));
-        if (!one) return NULL;
-        one[0] = as_number_vm(vm, v);
-        if (out_n) *out_n = 1;
-        return one;
-    }
-    if (len == 0) return NULL;                       /* #() — no elements */
-
-    double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)len * sizeof(double));
+    /* Nesting is shape, so `#(#(0 0))` flattens to the same two elements it
+     * is natively (where that literal already IS a rank-2 tensor) — see
+     * tests/ad/free_energy_ad_test.esk, whose observation operand is exactly
+     * that. */
+    int n = vm_fg_seq_count(vm, v, 0);
+    if (n <= 0) return NULL;
+    double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
     if (!buf) return NULL;
-    for (int i = 0; i < len; i++)
-        buf[i] = as_number_vm(vm, vm_tensor_collection_at(vm, v, i));
-    if (out_n) *out_n = len;
+    int pos = 0;
+    vm_fg_seq_fill(vm, v, buf, n, &pos, 0);
+    if (pos == 0) return NULL;
+    if (out_n) *out_n = pos;
     return buf;
 }
 
@@ -8653,12 +8672,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     }
                     /* vm_make_factor() copies exactly `need` doubles out of
                      * the CPT, so a table shorter than the factor's
-                     * configuration space would read past the operand.  Refuse
-                     * the factor instead (a raise here would diverge from the
-                     * native runtime, which also just declines). */
-                    if (cpt_n >= need) {
+                     * configuration space would read past the operand.  The
+                     * native runtime requires the length to match EXACTLY and
+                     * reports the mismatch without aborting the program
+                     * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
+                     * mirror both halves of that contract. */
+                    if (cpt_n == need) {
                         VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
                         if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
+                    } else {
+                        fprintf(stderr,
+                            "ERROR: fg-add-factor!: tensor has %d elements but factor expects %d\n",
+                            cpt_n, need);
                     }
                 }
             }
@@ -8671,12 +8696,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                int converged = vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
-                vm_push(vm, BOOL_VAL(converged));
+                vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
+                /* fg-infer! ANSWERS the converged beliefs: a rank-1 tensor of
+                 * every variable's per-state probability, var-major, in
+                 * probability space (exp of the log-space beliefs) — the same
+                 * contract as eshkol_fg_infer_tagged() natively.  The VM used
+                 * to answer a bare convergence flag instead, so
+                 * `(display (fg-infer! fg 20))` printed #t/#f here and the
+                 * belief vector natively.  A tensor stays truthy, so code that
+                 * only tested the old flag still takes the same branch. */
+                int total_beliefs = 0;
+                for (int v = 0; v < fg->num_vars; v++) total_beliefs += fg->var_dims[v];
+                if (total_beliefs > 0) {
+                    int64_t shape[1] = { total_beliefs };
+                    VmTensor* bt = vm_tensor_new(&vm->heap.regions, shape, 1);
+                    if (bt) {
+                        int idx = 0;
+                        for (int v = 0; v < fg->num_vars; v++)
+                            for (int s = 0; s < fg->var_dims[v]; s++)
+                                bt->data[idx++] = exp(fg->beliefs[v][s]);
+                        VM_PUSH_TENSOR(vm, bt);
+                        break;
+                    }
+                }
+                vm_push(vm, NIL_VAL);
                 break;
             }
         }
-        vm_push(vm, BOOL_VAL(0));
+        vm_push(vm, NIL_VAL);
         break;
     }
     case 524: { /* fg-update-cpt!(fg, factor_idx, new_cpt_tensor) */
