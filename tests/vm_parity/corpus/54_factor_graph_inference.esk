@@ -1,0 +1,97 @@
+; Factor-graph inference: free energy must MOVE when the evidence moves.
+;
+; REGRESSION GATE for the factor-graph native boundary. The VM answered -0.0
+; from `free-energy` for EVERY graph and EVERY evidence set — reported as a
+; wasm32 divergence because WASM *is* the bytecode VM, though the natively
+; built VM produced the identical -0.0 while native codegen was correct.
+; Three defects lived here, all one class:
+;
+;   * the consciousness surface documents its operands as reader literals —
+;     (make-factor-graph 2 #(2 2)), (fg-add-factor! fg #(0 1) #(...)),
+;     (free-energy fg #(1 1)). Natively a numeric #(...) literal already IS a
+;     tensor; in the VM it is a vector. Each factor-graph native had its own
+;     tensor-or-list reader matching NEITHER, so var-dims collapsed to one
+;     degenerate variable, every factor was dropped, and observations were
+;     never seen. A graph with no factors and one degenerate variable has
+;     entropy 0 and expected-log-joint 0, and F = -entropy - E[log p] is then
+;     exactly -0.0: the reported symptom, evidence-insensitive by
+;     construction.
+;   * `free-energy` passed an `int[32][2]` to a function taking a flat double
+;     array — a strict-aliasing violation that also mis-strided the buffer, so
+;     observation clamping consumed reinterpreted integer bit patterns that
+;     truncate to 0. Clamping was inert on every platform.
+;   * `fg-infer!` answered a bare convergence flag where native answers the
+;     converged belief tensor.
+;
+; Values are asserted against native's answers through a 1e-9 tolerance rather
+; than printed raw: this file is ALSO replayed by the WASM execute-and-diff
+; lane, where exp/log come from a different libm and the last ULP of an
+; entropy sum legitimately differs. A tolerance keeps the assertion on the
+; VALUE (1e-9 is nine orders coarser than the wobble, and any of the defects
+; above moves the answer by whole units) without making libm noise a failure.
+
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+; ---- a two-variable graph: prior on the cause, likelihood of the symptom ----
+(define fg (make-factor-graph 2 #(2 2)))
+(fg-add-factor! fg #(0) #(-0.3567 -1.2040))
+(fg-add-factor! fg #(0 1) #(-0.1054 -2.3026 -1.6094 -0.2231))
+
+; fg-infer! ANSWERS the converged beliefs: one probability per (var, state)
+(define beliefs (fg-infer! fg 20))
+(display (tensor-shape beliefs)) (newline)
+(display (close? (tensor-ref beliefs 0) 0.6999837645420198)) (newline)
+(display (close? (tensor-ref beliefs 1) 0.30001623545798023)) (newline)
+(display (close? (+ (tensor-ref beliefs 0) (tensor-ref beliefs 1)) 1.0)) (newline)
+
+; ---- free energy, with and without evidence ----
+(define fe-none (free-energy fg #()))
+(define fe-11 (free-energy fg #(1 1)))
+(define fe-10 (free-energy fg #(1 0)))
+(define fe-00 (free-energy fg #(0 0)))
+(display (close? fe-none 0.2854021618284226)) (newline)
+(display (close? fe-11 1.4565426156791883)) (newline)
+(display (close? fe-10 0.6564849504344235)) (newline)
+(display (close? fe-00 0.6421002995475289)) (newline)
+
+; EVIDENCE SENSITIVITY: the whole point. Each observation must move the answer,
+; and the two states of the same variable must not move it the same way.
+(display (> (abs (- fe-11 fe-none)) 0.1)) (newline)
+(display (> (abs (- fe-10 fe-none)) 0.1)) (newline)
+(display (> (abs (- fe-11 fe-10)) 0.1)) (newline)
+(display (> (abs (- fe-00 fe-none)) 0.1)) (newline)
+
+; several (var state) pairs in one flat observation vector all get clamped
+(display (close? (free-energy fg #(0 0 1 1)) 1.8132407533982948)) (newline)
+
+; an out-of-range variable or state is IGNORED — never applied, never fatal
+(display (close? (free-energy fg #(7 0)) fe-none)) (newline)
+(display (close? (free-energy fg #(0 9)) fe-none)) (newline)
+
+; ---- expected free energy over the action variable ----
+(display (close? (expected-free-energy fg 0 0) 0.5241497548866028)) (newline)
+(display (close? (expected-free-energy fg 0 1) 1.764517510551123)) (newline)
+
+; ---- learning: a CPT update must re-converge to a different free energy ----
+(fg-update-cpt! fg 0 #(-1.6094 -0.2231))
+(fg-infer! fg 20)
+(define fe-updated (free-energy fg #(1 1)))
+(display (close? fe-updated 0.6410735495696462)) (newline)
+(display (> (abs (- fe-updated fe-11)) 0.1)) (newline)
+
+; the same update spelled as a runtime vector, not a literal
+(fg-update-cpt! fg 0 (vector -0.5108 -0.9163))
+(fg-infer! fg 20)
+(display (close? (free-energy fg #(1 1)) 1.3007321290226908)) (newline)
+
+; ---- three variables, two factors sharing the cause ----
+(define g3 (make-factor-graph 3 #(2 2 2)))
+(fg-add-factor! g3 #(0) #(-0.6931 -0.6931))
+(fg-add-factor! g3 #(0 1) #(-0.5108 -1.2040 -1.2040 -0.5108))
+(fg-add-factor! g3 #(0 2) #(-0.2231 -1.6094 -1.6094 -0.2231))
+(define b3 (fg-infer! g3 30))
+(display (tensor-shape b3)) (newline)
+(display (close? (free-energy g3 #()) 0.3873084583201636)) (newline)
+(display (close? (free-energy g3 #(2 0)) 1.080455638880109)) (newline)
+(display (close? (free-energy g3 #(0 1 2 1)) 1.7736028194400544)) (newline)
+(display (> (abs (- (free-energy g3 #(0 1 2 1)) (free-energy g3 #()))) 0.1)) (newline)
