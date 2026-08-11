@@ -377,6 +377,23 @@ block ordinary use.
 - JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
   unaffected (ESH-0103).
 
+**Knowledge base and consciousness engine**
+- **Quoted pattern-variable queries never match — silent wrong answer.**
+  `(kb-query kb '(parent alice ?child))` never returns a match, on any target
+  (native, VM, or WASM). A quoted `?x` compiles to a plain symbol, but the
+  pattern detector recognizes only string-spelled logic variables, and
+  `unify` / `logic-var?` / `kb-query` each use a different, mutually
+  incompatible representation of what counts as a logic variable. Affects
+  every knowledge-base pattern query written with the documented
+  `'(pattern ?var)` syntax. Fix (a single unified logic-variable
+  representation) is scheduled for v1.3.5.
+- **Factor-graph free energy is wrong in the browser build only.**
+  `(free-energy fg evidence)` returns `-0.0` regardless of the supplied
+  evidence when run under the browser's WASM VM; native `eshkol-run`
+  computes the correct value. Root cause is under investigation and looks
+  like a wasm32-specific divergence together with a related
+  observation-clamping defect. Fix scheduled for v1.3.5.
+
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 951 rows —
