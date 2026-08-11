@@ -797,6 +797,15 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         }
         case VAL_BOOL:  printf("%s", v.as.b ? "#t" : "#f"); break;
         case VAL_PAIR: {
+            /* A fact is a heap wrapper around its `(predicate arg ...)`
+             * datum; print the datum, not the wrapper, so `(display
+             * (make-fact 'p 'a 'b))` is `(p a b)` on both substrates
+             * (native eshkol_display_fact prints the same). */
+            if (v.as.ptr >= 0 && vm->heap.objects[v.as.ptr] &&
+                vm->heap.objects[v.as.ptr]->type == HEAP_FACT) {
+                print_value_mode(vm, vm->heap.objects[v.as.ptr]->cons.car, write_syntax);
+                break;
+            }
             printf("(");
             Value cur = v;
             int first = 1;
@@ -931,7 +940,11 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             break;
         }
         case VAL_KB:          printf("<knowledge-base>"); break;
-        case VAL_SUBST:       printf("<substitution>"); break;
+        case VAL_SUBST: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            vm_print_substitution(obj ? (const VmSubstitution*)obj->opaque.ptr : NULL);
+            break;
+        }
         case VAL_HASH:        printf("<hash-table>"); break;
         case VAL_BYTEVECTOR:  printf("<bytevector>"); break;
         case VAL_PARAMETER_OBJ: printf("<parameter>"); break;

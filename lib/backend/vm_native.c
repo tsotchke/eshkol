@@ -4336,49 +4336,340 @@ static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
     return vm_values_equal_deep(vm, obj->cons.car, predicate, 0);
 }
 
-/** @brief True if `value` is a string starting with `?`, the knowledge-base
- *         query pattern convention for an unbound logic variable. */
-static int vm_kb_pattern_is_logic_var(VM* vm, Value value) {
-    if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
-        return 0;
+/* ══════════════════════════════════════════════════════════════════════════
+ * Logic-variable representation — ONE definition for the whole engine
+ *
+ * Before this bridge existed the VM answered "is this a logic variable?"
+ * in three mutually incompatible ways: the KB pattern matcher accepted
+ * only a VAL_STRING beginning `?`, `unify` (fid 502) wanted a bare
+ * VAL_INT variable id, and `logic-var?` (fid 501) tested for a
+ * HEAP_LOGIC_VAR object that nothing ever constructed.  A quoted `?x`
+ * compiles to a VAL_SYMBOL, which satisfied none of them, so the
+ * documented `(kb-query kb '(parent alice ?child))` could never match.
+ *
+ * The documented public contract governs: a `?`-prefixed token IS a logic
+ * variable, in a quoted datum exactly as in argument position.  Every
+ * dispatch site below now routes through vm_logic_var_id_of() /
+ * vm_value_is_logic_var(), and terms cross into vm_logic.c's real
+ * unification engine through vm_logic_term_from_value(), so the VM and
+ * the native LLVM runtime implement one semantics rather than two.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* Term KINDs (VM_TERM_KIND_*) are defined in vm_logic.c, next to the term
+ * type they annotate, because the substitution printer there needs them too. */
+
+#define VM_LOGIC_TERM_MAX_DEPTH 64
+
+/** @brief Read the text of a VAL_SYMBOL / VAL_STRING value.
+ * @return 1 and fills @p out_text/@p out_len (and @p out_kind with
+ *         VM_TERM_KIND_SYMBOL or VM_TERM_KIND_STRING) when @p value is a
+ *         heap-backed symbol or string; 0 otherwise. */
+static int vm_logic_text_of(VM* vm, Value value, const char** out_text,
+                            int* out_len, int* out_kind) {
+    if (!vm) return 0;
+    if (value.type != VAL_SYMBOL && value.type != VAL_STRING) return 0;
+    if (!is_valid_heap_ptr(vm, value.as.ptr)) return 0;
     HeapObject* obj = vm->heap.objects[value.as.ptr];
     if (!obj || obj->type != HEAP_STRING || !obj->opaque.ptr) return 0;
     VmString* s = (VmString*)obj->opaque.ptr;
-    return s && s->byte_len > 0 && s->data && s->data[0] == '?';
+    if (!s || !s->data || s->byte_len < 0) return 0;
+    if (out_text) *out_text = s->data;
+    if (out_len)  *out_len  = s->byte_len;
+    if (out_kind) *out_kind = (value.type == VAL_SYMBOL) ? VM_TERM_KIND_SYMBOL
+                                                         : VM_TERM_KIND_STRING;
+    return 1;
 }
 
-/** @brief Test whether a query `pattern` list matches a stored `fact` list
- *         element-by-element, treating `?`-prefixed pattern elements
- *         (vm_kb_pattern_is_logic_var) as wildcards that match anything,
- *         and requiring exact deep-equality elsewhere. Falls back to plain
- *         deep equality for non-list patterns/facts. */
-static int vm_kb_datums_match(VM* vm, Value pattern, Value fact) {
-    if (pattern.type == VAL_NIL) return 1;
+/**
+ * @brief THE logic-variable predicate for the VM.
+ *
+ * A value is a logic variable when it is
+ *   - a `?`-prefixed symbol   — `?x`, `'?x`, `'(parent alice ?child)`;
+ *   - a `?`-prefixed string   — the pre-existing KB spelling, kept so
+ *     KBs written against it (and `kb-load`ed data) keep working;
+ *   - a HEAP_LOGIC_VAR heap object — reserved for a first-class VM
+ *     logic-variable object; recognised here so the type stays live.
+ *
+ * The bare name (`?` included) is what gets interned, so `?x` denotes the
+ * same variable however it was spelled.
+ *
+ * @return 1 and, if @p out_id is non-NULL, the interned variable id.
+ */
+static int vm_logic_var_id_of(VM* vm, Value value, uint64_t* out_id) {
+    const char* text = NULL;
+    int len = 0, kind = 0;
 
-    if (pattern.type == VAL_PAIR && fact.type == VAL_PAIR) {
-        Value pc = pattern;
-        Value fc = fact;
-        while (pc.type == VAL_PAIR && fc.type == VAL_PAIR) {
-            if (!is_valid_heap_ptr(vm, pc.as.ptr) || !is_valid_heap_ptr(vm, fc.as.ptr))
-                return 0;
-            HeapObject* po = vm->heap.objects[pc.as.ptr];
-            HeapObject* fo = vm->heap.objects[fc.as.ptr];
-            if (!po || !fo || po->type != HEAP_CONS || fo->type != HEAP_CONS)
-                return 0;
-
-            Value pe = po->cons.car;
-            Value fe = fo->cons.car;
-            if (!vm_kb_pattern_is_logic_var(vm, pe) &&
-                !vm_values_equal_deep(vm, pe, fe, 0))
-                return 0;
-
-            pc = po->cons.cdr;
-            fc = fo->cons.cdr;
+    if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
+        HeapObject* obj = vm->heap.objects[value.as.ptr];
+        if (obj && obj->type == HEAP_LOGIC_VAR) {
+            if (out_id) *out_id = (uint64_t)obj->cons.car.as.i;
+            return 1;
         }
-        return pc.type == VAL_NIL && fc.type == VAL_NIL;
     }
 
-    return vm_values_equal_deep(vm, pattern, fact, 0);
+    if (!vm_logic_text_of(vm, value, &text, &len, &kind)) return 0;
+    if (len < 2 || text[0] != '?') return 0;
+
+    if (out_id) {
+        char name[64];
+        int n = len < (int)sizeof(name) - 1 ? len : (int)sizeof(name) - 1;
+        memcpy(name, text, (size_t)n);
+        name[n] = '\0';
+        *out_id = vm_make_logic_var(name);
+    }
+    return 1;
+}
+
+/** @brief Boolean form of vm_logic_var_id_of(); this is what `logic-var?`
+ *         (fid 501) answers with, so the predicate and the pattern matcher
+ *         can never disagree again. */
+static int vm_value_is_logic_var(VM* vm, Value value) {
+    return vm_logic_var_id_of(vm, value, NULL);
+}
+
+/* Bridge: VM Value <-> vm_logic.c VmValue term. */
+static VmValue vm_logic_term_from_value(VM* vm, Value v, int depth);
+static VmFact* vm_logic_fact_from_datum(VM* vm, Value datum, int depth);
+
+/** @brief Build a VmValue term whose identity is the VM heap slot itself.
+ *         Used for values with no structural term encoding (closures,
+ *         tensors, ports): they unify only with themselves. */
+static VmValue vm_logic_term_opaque(Value v) {
+    VmValue t;
+    memset(&t, 0, sizeof(t));
+    t.type = VM_VAL_HEAP_PTR;
+    t.flags = VM_TERM_KIND_OPAQUE;
+    /* Tag in the high half so two different value types sharing a heap slot
+     * index (or a garbage `as.ptr` on a non-pointer tag) never unify. */
+    t.data.ptr_val = ((uint64_t)(uint32_t)v.type << 32) | (uint64_t)(uint32_t)v.as.ptr;
+    return t;
+}
+
+/**
+ * @brief Convert a VM `Value` into a unification term.
+ *
+ * Ground symbols and strings are interned (vm_logic_intern_text) so that
+ * two separately allocated spellings of `alice` are pointer-equal terms —
+ * without that, no ground argument could ever unify.  Proper lists become
+ * nested VmFacts, which is what gives structural (nested-pattern)
+ * unification; improper lists and unrepresentable objects degrade to
+ * identity-only opaque terms rather than silently matching.
+ */
+static VmValue vm_logic_term_from_value(VM* vm, Value v, int depth) {
+    VmValue t;
+    memset(&t, 0, sizeof(t));
+
+    uint64_t var_id = 0;
+    if (vm_logic_var_id_of(vm, v, &var_id) && var_id != UINT64_MAX) {
+        t.type = VM_VAL_LOGIC_VAR;
+        t.flags = VM_TERM_KIND_PLAIN;
+        t.data.int_val = (int64_t)var_id;
+        return t;
+    }
+
+    switch (v.type) {
+        case VAL_NIL:
+            t.type = VM_VAL_NULL;
+            return t;
+        case VAL_INT:
+            t.type = VM_VAL_INT64;
+            t.data.int_val = v.as.i;
+            return t;
+        case VAL_FLOAT:
+            t.type = VM_VAL_DOUBLE;
+            t.data.double_val = v.as.f;
+            return t;
+        case VAL_BOOL:
+            t.type = VM_VAL_BOOL;
+            t.data.int_val = v.as.b ? 1 : 0;
+            return t;
+        default:
+            break;
+    }
+
+    const char* text = NULL;
+    int len = 0, kind = 0;
+    if (vm_logic_text_of(vm, v, &text, &len, &kind)) {
+        const char* interned = vm_logic_intern_text(text, len, kind);
+        if (!interned) return vm_logic_term_opaque(v);
+        t.type = VM_VAL_HEAP_PTR;
+        t.flags = (uint8_t)kind;
+        t.data.ptr_val = (uint64_t)(uintptr_t)interned;
+        return t;
+    }
+
+    if (v.type == VAL_PAIR && depth < VM_LOGIC_TERM_MAX_DEPTH &&
+        is_valid_heap_ptr(vm, v.as.ptr)) {
+        HeapObject* obj = vm->heap.objects[v.as.ptr];
+        if (obj && (obj->type == HEAP_CONS || obj->type == HEAP_FACT)) {
+            VmFact* nested = vm_logic_fact_from_datum(vm, v, depth + 1);
+            if (nested) {
+                t.type = VM_VAL_HEAP_PTR;
+                t.flags = VM_TERM_KIND_FACT;
+                t.data.ptr_val = (uint64_t)(uintptr_t)nested;
+                return t;
+            }
+        }
+    }
+
+    if (v.type == VAL_NIL) { t.type = VM_VAL_NULL; return t; }
+    return vm_logic_term_opaque(v);
+}
+
+/**
+ * @brief Convert a `(predicate arg ...)` datum list (or a HEAP_FACT
+ *        wrapper around one) into a VmFact suitable for vm_unify().
+ *
+ * When the list head is a ground symbol or string it becomes the fact's
+ * interned predicate and the tail becomes the arguments — matching the
+ * native engine, whose predicate/arity pre-filter this mirrors.  When the
+ * head is anything else (a number, a logic variable, a nested list) the
+ * predicate is left 0, which the query pre-filter treats as "matches any
+ * predicate", and every element becomes an argument.
+ *
+ * @return NULL for a non-list, an improper list, or on allocation failure.
+ */
+static VmFact* vm_logic_fact_from_datum(VM* vm, Value datum, int depth) {
+    if (depth > VM_LOGIC_TERM_MAX_DEPTH) return NULL;
+    if (datum.type != VAL_PAIR || !is_valid_heap_ptr(vm, datum.as.ptr)) return NULL;
+
+    HeapObject* obj = vm->heap.objects[datum.as.ptr];
+    if (obj && obj->type == HEAP_FACT) {
+        return vm_logic_fact_from_datum(vm, obj->cons.car, depth);
+    }
+    if (!obj || obj->type != HEAP_CONS) return NULL;
+
+    /* Count elements and reject improper lists (no faithful term form). */
+    int n = 0;
+    Value cur = datum;
+    while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        HeapObject* c = vm->heap.objects[cur.as.ptr];
+        if (!c || c->type != HEAP_CONS) return NULL;
+        n++;
+        cur = c->cons.cdr;
+        if (n > 4096) return NULL;
+    }
+    if (cur.type != VAL_NIL) return NULL;
+
+    /* Head becomes the predicate only when it is a GROUND symbol/string. */
+    HeapObject* head_obj = vm->heap.objects[datum.as.ptr];
+    Value head = head_obj->cons.car;
+    uint64_t predicate = 0;
+    int first_arg = 0;
+    const char* text = NULL;
+    int len = 0, kind = 0;
+    if (!vm_value_is_logic_var(vm, head) &&
+        vm_logic_text_of(vm, head, &text, &len, &kind)) {
+        const char* interned = vm_logic_intern_text(text, len, kind);
+        if (interned) {
+            predicate = (uint64_t)(uintptr_t)interned;
+            first_arg = 1;
+        }
+    }
+
+    int arity = n - first_arg;
+    VmValue* args = NULL;
+    if (arity > 0) {
+        args = (VmValue*)vm_alloc(&vm->heap.regions, (size_t)arity * sizeof(VmValue));
+        if (!args) return NULL;
+        cur = datum;
+        for (int i = 0; i < first_arg; i++)
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        for (int i = 0; i < arity; i++) {
+            HeapObject* c = vm->heap.objects[cur.as.ptr];
+            args[i] = vm_logic_term_from_value(vm, c->cons.car, depth + 1);
+            cur = c->cons.cdr;
+        }
+    }
+
+    return vm_make_fact_obj(&vm->heap.regions, predicate, args, arity);
+}
+
+/** @brief Materialise a heap-backed VAL_SYMBOL / VAL_STRING from interned
+ *         term text, so a substitution binding can be handed back to
+ *         Scheme code as an ordinary value. */
+static Value vm_logic_value_from_text(VM* vm, const char* text, int kind) {
+    if (!text) return NIL_VAL;
+    VmString* s = vm_string_from_cstr(&vm->heap.regions, text);
+    if (!s) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) return NIL_VAL;
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = s;
+    Value out;
+    out.type = (kind == VM_TERM_KIND_STRING) ? VAL_STRING : VAL_SYMBOL;
+    out.as.ptr = ptr;
+    return out;
+}
+
+/**
+ * @brief Convert a unification term back into a VM `Value` — the inverse of
+ *        vm_logic_term_from_value(), used by `walk` and by substitution
+ *        display.  Facts are rebuilt as `(predicate arg ...)` lists (or a
+ *        bare argument list when the fact carries no predicate), which is
+ *        exactly the shape they were read from.
+ */
+static Value vm_logic_value_from_term(VM* vm, const VmValue* t, int depth) {
+    if (!t || depth > VM_LOGIC_TERM_MAX_DEPTH) return NIL_VAL;
+    switch (t->type) {
+        case VM_VAL_NULL:   return NIL_VAL;
+        case VM_VAL_INT64:  return INT_VAL(t->data.int_val);
+        case VM_VAL_DOUBLE: return FLOAT_VAL(t->data.double_val);
+        case VM_VAL_BOOL:   return BOOL_VAL((int)t->data.int_val);
+        case VM_VAL_LOGIC_VAR: {
+            const char* name = vm_logic_var_name((uint64_t)t->data.int_val);
+            return name ? vm_logic_value_from_text(vm, name, VM_TERM_KIND_SYMBOL)
+                        : NIL_VAL;
+        }
+        case VM_VAL_HEAP_PTR:
+            switch (t->flags) {
+                case VM_TERM_KIND_SYMBOL:
+                case VM_TERM_KIND_STRING:
+                    return vm_logic_value_from_text(
+                        vm, (const char*)(uintptr_t)t->data.ptr_val, t->flags);
+                case VM_TERM_KIND_OPAQUE: {
+                    Value out;
+                    out.type = (ValType)(uint32_t)(t->data.ptr_val >> 32);
+                    out.as.ptr = (int32_t)(uint32_t)t->data.ptr_val;
+                    return out;
+                }
+                case VM_TERM_KIND_FACT: {
+                    VmFact* f = (VmFact*)(uintptr_t)t->data.ptr_val;
+                    if (!f) return NIL_VAL;
+                    Value list = NIL_VAL;
+                    for (int i = f->arity - 1; i >= 0; i--) {
+                        Value el = vm_logic_value_from_term(vm, &f->args[i], depth + 1);
+                        int32_t p = heap_alloc(&vm->heap);
+                        if (p < 0) return NIL_VAL;
+                        vm->heap.objects[p]->type = HEAP_CONS;
+                        vm->heap.objects[p]->cons.car = el;
+                        vm->heap.objects[p]->cons.cdr = list;
+                        list = PAIR_VAL(p);
+                    }
+                    if (f->predicate) {
+                        Value head = vm_logic_value_from_text(
+                            vm, (const char*)(uintptr_t)f->predicate,
+                            VM_TERM_KIND_SYMBOL);
+                        int32_t p = heap_alloc(&vm->heap);
+                        if (p < 0) return NIL_VAL;
+                        vm->heap.objects[p]->type = HEAP_CONS;
+                        vm->heap.objects[p]->cons.car = head;
+                        vm->heap.objects[p]->cons.cdr = list;
+                        list = PAIR_VAL(p);
+                    }
+                    return list;
+                }
+                default: return NIL_VAL;
+            }
+        default: return NIL_VAL;
+    }
+}
+
+/** @brief Push a substitution onto the VM stack as a VAL_SUBST heap value,
+ *         or the empty list when unification failed (NULL). */
+static void vm_logic_push_subst(VM* vm, VmSubstitution* s) {
+    if (!s) { vm_push(vm, NIL_VAL); return; }
+    VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_SUBST, s);
 }
 
 /** @brief Query the terminal for the cursor's current row/column via the
@@ -8330,37 +8621,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Logic Operations (500-512)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 500: { /* make-logic-var(name) — name as int (id) */
-        Value name_val = vm_pop(vm), dummy = vm_pop(vm); (void)dummy; (void)name_val;
-        /* For simplicity, use the integer as var ID */
-        vm_push(vm, INT_VAL((int64_t)vm_make_logic_var("?auto")));
-        break;
-    }
-    case 501: { /* logic-var? — check heap type for LOGIC_VAR */
-        Value v = vm_pop(vm);
-        int is_lv = (is_heap_type(vm, v, HEAP_LOGIC_VAR));
-        vm_push(vm, BOOL_VAL(is_lv));
-        break;
-    }
-    case 502: { /* unify(subst, a, b) — bind a to b in substitution (copy-on-extend) */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm), s_val = vm_pop(vm);
-        if (is_heap_type(vm, s_val, HEAP_SUBST)) {
-            VmSubstitution* subst = (VmSubstitution*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            if (subst && a_val.type == VAL_INT) {
-                /* Treat a_val as logic var ID, bind it to b_val */
-                VmValue term;
-                if (b_val.type == VAL_INT) { term.type = VM_VAL_INT64; term.data.int_val = b_val.as.i; }
-                else if (b_val.type == VAL_FLOAT) { term.type = VM_VAL_DOUBLE; term.data.double_val = b_val.as.f; }
-                else if (b_val.type == VAL_BOOL) { term.type = VM_VAL_BOOL; term.data.int_val = b_val.as.b; }
-                else { term.type = VM_VAL_INT64; term.data.int_val = b_val.as.i; }
-                VmSubstitution* extended = vm_subst_extend(&vm->heap.regions, subst, (uint64_t)a_val.as.i, &term);
-                if (extended) {
-                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_SUBST, extended);
-                    break;
-                }
-            }
+    case 500: { /* make-logic-var(name) → the `?name` logic variable */
+        Value name_val = vm_pop(vm);
+        const char* text = NULL;
+        int len = 0, kind = 0;
+        if (vm_logic_text_of(vm, name_val, &text, &len, &kind) && len > 0) {
+            char buf[64];
+            int off = (text[0] == '?') ? 0 : 1;
+            int n = len < (int)sizeof(buf) - 1 - off ? len : (int)sizeof(buf) - 1 - off;
+            if (off) buf[0] = '?';
+            memcpy(buf + off, text, (size_t)n);
+            buf[off + n] = '\0';
+            vm_make_logic_var(buf); /* register the name up front */
+            vm_push(vm, vm_logic_value_from_text(vm, buf, VM_TERM_KIND_SYMBOL));
+        } else {
+            vm_push(vm, NIL_VAL);
         }
-        vm_push(vm, NIL_VAL); /* unification failed */
+        break;
+    }
+    case 501: { /* logic-var? — THE shared predicate (see vm_value_is_logic_var) */
+        Value v = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_value_is_logic_var(vm, v)));
+        break;
+    }
+    case 502: { /* unify(a, b, subst) → extended substitution, or () on failure */
+        Value s_val = vm_pop(vm), b_val = vm_pop(vm), a_val = vm_pop(vm);
+        VmSubstitution* subst = NULL;
+        if (is_heap_type(vm, s_val, HEAP_SUBST))
+            subst = (VmSubstitution*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
+        if (!subst) subst = vm_make_substitution(&vm->heap.regions, 8);
+
+        VmValue t1 = vm_logic_term_from_value(vm, a_val, 0);
+        VmValue t2 = vm_logic_term_from_value(vm, b_val, 0);
+        vm_logic_push_subst(vm,
+            vm_unify(&vm->heap.regions, &t1, &t2, subst));
         break;
     }
     case 505: { /* make-substitution */
@@ -8387,59 +8681,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(is_kb));
         break;
     }
-    case 503: { /* walk(term, subst) */
+    case 503: { /* walk(term, subst) — shallow dereference through the chain */
         Value subst_val = vm_pop(vm), term_val = vm_pop(vm);
-        /* Walk resolves variables through substitution chains */
-        if (is_heap_type(vm, subst_val, HEAP_SUBST)) {
-            VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
-            if (s && term_val.type == VAL_INT) {
-                /* Check if term is a var_id that has a binding */
-                for (int i = 0; i < s->n_bindings; i++) {
-                    if (s->var_ids[i] == (uint64_t)term_val.as.i) {
-                        /* Convert VmValue to VM Value */
-                        VmValue bound = s->terms[i];
-                        if (bound.type == VM_VAL_INT64)
-                            vm_push(vm, INT_VAL(bound.data.int_val));
-                        else if (bound.type == VM_VAL_DOUBLE)
-                            vm_push(vm, FLOAT_VAL(bound.data.double_val));
-                        else if (bound.type == VM_VAL_BOOL)
-                            vm_push(vm, BOOL_VAL((int)bound.data.int_val));
-                        else
-                            vm_push(vm, INT_VAL(bound.data.int_val));
-                        goto walk_done;
-                    }
-                }
-            }
-        }
-        vm_push(vm, term_val); /* unbound — return as-is */
-        walk_done: break;
-    }
-    case 504: { /* walk-deep — recursive walk through substitution chains */
-        Value subst_val = vm_pop(vm), term_val = vm_pop(vm);
-        /* Walk repeatedly until term no longer resolves */
-        if (is_heap_type(vm, subst_val, HEAP_SUBST)) {
-            VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
-            Value resolved = term_val;
-            int depth = 0;
-            while (s && resolved.type == VAL_INT && depth < 100) {
-                int found = 0;
-                for (int i = 0; i < s->n_bindings; i++) {
-                    if (s->var_ids[i] == (uint64_t)resolved.as.i) {
-                        VmValue bound = s->terms[i];
-                        if (bound.type == VM_VAL_INT64) resolved = INT_VAL(bound.data.int_val);
-                        else if (bound.type == VM_VAL_DOUBLE) resolved = FLOAT_VAL(bound.data.double_val);
-                        else if (bound.type == VM_VAL_BOOL) resolved = BOOL_VAL((int)bound.data.int_val);
-                        else resolved = INT_VAL(bound.data.int_val);
-                        found = 1;
-                        break;
-                    }
-                }
-                if (!found) break;
-                depth++;
-            }
-            vm_push(vm, resolved);
-        } else {
+        if (!is_heap_type(vm, subst_val, HEAP_SUBST)) { vm_push(vm, term_val); break; }
+        VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
+        VmValue term = vm_logic_term_from_value(vm, term_val, 0);
+        VmValue walked = vm_walk(&term, s);
+        /* An unbound variable walks to itself; hand back the caller's own
+         * value so `(walk ?z s)` is `?z`, not a freshly built copy. */
+        if (walked.type == VM_VAL_LOGIC_VAR && term.type == VM_VAL_LOGIC_VAR &&
+            walked.data.int_val == term.data.int_val) {
             vm_push(vm, term_val);
+        } else {
+            vm_push(vm, vm_logic_value_from_term(vm, &walked, 0));
+        }
+        break;
+    }
+    case 504: { /* walk-deep(term, subst) — resolve variables inside structure too */
+        Value subst_val = vm_pop(vm), term_val = vm_pop(vm);
+        if (!is_heap_type(vm, subst_val, HEAP_SUBST)) { vm_push(vm, term_val); break; }
+        VmSubstitution* s = (VmSubstitution*)vm->heap.objects[subst_val.as.ptr]->opaque.ptr;
+        VmValue term = vm_logic_term_from_value(vm, term_val, 0);
+        VmValue walked = vm_walk_deep_full(&vm->heap.regions, &term, s, 0);
+        if (walked.type == VM_VAL_LOGIC_VAR && term.type == VM_VAL_LOGIC_VAR &&
+            walked.data.int_val == term.data.int_val) {
+            vm_push(vm, term_val);
+        } else {
+            vm_push(vm, vm_logic_value_from_term(vm, &walked, 0));
         }
         break;
     }
@@ -8472,6 +8740,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         datum.type == VAL_PAIR && is_valid_heap_ptr(vm, datum.as.ptr)) {
                         f->has_datum = 1;
                         f->datum_ptr = datum.as.ptr;
+                        /* Pre-compute the unification term form once, at
+                         * assert time, so kb-query only has to convert the
+                         * pattern (and so a KB scan does not re-intern every
+                         * ground argument on every query). */
+                        VmFact* term_form = vm_logic_fact_from_datum(vm, datum, 0);
+                        if (term_form) {
+                            f->predicate = term_form->predicate;
+                            f->args      = term_form->args;
+                            f->arity     = term_form->arity;
+                        }
                         kb_obj->facts[kb_obj->n_facts++] = f;
                     }
                 }
@@ -8480,27 +8758,56 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 512: { /* kb-query(kb, pattern) → list of matching facts */
+    case 512: { /* kb-query(kb, pattern) → list of unifying substitutions
+                 *
+                 * Matches the native engine (eshkol_kb_query): one
+                 * substitution per fact that unifies with the pattern, in
+                 * KB insertion order.  `?`-prefixed pattern elements bind;
+                 * ground elements must unify structurally.  The empty list
+                 * means no match. */
         Value pattern = vm_pop(vm), kb_val = vm_pop(vm);
         Value pattern_datum;
-        int has_pattern = vm_kb_extract_fact_datum(vm, pattern, &pattern_datum);
-        if (!has_pattern) pattern_datum = pattern;
+        if (!vm_kb_extract_fact_datum(vm, pattern, &pattern_datum))
+            pattern_datum = pattern;
+
         if (is_heap_type(vm, kb_val, HEAP_KB)) {
-            VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
-            if (kb_obj) {
+            VmKnowledgeBase* kb_obj =
+                (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            VmFact* pat = vm_logic_fact_from_datum(vm, pattern_datum, 0);
+            if (kb_obj && pat) {
+                VmSubstitution* base = vm_make_substitution(&vm->heap.regions, 8);
                 Value result = NIL_VAL;
+                /* Scan backwards and prepend, so the result list comes out
+                 * in KB insertion order — the same order the native engine
+                 * produces after the matching change in eshkol_kb_query. */
                 for (int i = kb_obj->n_facts - 1; i >= 0; i--) {
                     VmFact* f = kb_obj->facts[i];
-                    Value fact_datum;
-                    if (!vm_kb_stored_fact_datum(vm, f, &fact_datum)) continue;
-                    if (vm_kb_datums_match(vm, pattern_datum, fact_datum)) {
-                        int32_t p = heap_alloc(&vm->heap);
-                        if (p < 0) break;
-                        vm->heap.objects[p]->type = HEAP_CONS;
-                        vm->heap.objects[p]->cons.car = fact_datum;
-                        vm->heap.objects[p]->cons.cdr = result;
-                        result = PAIR_VAL(p);
+                    if (!f) continue;
+                    if (pat->predicate != 0 && f->predicate != 0 &&
+                        pat->predicate != f->predicate) continue;
+                    if (pat->arity != f->arity) continue;
+
+                    VmSubstitution* subst = base;
+                    int ok = 1;
+                    for (int j = 0; j < pat->arity; j++) {
+                        subst = vm_unify(&vm->heap.regions,
+                                         &pat->args[j], &f->args[j], subst);
+                        if (!subst) { ok = 0; break; }
                     }
+                    if (!ok || !subst) continue;
+
+                    int32_t sp = heap_alloc(&vm->heap);
+                    if (sp < 0) break;
+                    vm->heap.objects[sp]->type = HEAP_SUBST;
+                    vm->heap.objects[sp]->opaque.ptr = subst;
+                    Value sv; sv.type = VAL_SUBST; sv.as.ptr = sp;
+
+                    int32_t p = heap_alloc(&vm->heap);
+                    if (p < 0) break;
+                    vm->heap.objects[p]->type = HEAP_CONS;
+                    vm->heap.objects[p]->cons.car = sv;
+                    vm->heap.objects[p]->cons.cdr = result;
+                    result = PAIR_VAL(p);
                 }
                 vm_push(vm, result);
                 break;

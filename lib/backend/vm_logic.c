@@ -33,6 +33,16 @@
 #define VM_VAL_LOGIC_VAR 10
 #define VM_VAL_HEAP_PTR  8   /* generic pointer to arena object */
 
+/* Term KIND, carried in VmValue.flags by the Value<->VmValue bridge in
+ * vm_native.c.  It records what a VM_VAL_HEAP_PTR term actually points at,
+ * so unification can tell an interned symbol from an interned string from a
+ * structural fact, and so the printer below can render a binding. */
+#define VM_TERM_KIND_PLAIN   0  /* immediate: null / int / double / bool / var */
+#define VM_TERM_KIND_SYMBOL  1  /* data.ptr_val = interned symbol text         */
+#define VM_TERM_KIND_STRING  2  /* data.ptr_val = interned string text         */
+#define VM_TERM_KIND_FACT    3  /* data.ptr_val = VmFact* (structural)         */
+#define VM_TERM_KIND_OPAQUE  4  /* data.ptr_val = tag<<32 | VM heap index      */
+
 typedef struct {
     uint8_t  type;
     uint8_t  flags;
@@ -122,10 +132,66 @@ static const char* vm_logic_var_name(uint64_t var_id) {
     return g_vm_var_names[var_id];
 }
 
-/** @brief Reset the process-global logic-variable registry (used between
- *         test runs). */
+/* ------------------------------------------------------------------
+ * Ground-term text interning
+ *
+ * Unification compares ground terms by identity, so two independently
+ * heap-allocated spellings of `alice` must resolve to the SAME pointer
+ * or `(kb-query kb '(parent alice ?child))` can never match a stored
+ * `(parent alice bob)`.  This mirrors eshkol_intern_predicate() in
+ * lib/core/logic.cpp, which the native engine relies on for exactly the
+ * same reason.  `kind` separates namespaces so a symbol and a string
+ * with identical text never collapse onto one pointer.
+ * ------------------------------------------------------------------ */
+#define VM_LOGIC_INTERN_POOL   (64 * 1024)
+#define VM_LOGIC_INTERN_MAX    4096
+
+static char        g_vm_intern_pool[VM_LOGIC_INTERN_POOL];
+static size_t      g_vm_intern_offset = 0;
+static const char* g_vm_intern_table[VM_LOGIC_INTERN_MAX];
+static size_t      g_vm_intern_count = 0;
+
+/**
+ * @brief Intern @p len bytes of @p text under namespace @p kind, returning a
+ *        stable pointer that is pointer-equal for equal (kind, text) pairs.
+ *
+ * The pooled entry is stored as one leading kind byte followed by the text
+ * and a NUL, and the returned pointer addresses the TEXT (one past the kind
+ * byte), so callers can read it directly while distinct kinds still occupy
+ * distinct addresses.
+ *
+ * @return Interned text pointer, or NULL if @p text is NULL or the pool /
+ *         table is exhausted (callers must treat NULL as "not internable"
+ *         and fall back to a non-unifiable opaque term).
+ */
+static const char* vm_logic_intern_text(const char* text, int len, int kind) {
+    if (!text || len < 0) return NULL;
+    for (size_t i = 0; i < g_vm_intern_count; i++) {
+        const char* e = g_vm_intern_table[i];
+        if (!e) continue;
+        if (e[-1] != (char)kind) continue;
+        if ((int)strlen(e) != len) continue;
+        if (memcmp(e, text, (size_t)len) == 0) return e;
+    }
+    if (g_vm_intern_count >= VM_LOGIC_INTERN_MAX) return NULL;
+    size_t needed = (size_t)len + 2; /* kind byte + text + NUL */
+    if (g_vm_intern_offset + needed > sizeof(g_vm_intern_pool)) return NULL;
+    char* slot = g_vm_intern_pool + g_vm_intern_offset;
+    g_vm_intern_offset += needed;
+    slot[0] = (char)kind;
+    memcpy(slot + 1, text, (size_t)len);
+    slot[1 + len] = '\0';
+    g_vm_intern_table[g_vm_intern_count++] = slot + 1;
+    return slot + 1;
+}
+
+/** @brief Reset the process-global logic-variable registry and the
+ *         ground-term intern pool (used between test runs). */
 static void vm_logic_var_reset(void) {
     g_vm_var_count = 0;
+    g_vm_intern_offset = 0;
+    g_vm_intern_count = 0;
+    for (size_t i = 0; i < VM_LOGIC_INTERN_MAX; i++) g_vm_intern_table[i] = NULL;
 }
 
 /* ========================================================================
@@ -303,9 +369,16 @@ static int vm_occurs(uint64_t var_id, const VmValue* term,
  * ======================================================================== */
 
 /** @brief Structural equality of two VmValues of the same type (raw bit
- *         comparison per type; different types are never equal). */
+ *         comparison per type; different types are never equal).
+ *
+ *  `flags` carries the term KIND for bridged VM values (see
+ *  VM_TERM_KIND_* in vm_native.c): a symbol and a string with the same
+ *  interned text must NOT unify, so the kind participates in equality.
+ *  Terms built by this file's own constructors all leave flags at 0, so
+ *  this is a no-op for them. */
 static int vm_values_equal(const VmValue* a, const VmValue* b) {
     if (a->type != b->type) return 0;
+    if (a->flags != b->flags) return 0;
     switch (a->type) {
         case VM_VAL_NULL:      return 1;
         case VM_VAL_INT64:     return a->data.int_val == b->data.int_val;
@@ -618,6 +691,82 @@ static VmValue vm_walk_deep_full(VmRegionStack* rs, const VmValue* term,
     }
 
     return walked;
+}
+
+/* ========================================================================
+ * Display — byte-identical to the native engine's
+ * eshkol_display_substitution() / eshkol_display_fact()
+ * ======================================================================== */
+
+static void vm_print_logic_term(const VmValue* t, int depth);
+
+/** @brief Print a fact as `(predicate arg ...)`; an unset predicate prints
+ *         as `?`, matching eshkol_display_fact(). */
+static void vm_print_logic_fact(const VmFact* f, int depth) {
+    if (!f) { printf("(fact)"); return; }
+    printf("(");
+    if (f->predicate) printf("%s", (const char*)(uintptr_t)f->predicate);
+    else              printf("?");
+    for (int i = 0; i < f->arity; i++) {
+        printf(" ");
+        vm_print_logic_term(&f->args[i], depth + 1);
+    }
+    printf(")");
+}
+
+/** @brief Print one bound term using the native engine's per-type spelling. */
+static void vm_print_logic_term(const VmValue* t, int depth) {
+    if (!t || depth > 32) { printf("..."); return; }
+    switch (t->type) {
+        case VM_VAL_NULL:  printf("()"); break;
+        case VM_VAL_INT64: printf("%lld", (long long)t->data.int_val); break;
+        case VM_VAL_DOUBLE: {
+            char buf[48];
+            eshkol_dtoa_shortest(buf, sizeof(buf), t->data.double_val);
+            printf("%s", buf);
+            break;
+        }
+        case VM_VAL_BOOL:  printf("%s", t->data.int_val ? "#t" : "#f"); break;
+        case VM_VAL_LOGIC_VAR: {
+            const char* name = vm_logic_var_name((uint64_t)t->data.int_val);
+            if (name) printf("%s", name);
+            else      printf("?_%llu", (unsigned long long)t->data.int_val);
+            break;
+        }
+        case VM_VAL_HEAP_PTR:
+            if (!t->data.ptr_val) { printf("()"); break; }
+            switch (t->flags) {
+                case VM_TERM_KIND_SYMBOL:
+                case VM_TERM_KIND_STRING:
+                    printf("%s", (const char*)(uintptr_t)t->data.ptr_val);
+                    break;
+                case VM_TERM_KIND_FACT:
+                    vm_print_logic_fact((const VmFact*)(uintptr_t)t->data.ptr_val, depth);
+                    break;
+                default:
+                    printf("#<heap:%d>", (int)t->flags);
+                    break;
+            }
+            break;
+        default: printf("#<type:%d>", (int)t->type); break;
+    }
+}
+
+/** @brief Print a substitution as `{?x -> 42, ?y -> bob}` (`{}` when empty
+ *         or NULL) — the same external form the native runtime prints, so
+ *         `(display (unify …))` is byte-identical on both substrates. */
+static void vm_print_substitution(const VmSubstitution* s) {
+    if (!s) { printf("{}"); return; }
+    printf("{");
+    for (int i = 0; i < s->n_bindings; i++) {
+        if (i > 0) printf(", ");
+        const char* name = vm_logic_var_name(s->var_ids[i]);
+        if (name) printf("%s", name);
+        else      printf("?_%llu", (unsigned long long)s->var_ids[i]);
+        printf(" -> ");
+        vm_print_logic_term(&s->terms[i], 0);
+    }
+    printf("}");
 }
 
 /* ========================================================================
