@@ -146,6 +146,8 @@
 (kb-assert! kb4 (make-fact "likes" "alice" "math"))
 (kb-assert! kb4 (make-fact "likes" "bob" "physics"))
 (chk "string fact binds a variable"  (length (kb-query kb4 (make-fact "likes" "alice" ?s))) 1)
+(chk "a bound string resolves to its text"
+     (walk ?s (car (kb-query kb4 (make-fact "likes" "alice" ?s)))) "math")
 (chk "string fact exact match"       (length (kb-query kb4 (make-fact "likes" "alice" "math"))) 1)
 (chk "string fact no match"          (length (kb-query kb4 (make-fact "likes" "alice" "chem"))) 0)
 

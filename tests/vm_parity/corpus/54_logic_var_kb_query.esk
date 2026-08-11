@@ -50,6 +50,13 @@
 (display (make-fact 'p 'a 'b)) (newline)
 (display (make-fact '(p a b))) (newline)
 
+;; -- string-valued predicate and arguments ---------------------------------
+(define kbs (make-kb))
+(kb-assert! kbs (make-fact "likes" "alice" "math"))
+(kb-assert! kbs (make-fact "likes" "alice" "physics"))
+(display (kb-query kbs (make-fact "likes" "alice" ?s))) (newline)
+(display (walk ?s (car (kb-query kbs (make-fact "likes" "alice" ?s))))) (newline)
+
 ;; -- two variables in one pattern ------------------------------------------
 (define kb3 (make-kb))
 (kb-assert! kb3 (make-fact '(color sky blue)))

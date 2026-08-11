@@ -1348,7 +1348,13 @@ static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file
         case ESHKOL_VALUE_HEAP_PTR:
             if (t->data.ptr_val) {
                 eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)t->data.ptr_val);
-                if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
+                if (header->subtype == HEAP_SUBTYPE_SYMBOL ||
+                    header->subtype == HEAP_SUBTYPE_STRING) {
+                    /* `display` semantics: a bound string shows its text, the
+                     * same as `(display "math")`.  Printing `#<heap:1>` made
+                     * every string binding in a substitution indistinguishable
+                     * — `(kb-query kb (make-fact "likes" "alice" ?x))` read
+                     * back as two identical `{?x -> #<heap:1>}` entries. */
                     fprintf(f, "%s", (const char*)(uintptr_t)t->data.ptr_val);
                 } else if (header->subtype == HEAP_SUBTYPE_FACT) {
                     eshkol_display_fact(
