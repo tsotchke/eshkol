@@ -387,13 +387,18 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_IS_COMPLEX_TYPE(type)     ((type) == ESHKOL_VALUE_COMPLEX)
 
 // Storage type checks - for cons cell setters that take int64 or double storage
-// INT64 storage: INT64, BOOL, CHAR, SYMBOL (types that use int_val in the union)
+// INT64 storage: INT64, BOOL, CHAR, SYMBOL, LOGIC_VAR (types that use int_val
+// in the union).  LOGIC_VAR is an immediate carrying a variable id, exactly
+// like BOOL/CHAR carry their payloads; omitting it here meant a logic variable
+// could not be stored in a cons cell, so `'(parent alice ?child)` failed to
+// build with "Invalid type for int64 storage value: 10".
 // Also includes legacy pointer types (32+) and consolidated types (HEAP_PTR, CALLABLE)
 // which store pointer addresses as int64
 #define ESHKOL_IS_INT_STORAGE_TYPE(type) ((type) == ESHKOL_VALUE_INT64 || \
                                           (type) == ESHKOL_VALUE_BOOL || \
                                           (type) == ESHKOL_VALUE_CHAR || \
                                           (type) == ESHKOL_VALUE_SYMBOL || \
+                                          (type) == ESHKOL_VALUE_LOGIC_VAR || \
                                           (type) == ESHKOL_VALUE_HEAP_PTR || \
                                           (type) == ESHKOL_VALUE_CALLABLE || \
                                           (type) >= 32)

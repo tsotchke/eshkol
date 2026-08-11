@@ -339,6 +339,9 @@ static VmFact* vm_make_fact(VmRegionStack* rs, uint64_t predicate,
  *         Fact-internal recursion is not yet implemented (see inline
  *         comment) — only checks whether the walked term itself is
  *         @p var_id. */
+static int vm_occurs_in_fact(uint64_t var_id, const VmFact* fact,
+    const VmSubstitution* subst, int depth);
+
 static int vm_occurs_impl(uint64_t var_id, const VmValue* term,
     const VmSubstitution* subst, int depth)
 {
@@ -350,9 +353,18 @@ static int vm_occurs_impl(uint64_t var_id, const VmValue* term,
         return (uint64_t)walked.data.int_val == var_id;
     }
 
-    /* Check inside facts (if the walked value is a fact pointer) */
-    /* For simplicity in the VM, facts stored as HEAP_PTR can be checked
-     * via the object header subtype. We use vm_alloc_object for facts. */
+    /* Recurse into compound terms.  A term built from a list — `(list ?x)`,
+     * `'(node ?x)` — is a fact here, so the check has to look inside it;
+     * stopping at the top level let `(unify ?x (list ?x) s)` succeed and
+     * build the circular binding the occurs check exists to prevent. */
+    if (walked.type == VM_VAL_HEAP_PTR && walked.data.ptr_val) {
+        VmObjectHeader* h = (VmObjectHeader*)((uint8_t*)(uintptr_t)walked.data.ptr_val
+                             - sizeof(VmObjectHeader));
+        if (h->subtype == VM_SUBTYPE_FACT) {
+            return vm_occurs_in_fact(var_id,
+                (const VmFact*)(uintptr_t)walked.data.ptr_val, subst, depth + 1);
+        }
+    }
 
     return 0;
 }
@@ -638,18 +650,7 @@ static int vm_occurs_in_fact(uint64_t var_id, const VmFact* fact,
 {
     if (!fact || depth > OCCURS_MAX_DEPTH) return 0;
     for (int i = 0; i < fact->arity; i++) {
-        VmValue walked = vm_walk(&fact->args[i], subst);
-        if (walked.type == VM_VAL_LOGIC_VAR &&
-            (uint64_t)walked.data.int_val == var_id) return 1;
-        if (walked.type == VM_VAL_HEAP_PTR && walked.data.ptr_val) {
-            VmObjectHeader* h = (VmObjectHeader*)((uint8_t*)(uintptr_t)walked.data.ptr_val
-                                 - sizeof(VmObjectHeader));
-            if (h->subtype == VM_SUBTYPE_FACT) {
-                if (vm_occurs_in_fact(var_id,
-                    (const VmFact*)(uintptr_t)walked.data.ptr_val, subst, depth + 1))
-                    return 1;
-            }
-        }
+        if (vm_occurs_impl(var_id, &fact->args[i], subst, depth + 1)) return 1;
     }
     return 0;
 }
@@ -700,15 +701,15 @@ static VmValue vm_walk_deep_full(VmRegionStack* rs, const VmValue* term,
 
 static void vm_print_logic_term(const VmValue* t, int depth);
 
-/** @brief Print a fact as `(predicate arg ...)`; an unset predicate prints
- *         as `?`, matching eshkol_display_fact(). */
+/** @brief Print a fact as `(predicate arg ...)`, matching
+ *         eshkol_display_fact(). A fact with no predicate came from a datum
+ *         list with no ground head, so it prints as that plain list. */
 static void vm_print_logic_fact(const VmFact* f, int depth) {
     if (!f) { printf("(fact)"); return; }
     printf("(");
     if (f->predicate) printf("%s", (const char*)(uintptr_t)f->predicate);
-    else              printf("?");
     for (int i = 0; i < f->arity; i++) {
-        printf(" ");
+        if (i > 0 || f->predicate) printf(" ");
         vm_print_logic_term(&f->args[i], depth + 1);
     }
     printf(")");
