@@ -2498,7 +2498,12 @@ runtime `eshkol_make_substitution_tagged`.
 **Syntax:** `(unify t₁ t₂ σ)` → Substitution | #f
 
 Attempts to extend substitution σ to make terms t₁ and t₂ identical. Returns the extended
-substitution on success, or `#f` if unification fails.
+substitution on success, or `#f` if unification fails — so `(if (unify a b σ) ...)` branches
+on the result directly.
+
+A term is a logic variable when it is a `?`-prefixed token, written bare (`?x`) or inside
+quoted data (`'?x`, `'(parent alice ?x)`); both spellings denote the same variable. A
+`?`-prefixed *string* is a string, not a variable.
 
 **Algorithm** (Martelli-Montanari with occurs check):
 
@@ -2572,7 +2577,12 @@ runtime `eshkol_make_fact_tagged`.
 (make-fact 'parent 'alice 'bob)      ; parent(alice, bob)
 (make-fact 'edge 1 2 5.0)            ; edge(1, 2, 5.0) — weighted graph edge
 (make-fact 'type ?x 'integer)        ; type(?x, integer) — with logic variable
+(make-fact '(parent alice bob))      ; same fact, written as one datum list
 ```
+
+A single list argument is read as `(predicate arg ...)`, so the two `parent` lines above
+build the same fact. A fact displays as that list: `(display (make-fact 'p 'a 'b))` prints
+`(p a b)`.
 
 #### `make-kb`
 
@@ -2601,8 +2611,19 @@ runtime `eshkol_kb_assert_tagged`.
 **Syntax:** `(kb-query kb pattern)` → List of Substitutions
 
 Queries the knowledge base by attempting to unify `pattern` against every fact in the KB.
-Returns a list of substitutions — one for each fact that successfully unifies with the pattern.
-An empty list indicates no matches.
+Returns a list of substitutions — one for each fact that successfully unifies with the pattern,
+in KB **insertion order**. An empty list indicates no matches.
+
+`pattern` may be written either way, and the two mean the same thing:
+
+```scheme
+(kb-query kb (make-fact 'parent 'alice ?child))   ; fact pattern
+(kb-query kb '(parent alice ?child))              ; quoted datum-list pattern
+```
+
+A `?`-prefixed token is a logic variable in **both** — bare, and inside quoted data. Ground
+elements must unify; a sub-list unifies structurally, so `'(edge (node a) ?to)` matches
+`(edge (node a) (node b))` and binds `?to` to `(node b)`.
 
 **Algorithm:** For each fact f in kb, attempt `(unify pattern f (make-substitution))`.
 Collect all successful substitutions into a list.
@@ -2634,7 +2655,7 @@ runtime `eshkol_kb_query_tagged`.
 
 | Predicate | Tests For | Type |
 |-----------|-----------|------|
-| `(logic-var? x)` | Logic variable | Tag 10 |
+| `(logic-var? x)` | Logic variable — `?x` **and** `'?x` | Tag 10 |
 | `(substitution? x)` | Substitution | Heap subtype 12 |
 | `(fact? x)` | Fact | Heap subtype 13 |
 | `(kb? x)` | Knowledge base | Heap subtype 15 |
