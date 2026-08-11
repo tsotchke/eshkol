@@ -1,0 +1,238 @@
+;; tests/logic/logic_var_kb_query_test.esk
+;;
+;; Value-asserting guard for the logic-variable representation (task #100,
+;; "Bug A") and the KB half of task #102.
+;;
+;; Reported symptom: `(kb-query kb '(parent alice ?child))` — the syntax in
+;; API_REFERENCE, the language guide and the three browser demos in
+;; site/src/main.esk — never matched anything, on any substrate.
+;;
+;; Root cause was a THREE-WAY representation split.  "Is this a logic
+;; variable?" had three incompatible answers:
+;;
+;;   VM      the KB pattern matcher accepted only a VAL_STRING beginning "?";
+;;           `unify` wanted a bare VAL_INT variable id (and read its arguments
+;;           in (subst a b) order, not the documented (t1 t2 subst));
+;;           `logic-var?` tested for a HEAP_LOGIC_VAR object nothing ever
+;;           constructed, so it was unconditionally #f.
+;;   native  a ?-prefixed token inside a quoted datum had no codegen arm at
+;;           all and evaluated to (); `logic-var?` inlined its own type-byte
+;;           compare; the KB entry points cast a datum list straight to
+;;           eshkol_fact_t* without a subtype check.
+;;
+;; A quoted `?x` compiles to a SYMBOL, which satisfied none of those, so the
+;; documented form could not match anywhere.
+;;
+;; The contract this test pins (identical on native and on the VM):
+;;
+;;   (1) A ?-prefixed token is a logic variable in EVERY position — bare, and
+;;       inside a quoted datum.  `logic-var?` is #t for both spellings and #f
+;;       for a plain symbol, a string, a number and every other value.
+;;   (2) `kb-query` returns a LIST OF SUBSTITUTIONS, one per unifying fact,
+;;       in KB insertion order; the empty list means no match.
+;;   (3) Both `(make-fact 'p 'a 'b)` and `(make-fact '(p a b))` build the same
+;;       fact, and a query pattern may be either a fact or a datum list.
+;;   (4) `unify` takes (t1 t2 subst), accepts ?-symbols and logic variables,
+;;       unifies facts structurally, and FAILS the occurs check.
+;;   (5) `walk` resolves a variable through a binding chain and returns an
+;;       unbound variable unchanged.
+;;
+;; Runs identically under `-r` (JIT), from the JIT object cache, and AOT.
+
+(define fails 0)
+
+(define (chk label got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display label) (display " = ") (display got) (newline))
+      (begin
+        (set! fails (+ fails 1))
+        (display "  FAIL ") (display label)
+        (display " got=") (display got) (display " want=") (display want) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; (1) One predicate: logic-var? agrees with what the KB matcher binds.
+;; ---------------------------------------------------------------------------
+(display "(1) logic-var? — one predicate for every spelling:") (newline)
+(chk "bare ?x is a logic variable"        (logic-var? ?x)     #t)
+(chk "quoted '?x is a logic variable"     (logic-var? '?x)    #t)
+(chk "a plain symbol is not"              (logic-var? 'x)     #f)
+(chk "a ?-prefixed STRING is not"         (logic-var? "?x")   #f)
+(chk "an integer is not"                  (logic-var? 42)     #f)
+(chk "a boolean is not"                   (logic-var? #t)     #f)
+(chk "a flonum is not"                    (logic-var? 3.14)   #f)
+(chk "the empty list is not"              (logic-var? '())    #f)
+(chk "a substitution is not"              (logic-var? (make-substitution)) #f)
+;; A logic variable carried through ordinary data stays one.
+(chk "car of (cons ?a ?b) is a variable"  (logic-var? (car (cons ?a ?b))) #t)
+(chk "element of a quoted list is one"    (logic-var? (car (cdr (cdr '(parent alice ?child))))) #t)
+
+;; ---------------------------------------------------------------------------
+;; (2) The documented quoted-list query form binds and returns substitutions.
+;; ---------------------------------------------------------------------------
+(display "(2) kb-query with the documented quoted pattern:") (newline)
+
+(define kb (make-kb))
+(kb-assert! kb (make-fact '(parent alice bob)))
+(kb-assert! kb (make-fact '(parent bob charlie)))
+(kb-assert! kb (make-fact '(parent alice diana)))
+
+(define one-child (kb-query kb '(parent bob ?child)))
+(chk "single solution: one substitution" (length one-child) 1)
+(chk "single solution: binding resolves" (walk ?child (car one-child)) 'charlie)
+
+(define alice-children (kb-query kb '(parent alice ?child)))
+(chk "multi-solution: two substitutions" (length alice-children) 2)
+(chk "multi-solution: first is bob (insertion order)"
+     (walk ?child (car alice-children)) 'bob)
+(chk "multi-solution: second is diana"
+     (walk ?child (car (cdr alice-children))) 'diana)
+
+;; A variable in the FIRST argument position binds just the same.
+(define bobs-parent (kb-query kb '(parent ?p bob)))
+(chk "variable in argument 1 binds" (walk ?p (car bobs-parent)) 'alice)
+
+;; Two variables in one pattern.
+(define kb2 (make-kb))
+(kb-assert! kb2 (make-fact '(color sky blue)))
+(kb-assert! kb2 (make-fact '(color grass green)))
+(define colors (kb-query kb2 '(color ?obj ?col)))
+(chk "two variables: two solutions" (length colors) 2)
+(chk "two variables: first object"  (walk ?obj (car colors)) 'sky)
+(chk "two variables: first colour"  (walk ?col (car colors)) 'blue)
+(chk "two variables: second object" (walk ?obj (car (cdr colors))) 'grass)
+(chk "two variables: second colour" (walk ?col (car (cdr colors))) 'green)
+
+;; ---------------------------------------------------------------------------
+;; (3) No-match cases return the empty list, not a spurious solution.
+;; ---------------------------------------------------------------------------
+(display "(3) no-match queries:") (newline)
+(chk "unknown subject"       (kb-query kb '(parent eve ?child))   '())
+(chk "unknown predicate"     (kb-query kb '(sibling ?a ?b))       '())
+(chk "wrong ground argument" (kb-query kb '(parent alice zoe))    '())
+(chk "wrong arity"           (kb-query kb '(parent alice))        '())
+(chk "no-match is null?"     (null? (kb-query kb '(parent eve ?c))) #t)
+
+;; A fully ground pattern is a membership test, not a wildcard.
+(chk "ground pattern that holds"     (length (kb-query kb '(parent alice bob))) 1)
+(chk "ground pattern that does not"  (length (kb-query kb '(parent alice charlie))) 0)
+
+;; ---------------------------------------------------------------------------
+;; (4) Both make-fact spellings, and both pattern spellings, mean one thing.
+;; ---------------------------------------------------------------------------
+(display "(4) fact and pattern spellings agree:") (newline)
+
+(define kb3 (make-kb))
+(kb-assert! kb3 (make-fact 'likes 'alice 'math))       ; variadic spelling
+(kb-assert! kb3 (make-fact '(likes alice physics)))    ; datum-list spelling
+(kb-assert! kb3 (make-fact 'likes 'bob 'music))
+
+(chk "variadic fact is a fact"     (fact? (make-fact 'likes 'alice 'math)) #t)
+(chk "datum-list fact is a fact"   (fact? (make-fact '(likes alice math))) #t)
+(chk "both spellings unify"
+     (null? (unify (make-fact 'likes 'alice 'math)
+                   (make-fact '(likes alice math))
+                   (make-substitution)))
+     #f)
+
+(chk "list pattern finds both"     (length (kb-query kb3 '(likes alice ?what))) 2)
+(chk "fact pattern finds both"     (length (kb-query kb3 (make-fact 'likes 'alice ?what))) 2)
+(chk "list and fact pattern agree"
+     (length (kb-query kb3 '(likes alice ?what)))
+     (length (kb-query kb3 (make-fact 'likes 'alice ?what))))
+(chk "kb-count sees every assert"  (kb-count kb3) 3)
+
+;; String-valued predicates and arguments keep working.
+(define kb4 (make-kb))
+(kb-assert! kb4 (make-fact "likes" "alice" "math"))
+(kb-assert! kb4 (make-fact "likes" "bob" "physics"))
+(chk "string fact binds a variable"  (length (kb-query kb4 (make-fact "likes" "alice" ?s))) 1)
+(chk "string fact exact match"       (length (kb-query kb4 (make-fact "likes" "alice" "math"))) 1)
+(chk "string fact no match"          (length (kb-query kb4 (make-fact "likes" "alice" "chem"))) 0)
+
+;; ---------------------------------------------------------------------------
+;; (5) Nested patterns unify structurally.
+;; ---------------------------------------------------------------------------
+(display "(5) nested patterns:") (newline)
+
+(define kb5 (make-kb))
+(kb-assert! kb5 (make-fact '(edge (node a) (node b))))
+(kb-assert! kb5 (make-fact '(edge (node b) (node c))))
+
+(define from-a (kb-query kb5 '(edge (node a) ?to)))
+(chk "nested ground head selects one" (length from-a) 1)
+(chk "variable binds to the sub-term" (walk ?to (car from-a)) '(node b))
+
+(define into-c (kb-query kb5 '(edge (node ?from) (node c))))
+(chk "variable INSIDE a sub-term binds" (length into-c) 1)
+(chk "…to the right value"              (walk ?from (car into-c)) 'b)
+
+(chk "nested pattern that does not match"
+     (length (kb-query kb5 '(edge (node a) (node c)))) 0)
+
+;; ---------------------------------------------------------------------------
+;; (6) unify: documented argument order, chains, structure, occurs check.
+;; ---------------------------------------------------------------------------
+(display "(6) unify and walk:") (newline)
+
+(define s1 (unify ?v 42 (make-substitution)))
+(chk "unify binds in (t1 t2 subst) order" (walk ?v s1) 42)
+(chk "unify returns a substitution"       (substitution? s1) #t)
+
+(define c1 (unify ?a1 ?b1 (make-substitution)))
+(define c2 (unify ?b1 99 c1))
+(chk "chain resolves transitively" (walk ?a1 c2) 99)
+(chk "chain intermediate resolves" (walk ?b1 c2) 99)
+
+(define c3 (unify ?p1 ?q1 (make-substitution)))
+(define c4 (unify ?q1 ?r1 c3))
+(define c5 (unify ?r1 'hello c4))
+(chk "three-link chain" (walk ?p1 c5) 'hello)
+
+(chk "unbound variable walks to itself" (logic-var? (walk ?unbound (make-substitution))) #t)
+(chk "a non-variable walks to itself"   (walk 42 (make-substitution)) 42)
+
+(chk "distinct constants do not unify" (unify 42 99 (make-substitution)) '())
+(chk "distinct symbols do not unify"   (unify 'red 'blue (make-substitution)) '())
+(chk "a variable unifies with itself"  (substitution? (unify ?w ?w (make-substitution))) #t)
+
+(define f1 (unify (make-fact 'parent ?ma 'bob)
+                  (make-fact 'parent 'alice ?mb)
+                  (make-substitution)))
+(chk "structural unification binds both ways (left)"  (walk ?ma f1) 'alice)
+(chk "structural unification binds both ways (right)" (walk ?mb f1) 'bob)
+(chk "different predicates do not unify"
+     (unify (make-fact 'parent 'a 'b) (make-fact 'child 'a 'b) (make-substitution)) '())
+(chk "different arities do not unify"
+     (unify (make-fact 'p 'a 'b) (make-fact 'p 'a) (make-substitution)) '())
+
+;; Occurs check — API_REFERENCE: "(unify ?x (list ?x) σ) fails because binding
+;; ?x -> (list ?x) would create an infinite term."
+(chk "occurs check rejects a circular binding"
+     (unify ?occ (list ?occ) (make-substitution)) '())
+(chk "occurs check result is null?"
+     (null? (unify ?occ2 (list ?occ2) (make-substitution))) #t)
+(chk "occurs check reaches a NESTED position"
+     (unify ?occ3 (list 'f (list 'g ?occ3)) (make-substitution)) '())
+(chk "a variable in a list it does not occur in still binds"
+     (substitution? (unify ?occ4 (list 'f 'g) (make-substitution))) #t)
+
+;; ---------------------------------------------------------------------------
+;; (7) External representations — the same text on every substrate.
+;; ---------------------------------------------------------------------------
+(display "(7) external representations:") (newline)
+(chk "a variable prints by name"       ?named    ?named)
+(chk "quoted and bare name one variable"
+     (walk '?same (unify ?same 7 (make-substitution))) 7)
+(chk "a quoted datum keeps its variable"
+     (length (kb-query kb '(parent alice ?child))) 2)
+
+(newline)
+(if (= fails 0)
+    (begin
+      (display "PASS: logic variables and kb-query hold one contract")
+      (newline))
+    (begin
+      (display "FAIL: ")
+      (display fails)
+      (display " logic-variable/kb-query check(s) failed")
+      (newline)))
