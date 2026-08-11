@@ -4670,10 +4670,12 @@ static Value vm_logic_value_from_term(VM* vm, const VmValue* t, int depth) {
     }
 }
 
-/** @brief Push a substitution onto the VM stack as a VAL_SUBST heap value,
- *         or the empty list when unification failed (NULL). */
+/** @brief Push a substitution onto the VM stack as a VAL_SUBST heap value, or
+ *         `#f` when unification failed — the documented `(unify t1 t2 s) ->
+ *         Substitution | #f`.  (kb-query's no-match result stays `()`: that
+ *         one really is an empty list of solutions.) */
 static void vm_logic_push_subst(VM* vm, VmSubstitution* s) {
-    if (!s) { vm_push(vm, NIL_VAL); return; }
+    if (!s) { vm_push(vm, BOOL_VAL(0)); return; }
     VM_PUSH_HEAP_OPAQUE(vm, HEAP_SUBST, VAL_SUBST, s);
 }
 

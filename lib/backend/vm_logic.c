@@ -17,6 +17,10 @@
  */
 
 #include "vm_numeric.h"   /* pulls in vm_arena.h + subtypes */
+/* Substitution display formats flonums exactly as the rest of the VM (and the
+ * native runtime) does.  Included here rather than relying on the amalgamation
+ * order, because weight_matrices.c also #includes this file. */
+#include "eshkol/core/dtoa_shortest.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

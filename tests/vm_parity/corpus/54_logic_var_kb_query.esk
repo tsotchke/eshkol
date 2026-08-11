@@ -77,7 +77,7 @@
 (display (walk ?unbound c2)) (newline)
 (display (walk 42 c2)) (newline)
 
-(display (unify 42 99 (make-substitution))) (newline)
+(display (unify 42 99 (make-substitution))) (newline)          ; #f, not ()
 (display (unify 'red 'blue (make-substitution))) (newline)
 (display (make-substitution)) (newline)
 

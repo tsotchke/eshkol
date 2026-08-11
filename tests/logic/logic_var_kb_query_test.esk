@@ -129,10 +129,10 @@
 (chk "variadic fact is a fact"     (fact? (make-fact 'likes 'alice 'math)) #t)
 (chk "datum-list fact is a fact"   (fact? (make-fact '(likes alice math))) #t)
 (chk "both spellings unify"
-     (null? (unify (make-fact 'likes 'alice 'math)
-                   (make-fact '(likes alice math))
-                   (make-substitution)))
-     #f)
+     (substitution? (unify (make-fact 'likes 'alice 'math)
+                           (make-fact '(likes alice math))
+                           (make-substitution)))
+     #t)
 
 (chk "list pattern finds both"     (length (kb-query kb3 '(likes alice ?what))) 2)
 (chk "fact pattern finds both"     (length (kb-query kb3 (make-fact 'likes 'alice ?what))) 2)
@@ -191,8 +191,8 @@
 (chk "unbound variable walks to itself" (logic-var? (walk ?unbound (make-substitution))) #t)
 (chk "a non-variable walks to itself"   (walk 42 (make-substitution)) 42)
 
-(chk "distinct constants do not unify" (unify 42 99 (make-substitution)) '())
-(chk "distinct symbols do not unify"   (unify 'red 'blue (make-substitution)) '())
+(chk "distinct constants do not unify" (unify 42 99 (make-substitution)) #f)
+(chk "distinct symbols do not unify"   (unify 'red 'blue (make-substitution)) #f)
 (chk "a variable unifies with itself"  (substitution? (unify ?w ?w (make-substitution))) #t)
 
 (define f1 (unify (make-fact 'parent ?ma 'bob)
@@ -201,18 +201,18 @@
 (chk "structural unification binds both ways (left)"  (walk ?ma f1) 'alice)
 (chk "structural unification binds both ways (right)" (walk ?mb f1) 'bob)
 (chk "different predicates do not unify"
-     (unify (make-fact 'parent 'a 'b) (make-fact 'child 'a 'b) (make-substitution)) '())
+     (unify (make-fact 'parent 'a 'b) (make-fact 'child 'a 'b) (make-substitution)) #f)
 (chk "different arities do not unify"
-     (unify (make-fact 'p 'a 'b) (make-fact 'p 'a) (make-substitution)) '())
+     (unify (make-fact 'p 'a 'b) (make-fact 'p 'a) (make-substitution)) #f)
 
 ;; Occurs check — API_REFERENCE: "(unify ?x (list ?x) σ) fails because binding
 ;; ?x -> (list ?x) would create an infinite term."
 (chk "occurs check rejects a circular binding"
-     (unify ?occ (list ?occ) (make-substitution)) '())
-(chk "occurs check result is null?"
-     (null? (unify ?occ2 (list ?occ2) (make-substitution))) #t)
+     (unify ?occ (list ?occ) (make-substitution)) #f)
+(chk "occurs check failure is FALSE, so (if (unify ...)) branches correctly"
+     (if (unify ?occ2 (list ?occ2) (make-substitution)) 'bound 'failed) 'failed)
 (chk "occurs check reaches a NESTED position"
-     (unify ?occ3 (list 'f (list 'g ?occ3)) (make-substitution)) '())
+     (unify ?occ3 (list 'f (list 'g ?occ3)) (make-substitution)) #f)
 (chk "a variable in a list it does not occur in still binds"
      (substitution? (unify ?occ4 (list 'f 'g) (make-substitution))) #t)
 
