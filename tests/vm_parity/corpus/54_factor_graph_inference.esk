@@ -68,6 +68,14 @@
 (display (close? (free-energy fg #(7 0)) fe-none)) (newline)
 (display (close? (free-energy fg #(0 9)) fe-none)) (newline)
 
+; the same VALUE spelled at run time is the same evidence: equal? says the
+; literal and the constructed vector are one value, so the answer must be one
+; answer too (the native runtime read only the literal and silently dropped
+; run-time evidence; the VM could not tell them apart at all)
+(display (equal? #(1 1) (vector 1 1))) (newline)
+(display (close? (free-energy fg (vector 1 1)) fe-11)) (newline)
+(display (close? (free-energy fg (vector)) fe-none)) (newline)
+
 ; ---- expected free energy over the action variable ----
 (display (close? (expected-free-energy fg 0 0) 0.5241497548866028)) (newline)
 (display (close? (expected-free-energy fg 0 1) 1.764517510551123)) (newline)
