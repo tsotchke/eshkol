@@ -20,9 +20,9 @@ before a coordinated disclosure window has been agreed.
 
 | Version          | Security fixes                |
 | ---------------- | ----------------------------- |
-| v1.2.x (current) | yes                           |
-| v1.1.x           | yes (until v1.3 GA)           |
-| < v1.1           | no                            |
+| v1.3.x (current) | yes                           |
+| v1.2.x           | yes (until v1.4 GA)           |
+| < v1.2           | no                            |
 
 ## Trust Boundaries
 
@@ -93,11 +93,15 @@ need to coordinate resets.
 
 ## Sanitizer / Fuzzing Coverage
 
-- ASan / UBSan builds pass the full v1.2 edge-case suite
-  (testing framework, argparse, time API, binary I/O, hardening
-  path, regex, JSON). See `scripts/build-sanitizer.sh`.
-- TSan / MSan / LSan are wired via the same CMake flags; CI lanes
-  are being added incrementally.
+- ASan / UBSan builds pass the full aggregate suite (45 suites, 770 tests),
+  including the v1.2 edge-case coverage (testing framework, argparse, time
+  API, binary I/O, hardening path, regex, JSON). See
+  `scripts/build-sanitizer.sh`. `linux-x64-asan-ubsan` is a required,
+  merge-blocking CI lane.
+- ThreadSanitizer is run against the parallel runtime: the v1.3.4-evolve
+  `parallel-map` fix took the arena data-race count to zero.
+- MSan / LSan are wired via the same CMake flags; their CI lanes are being
+  added incrementally.
 - Fuzzing harnesses (libfuzzer) are tracked under #187.
 
 ## Threat Model (summary)

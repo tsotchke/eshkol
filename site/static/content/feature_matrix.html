@@ -1,11 +1,12 @@
-<h1 id="eshkol-v1.3.4-feature-matrix">Eshkol v1.3.4 Feature Matrix</h1>
+<h1 id="eshkol-v1.3.4-evolve-feature-matrix">Eshkol v1.3.4-evolve
+Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> =
 Production | <code>WIP</code> = In Progress | <code>Planned</code> =
 Planned | <code>No</code> = Not Planned | <code>Partial</code> =
 Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol
 ecosystem. Every <strong>Production</strong> feature is code-verified,
-with extensive test coverage (37 suites, 528 self-reported tests).</p>
+with extensive test coverage (45 suites, 770 individual tests).</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -557,14 +558,19 @@ native + VM</td>
 </tr>
 <tr>
 <td>Higher-order derivatives</td>
-<td>Yes</td>
+<td>Yes, with one known exception</td>
 <td>Forward</td>
-<td>Nested differentials; every spelling agrees —
+<td>Every <em>well-defined</em> spelling agrees —
 <code>(derivative-n f x k)</code>, the nested-lambda form, and the
 curried form <code>(define df (derivative f))</code> …
 <code>(derivative df)</code> / <code>(derivative (derivative f))</code>
 (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders
-1-3 are exact)</td>
+1-3 are exact). <strong>Exception</strong>: the Taylor tower does not
+nest — <code>(derivative-n df x k)</code> over a derivative
+<em>closure</em>, and <code>derivative-n</code> of
+<code>derivative-n</code>, silently return <code>0</code>. See <a
+href="KNOWN_ISSUES.md#tracked-open-issues">KNOWN_ISSUES</a> (“The Taylor
+tower cannot nest”)</td>
 </tr>
 <tr>
 <td>Math function support</td>
@@ -1233,7 +1239,29 @@ and variable-bound points, #343) or nested scalar
 <td>Lexical regions</td>
 <td>Yes</td>
 <td>Manual</td>
-<td><code>with-region</code></td>
+<td><code>with-region</code>; unwinds correctly through
+<code>raise</code>/<code>call/cc</code> as of v1.3.4-evolve</td>
+</tr>
+<tr>
+<td>Region handles</td>
+<td>Yes</td>
+<td>Manual</td>
+<td>v1.3.4-evolve (#341): <code>region-open</code> /
+<code>region-close</code> / <code>region-open?</code>, a non-lexical
+surface over the same machinery. Generation-counted handles, so every
+stale token is detectably stale; out-of-order close is a defined
+cascade. <code>region-open?</code> is <code>vm-supported</code>; the
+reclamation itself is native-only</td>
+</tr>
+<tr>
+<td>Automatic per-iteration nursery</td>
+<td>Yes</td>
+<td>Automatic</td>
+<td>ESH-0214e: a resident loop that mutates persistent state reclaims
+per iteration, matching <code>with-region</code>. Loop bodies containing
+a <code>gradient</code> op, a <code>set!</code> or a
+<code>tensor-set!</code> are excluded by design — scope those with a
+region handle or <code>with-region</code></td>
 </tr>
 <tr>
 <td>Global arena</td>
@@ -1306,6 +1334,12 @@ and variable-bound points, #343) or nested scalar
 <hr />
 <h2 id="compilation-runtime">Compilation &amp; Runtime</h2>
 <table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 20%" />
+<col style="width: 23%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr>
 <th>Feature</th>
@@ -1443,9 +1477,10 @@ and variable-bound points, #343) or nested scalar
 </tr>
 <tr>
 <td>Stack traces</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>Source spans</td>
+<td>Source-span diagnostics; <code>-g</code> emits DWARF for
+GDB/LLDB</td>
 </tr>
 <tr>
 <td>Breakpoint support</td>
@@ -1690,6 +1725,34 @@ and variable-bound points, #343) or nested scalar
 <td>Yes</td>
 <td><code>close-port</code>, <code>eof-object?</code></td>
 <td>Complete</td>
+</tr>
+<tr>
+<td><strong>Event Loop</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Portable readiness loop</td>
+<td>Yes</td>
+<td><code>make-event-loop</code>, <code>event-loop-poll</code>,
+<code>event-loop-close</code></td>
+<td>v1.3.4-evolve (ESH-0011): kqueue (BSD/macOS), epoll (Linux), IOCP +
+WSAPoll/PeekNamedPipe (Windows); fail-closed stub on WASM.
+<code>vm-supported</code></td>
+</tr>
+<tr>
+<td>Descriptor registration</td>
+<td>Yes</td>
+<td><code>event-loop-add-fd!</code>,
+<code>event-loop-remove-fd!</code></td>
+<td>Readiness-style interest bits</td>
+</tr>
+<tr>
+<td>Backend introspection</td>
+<td>Yes</td>
+<td><code>event-loop-backend</code></td>
+<td>Reports the live backend</td>
 </tr>
 <tr>
 <td><strong>Console I/O</strong></td>
@@ -2071,6 +2134,11 @@ opener</td>
 <hr />
 <h2 id="performance-characteristics">Performance Characteristics</h2>
 <table>
+<colgroup>
+<col style="width: 44%" />
+<col style="width: 28%" />
+<col style="width: 28%" />
+</colgroup>
 <thead>
 <tr>
 <th>Operation</th>
@@ -2147,7 +2215,8 @@ opener</td>
 <tr>
 <td>Hessian (n→1)</td>
 <td>O(n²)</td>
-<td>Numerical finite differences</td>
+<td>Exact: routed through the Taylor tower, identity with
+<code>(derivative-n f x 2)</code> in value and exactness</td>
 </tr>
 <tr>
 <td><strong>List Operations</strong></td>
@@ -2255,8 +2324,14 @@ opener</td>
 <tr>
 <td>Windows</td>
 <td>Yes</td>
-<td>x86-64</td>
-<td>Native Visual Studio 2022 + ClangCL/LLVM 21</td>
+<td>x86-64, ARM64</td>
+<td>Native Visual Studio 2022 + ClangCL/LLVM 21. x86-64 covers Lite, XLA
+and CUDA. ARM64 builds and passes the hosted
+<code>windows-arm64-lite</code> and <code>windows-arm64-xla</code> CI
+lanes (<code>windows-11-arm</code> runners) and ships those two
+packages; there is no mesh/self-verified ARM64 hardware coverage, and
+ARM64 CUDA is not advertised because NVIDIA does not ship the required
+toolkit</td>
 </tr>
 <tr>
 <td>FreeBSD</td>
@@ -2375,7 +2450,8 @@ opener</td>
 <td></td>
 </tr>
 <tr>
-<td><code>eshkol-run</code> (AOT mode, <code>eshkol-run in.esk -o out</code>)</td>
+<td><code>eshkol-run</code> (AOT mode,
+<code>eshkol-run in.esk -o out</code>)</td>
 <td>Yes</td>
 <td>Ahead-of-time compiler</td>
 <td>Produces executables</td>
@@ -2444,7 +2520,7 @@ opener</td>
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>555+ builtins</td>
+<td>1,025 builtins across a 1,091-construct declared surface</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -2648,15 +2724,16 @@ opener</td>
 </tr>
 <tr>
 <td>Model serialization</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td>Native <code>.eshkol-model</code> serialiser
+(<code>lib/core/model_io.cpp</code>)</td>
 </tr>
 <tr>
 <td>ONNX export</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td><code>lib/core/onnx_export.c</code></td>
 </tr>
 <tr>
 <td><strong>Datasets</strong></td>
@@ -3279,7 +3356,13 @@ opener</td>
 </table>
 <hr />
 <h2 id="interoperability">Interoperability</h2>
-<table>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 29%" />
+<col style="width: 21%" />
+<col style="width: 29%" />
+<col style="width: 18%" />
+</colgroup>
 <thead>
 <tr>
 <th>Interface</th>
@@ -3321,21 +3404,21 @@ opener</td>
 </tr>
 <tr>
 <td>Call Python from Eshkol</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned (ctypes/cffi)</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td>Stable C FFI</td>
 </tr>
 <tr>
 <td>Call Eshkol from Python</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned (wrapper lib)</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td>pybind11 bindings (<code>bindings/python/</code>)</td>
 </tr>
 <tr>
 <td>NumPy interop</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned (array protocol)</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td>Zero-copy array interop</td>
 </tr>
 <tr>
 <td><strong>Data Formats</strong></td>
@@ -3363,9 +3446,10 @@ opener</td>
 </tr>
 <tr>
 <td>MessagePack</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>Stable</td>
+<td><code>lib/core/msgpack.esk</code>; see
+<code>docs/reference/stdlib/msgpack.md</code></td>
 </tr>
 <tr>
 <td>Protocol Buffers</td>
@@ -3381,9 +3465,10 @@ opener</td>
 </tr>
 <tr>
 <td>SQLite</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>v1.2</td>
+<td><code>agent.sqlite</code> FFI module; see
+<code>docs/reference/agent/sqlite.md</code></td>
 </tr>
 <tr>
 <td>PostgreSQL</td>
@@ -3701,8 +3786,9 @@ optimization, polyhedral loop optimization</li>
 </ul>
 <h3 id="v1.4-connection-q4-2026">v1.4-connection (Q4 2026)</h3>
 <ul>
-<li><strong>Platform Abstraction</strong>: Cross-platform windows, event
-system, event loop</li>
+<li><strong>Platform Abstraction</strong>: Cross-platform windows and
+event system (the portable event loop already SHIPPED in
+v1.3.4-evolve)</li>
 <li><strong>Real-Time Audio</strong>: Device management, synthesis, MIDI
 I/O</li>
 <li><strong>Networking</strong>: TCP/UDP sockets with linear resource
@@ -3721,8 +3807,9 @@ Networks</li>
 </ul>
 <h3 id="v2.0-starlight-2027">v2.0-starlight (2027+)</h3>
 <ul>
-<li><strong>Quantum Computing</strong>: Qubit types with linear
-tracking, gates, VQE/QAOA</li>
+<li><strong>Quantum Computing</strong>: QAOA and circuit-level
+optimisation (Qubit types with linear tracking, gates and VQE already
+SHIPPED in v1.3.3/v1.3.4-evolve)</li>
 <li><strong>Formal Verification</strong>: Proof assistant integration,
 certified compilation</li>
 <li><strong>Next-Gen Types</strong>: Session types, algebraic effects,
@@ -3732,7 +3819,7 @@ quantitative type theory</li>
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v1.1">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (39 special forms, 555+ builtins)</li>
+<li>Core language (116 special forms, 1,025 builtins)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>
@@ -3791,7 +3878,7 @@ quantitative type theory</li>
 <td>Register+stack architecture, computed-goto dispatch</td>
 </tr>
 <tr>
-<td>550+ native call IDs</td>
+<td>694 native call IDs</td>
 <td>Yes</td>
 <td>Math, string, IO, complex, rational, bignum, dual, AD, tensor,
 logic, inference, workspace, hash, bytevector, parameter</td>
@@ -3872,6 +3959,36 @@ fabricate. Higher-order AD needs the native jet’s
 tower; native-only until a VM jet carrier is built</td>
 </tr>
 <tr>
+<td>R7RS module forms (<code>op:IMPORT</code> / <code>op:PROVIDE</code>
+/ <code>op:REQUIRE</code>)</td>
+<td>Yes</td>
+<td>v1.3.4-evolve (#402): the VM lane previously knew none of
+<code>define-library</code> / <code>import</code> / <code>export</code>.
+All three move to <code>vm-supported</code> with no new waivers; three
+latent VM defects were fixed with them (<code>provide</code> emitting
+nothing via a slot shift, a module-loader POP desync, and a fail-open
+forward reference now refused)</td>
+</tr>
+<tr>
+<td>Portable event loop</td>
+<td>Yes</td>
+<td>v1.3.4-evolve (ESH-0011): <code>make-event-loop</code>,
+<code>event-loop-poll</code>, <code>event-loop-add-fd!</code>,
+<code>event-loop-remove-fd!</code>, <code>event-loop-close</code>,
+<code>event-loop-backend</code> all <code>vm-supported</code></td>
+</tr>
+<tr>
+<td>Region handles / <code>with-region</code></td>
+<td>Surface yes, reclamation no</td>
+<td><code>region-open?</code> is <code>vm-supported</code>;
+<code>region-open</code>, <code>region-close</code> and
+<code>op:WITH_REGION</code> are <code>native-only-justified</code>. The
+name resolves on both substrates and the handle protocol, its validation
+and every error message are byte-identical (one shared C
+implementation), so output parity holds — what is native-only is the
+reclamation, because the VM heap has no escape evacuator</td>
+</tr>
+<tr>
 <td>Checked ascription <code>(the &lt;type&gt; expr)</code></td>
 <td>No</td>
 <td>native-only-justified: compile-time type-checker construct, runtime
@@ -3928,7 +4045,8 @@ eshkol.ai</td>
 <tr>
 <td>VM Production</td>
 <td>Complete</td>
-<td>176/176 tests, zero stubs, zero stdout contamination</td>
+<td>Zero stubs, zero stdout contamination; gated by the VM source suite,
+the 81/81 C-API suite, and the 140/140 VM parity differential</td>
 </tr>
 <tr>
 <td>KB Pattern Matching</td>
@@ -4040,7 +4158,7 @@ eshkol.ai</td>
 <h2 id="known-limitations">Known Limitations</h2>
 <ol type="1">
 <li><strong>Single GPU dispatch</strong> - One GPU at a time (multi-GPU
-planned v1.2)</li>
+not yet scheduled)</li>
 <li><strong>Small ecosystem</strong> - Growing standard library, but not
 as extensive as Python/Julia</li>
 <li><strong>Learning curve</strong> - Functional programming + AD
@@ -4077,7 +4195,7 @@ arithmetic (bignums + rationals) - Consciousness engine (logic,
 inference, workspace) - Signal processing library (FFT, filters, window
 functions) - R7RS extensions (call/cc, dynamic-wind, bytevectors) - 555+
 builtins, 37 test suites, 528 self-reported tests (87/87 v1.2 edge
-cases)</p>
+cases) [as of v1.1]</p>
 <p><strong>Codebase</strong>: ~232,000 lines of production C/C++</p>
 <h3 id="v1.0-december-2025---foundation-release">v1.0 (December 2025) -
 Foundation Release</h3>
@@ -4103,7 +4221,7 @@ infrastructure) - Scheme community (language design inspiration) -
 JAX/PyTorch (AD implementation insights) - Julia (technical computing
 design patterns)</p>
 <hr />
-<p><strong>Last Updated</strong>: 2026-07-08 <strong>Document
-Version</strong>: 1.3.3</p>
+<p><strong>Last Updated</strong>: 2026-07-31 <strong>Document
+Version</strong>: 1.3.4-evolve</p>
 <p>For detailed API documentation, see <a
 href="API_REFERENCE.md">API_REFERENCE.md</a></p>

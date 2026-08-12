@@ -185,9 +185,9 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 
 Total compiler infrastructure is approximately 286,000 lines of C17 and C++20
 across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
-added roughly 12,600 lines of Doxygen-format documentation across 116 files —
-50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
-previously-undocumented implementation files under `lib/` (≈7,478 lines) —
+added Doxygen-format documentation across 116 files —
+50 of the 64 public headers under `inc/eshkol/` and 56
+previously-undocumented implementation files under `lib/` —
 comments only, no behaviour change; v1.3.2-evolve added a further
 `eshkol-doc` reference generator (`docs/api/`) that harvests those comments
 automatically.
@@ -724,8 +724,8 @@ added Doxygen documentation across every agent-FFI implementation file in
   region-evacuator poison coverage and the corrected `input2` gradient
   gate, and extended with the release's two generative exposure engines
   (the multi-oracle differential harness and the AD-vs-finite-difference
-  adversarial oracle) as permanent release gates. ICC readiness oracle
-  reports 100/100, trace-verified.
+  adversarial oracle) as permanent release gates. The ICC readiness oracle
+  reports a score of 100 with verdict `ready`, trace-verified.
 
 ---
 
@@ -766,7 +766,19 @@ change.
 
 ## Hardening and robustness posture
 
-**v1.3.3-evolve (current release).** Alongside the quantum, post-quantum,
+**v1.3.4-evolve (current release)** continues the posture described below.
+Its second half is a consumer-hardening correctness wave whose organising
+principle is that a wrong answer must not be able to look like a right one: an
+emitted compile-time error now prevents artifact emission and execution, which
+turned a family of silent wrong answers into build failures and exposed the
+rest. Exactness is decided from an operand's runtime tag rather than a result's
+value shape on both engines; differentiation is exact at exact points, survives
+per-iteration nursery reclamation, and no longer returns zeros above gradient
+arity 16; `define-library` and `import` resolve same-unit libraries on all three
+back ends; and `--shared-lib` links a real, C-ABI-correct shared library instead
+of exiting zero with no artifact.
+
+**v1.3.3-evolve.** Alongside the quantum, post-quantum,
 dynamic-parameter, incremental-dataflow, and exact-rational features
 described elsewhere in this sheet, the release ran a silent-wrong-answer
 correctness campaign driven by two new generative exposure engines, both
@@ -974,7 +986,8 @@ link errors.
 - **Browser REPL**: https://eshkol.ai/learn
 - **Licence**: MIT
 - **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
-  (GCC 11+, Clang 14+), Ninja recommended.
+  (GCC 11+ or Clang 14+ — the toolchain the CI matrix builds with; AppleClang
+  on macOS, LLVM 21 ClangCL on Windows), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.
 - **Homebrew tap**: `brew tap tsotchke/eshkol && brew install eshkol`; the
   tap formula carries the computed release SHA-256 after tagging.

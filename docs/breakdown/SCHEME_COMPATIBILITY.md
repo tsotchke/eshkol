@@ -31,9 +31,9 @@ The R7RS-small standard defines 244 standard procedures and ~30 special forms. E
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
 **Implementation references:**
-- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (8,368 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (33,999 lines)
-- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (2,048 lines)
+- Parser: [parser.cpp](../../lib/frontend/parser.cpp)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
+- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp)
 
 ---
 
@@ -691,7 +691,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 861 lines).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp)).
 
 ```scheme
 ;; Pattern-based macros

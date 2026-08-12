@@ -1,7 +1,7 @@
 # XLA Backend — Eshkol Compiler Internals
 
 **Status**: Production (v1.2.1-scale)
-**Source**: `lib/backend/xla/xla_runtime.cpp` (1249 lines), `inc/eshkol/backend/xla/xla_codegen.h`, `inc/eshkol/backend/xla/xla_runtime.h`
+**Source**: `lib/backend/xla/xla_runtime.cpp`, `inc/eshkol/backend/xla/xla_codegen.h`, `inc/eshkol/backend/xla/xla_runtime.h`
 **Build flag**: `-DESHKOL_XLA_ENABLED`
 
 ---
@@ -833,7 +833,7 @@ subtype `HEAP_SUBTYPE_TENSOR`) store raw doubles as int64 bit patterns.
 
 ## 12. See Also
 
-- `lib/backend/xla/xla_runtime.cpp` — all 11 C runtime functions (1249 lines)
+- `lib/backend/xla/xla_runtime.cpp` — all 11 C runtime functions
 - `inc/eshkol/backend/xla/xla_codegen.h` — XLACodegen LLVM emit API
 - `inc/eshkol/backend/xla/xla_runtime.h` — XLARuntime C++ class API
 - `inc/eshkol/backend/xla/xla_types.h` — XLATypes HoTT→MLIR type mapping

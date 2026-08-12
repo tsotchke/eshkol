@@ -41,10 +41,15 @@ We expect all contributors to adhere to our Code of Conduct. Please be respectfu
 To set up your development environment for Eshkol, you'll need:
 
 1. **C/C++ Compiler**
-   - GCC 9.0+ or Clang 10.0+
-   - On macOS: `brew install gcc` or use the default Clang
+   - A C17 + C++20 compiler — the standards `CMakeLists.txt` enforces
+     (`CMAKE_C_STANDARD 17`, `CMAKE_CXX_STANDARD 20`)
+   - GCC 11+ or Clang 14+ — the toolchain the CI matrix actually builds with
+     (the `ubuntu-22.04` / `ubuntu-22.04-arm` runners' defaults). Older
+     compilers are untested and not supported
+   - On macOS: the default AppleClang (macOS 14 / macOS 15 runners)
    - On Linux: `sudo apt install build-essential`
-   - On Windows: Visual Studio 2022 with Desktop development for C++ and Clang tools
+   - On Windows: Visual Studio 2022 with Desktop development for C++ and
+     LLVM 21 ClangCL
 
 2. **CMake**
    - Version 3.14 or higher
@@ -129,6 +134,8 @@ The website is written in Eshkol and compiled to WebAssembly:
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
+# CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
+# or the bundle can diverge from the checked-in artifact.
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
@@ -351,7 +358,7 @@ eshkol/
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (35 suites by feature)
+├── tests/                  # Test suite (45 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests
@@ -390,14 +397,17 @@ race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
 releases:
 
-### Immediate Priorities (v1.4-connection - July 2026)
+### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close
 2. **TLS/SSL**: Via system libraries
-3. **Non-Blocking I/O**: Event loop (epoll/kqueue)
-4. **HTTP Client**: Built on sockets + TLS
-5. **Linear Types for Handles**: `open -> borrowed -> closed` with compile-time tracking
-6. **Debugger**: REPL step-through with breakpoints + variable inspection
-7. **Documentation Generator**: `eshkol-doc` from docstrings
+3. **HTTP Client**: Built on sockets + TLS
+4. **Linear Types for Handles**: `open -> borrowed -> closed` with compile-time tracking
+5. **Debugger**: REPL step-through with breakpoints + variable inspection
+
+Already delivered ahead of this list: the portable event loop (kqueue / epoll /
+IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
+linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
+extending it to handles is what remains.
 
 ### Near-Term (v1.5-intelligence - August 2026)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)

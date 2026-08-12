@@ -88,7 +88,7 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (33,999 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus roughly thirty specialised modules; the compiler tree as a whole totals about 233,000 lines)
+**Phase 4: LLVM IR Generation** (in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus roughly thirty specialised modules; the compiler tree as a whole totals about 322,000 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
@@ -169,7 +169,7 @@ Closures capture variables by storing **pointers** (not values) to the captured 
   (inc)) ; Returns 2 (mutates same counter)
 ```
 
-**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 805 lines, [inference.cpp](../../lib/core/inference.cpp) 912 lines, [workspace.cpp](../../lib/core/workspace.cpp) 308 lines):
+**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp), [inference.cpp](../../lib/core/inference.cpp), [workspace.cpp](../../lib/core/workspace.cpp)):
 
 Three C runtime libraries implementing unification with substitutions, factor graph belief propagation, and global workspace softmax competition. LLVM codegen dispatches to these via tagged value calling conventions.
 
@@ -228,7 +228,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (1,540 lines after the v1.2 split); the per-domain implementations live in twelve `tensor_*_codegen.cpp` siblings (~19,200 lines combined) with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (a thin dispatcher after the v1.2 split); the per-domain implementations live in twelve `tensor_*_codegen.cpp` siblings with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss
@@ -263,7 +263,7 @@ Adaptive dispatch system with cost model calibration:
 | cBLAS (Apple Accelerate AMX) | 1,100 GFLOPS | 5 us | 17 to ~1B elements |
 | Metal GPU (SF64 software float64) | 200 GFLOPS | 200 us | >1B elements |
 
-**SF64 (Software Float64):** Metal GPUs lack native float64 — SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas combined for ~100-bit effective precision). Implemented in [metal_softfloat.h](../../lib/backend/gpu/metal_softfloat.h) (4,076 lines) and [gpu_memory.mm](../../lib/backend/gpu/gpu_memory.mm) (3,786 lines).
+**SF64 (Software Float64):** Metal GPUs lack native float64 — SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas combined for ~100-bit effective precision). Implemented in [metal_softfloat.h](../../lib/backend/gpu/metal_softfloat.h) and [gpu_memory.mm](../../lib/backend/gpu/gpu_memory.mm).
 
 **Cost model dispatch** ([blas_backend.cpp](../../lib/backend/blas_backend.cpp)): Automatically selects the optimal backend based on tensor size and compute intensity. Configurable via environment variables (`ESHKOL_GPU_PRECISION`, `ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_GPU_PEAK_GFLOPS`).
 
@@ -276,7 +276,7 @@ Work-stealing thread pool with parallel higher-order functions:
 - `parallel-filter` — parallel predicate-based selection
 - `parallel-for-each` — parallel side-effecting iteration
 
-Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) (705 lines), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) (2,401 lines), [thread_pool.cpp](../../lib/backend/thread_pool.cpp) (1,131 lines). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
+Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp), [thread_pool.cpp](../../lib/backend/thread_pool.cpp). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
 
 ### Signal Processing
 
@@ -529,10 +529,10 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 2,062 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
-- **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 1,018 lines): Completions, hover, go-to-definition, diagnostics, formatting
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp)): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp)): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
-- **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 721 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry
+- **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp)): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry
 - **Docker images**: Debian debug/release, Ubuntu release, CUDA, XLA
 - **CI/CD**: GitHub Actions for continuous integration and release automation
 - **Homebrew**: `brew install eshkol` via tap
