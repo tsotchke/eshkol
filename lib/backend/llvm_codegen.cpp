@@ -13909,7 +13909,8 @@ private:
     }
 
     static bool externTypeIsPointerLike(const std::string& declared) {
-        return declared == "ptr" || declared == "string" || declared == "char*";
+        return declared == "ptr" || declared == "string" || declared == "char*" ||
+               declared == "void*";
     }
 
     Value* codegenCall(const eshkol_operations_t* op) {
@@ -25703,8 +25704,8 @@ private:
             if (strcmp(type_str, "double") == 0 || strcmp(type_str, "f64") == 0)
                 return double_type;
             if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0 ||
-                strcmp(type_str, "ptr") == 0) {
-                return PointerType::getUnqual(*context); // char*
+                strcmp(type_str, "ptr") == 0 || strcmp(type_str, "void*") == 0) {
+                return PointerType::getUnqual(*context); // char* / void*
             }
             // Default to int32 for unknown types
             eshkol_warn("Unknown type '%s', defaulting to int32", type_str);
@@ -25834,7 +25835,12 @@ private:
             if (strcmp(type_str, "i64") == 0) return int64_type;
             if (strcmp(type_str, "f32") == 0) return Type::getFloatTy(*context);
             if (strcmp(type_str, "f64") == 0) return double_type;
-            if (strcmp(type_str, "ptr") == 0) return PointerType::getUnqual(*context);
+            // `void*` is accepted as a friendlier alias for `ptr` — a C
+            // declaration copy-pasted as `(extern ptr foo void*)` used to
+            // silently default to int64 with only a warning, corrupting the
+            // call ABI (a pointer argument/return packed as a 64-bit int).
+            if (strcmp(type_str, "ptr") == 0 || strcmp(type_str, "void*") == 0)
+                return PointerType::getUnqual(*context);
             // Default to int64 for unknown types
             eshkol_warn("Unknown type '%s', defaulting to int64", type_str);
             return int64_type;
