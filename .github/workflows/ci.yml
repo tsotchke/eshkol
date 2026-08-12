@@ -21,6 +21,14 @@ on:
       - 'notes/**'
       - 'press/**'
       - 'LICENSE'
+  schedule:
+    # Weekly touch of the Windows LLVM SDK caches so actions/cache's 7-day
+    # idle-eviction can never strand a run on the cold download+extract path
+    # (see llvm-sdk-cache-keepalive below). This trigger fires every job in
+    # this workflow by default, so every job below carries
+    # `if: github.event_name != 'schedule'` to stay off the cron path; only
+    # llvm-sdk-cache-keepalive runs on it.
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,6 +65,7 @@ jobs:
   # PR.
   surface-manifest:
     name: surface-manifest
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -94,6 +103,7 @@ jobs:
   # gate; branch-protection configuration must not add this check as required.
   quantum-macos:
     name: quantum-macos (advisory)
+    if: github.event_name != 'schedule'
     runs-on: macos-14
     continue-on-error: true
     timeout-minutes: 120
@@ -245,6 +255,7 @@ jobs:
 
   unix-matrix:
     name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -573,9 +584,76 @@ jobs:
             .icc/runtime-traces-oracle-view/
           if-no-files-found: ignore
 
+  # The Windows lanes' own curl-from-llvm-project path is where the
+  # stall/slow-download risk lives (see "Install LLVM SDK" below and
+  # llvm-sdk-cache-keepalive above). Linux runner egress to GitHub release
+  # assets is fast and has not hung a single lane. This job pre-fetches the
+  # raw, still-compressed LLVM SDK archives on Linux and stashes them under
+  # a short, in-workspace, OS-agnostic relative path via
+  # enableCrossOsArchive: a compressed .tar.xz is byte-identical cache
+  # content no matter which OS wrote it. This is deliberately a SEPARATE
+  # cache key/path from the *extracted* SDK the Windows jobs restore into
+  # C:\src — an absolute, drive-lettered path outside the workspace, which
+  # actions/cache's own docs say cross-OS archiving cannot reconcile
+  # ("avoid directory pointers... which evaluate to an absolute path that
+  # does not match across OSs"); that extraction step and its cache key are
+  # untouched. windows-matrix only needs to extract on a hit, skipping its
+  # own curl entirely; a miss here falls back unchanged to that curl.
+  prefetch-windows-llvm-archives:
+    name: prefetch-windows-llvm-archives (${{ matrix.arch }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            llvm_suffix: aarch64
+          - arch: x64
+            llvm_suffix: x86_64
+    steps:
+      - name: Restore LLVM SDK archive cache
+        id: archive-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
+      - name: Download LLVM SDK archive
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p llvm-archive-cache
+          llvm_version='${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          suffix='${{ matrix.llvm_suffix }}'
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${llvm_version}/clang+llvm-${llvm_version}-${suffix}-pc-windows-msvc.tar.xz"
+          out="llvm-archive-cache/clang+llvm-${llvm_version}-${suffix}-pc-windows-msvc.tar.xz"
+          echo "Downloading $url"
+          curl --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output "$out" "$url"
+
+      - name: Save LLVM SDK archive cache
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
   windows-matrix:
     name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
+    needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
+    # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
+    # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
+    # CUDA toolkit install and GPU build/test on top. 90 minutes leaves that
+    # real baseline comfortable headroom while still making the platform's
+    # unbounded 360-minute default (what let "Install LLVM SDK" run
+    # undetected for ~6h below) unreachable.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -636,14 +714,32 @@ jobs:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
 
+      # Populated by prefetch-windows-llvm-archives above, which this job
+      # `needs:`. On a hit, "Install LLVM SDK" below extracts straight from
+      # this file and never calls curl at all.
+      - name: Restore prefetched LLVM SDK archive
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        id: archive-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
       - name: Install LLVM SDK
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
+        # Pure extraction of an already-local archive should never come
+        # close to this. If it does, something is genuinely stuck and
+        # failing fast beats silently riding the platform's 360-minute
+        # default to the same outcome six hours later.
+        timeout-minutes: 45
         run: |
           $ErrorActionPreference = 'Stop'
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
           $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
           $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $prefetched = "llvm-archive-cache\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
           $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
 
@@ -652,13 +748,56 @@ jobs:
             Remove-Item -LiteralPath $llvmRoot -Recurse -Force
           }
 
-          Write-Host "Downloading $url"
-          curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
-          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+          # Windows Defender's real-time scanner inspecting each of the SDK's
+          # tens of thousands of small files as they're written is a known
+          # cause of extraction taking hours instead of minutes on hosted
+          # Windows runners. This needs admin, which hosted runners grant;
+          # if it fails for any reason, proceed without it rather than fail
+          # the step over an optimization.
+          try {
+            Add-MpPreference -ExclusionPath 'C:\src', $env:RUNNER_TEMP -ErrorAction Stop
+            Write-Host "Added Windows Defender exclusions for C:\src and $env:RUNNER_TEMP"
+          } catch {
+            Write-Host "Add-MpPreference failed (non-fatal, proceeding): $_"
+          }
+
+          if ('${{ steps.archive-cache.outputs.cache-hit }}' -eq 'true' -and (Test-Path $prefetched)) {
+            Write-Host "Using prefetched archive at $prefetched (skipping curl)"
+            $archive = $prefetched
+          } else {
+            Write-Host "Downloading $url"
+            # --retry only fires on curl's own error exits; a connection that
+            # opens and then goes silent (stalled transfer) is not an error to
+            # curl and --retry never sees it, so the step can hang to the job
+            # timeout. --connect-timeout bounds the TCP/TLS handshake and
+            # --speed-limit/--speed-time make curl abort (exit 28) once the
+            # transfer drops below 100 KB/s for 60s straight, which --retry-all-errors
+            # then retries like any other failure.
+            curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+            if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+          }
 
           Write-Host "Extracting..."
-          tar -xf $archive -C C:\src
-          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          # `tar -xf` on this archive has been observed to hang for hours on
+          # these runners even with the archive already local — this is an
+          # extraction problem, not a download problem. 7-Zip handles each
+          # format (.xz then .tar) in a single pass and is preinstalled on
+          # hosted Windows runners; fall back to tar only if 7z is
+          # unexpectedly absent.
+          $use7z = [bool](Get-Command 7z -ErrorAction SilentlyContinue)
+          if ($use7z) {
+            $archiveLeaf = Split-Path -Leaf $archive
+            $innerTar = Join-Path $env:RUNNER_TEMP ([System.IO.Path]::GetFileNameWithoutExtension($archiveLeaf))
+            & 7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar.xz failed (exit $LASTEXITCODE)" }
+            & 7z x $innerTar "-oC:\src" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar failed (exit $LASTEXITCODE)" }
+            Remove-Item -LiteralPath $innerTar -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "7z not found on PATH, falling back to tar"
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          }
 
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
             throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
@@ -880,6 +1019,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   wasm-execute-diff:
     name: wasm-execute-diff
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -952,3 +1092,96 @@ jobs:
           name: wasm-execute-diff-trace
           path: scripts/icc_traces/wasm_parity.jsonl
           if-no-files-found: ignore
+
+  # actions/cache evicts entries that go unaccessed for 7 days, and the
+  # windows-llvm-sdk-* caches only get touched by pushes/PRs that actually
+  # exercise the windows-matrix lane on a cold cache. In a quiet stretch that
+  # is enough idle time for eviction, which strands the *next* run on the
+  # ~800MB download+extract path above — with no warning until it happens to
+  # hit the job timeout (this is what happened to windows-x64-cuda after 12
+  # idle days). A weekly restore is a cheap access that resets the idle
+  # clock; if the entry is already gone by the time this runs, it rebuilds
+  # and re-saves it so the gap never has a chance to compound.
+  llvm-sdk-cache-keepalive:
+    name: llvm-sdk-cache-keepalive (${{ matrix.arch }})
+    if: github.event_name == 'schedule' && github.repository == 'tsotchke/eshkol'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: windows-11-arm
+            llvm_suffix: aarch64
+          - arch: x64
+            runner: windows-2022
+            llvm_suffix: x86_64
+    steps:
+      - name: Restore LLVM SDK Cache
+        id: llvm-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+
+      - name: Install LLVM SDK
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        timeout-minutes: 45
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
+
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (Test-Path $llvmRoot) {
+            Remove-Item -LiteralPath $llvmRoot -Recurse -Force
+          }
+
+          try {
+            Add-MpPreference -ExclusionPath 'C:\src', $env:RUNNER_TEMP -ErrorAction Stop
+            Write-Host "Added Windows Defender exclusions for C:\src and $env:RUNNER_TEMP"
+          } catch {
+            Write-Host "Add-MpPreference failed (non-fatal, proceeding): $_"
+          }
+
+          Write-Host "Downloading $url"
+          curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+
+          Write-Host "Extracting..."
+          # See windows-matrix's "Install LLVM SDK" for why: tar has been
+          # observed to hang for hours on this archive even with it already
+          # local, so use 7-Zip (preinstalled on hosted Windows runners) and
+          # only fall back to tar if it is unexpectedly absent.
+          $use7z = [bool](Get-Command 7z -ErrorAction SilentlyContinue)
+          if ($use7z) {
+            $archiveLeaf = Split-Path -Leaf $archive
+            $innerTar = Join-Path $env:RUNNER_TEMP ([System.IO.Path]::GetFileNameWithoutExtension($archiveLeaf))
+            & 7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar.xz failed (exit $LASTEXITCODE)" }
+            & 7z x $innerTar "-oC:\src" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar failed (exit $LASTEXITCODE)" }
+            Remove-Item -LiteralPath $innerTar -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "7z not found on PATH, falling back to tar"
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          }
+
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
+          }
+
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
+
+      - name: Save LLVM SDK Cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
