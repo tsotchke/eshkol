@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Docker Build Script - Build Eshkol for Linux via Docker
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # forward_ref_named_test.sh — Bug W regression (2026-04-25)
 #
 # Asserts that calling a forward-referenced function that was never

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Control Flow Test Suite
 # Runs all control flow tests and reports results

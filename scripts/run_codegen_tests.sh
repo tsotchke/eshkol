@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Codegen Test Suite
 # Runs codegen-level tests (arithmetic, etc.)

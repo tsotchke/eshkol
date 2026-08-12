@@ -1,7 +1,7 @@
 # Tensors & ML — Reference
 
 Machine-verified reference for Eshkol's tensor system and the ML/numerical
-library modules (v1.3.0-evolve). Every signature and output on these pages was
+library modules (v1.3.4-evolve). Every signature and output on these pages was
 produced by running the current compiler; broken operations are documented
 against their behavior, not hidden.
 

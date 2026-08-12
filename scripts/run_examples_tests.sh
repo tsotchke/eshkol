@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Examples Test Suite
 # Tests all examples and categorizes them by status

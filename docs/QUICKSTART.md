@@ -114,19 +114,24 @@ eshkol-run hello.esk -o hello
 (* 7 6)             ; => 42
 (- 10 3)            ; => 7
 
-; Division promotes to double
-(/ 10 3)            ; => 3.333...
+; Division of exact integers stays exact — it makes a rational, not a double
+(/ 10 3)            ; => 10/3
+(/ 10 2)            ; => 5
 
 ; Mixed types promote automatically
 (+ 5 2.5)           ; => 7.5
 
 ; Math functions
-(sqrt 16)           ; => 4.0
-(sin 3.14159)       ; => ~0.0
-(pow 2 10)          ; => 1024.0
+(sqrt 16)           ; => 4
+(sin 3.14159)       ; => 2.65358979335273e-06
+(pow 2 10)          ; => 1024
 ```
 
-**Type System**: Polymorphic arithmetic with automatic promotion (int64 → double when needed)
+**Type System**: Polymorphic arithmetic with automatic promotion (exact integer
+→ rational → double, promoting only when a value actually requires it). An
+inexact value with no fractional part prints without a decimal point, so `4`
+above may be either exact or inexact — ask `exact?` if it matters. See
+[the numeric tower reference](reference/language/numeric-tower.md).
 
 ---
 
@@ -144,7 +149,7 @@ eshkol-run hello.esk -o hello
 (define (circle-area r)
   (* pi r r))
 
-(circle-area 5)  ; => 78.5398...
+(circle-area 5)  ; => 78.53975
 
 ; Lambda expressions (anonymous functions)
 (define double (lambda (x) (* 2 x)))
@@ -152,7 +157,7 @@ eshkol-run hello.esk -o hello
 
 ; Functions are first-class values
 (define ops (list + - * /))
-(map (lambda (f) (f 10 2)) ops)  ; => (12 8 20 5.0)
+(map (lambda (f) (f 10 2)) ops)  ; => (12 8 20 5)
 ```
 
 ---
@@ -532,16 +537,16 @@ Here's a complete 2-layer neural network with backpropagation:
 ### 5. **File I/O**
 
 ```scheme
-; Write to file
+; Write to file — the string comes first, the port second
 (define out (open-output-file "data.txt"))
-(write-line out "Hello, File!")
+(write-line "Hello, File!" out)
 (close-port out)
 
 ; Read from file
 (define in (open-input-file "data.txt"))
 (define line (read-line in))
 (close-port in)
-(display line)  ; => "Hello, File!"
+(display line)  ; => Hello, File!
 ```
 
 ---
@@ -965,7 +970,8 @@ ar rcs libmylib.a mylib.o
 (+ r r)             ; => 2/3 (exact)
 
 ;; R7RS: exact + inexact → inexact
-(+ big 0.5)         ; => 9.223372036854776e+18 (double)
+(+ big 0.5)         ; => 9223372036854776000 (a double, printed without a
+                    ;    decimal point because it has no fractional part)
 ```
 
 ---
@@ -975,16 +981,17 @@ ar rcs libmylib.a mylib.o
 ```scheme
 ;; Create complex numbers
 (define z (make-rectangular 3.0 4.0))
-(magnitude z)       ; => 5.0
-(angle z)           ; => 0.9273...
+(magnitude z)       ; => 5
+(angle z)           ; => 0.9272952180016122
 
 ;; Complex arithmetic
-(+ z (make-rectangular 1.0 -1.0))  ; => 4.0+3.0i
-(* z z)             ; => -7.0+24.0i
+(+ z (make-rectangular 1.0 -1.0))  ; => 4+3i
+(* z z)             ; => -7+24i
 
 ;; Smith's formula for numerical stability
 (/ (make-rectangular 1e300 1e300)
-   (make-rectangular 1e300 1e300))  ; => 1.0+0.0i (no overflow)
+   (make-rectangular 1e300 1e300))  ; => 1 (no overflow; the zero imaginary
+                                    ;    part is not printed)
 ```
 
 ---
@@ -1234,7 +1241,7 @@ eshkol-run --wasm app.esk -o app.wasm
 ## Next Steps
 
 - **[API Reference](API_REFERENCE.md)** — Complete function documentation (555+ builtins)
-- **[Examples](../../examples/)** — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine
+- **[Examples](../examples/)** — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine
 - **[Consciousness Engine](breakdown/CONSCIOUSNESS_ENGINE.md)** — Logic programming, factor graphs, global workspace
 - **[Automatic Differentiation](breakdown/AUTODIFF.md)** — Forward/reverse mode, vector calculus operators
 - **[Machine Learning](breakdown/MACHINE_LEARNING.md)** — Neural network training, optimizers, activations

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run the standalone bytecode VM self-tests.
 
 set -e

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Parallel Primitives Test Suite
 # Tests parallel-map, parallel-fold, parallel-filter, parallel-for-each,

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # macOS Build Script - Build Eshkol natively on macOS
 #

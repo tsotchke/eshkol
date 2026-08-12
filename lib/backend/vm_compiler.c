@@ -241,6 +241,13 @@ static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
  *        `(unquote-splicing x)` elements in via a native "append" call
  *        (native id 73) instead of consing.
  */
+/** @brief True when @p n is an `(unquote-splicing x)` form. */
+static int vm_qq_is_splice(Node* n) {
+    return n && n->type == N_LIST && n->n_children == 2 &&
+           n->children[0]->type == N_SYMBOL &&
+           strcmp(n->children[0]->symbol, "unquote-splicing") == 0;
+}
+
 static void compile_quasiquote(FuncChunk* c, Node* node) {
     if (!node) { chunk_emit(c, OP_NIL, 0); return; }
 
@@ -274,23 +281,45 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         return;
     }
 
-    /* List: build from right to left using cons */
+    /* List: accumulate LEFT TO RIGHT in segments.
+     *
+     * This used to build right-to-left, consing literals onto an accumulator
+     * and calling `append` for each `,@`. But native call 73 pops its SECOND
+     * operand from the top of stack (`b = pop, a = pop; result = a ++ b`),
+     * and the accumulator already sat underneath — so every splice computed
+     * `acc ++ spliced` and the spliced elements landed at the END of the
+     * list regardless of where they were written:
+     *
+     *   `(1 ,@xs 5 6)   with xs = (2 3 4)   =>  (1 5 6 2 3 4)   not (1 2 3 4 5 6)
+     *   `(,@a ,@b)                          =>  (p q x y)       not (x y p q)
+     *
+     * Accumulating left to right makes the operand order come out right with
+     * no new opcode: each maximal run of literal elements is built into its
+     * own segment list and appended to the accumulator, and each `,@` is
+     * appended in the position it was written. `append` returns its second
+     * argument unchanged when the first is '(), so the initial empty
+     * accumulator costs nothing. */
     if (node->type == N_LIST) {
-        chunk_emit(c, OP_NIL, 0); /* start with empty list */
-        for (int i = node->n_children - 1; i >= 0; i--) {
+        chunk_emit(c, OP_NIL, 0); /* accumulator = '() */
+        int i = 0;
+        while (i < node->n_children) {
             Node* elem = node->children[i];
-            /* Check for unquote-splicing */
-            if (elem->type == N_LIST && elem->n_children == 2 &&
-                elem->children[0]->type == N_SYMBOL &&
-                strcmp(elem->children[0]->symbol, "unquote-splicing") == 0) {
-                /* Compile the spliced expression */
-                compile_expr(c, elem->children[1], 0);
-                /* Append to accumulator: (append spliced acc) */
-                chunk_emit(c, OP_NATIVE_CALL, 73); /* append */
-            } else {
-                compile_quasiquote(c, elem);
+            if (vm_qq_is_splice(elem)) {
+                compile_expr(c, elem->children[1], 0);  /* TOS = spliced list */
+                chunk_emit(c, OP_NATIVE_CALL, 73);      /* acc ++ spliced */
+                i++;
+                continue;
+            }
+            /* Maximal run of non-spliced elements [i, j). */
+            int j = i;
+            while (j < node->n_children && !vm_qq_is_splice(node->children[j])) j++;
+            chunk_emit(c, OP_NIL, 0);                   /* segment tail */
+            for (int k = j - 1; k >= i; k--) {
+                compile_quasiquote(c, node->children[k]);
                 chunk_emit(c, OP_CONS, 0);
             }
+            chunk_emit(c, OP_NATIVE_CALL, 73);          /* acc ++ segment */
+            i = j;
         }
         return;
     }
@@ -353,7 +382,23 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
     int n_patches = 0;
     for (int i = 1; i < node->n_children; i++) {
         Node* clause = node->children[i];
-        if (clause->type != N_LIST || clause->n_children < 2) continue;
+        if (clause->type != N_LIST || clause->n_children < 1) continue;
+        /* R7RS 4.2.1: a `(<test>)` clause with NO body evaluates to the TEST
+         * VALUE when the test is truthy, and falls through when it is not.
+         * These clauses used to be skipped outright by an `n_children < 2`
+         * guard, so `(cond ((+ 1 2)) (else 'fail))` returned `fail` on the VM
+         * and `3` natively — the whole point of the idiom, `(cond ((assoc k
+         * alist)) (else ...))`, silently produced the wrong branch. */
+        if (clause->n_children == 1 && !is_sym(clause->children[0], "else")) {
+            compile_expr(c, clause->children[0], 0);   /* test -> TOS */
+            chunk_emit(c, OP_DUP, 0);                  /* keep a copy       */
+            int jfall = placeholder(c);                /* pops the copy     */
+            if (n_patches < 64) end_patches[n_patches++] = placeholder(c);
+            patch(c, jfall, OP_JUMP_IF_FALSE, c->code_len);
+            chunk_emit(c, OP_POP, 0);                  /* falsy: discard it  */
+            continue;
+        }
+        if (clause->n_children < 2) continue;
         if (is_sym(clause->children[0], "else")) {
             /* else clause — always taken */
             for (int j = 1; j < clause->n_children; j++) {

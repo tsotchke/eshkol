@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol HoTT Type System Test Suite
 # Runs all type system tests and reports results

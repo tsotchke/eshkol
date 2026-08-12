@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol ML Test Suite
 # Runs all machine learning tests and reports results

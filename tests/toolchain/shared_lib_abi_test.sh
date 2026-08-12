@@ -106,6 +106,58 @@ done
 [ -n "$PYTHON" ] \
     || fail "no python3: the ctypes leg is a required second consumer, not an optional one"
 
+# ── ASan interop ───────────────────────────────────────────────────────────────
+# On the linux-x64-asan lane, $ESHKOL_RUN and everything it compiles are built
+# with `-fsanitize=address` (CMakeLists.txt ESHKOL_ENABLE_ASAN), so the
+# `--shared-lib` output produced below is itself ASan-instrumented and depends
+# on the ASan runtime DSO. dlopen()-ing that library from a plain,
+# non-instrumented process (this test's own C harness, or the system python
+# running the ctypes leg) makes ASan's own initialization detect that its
+# runtime was not the first thing loaded into the process and abort with
+# "ASan runtime does not come first in initial library list" -- a harness
+# ordering problem, not a defect in the exported ABI this test exists to check.
+#
+# Detect ASan by asking the dynamic linker what $ESHKOL_RUN itself actually
+# depends on (portable across the gcc/libasan.so and clang/libclang_rt.asan*.so
+# naming schemes, and always the exact path the toolchain resolved) rather than
+# guessing a compiler-specific flag or relying on a lane-set env var that could
+# drift out of sync with the actual build.
+ASAN_RUNTIME=""
+if [ "$(uname -s)" != "Darwin" ] && command -v ldd >/dev/null 2>&1; then
+    ASAN_RUNTIME="$(ldd "$ESHKOL_RUN" 2>/dev/null \
+        | awk '/libasan|libclang_rt\.asan/ { print $3; exit }')"
+fi
+
+run_c_harness() {
+    # Correct preload ordering: put the same ASan runtime the library was
+    # built against first in the process, so the harness stays a real,
+    # ASan-instrumented consumer -- this is the meaningful fix, not a
+    # disabled check.
+    if [ -n "$ASAN_RUNTIME" ]; then
+        LD_PRELOAD="$ASAN_RUNTIME" "$WORK/abi_harness" "$1"
+    else
+        "$WORK/abi_harness" "$1"
+    fi
+}
+
+run_ctypes_harness() {
+    if [ -n "$ASAN_RUNTIME" ]; then
+        # LD_PRELOAD-ing libasan into a live CPython process is a materially
+        # different risk than preloading it ahead of a fresh C harness exec:
+        # CPython's own small-object allocator and internal caches were not
+        # built against ASan's interceptors, and forcing the preload here has
+        # been observed to make the interpreter itself misbehave for reasons
+        # unrelated to the export-ABI contract this test checks. So for this
+        # child ONLY, keep the ctypes leg meaningful (it still performs every
+        # ABI assertion above) while dropping ASan's link-order verification
+        # instead of the correct-ordering fix used for the C harness.
+        ASAN_OPTIONS="${ASAN_OPTIONS:-}:verify_asan_link_order=0" \
+            "$PYTHON" "$WORK/abi_harness.py" "$1"
+    else
+        "$PYTHON" "$WORK/abi_harness.py" "$1"
+    fi
+}
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-sharedlibabi.XXXXXX")" || fail "mktemp failed"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
@@ -519,8 +571,8 @@ for opt in 0 2; do
         esac
     done
 
-    "$WORK/abi_harness" "$lib_path" || fail "-O$opt: C harness rejected the library ABI"
-    "$PYTHON" "$WORK/abi_harness.py" "$lib_path" \
+    run_c_harness "$lib_path" || fail "-O$opt: C harness rejected the library ABI"
+    run_ctypes_harness "$lib_path" \
         || fail "-O$opt: ctypes harness rejected the library ABI"
 done
 

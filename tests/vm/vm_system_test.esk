@@ -91,7 +91,7 @@
 (display "=== Process ===") (newline)
 
 ;; process-spawn + process-wait
-(let ((pid (process-spawn "/bin/echo" (list "hello" "from" "eshkol") #f)))
+(let ((pid (process-spawn "echo" (list "hello" "from" "eshkol") #f)))
   (if pid
     (begin
       (display "process-spawn pid: ") (display pid) (newline)

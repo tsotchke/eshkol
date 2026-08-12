@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"

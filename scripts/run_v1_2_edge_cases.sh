@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_v1_2_edge_cases.sh — proper runner for tests/v1_2_edge_cases/
 #
 # Each .esk test may declare a mode header on its first line:

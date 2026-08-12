@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Rational Number Test Suite
 # Tests rational number (fraction) operations

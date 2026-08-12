@@ -17,7 +17,7 @@ Forward DFT of vector `x`. Length must be a power of 2. Real inputs are treated 
 (display (fft #(1.0 2.0 3.0 4.0))) (newline)
 ```
 ```
-#(10 -2+2i -2 -2-2i)
+#(10 -2+2i -2 -1.9999999999999998-2i)
 ```
 
 Edge cases: a non-power-of-2 length aborts the program with a printed error (from the native builtin) rather than raising a catchable condition:
@@ -36,7 +36,7 @@ Inverse DFT. Length must be a power of 2. Returns a complex vector; `ifft ∘ ff
 (display (ifft (fft #(1.0 2.0 3.0 4.0)))) (newline)
 ```
 ```
-#(1 2+5.72119e-18i 3 4-5.72119e-18i)
+#(1 2+5.721188726109833e-18i 3 4-5.721188726109833e-18i)
 ```
 
 Edge cases: same power-of-2 requirement as `fft`.

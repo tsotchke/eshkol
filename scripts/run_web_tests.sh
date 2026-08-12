@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Web/WASM Test Suite
 # Tests WASM compilation and server functionality

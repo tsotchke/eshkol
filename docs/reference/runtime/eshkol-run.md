@@ -10,7 +10,7 @@ Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]
        eshkol-run -r <file.esk>       (JIT run file)
 ```
 
-Reported version: `Eshkol Compiler v1.2.4-scale` (`--version`).
+Reported version: `Eshkol Compiler v1.3.4-evolve` (`--version`).
 
 ## Modes at a glance
 

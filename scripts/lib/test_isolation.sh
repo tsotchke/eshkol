@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test_isolation.sh — per-run, per-repo-root isolation for the shell test suites.
 #
 # WHY THIS EXISTS

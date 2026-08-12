@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Features Test Suite
 # Runs all feature tests and reports results

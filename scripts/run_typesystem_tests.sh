@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Type System Test Suite
 # Checks that the type checker detects the faults it claims to detect AND that

@@ -18,7 +18,7 @@
 (define (loop i fails)
   (if (>= i N)
       fails
-      (let* ((r (run-argv-capture (list "/bin/echo" "ok")))
+      (let* ((r (run-argv-capture (list "echo" "ok")))
              (code (cdr (assoc 'exit-code r))))
         (if (= code 0)
             (loop (+ i 1) fails)

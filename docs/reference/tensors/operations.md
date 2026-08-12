@@ -1,6 +1,6 @@
 # Tensor Operations Reference
 
-Signatures and outputs below are verified on the v1.3.0 compiler. Every tensor
+Signatures and outputs below are verified on the v1.3.4 compiler. Every tensor
 operation is a **codegen builtin** — no `(require …)` is needed for anything on
 this page (the library modules are separate; see
 [ml-modules.md](ml-modules.md)). Outputs are pasted as printed by `display`
@@ -50,8 +50,8 @@ Scalar-broadcast and unary:
 (tensor-scale (tensor 1.0 2.0 3.0) 10.0)   ;; => #(10 20 30)
 (tensor-neg (tensor 1.0 -2.0))             ;; => #(-1 2)
 (tensor-abs (tensor -1.0 2.0 -3.0))        ;; => #(1 2 3)
-(tensor-exp (tensor 0.0 1.0))              ;; => #(1 2.71828)
-(tensor-log (tensor 1.0 2.71828))          ;; => #(0 1)
+(tensor-exp (tensor 0.0 1.0))              ;; => #(1 2.718281828459045)
+(tensor-log (tensor 1.0 2.71828))          ;; => #(0 0.999999327347282)
 (tensor-sqrt (tensor 4.0 9.0))             ;; => #(2 3)
 (tensor-sin (tensor 0.0))                  ;; => #(0)
 (tensor-cos (tensor 0.0))                  ;; => #(1)

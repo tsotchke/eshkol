@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Migration Test Suite
 # Validates type system migration and pointer consolidation

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # update-homebrew-formula.sh
 #
 # Updates packaging/homebrew/eshkol.rb (and optionally the tsotchke/homebrew-eshkol

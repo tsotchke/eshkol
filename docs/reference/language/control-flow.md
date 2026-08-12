@@ -34,19 +34,28 @@ the catch-all.
 b
 ```
 
-### Known issue — `=>` clause not supported
+### `=>` clauses
 
-The R7RS `(test => proc)` clause form is **not** supported; `=>` is parsed as a
-variable reference.
+The R7RS `(test => proc)` clause form is supported: when `test` is true its
+value is passed to `proc`, and the clause's value is the result of that call.
 
 ```scheme
 (display (cond (42 => (lambda (v) (* v 2))) (else 'z))) (newline)
+(display (cond ((assv 2 '((1 a) (2 b))) => cadr) (else 'none))) (newline)
+(display (cond (#f => (lambda (v) v)) (else 'fell-through))) (newline)
 ```
 ```
-error: Undefined variable: =>
+84
+b
+fell-through
 ```
-**Workaround:** bind the test value explicitly:
-`(let ((v 42)) (cond (v ((lambda (x) (* x 2)) v)) (else 'z)))`.
+`case` accepts `=>` on a clause too — the key is passed to `proc`:
+```scheme
+(display (case 3 ((1 2) 'low) ((3 4) => (lambda (v) (* v 10))) (else 'other))) (newline)
+```
+```
+30
+```
 
 ## `case`
 

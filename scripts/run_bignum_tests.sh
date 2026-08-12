@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Bignum Test Suite
 # Tests arbitrary-precision integer operations

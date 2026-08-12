@@ -42,6 +42,7 @@ maps `+/` to `-_`. `base64url-decode` re-pads and reverses the mapping.
 ```
 $ eshkol-run -r sha.esk
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+aGk_
 ```
 
 Both `-r` (JIT) and AOT builds resolve the crypto C symbols; because other

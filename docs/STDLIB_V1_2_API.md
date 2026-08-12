@@ -1,16 +1,16 @@
 # Eshkol Standard Library — v1.2-scale surfaces (API Reference)
 
-**Version**: current as of 1.3.0-evolve (original v1.2 surfaces closed out
+**Version**: current as of 1.3.4-evolve (original v1.2 surfaces closed out
 2026-05-20, base 2026-05-01)
 **Audience**: implementers and library authors writing against the public
 stdlib surface.
 **Scope**: this document covers the modules added or significantly expanded in
-the v1.2-scale cycle. For the **complete, per-module v1.3.0 stdlib API
+the v1.2-scale cycle. For the **complete, per-module v1.3.4 stdlib API
 reference** — every provided symbol of every module with run-verified examples
 — see [`reference/stdlib/INDEX.md`](reference/stdlib/INDEX.md).
 
 This document is a source-verified reference for the v1.2-scale public
-surfaces, still current in v1.3.0-evolve. Every signature, default, and edge
+surfaces, still current in v1.3.4-evolve. Every signature, default, and edge
 case below is read directly from the implementing `.esk`, `.c`, or `.cpp` file;
 every example exercises only symbols listed in the corresponding `(provide …)`
 block or in the codegen builtin table. Where a feature listed in
@@ -1468,7 +1468,7 @@ real code.
 
 **Source**: [`lib/core/data/base64.esk`](../lib/core/data/base64.esk) (the
 standard base64 primitives, pure Eshkol) plus the base64url variants from
-[`lib/core/url.esk`](../lib/core/url.esk:185-214) built on top.
+[`lib/core/url.esk`](../lib/core/url.esk) built on top.
 **Auto-loaded**: yes, via `(require stdlib)` (which pulls in both
 `core.data.base64` and `core.url`).
 **Direct import**: `(require core.data.base64)` and/or `(require core.url)`.

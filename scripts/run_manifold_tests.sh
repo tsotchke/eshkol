@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Compile and run the differential-geometry regression suite.
 
 set -euo pipefail

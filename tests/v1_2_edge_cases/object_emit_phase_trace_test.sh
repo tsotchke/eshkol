@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # object_emit_phase_trace_test.sh — ESH-0088 object-emission diagnostics.
 
 set -u

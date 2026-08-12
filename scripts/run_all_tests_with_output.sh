@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Complete Test Suite (Verbose Output)
 # Runs all test suites with full output displayed

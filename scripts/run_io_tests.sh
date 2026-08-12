@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol I/O Test Suite
 # Runs all I/O tests (read, write, string ports)

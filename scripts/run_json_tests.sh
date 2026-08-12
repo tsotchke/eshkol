@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # JSON Test Suite Validation Script
 # Runs all tests in tests/json/ directory

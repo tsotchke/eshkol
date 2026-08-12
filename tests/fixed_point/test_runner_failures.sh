@@ -30,7 +30,11 @@ if [ "$(basename "$0")" = "fake-cc" ]; then
         echo "fake-cc: missing -o output" >&2
         exit 43
     fi
-    ln -s /usr/bin/true "$output"
+    # Portability: /usr/bin/true does not exist on every host (e.g. NixOS,
+    # which keeps /usr/bin nearly empty). Emit a tiny POSIX-sh stub instead
+    # of symlinking to an absolute path that may not exist.
+    printf '#!/bin/sh\nexit 0\n' > "$output"
+    chmod +x "$output"
     exit 0
 fi
 

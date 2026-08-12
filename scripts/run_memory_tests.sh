@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Memory Test Suite
 # Runs all memory tests and reports results

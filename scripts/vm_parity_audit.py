@@ -192,6 +192,45 @@ def codegen_surface():
     return extract_codegen_builtins() | extract_op_enum()
 
 
+_SCHEME_SURFACE = None
+
+
+def scheme_surface():
+    """Top-level names defined in the Scheme stdlib (lib/**.esk).
+
+    This audit's RATCHET is deliberately still driven by codegen_surface()
+    alone — requiring a manifest row for all ~1700 Scheme-level defines at
+    once would fail the build on a backlog nobody has triaged.  But a
+    manifest row for a Scheme-level name is LEGITIMATE, not stale: `assq`
+    lives in lib/core/list/search.esk, resolves natively, aborts the VM, and
+    is recorded here as a justified `gap`.  Without this set, that honest
+    row was reported as "no longer on the codegen surface".
+
+    The execution-backed ratchet over this surface lives in
+    scripts/run_surface_parity.py, which probes both engines rather than
+    scraping source text.
+    """
+    global _SCHEME_SURFACE
+    if _SCHEME_SURFACE is not None:
+        return _SCHEME_SURFACE
+    names = set()
+    lib = os.path.join(REPO, "lib")
+    for dirpath, _dirs, files in os.walk(lib):
+        for fn in files:
+            if not fn.endswith(".esk"):
+                continue
+            try:
+                src = read(os.path.join(dirpath, fn))
+            except SystemExit:
+                continue
+            for m in re.finditer(r"^\(define\s+\(([^\s()]+)", src, re.M):
+                names.add(m.group(1))
+            for m in re.finditer(r"^\(define\s+([^\s()]+)\s", src, re.M):
+                names.add(m.group(1))
+    _SCHEME_SURFACE = names
+    return names
+
+
 # ── manifest ─────────────────────────────────────────────────────────────
 
 def load_manifest():
@@ -252,9 +291,10 @@ def audit(cg, vm):
             failures.append(
                 "UNJUSTIFIED %s: status %s requires a justification" %
                 (name, status))
-        if name not in cg:
+        if name not in cg and name not in scheme_surface():
             warnings.append(
-                "stale-row %s: no longer on the codegen surface" % name)
+                "stale-row %s: on neither the codegen surface nor the "
+                "Scheme stdlib" % name)
 
     n_sup = sum(1 for s, _ in manifest.values() if s == "vm-supported")
     n_just = sum(1 for s, _ in manifest.values()

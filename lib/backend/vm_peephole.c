@@ -67,9 +67,18 @@ static void peephole_optimize(FuncChunk* c) {
     for (int i = 0; i < c->code_len; i++) {
         if (c->code[i].op == OP_NOP) n_nops++;
     }
-    if (n_nops > 0) {
-        printf("  [peephole] eliminated %d instructions\n", n_nops);
+    /* Compiler diagnostic, not program output: it belongs on stderr and must
+     * honour the same disassembly switch as the rest of the VM's chatter.
+     * Printed on STDOUT it prefixed the program's own output, so
+     * tests/parser/edge_cases_test.esk diverged from native at character 0 —
+     * a parity failure caused purely by a debug line. */
+#ifndef ESHKOL_VM_NO_DISASM
+    if (n_nops > 0 && !getenv("ESHKOL_VM_NO_DISASM")) {
+        fprintf(stderr, "  [peephole] eliminated %d instructions\n", n_nops);
     }
+#else
+    (void)n_nops;
+#endif
     /* Note: we leave NOPs in place rather than compacting, because compacting
      * requires fixing all jump targets. The VM handles NOPs at near-zero cost. */
 }

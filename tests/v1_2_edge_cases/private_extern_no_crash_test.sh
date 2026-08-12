@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # private_extern_no_crash_test.sh — EXTERN_OP rename SIGSEGV (2026-04-26)
 #
 # Regression for the union-aliasing bug in update_ast_references:

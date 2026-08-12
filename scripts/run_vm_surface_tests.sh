@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Compile and execute deterministic extended-surface probes on the hosted VM.
 
 set -euo pipefail

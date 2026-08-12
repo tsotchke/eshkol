@@ -1,6 +1,6 @@
 # GPU Dispatch — Honest Status
 
-This page states what actually runs on the GPU today, verified on the v1.3.0
+This page states what actually runs on the GPU today, verified on the v1.3.4
 build on an **Apple M2 Ultra (Metal)**. CUDA and XLA notes are marked as such.
 The GPU-campaign ledger tasks **ESH-0022** and **ESH-0023** describe an older
 state ("`gpu-*` are Unknown function", "AOT runs CPU BLAS only") that is

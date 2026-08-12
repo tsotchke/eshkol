@@ -23,7 +23,8 @@ Comparison</a></li>
 <li><a href="#system-operations">System Operations</a></li>
 <li><a href="#hash-tables">Hash Tables</a></li>
 <li><a href="#type-system">Type System</a></li>
-<li><a href="#standard-library">Standard Library</a> (25+ modules)</li>
+<li><a href="#standard-library-reference">Standard Library</a> (25+
+modules)</li>
 <li><a href="#exact-arithmetic">Exact Arithmetic</a> (v1.1)</li>
 <li><a href="#complex-numbers">Complex Numbers</a> (v1.1)</li>
 <li><a href="#continuations--control-flow">Continuations &amp; Control
@@ -1435,13 +1436,15 @@ href="../lib/backend/string_io_codegen.cpp"><code>openInputFile()</code></a></p>
 <h4 id="read-line-write-line"><code>read-line</code>,
 <code>write-line</code></h4>
 <p><strong>Syntax</strong>: <code>(read-line port)</code>,
-<code>(write-line port str)</code></p>
+<code>(write-line str [port])</code></p>
+<p><code>write-line</code> takes the string first and the port second;
+the port is optional and defaults to standard output.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(define in (open-input-file &quot;file.txt&quot;))
 (define line (read-line in))  ; Returns string or EOF
 
 (define out (open-output-file &quot;out.txt&quot;))
-(write-line out &quot;Hello, World!&quot;)</code></pre>
+(write-line &quot;Hello, World!&quot; out)</code></pre>
 <hr />
 <h4 id="display-newline"><code>display</code>, <code>newline</code></h4>
 <p><strong>Syntax</strong>: <code>(display obj [port])</code>,
@@ -1885,7 +1888,7 @@ across heterogeneous workloads.</p>
 cores). Can be tuned via environment variable
 <code>ESHKOL_NUM_THREADS</code>.</p>
 <p><strong>Implementation:</strong> <a
-href="lib/backend/system_codegen.cpp">system_codegen.cpp</a>.</p>
+href="../lib/backend/system_codegen.cpp">system_codegen.cpp</a>.</p>
 <h3 id="parallel-map"><code>parallel-map</code></h3>
 <p><strong>Syntax:</strong> <code>(parallel-map proc list)</code> →
 List</p>
@@ -2033,12 +2036,12 @@ holds the codegen methods (<code>codegenMakeFactorGraph</code>,
 dispatch table lives in
 <code>LLVMCodeGenerator::codegenSpecialOperation</code> in <a
 href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.
-Runtime: <a href="inc/eshkol/backend/logic.h">logic.h</a> / <a
-href="lib/backend/logic.cpp">logic.cpp</a>, <a
-href="inc/eshkol/backend/inference.h">inference.h</a> / <a
-href="lib/backend/inference.cpp">inference.cpp</a>, <a
-href="inc/eshkol/backend/workspace.h">workspace.h</a> / <a
-href="lib/backend/workspace.cpp">workspace.cpp</a>.</p>
+Runtime: <a href="../inc/eshkol/core/logic.h">logic.h</a> / <a
+href="../lib/core/logic.cpp">logic.cpp</a>, <a
+href="../inc/eshkol/core/inference.h">inference.h</a> / <a
+href="../lib/core/inference.cpp">inference.cpp</a>, <a
+href="../inc/eshkol/core/workspace.h">workspace.h</a> / <a
+href="../lib/core/workspace.cpp">workspace.cpp</a>.</p>
 <h3 id="logic-programming">Logic Programming</h3>
 <p>Logic programming in Eshkol is grounded in first-order unification
 theory. The central operation is finding a substitution σ such that
@@ -2078,7 +2081,13 @@ runtime <code>eshkol_make_substitution_tagged</code>.</p>
 | #f</p>
 <p>Attempts to extend substitution σ to make terms t₁ and t₂ identical.
 Returns the extended substitution on success, or <code>#f</code> if
-unification fails.</p>
+unification fails — so <code>(if (unify a b σ) ...)</code> branches on
+the result directly.</p>
+<p>A term is a logic variable when it is a <code>?</code>-prefixed
+token, written bare (<code>?x</code>) or inside quoted data
+(<code>'?x</code>, <code>'(parent alice ?x)</code>); both spellings
+denote the same variable. A <code>?</code>-prefixed <em>string</em> is a
+string, not a variable.</p>
 <p><strong>Algorithm</strong> (Martelli-Montanari with occurs
 check):</p>
 <ol type="1">
@@ -2146,7 +2155,12 @@ href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_co
 runtime <code>eshkol_make_fact_tagged</code>.</p>
 <pre class="scheme"><code>(make-fact &#39;parent &#39;alice &#39;bob)      ; parent(alice, bob)
 (make-fact &#39;edge 1 2 5.0)            ; edge(1, 2, 5.0) — weighted graph edge
-(make-fact &#39;type ?x &#39;integer)        ; type(?x, integer) — with logic variable</code></pre>
+(make-fact &#39;type ?x &#39;integer)        ; type(?x, integer) — with logic variable
+(make-fact &#39;(parent alice bob))      ; same fact, written as one datum list</code></pre>
+<p>A single list argument is read as <code>(predicate arg ...)</code>,
+so the two <code>parent</code> lines above build the same fact. A fact
+displays as that list: <code>(display (make-fact 'p 'a 'b))</code>
+prints <code>(p a b)</code>.</p>
 <h4 id="make-kb"><code>make-kb</code></h4>
 <p><strong>Syntax:</strong> <code>(make-kb)</code> → KnowledgeBase</p>
 <p>Creates an empty knowledge base. A KB is a mutable collection of
@@ -2172,7 +2186,18 @@ Substitutions</p>
 <p>Queries the knowledge base by attempting to unify
 <code>pattern</code> against every fact in the KB. Returns a list of
 substitutions — one for each fact that successfully unifies with the
-pattern. An empty list indicates no matches.</p>
+pattern, in KB <strong>insertion order</strong>. An empty list indicates
+no matches.</p>
+<p><code>pattern</code> may be written either way, and the two mean the
+same thing:</p>
+<pre class="scheme"><code>(kb-query kb (make-fact &#39;parent &#39;alice ?child))   ; fact pattern
+(kb-query kb &#39;(parent alice ?child))              ; quoted datum-list pattern</code></pre>
+<p>A <code>?</code>-prefixed token is a logic variable in
+<strong>both</strong> — bare, and inside quoted data. Ground elements
+must unify; a sub-list unifies structurally, so
+<code>'(edge (node a) ?to)</code> matches
+<code>(edge (node a) (node b))</code> and binds <code>?to</code> to
+<code>(node b)</code>.</p>
 <p><strong>Algorithm:</strong> For each fact f in kb, attempt
 <code>(unify pattern f (make-substitution))</code>. Collect all
 successful substitutions into a list.</p>
@@ -2209,7 +2234,8 @@ runtime <code>eshkol_kb_query_tagged</code>.</p>
 <tbody>
 <tr>
 <td><code>(logic-var? x)</code></td>
-<td>Logic variable</td>
+<td>Logic variable — <code>?x</code> <strong>and</strong>
+<code>'?x</code></td>
 <td>Tag 10</td>
 </tr>
 <tr>
@@ -2675,8 +2701,8 @@ integration with Eshkol’s automatic differentiation system via
 <code>LLVMCodeGenerator::codegenCall</code> in <a
 href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>
 and implemented in <a
-href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a>. Backward
-passes are available for AD integration (e.g.,
+href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a>.
+Backward passes are available for AD integration (e.g.,
 <code>tensorReluBackward</code>,
 <code>tensorSigmoidBackward</code>).</p>
 <h3 id="activation-functions">Activation Functions</h3>
@@ -3663,9 +3689,9 @@ systems compose into a complete neural network training pipeline.</p>
 Dispatch is automatic based on a cost model comparing CPU (cBLAS/SIMD)
 vs GPU throughput, accounting for data transfer latency.</p>
 <p><strong>Implementation:</strong> <a
-href="lib/backend/gpu/gpu_memory.mm">gpu_memory.mm</a> (Metal), <a
-href="lib/backend/system_codegen.cpp">system_codegen.cpp</a> (dispatch
-logic).</p>
+href="../lib/backend/gpu/gpu_memory.mm">gpu_memory.mm</a> (Metal), <a
+href="../lib/backend/system_codegen.cpp">system_codegen.cpp</a>
+(dispatch logic).</p>
 <h3 id="automatic-dispatch">Automatic Dispatch</h3>
 <p>The compiler automatically dispatches tensor operations to GPU when
 beneficial:</p>
@@ -3799,7 +3825,7 @@ tensor allocations and enabling whole-graph optimizations.</p>
 MLIR optimization passes → target-specific code (CPU with SIMD / GPU via
 Metal or CUDA).</p>
 <p><strong>Implementation:</strong> <a
-href="lib/backend/xla/xla_runtime.cpp">xla_runtime.cpp</a>.</p>
+href="../lib/backend/xla/xla_runtime.cpp">xla_runtime.cpp</a>.</p>
 <h3 id="operation-fusion">Operation Fusion</h3>
 <p>XLA’s primary advantage is <strong>operation fusion</strong>: chains
 of element-wise operations and reductions are compiled into single
@@ -3882,7 +3908,7 @@ beta</li>
 <ul>
 <li><code>(convolve signal kernel)</code> — Direct convolution
 O(N*M)</li>
-<li><code>(fft-convolve signal kernel)</code> — FFT-based convolution
+<li><code>(fast-convolve signal kernel)</code> — FFT-based convolution
 O(N log N)</li>
 </ul>
 <h4 id="filters">Filters</h4>
@@ -6549,12 +6575,12 @@ for composability and custom pipelines.</p>
 <h2 id="implementation-statistics">Implementation Statistics</h2>
 <p><strong>Codebase Size</strong>: ~232,000 lines of production C++
 <strong>Main Backend</strong>: <a
-href="lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 34,928 lines
-<strong>Tensor Codegen</strong>: <a
-href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — 20,000+
-lines <strong>Compiler Modules</strong>: 21 specialized code generators
-<strong>Test Suite</strong>: 37 suites, 528 self-reported tests
-<strong>Verified Operations</strong>: 555+ builtins, 300+ standard
+href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 34,928
+lines <strong>Tensor Codegen</strong>: <a
+href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> —
+20,000+ lines <strong>Compiler Modules</strong>: 21 specialized code
+generators <strong>Test Suite</strong>: 37 suites, 528 self-reported
+tests <strong>Verified Operations</strong>: 555+ builtins, 300+ standard
 library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>

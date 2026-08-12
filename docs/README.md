@@ -35,6 +35,7 @@ pages and lets them fan out to their siblings.
 - [Scheme Compatibility](breakdown/SCHEME_COMPATIBILITY.md) — R7RS compliance and migration guide
 - [Function Composition](breakdown/FUNCTION_COMPOSITION.md) — closures, lambda registry, mutable captures
 - [Long-Running Loops](LONG_RUNNING_LOOPS.md) — tail-call and loop behaviour for long-lived processes
+- [Binary Lambda Calculus in Eshkol](guide/BINARY_LAMBDA_CALCULUS.md) — the `core.blc` module: De Bruijn-indexed lambda terms as bit strings, encode/decode/reduce
 
 ## Automatic Differentiation
 
@@ -156,6 +157,23 @@ pages and lets them fan out to their siblings.
 - [Compilation Guide (breakdown)](breakdown/COMPILATION_GUIDE.md) — LLVM compilation, debugging, troubleshooting
 - [Hardening Status](HARDENING.md) — per-module hardening audit and mitigation record
 - [Self-Differentiating Neural Computer (SDNC)](SDNC.md) — v1.2 paper artefact
+- [Generated API Reference](api/README.md) — Doxygen-comment-derived per-header symbol pages (`scripts/gen_api_docs.py`), fans out via [INDEX.md](api/INDEX.md)
+- [AD Staged Kernel Handoff](design/AD_STAGED_KERNEL_HANDOFF.md) — compiler work needed for staged dense-tensor training kernels
+
+Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
+
+- [ADR 0000 — Unified architectural trajectory](design/adr/0000-unified-trajectory.md)
+- [ADR 0001 — Concurrent, resident-grade OALR](design/adr/0001-oalr-concurrent-resident.md)
+- [ADR 0002 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0002-ad-alt-architect.md)
+- [ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel](design/adr/0002-ad-staged-dense-kernels.md)
+- [VM/LLVM parity conformance matrix + modularization notes](design/adr/0003-codegen-vm-parity.md)
+- [ADR 0004 — One quantitative dependent type system for Eshkol](design/adr/0004-type-system-trajectory.md)
+- [ADR 0005 — Lambda foundations to resident programs-as-weights](design/adr/0005-lambda-foundations-programs-to-weights.md)
+- [ADR 0006 — Binding-resolved libraries and proper tail invocation](design/adr/0006-language-conformance-modules.md)
+- [ADR 0007 — PGO, whole-program optimization, and staged training throughput](design/adr/0007-performance-pgo-wpo.md)
+- [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md)
+- [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
+- [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
 
 ## Testing and Quality Gates
 
@@ -178,6 +196,7 @@ Engineering reports (`docs/reports/`) — see the [reports directory index](repo
 
 - [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable
 - [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a)
+- [Generative Multi-Oracle Differential Report](reports/GENERATIVE_DIFFERENTIAL_REPORT.md) — generated closed R7RS-small program family cross-checked against every installed reference implementation (P7c)
 - [Sanitizer Fuzz Report](reports/SANITIZER_FUZZ_REPORT.md)
 - [Metamorphic Report](reports/METAMORPHIC_REPORT.md) — P7c property-style harness results
 - [Sweep Gate Report](reports/SWEEP_GATE_REPORT.md) — full gate matrix re-verification

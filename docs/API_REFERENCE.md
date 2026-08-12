@@ -21,7 +21,7 @@ This comprehensive reference documents all special forms, functions, and operati
 9. [System Operations](#system-operations)
 10. [Hash Tables](#hash-tables)
 11. [Type System](#type-system)
-12. [Standard Library](#standard-library) (25+ modules)
+12. [Standard Library](#standard-library-reference) (25+ modules)
 13. [Exact Arithmetic](#exact-arithmetic) (v1.1)
 14. [Complex Numbers](#complex-numbers) (v1.1)
 15. [Continuations & Control Flow](#continuations--control-flow) (v1.1)
@@ -1807,7 +1807,10 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 ---
 
 #### `read-line`, `write-line`
-**Syntax**: `(read-line port)`, `(write-line port str)`
+**Syntax**: `(read-line port)`, `(write-line str [port])`
+
+`write-line` takes the string first and the port second; the port is optional
+and defaults to standard output.
 
 **Examples**:
 ```scheme
@@ -1815,7 +1818,7 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 (define line (read-line in))  ; Returns string or EOF
 
 (define out (open-output-file "out.txt"))
-(write-line out "Hello, World!")
+(write-line "Hello, World!" out)
 ```
 
 ---
@@ -2321,7 +2324,7 @@ heterogeneous workloads.
 **Thread pool sizing:** Defaults to `std::thread::hardware_concurrency()` (number of logical
 cores). Can be tuned via environment variable `ESHKOL_NUM_THREADS`.
 
-**Implementation:** [system_codegen.cpp](lib/backend/system_codegen.cpp).
+**Implementation:** [system_codegen.cpp](../lib/backend/system_codegen.cpp).
 
 ### `parallel-map`
 
@@ -2450,9 +2453,9 @@ holds the codegen methods (`codegenMakeFactorGraph`, `codegenFGAddFactor`,
 `codegenWSStep`, plus the logic-engine entry points); the dispatch
 table lives in `LLVMCodeGenerator::codegenSpecialOperation` in
 [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
-Runtime: [logic.h](inc/eshkol/backend/logic.h) / [logic.cpp](lib/backend/logic.cpp),
-[inference.h](inc/eshkol/backend/inference.h) / [inference.cpp](lib/backend/inference.cpp),
-[workspace.h](inc/eshkol/backend/workspace.h) / [workspace.cpp](lib/backend/workspace.cpp).
+Runtime: [logic.h](../inc/eshkol/core/logic.h) / [logic.cpp](../lib/core/logic.cpp),
+[inference.h](../inc/eshkol/core/inference.h) / [inference.cpp](../lib/core/inference.cpp),
+[workspace.h](../inc/eshkol/core/workspace.h) / [workspace.cpp](../lib/core/workspace.cpp).
 
 ### Logic Programming
 
@@ -2498,7 +2501,12 @@ runtime `eshkol_make_substitution_tagged`.
 **Syntax:** `(unify t₁ t₂ σ)` → Substitution | #f
 
 Attempts to extend substitution σ to make terms t₁ and t₂ identical. Returns the extended
-substitution on success, or `#f` if unification fails.
+substitution on success, or `#f` if unification fails — so `(if (unify a b σ) ...)` branches
+on the result directly.
+
+A term is a logic variable when it is a `?`-prefixed token, written bare (`?x`) or inside
+quoted data (`'?x`, `'(parent alice ?x)`); both spellings denote the same variable. A
+`?`-prefixed *string* is a string, not a variable.
 
 **Algorithm** (Martelli-Montanari with occurs check):
 
@@ -2572,7 +2580,12 @@ runtime `eshkol_make_fact_tagged`.
 (make-fact 'parent 'alice 'bob)      ; parent(alice, bob)
 (make-fact 'edge 1 2 5.0)            ; edge(1, 2, 5.0) — weighted graph edge
 (make-fact 'type ?x 'integer)        ; type(?x, integer) — with logic variable
+(make-fact '(parent alice bob))      ; same fact, written as one datum list
 ```
+
+A single list argument is read as `(predicate arg ...)`, so the two `parent` lines above
+build the same fact. A fact displays as that list: `(display (make-fact 'p 'a 'b))` prints
+`(p a b)`.
 
 #### `make-kb`
 
@@ -2601,8 +2614,19 @@ runtime `eshkol_kb_assert_tagged`.
 **Syntax:** `(kb-query kb pattern)` → List of Substitutions
 
 Queries the knowledge base by attempting to unify `pattern` against every fact in the KB.
-Returns a list of substitutions — one for each fact that successfully unifies with the pattern.
-An empty list indicates no matches.
+Returns a list of substitutions — one for each fact that successfully unifies with the pattern,
+in KB **insertion order**. An empty list indicates no matches.
+
+`pattern` may be written either way, and the two mean the same thing:
+
+```scheme
+(kb-query kb (make-fact 'parent 'alice ?child))   ; fact pattern
+(kb-query kb '(parent alice ?child))              ; quoted datum-list pattern
+```
+
+A `?`-prefixed token is a logic variable in **both** — bare, and inside quoted data. Ground
+elements must unify; a sub-list unifies structurally, so `'(edge (node a) ?to)` matches
+`(edge (node a) (node b))` and binds `?to` to `(node b)`.
 
 **Algorithm:** For each fact f in kb, attempt `(unify pattern f (make-substitution))`.
 Collect all successful substitutions into a list.
@@ -2634,7 +2658,7 @@ runtime `eshkol_kb_query_tagged`.
 
 | Predicate | Tests For | Type |
 |-----------|-----------|------|
-| `(logic-var? x)` | Logic variable | Tag 10 |
+| `(logic-var? x)` | Logic variable — `?x` **and** `'?x` | Tag 10 |
 | `(substitution? x)` | Substitution | Heap subtype 12 |
 | `(fact? x)` | Fact | Heap subtype 13 |
 | `(kb? x)` | Knowledge base | Heap subtype 15 |
@@ -3071,7 +3095,7 @@ for large tensors, automatic GPU dispatch above cost model thresholds, and seaml
 with Eshkol's automatic differentiation system via `gradient`.
 
 **Architecture:** Operations are dispatched in `LLVMCodeGenerator::codegenCall` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp)
-and implemented in [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp). Backward passes are
+and implemented in [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp). Backward passes are
 available for AD integration (e.g., `tensorReluBackward`, `tensorSigmoidBackward`).
 
 ### Activation Functions
@@ -4192,8 +4216,8 @@ GPU acceleration via Metal (Apple Silicon) and CUDA (NVIDIA). Dispatch is automa
 on a cost model comparing CPU (cBLAS/SIMD) vs GPU throughput, accounting for data transfer
 latency.
 
-**Implementation:** [gpu_memory.mm](lib/backend/gpu/gpu_memory.mm) (Metal),
-[system_codegen.cpp](lib/backend/system_codegen.cpp) (dispatch logic).
+**Implementation:** [gpu_memory.mm](../lib/backend/gpu/gpu_memory.mm) (Metal),
+[system_codegen.cpp](../lib/backend/system_codegen.cpp) (dispatch logic).
 
 ### Automatic Dispatch
 
@@ -4267,7 +4291,7 @@ eliminating intermediate tensor allocations and enabling whole-graph optimizatio
 **Architecture:** Eshkol tensor IR → StableHLO dialect → MLIR optimization passes →
 target-specific code (CPU with SIMD / GPU via Metal or CUDA).
 
-**Implementation:** [xla_runtime.cpp](lib/backend/xla/xla_runtime.cpp).
+**Implementation:** [xla_runtime.cpp](../lib/backend/xla/xla_runtime.cpp).
 
 ### Operation Fusion
 
@@ -4329,7 +4353,7 @@ Built-in Cooley-Tukey radix-2 FFT:
 
 #### Convolution
 - `(convolve signal kernel)` — Direct convolution O(N*M)
-- `(fft-convolve signal kernel)` — FFT-based convolution O(N log N)
+- `(fast-convolve signal kernel)` — FFT-based convolution O(N log N)
 
 #### Filters
 - `(fir-filter coefficients signal)` — FIR filter application
@@ -7064,8 +7088,8 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~232,000 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) — 34,928 lines
-**Tensor Codegen**: [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) — 20,000+ lines
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 34,928 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 20,000+ lines
 **Compiler Modules**: 21 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

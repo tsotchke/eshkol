@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Signal Processing Test Suite
 # Tests signal processing filters, windowing, and convolution
