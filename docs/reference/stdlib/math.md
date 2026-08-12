@@ -54,7 +54,7 @@ Inverse of the `n`×`n` matrix `M` via Gauss-Jordan elimination. Returns the inv
 (display (inv #(1.0 2.0 2.0 4.0) 2)) (newline)   ;; singular
 ```
 ```
-#(0.6 -0.7 -0.2 0.4)
+#(0.6000000000000001 -0.7000000000000001 -0.2 0.4)
 #f
 ```
 
@@ -119,7 +119,7 @@ Estimate the dominant eigenvalue of the `n`×`n` matrix `A` by the power method,
 (display (power-iteration #(2.0 0.0 0.0 3.0) 2 100 1e-9)) (newline)
 ```
 ```
-3
+2.9999999993029647
 ```
 
 ### `(integrate f a b n)`
@@ -129,7 +129,7 @@ Numerical integral of `f` over `[a, b]` using Simpson's rule with `n` intervals 
 (display (integrate (lambda (x) (* x x)) 0.0 1.0 100)) (newline)
 ```
 ```
-0.333333
+0.3333333333333334
 ```
 
 ### `(newton f df x0 tolerance max-iters)`
@@ -141,7 +141,7 @@ Newton–Raphson root of `f` with derivative `df`, starting from `x0`. Stops whe
                  1.0 1e-10 100)) (newline)
 ```
 ```
-1.41421
+1.4142135623730951
 ```
 
 ### `(variance v)`
@@ -161,7 +161,7 @@ Standard deviation, `(sqrt (variance v))`.
 (display (std #(1.0 2.0 3.0 4.0 5.0))) (newline)
 ```
 ```
-1.41421
+1.4142135623730951
 ```
 
 ### `(covariance u v)`
@@ -171,7 +171,7 @@ Population covariance of `u` and `v` (divides by `len` of `u`).
 (display (covariance #(1.0 2.0 3.0) #(4.0 5.0 6.0))) (newline)
 ```
 ```
-0.666667
+0.6666666666666666
 ```
 
 ## Known issues

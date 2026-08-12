@@ -28,7 +28,7 @@ Return a hard one-hot vector with `1.0` at the argmax position (length = input l
 (display "onehot ")(display (argmax-onehot (vector 0.1 0.9 0.3)))(newline)
 ```
 ```
-softmax #(0.231224 0.628532 0.140244)
+softmax #(0.23122389762214907 0.6285317192117624 0.14024438316608848)
 pick 1
 onehot #(0 1 0)
 ```
@@ -60,7 +60,7 @@ Stochastic variant of the above — draws fresh Gumbel noise internally (matchin
   (let loop ((i 0)(s 0.0)) (if (< i n) (loop (+ i 1) (+ s (vector-ref p i))) s))))(newline)
 ```
 ```
-#(0.174628 0.70815 0.0958377 0.0213843)
+#(0.17462771023134466 0.7081502847403103 0.09583771935941783 0.021384285668927173)
 sum=1
 ```
 

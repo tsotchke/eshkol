@@ -39,54 +39,48 @@ value of `expr`, and `,@expr` splices a list's elements into the surrounding lis
 (1 2 3 4)
 ```
 
-## Known Issues
+### Long forms
 
-### ESH-0104 — long forms are not wired
-
-Only the reader sugar (``` ` ```, `,`, `,@`) is interpreted. The written-out
-long forms `(quasiquote …)`, `(unquote …)`, `(unquote-splicing …)` are treated as
-plain data and left unsubstituted.
+The written-out forms `(quasiquote …)`, `(unquote …)` and
+`(unquote-splicing …)` mean exactly what their reader sugar means (R7RS 4.2.8),
+so a program may use either spelling:
 
 ```scheme
 (define x 5)
 (display (quasiquote (a (unquote x) b))) (newline)
+(display (quasiquote (a (unquote-splicing (list 1 2)) b))) (newline)
 ```
 ```
-(a (unquote x) b)
+(a 5 b)
+(a 1 2 b)
 ```
-Expected (R7RS 4.2.8): `(a 5 b)`. **Workaround:** use the reader sugar
-``` `(a ,x b) ```, which evaluates correctly. `quote`'s long form `(quote …)` is
-unaffected — it works.
 
-### ESH-0107 — nested quasiquote collapses to `()`
+### Nesting
 
-Any `quasiquote` nested inside another `quasiquote` (level ≥ 2) evaluates to `()`.
+Nested quasiquotation follows the R7RS level rule: an `unquote` is evaluated
+only when its nesting level matches the quasiquote it belongs to, so an inner
+template comes back as *data*, still carrying its unevaluated `unquote`.
 
 ```scheme
-(display `a) (newline)        ; single level: correct
-(display ``a) (newline)       ; nested: wrong
+(display `a) (newline)
+(display ``a) (newline)
 (display `(a `(b ,(+ 1 1)))) (newline)
 ```
 ```
 a
-()
-(a ())
+(quasiquote a)
+(a (quasiquote (b (unquote (+ 1 1)))))
 ```
-Single-level quasiquote/unquote/unquote-splicing are correct; only nesting is
-affected.
 
-### ESH-0106 — `'sym` sugar inside `guard` is misread
+### `'sym` inside `guard`
 
-The `'` reader sugar anywhere inside a `guard` form (clause bodies **and** the
-`raise` argument) is compiled as a *variable reference* rather than a quoted
-symbol.
+The `'` reader sugar behaves the same inside a `guard` form — in a clause body
+and in the `raise` argument alike — as it does anywhere else:
 
 ```scheme
 (display (guard (e (#t 'sym)) (raise 1))) (newline)
 ```
 ```
-error: Undefined variable: sym
-()
+sym
 ```
-**Workaround:** use the explicit `(quote sym)` form inside `guard`, which works
-everywhere. See [error-handling.md](error-handling.md).
+See [error-handling.md](error-handling.md).

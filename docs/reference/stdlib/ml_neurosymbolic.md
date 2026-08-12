@@ -33,7 +33,7 @@ Dot product of two equal-length numeric vectors. (Exported helper.)
 ```
 dim 8
 emb len 8
-vdot(e,e) 2.41432
+vdot(e,e) 2.414316
 ```
 
 ### `(soft-unify tbl a b)`
@@ -55,8 +55,8 @@ One differentiable SGD step that pushes `soft-unify(a,b)` toward `target` by upd
 (display "after  ")(display (soft-unify tbl 'cat 'feline))(newline)
 ```
 ```
-before 0.443577
-after  0.960393
+before 0.44357664326978336
+after  0.96039327982842
 ```
 
 ### `(kb-attention tbl keys query)`
@@ -76,7 +76,7 @@ Argmax over `kb-attention`: return the single key the query attends to most.
 (display (kb-retrieve tbl (list 'cat 'dog 'rock) 'feline))(newline)
 ```
 ```
-((cat . 0.87199) (dog . 0.00842293) (rock . 0.119587))
+((cat . 0.8719897675035976) (dog . 0.008422925924506636) (rock . 0.11958730657189558))
 cat
 ```
 

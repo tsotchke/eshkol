@@ -1,6 +1,6 @@
 # Runtime Reference
 
-Reference documentation for the Eshkol runtime and toolchain (v1.3.0-evolve).
+Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
 
 ## Tools
 
@@ -38,9 +38,11 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.0-evolve).
   [build notes](../../platform/BUILD_NOTES.md),
   [target matrix](../../platform/TARGET_SUPPORT_MATRIX.md).
 
-## Notes / discrepancies observed
+## Notes
 
-- The binary reports `v1.2.4-scale` (`eshkol-run --version`) while this
-  documentation campaign targets **v1.3.0-evolve**.
-- `--help` says `-e` "prints the result," but a bare value expression is **not**
-  auto-printed — use `display`. (See [`eshkol-run`](eshkol-run.md).)
+- The binary reports `v1.3.4-evolve` (`eshkol-run --version`), matching this
+  documentation.
+- `-e` does not auto-print a bare value expression; `--help` says so
+  ("output is shown via `(display …)`"), and `eshkol-run -e '(+ 1 2)'` prints
+  nothing while `eshkol-run -e '(display (+ 1 2))'` prints `3`. (See
+  [`eshkol-run`](eshkol-run.md).)

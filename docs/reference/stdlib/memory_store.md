@@ -62,6 +62,10 @@ event (`linkage-broken`) — the first event's `prev` must be `#f` and each even
 `prev` must equal its predecessor's id. Returns `#t` or a failure descriptor. Valid
 for single-node chains; merged multi-node logs have legitimate forks.
 
+The log is **append-only**, so these two examples assume a fresh
+`/tmp/events.log` — re-running them without deleting the file first replays the
+previous run's events too and the counts grow accordingly.
+
 ```scheme
 ;; memory_store.esk  (writes to /tmp/events.log)
 (require core.memory_store)

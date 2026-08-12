@@ -15,7 +15,7 @@ Length-`N` Hamming window, `w[n] = 0.54 − 0.46·cos(2πn/(N−1))`.
 (display (hamming-window 5)) (newline)
 ```
 ```
-#(0.08 0.54 1 0.54 0.08)
+#(0.08000000000000002 0.54 1 0.5400000000000001 0.08000000000000002)
 ```
 
 ### `(hann-window N)`
@@ -25,7 +25,7 @@ Length-`N` Hann (Hanning) window, `w[n] = 0.5·(1 − cos(2πn/(N−1)))`.
 (display (hann-window 5)) (newline)
 ```
 ```
-#(0 0.5 1 0.5 0)
+#(0 0.49999999999999994 1 0.5000000000000001 0)
 ```
 
 ### `(blackman-window N)`
@@ -35,7 +35,7 @@ Length-`N` Blackman window, `w[n] = 0.42 − 0.5·cos(2πn/(N−1)) + 0.08·cos(
 (display (blackman-window 5)) (newline)
 ```
 ```
-#(-1.38778e-17 0.34 1 0.34 -1.38778e-17)
+#(-1.3877787807814457e-17 0.3399999999999999 0.9999999999999999 0.3400000000000001 -1.3877787807814457e-17)
 ```
 
 ### `(kaiser-window N beta)`
@@ -45,7 +45,7 @@ Length-`N` Kaiser window with shape parameter `beta`; uses an internal 25-term s
 (display (kaiser-window 5 4.0)) (newline)
 ```
 ```
-#(0.0884805 0.633432 1 0.633432 0.0884805)
+#(0.08848052607644988 0.6334317797559347 1 0.6334317797559347 0.08848052607644988)
 ```
 
 ### `(apply-window signal window)`
@@ -55,7 +55,7 @@ Element-wise product of `signal` and `window` (they should be the same length; t
 (display (apply-window #(1.0 1.0 1.0 1.0 1.0) (hamming-window 5))) (newline)
 ```
 ```
-#(0.08 0.54 1 0.54 0.08)
+#(0.08000000000000002 0.54 1 0.5400000000000001 0.08000000000000002)
 ```
 
 ## Convolution
@@ -77,7 +77,9 @@ FFT-based convolution, intended to be O(N log N) (zero-pads both signals to the 
 (display (fast-convolve #(1.0 2.0 3.0) #(1.0 1.0))) (newline)
 ```
 ```
-#(5.23552e+09 -8 -8 -8)      ;; expected #(1 3 5 3)
+#(4966129304 -8 -8 -7.999999999999999)   ;; expected #(1 3 5 3); the leading
+                                         ;; value is uninitialised memory and
+                                         ;; differs on every run
 ```
 
 ## FIR / IIR filters
@@ -114,7 +116,7 @@ Design an `order`-th Butterworth lowpass (bilinear transform of the analog proto
 (display (butterworth-lowpass 2 0.5)) (newline)
 ```
 ```
-(#(0.292893 0.585786 0.292893) . #(1 -1.38778e-16 0.171573))
+(#(0.2928932188134524 0.5857864376269049 0.2928932188134524) . #(1 -1.3877787807814457e-16 0.17157287525380988))
 ```
 
 ### `(butterworth-highpass order cutoff)`
@@ -124,7 +126,7 @@ Highpass via the lowpass-to-highpass spectral inversion (`z → −z` on the num
 (display (butterworth-highpass 2 0.5)) (newline)
 ```
 ```
-(#(0.292893 -0.585786 0.292893) . #(1 -1.38778e-16 0.171573))
+(#(0.2928932188134524 -0.5857864376269049 0.2928932188134524) . #(1 -1.3877787807814457e-16 0.17157287525380988))
 ```
 
 ### `(butterworth-bandpass order low-cutoff high-cutoff)`
@@ -134,7 +136,7 @@ Bandpass as a lowpass+highpass cascade. Returns a **list of two** `(b . a)` pair
 (display (butterworth-bandpass 2 0.2 0.6)) (newline)
 ```
 ```
-((#(0.391336 0.782672 0.391336) . #(1 0.369527 0.195816)) (#(0.638946 -1.27789 0.638946) . #(1 1.14298 0.412802)))
+((#(0.39133577250176854 0.7826715450035371 0.39133577250176854) . #(1 0.36952737735124097 0.19581571265583303)) (#(0.6389455251590224 -1.2778910503180447 0.6389455251590224) . #(1 1.142980502539901 0.4128015980961886)))
 ```
 
 ## Frequency response
@@ -147,7 +149,7 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 (display (frequency-response (car lp) (cdr lp) 4)) (newline)
 ```
 ```
-(#(1 0.948683 0.316228 0) . #(0 -0.886077 -2.25552 0))
+(#(1 0.9486832980505139 0.316227766016838 0) . #(0 -0.8860771237926136 -2.2555155297971794 0))
 ```
 
 ## Internal helpers (not in `provide`)
@@ -158,7 +160,7 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 
 ### `fast-convolve` returns garbage
 
-`fast-convolve` produces completely wrong output — the first element is a huge number (~5e9) and the remaining elements collapse to a negative constant — whereas the direct `convolve` is correct.
+`fast-convolve` produces completely wrong output — the first element is a huge number in the billions that **differs on every run** (it is uninitialised memory) and the remaining elements collapse to a negative constant — whereas the direct `convolve` is correct.
 
 ```scheme
 ;; repro.esk
@@ -168,7 +170,9 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 ```
 ```
 #(1 3 6 9 12 9 5)                     ;; convolve — correct
-#(6.1741e+09 -8 -8 -8 -8 -8 -8)       ;; fast-convolve — garbage
+#(4430393720 -8 -8 -8 -8 -7.999999999999999 -7.999999999999999)
+                                      ;; fast-convolve — garbage; the leading
+                                      ;; value differs on every run
 ```
 Root cause: `fast-convolve` computes `(ifft (fft …))` inside its body, and
 because `fast-convolve` lives in the **precompiled stdlib shared library**, it

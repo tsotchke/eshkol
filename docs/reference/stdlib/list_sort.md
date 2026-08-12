@@ -3,10 +3,12 @@
 **Source**: [`lib/core/list/sort.esk`](../../../lib/core/list/sort.esk)
 **Require**: `(require core.list.sort)` — auto-loaded by `(require stdlib)`.
 
-A single `sort` function implementing top-down merge sort with a user-supplied
-comparator. Not stable-guaranteed by contract, but the merge favours the left
-half on ties (`less?` strictly-less test), which preserves input order for equal
-keys in practice.
+A single `sort` function implementing **bottom-up (iterative) merge sort** with a
+user-supplied comparator. The list is converted to a vector once and merged
+between that vector and one scratch vector, doubling the run width each pass, so
+the workspace is O(n) and the call depth is O(log n) of tail calls — not a
+recursion tree over cons cells. The merge favours the left run on ties (`less?`
+is a strictly-less test), which preserves the input order of equal keys.
 
 ## Functions
 
@@ -40,29 +42,34 @@ auto-loaded into the default namespace, so `(sort strs string<?)` errors with
 `Undefined variable: string<?` unless you have brought it into scope. Define your
 own or require the string module that provides it.
 
-### Known issues — recursion depth is O(n) (ESH-0098)
+### Large inputs (ESH-0098, resolved)
 
-The recursion **control depth grows linearly with list length**, not
-logarithmically, because `sort` recurses on `(take-n mid …)` / `(drop-n mid …)`
-and those helpers plus `merge` are themselves non-tail-recursive. Consequences on
-this machine:
+There is no list-length ceiling. The earlier top-down implementation recursed on
+`take-n`/`drop-n` helpers, so its control depth grew linearly with the list and
+it tripped the `ESHKOL_MAX_RECURSION_DEPTH=100000` guard at 100,000 elements
+(and peaked near 1 GB sorting 50,000). Those helpers no longer exist — the
+current `sort` is the iterative vector merge described above.
 
-| `sort` input | result |
-| --- | --- |
-| 50,000 | sorted (ok) |
-| 100,000 | `Unhandled exception: maximum recursion depth (100000) exceeded` (rc 1) |
+Measured on this build, sorting a fully reversed `iota` (worst-case input) with
+`eshkol-run -r`:
 
-Repro:
+| `sort` input | result | peak RSS |
+| --- | --- | --- |
+| 50,000 | sorted, rc 0 | 139 MB |
+| 100,000 | sorted, rc 0 | 147 MB |
+| 250,000 | sorted, rc 0 | 139 MB |
+| 1,000,000 | sorted, rc 0 | 176 MB |
+| 5,000,000 | sorted, rc 0 | 848 MB |
+
 ```scheme
+;; bigsort.esk
 (require core.list.sort)
 (require core.list.generate)
-(display (car (sort (iota 100000) <))) (newline)
-;; => Unhandled exception: maximum recursion depth (100000) exceeded
+(define s (sort (reverse (iota 1000000)) <))
+(display (car s)) (display " ") (display (length s)) (newline)
 ```
-
-Unlike `length`/`filter` (which SIGILL silently), `sort` fails through the C
-runtime list helpers, so it hits the `ESHKOL_MAX_RECURSION_DEPTH=100000` guard
-and reports a clean diagnostic with exit code 1. The task note also records a
-~983MB RSS peak sorting 50k. Tracked as **ESH-0098** ("stdlib sort recursion
-depth is O(n): cannot sort >= ~100k elements"). Docs-only note; no code changed.
-For >~50k elements, sort a vector or chunk the input.
+```
+0 1000000
+```
+Identical result from an AOT binary (`eshkol-run -o bigsort bigsort.esk`). Above
+a few million elements the limit is available memory, not recursion depth.
