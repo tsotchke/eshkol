@@ -182,7 +182,7 @@ def main() -> int:
     require(index, "expectedTag", "site GitHub release loader")
     require(index, "escapeHtml", "site GitHub release loader")
 
-    require(announcement, "1,078/1,078", "release announcement")
+    require(announcement, "1,091/1,091", "release announcement")
     require(
         announcement,
         "15 platform packages plus `SHA256SUMS.txt`",
@@ -193,7 +193,7 @@ def main() -> int:
         "not a claim of complete backend parity",
         "VM parity disclosure",
     )
-    require(announcement_html_text, "1,078/1,078", "generated announcement HTML")
+    require(announcement_html_text, "1,091/1,091", "generated announcement HTML")
     require(
         announcement_html_text,
         "15 platform packages plus SHA256SUMS.txt",
