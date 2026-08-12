@@ -4,41 +4,72 @@
 ;; value: the native back end reinterpreted the heap pointer as a double
 ;; (`(sqrt (make-rectangular -1.0 0.0))` => 73278.56614317723) while the VM's
 ;; as_number() answered 0 and computed f(0) (=> 0). Two different wrong
-;; answers, so this file's differential catches either regression on its own.
+;; answers, so this differential catches either regression on its own.
 ;;
 ;; Both engines now evaluate the SAME expressions from
-;; <eshkol/core/complex_math.h>, so agreement here is bit-for-bit.
+;; <eshkol/core/complex_math.h>, so agreement is bit-for-bit on one host.
 ;;
-;; Components are printed with real-part/imag-part rather than displaying the
-;; complex directly: the two engines format a complex differently (native
-;; "2+i", VM "2+1i" — tests/vm_parity/found/complex_display_format.esk), which
-;; is a display divergence unrelated to the values under test.
+;; TWO KINDS OF ROW, deliberately:
+;;
+;;   raw digits   only for values that are exact on any conforming libm —
+;;                the algebraic square root is one sqrt and one division, so
+;;                sqrt(-1+0i) and sqrt(3+4i) are exactly 0+1i and 2+1i
+;;                everywhere. These rows keep full digit-level sensitivity:
+;;                a reinterpreted pointer cannot land on them.
+;;
+;;   PASS/FAIL    for everything built on exp/log/trig. This corpus is also
+;;                the input to scripts/run_wasm_differential.sh, and wasm32's
+;;                musl libm differs from the host's by an ulp: e^3*sin(4) is
+;;                -15.200784463067956 natively and -15.200784463067954 under
+;;                wasm. That is a libm difference, not a codegen defect, so
+;;                these rows assert the mathematics to a tolerance that every
+;;                libm meets while still failing on any wrong-by-a-pointer
+;;                answer, which is wrong by many orders of magnitude.
+;;
+;; Components are read with real-part/imag-part rather than displaying the
+;; complex directly: the engines format a complex differently (native "2+i",
+;; VM "2+1i" — tests/vm_parity/found/complex_display_format.esk), a display
+;; divergence unrelated to the values under test.
 
-(define (show name z)
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+(define (show-exact name z)
   (display name) (display " ")
   (display (real-part z)) (display " ")
   (display (imag-part z)) (newline))
 
-;; The two examples documented in docs/ESHKOL_LANGUAGE_GUIDE.md.
-(show "doc-sqrt" (sqrt (make-rectangular -1.0 0.0)))
-(show "doc-exp" (exp (make-rectangular 0.0 3.14159)))
+(define (chk name z re im tol)
+  (display name) (display " ")
+  (display (if (and (near? (real-part z) re tol)
+                    (near? (imag-part z) im tol))
+               "PASS" "FAIL"))
+  (newline))
 
+;; ── exact on any libm ────────────────────────────────────────────────────
+;; The example documented in docs/ESHKOL_LANGUAGE_GUIDE.md.
+(show-exact "doc-sqrt" (sqrt (make-rectangular -1.0 0.0)))
+(show-exact "sqrt" (sqrt (make-rectangular 3.0 4.0)))
+;; The promotion documented in docs/reference/language/numeric-tower.md:
+;; (sqrt -1) is +i.
+(show-exact "sqrt-exact-negative" (sqrt -1))
+
+;; ── asserted to a libm-portable tolerance ────────────────────────────────
 (define z (make-rectangular 3.0 4.0))
-(show "sqrt" (sqrt z))
-(show "exp" (exp z))
-(show "log" (log z))
-(show "sin" (sin z))
-(show "cos" (cos z))
-(show "tan" (tan z))
-(show "asin" (asin z))
-(show "acos" (acos z))
-(show "sinh" (sinh z))
-(show "cosh" (cosh z))
-(show "tanh" (tanh z))
-(show "expt-real-exponent" (expt z 2))
-(show "expt-complex-exponent"
-      (expt (make-rectangular 0.0 1.0) (make-rectangular 0.0 1.0)))
 
-;; The negative-real promotion documented in
-;; docs/reference/language/numeric-tower.md: (sqrt -1) is +i.
-(show "sqrt-exact-negative" (sqrt -1))
+;; The second example documented in docs/ESHKOL_LANGUAGE_GUIDE.md.
+(chk "doc-exp" (exp (make-rectangular 0.0 3.14159)) -1.0 0.0 1.0e-5)
+
+(chk "exp" (exp z) -13.128783081462158 -15.200784463067956 1.0e-12)
+(chk "log" (log z) 1.6094379124341003 0.9272952180016122 1.0e-15)
+(chk "sin" (sin z) 3.853738037919377 -27.016813258003936 1.0e-12)
+(chk "cos" (cos z) -27.034945603074224 -3.8511533348117775 1.0e-12)
+(chk "tan" (tan z) -0.00018734620462947842 0.9993559873814732 1.0e-15)
+(chk "asin" (asin z) 0.6339838656391773 2.3055090312434685 1.0e-15)
+(chk "acos" (acos z) 0.9368124611557193 -2.3055090312434685 1.0e-15)
+(chk "sinh" (sinh z) -6.5481200409110025 -7.619231720321411 1.0e-12)
+(chk "cosh" (cosh z) -6.580663040551157 -7.5815527427465454 1.0e-12)
+(chk "tanh" (tanh z) 1.000709536067233 0.00490825806749606 1.0e-15)
+(chk "expt-real-exponent" (expt z 2) -7.0 24.0 1.0e-13)
+(chk "expt-complex-exponent"
+     (expt (make-rectangular 0.0 1.0) (make-rectangular 0.0 1.0))
+     0.20787957635076193 0.0 1.0e-15)
