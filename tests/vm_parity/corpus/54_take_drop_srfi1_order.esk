@@ -1,0 +1,13 @@
+; take/drop must use SRFI-1 argument order: (take lst n) / (drop lst n).
+; The VM's embedded prelude used to define them reversed as (take n lst) /
+; (drop n lst), diverging from core/list/transform.esk (the on-disk stdlib
+; module the native/AOT compiler uses). A list and a distinct-type numeric
+; count make a reversed order fail LOUDLY (a type error trying to treat the
+; list as a count, or the count as a list) instead of silently returning the
+; wrong value.
+(display (take '(a b c d e) 3)) (newline)
+(display (drop '(a b c d e) 3)) (newline)
+(display (take (list 10 20 30 40) 0)) (newline)
+(display (drop (list 10 20 30 40) 4)) (newline)
+(display (take '(1 2 3) 5)) (newline)
+(display (drop '(1 2 3) 5)) (newline)

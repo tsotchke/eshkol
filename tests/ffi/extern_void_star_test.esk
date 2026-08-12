@@ -1,0 +1,55 @@
+;;; extern void* — accepted as a friendlier alias for `ptr`, both as a
+;;; return type and as a parameter type. Before this fix, `void*` fell
+;;; through mapStringToType's "Unknown type '%s'" branch and silently
+;;; became int64 (with only a warning), corrupting the call ABI for any
+;;; extern using the spelling most C headers actually use.
+;;;
+;;; Declares and calls real C library functions end-to-end through
+;;; void*-typed externs (malloc/free/memset — all fixed-arity, so safe on
+;;; every platform, see lib/core/memory_store.esk's header on why variadic
+;;; externs are not) and checks they behave identically to the existing
+;;; `ptr` spelling.
+
+(require stdlib)
+
+;; void* malloc(size_t size)              — void* as a RETURN type
+(extern void* vs-malloc i64 :real malloc)
+;; void free(void* ptr)                   — void* as a PARAMETER type
+(extern void vs-free void* :real free)
+;; void* memset(void* s, int c, size_t n) — void* as BOTH
+(extern void* vs-memset void* i32 i64 :real memset)
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (write expected)
+             (display " actual=") (write actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(define block (vs-malloc 16))
+(check "void*-returning extern yields a non-null pointer"
+       #t (> (ptr->usize block) 0))
+
+;; Write through the void*-typed pointer and read it back via the same
+;; volatile-op access path tests/ffi/low_level_memory_surface_test.esk uses
+;; for `ptr` — proves void* reaches codegen as a real pointer, not an int64.
+(volatile-store! i64 block 424242)
+(check "value written through a void*-return pointer round-trips"
+       424242 (volatile-load i64 block))
+
+;; memset: void* used as both a parameter AND the return type of one call.
+(define filled (vs-memset block 0 16))
+(check "memset (void* param + void* return) yields the same pointer"
+       (ptr->usize block) (ptr->usize filled))
+(check "memset actually zeroed the block"
+       0 (volatile-load i64 block))
+
+(vs-free block)
+
+(display "extern void* surface: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))

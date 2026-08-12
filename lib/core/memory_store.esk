@@ -182,8 +182,22 @@
 (define (make-memory-store log path) (vector (quote mem-store) log path))
 (define (memory-store? s)
   (and (vector? s) (= (vector-length s) 3) (eq? (vector-ref s 0) (quote mem-store))))
-(define (memory-store-log s)  (vector-ref s 1))
-(define (memory-store-path s) (vector-ref s 2))
+
+;; Runtime tag check: the accessors below used to call vector-ref directly
+;; on `s`, trusting every caller to have passed a real memory-store. A
+;; non-store value (an integer, #f, a bare vector from elsewhere, ...)
+;; SIGSEGV'd at address 0 instead of raising — vector-ref on a value that
+;; isn't a vector reads through it as if it were one. Every public function
+;; that takes a store (memory-store-append!, -verify, -count, -head, and the
+;; internal ms-write-head!) reaches its store's fields ONLY through
+;; memory-store-log / memory-store-path, so guarding these two accessors
+;; protects the whole module. Matches the module's error convention
+;; ("fn-name: description" + offending value; see json-result-value).
+(define (ms-check-store s who)
+  (if (memory-store? s) s
+      (error (string-append who ": not a memory-store") s)))
+(define (memory-store-log s)  (vector-ref (ms-check-store s "memory-store-log") 1))
+(define (memory-store-path s) (vector-ref (ms-check-store s "memory-store-path") 2))
 
 ;; Rebuild the in-memory log from persisted events (replay). The stored id,
 ;; prev, vclock are TRUSTED ONLY until memory-store-verify re-derives them.
