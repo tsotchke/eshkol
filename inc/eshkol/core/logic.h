@@ -121,6 +121,22 @@ bool eshkol_logic_var_id_of(const eshkol_tagged_value_t* tv, uint64_t* out_id);
 bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv);
 
 /*
+ * Structural equality of two facts: same predicate, same arity, pairwise
+ * equal arguments. EQUALITY, not unification — a logic variable matches
+ * only the same logic variable. Used by kb-retract! so a caller can name a
+ * fact by rebuilding it rather than by retaining the pointer they asserted.
+ */
+bool eshkol_fact_equal(const eshkol_fact_t* a, const eshkol_fact_t* b);
+
+/*
+ * Coerce a tagged value to a fact: a fact passes through, a
+ * `(predicate arg ...)` datum list is converted, anything else is NULL.
+ * Same acceptance kb-assert! and kb-query use.
+ */
+const eshkol_fact_t* eshkol_fact_operand(arena_t* arena,
+                                         const eshkol_tagged_value_t* tv);
+
+/*
  * Clear the process-global logic-variable name registry AND the
  * predicate interning pool. Used by (reset-tests!) to achieve full
  * test isolation — without this, two consecutive test runs share

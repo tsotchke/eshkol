@@ -75,6 +75,14 @@
 (display (kb-query kb '(?rel alice bob))) (newline)
 (display (kb-query kb (make-fact ?rel2 'alice 'bob))) (newline)
 
+;; -- kb-retract! matches by value, not pointer identity ---------------------
+(define kbr (make-kb))
+(kb-assert! kbr (make-fact 'r 1 2))
+(kb-assert! kbr (make-fact 'r 2 3))
+(display (kb-retract! kbr (make-fact 'r 1 2))) (newline)
+(display (kb-count kbr)) (newline)
+(display (kb-retract! kbr (make-fact 'r 9 9))) (newline)
+
 ;; -- nested patterns unify structurally ------------------------------------
 (define kb4 (make-kb))
 (kb-assert! kb4 (make-fact '(edge (node a) (node b))))
