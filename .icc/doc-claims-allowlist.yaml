@@ -1,0 +1,805 @@
+schema_version: 1
+description: 'Allowlist for icc doc-typed-claims ''wrong'' findings that are not real documentation defects.
+  Consumed by the doc-typed-claims-residual release-oracle criterion: final_wrong_count MUST equal len(entries)
+  here plus any open build-item count, with zero unexplained remainder. Each entry names the exact claim_id
+  (stable hash from the icc doc-typed-claims JSON output) plus path:line so a re-run can be cross-checked
+  without re-deriving the reasoning. Two dispositions live here: EXEMPT-HISTORICAL (a dated CHANGELOG/RELEASE_NOTES/ROADMAP-[x]/dated-report
+  row describing a past point-in-time fact, correct as written, now superseded by later code changes)
+  and DETECTOR-MISATTRIBUTION (the underlying doc text is accurate but icc doc-typed-claims bound the
+  wrong subject file to a numeric/file_path claim -- see reason for the specific detector gap).'
+generated_at: '2026-08-12T18:06:37Z'
+generated_from: 'icc doc-typed-claims --repo eshkol-docprobe --format json, HEAD f9dfc9d1 (PR #416 branch
+  docs/icc-doc-probe-v134) + 6 doc fixes on top'
+detector_fix_references:
+- gap: family-sum misattribution
+  detail: When a sentence states an aggregate line count across a list of files (e.g. 'totalling roughly
+    N lines across thirteen per-domain *_codegen.cpp modules'), doc-typed-claims binds N to a single file
+    (usually the nearest or last-named file in the sentence) instead of recognising the multi-file list
+    and either (a) skipping the claim as an aggregate, or (b) checking N against the summed line count
+    of every named file.
+  affected_count: 7
+- gap: cross-repo citation
+  detail: doc-typed-claims has no notion of a document that deliberately cites another repository's files
+    (design RFCs written against a dependency's source tree). Every non-indexed file_path claim is scored
+    'wrong' regardless of whether the document states its cross-repo scope up front. A fix would let a
+    doc declare its external repos (front-matter or an inline marker) and skip grounding for citations
+    under those roots.
+  affected_count: 52
+- gap: ambiguous duplicate basename
+  detail: 'Bare filename citations (no directory) fail to resolve to ''wrong'' when two or more files
+    share a basename anywhere in the tree, even when the surrounding document (an ADR''s own Scope: line,
+    here) disambiguates which one is meant. Fixed at the doc level in this pass by qualifying the citations
+    with their directory; a detector fix would prefer a directory named in the same document''s front-matter/Scope
+    before giving up.'
+  affected_count: 0
+- gap: estimate-vs-current-size claim-type confusion
+  detail: Prose estimating the size of code YET TO BE WRITTEN ('llvm_codegen.cpp additions (~4,000 lines)'
+    inside a 'Total estimated implementation' proposal) is parsed as a claim about the file's CURRENT
+    total line count. A fix would recognise 'additions'/'extensions'/'estimated' qualifiers and either
+    skip the claim or classify it as a distinct claim_type (e.g. 'estimated_addition') that current-size
+    grounding does not apply to.
+  affected_count: 3
+- gap: per-release delta vs current-total confusion
+  detail: 'Prose describing how many lines a SPECIFIC PAST RELEASE added (''v1.3.1-evolve added ... documentation
+    ... under inc/eshkol/ (~4,650 lines)'') is parsed as a claim about inc/eshkol/''s current total size.
+    Same class of fix as the estimate-vs-current-size gap: a claim scoped by a named past version should
+    not be checked against present-day totals.'
+  affected_count: 5
+- gap: illustrative/hypothetical example read as a file citation
+  detail: Prose using a made-up filename to illustrate a bug ('for a 3-line entry file requiring a module,
+    the reported location was entry.esk:6:13') is parsed as a real file_path claim. A fix would recognise
+    the illustrative framing ('For a 3-line X file...', 'the reported location was') or require the cited
+    file to appear elsewhere in the document as a real artifact.
+  affected_count: 1
+- gap: rhetorical line-count phrasing read as a LOC claim
+  detail: '''in N lines using X'' as a description of algorithmic conciseness is parsed as a total-file-line-count
+    claim, even when the same document''s explicit LOC column states the correct total two words later.'
+  affected_count: 1
+entries:
+- claim_id: 0ca11f2af611e2b2
+  path: CHANGELOG.md
+  line: 642
+  claim_type: file_path
+  subject: entry.esk
+  value: 6
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: illustrative/hypothetical example filename used to explain a diagnostic-location bug ("a 3-line
+    entry file... entry.esk:6:13") -- not a real file citation; no such file exists anywhere in the tree
+- claim_id: b561486fcd95dc4f
+  path: CHANGELOG.md
+  line: 2406
+  claim_type: numeric
+  subject: lib/backend/weight_matrices.c
+  value: 3998
+  disposition: EXEMPT-HISTORICAL
+  reason: dated CHANGELOG entry describing the file size at the historical "Restored weight_matrices.c"
+    commit, not a claim about current size
+- claim_id: 15a7488641eeff50
+  path: CHANGELOG.md
+  line: 2464
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 1280
+  disposition: EXEMPT-HISTORICAL
+  reason: dated CHANGELOG entry describing the file size immediately after a specific historical extraction
+    commit ("now ~1,280 lines, down from 19,940")
+- claim_id: a1446c0a21d62259
+  path: CHANGELOG.md
+  line: 3263
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 8457
+  disposition: EXEMPT-HISTORICAL
+  reason: dated CHANGELOG entry describing the monolithic VM file size at the historical "Dual Backend
+    Architecture (NEW)" entry, before the later vm_*.c module split
+- claim_id: b0e3c0034d6b03ef
+  path: RELEASE_NOTES.md
+  line: 1128
+  claim_type: file_path
+  subject: arena_memory.cpp
+  value: 3908
+  disposition: EXEMPT-HISTORICAL
+  reason: sits inside the dated "What's New in v1.1.12-accelerate" section of RELEASE_NOTES.md -- a per-release
+    historical record; arena_memory.cpp was later removed/renamed in a subsequent refactor
+- claim_id: d27b81581fe23998
+  path: ROADMAP.md
+  line: 271
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 1280
+  disposition: EXEMPT-HISTORICAL
+  reason: a completed [x] checklist row recording the before/after size of a specific historical refactor
+    commit ("19,940 -> 1,280 lines, 94% reduction"), identical historical fact to the CHANGELOG:2464 entry
+- claim_id: 63dddb6baad23920
+  path: docs/API_REFERENCE.md
+  line: 7068
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22300
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum sentence ("1,867-line dispatcher plus ~22,300 lines across thirteen per-domain tensor_*_codegen.cpp
+    modules") -- detector bound the aggregate 22,300 to the dispatcher file alone; true family total today
+    is 22,320, so the prose figure is still accurate
+- claim_id: a36ad15bdd2552e3
+  path: docs/DESIGN.md
+  line: 79
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22300
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum sentence over thirteen per-domain modules ("totalling roughly 22,300 lines") -- detector
+    bound the aggregate to the last-named module (tensorcore_codegen.cpp, 225 actual lines) instead of
+    the family; true family total today is 22,320
+- claim_id: 2163a2971e181387
+  path: docs/DESIGN.md
+  line: 252
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 46200
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum sentence ("eshkol_vm.c, 2,189 lines; roughly 46,200 lines across the full eshkol_vm.c
+    + vm_*.c module family") -- detector bound the family total to eshkol_vm.c alone; true family total
+    today is 46,153, matching "roughly 46,200"
+- claim_id: a0378023ffba1503
+  path: docs/V1.1_SCOPE.md
+  line: 24
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 35074
+  disposition: EXEMPT-HISTORICAL
+  reason: 'V1.1_SCOPE.md is an explicitly versioned/dated scope document ("Date: April 9, 2026", "Version:
+    v1.1.13-accelerate"), long superseded by v1.3.4 -- a historical snapshot, not a current-state claim'
+- claim_id: 9bdd5499f5912ce1
+  path: docs/V1.1_SCOPE.md
+  line: 25
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 8457
+  disposition: EXEMPT-HISTORICAL
+  reason: same V1.1_SCOPE.md historical-snapshot reasoning as line 24
+- claim_id: 51a9c41b254f7a11
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 391
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22300
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same thirteen-module family-sum misattribution as DESIGN.md:79; true family total today is 22,320
+- claim_id: c958a66a92346a68
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 518
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22100
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum sentence over twelve sibling modules ("~22,100 lines across twelve sibling tensor_*_codegen.cpp
+    files") excluding tensorcore_codegen.cpp -- detector bound the aggregate to the dispatcher; true twelve-sibling
+    total today is 22,095, matching "~22,100"
+- claim_id: 3c56dee67055f51e
+  path: docs/breakdown/OVERVIEW.md
+  line: 91
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 322800
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: repo-wide aggregate ("the compiler tree as a whole totals about 322,800 lines") -- detector
+    bound the repo total to llvm_codegen.cpp, the nearest named file, instead of the whole-tree scope;
+    the same 322,800 figure is used consistently across DESIGN.md, breakdown/README.md and the press copy
+    as the established compiler-infrastructure total
+- claim_id: bc208cd31d19aaf0
+  path: docs/breakdown/VECTOR_OPERATIONS.md
+  line: 130
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22100
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same twelve-sibling family-sum misattribution as COMPILER_ARCHITECTURE.md:518
+- claim_id: 3e8c8dee49b8ea88
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 33
+  claim_type: file_path
+  subject: gpu_eshkol.h
+  value: 123
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gpu_eshkol.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: e45438e3f3b1692c
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 54
+  claim_type: file_path
+  subject: src/applications/moonlab_api.h
+  value: 22
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- src/applications/moonlab_api.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: aae510c93e81e51b
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 61
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 6
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 6be6516949ac1459
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 84
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 217
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 91447db27ef4d894
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 85
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 521
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7171fdb200d46702
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 86
+  claim_type: file_path
+  subject: src/quantum/state.h
+  value: 131
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- src/quantum/state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: bed3cfe9bea19b2b
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 87
+  claim_type: file_path
+  subject: gates.h
+  value: 293
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gates.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 63cf69d05526c0a8
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 89
+  claim_type: file_path
+  subject: src/applications/qrng.h
+  value: 180
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- src/applications/qrng.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7b5849c5eb0dc1fa
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 100
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 296
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 2c8dc7c9e947ca54
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 101
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 700
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: be0db6ad35ce77c8
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 103
+  claim_type: file_path
+  subject: state.h
+  value: 79
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 48c069841035858d
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 105
+  claim_type: file_path
+  subject: qrng.h
+  value: 140
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- qrng.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 96407b4d762636ac
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 107
+  claim_type: file_path
+  subject: state.h
+  value: 382
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 491c8d9e5adb15a6
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 110
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 466
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 75cda1ffed18bdab
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 111
+  claim_type: file_path
+  subject: moonlab_qrng_export.c
+  value: 33
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_qrng_export.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7139dacd3caac432
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 116
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 72
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 3cef2d8450628bb7
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 117
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 700
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 2d521b9e044c61f5
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 120
+  claim_type: file_path
+  subject: state.h
+  value: 373
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 451c201bb42ee66a
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 121
+  claim_type: file_path
+  subject: state.h
+  value: 184
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: f0bc30de380edf60
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 122
+  claim_type: file_path
+  subject: state.h
+  value: 238
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7214304f6650fe9a
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 124
+  claim_type: file_path
+  subject: state.h
+  value: 414
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- state.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: b219373911b26efd
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 135
+  claim_type: file_path
+  subject: gates.h
+  value: 293
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gates.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: e563158dacaba7eb
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 135
+  claim_type: file_path
+  subject: gates.h
+  value: 341
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gates.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 46abbd7958b6daa8
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 151
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 314
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: f221f7bbbbb7d679
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 155
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 96
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 3b7a2afff66daaa4
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 156
+  claim_type: file_path
+  subject: moonlab_qrng_export.c
+  value: 57
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_qrng_export.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: e1d51f18807f1664
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 157
+  claim_type: file_path
+  subject: moonlab_export.h
+  value: 78
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_export.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 3c83a37119f6dc05
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 162
+  claim_type: file_path
+  subject: qrng.h
+  value: 404
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- qrng.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 799df719fc64ee71
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 178
+  claim_type: file_path
+  subject: decoder_bench.h
+  value: 151
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- decoder_bench.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7a558119a9906686
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 179
+  claim_type: file_path
+  subject: vendor_noise_backend.h
+  value: 84
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vendor_noise_backend.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: dae60b95a599b082
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 203
+  claim_type: file_path
+  subject: gpu_eshkol.h
+  value: 51
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gpu_eshkol.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: a5094444558da022
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 208
+  claim_type: file_path
+  subject: gpu_eshkol.h
+  value: 58
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gpu_eshkol.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: dc93eaa74df4d044
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 212
+  claim_type: file_path
+  subject: gpu_eshkol.h
+  value: 96
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gpu_eshkol.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 7773a407071c91af
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 215
+  claim_type: file_path
+  subject: gpu_eshkol.h
+  value: 49
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- gpu_eshkol.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: e43fc3bee56d14d9
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 350
+  claim_type: file_path
+  subject: vqe.c
+  value: 1714
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: f22bdccc866d7706
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 350
+  claim_type: file_path
+  subject: vqe.h
+  value: 509
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: ed7976710e892266
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 355
+  claim_type: file_path
+  subject: vqe.c
+  value: 1668
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: ca3015f1072cd190
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 356
+  claim_type: file_path
+  subject: vqe.c
+  value: 1672
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 37e18e68660d9601
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 358
+  claim_type: file_path
+  subject: vqe.c
+  value: 1628
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: de7bcb399cbb23d0
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 359
+  claim_type: file_path
+  subject: vqe.c
+  value: 1705
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 84b14ab8f4cb74b3
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 363
+  claim_type: file_path
+  subject: differentiable.h
+  value: 31
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- differentiable.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 38eccc16d0e060f1
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 365
+  claim_type: file_path
+  subject: differentiable.h
+  value: 216
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- differentiable.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 08967523ff01ea0e
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 367
+  claim_type: file_path
+  subject: vqe.c
+  value: 1741
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 1c3e3a81cfe7fc34
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 369
+  claim_type: file_path
+  subject: vqe.c
+  value: 1762
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: d5559522d590ba74
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 369
+  claim_type: file_path
+  subject: vqe.h
+  value: 501
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: ffe9d92ec669309f
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 374
+  claim_type: file_path
+  subject: vqe.h
+  value: 476
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- vqe.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: f234c35fadffdbd4
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 482
+  claim_type: file_path
+  subject: moonlab_qrng_export.c
+  value: 5
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- moonlab_qrng_export.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 02fd0466917a93ad
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 541
+  claim_type: file_path
+  subject: src/applications/bell_test.h
+  value: 141
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- src/applications/bell_test.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: cdd4ed7444221051
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 542
+  claim_type: file_path
+  subject: bell_test.h
+  value: 77
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- bell_test.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: f6042caa1701e202
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 544
+  claim_type: file_path
+  subject: qrng.h
+  value: 404
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- qrng.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 150ec64340c63775
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 547
+  claim_type: file_path
+  subject: health_tests.h
+  value: 154
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- health_tests.h
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: 43bbd55556d6743c
+  path: docs/design/MOONLAB_INTEGRATION.md
+  line: 580
+  claim_type: file_path
+  subject: wrapper.c
+  value: 31
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: cross-repo citation into the Moonlab quantum-simulator repo (github.com/tsotchke/moonlab); MOONLAB_INTEGRATION.md
+    explicitly states it 'cites the file and symbol it is grounded in, across four repositories' -- wrapper.c
+    is a Moonlab source/header, not present in the eshkol tree
+- claim_id: fbacd77dca23016d
+  path: docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md
+  line: 1261
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 4000
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: 'claim-type mismatch: "llvm_codegen.cpp additions (~4,000 lines)" is an ESTIMATE of new code
+    to be written for an unbuilt proposal ("Total estimated implementation: ~6,000-8,000 lines of new
+    code"), not a claim about the file''s current size'
+- claim_id: 0dd07fb1ecbc6ba5
+  path: docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md
+  line: 1263
+  claim_type: numeric
+  subject: inc/eshkol/eshkol.h
+  value: 200
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same estimate-of-future-addition mismatch as line 1261 ("eshkol.h extensions (~200 lines)")
+- claim_id: 77835402dddb910a
+  path: docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md
+  line: 1264
+  claim_type: numeric
+  subject: lib/frontend/parser.cpp
+  value: 300
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same estimate-of-future-addition mismatch as line 1261 ("parser.cpp extensions (~300 lines)")
+- claim_id: 38fc5fa8432e3813
+  path: docs/reports/ESHKOL_ICC_COMPLETE_REVIEW_2026-07-01.md
+  line: 70
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 886
+  disposition: EXEMPT-HISTORICAL
+  reason: dated ICC audit report (filename carries the audit date 2026-07-01); records a dead-code candidate
+    size as observed on that date
+- claim_id: 08301ffaf1a3ce10
+  path: examples/README.md
+  line: 35
+  claim_type: numeric
+  subject: examples/newton_method.esk
+  value: 10
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: prose "Newton's root finder in 10 lines using derivative" is a rhetorical description of the
+    core solver's conciseness, not a file-size claim; the table's explicit LOC column already states the
+    correct total (70), and is grounded
+- claim_id: 54010cb43295398c
+  path: press/ESHKOL_DESCRIPTION_COPY.md
+  line: 224
+  claim_type: numeric
+  subject: inc/eshkol/
+  value: 4650
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: per-release documentation delta ("v1.3.1-evolve added Doxygen-format documentation across 50
+    of the 64 public headers under inc/eshkol/ (~4,650 lines)") -- describes lines of comments ADDED IN
+    THAT RELEASE, not the current total size of inc/eshkol/
+- claim_id: 72d08c18bbdb943c
+  path: press/ESHKOL_DESCRIPTION_COPY.md
+  line: 225
+  claim_type: numeric
+  subject: lib/
+  value: 7478
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: combined-total delta ("116 files and roughly 12,600 lines total") for the same v1.3.1-evolve
+    documentation pass, misattributed to lib/ alone by the same-line dual match
+- claim_id: f50ae35a1e430ee2
+  path: press/ESHKOL_DESCRIPTION_COPY.md
+  line: 225
+  claim_type: numeric
+  subject: lib/
+  value: 12600
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: combined-total delta ("116 files and roughly 12,600 lines total") for the same v1.3.1-evolve
+    documentation pass, misattributed to lib/ alone by the same-line dual match
+- claim_id: 76a6e7fc4c80ce09
+  path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
+  line: 189
+  claim_type: numeric
+  subject: inc/eshkol/
+  value: 4650
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:224
+- claim_id: 22ed7a44c534f409
+  path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
+  line: 190
+  claim_type: numeric
+  subject: lib/
+  value: 7478
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:225

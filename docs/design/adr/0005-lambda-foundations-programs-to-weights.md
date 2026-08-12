@@ -114,7 +114,7 @@ instruction rows and loops until halt (`lib/backend/weight_matrices.c:5555-5633`
 The artifact validates reference C, simulated layers, and actual matrix
 execution as three separate paths (`lib/backend/weight_matrices.c:5667-5700`),
 and it can load compiler-produced ESKB instructions into those rows
-(`lib/backend/weight_matrices.c:7368-7446`).
+(`lib/backend/weight_matrices.c:7188-7275`).
 
 Therefore the shipped map is currently:
 

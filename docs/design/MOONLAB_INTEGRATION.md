@@ -422,7 +422,7 @@ Architecture (cleanest, honesty-preserving):
   node**. This requires the extension noted in 4.2: add an `AD_NODE_CUSTOM`
   opcode to `ad_node_type_t` and a `void (*backward)(ad_node_t*)` (plus an
   opaque saved-context pointer) field to `ad_node_t`, and route `AD_NODE_CUSTOM`
-  through `get_tensor_backward_fn` (`tensor_backward.cpp:638`) to invoke that
+  through `get_tensor_backward_fn` (`lib/bridge/tensor_backward.cpp:1316`) to invoke that
   function pointer instead of the fixed table. The node is allocated through the
   same tape machinery as `recordADNodeTensor` and saves the `solver` handle and
   the forward `params` in `saved_tensors`/the new context field. Its backward,

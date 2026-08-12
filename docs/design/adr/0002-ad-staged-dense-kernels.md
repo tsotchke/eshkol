@@ -52,7 +52,7 @@ Verdicts, with file:line evidence:
 | 2 | `jacobian` uses `(i,j)` double-loop replay (replays `f` per Jacobian entry), not row-sweep | **TRUE** | `autodiff_codegen.cpp:6588-6603` nested `i_out<m` / `j_in<n`; per-entry tape `6609-6610`, call `6732`, `backpropagate` `6832` |
 | 3 | Dense tensor ops scalarize in AD mode (matmul, elementwise, reductions build scalar nodes) | **TRUE** | matmul nested M/N/K scalar `recordADNodeBinary(4,…)` mul + `(2,…)` add `llvm_codegen.cpp:27679-27726`; elementwise per-element `tensor_arith_codegen.cpp:517`; sum/mean add-chains `tensor_reduce_codegen.cpp:1948,2226,2236` |
 | 4 | A dense `recordADNodeTensor` matmul callsite exists but is **bypassed** when the scalarizing AD branch runs | **TRUE** | dense record `llvm_codegen.cpp:27824`; guard `27783` `if (autodiff_ && ad_mode && !after_matmul_compute)` where `after_matmul_compute` is set exactly by the scalarizing branch `27623` |
-| 5 | `eshkol_tensor_backward_dispatch` has default/skipped cases that **silently drop** gradients | **TRUE** | `tensor_backward.cpp:1362-1365` `default:` → bare `break;` ("gradient silently dropped"); explicit skip group `1348-1360` (ATTENTION/TRANSPOSE/SUM/BROADCAST_ADD/BROADCAST_MUL/EMBEDDING/FRECHET_MEAN). Also a known partial: attention backward "gradients flow only into V, never Q or K" `lib/bridge/tensor_backward.cpp:646` |
+| 5 | `eshkol_tensor_backward_dispatch` has default/skipped cases that **silently drop** gradients | **TRUE** | `lib/backend/tensor_backward.cpp:1362-1365` `default:` → bare `break;` ("gradient silently dropped"); explicit skip group `1348-1360` (ATTENTION/TRANSPOSE/SUM/BROADCAST_ADD/BROADCAST_MUL/EMBEDDING/FRECHET_MEAN). Also a known partial: attention backward "gradients flow only into V, never Q or K" `lib/bridge/tensor_backward.cpp:646` |
 | 6 | Hidden finite differences in `gradientHigherOrder`, vector/tensor Hessian fallback, and Scheme tape | **TRUE** | central diff `autodiff_codegen.cpp:3464,3522,3558-3559`; Hessian epsilon fallback `7686-7689,8168-8169,8365`; `record-fd-op!` central diff `lib/core/ad/tape.esk:37,130,148-159` (`tape-fd-eps 1e-6`) |
 | 7 | `ad_node_t` has the listed tensor fields in the stated order | **TRUE** | `inc/eshkol/eshkol.h:971-1013`: `tensor_value`983, `tensor_gradient`984, `input3`987, `input4`988, `saved_tensors`991, `num_saved`992, `params` union 995-1008, `shape`1011, `ndim`1012 |
 | 8 | `recordADNodeTensor` exists; `propagateGradient` has a tensor fast path calling `eshkol_tensor_backward_dispatch` when `tensor_gradient != null` | **TRUE** | `recordADNodeTensor` def `autodiff_codegen.cpp:2334`; fast path `10134-10164`, dispatch call `10157-10159` |
@@ -182,7 +182,7 @@ proper VJP registry rather than an ad-hoc switch:
 
 1. **Totality is enforced.** Every dense op ID that codegen can record MUST have
    a registered dense backward. The `default:` and skip cases at
-   `tensor_backward.cpp:1348-1365` become: strict mode → hard error
+   `lib/backend/tensor_backward.cpp:1348-1365` become: strict mode → hard error
    (`ESHKOL_KERNEL_UNSUPPORTED_AD`); release fallback → warn-once, and only when
    the compiler *explicitly* selected a numeric fallback. **Silent zero/missing
    gradient is prohibited.** Gate with `ESHKOL_AD_STRICT_TENSOR=1` (default in
@@ -367,7 +367,7 @@ Out of scope for PR 1: matmul dense routing (C.1), the ABI, any FD removal
   1/1/1 for a scalar loss; `jacobian` from `m*n` to `m`.
 - Tape size scales with tensor-op count, not scalar element count — the matmul
   inner-loop scalar explosion (`llvm_codegen.cpp:27679-27726`) disappears, so
-  dense backward kernels (`tensor_backward.cpp:543`) finally carry the work.
+  dense backward kernels (`lib/backend/tensor_backward.cpp:543`) finally carry the work.
 - The exactness guarantee becomes machine-checkable: `finite_difference_evals ==
   0` on the SciML/PINN path, enforced by tests and the strict flag.
 - Silent gradient drops (incl. the shipping attention Q/K bug,
@@ -421,7 +421,7 @@ Out of scope for PR 1: matmul dense routing (C.1), the ABI, any FD removal
   Mitigation: lifting a non-second-differentiable dense node into a tower is a
   strict error, not a silent linearization.
 - **Strict-mode regressions in the existing suite.** Turning skip cases
-  (`tensor_backward.cpp:1348-1360`) into errors may surface tests that were
+  (`lib/backend/tensor_backward.cpp:1348-1360`) into errors may surface tests that were
   quietly relying on zero gradients. Triage each before flipping the default.
 
 ---
