@@ -566,6 +566,27 @@ entries:
     evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
     caught_by: [pr-record-414, icc-odr-audit]
 
+  - id: PR-10
+    bucket: PARITY-RATCHET
+    status: open
+    title: "The engine-parity gate reports PASS while 89.86 percent of the language surface has never been differentially compared"
+    measured: >-
+      scripts/icc_traces/engine_parity_coverage.jsonl at 9f2da2ab reads
+      "113/1114 constructs with differential evidence (10.14%), 10 divergent program(s), 0 new"
+      and its value is PASS. scripts/icc_traces/surface_parity.jsonl reads
+      "2506 probed / 318 divergences / 0 new" and its value is also PASS.
+    evidence: "scripts/icc_traces/engine_parity_coverage.jsonl; scripts/icc_traces/surface_parity.jsonl"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-readiness]
+    notes: >-
+      This is the structural reason the AD and numeric silent-wrong entries escaped. Both
+      probes grade NON-GROWTH ("0 new"), not correctness, so a defect that has been present
+      since before the baseline is permanently invisible and the gate is green anyway.
+      SW-01, SW-02, SW-06 and SW-08 all live in the 1001 constructs (89.86 percent) that
+      have no differential evidence at all. A coverage percentage that low should itself be
+      a criterion: the gate needs a rising floor on constructs-with-evidence, not only a
+      ceiling on new divergences.
+
   # ───────────────────────── DOC-DEBT ─────────────────────────
 
   - id: DD-01
