@@ -71,6 +71,10 @@
 (display (kb-count kbg)) (newline)
 (display (walk ?rv (car (kb-query kbg (make-fact 'row 73 ?rv))))) (newline)
 
+;; -- a logic variable is not a predicate -----------------------------------
+(display (kb-query kb '(?rel alice bob))) (newline)
+(display (kb-query kb (make-fact ?rel2 'alice 'bob))) (newline)
+
 ;; -- nested patterns unify structurally ------------------------------------
 (define kb4 (make-kb))
 (kb-assert! kb4 (make-fact '(edge (node a) (node b))))

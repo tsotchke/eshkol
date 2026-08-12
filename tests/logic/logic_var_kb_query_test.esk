@@ -165,6 +165,18 @@
 (chk "the last asserted fact is queryable"
      (walk ?rv2 (car (kb-query kb-big (make-fact 'row 99 ?rv2)))) 198)
 
+;; A logic variable is NOT a predicate. Both make-fact spellings treat a
+;; non-ground head as an ordinary first argument, so such a pattern has one
+;; more argument than the facts and matches nothing — rather than reporting a
+;; match with an empty substitution and silently dropping the variable.
+(chk "a variable in predicate position matches nothing (list form)"
+     (kb-query kb '(?rel alice bob)) '())
+(chk "a variable in predicate position matches nothing (fact form)"
+     (kb-query kb (make-fact ?rel2 'alice 'bob)) '())
+(chk "both spellings agree on a variable head"
+     (equal? (kb-query kb '(?rel3 alice bob))
+             (kb-query kb (make-fact ?rel3 'alice 'bob))) #t)
+
 ;; ---------------------------------------------------------------------------
 ;; (5) Nested patterns unify structurally.
 ;; ---------------------------------------------------------------------------
