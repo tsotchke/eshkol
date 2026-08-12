@@ -4360,6 +4360,11 @@ static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
 
 #define VM_LOGIC_TERM_MAX_DEPTH 64
 
+/* Ceiling on solutions lifted out of one kb-query, so the reversal buffer is
+ * bounded. A query returning more than this many matches is truncated rather
+ * than overrunning the stack. */
+#define VM_KB_QUERY_MAX_SOLUTIONS 4096
+
 /** @brief Read the text of a VAL_SYMBOL / VAL_STRING value.
  * @return 1 and fills @p out_text/@p out_len (and @p out_kind with
  *         VM_TERM_KIND_SYMBOL or VM_TERM_KIND_STRING) when @p value is a
@@ -8742,51 +8747,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
         if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
-            /* Grow the fact array when it fills.  This used to be a bare
-             * `n_facts < capacity` guard with no growth, so the 17th
-             * kb-assert! and every one after it was SILENTLY DROPPED — a
-             * 500-fact knowledge base held 16 facts and answered queries
-             * from them without a word.  vm_logic.c's vm_kb_assert() and the
-             * native eshkol_kb_assert() both double; so does this now. */
-            if (kb_obj && kb_obj->n_facts >= kb_obj->capacity) {
-                int new_cap = kb_obj->capacity > 0 ? kb_obj->capacity * 2 : 16;
-                VmFact** grown = (VmFact**)vm_alloc(&vm->heap.regions,
-                                                    (size_t)new_cap * sizeof(VmFact*));
-                if (grown) {
-                    memcpy(grown, kb_obj->facts,
-                           (size_t)kb_obj->n_facts * sizeof(VmFact*));
-                    kb_obj->facts = grown;
-                    kb_obj->capacity = new_cap;
-                }
-            }
-            if (kb_obj && kb_obj->n_facts < kb_obj->capacity) {
-                VmFact* f = (VmFact*)vm_alloc(&vm->heap.regions, sizeof(VmFact));
+            Value datum;
+            if (kb_obj && vm_kb_extract_fact_datum(vm, fact_val, &datum) &&
+                datum.type == VAL_PAIR && is_valid_heap_ptr(vm, datum.as.ptr)) {
+                /* Build the unification term form ONCE, here, so a KB scan
+                 * does not re-intern every ground argument on every query. */
+                VmFact* f = vm_logic_fact_from_datum(vm, datum, 0);
                 if (f) {
-                    memset(f, 0, sizeof(VmFact));
-                    Value datum;
-                    if (vm_kb_extract_fact_datum(vm, fact_val, &datum) &&
-                        datum.type == VAL_PAIR && is_valid_heap_ptr(vm, datum.as.ptr)) {
-                        f->has_datum = 1;
-                        f->datum_ptr = datum.as.ptr;
-                        /* Pre-compute the unification term form once, at
-                         * assert time, so kb-query only has to convert the
-                         * pattern (and so a KB scan does not re-intern every
-                         * ground argument on every query). */
-                        VmFact* term_form = vm_logic_fact_from_datum(vm, datum, 0);
-                        if (term_form) {
-                            f->predicate = term_form->predicate;
-                            f->args      = term_form->args;
-                            f->arity     = term_form->arity;
-                        }
-                        kb_obj->facts[kb_obj->n_facts++] = f;
-                    }
+                    /* Keep the original Scheme list alongside the term form:
+                     * kb-retract!/kb-count-predicate and `display` work on the
+                     * datum, unification works on the terms. */
+                    f->has_datum = 1;
+                    f->datum_ptr = datum.as.ptr;
+                    /* vm_kb_assert() owns the growth (doubling), the same as
+                     * native eshkol_kb_assert().  This dispatch used to guard
+                     * on `n_facts < capacity` with no growth of its own, so a
+                     * knowledge base stopped accepting facts at 16 and dropped
+                     * every later assert without a word. */
+                    vm_kb_assert(&vm->heap.regions, kb_obj, f);
                 }
             }
         }
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 512: { /* kb-query(kb, pattern) → list of unifying substitutions
+    case 512: { /* kb-query(kb, pattern) -> list of unifying substitutions
                  *
                  * Matches the native engine (eshkol_kb_query): one
                  * substitution per fact that unifies with the pattern, in
@@ -8803,31 +8788,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
             VmFact* pat = vm_logic_fact_from_datum(vm, pattern_datum, 0);
             if (kb_obj && pat) {
-                VmSubstitution* base = vm_make_substitution(&vm->heap.regions, 8);
+                /* The scan itself lives in vm_logic.c's vm_kb_query() — the
+                 * same engine native eshkol_kb_query() mirrors — so there is
+                 * one implementation of predicate/arity filtering and
+                 * argument unification, not a second copy here.  All this
+                 * dispatch does is lift the resulting term-level cons list
+                 * into VM heap values. */
+                VmValue solutions = vm_kb_query(&vm->heap.regions, kb_obj, pat, NULL);
+
+                /* vm_kb_query prepends while scanning forward, so its list is
+                 * in reverse insertion order; reversing it here yields KB
+                 * insertion order, which is what native now returns too. */
+                VmSubstitution* stack[VM_KB_QUERY_MAX_SOLUTIONS];
+                int n = 0;
+                VmValue cur = solutions;
+                while (cur.type == VM_VAL_HEAP_PTR && cur.data.ptr_val &&
+                       n < VM_KB_QUERY_MAX_SOLUTIONS) {
+                    VmConsPair* cell = (VmConsPair*)(uintptr_t)cur.data.ptr_val;
+                    stack[n++] = (VmSubstitution*)(uintptr_t)cell->car.data.ptr_val;
+                    cur = cell->cdr;
+                }
+
                 Value result = NIL_VAL;
-                /* Scan backwards and prepend, so the result list comes out
-                 * in KB insertion order — the same order the native engine
-                 * produces after the matching change in eshkol_kb_query. */
-                for (int i = kb_obj->n_facts - 1; i >= 0; i--) {
-                    VmFact* f = kb_obj->facts[i];
-                    if (!f) continue;
-                    if (pat->predicate != 0 && f->predicate != 0 &&
-                        pat->predicate != f->predicate) continue;
-                    if (pat->arity != f->arity) continue;
-
-                    VmSubstitution* subst = base;
-                    int ok = 1;
-                    for (int j = 0; j < pat->arity; j++) {
-                        subst = vm_unify(&vm->heap.regions,
-                                         &pat->args[j], &f->args[j], subst);
-                        if (!subst) { ok = 0; break; }
-                    }
-                    if (!ok || !subst) continue;
-
+                for (int i = 0; i < n; i++) {
                     int32_t sp = heap_alloc(&vm->heap);
                     if (sp < 0) break;
                     vm->heap.objects[sp]->type = HEAP_SUBST;
-                    vm->heap.objects[sp]->opaque.ptr = subst;
+                    vm->heap.objects[sp]->opaque.ptr = stack[i];
                     Value sv; sv.type = VAL_SUBST; sv.as.ptr = sp;
 
                     int32_t p = heap_alloc(&vm->heap);
