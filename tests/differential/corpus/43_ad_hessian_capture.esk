@@ -1,0 +1,35 @@
+;; automatic differentiation: hessian over a lambda that CAPTURES free variables
+;;
+;; The differentiated lambda's free variables are its enclosing function's
+;; parameters, so the lowered LLVM function carries extra capture parameters
+;; after its single user argument. The scalar hessian arm used to call it with
+;; the seeded jet alone ("Incorrect number of arguments passed to called
+;; function"). Self-contained: no require, runs on every axis.
+
+;; f(t) = q t^3  ->  f''(t) = 6 q t
+(define (h1 q) (hessian (lambda (t) (* q t t t)) 2.0))
+(display (h1 1.5)) (newline)
+(display (h1 -2.0)) (newline)
+
+;; f(t) = a t^2 + b t^3  ->  f''(t) = 2a + 6 b t
+(define (h2 a b) (hessian (lambda (t) (+ (* a t t) (* b t t t))) 2.0))
+(display (h2 3.0 0.5)) (newline)
+
+;; three captures: f(t) = a t^2 + b t^3 + c t^4
+(define (h3 a b c)
+  (hessian (lambda (t) (+ (* a t t) (* b t t t) (* c t t t t))) 2.0))
+(display (h3 1.0 2.0 0.25)) (newline)
+
+;; capture of a let binding rather than a parameter
+(define (h1let q)
+  (let ((k (* 2.0 q)))
+    (hessian (lambda (t) (* k t t t)) 2.0)))
+(display (h1let 1.5)) (newline)
+
+;; laplacian delegates to hessian, so it exercises the same call
+(define (l1 q) (laplacian (lambda (t) (* q t t t)) 2.0))
+(display (l1 1.5)) (newline)
+
+;; derivative over the same capturing lambda, for cross-operator agreement
+(define (d1 q) (derivative (lambda (t) (* q t t t)) 2.0))
+(display (d1 1.5)) (newline)

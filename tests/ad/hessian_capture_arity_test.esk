@@ -1,0 +1,113 @@
+;;; tests/ad/hessian_capture_arity_test.esk
+;;; ─────────────────────────────────────────────────────────────────────────
+;;;  `hessian` over a lambda that CAPTURES free variables.
+;;;
+;;;  A lambda whose free variables are its enclosing function's parameters is
+;;;  lowered to an LLVM function with EXTRA parameters — one pointer per
+;;;  capture — after its single user argument. Every other AD call site in
+;;;  autodiff_codegen.cpp reconstructs those capture arguments before calling
+;;;  the differentiand (resolveGradientCaptures / loadCapturesForAutodiff).
+;;;  The SCALAR arm of hessianJetPath did not: it called the lambda with the
+;;;  seeded jet alone, so
+;;;
+;;;      (define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0))
+;;;
+;;;  failed LLVM module verification with
+;;;      "Incorrect number of arguments passed to called function"
+;;;  for ANY capturing lambda, with or without a shadowing global. Fixed by
+;;;  routing that call through the same shared capture resolver.
+;;;
+;;;  Covered here: 1, 2 and 3 captures; captures from a `let` rather than a
+;;;  parameter; a capture whose name also exists as a top-level global (the
+;;;  resolver must pick the LEXICALLY visible parameter); an exact point (the
+;;;  exact-tower route) as well as an inexact one; the vector-point
+;;;  forward-over-forward arm; and the multi-parameter arm.
+;;;
+;;;  Prints a PASS/FAIL summary and exits non-zero on any failure.
+;;; ─────────────────────────────────────────────────────────────────────────
+
+(define pass 0)
+(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-6))
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ")
+  (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; ── 1 capture, inexact point ───────────────────────────────────────────────
+;; f(t) = q t^3 ; f''(t) = 6 q t ; at t = 2 -> 12 q
+(define (h1 q) (hessian (lambda (t) (* q t t t)) 2.0))
+(chk "1 capture, inexact point  (q=1.5 -> 18)" (approx= (h1 1.5) 18.0))
+(chk "1 capture, inexact point  (q=-2.0 -> -24)" (approx= (h1 -2.0) -24.0))
+
+;; ── 1 capture, EXACT point (exact-tower route) ─────────────────────────────
+(define (h1e q) (hessian (lambda (t) (* q t t t)) 2))
+(chk "1 capture, exact point    (q=1.5 -> 18)" (approx= (h1e 1.5) 18.0))
+
+;; ── 2 captures ─────────────────────────────────────────────────────────────
+;; f(t) = a t^2 + b t^3 ; f''(t) = 2a + 6 b t ; at t = 2 -> 2a + 12b
+(define (h2 a b) (hessian (lambda (t) (+ (* a t t) (* b t t t))) 2.0))
+(chk "2 captures (a=3,b=0.5 -> 12)" (approx= (h2 3.0 0.5) 12.0))
+
+;; ── 3 captures ─────────────────────────────────────────────────────────────
+;; f(t) = a t^2 + b t^3 + c t^4 ; f''(t) = 2a + 6 b t + 12 c t^2
+;; at t = 2 -> 2a + 12b + 48c
+(define (h3 a b c)
+  (hessian (lambda (t) (+ (* a t t) (* b t t t) (* c t t t t))) 2.0))
+(chk "3 captures (a=1,b=2,c=0.25 -> 38)" (approx= (h3 1.0 2.0 0.25) 38.0))
+
+;; ── capture of a LET binding, not a parameter ──────────────────────────────
+(define (h1let q)
+  (let ((k (* 2.0 q)))
+    (hessian (lambda (t) (* k t t t)) 2.0)))
+(chk "let-bound capture (q=1.5 -> 36)" (approx= (h1let 1.5) 36.0))
+
+;; ── capture whose name ALSO exists as a top-level global ───────────────────
+;; The lambda's free variable `qg` is the enclosing PARAMETER, which lexically
+;; shadows the global. Resolving the capture to the global would silently
+;; answer 12*100 = 1200 instead of 12*1.5 = 18.
+(define qg 100.0)
+(define (h1shadow qg) (hessian (lambda (t) (* qg t t t)) 2.0))
+(chk "capture shadows a global (-> 18, not 1200)" (approx= (h1shadow 1.5) 18.0))
+
+;; ── two AD operators over the same captures, in one function ───────────────
+;; Guards against the capture reconstruction being consumed by the first call.
+(define (h1twice q)
+  (+ (hessian (lambda (t) (* q t t t)) 2.0)
+     (hessian (lambda (t) (* q t t)) 3.0)))
+(chk "two hessians, same captures (q=1.5 -> 21)" (approx= (h1twice 1.5) 21.0))
+
+;; ── derivative/gradient agree with hessian on the same capturing lambda ────
+;; f'(t) = 3 q t^2 -> at t=2, q=1.5 : 18
+(define (d1 q) (derivative (lambda (t) (* q t t t)) 2.0))
+(chk "derivative of the same lambda (q=1.5 -> 18)" (approx= (d1 1.5) 18.0))
+
+;; ── laplacian delegates to hessian, so it inherits the same call ───────────
+;; Laplacian of a 1-D field IS f''(x).
+(define (l1 q) (laplacian (lambda (t) (* q t t t)) 2.0))
+(chk "laplacian of the same lambda (q=1.5 -> 18)" (approx= (l1 1.5) 18.0))
+
+;; ── VECTOR point, 1 capture (forward-over-forward arm) ─────────────────────
+;; f(v) = q * (v.v) ; H = 2q I
+(define (hvec q) (hessian (lambda (v) (* q (tensor-dot v v))) (vector 1.0 2.0)))
+(define hv (hvec 1.5))
+(chk "vector point H[0][0] = 3" (approx= (tensor-ref hv 0 0) 3.0))
+(chk "vector point H[1][1] = 3" (approx= (tensor-ref hv 1 1) 3.0))
+(chk "vector point H[0][1] = 0" (approx= (tensor-ref hv 0 1) 0.0))
+
+;; ── MULTI-PARAMETER loss with a capture (multi-param arm) ──────────────────
+;; f(x,y) = q x^2 + x y ; H = [[2q, 1],[1, 0]]
+(define (hmulti q)
+  (hessian (lambda (x y) (+ (* q x x) (* x y))) (vector 1.0 2.0)))
+(define hm (hmulti 1.5))
+(chk "multi-param H[0][0] = 3" (approx= (tensor-ref hm 0 0) 3.0))
+(chk "multi-param H[0][1] = 1" (approx= (tensor-ref hm 0 1) 1.0))
+(chk "multi-param H[1][1] = 0" (approx= (tensor-ref hm 1 1) 0.0))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (= fail 0)
+    (begin (display "PASS: hessian over parameter-capturing lambdas") (newline))
+    (begin (display "FAIL: hessian over parameter-capturing lambdas") (newline)
+           (exit 1)))
