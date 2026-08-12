@@ -4496,11 +4496,15 @@ static VmValue vm_logic_term_from_value(VM* vm, Value v, int depth) {
     const char* text = NULL;
     int len = 0, kind = 0;
     if (vm_logic_text_of(vm, v, &text, &len, &kind)) {
+        /* Interning gives equal ground text one pointer, which is the fast
+         * path in vm_values_equal.  If the pool is full we still hand over the
+         * heap string's own NUL-terminated arena text (VmString.data) rather
+         * than degrading to an identity-only term: vm_values_equal falls back
+         * to strcmp, so a full pool costs a comparison and never a match. */
         const char* interned = vm_logic_intern_text(text, len, kind);
-        if (!interned) return vm_logic_term_opaque(v);
         t.type = VM_VAL_HEAP_PTR;
         t.flags = (uint8_t)kind;
-        t.data.ptr_val = (uint64_t)(uintptr_t)interned;
+        t.data.ptr_val = (uint64_t)(uintptr_t)(interned ? interned : text);
         return t;
     }
 
@@ -4565,11 +4569,12 @@ static VmFact* vm_logic_fact_from_datum(VM* vm, Value datum, int depth) {
     int len = 0, kind = 0;
     if (!vm_value_is_logic_var(vm, head) &&
         vm_logic_text_of(vm, head, &text, &len, &kind)) {
+        /* As above: the heap string's own text is the fallback when the pool
+         * is full, and vm_unify_facts compares predicates by strcmp when the
+         * pointers differ. */
         const char* interned = vm_logic_intern_text(text, len, kind);
-        if (interned) {
-            predicate = (uint64_t)(uintptr_t)interned;
-            first_arg = 1;
-        }
+        predicate = (uint64_t)(uintptr_t)(interned ? interned : text);
+        first_arg = 1;
     }
 
     int arity = n - first_arg;

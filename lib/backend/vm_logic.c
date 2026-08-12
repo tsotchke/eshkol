@@ -177,9 +177,19 @@ static const char* vm_logic_intern_text(const char* text, int len, int kind) {
         if ((int)strlen(e) != len) continue;
         if (memcmp(e, text, (size_t)len) == 0) return e;
     }
-    if (g_vm_intern_count >= VM_LOGIC_INTERN_MAX) return NULL;
+    if (g_vm_intern_count >= VM_LOGIC_INTERN_MAX) {
+        fprintf(stderr, "WARN: logic term intern table full (%zu entries); "
+                        "ground terms fall back to text comparison\n",
+                g_vm_intern_count);
+        return NULL;
+    }
     size_t needed = (size_t)len + 2; /* kind byte + text + NUL */
-    if (g_vm_intern_offset + needed > sizeof(g_vm_intern_pool)) return NULL;
+    if (g_vm_intern_offset + needed > sizeof(g_vm_intern_pool)) {
+        fprintf(stderr, "WARN: logic term intern pool exhausted (%zu bytes); "
+                        "ground terms fall back to text comparison\n",
+                g_vm_intern_offset);
+        return NULL;
+    }
     char* slot = g_vm_intern_pool + g_vm_intern_offset;
     g_vm_intern_offset += needed;
     slot[0] = (char)kind;
@@ -401,7 +411,21 @@ static int vm_values_equal(const VmValue* a, const VmValue* b) {
         case VM_VAL_DOUBLE:    return a->data.double_val == b->data.double_val;
         case VM_VAL_BOOL:      return a->data.int_val == b->data.int_val;
         case VM_VAL_LOGIC_VAR: return a->data.int_val == b->data.int_val;
-        case VM_VAL_HEAP_PTR:  return a->data.ptr_val == b->data.ptr_val;
+        case VM_VAL_HEAP_PTR:
+            if (a->data.ptr_val == b->data.ptr_val) return 1;
+            /* Interning makes equal ground text pointer-equal, and that is the
+             * fast path above.  It must not be what CORRECTNESS rests on: the
+             * intern pool is finite, and if it fills, two spellings of `alice`
+             * would stop unifying and queries would silently return fewer
+             * answers.  Compare the text when the pointers differ, so a full
+             * pool costs speed and never truth.  (Native's unify has the same
+             * strcmp fallback behind its interned-predicate comparison.) */
+            if ((a->flags == VM_TERM_KIND_SYMBOL || a->flags == VM_TERM_KIND_STRING) &&
+                a->data.ptr_val && b->data.ptr_val) {
+                return strcmp((const char*)(uintptr_t)a->data.ptr_val,
+                              (const char*)(uintptr_t)b->data.ptr_val) == 0;
+            }
+            return 0;
         default:               return 0;
     }
 }
@@ -479,7 +503,14 @@ static VmSubstitution* vm_unify(VmRegionStack* rs,
 static VmSubstitution* vm_unify_facts(VmRegionStack* rs,
     const VmFact* f1, const VmFact* f2, const VmSubstitution* subst)
 {
-    if (f1->predicate != f2->predicate) return NULL;
+    if (f1->predicate != f2->predicate) {
+        /* Interned predicates compare by pointer; fall back to the text if
+         * either escaped interning (a full pool), for the same reason
+         * vm_values_equal does.  Mirrors eshkol_unify's fallback. */
+        const char* p1 = (const char*)(uintptr_t)f1->predicate;
+        const char* p2 = (const char*)(uintptr_t)f2->predicate;
+        if (!p1 || !p2 || strcmp(p1, p2) != 0) return NULL;
+    }
     if (f1->arity != f2->arity) return NULL;
 
     VmSubstitution* current = (VmSubstitution*)subst;
@@ -616,9 +647,16 @@ static VmValue vm_kb_query(VmRegionStack* rs, const VmKnowledgeBase* kb,
     for (int i = 0; i < kb->n_facts; i++) {
         const VmFact* fact = kb->facts[i];
 
-        /* Quick checks: predicate match and arity */
+        /* Quick checks: predicate match and arity.  The predicate compare
+         * falls back to the text when the pointers differ, for the same
+         * reason vm_unify_facts does — a full intern pool must not make
+         * facts stop matching. */
         if (pattern->predicate != 0 && fact->predicate != 0 &&
-            pattern->predicate != fact->predicate) continue;
+            pattern->predicate != fact->predicate) {
+            const char* p1 = (const char*)(uintptr_t)pattern->predicate;
+            const char* p2 = (const char*)(uintptr_t)fact->predicate;
+            if (!p1 || !p2 || strcmp(p1, p2) != 0) continue;
+        }
         if (pattern->arity != fact->arity) continue;
 
         /* Try to unify each argument pair */
