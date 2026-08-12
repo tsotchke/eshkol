@@ -1,0 +1,124 @@
+;;; tests/memory/memory_store_test.esk — core.memory_store (durable chain)
+;;;
+;;; Two things this module never had coverage for:
+;;;
+;;;   1. memory-store-append! itself — sweep_a_regressions_test.esk only
+;;;      exercised memory-store-audit on a log built directly with
+;;;      core.memory's memory-append!, never through the durable store's
+;;;      own PERSIST-BEFORE-ADVANCE append path.
+;;;   2. The memory-store-* accessors previously trusted their `store`
+;;;      argument unconditionally: memory-store-log / memory-store-path
+;;;      called vector-ref directly, so a non-store value (an integer, a
+;;;      string, a plain list, #f, ...) SIGSEGV'd at address 0 instead of
+;;;      raising. Every other public function that takes a store
+;;;      (memory-store-append!, -verify, -count, -head) reaches the
+;;;      store's fields only through those two accessors, so this exercises
+;;;      the fix for the whole module, not just the two direct entry points.
+;;;
+;;; Must pass identically under -r and AOT.
+
+(require stdlib)
+(require core.memory)
+(require core.sexp)
+(require core.memory_store)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exn (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+;; =====================================================================
+;; 1. Wrong-type raise: non-store values must raise a catchable error,
+;;    not crash. Cover every accessor that used to reach a bare vector-ref,
+;;    plus every public function layered on top of them.
+;; =====================================================================
+
+(define bad-values (list 42 "not-a-store" #f (list 1 2 3) (vector 1 2)))
+
+(for-each
+  (lambda (bad)
+    (check "memory-store-log raises on non-store"
+           (raises? (lambda () (memory-store-log bad))))
+    (check "memory-store-path raises on non-store"
+           (raises? (lambda () (memory-store-path bad))))
+    (check "memory-store-count raises on non-store"
+           (raises? (lambda () (memory-store-count bad))))
+    (check "memory-store-head raises on non-store"
+           (raises? (lambda () (memory-store-head bad))))
+    (check "memory-store-verify raises on non-store"
+           (raises? (lambda () (memory-store-verify bad))))
+    (check "memory-store-append! raises on non-store"
+           (raises? (lambda () (memory-store-append! bad 'note (list (cons 'k "v")))))))
+  bad-values)
+
+;; A vector that merely LOOKS store-shaped (right length, wrong tag) must
+;; also be rejected — memory-store? checks the tag, not just vector?+length.
+(define fake-store (vector 'not-mem-store 1 2))
+(check "memory-store-log raises on mistagged 3-vector"
+       (raises? (lambda () (memory-store-log fake-store))))
+
+;; A genuine store must NOT raise.
+(define real-path (path-join (temp-directory) "eshkol-memory-store-test.log"))
+(if (file-exists? real-path) (delete-file real-path) #t)
+(if (file-exists? (string-append real-path ".head")) (delete-file (string-append real-path ".head")) #t)
+(define real-store (memory-store-open 'test-node real-path))
+(check "memory-store-log does not raise on a real store"
+       (not (raises? (lambda () (memory-store-log real-store)))))
+(check "memory-store? recognizes a real store"
+       (memory-store? real-store))
+(check "memory-store? rejects a non-store"
+       (not (memory-store? 42)))
+
+;; =====================================================================
+;; 2. memory-store-append! — basic behavior (previously untested).
+;; =====================================================================
+
+(define ev1 (memory-store-append! real-store 'note (list (cons 'text "first"))))
+(check "append! returns a truthy event on success" (if ev1 #t #f))
+(check "store count is 1 after one append" (= (memory-store-count real-store) 1))
+(check "store head equals the appended event's id"
+       (equal? (memory-store-head real-store) (memory-event-id ev1)))
+(check "first event's prev is #f (chain start)"
+       (eq? (memory-event-prev ev1) #f))
+
+(define ev2 (memory-store-append! real-store 'note (list (cons 'text "second"))))
+(check "store count is 2 after a second append" (= (memory-store-count real-store) 2))
+(check "second event's prev links to the first" (equal? (memory-event-prev ev2) (memory-event-id ev1)))
+(check "store head advances to the second event"
+       (equal? (memory-store-head real-store) (memory-event-id ev2)))
+(check "memory-store-verify passes on a clean chain" (eq? (memory-store-verify real-store) #t))
+
+;; Durability: the events actually landed on disk, not just in memory —
+;; reopening from the path alone must replay both.
+(define reopened (memory-store-open 'test-node real-path))
+(check "reopened store replays both persisted events"
+       (= (memory-store-count reopened) 2))
+(check "reopened store's head matches the original"
+       (equal? (memory-store-head reopened) (memory-store-head real-store)))
+(check "reopened store verifies clean" (eq? (memory-store-verify reopened) #t))
+
+;; memory-store-audit (streaming, path-based — no store argument to guard)
+;; still agrees with the replayed count.
+(check "memory-store-audit agrees with replayed count"
+       (equal? (memory-store-audit real-path) (list 'ms-audit-v1 #t 2 0)))
+
+(if (file-exists? real-path) (delete-file real-path) #t)
+(if (file-exists? (string-append real-path ".head")) (delete-file (string-append real-path ".head")) #t)
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+
+(if (> failed 0) (exit 1) (exit 0))
