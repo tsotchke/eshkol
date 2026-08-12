@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Modules Test Suite
 # Runs all module tests and reports results

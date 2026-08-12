@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Numeric Regression Test Suite
 # Tests critical numeric bug fixes from v1.1 development

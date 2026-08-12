@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Examples Test Suite (Verbose Output)
 # Same as run_examples_tests.sh but shows compile/runtime output for debugging

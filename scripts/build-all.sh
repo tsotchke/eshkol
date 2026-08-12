@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Master Build Script - Build all targets locally via Docker + native
 #

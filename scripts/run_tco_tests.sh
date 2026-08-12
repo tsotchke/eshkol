@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol TCO (Tail Call Optimization) Test Suite
 # Tests that TCO works correctly with nested letrec expressions.

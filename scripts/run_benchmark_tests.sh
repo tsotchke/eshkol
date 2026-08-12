@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Benchmark Test Suite
 # Runs benchmark tests (timing, BLAS, SIMD) — validates they compile and run

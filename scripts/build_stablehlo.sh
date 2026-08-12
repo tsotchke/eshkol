@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build StableHLO with LLVM for Eshkol XLA backend
 #
 # This script builds LLVM/MLIR and StableHLO with all necessary targets

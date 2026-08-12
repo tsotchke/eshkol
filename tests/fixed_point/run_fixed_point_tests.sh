@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_fixed_point_tests.sh — build + run the fixed-point / i128 / exact-accumulation
 # suite standalone (no CMake, no dependency on the Eshkol build tree). Additive:
 # touches nothing outside this directory + the library it tests.

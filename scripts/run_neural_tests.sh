@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Neural Network Test Suite
 # Runs all neural network tests and reports results

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Deterministic R7RS conformance probes. Every source in tests/r7rs is
 # compiled and executed, so language-surface coverage cannot be earned by a

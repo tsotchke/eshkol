@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # repl_machine_mode_protocol_test.sh — machine-mode warm worker keeps
 # framing on stderr and user output on stdout.
 

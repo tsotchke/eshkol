@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Macros Test Suite
 # Tests define-syntax / syntax-rules macro system

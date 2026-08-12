@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run Eshkol v1.2 edge-case + security regression suite.
 #
 # This pulls every .esk file under tests/v1_2_edge_cases/ and treats it

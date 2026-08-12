@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # object_build_cli_contract_test.sh - Noesis Bug LL positive regression.
 #
 # Build systems need an exact object-output contract. This verifies the

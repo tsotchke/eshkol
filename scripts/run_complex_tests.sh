@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Complex Number & FFT Test Suite
 # Runs all complex arithmetic and FFT tests

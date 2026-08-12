@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ast_dump_let_ops_test.sh — AST printer must not read the wrong operation
 # union fields for let-family forms.
 

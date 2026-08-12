@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Complete Test Suite
 # Runs all test suites and reports aggregate results

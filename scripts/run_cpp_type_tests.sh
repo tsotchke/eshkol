@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol HoTT Type Checker C++ Unit Tests
 # Compiles and runs the C++ type system tests

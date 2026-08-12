@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol GPU Test Suite
 # Runs all GPU and softfloat tests

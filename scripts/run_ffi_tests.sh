@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol FFI Test Suite
 # Runs all tests/ffi/*.esk tests (extern declarations, string<->C marshalling,

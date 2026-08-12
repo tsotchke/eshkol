@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # repl_display_persistent_test.sh — displayed REPL expressions must not
 # abort the process before the next read.
 

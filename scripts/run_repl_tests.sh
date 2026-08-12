@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol REPL Test Suite
 # Runs all REPL tests and reports results

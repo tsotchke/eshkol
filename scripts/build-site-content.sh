@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build site content: Convert markdown docs to HTML fragments for the website.
 # These HTML fragments are fetched by the WASM app at runtime via web-load-content.
 

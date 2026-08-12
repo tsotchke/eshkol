@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # http_server_smoke_test.sh — core HTTP server builtin round-trip (#145).
 #
 # Spins up the loopback HTTP server, forks a child that performs a core

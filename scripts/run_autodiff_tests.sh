@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Eshkol Autodiff Test Suite
 # Runs all automatic differentiation tests and reports results

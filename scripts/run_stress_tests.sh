@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_stress_tests.sh — drive the long-running stress harnesses.
 #
 # Not wired into scripts/run_all_tests.sh because these take minutes

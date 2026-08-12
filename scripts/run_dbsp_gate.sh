@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # core.dbsp acceptance gate (ADR 0009, v1.5.0 incremental-dataflow slice).
 #

@@ -64,7 +64,7 @@ cat > "$tmp/leaf.esk" <<'EOF'
 ;; the agent-FFI archive. Guarded so the test never depends on a spawn actually
 ;; succeeding in a sandbox — the link requirement exists regardless.
 (define (leaf-touch-ffi)
-  (if #f (run-argv-capture (list "/bin/echo" "x")) #t))
+  (if #f (run-argv-capture (list "echo" "x")) #t))
 EOF
 cat > "$tmp/mid.esk" <<'EOF'
 (load "leaf.esk")
