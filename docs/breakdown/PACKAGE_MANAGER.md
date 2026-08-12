@@ -1,7 +1,7 @@
 # Eshkol Package Manager (eshkol-pkg)
 
 **Status:** Production — v1.2.1-scale
-**Source:** `tools/pkg/eshkol_pkg.cpp` (722 lines)
+**Source:** `tools/pkg/eshkol_pkg.cpp`
 **Binary:** `eshkol-pkg`
 
 ---
@@ -533,7 +533,7 @@ ESHKOL_REGISTRY=https://gitlab.example.com/internal/eshkol-registry.git eshkol-p
 ## See Also
 
 - `eshkol-run(1)` — the Eshkol compiler and execution driver
-- `tools/pkg/eshkol_pkg.cpp` — complete package manager source (722 lines)
+- `tools/pkg/eshkol_pkg.cpp` — complete package manager source
 - `docs/breakdown/README.md` — Eshkol architecture overview
 - `CONTRIBUTING.md` — guidelines for contributing packages and compiler changes
 - Registry: https://github.com/tsotchke/eshkol-registry.git

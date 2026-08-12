@@ -221,8 +221,8 @@ Each item below cites the file or measurement that grounds the claim.
 
 - **Comprehensively documented public API and implementation.** v1.3.1-evolve added
   Doxygen-format documentation across 50 of the 64 public headers under
-  `inc/eshkol/` (~4,650 lines) and 56 previously-undocumented implementation files
-  under `lib/` (~7,478 lines) — 116 files and roughly 12,600 lines total, comments
+  `inc/eshkol/` and 56 previously-undocumented implementation files
+  under `lib/` — 116 files, comments
   only; v1.3.2-evolve added `eshkol-doc`, which harvests those comments automatically
   into a generated `docs/api/` reference. A navigable per-subsystem reference index
   (*docs/reference/{language,ad,runtime,tensors,stdlib,agent}/INDEX.md*) organizes
