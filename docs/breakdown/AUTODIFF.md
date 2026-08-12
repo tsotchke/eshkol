@@ -328,7 +328,7 @@ confirmed by re-running its own minimal repro under
 
 | Cell | Was | Now |
 |------|-----|-----|
-| ESH-0096 | vector-param gradient-of-gradient returned zeros | returns `#(12)` (1-D) / `#(8 6)` (2-D) |
+| ESH-0096 | vector-param gradient-of-gradient returned zeros | direct nested form returns `#(12)` (1-D) / `#(8 6)` (2-D); the *curried* route (`(jacobian (gradient f) point)`) still returns zeros |
 | ESH-0095 | `hessian`/`laplacian` SIGSEGV at a `tensor`/`#(…)` point | every point form returns the same answer |
 | ESH-0078 | second-order gradient through a **named** inner function returned zeros | agrees with the inline-lambda form |
 | ESH-0097 | vector-param AD capturing a local failed IR verification (`PtrToInt`) | returns `#(4.42 0)` |

@@ -136,6 +136,11 @@ where each used to return zeros:
 ;; => #(12)
 ```
 
+This holds for the *direct* nested form shown above. The **curried** route —
+`(define g (gradient f))` then `(jacobian g point)` — still silently returns a
+zero matrix; see KNOWN_ISSUES.md. Use `(hessian f point)` for exact curried-free
+second order.
+
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 
 ---
