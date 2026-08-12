@@ -434,6 +434,13 @@ jobs:
     name: release-${{ matrix.name }}
     needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
+    # See ci.yml's windows-matrix for the baseline this is set against: a
+    # full build+test with the LLVM SDK cache already warm has been
+    # observed to take ~50 minutes; windows-x64-cuda adds the CUDA toolkit
+    # install and GPU build/test on top. 90 minutes leaves that comfortable
+    # headroom while making the platform's unbounded 360-minute default
+    # unreachable.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -524,6 +531,11 @@ jobs:
       - name: Install LLVM SDK
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
+        # Pure extraction of an already-local archive should never come
+        # close to this. If it does, something is genuinely stuck and
+        # failing fast beats silently riding the platform's 360-minute
+        # default to the same outcome six hours later.
+        timeout-minutes: 45
         run: |
           $ErrorActionPreference = 'Stop'
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
@@ -536,6 +548,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
           if (Test-Path $llvmRoot) {
             Remove-Item -LiteralPath $llvmRoot -Recurse -Force
+          }
+
+          # Windows Defender's real-time scanner inspecting each of the SDK's
+          # tens of thousands of small files as they're written is a known
+          # cause of extraction taking hours instead of minutes on hosted
+          # Windows runners. This needs admin, which hosted runners grant;
+          # if it fails for any reason, proceed without it rather than fail
+          # the step over an optimization.
+          try {
+            Add-MpPreference -ExclusionPath 'C:\src', $env:RUNNER_TEMP -ErrorAction Stop
+            Write-Host "Added Windows Defender exclusions for C:\src and $env:RUNNER_TEMP"
+          } catch {
+            Write-Host "Add-MpPreference failed (non-fatal, proceeding): $_"
           }
 
           if ('${{ steps.archive-cache.outputs.cache-hit }}' -eq 'true' -and (Test-Path $prefetched)) {
@@ -555,8 +580,26 @@ jobs:
           }
 
           Write-Host "Extracting..."
-          tar -xf $archive -C C:\src
-          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          # `tar -xf` on this archive has been observed to hang for hours on
+          # these runners even with the archive already local — this is an
+          # extraction problem, not a download problem. 7-Zip handles each
+          # format (.xz then .tar) in a single pass and is preinstalled on
+          # hosted Windows runners; fall back to tar only if 7z is
+          # unexpectedly absent.
+          $use7z = [bool](Get-Command 7z -ErrorAction SilentlyContinue)
+          if ($use7z) {
+            $archiveLeaf = Split-Path -Leaf $archive
+            $innerTar = Join-Path $env:RUNNER_TEMP ([System.IO.Path]::GetFileNameWithoutExtension($archiveLeaf))
+            & 7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar.xz failed (exit $LASTEXITCODE)" }
+            & 7z x $innerTar "-oC:\src" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7z extraction of .tar failed (exit $LASTEXITCODE)" }
+            Remove-Item -LiteralPath $innerTar -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "7z not found on PATH, falling back to tar"
+            tar -xf $archive -C C:\src
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+          }
 
           if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
             throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
