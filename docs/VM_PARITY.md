@@ -52,8 +52,12 @@ statuses:
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **936 rows — 562
-`vm-supported`, 45 `native-only-justified`, 329 `gap`** (v1.3.4-evolve audit).
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **951 rows — 581
+`vm-supported`, 44 `native-only-justified`, 326 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv`; the 936/562/45 figures quoted here previously
+predated several ratchet promotions). The three most recent promotions are
+`op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
+logic-variable representation was unified across the engines (task #100).
 Verified behavioral divergences remain explicit `gap` rows with reproducible
 programs under `tests/vm_parity/found/`.
 
