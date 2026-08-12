@@ -261,16 +261,23 @@ block ordinary use.
   "differentiate a tower" runtime step inside the emitted derivative wrapper.
 - **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
   `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
-  is complete and bit-identical on both engines. Generic `+` / `*` over `i128`
-  values is not wired on **either** side. For `+`, both engines now raise a
-  catchable error rather than silently computing — native reports a type
-  error and the VM reports "i128 arithmetic is not supported on the VM"
-  (previously the VM silently answered `0`; fixed as part of the
-  skipped-flaws ledger's SW-09 entry). `*` is unchanged: native is fatal and
-  the VM still silently answers a wrong value (same missing-opcode-branch
-  class as `+`, not yet converted). Use the `i128-*` operators; `i128`
-  deliberately lives off the numeric tower and never auto-promotes, so this
-  is a missing opcode branch rather than a tower-contagion question.
+  is complete and bit-identical on both engines. Generic arithmetic and
+  comparison over `i128` values is not wired on **either** side — no i128
+  opcodes exist in the bytecode interpreter (that is unchanged, still
+  v1.3.5 scope for the real fix). What changed: every generic arithmetic
+  and comparison opcode on the VM (`+ - * / modulo`, unary `-`, `abs`, and
+  `= < > <= >=`, in both of `vm_run.c`'s interpreter loops — the threaded/
+  computed-goto dispatch and the switch-based fallback) now raises a
+  catchable "i128 arithmetic/comparison is not supported on the VM" error
+  instead of silently coercing an i128 operand to `0.0` and computing a
+  wrong answer (fixed as part of the skipped-flaws ledger's SW-09 entry;
+  originally only `+` was converted, the rest of the family followed in
+  the same PR before merge). Native already raised a type error for the
+  whole family before this change (LE-03) and is unaffected. Use the
+  `i128-*` operators (`i128-add`, `i128-mul`, `i128=?`, …) for i128
+  arithmetic and comparison on either engine; `i128` deliberately lives
+  off the numeric tower and never auto-promotes, so this is a missing
+  opcode branch rather than a tower-contagion question.
 - **The VM lane ignores a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
   The VM lane still resolves only the CWD `lib/<dotted>` form and silently

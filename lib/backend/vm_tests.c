@@ -900,6 +900,45 @@ static int run_source_tests(void) {
         "(define a (i128 5)) (define b (i128 7))"
         "(display (guard (e (#t 'caught)) (+ a b) 'no))", "caught");
 
+    /* SW-09b: the i128-misread bug shape is not unique to `+` — every
+     * arithmetic/comparison opcode that falls through to as_number_vm()
+     * (both the threaded lbl_* and switch-based OP_* dispatch loops in
+     * lib/backend/vm_run.c) has the identical defect. Pin the whole family:
+     * -, *, /, modulo, unary -, abs, =, <, >, <=, >=. */
+    source_test_expect("i128-sub-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (- a b) 'no))", "caught");
+    source_test_expect("i128-mul-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (* a b) 'no))", "caught");
+    source_test_expect("i128-div-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (/ a b) 'no))", "caught");
+    source_test_expect("i128-modulo-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (modulo a b) 'no))", "caught");
+    source_test_expect("i128-neg-raises",
+        "(define a (i128 5))"
+        "(display (guard (e (#t 'caught)) (- a) 'no))", "caught");
+    source_test_expect("i128-abs-raises",
+        "(define a (i128 5))"
+        "(display (guard (e (#t 'caught)) (abs a) 'no))", "caught");
+    source_test_expect("i128-eq-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (= a b) 'no))", "caught");
+    source_test_expect("i128-lt-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (< a b) 'no))", "caught");
+    source_test_expect("i128-gt-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (> a b) 'no))", "caught");
+    source_test_expect("i128-le-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (<= a b) 'no))", "caught");
+    source_test_expect("i128-ge-raises",
+        "(define a (i128 5)) (define b (i128 7))"
+        "(display (guard (e (#t 'caught)) (>= a b) 'no))", "caught");
+
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
     return source_test_count - source_test_pass;
 }

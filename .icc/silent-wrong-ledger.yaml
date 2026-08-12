@@ -189,16 +189,74 @@ entries:
       docs/KNOWN_ISSUES.md); this PR only stops the VM from silently
       coercing an i128 operand to 0.0 via as_number_vm(). Native is
       unchanged (LE-03 already raised "Type error in +: expected number,
-      vector, or tensor, got heap-object"). NOTE: generic `*` over i128 is
-      the SAME shape of bug and remains open/unfixed on the VM — only `+`
-      (the literal SW-09 repro) was converted here; see
-      docs/KNOWN_ISSUES.md's i128 entry.
-    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+      vector, or tensor, got heap-object"). SW-09b (below), landed in the
+      same PR before merge, converts the rest of the family (`- * / modulo`,
+      unary `-`, `abs`, `= < > <= >=`) the same way — the family is no
+      longer split between "+ fixed" and "everything else open".
+    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22, SW-09b same PR)"
     evidence: >-
       lib/backend/vm_tests.c source_test_expect "i128-add-raises" (VM
-      standalone self-test, 62/62 passing). Revert-validated: reverting the
+      standalone self-test, 73/73 passing). Revert-validated: reverting the
       guard reproduces the original "no" (silent 0, uncaught) output on the
       pre-fix VM binary.
+
+  - id: SW-09b
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    title: >-
+      The rest of the generic arithmetic/comparison family over i128 (-, *,
+      /, modulo, unary -, abs, =, <, >, <=, >=) now raises on the VM, same
+      as SW-09's +
+    repro: >-
+      (define a (i128 5)) (define b (i128 7)) (display (guard (e (#t
+      'caught)) (* a b) 'no)) — and the same shape for -, /, modulo, (- a),
+      (abs a), =, <, >, <=, >=.
+    observed_before: >-
+      Every one of these opcodes silently answered a fabricated value with
+      exit 0 on the VM (e.g. `*` printed 'no', meaning the guard body ran to
+      completion and returned its non-exceptional value, exactly like SW-09
+      before its fix). Confirmed by direct measurement: not caught by the
+      original SW-09 fix, which converted only `+`.
+    observed_after: >-
+      All twelve opcodes now raise a catchable "i128 arithmetic/comparison
+      is not supported on the VM" error: `+ - * / modulo` (binary
+      arithmetic), unary `-` and `abs` (unary arithmetic), `= < > <= >=`
+      (comparison). Fixed in BOTH of vm_run.c's independent dispatch
+      implementations — the threaded/computed-goto loop (lbl_ADD, lbl_SUB,
+      lbl_MUL, lbl_DIV, lbl_MOD, lbl_NEG, lbl_ABS, lbl_EQ, lbl_LT, lbl_GT,
+      lbl_LE, lbl_GE) and the switch-based fallback compiled only on
+      non-GCC/non-Clang toolchains (OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
+      OP_NEG, OP_ABS, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE) — this platform can
+      only execute the threaded loop, so the switch-based twin was verified
+      by temporarily forcing its compilation (flipping the `#if
+      defined(__GNUC__) || defined(__clang__)` guard to `#if 0`, confirming
+      a clean build and all 12 opcodes raising, then reverting). No i128
+      opcodes were implemented — this is still a missing-opcode-branch gap,
+      not the v1.3.5 real fix; only the silent-wrong path changed. The
+      dedicated `i128-*`/`i128=?`/`i128<?`/etc. comparison and arithmetic
+      surface (docs/KNOWN_ISSUES.md) is unaffected and was already correct.
+    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+    evidence: >-
+      lib/backend/vm_tests.c source_test_expect entries i128-sub-raises,
+      i128-mul-raises, i128-div-raises, i128-modulo-raises, i128-neg-raises,
+      i128-abs-raises, i128-eq-raises, i128-lt-raises, i128-gt-raises,
+      i128-le-raises, i128-ge-raises (VM standalone self-test, 73/73
+      passing, up from 62/62 pre-family-fix). ctest 142/142, VM parity
+      144/144 (0 failed) after the family-wide change — no regression.
+      Revert-validated at MUL specifically (temporarily `#if 0`-disabling
+      just the lbl_MUL guard reproduced the original silent 'no' output;
+      restoring it reproduced 'caught'), plus the family-wide instance of
+      the same pattern already proved once for SW-09's `+`.
+    caught_by: [direct-measurement, coordinator-review]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, i128_native_type_oracle]
+    notes: >-
+      Filed because the original SW-09 fix explicitly scoped itself to `+`
+      (the literal ledger repro) and left the rest of the family open in
+      KNOWN_ISSUES rather than silently dropping them — this entry closes
+      that gap in the same PR, before merge, so no silent-wrong i128 path
+      ships.
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, i128_native_type_oracle]
     notes: "Native half was already LOUD-ERROR (see LE-03); this PR fixes the VM half."
