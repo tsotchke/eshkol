@@ -1,0 +1,18 @@
+;; SW-06 (skipped-flaws ledger, .icc/silent-wrong-ledger.yaml): `(diff 'expr
+;; 'x)` on a QUOTED s-expression used to silently answer 0 on every axis —
+;; "shared-defect blindness" in the ledger's own words, since both engines
+;; agreeing on the same wrong value means no native-vs-VM differential axis
+;; could ever see it. A guard-wrapped assertion closes that blind spot: if a
+;; future change makes any native axis stop raising (or start raising a
+;; DIFFERENT way that a guard can't catch), this file diverges from the
+;; other axes and the corpus runner goes red.
+;;
+;; Also pins that the fix did not regress the real, working feature: diff
+;; over an UNQUOTED expression (the documented/supported form) must still
+;; run to completion without raising.
+
+(display (guard (e (#t "caught")) (diff '(* x x) 'x) "no"))
+(newline)
+
+(display (guard (e (#t "raised")) (diff (* x x) x) "ok"))
+(newline)

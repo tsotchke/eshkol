@@ -49,6 +49,21 @@ extern "C" void* eshkol_xla_matmul(
     int64_t a_rank,
     int64_t b_rank);
 
+// SW-06/SW-09/SW-22 (skipped-flaws ledger): eshkol_xla_broadcast performed no
+// broadcast-compatibility validation, so an incompatible source dimension
+// (not 1 and not equal to the target) fed straight into the stride
+// multiplication and produced an out-of-bounds read of `data` whenever that
+// dimension was narrower than the target — a memory-safety defect, not
+// merely a wrong numeric answer (docs/breakdown/XLA_BACKEND.md "Broadcast
+// Semantics"). This is the guarded entry point under test.
+extern "C" void* eshkol_xla_broadcast(
+    void* arena,
+    const double* data,
+    const uint64_t* src_shape,
+    int64_t src_rank,
+    const uint64_t* tgt_shape,
+    int64_t tgt_rank);
+
 // Arena allocator — use the real Eshkol arena
 typedef struct arena arena_t;
 extern "C" arena_t* arena_create(size_t default_block_size);
@@ -298,6 +313,94 @@ bool test_xla_matmul_large() {
     return true;
 }
 
+// ===== Test: XLA Broadcast — compatible shapes (NumPy rules) =====
+bool test_xla_broadcast_compatible() {
+    std::cout << "Test: XLA Broadcast Compatible Shapes... ";
+
+    // [3] -> [2, 3]: prepend an implicit leading 1, then expand it to 2.
+    {
+        double src_data[] = {1.0, 2.0, 3.0};
+        uint64_t src_shape[] = {3};
+        uint64_t tgt_shape[] = {2, 3};
+
+        void* result = eshkol_xla_broadcast(g_test_arena, src_data, src_shape, 1, tgt_shape, 2);
+        TEST_ASSERT(result != nullptr, "Broadcast [3]->[2,3] should succeed");
+
+        auto* tensor = static_cast<EshkolTensor*>(result);
+        TEST_ASSERT(tensor->num_dimensions == 2, "Result should have 2 dimensions");
+        TEST_ASSERT(tensor->dimensions[0] == 2 && tensor->dimensions[1] == 3,
+            "Result shape should be [2,3]");
+        double expected[] = {1.0, 2.0, 3.0, 1.0, 2.0, 3.0};
+        for (int i = 0; i < 6; i++) {
+            TEST_ASSERT_NEAR(read_element(tensor, i), expected[i], 1e-10,
+                "Broadcast [3]->[2,3] value mismatch at index " + std::to_string(i));
+        }
+    }
+
+    // [4, 1] -> [4, 3]: the trailing size-1 dimension expands.
+    {
+        double src_data[] = {10.0, 20.0, 30.0, 40.0};
+        uint64_t src_shape[] = {4, 1};
+        uint64_t tgt_shape[] = {4, 3};
+
+        void* result = eshkol_xla_broadcast(g_test_arena, src_data, src_shape, 2, tgt_shape, 2);
+        TEST_ASSERT(result != nullptr, "Broadcast [4,1]->[4,3] should succeed");
+
+        auto* tensor = static_cast<EshkolTensor*>(result);
+        double expected[] = {10.0, 10.0, 10.0, 20.0, 20.0, 20.0,
+                              30.0, 30.0, 30.0, 40.0, 40.0, 40.0};
+        for (int i = 0; i < 12; i++) {
+            TEST_ASSERT_NEAR(read_element(tensor, i), expected[i], 1e-10,
+                "Broadcast [4,1]->[4,3] value mismatch at index " + std::to_string(i));
+        }
+    }
+
+    std::cout << "PASS" << std::endl;
+    return true;
+}
+
+// ===== Test: XLA Broadcast — incompatible shapes must be rejected =====
+bool test_xla_broadcast_incompatible() {
+    std::cout << "Test: XLA Broadcast Incompatible Shapes... ";
+
+    // [2] -> [4, 3]: trailing dim 2 vs target 3 — neither equal nor 1.
+    // Before the SW-22 guard this read past the end of `src_data` (2
+    // elements) for 2 of every 3 output positions instead of failing.
+    {
+        double src_data[] = {1.0, 2.0};
+        uint64_t src_shape[] = {2};
+        uint64_t tgt_shape[] = {4, 3};
+
+        void* result = eshkol_xla_broadcast(g_test_arena, src_data, src_shape, 1, tgt_shape, 2);
+        TEST_ASSERT(result == nullptr, "Broadcast [2]->[4,3] must be rejected (trailing dim mismatch)");
+    }
+
+    // [3, 3] -> [3]: source has MORE dimensions than the target — broadcast
+    // never reduces rank.
+    {
+        double src_data[9] = {0};
+        uint64_t src_shape[] = {3, 3};
+        uint64_t tgt_shape[] = {3};
+
+        void* result = eshkol_xla_broadcast(g_test_arena, src_data, src_shape, 2, tgt_shape, 1);
+        TEST_ASSERT(result == nullptr, "Broadcast [3,3]->[3] must be rejected (source rank > target rank)");
+    }
+
+    // [5, 2] -> [5, 4]: leading dim matches, trailing dim 2 vs 4 — neither
+    // equal nor 1.
+    {
+        double src_data[10] = {0};
+        uint64_t src_shape[] = {5, 2};
+        uint64_t tgt_shape[] = {5, 4};
+
+        void* result = eshkol_xla_broadcast(g_test_arena, src_data, src_shape, 2, tgt_shape, 2);
+        TEST_ASSERT(result == nullptr, "Broadcast [5,2]->[5,4] must be rejected (trailing dim mismatch)");
+    }
+
+    std::cout << "PASS" << std::endl;
+    return true;
+}
+
 // ===== Test: XLA Threshold Function =====
 bool test_xla_threshold() {
     std::cout << "Test: XLA Threshold... ";
@@ -352,6 +455,10 @@ int main() {
     run_test(test_xla_matmul_dim_mismatch);
     run_test(test_xla_matmul_invalid_rank);
     run_test(test_xla_matmul_large);
+
+    // Broadcast tests (SW-22)
+    run_test(test_xla_broadcast_compatible);
+    run_test(test_xla_broadcast_incompatible);
 
     // Threshold tests
     run_test(test_xla_threshold);

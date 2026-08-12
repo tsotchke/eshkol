@@ -249,6 +249,20 @@ void vm_run(VM* vm) {
 
     lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09: neither operand check below recognizes VAL_I128, so a
+         * generic `+` over i128 values used to fall all the way through to
+         * the double path, where as_number_vm() reads a heap-boxed i128 as
+         * 0.0 — silently answering 0 with exit 0. The VM has no i128
+         * opcodes (that is v1.3.5 scope); raise instead of fabricating a
+         * result. The native engine already raises for the same case
+         * (LE-03, "Type error in +: expected number, vector, or tensor"). */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1905); }
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
@@ -965,6 +979,17 @@ vm_exit:
 
         /* Arithmetic */
         case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09: see the identical guard in lbl_ADD above — this switch-
+             * based loop is the non-computed-goto twin of the same opcode
+             * and must reject i128 operands the same way, not silently
+             * coerce them to 0.0 via as_number_vm(). */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1905); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }

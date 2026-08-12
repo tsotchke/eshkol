@@ -702,9 +702,12 @@ Eshkol's broadcast follows NumPy semantics with right-alignment:
 | `[4, 1]` | `[4, 3]` | `[4, 3]` — second dim expanded |
 | `[]` (scalar) | `[4, 3]` | `[4, 3]` — treated as `[1, 1]` |
 
-**Implementation note**: `eshkol_xla_broadcast` does not validate broadcast compatibility.
-Passing incompatible shapes produces undefined memory reads. Shape compatibility must be
-verified at the codegen level before emission.
+**Implementation note**: `eshkol_xla_broadcast` validates broadcast compatibility at the
+runtime entry point (right-aligned dimension check: compatible iff equal or source is 1,
+and the source rank does not exceed the target rank). An incompatible call returns a null
+tensor pointer rather than performing the out-of-bounds read that used to be silently
+possible. This is a guard at the runtime boundary, not a substitute for checking shapes
+earlier — callers should still verify compatibility at the codegen level before emission.
 
 The `XLATypes::broadcastShape` static method (`inc/eshkol/backend/xla/xla_types.h:161`)
 computes the result shape at compile time and checks compatibility.
