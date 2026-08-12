@@ -555,19 +555,76 @@ entries:
   - id: LE-01
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
+    status: closed
+    closed_at: "80415893"
+    closed_by: "PR_NUMBER_PLACEHOLDER (branch fix/first-class-builtins)"
     title: "Builtins are call-position-only; passing one as a first-class value SIGSEGVs (exit 139)"
     repro: "(define (ap f a b) (f a b)) (display (ap string<? \"a\" \"b\"))"
     observed: "SIGSEGV at address 0x0, exit 139"
     affected_measured: ["string<?", "string>?", "string=?", "char<?", "char=?", "string-append", "vector-ref", "car", "expt", "min", "max"]
     unaffected_measured: ["+", "<", "eq?"]
     evidence: ".scratch/flaw-ledger/repro/fc_tmp.esk; tests/differential/corpus/37_sort.esk"
-    caught_by: [pr-record-420, direct-measurement]
+    axis_dependent_failure: >-
+      scripts/icc_traces/differential_smoke at 9f2da2ab records 37_sort.esk failing a
+      DIFFERENT way on every compilation axis: jit rc=1, jit-nocache rc=139 (SIGSEGV),
+      aot-o0 rc=125, aot-o2 rc=125. Six pairwise axis comparisons FAIL plus the
+      differential_corpus_clean roll-up ("1/41 corpus programs diverge across axes").
+      The cached-JIT-versus-nocache split (1 vs 139) is the same object-cache signature as
+      IF-01, so the two are probably one root cause seen from two directions.
+    readiness_impact: >-
+      MEASURED at 9f2da2ab: icc readiness eshkol-compiler-readiness is BLOCKED at score 77,
+      and this defect is the whole of the failure_free FAIL apart from one stale event.
+      LE-01 is the single item standing between the cut and a green readiness run.
+    caught_by: [pr-record-420, direct-measurement, icc-readiness]
     missed_by: [icc-correctness-chain, icc-smoke, KNOWN_ISSUES]
+    root_cause: >-
+      TWO defects, which is why every axis failed differently.
+      (1) Most builtins are lowered INLINE from the head name by codegenCall
+      (lib/backend/llvm_codegen.cpp), so the bare name denoted nothing. codegenVariable
+      carried a hand-maintained cascade of per-builtin wrapper factories; anything not on
+      that list fell through to "Undefined variable: <name>" or, when the name sat in the
+      codegen function table, to a raw Function* — a FOREIGN-ABI pointer the closure
+      dispatcher then called with the closure calling convention (`(h remainder 7 3)`
+      SIGSEGV, `(h append '(1) '(2))` -> 1).
+      (2) The JIT-execution gate in ReplJITContext::addModule (lib/repl/repl_jit.cpp)
+      threw to refuse a diagnosed module, and the unwind destroyed the rejected module's
+      LLVMContext before the Module. llvm::Module::~Module calls
+      Context.removeModule(this) through that reference, so the compiler SIGSEGV'd at
+      address 0x0 while correctly REJECTING the program — turning "exit 1 + diagnostic"
+      into exit 139 on exactly the axes that reach the in-process JIT. That is why a plain
+      "Undefined variable" presented as a memory-safety defect.
+    fix: >-
+      Builtin references now get a real first-class representation:
+      createInlineBuiltinWrapper synthesises builtin_fc_<name> with the closure ABI and
+      generates its BODY by re-entering codegenCall on a synthetic (name p0 … pN-1) AST
+      bound to the wrapper's own parameters, so the authoritative call-site lowering is
+      the wrapper body and a reference cannot disagree with a direct call. Consulted only
+      where the old code produced a garbage callable or an error, so name resolution
+      order — and therefore user shadowing — is unchanged. The refusal path in addModule
+      now destroys module then context explicitly.
+    verified_at: >-
+      37_sort.esk exits 0 with byte-identical output on all four native axes
+      (jit, jit-nocache, aot-O0, aot-O2). Gated by first_class_builtins_{runtime,nocache,
+      aot_o0,aot_o2,vm}_smoke and undefined_variable_refusal_is_clean_{nocache,cached}.
+      Revert-validated: with the fix disabled, 5 of those 7 go red and 37_sort returns to
+      1 / 139 / compile-fail / compile-fail.
+    vm_status: >-
+      NOT AFFECTED, verified rather than assumed. The VM reaches builtins through a native
+      dispatch table, so a builtin is a value there by construction; pinned by
+      tests/integration/first_class_builtins_vm_test.esk.
     notes: >-
       PR #420 describes this as 'Undefined variable'. At 9f2da2ab it is a SIGSEGV, which is
-      strictly worse, and it is a FAMILY, not one builtin. It is the failure_free blocker
-      that holds icc readiness at 77 on #420's branch.
+      strictly worse, and it is a FAMILY of at least 11 builtins, not one. Note the honest
+      detector working: readiness is red BECAUSE this is real. 37_sort.esk was NOT
+      baselined, excluded or weakened — it is green because the compiler is fixed.
+      #420 is NOT the cause: its object-cache/AD-capture defect is unrelated to this one,
+      and the cached-vs-nocache split here is the addModule teardown-order bug above.
+      Two ADJACENT defects found while closing this and deliberately left open, since they
+      live in a different lowering path: a REST-ARG stdlib procedure referenced as a value
+      loses its variadic flag (`(h append '(1) '(2))` -> 1; `(h string-copy "abc")` SIGSEGV
+      under AOT), and the VM's builtin surface is narrower than native for `string>?`,
+      `string<=?`, `string>=?`, `string-length`, `string-ref`, `symbol=?`, `square`,
+      `boolean=?` in CALL POSITION too (parity-ratchet PR-02 class).
 
   - id: LE-02
     bucket: LOUD-ERROR
