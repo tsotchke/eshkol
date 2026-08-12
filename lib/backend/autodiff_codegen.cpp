@@ -9474,7 +9474,23 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
 
             Value* fres;
             if (scalar_func_ptr) {
-                fres = ctx_.builder().CreateCall(scalar_func_ptr, {x_jet});
+                // A lambda with free variables is lowered with one EXTRA
+                // pointer parameter per capture, appended after its user
+                // arguments, and every caller must reconstruct them. This arm
+                // passed the seeded jet ALONE, so any capturing differentiand
+                // — the ordinary case of a lambda closing over its enclosing
+                // function's parameters, e.g.
+                //     (define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0))
+                // — emitted a call whose arity disagreed with the callee and
+                // failed LLVM module verification ("Incorrect number of
+                // arguments passed to called function"). Every other AD call
+                // site in this file already goes through the shared resolver
+                // (resolveGradientCaptures / loadCapturesForAutodiff); this one
+                // now does too. The call is a no-op when the callee has no
+                // captures, so the non-capturing scalar Hessian is unchanged.
+                std::vector<Value*> scalar_hess_args{x_jet};
+                resolveGradientCaptures(scalar_func_ptr, scalar_hess_args, "hessian-scalar");
+                fres = ctx_.builder().CreateCall(scalar_func_ptr, scalar_hess_args);
             } else {
                 fres = closure_call_callback_(hessian_closure_val, {x_jet}, "hessian-scalar", callback_context_);
             }
