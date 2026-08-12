@@ -1,0 +1,33 @@
+;; Factor-graph marginals across the native axes (jit / jit-nocache / aot-O0 /
+;; aot-O2). Paired with tests/vm_parity/corpus/57_factor_graph_marginal.esk,
+;; which runs the same program on BOTH engines.
+;;
+;; A graph with no factors and no inference run carries the uniform prior
+;; log(1/dim), so the marginal of a d-state variable is 1/d in every slot.
+;; Dims 2 and 4 keep every expected value an exact binary fraction.
+
+(define (show label v) (display label) (display " = ") (display v) (newline))
+
+(define fg-tensor (make-factor-graph 2 #(2 2)))
+(define fg-list   (make-factor-graph 2 '(2 2)))
+(define fg-scalar (make-factor-graph 2 2))
+(define fg-ragged (make-factor-graph 2 #(2 4)))
+
+(show "tensor-dims var0" (fg-marginal fg-tensor 0))
+(show "tensor-dims var1" (fg-marginal fg-tensor 1))
+(show "list-dims   var0" (fg-marginal fg-list 0))
+(show "list-dims   var1" (fg-marginal fg-list 1))
+(show "scalar-dims var0" (fg-marginal fg-scalar 0))
+(show "scalar-dims var1" (fg-marginal fg-scalar 1))
+(show "ragged var0" (fg-marginal fg-ragged 0))
+(show "ragged var1" (fg-marginal fg-ragged 1))
+
+(define m (fg-marginal fg-tensor 0))
+(show "shape" (tensor-shape m))
+(display "uniform-2 ")
+(display (if (and (= (tensor-ref m 0) 0.5) (= (tensor-ref m 1) 0.5))
+             "PASS" "FAIL"))
+(newline)
+(display "extent-2 ")
+(display (if (equal? (tensor-shape m) '(2)) "PASS" "FAIL"))
+(newline)

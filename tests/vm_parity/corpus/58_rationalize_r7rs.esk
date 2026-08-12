@@ -1,0 +1,58 @@
+;; VM-parity differential over R7RS `rationalize` (SW-08).
+;;
+;; R7RS-small 6.2.6: "The rationalize procedure returns the simplest rational
+;; number differing from x by no more than y. A rational number r1 is simpler
+;; than another rational number r2 if r1 = p1/q1 and r2 = p2/q2 (in lowest
+;; terms) and |p1| <= |p2| and q1 <= q2", with the worked example
+;;
+;;     (rationalize (exact .3) 1/10)  =>  1/3
+;;
+;; The interesting arguments are therefore EXACT RATIONALS, which is exactly
+;; the tag the VM's native-call 349 did not unwrap: it read them through the
+;; plain as_number(), got 0.0 for both x and the tolerance, and answered the
+;; exact integer 0 with exit 0 for every input on this page while native
+;; answered 1/3.
+;;
+;; The integer rows are the mirror defect, on the other engine: native took an
+;; exact-integer x as its own answer no matter how wide the tolerance, so
+;; `(rationalize 3 1)` was 3 where the simplicity order above makes 2 the
+;; answer (|2| <= |3|, denominators both 1) and the VM already said 2.
+
+(define (show label v)
+  (display label) (display " = ") (display v)
+  (display " exact=") (display (exact? v)) (newline))
+
+;; ---- the R7RS worked example, in exact form ----
+(show "spec 3/10 within 1/10" (rationalize 3/10 1/10))
+
+;; ---- the same answer approached from the other side of 1/3 ----
+(show "1/3 within 1/10000" (rationalize 1/3 1/10000))
+
+;; ---- sign is carried, simplicity is not affected by it ----
+(show "-3/10 within 1/10" (rationalize -3/10 1/10))
+
+;; ---- a zero tolerance can only answer x itself ----
+(show "3/10 within 0" (rationalize 3/10 0))
+
+;; ---- an interval containing an integer answers with an integer ----
+(show "3 within 1" (rationalize 3 1))
+(show "-3 within 1" (rationalize -3 1))
+
+;; ---- an interval containing zero answers zero ----
+(show "0 within 1" (rationalize 0 1))
+(show "1/10 within 1/2" (rationalize 1/10 1/2))
+
+;; ---- a wider tolerance can only give a simpler answer ----
+(show "2/7 within 1/100" (rationalize 2/7 1/100))
+(show "3/4 within 1/100" (rationalize 3/4 1/100))
+
+;; ---- explicit R7RS oracle, so agreement on a wrong answer still fails ----
+(display "spec-example ")
+(display (if (= (rationalize 3/10 1/10) 1/3) "PASS" "FAIL"))
+(newline)
+(display "simplest-integer ")
+(display (if (= (rationalize 3 1) 2) "PASS" "FAIL"))
+(newline)
+(display "zero-tolerance-identity ")
+(display (if (= (rationalize 3/10 0) 3/10) "PASS" "FAIL"))
+(newline)

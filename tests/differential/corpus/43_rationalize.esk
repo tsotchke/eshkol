@@ -1,0 +1,25 @@
+;; R7RS `rationalize` across the native axes (jit / jit-nocache / aot-O0 /
+;; aot-O2). Paired with tests/vm_parity/corpus/58_rationalize_r7rs.esk, which
+;; runs the same operation on BOTH engines; this file pins the native axes to
+;; each other so an optimisation level can never change the answer.
+;;
+;; R7RS-small 6.2.6 example: (rationalize (exact .3) 1/10) => 1/3.
+
+(define (show label v)
+  (display label) (display " = ") (display v)
+  (display " exact=") (display (exact? v)) (newline))
+
+(show "spec" (rationalize 3/10 1/10))
+(show "tight" (rationalize 1/3 1/10000))
+(show "negative" (rationalize -3/10 1/10))
+(show "zero-tolerance" (rationalize 3/10 0))
+(show "integer-interval" (rationalize 3 1))
+(show "negative-integer-interval" (rationalize -3 1))
+(show "spans-zero" (rationalize 0 1))
+(show "spans-zero-2" (rationalize 1/10 1/2))
+(show "two-sevenths" (rationalize 2/7 1/100))
+(show "three-quarters" (rationalize 3/4 1/100))
+
+(display "spec-example ")
+(display (if (= (rationalize 3/10 1/10) 1/3) "PASS" "FAIL"))
+(newline)

@@ -88,10 +88,16 @@ static bool extract_doubles_from_vector(const eshkol_tagged_value_t* tv,
     return true;
 }
 
-/* Read numeric elements from a tensor (#(…)) OR a Scheme vector ((vector …)) as
- * doubles into out[0..max-1]; returns the count read (0 if neither / empty).
+/* Read numeric elements from a tensor (#(…)), a Scheme vector ((vector …)) OR a
+ * proper list ('(…)) as doubles into out[0..max-1]; returns the count read
+ * (0 if none of those / empty).
  * Lets the FG builtins accept runtime-constructed vectors, not only tensor
- * literals (bug-QQ-2). INT64 elements promote to double. */
+ * literals (bug-QQ-2). INT64 elements promote to double.
+ *
+ * The list spelling is not cosmetic: the VM's native dispatch has always read
+ * `(2 2)` for both the factor-graph dims and the fg-add-factor! variable
+ * indices, and `tests/vm/vm_kb_tensor_test.esk` uses it, so a native path that
+ * rejected it answered `()` where the VM answered the marginal (SW-07). */
 static uint32_t fg_read_numeric(const eshkol_tagged_value_t* tv, double* out, uint32_t max) {
     if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return 0;
     void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
@@ -111,6 +117,21 @@ static uint32_t fg_read_numeric(const eshkol_tagged_value_t* tv, double* out, ui
             uint8_t et = elems[i].type & 0x0F;
             out[i] = (et == ESHKOL_VALUE_DOUBLE) ? elems[i].data.double_val
                    : (et == ESHKOL_VALUE_INT64) ? (double)elems[i].data.int_val : 0.0;
+        }
+        return n;
+    }
+    if (hdr->subtype == HEAP_SUBTYPE_CONS) {
+        uint32_t n = 0;
+        eshkol_tagged_value_t cur = *tv;
+        while (n < max && ESHKOL_IS_CONS_COMPAT(cur)) {
+            const arena_tagged_cons_cell_t* cell =
+                (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            if (!cell) break;
+            uint8_t et = cell->car.type & 0x0F;
+            if (et != ESHKOL_VALUE_DOUBLE && et != ESHKOL_VALUE_INT64) return 0;
+            out[n++] = (et == ESHKOL_VALUE_DOUBLE) ? cell->car.data.double_val
+                                                   : (double)cell->car.data.int_val;
+            cur = cell->cdr;
         }
         return n;
     }
@@ -748,10 +769,11 @@ double eshkol_expected_free_energy(arena_t* arena,
 /**
  * @brief Tagged-value entry point for factor-graph construction, called from LLVM codegen.
  *
- * Unpacks @p num_vars_tv (must be a tagged INT64) and @p var_dims_tv (a
- * tensor or Scheme vector of per-variable state counts, via fg_read_numeric())
- * and forwards to eshkol_make_factor_graph(). Sets @p result to a HEAP_PTR on
- * success or the tagged NULL value on any type mismatch or allocation failure.
+ * Unpacks @p num_vars_tv (must be a tagged INT64) and @p var_dims_tv (a tensor,
+ * Scheme vector or list of per-variable state counts, via fg_read_numeric(), or
+ * a bare number broadcast to every variable) and forwards to
+ * eshkol_make_factor_graph(). Sets @p result to a HEAP_PTR on success or the
+ * tagged NULL value on any type mismatch or allocation failure.
  */
 void eshkol_make_factor_graph_tagged(arena_t* arena,
     const eshkol_tagged_value_t* num_vars_tv,
@@ -774,9 +796,24 @@ void eshkol_make_factor_graph_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract var_dims from a tensor (#(…)) OR a runtime vector ((vector …)). */
+    /* Extract var_dims from a tensor (#(…)), a runtime vector ((vector …)), a
+     * list ('(…)), or a BARE SCALAR meaning "every variable has this many
+     * states".  The scalar spelling is what the VM has always accepted, and
+     * `(make-factor-graph 2 2)` silently produced `()` here — and therefore
+     * `()` from every later fg-marginal — because a tagged INT64 is not a heap
+     * pointer and fg_read_numeric answered 0 (SW-07). */
     double* dims_buf = (double*)alloca(num_vars * sizeof(double));
-    if (fg_read_numeric(var_dims_tv, dims_buf, num_vars) < num_vars) {
+    uint8_t dims_tag = var_dims_tv->type & 0x0F;
+    if (dims_tag == ESHKOL_VALUE_INT64 || dims_tag == ESHKOL_VALUE_DOUBLE) {
+        double d = (dims_tag == ESHKOL_VALUE_INT64)
+                       ? (double)var_dims_tv->data.int_val
+                       : var_dims_tv->data.double_val;
+        if (d < 1.0) {
+            result->type = ESHKOL_VALUE_NULL;
+            return;
+        }
+        for (uint32_t i = 0; i < num_vars; i++) dims_buf[i] = d;
+    } else if (fg_read_numeric(var_dims_tv, dims_buf, num_vars) < num_vars) {
         result->type = ESHKOL_VALUE_NULL;
         return;
     }

@@ -7779,7 +7779,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 348: { Value b_v = vm_pop(vm), a_v = vm_pop(vm);
             vm_push(vm, INT_VAL(vm_rational_gcd((int64_t)as_number(a_v), (int64_t)as_number(b_v)))); break; }
         case 349: { Value tol = vm_pop(vm), x = vm_pop(vm);
-            VmRational* r = vm_rationalize(rat_arena, as_number(x), as_number(tol));
+            /* as_number_vm, NOT as_number: `rationalize` is the one operation
+             * whose arguments are USUALLY exact rationals — the R7RS-small
+             * example is `(rationalize (exact .3) 1/10) => 1/3` — and the
+             * plain as_number() reads a VAL_RATIONAL's heap index through the
+             * int64 arm of the union and answers 0.0.  Both arguments then
+             * became 0, and `(rationalize 1/3 1/10000)` returned the exact
+             * integer 0 with exit 0 where the native engine returns 1/3
+             * (SW-08).  Rationals, bignums and duals all need the heap-aware
+             * coercion, exactly as native calls 342-347 above already do. */
+            VmRational* r = vm_rationalize(rat_arena, as_number_vm(vm, x), as_number_vm(vm, tol));
             if (!r) { vm_push(vm, NIL_VAL); break; }
             if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); break; }
             int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
@@ -9064,6 +9073,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
             var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
                                                  * variable domain; binary is
                                                  * the documented default */
+        }
+        /* A BARE SCALAR dims argument means "every variable has this many
+         * states", so `(make-factor-graph 2 2)` is a two-variable graph and
+         * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
+         * one-element sequence it hits the clamp below and cuts num_vars to 1,
+         * where the native engine broadcasts — SW-07's own reproducer.  Only a
+         * genuine scalar LEAF broadcasts: a short sequence is an operand
+         * mismatch, not a broadcast, and still clamps. */
+        if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
+            for (int i = 1; i < nv && i < 64; i++) var_dims[i] = var_dims[0];
+            nd = (nv < 64) ? nv : 64;
         }
         if (nd == 0) {                          /* dims omitted/unreadable */
             int want = (nv > 0 && nv < 64) ? nv : 0;
