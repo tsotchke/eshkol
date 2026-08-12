@@ -30,7 +30,7 @@ _region-close-list	vm-supported
 _region-open	vm-supported	
 abs	vm-supported	stays in the operand's domain: (abs 1/3) is the exact 1/3 (it used to read the rational's heap pointer as 0) and (abs -2.0) stays inexact (corpus/52_numeric_tag_dispatch.esk)
 acons	gap	no VM name binding
-acos	vm-supported	
+acos	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to acos(0) (corpus/54_complex_transcendentals.esk)
 acosh	gap	no VM name binding
 ad-abs	vm-supported	
 ad-add	vm-supported	
@@ -69,7 +69,7 @@ apply	vm-supported
 apply-window	gap	signal faculty has no VM fid coverage
 arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step) via a VM-compiler special form; native handler pops (start,stop,step)
 arithmetic-shift	vm-supported	
-asin	vm-supported	
+asin	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to asin(0) (corpus/54_complex_transcendentals.esk)
 asinh	gap	no VM name binding
 atan	vm-supported	
 atan2	gap	no VM name binding
@@ -175,8 +175,8 @@ conv1d	gap	ml faculty has no VM fid coverage
 conv2d	gap	ml faculty has no VM fid coverage
 conv3d	gap	ml faculty has no VM fid coverage
 convolve	gap	signal faculty has no VM fid coverage
-cos	vm-supported	
-cosh	vm-supported	
+cos	vm-supported	a complex operand routes to the shared complex core rather than collapsing to cos(0) (corpus/54_complex_transcendentals.esk)
+cosh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to cosh(0) (corpus/54_complex_transcendentals.esk)
 cosine-annealing-lr	gap	ml faculty has no VM fid coverage
 cosine-embedding-loss	gap	ml faculty has no VM fid coverage
 cpu-count	vm-supported	
@@ -252,7 +252,7 @@ exp	vm-supported
 exp2	gap	no VM name binding
 expected-free-energy	vm-supported	
 exponential-decay-lr	gap	ml faculty has no VM fid coverage
-expt	vm-supported	exact integer^nonneg-integer stays exact (int, promoting to bignum on overflow)
+expt	vm-supported	exact integer^nonneg-integer stays exact (int, promoting to bignum on overflow); a complex base OR exponent promotes both and takes the principal exp(b log a), matching native — (expt i i) is 0.20787957635076193 on both engines (corpus/54_complex_transcendentals.esk)
 eye	vm-supported	
 fabs	gap	no VM name binding
 fact?	vm-supported	
@@ -384,7 +384,7 @@ image-read	vm-supported
 image-to-grayscale	vm-supported	
 image-write	vm-supported	
 inexact	gap	no VM name binding
-inexact->exact	vm-supported	
+inexact->exact	vm-supported	returns the operand's EXACT value via the same mantissa*2^exp decomposition as the native runtime, so (inexact->exact 0.1) is 3602879701896397/36028797018963968 on both engines (it used to truncate to an int64, giving 0). VmRational is an int64 pair and VAL_INT is int64, so magnitudes needing a bignum numerator (|x| >= 2^62, e.g. 1e300) or a denominator past 2^62 (subnormals, e.g. 5e-324) have no exact VM representation: the VM reports a fatal error naming the value rather than pushing a wrong number, where native promotes to bignum
 inexact?	vm-supported	
 infinite?	vm-supported	
 inject-left	gap	no VM name binding
@@ -432,7 +432,7 @@ list-copy	gap	no VM name binding
 list-set!	gap	no VM name binding
 list?	vm-supported	
 local-timezone-offset	vm-supported	
-log	vm-supported	
+log	vm-supported	a complex operand takes the principal complex logarithm from the shared core, and a NEGATIVE EXACT real promotes to log|x| + pi i, matching native; an inexact negative keeps IEEE NaN (corpus/54_complex_transcendentals.esk)
 log10	gap	no VM name binding
 log2	gap	no VM name binding
 logic-var?	vm-supported	
@@ -736,8 +736,8 @@ sha256-file	vm-supported
 shell-quote	vm-supported	
 sigmoid	vm-supported	
 silu	gap	ml faculty has no VM fid coverage
-sin	vm-supported	
-sinh	vm-supported	
+sin	vm-supported	a complex operand routes to the shared complex core rather than collapsing to sin(0) (corpus/54_complex_transcendentals.esk)
+sinh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to sinh(0) (corpus/54_complex_transcendentals.esk)
 sleep	native-only-justified	OS/process interface — native runtime only
 sleep-ms	vm-supported	
 slice	gap	tensor linalg/manipulation fid missing in VM
@@ -749,7 +749,7 @@ softmax	vm-supported
 softplus	gap	ml faculty has no VM fid coverage
 split	gap	tensor linalg/manipulation fid missing in VM
 split-at	gap	no VM name binding
-sqrt	vm-supported	
+sqrt	vm-supported	a complex operand takes the principal complex square root from the shared core <eshkol/core/complex_math.h> that the native back end also calls, and a NEGATIVE EXACT real promotes into the complex domain per docs/reference/language/numeric-tower.md ((sqrt -1) is +i on both engines); an inexact negative keeps IEEE NaN. as_number() used to answer 0 for a complex, so the VM silently computed sqrt(0) (corpus/54_complex_transcendentals.esk)
 square	gap	no VM name binding
 squeeze	gap	tensor linalg/manipulation fid missing in VM
 stack	gap	tensor linalg/manipulation fid missing in VM
@@ -803,8 +803,8 @@ symlink-create	vm-supported
 symlink-read	vm-supported	
 system	native-only-justified	OS/process interface — native runtime only
 take	vm-supported	
-tan	vm-supported	
-tanh	vm-supported	
+tan	vm-supported	a complex operand routes to the shared complex core rather than collapsing to tan(0) (corpus/54_complex_transcendentals.esk)
+tanh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to tanh(0) (corpus/54_complex_transcendentals.esk)
 target-intrinsic	native-only-justified	low-level memory/FFI primitive tied to native codegen
 temp-directory	vm-supported	
 tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (found/tensor_nested_collection_native.esk)
