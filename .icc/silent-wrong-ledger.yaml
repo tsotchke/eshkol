@@ -322,6 +322,28 @@ entries:
     caught_by: [parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
+  - id: SW-24
+    bucket: SILENT-WRONG
+    status: open
+    title: "The VM ignores a user redefinition of + : opcode dispatch bypasses the user binding"
+    repro: "(define + (lambda (a b) (* a b))) (display (+ 3 4))"
+    observed: "VM 7"
+    correct: "12 — native answers 12"
+    evidence: >-
+      tests/parser/test_function_shadowing.esk, run on both engines at 9f2da2ab. The test
+      prints its own verdict: native "PASS: Function shadowing works!", VM "FAIL: Expected 12".
+      The program is listed in ENGINE_PARITY_BASELINE.json divergent_programs, so the parity
+      gate is green while the test says FAIL out loud.
+    caught_by: [parity-baselines, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      THE SAME ROOT CLASS AS SW-01 AND SW-02. Name resolution does not respect shadowing,
+      and it surfaces on both engines in different subsystems: native ignores the shadowing
+      binding in AD (SW-01) and in map (SW-02); the VM ignores it in arithmetic opcode
+      dispatch (this entry). Treat the three as one defect family with one root cause, not
+      as three unrelated tickets. A user who redefines + gets a wrong number and no
+      diagnostic — the most basic Scheme capability there is.
+
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
   - id: IF-01
@@ -499,7 +521,13 @@ entries:
     title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
     count: 10
     evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
-    highest_priority: "tests/parser/test_function_shadowing.esk — a user + is ignored by opcode dispatch (VM 7, native 12)"
+    highest_priority: "tests/parser/test_function_shadowing.esk — a user + is ignored by opcode dispatch (VM 7, native 12). Promoted to SW-24."
+    measured: >-
+      All 10 were re-run on both engines at 9f2da2ab. NINE diverge only in output FORMATTING
+      (the VM's newline-per-call behaviour splits lines differently); exactly ONE,
+      test_function_shadowing.esk, is a real VALUE divergence, and that program prints
+      "FAIL: Expected 12" on the VM while the gate stays green. The baseline conflates
+      cosmetic drift with a wrong answer and hides the wrong answer among nine harmless rows.
     caught_by: [parity-baselines, pr-record-414]
     missed_by: [icc-correctness-chain, icc-smoke]
     notes: >-
