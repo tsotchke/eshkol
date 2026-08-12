@@ -140,12 +140,17 @@ typedef struct {
 #define PAIR_VAL(p) ((Value){.type = VAL_PAIR, .as.ptr = (p)})
 #define CLOSURE_VAL(p) ((Value){.type = VAL_CLOSURE, .as.ptr = (p)})
 
-/** @brief R7RS truthiness: only `#f` is false, everything else (including
- *         '()) is truthy. */
+/** @brief R7RS truthiness: only `#f` is false, everything else — including
+ *         '(), 0 and "" — is truthy.
+ *
+ *  The `VAL_NIL` line below used to return 0, contradicting this very
+ *  comment: `(if '() 'T 'F)` was `F` on the VM and `T` natively, and with it
+ *  `not`/`and`/`or`/`cond`/`when`/`unless` and every `assq`/`memq`-style
+ *  "did it find anything" idiom inverted.  R7RS 6.3.1 is unambiguous, and
+ *  the native engine has always been right, so this is the VM's bug. */
 static int is_truthy(Value v) {
     if (v.type == VAL_BOOL) return v.as.b;
-    if (v.type == VAL_NIL) return 0;
-    return 1;  /* everything else is truthy */
+    return 1;  /* everything that is not #f is true */
 }
 
 /** @brief Coerce a plain (non-heap-boxed) numeric Value to a double; 0.0
@@ -797,6 +802,15 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         }
         case VAL_BOOL:  printf("%s", v.as.b ? "#t" : "#f"); break;
         case VAL_PAIR: {
+            /* A fact is a heap wrapper around its `(predicate arg ...)`
+             * datum; print the datum, not the wrapper, so `(display
+             * (make-fact 'p 'a 'b))` is `(p a b)` on both substrates
+             * (native eshkol_display_fact prints the same). */
+            if (v.as.ptr >= 0 && vm->heap.objects[v.as.ptr] &&
+                vm->heap.objects[v.as.ptr]->type == HEAP_FACT) {
+                print_value_mode(vm, vm->heap.objects[v.as.ptr]->cons.car, write_syntax);
+                break;
+            }
             printf("(");
             Value cur = v;
             int first = 1;
@@ -925,13 +939,33 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             if (obj && obj->opaque.ptr) {
                 VmWorkspace* ws = (VmWorkspace*)obj->opaque.ptr;
-                printf("<workspace: %d modules, dim=%d>",
-                       ws->n_modules, ws->dim);
-            } else printf("<workspace>");
+                /* Same external form as the native runtime's
+                 * eshkol_display_workspace. The VM printed a differently
+                 * ordered, differently punctuated summary that also omitted
+                 * step_count, so any program displaying a workspace read
+                 * differently on the two engines. */
+                printf("#<workspace: dim=%d, %d modules, step=%d>",
+                       ws->dim, ws->n_modules, ws->step_count);
+            } else printf("#<workspace: empty>");
             break;
         }
-        case VAL_KB:          printf("<knowledge-base>"); break;
-        case VAL_SUBST:       printf("<substitution>"); break;
+        case VAL_KB: {
+            /* Same external form as the native runtime's eshkol_display_kb:
+             * `#<knowledge-base: N facts>`. The VM printed a bare
+             * `<knowledge-base>`, so every program that displayed a KB read
+             * differently on the two engines. */
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            VmKnowledgeBase* kb = (obj && obj->opaque.ptr)
+                ? (VmKnowledgeBase*)obj->opaque.ptr : NULL;
+            if (kb) printf("#<knowledge-base: %d facts>", kb->n_facts);
+            else    printf("#<knowledge-base: empty>");
+            break;
+        }
+        case VAL_SUBST: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            vm_print_substitution(obj ? (const VmSubstitution*)obj->opaque.ptr : NULL);
+            break;
+        }
         case VAL_HASH:        printf("<hash-table>"); break;
         case VAL_BYTEVECTOR:  printf("<bytevector>"); break;
         case VAL_PARAMETER_OBJ: printf("<parameter>"); break;

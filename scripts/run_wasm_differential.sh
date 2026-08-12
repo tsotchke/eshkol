@@ -202,16 +202,28 @@ if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
 fi
 
 # ── build the Emscripten VM-diff module from CURRENT source ───────────────
-# Rebuild when the module is missing or older than the VM source / this
+# Rebuild when the module is missing or older than ANY VM source / this
 # script, so the lane always tests the working tree.
+#
+# The freshness check used to name only vm_wasm_repl.c and eshkol_vm.c.  The VM
+# is an amalgamation: eshkol_vm.c #includes vm_native.c, vm_logic.c, vm_core.c,
+# vm_compiler.c, vm_run.c and the rest, none of which were checked — so editing
+# the actual VM implementation left the module STALE and the lane silently
+# diffed an old VM against a new native binary.  It reported PASS while testing
+# nothing of the change (caught when a VM knowledge-base fix showed up as a
+# WASM-only failure that did not exist in the built module).  Check every VM
+# source, plus the headers and prelude cache they compile against.
 need_build=1
 if [ -f "$WASM_MODULE" ] && [ -f "${WASM_MODULE%.js}.wasm" ]; then
-    if [ "$WASM_MODULE" -nt "$VM_WASM_SRC" ] && [ "$WASM_MODULE" -nt "$0" ]; then
-        # Also newer than the VM core it #includes.
-        if [ "$WASM_MODULE" -nt "$REPO_ROOT/lib/backend/eshkol_vm.c" ]; then
-            need_build=0
-        fi
-    fi
+    need_build=0
+    [ "$WASM_MODULE" -nt "$0" ] || need_build=1
+    for _src in "$REPO_ROOT"/lib/backend/vm_*.c "$REPO_ROOT"/lib/backend/vm_*.h \
+                "$REPO_ROOT"/lib/backend/eshkol_vm.c \
+                "$REPO_ROOT"/lib/backend/weight_matrices.c \
+                "$REPO_ROOT"/inc/eshkol/backend/vm_*.h; do
+        [ -f "$_src" ] || continue
+        if [ "$_src" -nt "$WASM_MODULE" ]; then need_build=1; break; fi
+    done
 fi
 if [ "$need_build" -eq 1 ]; then
     echo "== building Emscripten VM-diff module (emcc) =="

@@ -696,6 +696,7 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 
 ;; Unification failure returns #f
 (unify 1 2 s)              ;; -> #f
+(unify ?x (list ?x) s)     ;; -> #f  (occurs check)
 ```
 
 ### Knowledge Bases
@@ -703,14 +704,20 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 ```scheme
 ;; Create a knowledge base and assert facts
 (define kb (make-kb))
-(kb-assert! kb (make-fact 'parent (list 'alice 'bob)))
-(kb-assert! kb (make-fact 'parent (list 'bob 'charlie)))
+(kb-assert! kb (make-fact 'parent 'alice 'bob))
+(kb-assert! kb (make-fact '(parent bob charlie)))   ;; same shape, one datum list
 
-;; Query the knowledge base
-(kb-query kb 'parent)      ;; -> list of matching facts
+;; Query it with a pattern. A ?-prefixed token is a logic variable, bare or
+;; quoted, and kb-query returns one substitution per matching fact, in
+;; insertion order (the empty list means no match).
+(kb-query kb '(parent alice ?child))               ;; -> ({?child -> bob})
+(kb-query kb (make-fact 'parent 'alice ?child))    ;; -> the same
+(walk ?child (car (kb-query kb '(parent alice ?child))))  ;; -> bob
 
 ;; Type predicates
 (logic-var? ?x)             ;; -> #t
+(logic-var? '?x)            ;; -> #t  (quoted spelling, same variable)
+(logic-var? "?x")           ;; -> #f  (a string is a string)
 (substitution? s)           ;; -> #t
 (kb? kb)                    ;; -> #t
 ```
