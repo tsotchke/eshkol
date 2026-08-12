@@ -1,0 +1,155 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  AD capture reconstruction must respect lexical scope  (task #114)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  When an AD operator differentiates a lambda, the backend REBUILDS that
+;;  lambda's capture argument list from its LLVM parameter names. codegenLambda
+;;  itself resolves a free variable local-then-global, so an enclosing
+;;  function's PARAMETER lexically shadows a same-named top-level global. Three
+;;  of the reconstruction paths searched global-first, so they forwarded the
+;;  global's storage — packed as an address — where the lambda expected the
+;;  captured value. Reading that cell as the captured object produced garbage:
+;;  for a captured vector, `vector-ref: index out of bounds`.
+;;
+;;  RETRO-CATCH: every check below is written so the differentiand is a lambda
+;;  whose free variables are the enclosing function's parameters, AND a
+;;  top-level global of the same name exists with a DIFFERENT value. A correct
+;;  compiler never reads the global; a global-first resolver reads it (or its
+;;  address) and the check fails. Verified to FAIL before the fix.
+;;
+;;  Covers all three previously global-first resolvers:
+;;    codegenDerivativeMonolith  — `derivative`, `derivative-n`, `taylor`
+;;    gradientJetPath            — `gradient`
+;;    loadCapturesForAutodiff    — `directional-derivative` family
+;;
+;;  NOT covered here: `hessian` over a lambda that captures its enclosing
+;;  function's parameter fails LLVM verification ("Incorrect number of
+;;  arguments passed to called function") REGARDLESS of any shadowing global —
+;;  a separate, pre-existing arity defect in the hessian capture path, not a
+;;  scoping one. Adding it here would make this gate red for the wrong reason.
+;;
+;;  Runs identically under -r (JIT), -r with the persistent run cache (AOT),
+;;  and plain AOT. Prints a PASS/FAIL summary and exits non-zero on any failure.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.guw)
+
+(define npass 0)
+(define nfail 0)
+
+(define (nth lst i) (if (<= i 0) (car lst) (nth (cdr lst) (- i 1))))
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (check name got want)
+  (if (rel-ok got want)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; ─────────────────────────────────────────────────────────────────────────
+;;  The decoys. Every name here is ALSO a parameter of a function whose body
+;;  builds a differentiand lambda — in this file and in core.ad.guw
+;;  (`(define (taylor-propagate f xs v K) (taylor (lambda (t) (f (guw-line-point xs v t))) 0.0 K))`).
+;;  Their VALUES are deliberately wrong for every use below, so any leak is
+;;  numerically visible rather than accidentally correct.
+;; ─────────────────────────────────────────────────────────────────────────
+(define xs (vector 9.0 9.0 9.0 9.0 9.0))   ; wrong length AND wrong values
+(define v  (vector 9.0 9.0 9.0 9.0 9.0))
+(define a  1000.0)
+(define base (vector 7.0 7.0))
+(define pt (vector 5.0 5.0))
+
+;; ── 1. taylor / GUW through a module (the #114 reproducer verbatim) ───────
+;;    f(x,y) = x^3 y^2 + sin(x y) at (1.0, 0.5)
+(define (f2 w)
+  (let ((x (vector-ref w 0)) (y (vector-ref w 1)))
+    (+ (* x x x y y) (sin (* x y)))))
+(define pt2 (vector 1.0 0.5))
+(define S (sin 0.5)) (define C (cos 0.5))
+
+(check "guw mixed-partial xxy (module capture vs global xs)"
+       (mixed-partial f2 pt2 (list 0 0 1))
+       (- (- (* 12.0 1.0 0.5) (* C 1.0 0.5 0.5)) (* 2.0 S 0.5)))
+(check "guw mixed-partial xyy (module capture vs global xs)"
+       (mixed-partial f2 pt2 (list 0 1 1))
+       (- (- (* 6.0 1.0 1.0) (* C 1.0 1.0 0.5)) (* 2.0 S 1.0)))
+
+;;    taylor-propagate directly: g(t) = (2+t)^2 (3+t) = 12 + 16t + 7t^2 + t^3
+(define (fp w) (* (vector-ref w 0) (vector-ref w 0) (vector-ref w 1)))
+(define tp (taylor-propagate fp (vector 2.0 3.0) (vector 1.0 1.0) 3))
+(check "taylor-propagate c1 (module capture vs global xs/v)" (nth tp 1) 16.0)
+(check "taylor-propagate c2 (module capture vs global xs/v)" (nth tp 2) 7.0)
+(check "taylor-propagate c3 (module capture vs global xs/v)" (nth tp 3) 1.0)
+
+;; ── 2. derivative / derivative-n over a parameter-capturing lambda ────────
+;;    h(t) = sin(a + t); d/dt at 0 = cos(a). `a` is the PARAMETER, and the
+;;    top-level global `a` is 1000.0.
+(define (dwrap a) (derivative (lambda (t) (sin (+ a t))) 0.0))
+(check "derivative captures parameter a, not global a" (dwrap 0.3) (cos 0.3))
+
+(define (dnwrap a k) (derivative-n (lambda (t) (sin (+ a t))) 0.0 k))
+(check "derivative-n order 2 captures parameter a" (dnwrap 0.3 2) (- 0.0 (sin 0.3)))
+(check "derivative-n order 3 captures parameter a" (dnwrap 0.3 3) (- 0.0 (cos 0.3)))
+
+;;    taylor over a parameter-capturing lambda (same monolith path)
+(define (twrap a k) (taylor (lambda (t) (* (+ a t) (+ a t))) 0.0 k))
+(define tw (twrap 2.0 2))
+(check "taylor c0 captures parameter a" (nth tw 0) 4.0)
+(check "taylor c1 captures parameter a" (nth tw 1) 4.0)
+(check "taylor c2 captures parameter a" (nth tw 2) 1.0)
+
+;; ── 3. gradient over a lambda capturing a parameter VECTOR ────────────────
+;;    L(w) = w0*base0 + w1*base1 ; dL/dw = base. Global `base` is #(7 7).
+(define (gwrap base)
+  (gradient (lambda (w) (+ (* (vector-ref w 0) (vector-ref base 0))
+                           (* (vector-ref w 1) (vector-ref base 1))))
+            (vector 1.0 1.0)))
+(define gw (gwrap (vector 2.0 3.0)))
+(check "gradient captures parameter base[0], not global base" (vector-ref gw 0) 2.0)
+(check "gradient captures parameter base[1], not global base" (vector-ref gw 1) 3.0)
+
+;;    and a scalar-parameter capture through gradient
+(define (gscal a) (gradient (lambda (t) (* a t t)) 2.0))
+(check "gradient captures parameter a (scalar)" (gscal 0.5) 2.0)
+
+;; ── 4. directional derivative over a lambda capturing a parameter vector ──
+;;    D_dir [w . pt] = dir . pt. Global `pt` is #(5 5).
+(define (ddwrap pt dir)
+  (directional-derivative
+    (lambda (w) (+ (* (vector-ref w 0) (vector-ref pt 0))
+                   (* (vector-ref w 1) (vector-ref pt 1))))
+    (vector 1.0 1.0)
+    dir))
+(check "directional-derivative captures parameter pt, not global pt"
+       (ddwrap (vector 2.0 3.0) (vector 1.0 0.0)) 2.0)
+
+;; ── 5. the globals must be UNTOUCHED by all of the above ─────────────────
+(check "global a unchanged" a 1000.0)
+(check "global base[0] unchanged" (vector-ref base 0) 7.0)
+(check "global xs length unchanged" (vector-length xs) 5)
+(check "global xs[0] unchanged" (vector-ref xs 0) 9.0)
+
+;; ── summary ──────────────────────────────────────────────────────────────
+(display "----") (newline)
+(if (= nfail 0)
+    (begin
+      (display "PASS: ad_capture_global_shadow ")
+      (display npass)
+      (display "/")
+      (display npass)
+      (display " checks (derivative/derivative-n/taylor/GUW, gradient, directional)")
+      (newline))
+    (begin
+      (display "FAIL: ad_capture_global_shadow ")
+      (display nfail)
+      (display " of ")
+      (display (+ npass nfail))
+      (display " checks failed")
+      (newline)
+      (exit 1)))

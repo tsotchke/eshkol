@@ -557,6 +557,33 @@ probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe ad_forward_over_reverse_oracle 'jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/ad/forward_over_reverse_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+# Task #114. Two claims in one probe, because the defect needed both to be
+# visible: (1) an AD operator differentiating a lambda that captures its
+# ENCLOSING FUNCTION'S PARAMETER must never read a same-named top-level global
+# instead — the reconstruction has to use codegenLambda's own local-then-global
+# scope rule; and (2) the cached `-r` route (which compiles AOT in a child) and
+# the uncached in-process JIT route must produce BYTE-IDENTICAL output, the
+# PR #407 invariant. Pre-fix, core.ad.guw's documented example died with
+# `vector-ref: index out of bounds` under the default cache-on `-r` and printed
+# correct values under ESHKOL_JIT_CACHE=0, and the AD guide carried the
+# ESHKOL_JIT_CACHE=0 workaround eight times. Byte-comparing the two routes is
+# what turns that class from "a workaround in a doc" into a gate.
+probe ad_capture_global_shadow_oracle 'AD capture reconstruction respects lexical scope (parameter shadows same-named global), and the cached -r/AOT route is byte-identical to the uncached in-process JIT route (task #114)' \
+    'cd "$REPO_ROOT"; t=tests/ad/ad_capture_global_shadow_test.esk;
+     cold=$(mktemp -d) || exit 1;
+     a=$(ESHKOL_JIT_CACHE_DIR="$cold" "$ESHKOL_RUN" -r "$t" -L"$BUILD_DIR_PATH" 2>/dev/null); ra=$?;
+     b=$(ESHKOL_JIT_CACHE_DIR="$cold" "$ESHKOL_RUN" -r "$t" -L"$BUILD_DIR_PATH" 2>/dev/null); rb=$?;
+     c=$(ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$t" -L"$BUILD_DIR_PATH" 2>/dev/null); rc=$?;
+     rm -rf "$cold";
+     [ "$ra" -eq 0 ] && [ "$rb" -eq 0 ] && [ "$rc" -eq 0 ] || exit 1;
+     [ "$a" = "$b" ] && [ "$b" = "$c" ] || exit 1;
+     printf "%s" "$c" | grep -q "PASS: ad_capture_global_shadow" || exit 1;
+     printf "%s" "$c" | grep -q "FAIL:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     "$ESHKOL_RUN" "$t" -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     d=$("$bin" 2>/dev/null); rd=$?; rm -f "$bin";
+     [ "$rd" -eq 0 ] && [ "$d" = "$c" ] || exit 1;
+     exit 0'
 probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solver reaches full-f64 residual (<=1e-12, computed in-test) on well-conditioned/identity systems and raises catchably on singular/dimension-mismatch — verified on JIT, AOT, and the VM' \
     'cd "$REPO_ROOT"; t=tests/features/linear_solve_test.esk;
      out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
