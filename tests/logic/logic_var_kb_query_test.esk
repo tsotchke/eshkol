@@ -151,6 +151,20 @@
 (chk "string fact exact match"       (length (kb-query kb4 (make-fact "likes" "alice" "math"))) 1)
 (chk "string fact no match"          (length (kb-query kb4 (make-fact "likes" "alice" "chem"))) 0)
 
+;; A knowledge base grows past its initial capacity. `kb-assert!` used to stop
+;; at 16 facts in the VM and drop every later one without a word, so a large KB
+;; answered queries from a silent 16-fact prefix.
+(define kb-big (make-kb))
+(let loop ((i 0))
+  (if (< i 100)
+      (begin (kb-assert! kb-big (make-fact 'row i (* i 2))) (loop (+ i 1)))))
+(chk "a KB holds every asserted fact past its initial capacity"
+     (kb-count kb-big) 100)
+(chk "a fact asserted after the growth boundary is queryable"
+     (walk ?rv (car (kb-query kb-big (make-fact 'row 73 ?rv)))) 146)
+(chk "the last asserted fact is queryable"
+     (walk ?rv2 (car (kb-query kb-big (make-fact 'row 99 ?rv2)))) 198)
+
 ;; ---------------------------------------------------------------------------
 ;; (5) Nested patterns unify structurally.
 ;; ---------------------------------------------------------------------------
