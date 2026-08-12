@@ -148,8 +148,12 @@ def run_engine(cmd, program, trace_dir, env_extra, timeout):
         env.pop("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR", None)
     env["ESHKOL_LIB_DIR"] = BUILD
     try:
+        # errors="replace": a program under test may emit non-UTF-8 bytes
+        # (string/bytevector corpora do). The gate must never crash on data it
+        # is measuring — decoding is lossy but IDENTICAL for both engines, so
+        # comparison stays sound.
         r = subprocess.run(cmd + [program], capture_output=True, text=True,
-                           timeout=timeout, env=env)
+                           errors="replace", timeout=timeout, env=env)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return 124, "", ""
@@ -277,11 +281,19 @@ def main():
 
         both_ran += 1
         both_ran_now.append(rel)
-        if normalise(nout) != normalise(vout):
+        na, va = normalise(nout), normalise(vout)
+        if na != va:
+            # Report a window around the FIRST DIFFERENCE, not a prefix: the
+            # outputs usually agree for hundreds of characters, so a prefix
+            # shows two identical strings and tells the reader nothing.
+            at = next((k for k in range(min(len(na), len(va)))
+                       if na[k] != va[k]), min(len(na), len(va)))
+            lo = max(0, at - 40)
             divergences.append({
                 "program": rel,
-                "native": normalise(nout)[:200],
-                "vm": normalise(vout)[:200],
+                "diff_at": at,
+                "native": na[lo:at + 90],
+                "vm": va[lo:at + 90],
                 "constructs": sorted(n_constructs & v_constructs)[:40],
             })
             continue
@@ -359,9 +371,10 @@ def main():
         print("FAIL: %d program(s) produce DIFFERENT OUTPUT on the two engines "
               "and are not\n      in the ratchet baseline." % len(new_div))
         for d in new_div[:20]:
-            print("  %s" % d["program"])
-            print("      native: %s" % d["native"][:120])
-            print("      vm    : %s" % d["vm"][:120])
+            print("  %s  (first difference at char %d)"
+                  % (d["program"], d.get("diff_at", 0)))
+            print("      native: %s" % d["native"][:130])
+            print("      vm    : %s" % d["vm"][:130])
             if d["constructs"]:
                 print("      constructs exercised on both: %s"
                       % ", ".join(d["constructs"][:12]))

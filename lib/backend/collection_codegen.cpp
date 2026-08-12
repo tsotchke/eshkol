@@ -1163,7 +1163,16 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(int_cdr);
         llvm::Value* cdr_int64 = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_int64_cdr = tagged_.packInt64(cdr_int64, true);
+        // Preserve the STORED type byte rather than hardcoding INT64. This
+        // block is the fallback for every int-payload immediate the chain
+        // above does not enumerate, and re-tagging them all as INT64 silently
+        // destroyed their type: `(cdr (cons ?a ?b))` came back as the raw
+        // variable id `1` instead of `?b`, so `(logic-var? (cdr p))` was #f
+        // natively and #t on the VM. Carrying the tag through fixes
+        // LOGIC_VAR and any future immediate at the root instead of adding a
+        // tenth special case.
+        llvm::Value* tagged_int64_cdr = tagged_.packInt64WithTypeAndFlags(
+            cdr_int64, cdr_type, llvm::ConstantInt::get(ctx_.int8Type(), 0));
         ctx_.builder().CreateBr(merge_cdr);
         llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
 
