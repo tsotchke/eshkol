@@ -83,7 +83,7 @@ For detailed component documentation, see:
 
 ### Runtime System
 
-**Arena Memory** - [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.cpp)
+**Arena Memory** - [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.h)
 - Global arena allocation
 - Object header management
 - Display system

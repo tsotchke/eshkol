@@ -53,7 +53,7 @@ All three modes compute **exact derivatives** (not numerical approximations) by 
 
 ## Symbolic Differentiation
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp)
 
 Symbolic differentiation transforms ASTs at **compile-time** using 12 differentiation rules:
 
@@ -94,7 +94,7 @@ Symbolic differentiation transforms ASTs at **compile-time** using 12 differenti
 
 ## Forward-Mode AD (Dual Numbers)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp)
 
 Forward-mode AD uses **dual numbers** to compute derivatives in a single forward pass. Each dual number stores both the function value and its derivative:
 
@@ -107,7 +107,7 @@ typedef struct eshkol_dual_number {
 } eshkol_dual_number_t;  // 16 bytes
 ```
 
-**Tagged value type:** [`ESHKOL_VALUE_DUAL_NUMBER`](inc/eshkol/eshkol.h) (type = 6)
+**Tagged value type:** [`ESHKOL_VALUE_DUAL_NUMBER`](../../inc/eshkol/eshkol.h) (type = 6)
 
 ### Dual Number Arithmetic
 
@@ -144,7 +144,7 @@ dual_div(a, b) = {a.value / b.value, (a.deriv * b.value - a.value * b.deriv) / (
 
 ## Reverse-Mode AD (Computational Graph)
 
-**Implementation:** [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp)
+**Implementation:** [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp)
 
 Reverse-mode AD builds a **computational graph** during the forward pass, then propagates gradients backward from outputs to inputs. This is the foundation of neural network training.
 
@@ -216,7 +216,7 @@ typedef struct ad_tape {
 } ad_tape_t;
 ```
 
-**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp))
+**Nested gradient support:** 32-level tape stack for computing higher-order derivatives (implementation: [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp))
 
 ### Example: Reverse-Mode AD
 
@@ -328,10 +328,10 @@ Exact nested higher-order differentiation is done by nesting the **scalar**
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](lib/backend/autodiff_codegen.cpp) | 9,205 | All 3 AD modes, vector calculus |
-| **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](inc/eshkol/eshkol.h) | 38 | AD node structures, tape definition |
-| **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](inc/eshkol/eshkol.h) | 10 | Forward-mode dual number struct |
-| **Type System** | [`lib/backend/type_system.cpp`](lib/backend/type_system.cpp) | 287 | AD type generation (dual_t, ad_node_t) |
+| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 9,205 | All 3 AD modes, vector calculus |
+| **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](../../inc/eshkol/eshkol.h) | 38 | AD node structures, tape definition |
+| **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](../../inc/eshkol/eshkol.h) | 10 | Forward-mode dual number struct |
+| **Type System** | [`lib/backend/type_system.cpp`](../../lib/backend/type_system.cpp) | 287 | AD type generation (dual_t, ad_node_t) |
 
 ### AD Mode Detection
 
@@ -512,13 +512,13 @@ Where n = number of operations in the function.
 ;; Returns: #(6.0)
 ```
 
-**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp`](lib/backend/function_codegen.cpp)).
+**Implementation:** Closures check argument types at runtime and dispatch to the appropriate code path ([`lib/backend/function_codegen.cpp`](../../lib/backend/function_codegen.cpp)).
 
 ---
 
 ## Integration with Tensors
 
-Autodiff works seamlessly with tensor operations. The [`vref`](lib/backend/tensor_codegen.cpp) operation creates AD nodes when in AD mode:
+Autodiff works seamlessly with tensor operations. The [`vref`](../../lib/backend/tensor_codegen.cpp) operation creates AD nodes when in AD mode:
 
 ```scheme
 ;; Gradient of tensor sum

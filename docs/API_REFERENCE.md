@@ -21,7 +21,7 @@ This comprehensive reference documents all special forms, functions, and operati
 9. [System Operations](#system-operations)
 10. [Hash Tables](#hash-tables)
 11. [Type System](#type-system)
-12. [Standard Library](#standard-library) (25+ modules)
+12. [Standard Library](#standard-library-reference) (25+ modules)
 13. [Exact Arithmetic](#exact-arithmetic) (v1.1)
 14. [Complex Numbers](#complex-numbers) (v1.1)
 15. [Continuations & Control Flow](#continuations--control-flow) (v1.1)
@@ -2321,7 +2321,7 @@ heterogeneous workloads.
 **Thread pool sizing:** Defaults to `std::thread::hardware_concurrency()` (number of logical
 cores). Can be tuned via environment variable `ESHKOL_NUM_THREADS`.
 
-**Implementation:** [system_codegen.cpp](lib/backend/system_codegen.cpp).
+**Implementation:** [system_codegen.cpp](../lib/backend/system_codegen.cpp).
 
 ### `parallel-map`
 
@@ -2450,9 +2450,9 @@ holds the codegen methods (`codegenMakeFactorGraph`, `codegenFGAddFactor`,
 `codegenWSStep`, plus the logic-engine entry points); the dispatch
 table lives in `LLVMCodeGenerator::codegenSpecialOperation` in
 [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp).
-Runtime: [logic.h](inc/eshkol/backend/logic.h) / [logic.cpp](lib/backend/logic.cpp),
-[inference.h](inc/eshkol/backend/inference.h) / [inference.cpp](lib/backend/inference.cpp),
-[workspace.h](inc/eshkol/backend/workspace.h) / [workspace.cpp](lib/backend/workspace.cpp).
+Runtime: [logic.h](../inc/eshkol/core/logic.h) / [logic.cpp](../lib/core/logic.cpp),
+[inference.h](../inc/eshkol/core/inference.h) / [inference.cpp](../lib/core/inference.cpp),
+[workspace.h](../inc/eshkol/core/workspace.h) / [workspace.cpp](../lib/core/workspace.cpp).
 
 ### Logic Programming
 
@@ -3071,7 +3071,7 @@ for large tensors, automatic GPU dispatch above cost model thresholds, and seaml
 with Eshkol's automatic differentiation system via `gradient`.
 
 **Architecture:** Operations are dispatched in `LLVMCodeGenerator::codegenCall` in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp)
-and implemented in [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp). Backward passes are
+and implemented in [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp). Backward passes are
 available for AD integration (e.g., `tensorReluBackward`, `tensorSigmoidBackward`).
 
 ### Activation Functions
@@ -4192,8 +4192,8 @@ GPU acceleration via Metal (Apple Silicon) and CUDA (NVIDIA). Dispatch is automa
 on a cost model comparing CPU (cBLAS/SIMD) vs GPU throughput, accounting for data transfer
 latency.
 
-**Implementation:** [gpu_memory.mm](lib/backend/gpu/gpu_memory.mm) (Metal),
-[system_codegen.cpp](lib/backend/system_codegen.cpp) (dispatch logic).
+**Implementation:** [gpu_memory.mm](../lib/backend/gpu/gpu_memory.mm) (Metal),
+[system_codegen.cpp](../lib/backend/system_codegen.cpp) (dispatch logic).
 
 ### Automatic Dispatch
 
@@ -4267,7 +4267,7 @@ eliminating intermediate tensor allocations and enabling whole-graph optimizatio
 **Architecture:** Eshkol tensor IR → StableHLO dialect → MLIR optimization passes →
 target-specific code (CPU with SIMD / GPU via Metal or CUDA).
 
-**Implementation:** [xla_runtime.cpp](lib/backend/xla/xla_runtime.cpp).
+**Implementation:** [xla_runtime.cpp](../lib/backend/xla/xla_runtime.cpp).
 
 ### Operation Fusion
 
@@ -4329,7 +4329,7 @@ Built-in Cooley-Tukey radix-2 FFT:
 
 #### Convolution
 - `(convolve signal kernel)` — Direct convolution O(N*M)
-- `(fft-convolve signal kernel)` — FFT-based convolution O(N log N)
+- `(fast-convolve signal kernel)` — FFT-based convolution O(N log N)
 
 #### Filters
 - `(fir-filter coefficients signal)` — FIR filter application
@@ -7064,8 +7064,8 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~232,000 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](lib/backend/llvm_codegen.cpp) — 34,928 lines
-**Tensor Codegen**: [tensor_codegen.cpp](lib/backend/tensor_codegen.cpp) — 20,000+ lines
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 34,928 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 20,000+ lines
 **Compiler Modules**: 21 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

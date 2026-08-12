@@ -1234,7 +1234,7 @@ eshkol-run --wasm app.esk -o app.wasm
 ## Next Steps
 
 - **[API Reference](API_REFERENCE.md)** — Complete function documentation (555+ builtins)
-- **[Examples](../../examples/)** — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine
+- **[Examples](../examples/)** — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine
 - **[Consciousness Engine](breakdown/CONSCIOUSNESS_ENGINE.md)** — Logic programming, factor graphs, global workspace
 - **[Automatic Differentiation](breakdown/AUTODIFF.md)** — Forward/reverse mode, vector calculus operators
 - **[Machine Learning](breakdown/MACHINE_LEARNING.md)** — Neural network training, optimizers, activations
