@@ -472,7 +472,14 @@ jobs:
           }
 
           Write-Host "Downloading $url"
-          curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          # --retry only fires on curl's own error exits; a connection that
+          # opens and then goes silent (stalled transfer) is not an error to
+          # curl and --retry never sees it, so the step can hang to the job
+          # timeout. --connect-timeout bounds the TCP/TLS handshake and
+          # --speed-limit/--speed-time make curl abort (exit 28) once the
+          # transfer drops below 100 KB/s for 60s straight, which --retry-all-errors
+          # then retries like any other failure.
+          curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
           if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
 
           Write-Host "Extracting..."

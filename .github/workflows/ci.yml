@@ -21,6 +21,14 @@ on:
       - 'notes/**'
       - 'press/**'
       - 'LICENSE'
+  schedule:
+    # Weekly touch of the Windows LLVM SDK caches so actions/cache's 7-day
+    # idle-eviction can never strand a run on the cold download+extract path
+    # (see llvm-sdk-cache-keepalive below). This trigger fires every job in
+    # this workflow by default, so every job below carries
+    # `if: github.event_name != 'schedule'` to stay off the cron path; only
+    # llvm-sdk-cache-keepalive runs on it.
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,6 +65,7 @@ jobs:
   # PR.
   surface-manifest:
     name: surface-manifest
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -94,6 +103,7 @@ jobs:
   # gate; branch-protection configuration must not add this check as required.
   quantum-macos:
     name: quantum-macos (advisory)
+    if: github.event_name != 'schedule'
     runs-on: macos-14
     continue-on-error: true
     timeout-minutes: 120
@@ -245,6 +255,7 @@ jobs:
 
   unix-matrix:
     name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -575,6 +586,7 @@ jobs:
 
   windows-matrix:
     name: ${{ matrix.name }}
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -653,7 +665,14 @@ jobs:
           }
 
           Write-Host "Downloading $url"
-          curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          # --retry only fires on curl's own error exits; a connection that
+          # opens and then goes silent (stalled transfer) is not an error to
+          # curl and --retry never sees it, so the step can hang to the job
+          # timeout. --connect-timeout bounds the TCP/TLS handshake and
+          # --speed-limit/--speed-time make curl abort (exit 28) once the
+          # transfer drops below 100 KB/s for 60s straight, which --retry-all-errors
+          # then retries like any other failure.
+          curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
           if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
 
           Write-Host "Extracting..."
@@ -880,6 +899,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   wasm-execute-diff:
     name: wasm-execute-diff
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -952,3 +972,71 @@ jobs:
           name: wasm-execute-diff-trace
           path: scripts/icc_traces/wasm_parity.jsonl
           if-no-files-found: ignore
+
+  # actions/cache evicts entries that go unaccessed for 7 days, and the
+  # windows-llvm-sdk-* caches only get touched by pushes/PRs that actually
+  # exercise the windows-matrix lane on a cold cache. In a quiet stretch that
+  # is enough idle time for eviction, which strands the *next* run on the
+  # ~800MB download+extract path above — with no warning until it happens to
+  # hit the job timeout (this is what happened to windows-x64-cuda after 12
+  # idle days). A weekly restore is a cheap access that resets the idle
+  # clock; if the entry is already gone by the time this runs, it rebuilds
+  # and re-saves it so the gap never has a chance to compound.
+  llvm-sdk-cache-keepalive:
+    name: llvm-sdk-cache-keepalive (${{ matrix.arch }})
+    if: github.event_name == 'schedule' && github.repository == 'tsotchke/eshkol'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: windows-11-arm
+            llvm_suffix: aarch64
+          - arch: x64
+            runner: windows-2022
+            llvm_suffix: x86_64
+    steps:
+      - name: Restore LLVM SDK Cache
+        id: llvm-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+
+      - name: Install LLVM SDK
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          $llvmRoot    = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
+          $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
+
+          New-Item -ItemType Directory -Force -Path 'C:\src' | Out-Null
+          if (Test-Path $llvmRoot) {
+            Remove-Item -LiteralPath $llvmRoot -Recurse -Force
+          }
+
+          Write-Host "Downloading $url"
+          curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+
+          Write-Host "Extracting..."
+          tar -xf $archive -C C:\src
+          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+
+          if (-not (Test-Path "$llvmCmakeDir\LLVMConfig.cmake")) {
+            throw "LLVMConfig.cmake not found at $llvmCmakeDir - extraction may have failed"
+          }
+
+          Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
+
+      - name: Save LLVM SDK Cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
+          key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
