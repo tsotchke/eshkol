@@ -939,12 +939,28 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             if (obj && obj->opaque.ptr) {
                 VmWorkspace* ws = (VmWorkspace*)obj->opaque.ptr;
-                printf("<workspace: %d modules, dim=%d>",
-                       ws->n_modules, ws->dim);
-            } else printf("<workspace>");
+                /* Same external form as the native runtime's
+                 * eshkol_display_workspace. The VM printed a differently
+                 * ordered, differently punctuated summary that also omitted
+                 * step_count, so any program displaying a workspace read
+                 * differently on the two engines. */
+                printf("#<workspace: dim=%d, %d modules, step=%d>",
+                       ws->dim, ws->n_modules, ws->step_count);
+            } else printf("#<workspace: empty>");
             break;
         }
-        case VAL_KB:          printf("<knowledge-base>"); break;
+        case VAL_KB: {
+            /* Same external form as the native runtime's eshkol_display_kb:
+             * `#<knowledge-base: N facts>`. The VM printed a bare
+             * `<knowledge-base>`, so every program that displayed a KB read
+             * differently on the two engines. */
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            VmKnowledgeBase* kb = (obj && obj->opaque.ptr)
+                ? (VmKnowledgeBase*)obj->opaque.ptr : NULL;
+            if (kb) printf("#<knowledge-base: %d facts>", kb->n_facts);
+            else    printf("#<knowledge-base: empty>");
+            break;
+        }
         case VAL_SUBST: {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             vm_print_substitution(obj ? (const VmSubstitution*)obj->opaque.ptr : NULL);
