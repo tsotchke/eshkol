@@ -1112,34 +1112,49 @@ extern "C" void eshkol_make_fact_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract predicate pointer (should be a HEAP_PTR to interned symbol) */
+    /* Extract predicate pointer (must be a GROUND symbol/string, interned so
+     * pointer equality works in unification).  A non-ground head — most often
+     * a logic variable, `(make-fact ?rel 'alice 'bob)` — is NOT a predicate:
+     * fact_from_datum() treats such a head as an ordinary first argument, and
+     * this path must agree or the two `make-fact` spellings would build
+     * different facts.  It used to leave `predicate` at 0 and keep arity 2,
+     * and a predicate of 0 means "matches any" in the query pre-filter — so
+     * the pattern reported a bogus match with an EMPTY substitution, silently
+     * dropping the variable the caller asked about. */
     uint64_t predicate = 0;
-    if (pred->type == ESHKOL_VALUE_HEAP_PTR) {
-        /* Intern the predicate string so pointer equality works in unification.
-         * The string data is at pred->data.ptr_val (after 8-byte object header). */
+    bool head_is_predicate = false;
+    if (!eshkol_is_logic_var(pred) &&
+        (heap_subtype_is(pred, HEAP_SUBTYPE_SYMBOL) ||
+         heap_subtype_is(pred, HEAP_SUBTYPE_STRING))) {
         const char* pred_str = (const char*)(uintptr_t)pred->data.ptr_val;
         if (pred_str) {
-            const char* interned = eshkol_intern_predicate(pred_str);
-            predicate = (uint64_t)(uintptr_t)interned;
+            predicate = (uint64_t)(uintptr_t)eshkol_intern_predicate(pred_str);
+            head_is_predicate = true;
         }
     }
 
-    /* Canonicalize `?`-symbol arguments (and fold nested datum lists into
-     * nested facts) so every fact carries one term representation. */
+    /* Canonicalize `?`-symbol arguments so every fact carries one term
+     * representation; prepend the head when it is not a predicate. */
+    int32_t total = arity + (head_is_predicate ? 0 : 1);
     eshkol_tagged_value_t norm_stack[16];
     eshkol_tagged_value_t* norm = NULL;
-    if (args && arity > 0) {
-        norm = (arity <= 16) ? norm_stack
+    if (total > 0) {
+        norm = (total <= 16) ? norm_stack
              : (eshkol_tagged_value_t*)arena_allocate_aligned(
-                   arena, (size_t)arity * sizeof(eshkol_tagged_value_t), 8);
-        if (norm) {
-            for (int32_t i = 0; i < arity; i++)
-                norm[i] = fact_arg_from_datum(arena, &args[i], 0);
+                   arena, (size_t)total * sizeof(eshkol_tagged_value_t), 8);
+        if (!norm) {
+            result->type = ESHKOL_VALUE_NULL;
+            return;
         }
+        int32_t at = 0;
+        if (!head_is_predicate) norm[at++] = fact_arg_from_datum(arena, pred, 0);
+        for (int32_t i = 0; i < arity && args; i++)
+            norm[at++] = fact_arg_from_datum(arena, &args[i], 0);
+        total = at;
     }
 
     eshkol_fact_t* fact = eshkol_make_fact(arena, predicate,
-        norm ? norm : args, (uint32_t)arity);
+        norm, (uint32_t)total);
 
     if (fact) {
         result->type = ESHKOL_VALUE_HEAP_PTR;
