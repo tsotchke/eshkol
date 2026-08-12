@@ -20872,7 +20872,19 @@ private:
         // There is no third outcome. The pointer is never reinterpreted.
         const char* mf_cpx_suffix = eshkol::ComplexCodegen::complexRuntimeSuffix(func_name);
         BasicBlock* mf_cpx_done = BasicBlock::Create(*context, (func_name + "_cpx_done").c_str(), current_func);
-        Value* mf_cpx_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_cpx_slot").c_str());
+        // The slot lives in the ENTRY block: this dispatch is emitted for every
+        // math builtin, so a math call inside a loop body would otherwise
+        // re-adjust the stack pointer on every iteration (the hazard
+        // CodegenContext::emitRaiseFmt documents for its own buffer, and the
+        // one the flat-RSS AOT gate watches).
+        Value* mf_cpx_slot = nullptr;
+        {
+            IRBuilderBase::InsertPoint mf_cpx_ip = builder->saveIP();
+            BasicBlock& mf_entry = current_func->getEntryBlock();
+            builder->SetInsertPoint(&mf_entry, mf_entry.begin());
+            mf_cpx_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_cpx_slot").c_str());
+            builder->restoreIP(mf_cpx_ip);
+        }
         {
             BasicBlock* cpx_path = BasicBlock::Create(*context, (func_name + "_cpx_path").c_str(), current_func);
             BasicBlock* cpx_cont = BasicBlock::Create(*context, (func_name + "_cpx_cont").c_str(), current_func);

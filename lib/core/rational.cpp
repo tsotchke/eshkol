@@ -484,7 +484,10 @@ extern "C" void* eshkol_double_to_rational(void* arena, double d) {
     if (exp2 > 0) {
         /* Whole number: mantissa << exp2. Fits int64 only for small shifts. */
         if (exp2 < 62 && mant < (uint64_t)1 << (62 - exp2)) {
-            return eshkol_rational_create(arena, num << exp2, 1);
+            /* Shift the UNSIGNED magnitude and re-apply the sign: a left shift
+             * of a negative int64 is undefined before C++20. */
+            int64_t whole = (int64_t)(mant << exp2);
+            return eshkol_rational_create(arena, neg ? -whole : whole, 1);
         }
         eshkol_bignum_t* bn = eshkol_bignum_from_int64((arena_t*)arena, num);
         eshkol_bignum_t* shifted = eshkol_bignum_shift((arena_t*)arena, bn, exp2);
@@ -541,7 +544,8 @@ extern "C" void eshkol_double_to_exact_tagged(void* arena, double d,
     }
     if (exp2 > 0) {
         if (exp2 < 62 && mant < (uint64_t)1 << (62 - exp2)) {
-            *out = eshkol_make_int64(num << exp2, true);
+            int64_t whole = (int64_t)(mant << exp2);
+            *out = eshkol_make_int64(neg ? -whole : whole, true);
             return;
         }
         eshkol_bignum_t* bn = eshkol_bignum_from_int64((arena_t*)arena, num);

@@ -12999,7 +12999,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * are int64 pairs), so a magnitude past int64 has no exact VM
              * representation: say so rather than push a wrong number. */
             if (exp214 < 62 && mant214 < ((uint64_t)1 << (62 - exp214))) {
-                vm_push(vm, INT_VAL(num214 << exp214)); break;
+                /* Shift the UNSIGNED magnitude and re-apply the sign:
+                 * a left shift of a negative int64 is undefined. */
+                int64_t whole214 = (int64_t)(mant214 << exp214);
+                vm_push(vm, INT_VAL(d214 < 0 ? -whole214 : whole214)); break;
             }
             fprintf(stderr, "ERROR: inexact->exact: %g is outside this VM's exact "
                             "integer range (int64)\n", d214);
