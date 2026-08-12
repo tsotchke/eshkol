@@ -151,26 +151,79 @@ entries:
 
   - id: SW-07
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "fc3c1257"
     title: "fg-marginal returns an empty result natively"
     repro: "(define fg (make-factor-graph 2 2)) (display (fg-marginal fg 0))"
     observed: "native (), VM #(0.5 0.5)"
     correct: "#(0.5 0.5) — the uniform marginal"
-    evidence: ".scratch/flaw-ledger/repro/sw_fg_marginal.esk; PR #413 Follow-ups item 2"
+    measured: >-
+      At fc3c1257 (PR #424, branch fix/fg-marginal-rationalize) both engines
+      print #(0.5 0.5) for all three dims spellings #(2 2), '(2 2) and 2, and
+      for both variables of a two-variable graph. Four defects, not one: the
+      native result tensor's dimensions[] array was never written
+      (lib/core/logic_builtins.cpp:52, so the documented #(2 2) spelling printed
+      #() around a correct distribution); native fg_read_numeric() read no list
+      form and eshkol_make_factor_graph_tagged() had no bare-scalar arm
+      (lib/core/inference.cpp), so '(2 2) and 2 answered the tagged NULL; and
+      the VM matched HEAP_TENSOR only, so a #(2 2) VECTOR literal fell to the
+      scalar arm and built one zero-state variable, while a real scalar was read
+      as a one-element dims list that clamped num_vars to 1
+      (lib/backend/vm_native.c native call 520).
+    evidence: >-
+      tests/vm_parity/corpus/57_factor_graph_marginal.esk (both engines, with an
+      explicit uniform-prior and extent oracle);
+      tests/differential/corpus/44_factor_graph_marginal.esk (native axes);
+      .scratch/flaw-ledger/repro/sw_fg_marginal.esk; PR #413 Follow-ups item 2
     caught_by: [pr-record-413, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
-    notes: "PR #413 explicitly leaves this alone. #413 is still OPEN, so even its factor-graph fixes are not in the cut."
+    fixed_by: "PR #424 (fix/fg-marginal-rationalize)"
+    notes: >-
+      PR #413 has since MERGED and its unified factor-graph sequence reader
+      (vm_fg_seq_doubles) supersedes #424's original VM vector arm; #424 was
+      rebased onto it and now layers only the bare-scalar broadcast on top, so
+      `(make-factor-graph 2 2)` is a two-variable graph on both engines rather
+      than being clamped to one. #424 does NOT close
+      tests/logic/workspace_test.esk, which is a ws-step! defect and is still
+      divergent at fc3c1257. #413's merge already removed
+      tests/logic/inference_test.esk and continuous_learning.esk from
+      divergent_programs, taking it from 10 to 8; #424 removes nothing further.
+      SEPARATELY MEASURED at fc3c1257 and reported to the coordinator rather
+      than acted on here: tests/parser/special_forms_test.esk is still
+      baselined but now AGREES on both engines (stable over three runs, and it
+      references neither rationalize nor any factor-graph builtin), so one of
+      today's merges — most likely #428's nearest-enclosing-binding fix — left
+      a stale ratchet entry that its own lane should retire.
 
   - id: SW-08
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "fc3c1257"
     title: "rationalize diverges between engines; the VM silently answers 0"
     repro: "(display (rationalize (/ 1 3) 1/10000))"
     observed: "native 1/3, VM 0"
     correct: "1/3"
-    evidence: ".scratch/flaw-ledger/repro/sw_rationalize.esk"
+    measured: >-
+      At fc3c1257 (PR #424) both engines answer 1/3, and agree on the whole
+      R7RS-small 6.2.6 page. Two defects, one per engine: the VM's native call
+      349 coerced both arguments with the plain as_number(), which reads a
+      VAL_RATIONAL's heap index through the int64 arm of the union and answers
+      0.0, so every exact-rational input produced the exact integer 0
+      (lib/backend/vm_native.c; native calls 342-347 already special-case
+      VAL_RATIONAL, 349 now uses as_number_vm()). Natively, an exact-integer x
+      was taken as its own answer whatever the tolerance and the integer-in-range
+      test tried floor(lo)+1 before ceil(lo), so (rationalize 3 1) answered 3
+      where 2 is simpler under |p1| <= |p2| with q1 = q2 = 1, and where the VM
+      already answered 2 (lib/core/rational.cpp).
+    evidence: >-
+      tests/vm_parity/corpus/58_rationalize_r7rs.esk (both engines, with the
+      spec example as an explicit oracle);
+      tests/differential/corpus/43_rationalize.esk (native axes);
+      tests/rational/rationalize_test.esk;
+      .scratch/flaw-ledger/repro/sw_rationalize.esk
     caught_by: [direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, numeric_exactness_oracle]
+    fixed_by: "PR #424 (fix/fg-marginal-rationalize)"
 
   - id: SW-09
     bucket: LOUD-ERROR
