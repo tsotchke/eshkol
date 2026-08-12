@@ -4482,6 +4482,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # LE-01, VM side.  The VM reaches builtins through a native dispatch table,
+    # so a builtin is a value there by construction and this defect class does
+    # not exist on this engine.  Pin that, so the property is a tested fact
+    # rather than an assumption about an implementation that may change.
+    add_test(
+        NAME first_class_builtins_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_builtins_vm_test.esk"
+    )
+    set_tests_properties(first_class_builtins_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
@@ -4513,6 +4529,93 @@ if(ESHKOL_BUILD_TESTS AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# LE-01: builtins as FIRST-CLASS VALUES.  Gated on every native execution axis,
+# because this defect presented DIFFERENTLY on each one: `(sort xs string<?)`
+# was "Undefined variable: string<?" + exit 1 under the run cache, SIGSEGV
+# (exit 139) with the cache off, and exit 125 on both AOT levels.  One axis
+# going green proves nothing about the others, so all four are gated here and
+# the same program is in the differential corpus (37_sort.esk) where the axes
+# are compared against each other.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/first_class_builtins_test.esk")
+    add_test(
+        NAME first_class_builtins_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_builtins_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # Cache off: the axis that answered SIGSEGV rather than a diagnostic.
+    add_test(
+        NAME first_class_builtins_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_builtins_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_builtins_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o0' tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o0'"
+    )
+    set_tests_properties(first_class_builtins_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_builtins_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o2' tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o2'"
+    )
+    set_tests_properties(first_class_builtins_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # The refusal path itself.  A program the compiler has ALREADY diagnosed
+    # must exit 1 with the diagnostic on every axis — the in-process JIT used
+    # to destroy the rejected module's LLVMContext before the Module, so
+    # `llvm::Module::~Module` called `removeModule` through freed memory and
+    # the compiler crashed while correctly rejecting the program.  That is why
+    # a plain "Undefined variable" read as exit 139 and looked like a
+    # memory-safety defect.  The fixture is expected to FAIL to compile; the
+    # assertion is that it fails with status 1 rather than a signal.
+    add_test(
+        NAME undefined_variable_refusal_is_clean_nocache
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/undefined_variable_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(undefined_variable_refusal_is_clean_nocache
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    add_test(
+        NAME undefined_variable_refusal_is_clean_cached
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/undefined_variable_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(undefined_variable_refusal_is_clean_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")

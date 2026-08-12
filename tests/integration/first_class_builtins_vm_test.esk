@@ -1,0 +1,113 @@
+;;; first_class_builtins_vm_test.esk
+;;;
+;;; LE-01 class-kill test, VM engine. Companion to
+;;; tests/integration/first_class_builtins_test.esk, which covers the native
+;;; engine (JIT + AOT).
+;;;
+;;; The VM reaches builtins through a native dispatch table, so a builtin is a
+;;; value there by construction and the LE-01 defect class does not exist on
+;;; this engine. This file PINS that: if the VM ever grows a call-position-only
+;;; lowering, these checks catch it on the same day.
+;;;
+;;; Why this is a subset of the native file rather than the same file: the VM's
+;;; builtin SURFACE is narrower — `string>?`, `string<=?`, `string>=?`,
+;;; `string-length`, `string-ref`, `symbol=?`, `square` are undefined variables
+;;; on the VM in CALL POSITION TOO, and `boolean=?` reaches an unimplemented
+;;; native id. Those are the standing surface gaps ratcheted in
+;;; tests/vm_parity/SURFACE_BASELINE.tsv, a different defect from LE-01, and
+;;; are deliberately not smuggled into this test's scope. `sort` is also
+;;; omitted: the VM prelude's argument order is the mirror of the native
+;;; stdlib's (ledger LE-04), which is likewise a separate defect.
+;;;
+;;; Output convention: the VM's `display` appends a newline per call, so each
+;;; result is emitted as ONE pre-assembled string to keep the PASS/FAIL lines
+;;; byte-comparable between engines.
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (display (string-append "PASS: " name))
+      (begin (set! failures (+ failures 1))
+             (display (string-append "FAIL: " name)))))
+
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+
+;; Names from the LE-01 ledger entry that exist on the VM surface.
+(check "string<?"      (eq? (h2 string<? "apple" "banana") #t))
+(check "string=?"      (eq? (h2 string=? "abc" "abc") #t))
+(check "char<?"        (eq? (h2 char<? #\a #\b) #t))
+(check "char=?"        (eq? (h2 char=? #\a #\a) #t))
+(check "char>?"        (eq? (h2 char>? #\b #\a) #t))
+(check "string-append" (string=? (h2 string-append "ab" "cd") "abcd"))
+(check "vector-ref"    (= (h2 vector-ref (vector 7 8 9) 1) 8))
+(check "car"           (= (h1 car (list 1 2 3)) 1))
+(check "expt"          (= (h2 expt 2 10) 1024))
+(check "min"           (= (h2 min 3 5) 3))
+(check "max"           (= (h2 max 3 5) 5))
+(check "+"             (= (h2 + 3 5) 8))
+(check "<"             (eq? (h2 < 3 5) #t))
+(check "eq?"           (eq? (h2 eq? (quote a) (quote a)) #t))
+
+;; Representative sweep of the rest of the VM's builtin surface.
+(check "cdr"            (equal? (h1 cdr (list 1 2 3)) (list 2 3)))
+(check "cons"           (equal? (h2 cons 1 (list 2)) (list 1 2)))
+(check "length"         (= (h1 length (list 1 2 3)) 3))
+(check "reverse"        (equal? (h1 reverse (list 1 2)) (list 2 1)))
+(check "list-ref"       (= (h2 list-ref (list 1 2 3) 1) 2))
+(check "list-tail"      (equal? (h2 list-tail (list 1 2 3) 1) (list 2 3)))
+(check "modulo"         (= (h2 modulo 7 3) 1))
+(check "quotient"       (= (h2 quotient 7 3) 2))
+(check "remainder"      (= (h2 remainder 7 3) 1))
+(check "gcd"            (= (h2 gcd 12 18) 6))
+(check "lcm"            (= (h2 lcm 4 6) 12))
+(check "abs"            (= (h1 abs -3) 3))
+(check "sqrt"           (= (h1 sqrt 9.0) 3.0))
+(check "not"            (eq? (h1 not #f) #t))
+(check "number->string" (string=? (h1 number->string 42) "42"))
+(check "string->number" (= (h1 string->number "42") 42))
+(check "symbol->string" (string=? (h1 symbol->string (quote abc)) "abc"))
+(check "string->symbol" (eq? (h1 string->symbol "abc") (quote abc)))
+(check "string-upcase"  (string=? (h1 string-upcase "ab") "AB"))
+(check "string-downcase" (string=? (h1 string-downcase "AB") "ab"))
+(check "char->integer"  (= (h1 char->integer #\A) 65))
+(check "integer->char"  (eq? (h1 integer->char 65) #\A))
+(check "char-upcase"    (eq? (h1 char-upcase #\a) #\A))
+(check "char-downcase"  (eq? (h1 char-downcase #\A) #\a))
+(check "char-alphabetic?" (eq? (h1 char-alphabetic? #\a) #t))
+(check "char-numeric?"  (eq? (h1 char-numeric? #\5) #t))
+(check "char-whitespace?" (eq? (h1 char-whitespace? #\a) #f))
+(check "vector-length"  (= (h1 vector-length (vector 1 2)) 2))
+(check "vector->list"   (equal? (h1 vector->list (vector 1 2)) (list 1 2)))
+(check "list->vector"   (equal? (h1 list->vector (list 1 2)) (vector 1 2)))
+(check "number?"        (eq? (h1 number? 1) #t))
+(check "string?"        (eq? (h1 string? "a") #t))
+(check "symbol?"        (eq? (h1 symbol? (quote a)) #t))
+(check "vector?"        (eq? (h1 vector? (vector 1)) #t))
+(check "boolean?"       (eq? (h1 boolean? #t) #t))
+(check "char?"          (eq? (h1 char? #\a) #t))
+(check "procedure?"     (eq? (h1 procedure? car) #t))
+(check "even?"          (eq? (h1 even? 4) #t))
+(check "zero?"          (eq? (h1 zero? 0) #t))
+(check "null?"          (eq? (h1 null? (quote ())) #t))
+(check "pair?"          (eq? (h1 pair? (list 1)) #t))
+
+(define mutable-vector (vector 1 2))
+(h3 vector-set! mutable-vector 0 9)
+(check "vector-set!"    (= (vector-ref mutable-vector 0) 9))
+
+;; Stored and returned, not only passed.
+(define stored-comparator string<?)
+(check "stored in a variable" (eq? (h2 stored-comparator "a" "b") #t))
+
+(define (comparator-factory) char<?)
+(check "returned from a procedure" (eq? (h2 (comparator-factory) #\a #\b) #t))
+
+(check "stored in a list"
+       (eq? (h2 (car (list char<? char>?)) #\a #\b) #t))
+
+(if (= failures 0)
+    (display "PASS: first-class builtins on the VM — 0 failures")
+    (display "FAIL: first-class builtins on the VM"))
