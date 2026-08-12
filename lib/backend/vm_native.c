@@ -4557,8 +4557,7 @@ static VmFact* vm_logic_fact_from_datum(VM* vm, Value datum, int depth) {
     if (cur.type != VAL_NIL) return NULL;
 
     /* Head becomes the predicate only when it is a GROUND symbol/string. */
-    HeapObject* head_obj = vm->heap.objects[datum.as.ptr];
-    Value head = head_obj->cons.car;
+    Value head = vm->heap.objects[datum.as.ptr]->cons.car;
     uint64_t predicate = 0;
     int first_arg = 0;
     const char* text = NULL;
@@ -4581,9 +4580,14 @@ static VmFact* vm_logic_fact_from_datum(VM* vm, Value datum, int depth) {
         for (int i = 0; i < first_arg; i++)
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         for (int i = 0; i < arity; i++) {
+            /* Read car AND cdr before recursing: heap_alloc can grow
+             * vm->heap.objects, so a HeapObject* must not be held across a
+             * call that might allocate. */
             HeapObject* c = vm->heap.objects[cur.as.ptr];
-            args[i] = vm_logic_term_from_value(vm, c->cons.car, depth + 1);
-            cur = c->cons.cdr;
+            Value elem = c->cons.car;
+            Value next = c->cons.cdr;
+            args[i] = vm_logic_term_from_value(vm, elem, depth + 1);
+            cur = next;
         }
     }
 
