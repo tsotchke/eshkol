@@ -31,6 +31,10 @@ extern "C" arena_t* arena_get_thread_local(void);
  * through the public bignum API (lib/core/bignum.cpp); this file never
  * degrades an exact rational to double. */
 
+/** Tag a bignum as an exact integer, demoting to INT64 when it fits.
+ *  Defined below; declared here for eshkol_double_to_exact_tagged(). */
+static eshkol_tagged_value_t bignum_to_tagged_int(eshkol_bignum_t* b);
+
 /** True if bignum @p a equals the int64 constant @p k. */
 static inline bool bn_equals_i64(const eshkol_bignum_t* a, int64_t k) {
     int64_t v;
@@ -358,19 +362,147 @@ extern "C" int eshkol_rational_is_integer(void* r) {
     return rat->denominator == 1;
 }
 
-/* Convert IEEE 754 double to exact rational (R7RS inexact->exact) */
+/* ===== Exact double -> rational (R7RS inexact->exact) =====
+ *
+ * A finite IEEE-754 double IS a rational: it is exactly mantissa * 2^exponent
+ * with a 53-bit integer mantissa. `inexact->exact` must return THAT number,
+ * not a nearby one — ESHKOL_LANGUAGE_GUIDE.md documents
+ * `(inexact->exact 0.1)` => 3602879701896397/36028797018963968, the exact
+ * value of the double 0.1.
+ *
+ * The previous implementation multiplied by 2 until the value looked integral
+ * *or* the denominator reached 2^52, then truncated:
+ *
+ *     while (abs_d != floor(abs_d) && den < (1LL << 52)) { abs_d *= 2; den *= 2; }
+ *     num = (int64_t)abs_d;
+ *
+ * 0.1 needs 2^55, so the loop hit its cap with abs_d = 450359962737049.6 and
+ * the cast threw away the .6, yielding 450359962737049/4503599627370496 — a
+ * DIFFERENT double, which is why `(exact->inexact (inexact->exact 0.1))` came
+ * back as 0.09999999999999987. The cap also made every subnormal collapse to
+ * 0 and every |x| >= 2^63 overflow the cast.
+ *
+ * Decomposing the bits instead is exact by construction and needs no loop:
+ * `frexp` gives the normalized significand, scaling it by 2^53 makes it an
+ * integer (true for subnormals too, since frexp normalizes them), and the
+ * residual power of two becomes the numerator shift or the denominator. */
+
+/** @brief Split a finite non-zero double into odd_mantissa * 2^exp2.
+ *  @param d Input; must be finite and non-zero.
+ *  @param mant_out Receives the mantissa magnitude, always odd.
+ *  @param exp_out Receives the binary exponent.
+ *  @param neg_out Receives 1 when @p d is negative. */
+static void double_decompose_exact(double d, uint64_t* mant_out,
+                                   int* exp_out, int* neg_out) {
+    int e = 0;
+    double frac = frexp(d < 0 ? -d : d, &e);   /* 0.5 <= frac < 1 */
+    uint64_t mant = (uint64_t)ldexp(frac, 53); /* exact: < 2^53 */
+    int exp2 = e - 53;
+    /* Strip trailing zero bits so the pair is already in lowest terms against
+     * any power-of-two denominator — no GCD pass over a 1074-bit number. */
+    while (mant && (mant & 1u) == 0u) {
+        mant >>= 1;
+        exp2 += 1;
+    }
+    *mant_out = mant;
+    *exp_out = exp2;
+    *neg_out = (d < 0) ? 1 : 0;
+}
+
+/** @brief Exact IEEE-754 double -> rational (R7RS `inexact->exact`).
+ *
+ *  Returns the exact value of @p d. Whole-valued doubles come back with
+ *  denominator 1 (promoting the numerator to a bignum when it exceeds int64,
+ *  e.g. 1e300); fractional ones come back as mantissa/2^k, with a bignum
+ *  denominator for subnormals. A non-finite input has no exact value: it
+ *  reports an error and yields 0/1. */
 extern "C" void* eshkol_double_to_rational(void* arena, double d) {
     if (d == 0.0) return eshkol_rational_create(arena, 0, 1);
-    // Scale by powers of 2 until integer (IEEE doubles have at most 53 binary digits)
-    double abs_d = d < 0 ? -d : d;
-    int64_t den = 1;
-    while (abs_d != __builtin_floor(abs_d) && den < (1LL << 52)) {
-        abs_d *= 2.0;
-        den *= 2;
+    if (!std::isfinite(d)) {
+        eshkol_error("inexact->exact: no exact representation for %s",
+                     std::isnan(d) ? "+nan.0" : (d > 0 ? "+inf.0" : "-inf.0"));
+        return eshkol_rational_create(arena, 0, 1);
     }
-    int64_t num = (int64_t)abs_d;
-    if (d < 0) num = -num;
-    return eshkol_rational_create(arena, num, den);  // auto-reduces via GCD
+
+    uint64_t mant;
+    int exp2, neg;
+    double_decompose_exact(d, &mant, &exp2, &neg);
+    int64_t num = neg ? -(int64_t)mant : (int64_t)mant;
+
+    if (exp2 == 0) {
+        return eshkol_rational_create(arena, num, 1);
+    }
+    if (exp2 > 0) {
+        /* Whole number: mantissa << exp2. Fits int64 only for small shifts. */
+        if (exp2 < 62 && mant < (uint64_t)1 << (62 - exp2)) {
+            return eshkol_rational_create(arena, num << exp2, 1);
+        }
+        eshkol_bignum_t* bn = eshkol_bignum_from_int64((arena_t*)arena, num);
+        eshkol_bignum_t* shifted = eshkol_bignum_shift((arena_t*)arena, bn, exp2);
+        eshkol_bignum_t* one = eshkol_bignum_from_int64((arena_t*)arena, 1);
+        return eshkol_rational_create_bn(arena, shifted, one);
+    }
+    /* Fractional: mantissa / 2^(-exp2). */
+    int shift = -exp2;
+    if (shift < 63) {
+        return eshkol_rational_create(arena, num, (int64_t)1 << shift);
+    }
+    eshkol_bignum_t* bn_num = eshkol_bignum_from_int64((arena_t*)arena, num);
+    eshkol_bignum_t* bn_one = eshkol_bignum_from_int64((arena_t*)arena, 1);
+    eshkol_bignum_t* bn_den = eshkol_bignum_shift((arena_t*)arena, bn_one, shift);
+    return eshkol_rational_create_bn(arena, bn_num, bn_den);
+}
+
+/** @brief Exact `inexact->exact` returning a tagged value.
+ *
+ *  The single entry point the back ends call. It exists because exactness
+ *  conversion is not shape-preserving: a whole double becomes an exact INTEGER
+ *  (int64, or a bignum past int64 range), a fractional one becomes a RATIONAL.
+ *  The LLVM back end used to make that choice itself with
+ *  `is_whole ? fptosi(d) : eshkol_double_to_rational(d)`, and the `fptosi` arm
+ *  is undefined once |d| >= 2^63 — `(inexact->exact 1e300)` returned the
+ *  garbage 4347791012. Deciding here keeps one implementation for both engines
+ *  and no undefined cast anywhere.
+ *
+ *  @param arena Allocation arena.
+ *  @param d Value to convert; must be finite.
+ *  @param out Receives the exact result. */
+extern "C" void eshkol_double_to_exact_tagged(void* arena, double d,
+                                              eshkol_tagged_value_t* out) {
+    if (!out) return;
+    if (d == 0.0) {
+        *out = eshkol_make_int64(0, true);
+        return;
+    }
+    if (!std::isfinite(d)) {
+        eshkol_error("inexact->exact: no exact representation for %s",
+                     std::isnan(d) ? "+nan.0" : (d > 0 ? "+inf.0" : "-inf.0"));
+        *out = eshkol_make_int64(0, true);
+        return;
+    }
+
+    uint64_t mant;
+    int exp2, neg;
+    double_decompose_exact(d, &mant, &exp2, &neg);
+    int64_t num = neg ? -(int64_t)mant : (int64_t)mant;
+
+    if (exp2 == 0) {
+        *out = eshkol_make_int64(num, true);
+        return;
+    }
+    if (exp2 > 0) {
+        if (exp2 < 62 && mant < (uint64_t)1 << (62 - exp2)) {
+            *out = eshkol_make_int64(num << exp2, true);
+            return;
+        }
+        eshkol_bignum_t* bn = eshkol_bignum_from_int64((arena_t*)arena, num);
+        eshkol_bignum_t* shifted = eshkol_bignum_shift((arena_t*)arena, bn, exp2);
+        *out = bignum_to_tagged_int(shifted);
+        return;
+    }
+    *out = eshkol_make_ptr(
+        (uint64_t)(uintptr_t)eshkol_double_to_rational(arena, d),
+        ESHKOL_VALUE_HEAP_PTR);
 }
 
 /* Format rational as "num/denom" string into arena-allocated buffer with

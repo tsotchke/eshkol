@@ -2081,6 +2081,7 @@ endif()
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
+  lib/core/complex_math.cpp
   lib/core/rational.cpp
   lib/core/i128_runtime.cpp
   lib/core/runtime.cpp

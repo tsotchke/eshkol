@@ -6534,6 +6534,52 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
     return final;
 }
 
+/**
+ * @brief Task #113 — complex-operand dispatch for the scalar math builtins.
+ *
+ * The unary math opcodes all reduce their operand with `as_number()`, which
+ * answers 0 for a VAL_COMPLEX: `(sqrt (make-rectangular -1.0 0.0))` computed
+ * sqrt(0) and printed 0, `(exp z)` printed 1. Silently wrong on every complex
+ * input. This routes the complex case to the shared transcendental core
+ * (<eshkol/core/complex_math.h>) that the native back end also calls, so both
+ * engines return the same bits.
+ *
+ * @param vm Interpreter state.
+ * @param a Already-popped operand.
+ * @param fid Native call id of the math builtin.
+ * @return 1 when @p a was complex and a result (or a fatal error) has been
+ *         pushed/recorded; 0 when the caller must handle @p a itself.
+ */
+static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
+    VmComplex z;
+    VmComplex* result = NULL;
+    int32_t ptr;
+    if (a.type != VAL_COMPLEX) return 0;
+    z = *(VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+    switch (fid) {
+        case 20:  result = vm_complex_sin (&vm->heap.regions, &z); break;
+        case 21:  result = vm_complex_cos (&vm->heap.regions, &z); break;
+        case 22:  result = vm_complex_tan (&vm->heap.regions, &z); break;
+        case 23:  result = vm_complex_exp (&vm->heap.regions, &z); break;
+        case 24:  result = vm_complex_log (&vm->heap.regions, &z); break;
+        case 25:  result = vm_complex_sqrt(&vm->heap.regions, &z); break;
+        case 29:  result = vm_complex_asin(&vm->heap.regions, &z); break;
+        case 30:  result = vm_complex_acos(&vm->heap.regions, &z); break;
+        case 31:  result = vm_complex_atan(&vm->heap.regions, &z); break;
+        case 720: result = vm_complex_cosh(&vm->heap.regions, &z); break;
+        case 721: result = vm_complex_sinh(&vm->heap.regions, &z); break;
+        case 722: result = vm_complex_tanh(&vm->heap.regions, &z); break;
+        default: return 0;
+    }
+    if (!result) { vm->error = 1; return 1; }
+    ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return 1; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    return 1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -6566,20 +6612,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
             ? tape_fn((AdTape*)(vm)->active_tape, (in_node)) : -1; \
     } \
 } while (0)
-    case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
-    case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
-    case 22: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
-    case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
-    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
-    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
+    case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 20)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
+    case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 21)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
+    case 22: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
+    case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 23)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
+    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
+    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
      * not the exact 2 — the integral result shape must not decide the tag. */
     case 26: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
     case 27: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
     case 28: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
-    case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
-    case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
+    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
+    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); break; }
         /* Exact integer base with a non-negative integer exponent → exact
@@ -12869,7 +12915,64 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
-    case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
+    case 214: { /* inexact->exact */
+        Value a = vm_pop(vm);
+        /* Already exact tags pass through unchanged — truncating them to an
+         * int64 was how (inexact->exact 1/2) used to become 0. */
+        if (a.type == VAL_INT || a.type == VAL_RATIONAL || a.type == VAL_BIGNUM) {
+            vm_push(vm, a); break;
+        }
+        double d214 = as_number_vm(vm, a);
+        if (d214 == 0.0) { vm_push(vm, INT_VAL(0)); break; }
+        if (!isfinite(d214)) {
+            fprintf(stderr, "ERROR: inexact->exact: no exact representation for %s\n",
+                    isnan(d214) ? "+nan.0" : (d214 > 0 ? "+inf.0" : "-inf.0"));
+            vm->error = 1; break;
+        }
+        /* Exact expansion: a finite double IS odd_mantissa * 2^exp2. Shared,
+         * digit for digit, with lib/core/rational.cpp — see the comment there
+         * for what the old `(int64_t)as_number(...)` truncation cost. */
+        int e214 = 0;
+        double frac214 = frexp(d214 < 0 ? -d214 : d214, &e214);
+        uint64_t mant214 = (uint64_t)ldexp(frac214, 53);
+        int exp214 = e214 - 53;
+        while (mant214 && (mant214 & 1u) == 0u) { mant214 >>= 1; exp214 += 1; }
+        int64_t num214 = (d214 < 0) ? -(int64_t)mant214 : (int64_t)mant214;
+        if (exp214 >= 0) {
+            /* Whole value. The VM's exact integers are int64 (its rationals
+             * are int64 pairs), so a magnitude past int64 has no exact VM
+             * representation: say so rather than push a wrong number. */
+            if (exp214 < 62 && mant214 < ((uint64_t)1 << (62 - exp214))) {
+                vm_push(vm, INT_VAL(num214 << exp214)); break;
+            }
+            fprintf(stderr, "ERROR: inexact->exact: %g is outside this VM's exact "
+                            "integer range (int64)\n", d214);
+            vm->error = 1; break;
+        }
+        {
+            int shift214 = -exp214;
+            VmArena* i2e_arena;
+            VmRational* i2e_r;
+            int32_t i2e_ptr;
+            if (shift214 >= 63) {
+                /* Subnormals and other tiny values need a denominator past
+                 * 2^62; VmRational is an int64 pair, so it cannot hold them.
+                 * Recorded as a native/VM divergence in
+                 * tests/vm_parity/PARITY.tsv rather than silently rounded. */
+                fprintf(stderr, "ERROR: inexact->exact: %g needs a denominator "
+                                "beyond this VM's int64 rationals\n", d214);
+                vm->error = 1; break;
+            }
+            i2e_arena = vm_active_arena(&vm->heap.regions);
+            i2e_r = vm_rational_make(i2e_arena, num214, (int64_t)1 << shift214);
+            if (!i2e_r) { vm->error = 1; break; }
+            i2e_ptr = heap_alloc(&vm->heap);
+            if (i2e_ptr < 0) { vm->error = 1; break; }
+            vm->heap.objects[i2e_ptr]->type = HEAP_RATIONAL;
+            vm->heap.objects[i2e_ptr]->opaque.ptr = i2e_r;
+            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = i2e_ptr});
+        }
+        break; }
     case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
         Value a = vm_pop(vm);
         if (a.type != VAL_STRING) { vm_push(vm, BOOL_VAL(0)); break; }
@@ -13414,9 +13517,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math extensions (720-746)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 720: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
-    case 721: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
-    case 722: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
+    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
+    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
+    case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break; vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
     case 726: { /* write-line */
         Value s = vm_pop(vm);
         if (s.type == VAL_STRING) { VmString* vs = (VmString*)vm->heap.objects[s.as.ptr]->opaque.ptr;

@@ -2102,9 +2102,12 @@ public:
 
         // Type conversions
         function_return_types["exact->inexact"] = BuiltinTypes::Float64;
-        function_return_types["inexact->exact"] = BuiltinTypes::Int64;
+        // inexact->exact is NOT integer-valued: the exact value of a
+        // fractional double is a rational (and of a huge one, a bignum), so
+        // the static claim has to be the general Number, not Int64.
+        function_return_types["inexact->exact"] = BuiltinTypes::Number;
         function_return_types["inexact"] = BuiltinTypes::Float64;
-        function_return_types["exact"] = BuiltinTypes::Int64;
+        function_return_types["exact"] = BuiltinTypes::Number;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
         function_return_types["volatile-load"] = BuiltinTypes::Value;
@@ -15013,38 +15016,40 @@ private:
             BasicBlock* convert_bb = BasicBlock::Create(*context, "inexact_to_exact", cur_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_exact", cur_func);
             builder->CreateCondBr(already_exact, merge_bb, convert_bb);
-            // Convert double to exact: whole numbers → int64, fractional → rational
+            // Convert the double to its EXACT value in the runtime.
+            //
+            // This branch used to decide the result shape itself:
+            //
+            //     is_whole ? fptosi(d) : eshkol_double_to_rational(arena, d)
+            //
+            // Both arms were wrong. `fptosi` is undefined once |d| >= 2^63, so
+            // `(inexact->exact 1e300)` returned the garbage 4347791012 instead
+            // of an exact bignum integer; and the rational arm called a
+            // conversion that capped its denominator at 2^52, so
+            // `(inexact->exact 0.1)` returned 450359962737049/4503599627370496
+            // — the exact value of a DIFFERENT double — where the documented
+            // answer is 3602879701896397/36028797018963968. Both engines now
+            // call one runtime entry point that reads the operand's actual
+            // mantissa and exponent and picks int64 / bignum / rational there.
             builder->SetInsertPoint(convert_bb);
             Value* dbl_val = builder->CreateBitCast(data, double_type);
-            Function* floor_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::floor, {double_type});
-            Value* floored = builder->CreateCall(floor_fn, {dbl_val});
-            Value* is_whole = builder->CreateFCmpOEQ(dbl_val, floored);
-            BasicBlock* int_convert_bb = BasicBlock::Create(*context, "i2e_int", cur_func);
-            BasicBlock* rat_convert_bb = BasicBlock::Create(*context, "i2e_rat", cur_func);
-            builder->CreateCondBr(is_whole, int_convert_bb, rat_convert_bb);
-            // Whole number → int64
-            builder->SetInsertPoint(int_convert_bb);
-            Value* int_val = builder->CreateFPToSI(dbl_val, int64_type);
-            Value* int_converted = packInt64ToTaggedValue(int_val);
-            builder->CreateBr(merge_bb);
-            BasicBlock* int_convert_end = builder->GetInsertBlock();
-            // Fractional → rational via runtime
-            builder->SetInsertPoint(rat_convert_bb);
-            FunctionType* d2r_ft = FunctionType::get(
-                PointerType::getUnqual(*context),
-                {PointerType::getUnqual(*context), double_type}, false);
-            FunctionCallee d2r_fn = module->getOrInsertFunction("eshkol_double_to_rational", d2r_ft);
+            Value* exact_slot = builder->CreateAlloca(tagged_value_type, nullptr, "i2e_slot");
+            FunctionType* d2e_ft = FunctionType::get(
+                void_type,
+                {PointerType::getUnqual(*context), double_type,
+                 PointerType::getUnqual(*context)}, false);
+            FunctionCallee d2e_fn = module->getOrInsertFunction(
+                "eshkol_double_to_exact_tagged", d2e_ft);
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* rat_ptr = builder->CreateCall(d2r_fn, {arena_ptr, dbl_val}, "rat_from_dbl");
-            Value* rat_converted = packPtrToTaggedValue(rat_ptr, ESHKOL_VALUE_HEAP_PTR);
+            builder->CreateCall(d2e_fn, {arena_ptr, dbl_val, exact_slot});
+            Value* converted_exact = builder->CreateLoad(tagged_value_type, exact_slot, "i2e_result");
             builder->CreateBr(merge_bb);
-            BasicBlock* rat_convert_end = builder->GetInsertBlock();
+            BasicBlock* convert_end = builder->GetInsertBlock();
             // Merge
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
             phi->addIncoming(arg, cur_block);
-            phi->addIncoming(int_converted, int_convert_end);
-            phi->addIncoming(rat_converted, rat_convert_end);
+            phi->addIncoming(converted_exact, convert_end);
             return phi;
         }
         // R7RS exact-integer?: true if exact and integer (int64 or bignum)
@@ -20908,6 +20913,51 @@ private:
         BasicBlock* regular_path = BasicBlock::Create(*context, (func_name + "_regular_path").c_str(), current_func);
         BasicBlock* merge = BasicBlock::Create(*context, (func_name + "_merge").c_str(), current_func);
 
+        // TASK #113 — COMPLEX OPERAND PATH (memory-safety class kill).
+        //
+        // A complex tagged value carries a HEAP POINTER in its payload. Every
+        // scalar path below ends in either `extractAsDouble` or an
+        // `SIToFP(unpackInt64(...))`, both of which would read that pointer's
+        // bits as an IEEE double: `(sqrt (make-rectangular -1.0 0.0))` used to
+        // print 73278.56614317723 and `(exp (make-rectangular 0.0 3.14159))`
+        // printed +inf.0 — a different garbage value on every run, and an
+        // address leak to boot. This branch is emitted FIRST, before anything
+        // touches the payload, and it has exactly two outcomes:
+        //
+        //   * the builtin has a principal-branch complex extension: dispatch to
+        //     the shared runtime core (`<eshkol/core/complex_math.h>`, the same
+        //     code the VM compiles in) and return a complex;
+        //   * it does not (the real-domain-only `floor`/`ceiling`/`truncate`/
+        //     `round`/`fabs`/`cbrt`): raise a catchable, typed error naming the
+        //     procedure.
+        //
+        // There is no third outcome. The pointer is never reinterpreted.
+        const char* mf_cpx_suffix = eshkol::ComplexCodegen::complexRuntimeSuffix(func_name);
+        BasicBlock* mf_cpx_done = BasicBlock::Create(*context, (func_name + "_cpx_done").c_str(), current_func);
+        Value* mf_cpx_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_cpx_slot").c_str());
+        {
+            BasicBlock* cpx_path = BasicBlock::Create(*context, (func_name + "_cpx_path").c_str(), current_func);
+            BasicBlock* cpx_cont = BasicBlock::Create(*context, (func_name + "_cpx_cont").c_str(), current_func);
+            Value* arg_is_complex = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+            builder->CreateCondBr(arg_is_complex, cpx_path, cpx_cont);
+
+            builder->SetInsertPoint(cpx_path);
+            if (mf_cpx_suffix) {
+                Value* cpx_in = complex_->unpackComplexFromTagged(arg_tagged);
+                Value* cpx_res = complex_->complexUnaryRuntime(cpx_in, mf_cpx_suffix);
+                builder->CreateStore(complex_->packComplexToTagged(cpx_res), mf_cpx_slot);
+                builder->CreateBr(mf_cpx_done);
+            } else {
+                // emitRaise() closes the block with `unreachable`, so this path
+                // never reaches the merge and never needs a PHI incoming.
+                ctx_->emitRaise((func_name +
+                    ": argument is a complex number and this procedure is defined "
+                    "on the reals only (use real-part, magnitude or angle first)").c_str());
+            }
+            builder->SetInsertPoint(cpx_cont);
+        }
+
         // ESH-0186: Taylor-tower operand — route to the arbitrary-order kernel
         // before any scalar/tensor handling. Wraps the rest of the function so a
         // tower `sin`/`cos`/`exp`/`log`/... returns a tower, not a misread double.
@@ -21276,12 +21326,19 @@ private:
             promo_phi->addIncoming(real_tagged, real_exit);
             tagged_regular_result = promo_phi;
         } else {
-            // Non-rounding functions: always compute on double
-            Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* arg_double = builder->CreateSelect(arg_is_double,
-                unpackDoubleFromTaggedValue(arg_tagged),
-                builder->CreateSIToFP(unpackInt64FromTaggedValue(arg_tagged), double_type));
+            // Non-rounding functions: always compute on double.
+            //
+            // Task #113 — the two-way `select(is_double, unpackDouble,
+            // SIToFP(unpackInt64))` this replaces treated EVERY non-double tag
+            // as an int64, so a rational or bignum operand had its heap pointer
+            // sign-converted into a double: `(sin (/ 1 2))` returned
+            // 0.9241426121154859 (sin of an address) instead of sin(0.5).
+            // extractAsDouble dispatches on the real tag — int64, double,
+            // bignum, rational, Taylor primal — and yields 0.0 for anything
+            // non-numeric rather than reinterpreting a pointer. Complex is
+            // already handled by the dedicated branch at the top of this
+            // function and can never reach here.
+            Value* arg_double = arith_->extractAsDouble(arg_tagged);
             Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
             tagged_regular_result = packDoubleToTaggedValue(result_double);
         }
@@ -21314,9 +21371,14 @@ private:
             builder->CreateStore(mf_final, mf_twr_slot);
             builder->CreateBr(mf_twr_done);
             builder->SetInsertPoint(mf_twr_done);
-            return builder->CreateLoad(tagged_value_type, mf_twr_slot);
+            mf_final = builder->CreateLoad(tagged_value_type, mf_twr_slot);
         }
-        return mf_final;
+        // Task #113: merge the complex early-path (always emitted) last, so it
+        // is the outermost of the three operand-shape dispatches.
+        builder->CreateStore(mf_final, mf_cpx_slot);
+        builder->CreateBr(mf_cpx_done);
+        builder->SetInsertPoint(mf_cpx_done);
+        return builder->CreateLoad(tagged_value_type, mf_cpx_slot);
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs

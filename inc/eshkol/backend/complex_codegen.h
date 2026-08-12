@@ -27,6 +27,8 @@
 
 #include <llvm/IR/Value.h>
 
+#include <string>
+
 namespace eshkol {
 
 class CodegenContext;
@@ -148,6 +150,45 @@ public:
     llvm::Value* complexAngle(llvm::Value* z);
 
     /**
+     * Map an Eshkol math-builtin name to the complex runtime it dispatches to.
+     *
+     * Returns the `eshkol_complex_<suffix>` suffix for every builtin whose
+     * complex extension is defined (principal branch, C99 Annex G), or
+     * nullptr for the real-domain-only builtins (`floor`, `ceiling`,
+     * `truncate`, `round`, `fabs`, `cbrt`). A nullptr answer means the caller
+     * must raise a typed error — it must never fall through to the scalar
+     * path, which would read the complex heap pointer as a double.
+     *
+     * @param func_name Builtin name as it appears in the dispatch table.
+     * @return Runtime suffix, or nullptr when there is no complex extension.
+     */
+    static const char* complexRuntimeSuffix(const std::string& func_name);
+
+    /**
+     * Emit a call to a unary complex runtime function.
+     *
+     * Spills @p z to a stack slot, calls
+     * `void eshkol_complex_<suffix>(const complex*, complex*)`, and reloads
+     * the result. The runtime is the shared core in
+     * `<eshkol/core/complex_math.h>`, which the VM also uses, so both engines
+     * produce identical bits.
+     *
+     * @param z Operand complex-number struct value.
+     * @param suffix Runtime suffix from complexRuntimeSuffix().
+     * @return Complex-number struct value holding the result.
+     */
+    llvm::Value* complexUnaryRuntime(llvm::Value* z, const char* suffix);
+
+    /**
+     * Emit a call to the binary complex runtime `eshkol_complex_pow`.
+     *
+     * @param a Base.
+     * @param b Exponent.
+     * @return Complex-number struct value holding a^b (principal branch).
+     */
+    llvm::Value* complexPow(llvm::Value* a, llvm::Value* b);
+
+    /**
      * Complex exponential: exp(a+bi) = exp(a)(cos(b) + i*sin(b))
      */
     llvm::Value* complexExp(llvm::Value* z);
@@ -192,8 +233,6 @@ private:
     llvm::Function* getSqrtIntrinsic();
     llvm::Function* getSinIntrinsic();
     llvm::Function* getCosIntrinsic();
-    llvm::Function* getExpIntrinsic();
-    llvm::Function* getLogIntrinsic();
     llvm::Function* getAtan2Intrinsic();
 };
 

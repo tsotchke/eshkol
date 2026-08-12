@@ -2201,6 +2201,24 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+
+        // Task #113: R7RS defines `abs` on the reals; the complex counterpart
+        // is `magnitude`. Without this guard a complex operand fell through to
+        // the int64 arm below and printed its heap address
+        // (`(abs (make-rectangular 3.0 4.0))` => 4698660432). Raise instead —
+        // emitRaise closes the block with `unreachable`, so the arms below
+        // keep their existing PHI structure untouched.
+        {
+            llvm::BasicBlock* abs_cpx_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_complex", func);
+            llvm::BasicBlock* abs_real_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_real", func);
+            llvm::Value* is_complex = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+            ctx_.builder().CreateCondBr(is_complex, abs_cpx_bb, abs_real_bb);
+            ctx_.builder().SetInsertPoint(abs_cpx_bb);
+            ctx_.emitRaise("abs: argument is a complex number and abs is defined "
+                           "on the reals only (use magnitude for |z|)");
+            ctx_.builder().SetInsertPoint(abs_real_bb);
+        }
         llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_heap", func);
         llvm::BasicBlock* check_dbl = llvm::BasicBlock::Create(ctx_.context(), "abs_check_dbl", func);
         llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_double", func);
@@ -2499,16 +2517,37 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     non_numeric_bb = ctx_.builder().GetInsertBlock();
 
-    // Int path: SIToFP
+    // Int path: SIToFP.
+    //
+    // Task #113 — this is the last arm of the dispatch, so before the guard
+    // below it was reached by EVERY tag the arms above did not claim, not just
+    // ESHKOL_VALUE_INT64. A complex (tag 7), a port, a bool — all had their
+    // 64-bit payload sign-converted to a double, which for the pointer-carrying
+    // tags means an address is read as a number and leaked to the program
+    // (`(abs (make-rectangular 3.0 4.0))` returned 4698660432). Only a genuine
+    // INT64 is converted now; anything else falls to the same 0.0 the
+    // non-numeric heap arm already yields, so no payload is ever reinterpreted.
     ctx_.builder().SetInsertPoint(int_bb);
+    llvm::Value* is_int64 = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::BasicBlock* real_int_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_real_int", func);
+    llvm::BasicBlock* non_numeric_tag_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_non_numeric_tag", func);
+    ctx_.builder().CreateCondBr(is_int64, real_int_bb, non_numeric_tag_bb);
+
+    ctx_.builder().SetInsertPoint(real_int_bb);
     llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
     llvm::Value* int_as_dbl = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType());
     ctx_.builder().CreateBr(merge_bb);
-    int_bb = ctx_.builder().GetInsertBlock();
+    real_int_bb = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(non_numeric_tag_bb);
+    llvm::Value* tag_zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(merge_bb);
+    non_numeric_tag_bb = ctx_.builder().GetInsertBlock();
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 8, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 9, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dual_val, dual_bb);
     phi->addIncoming(dbl_val, dbl_bb);
@@ -2516,7 +2555,8 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     phi->addIncoming(bn_dbl, actual_bignum_bb);
     phi->addIncoming(twr_c0_val, ead_taylor_bb);
     phi->addIncoming(zero_fallback, non_numeric_bb);
-    phi->addIncoming(int_as_dbl, int_bb);
+    phi->addIncoming(int_as_dbl, real_int_bb);
+    phi->addIncoming(tag_zero_fallback, non_numeric_tag_bb);
     return phi;
 }
 

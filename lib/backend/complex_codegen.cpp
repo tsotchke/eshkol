@@ -421,154 +421,147 @@ llvm::Value* ComplexCodegen::complexAngle(llvm::Value* z) {
 }
 
 /**
- * @brief Emit IR for the complex exponential: exp(a+bi) = exp(a)(cos(b) + i*sin(b)).
+ * @brief Map an Eshkol math builtin to its complex runtime, or nullptr.
+ *
+ * The supported set is the R7RS 6.2.6 transcendental surface plus Eshkol's
+ * own `exp2`/`log2`/`log10`, all on the principal branch. The functions
+ * deliberately absent are the ones whose domain is the real line only —
+ * `floor`, `ceiling`, `truncate`, `round`, `fabs`, `cbrt` — plus `abs`,
+ * which R7RS defines for reals (the complex counterpart is `magnitude`).
+ * For those the caller raises a typed error rather than coercing.
+ */
+const char* ComplexCodegen::complexRuntimeSuffix(const std::string& func_name) {
+    if (func_name == "sqrt")  return "sqrt";
+    if (func_name == "exp")   return "exp";
+    if (func_name == "log")   return "log";
+    if (func_name == "exp2")  return "exp2";
+    if (func_name == "log2")  return "log2";
+    if (func_name == "log10") return "log10";
+    if (func_name == "sin")   return "sin";
+    if (func_name == "cos")   return "cos";
+    if (func_name == "tan")   return "tan";
+    if (func_name == "asin")  return "asin";
+    if (func_name == "acos")  return "acos";
+    if (func_name == "atan")  return "atan";
+    if (func_name == "sinh")  return "sinh";
+    if (func_name == "cosh")  return "cosh";
+    if (func_name == "tanh")  return "tanh";
+    if (func_name == "asinh") return "asinh";
+    if (func_name == "acosh") return "acosh";
+    if (func_name == "atanh") return "atanh";
+    return nullptr;
+}
+
+/**
+ * @brief Emit `eshkol_complex_<suffix>(&z, &out)` and reload the result.
+ *
+ * The transcendentals live in the runtime rather than in emitted IR for two
+ * reasons. First, correctness: the polar-form square root this replaced could
+ * not produce the exact `0.0+1.0i` that ESHKOL_LANGUAGE_GUIDE.md documents
+ * for `(sqrt (make-rectangular -1.0 0.0))`, because `cos(pi/2)` is 6.1e-17,
+ * not zero. Second, engine parity: `<eshkol/core/complex_math.h>` is compiled
+ * into the VM as well, so native and VM evaluate the same expression tree and
+ * agree bit-for-bit instead of drifting between two hand-written copies.
+ */
+llvm::Value* ComplexCodegen::complexUnaryRuntime(llvm::Value* z, const char* suffix) {
+    llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock& entry = func->getEntryBlock();
+    ctx_.builder().SetInsertPoint(&entry, entry.begin());
+    llvm::Value* in_slot = ctx_.builder().CreateAlloca(
+        ctx_.complexNumberType(), nullptr, "cpx_in");
+    llvm::Value* out_slot = ctx_.builder().CreateAlloca(
+        ctx_.complexNumberType(), nullptr, "cpx_out");
+    ctx_.builder().restoreIP(saved_ip);
+
+    ctx_.builder().CreateStore(z, in_slot);
+
+    llvm::FunctionType* ft = llvm::FunctionType::get(
+        ctx_.builder().getVoidTy(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+    llvm::FunctionCallee fn = ctx_.module().getOrInsertFunction(
+        std::string("eshkol_complex_") + suffix, ft);
+    ctx_.builder().CreateCall(fn, {in_slot, out_slot});
+
+    return ctx_.builder().CreateLoad(ctx_.complexNumberType(), out_slot,
+                                     "cpx_result");
+}
+
+/** @brief Emit `eshkol_complex_pow(&a, &b, &out)` for the principal a^b. */
+llvm::Value* ComplexCodegen::complexPow(llvm::Value* a, llvm::Value* b) {
+    llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock& entry = func->getEntryBlock();
+    ctx_.builder().SetInsertPoint(&entry, entry.begin());
+    llvm::Value* a_slot = ctx_.builder().CreateAlloca(
+        ctx_.complexNumberType(), nullptr, "cpx_pow_a");
+    llvm::Value* b_slot = ctx_.builder().CreateAlloca(
+        ctx_.complexNumberType(), nullptr, "cpx_pow_b");
+    llvm::Value* out_slot = ctx_.builder().CreateAlloca(
+        ctx_.complexNumberType(), nullptr, "cpx_pow_out");
+    ctx_.builder().restoreIP(saved_ip);
+
+    ctx_.builder().CreateStore(a, a_slot);
+    ctx_.builder().CreateStore(b, b_slot);
+
+    llvm::FunctionType* ft = llvm::FunctionType::get(
+        ctx_.builder().getVoidTy(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+    llvm::FunctionCallee fn = ctx_.module().getOrInsertFunction(
+        "eshkol_complex_pow", ft);
+    ctx_.builder().CreateCall(fn, {a_slot, b_slot, out_slot});
+
+    return ctx_.builder().CreateLoad(ctx_.complexNumberType(), out_slot,
+                                     "cpx_pow_result");
+}
+
+/**
+ * @brief Complex exponential exp(a+bi), via the shared runtime core.
  *
  * @param z Operand complex-number struct value.
- * @return Newly built complex-number struct value holding exp(z).
+ * @return Complex-number struct value holding exp(z).
  */
 llvm::Value* ComplexCodegen::complexExp(llvm::Value* z) {
-    // exp(a+bi) = exp(a)(cos(b) + i*sin(b))
-    llvm::Value* a = getComplexReal(z);
-    llvm::Value* b = getComplexImag(z);
-
-    llvm::Function* exp_fn = getExpIntrinsic();
-    llvm::Function* sin_fn = getSinIntrinsic();
-    llvm::Function* cos_fn = getCosIntrinsic();
-
-    llvm::Value* exp_a = ctx_.builder().CreateCall(exp_fn, {a}, "exp_a");
-    llvm::Value* cos_b = ctx_.builder().CreateCall(cos_fn, {b}, "cos_b");
-    llvm::Value* sin_b = ctx_.builder().CreateCall(sin_fn, {b}, "sin_b");
-
-    llvm::Value* real = ctx_.builder().CreateFMul(exp_a, cos_b, "exp_real");
-    llvm::Value* imag = ctx_.builder().CreateFMul(exp_a, sin_b, "exp_imag");
-
-    return createComplex(real, imag);
+    return complexUnaryRuntime(z, "exp");
 }
 
 /**
- * @brief Emit IR for the complex natural logarithm: log(z) = log|z| + i*arg(z).
+ * @brief Principal complex natural logarithm, via the shared runtime core.
  *
  * @param z Operand complex-number struct value.
- * @return Newly built complex-number struct value holding log(z).
+ * @return Complex-number struct value holding log(z).
  */
 llvm::Value* ComplexCodegen::complexLog(llvm::Value* z) {
-    // log(z) = log|z| + i*arg(z)
-    llvm::Value* mag = complexMagnitude(z);
-    llvm::Value* ang = complexAngle(z);
-
-    llvm::Function* log_fn = getLogIntrinsic();
-    llvm::Value* real = ctx_.builder().CreateCall(log_fn, {mag}, "log_mag");
-
-    return createComplex(real, ang);
+    return complexUnaryRuntime(z, "log");
 }
 
 /**
- * @brief Emit IR for the principal complex square root, via polar form:
- * sqrt(z) = sqrt(|z|) * (cos(arg(z)/2) + i*sin(arg(z)/2)).
+ * @brief Principal complex square root, via the shared runtime core.
  *
  * @param z Operand complex-number struct value.
- * @return Newly built complex-number struct value holding sqrt(z).
+ * @return Complex-number struct value holding sqrt(z).
  */
 llvm::Value* ComplexCodegen::complexSqrt(llvm::Value* z) {
-    // sqrt(z) = sqrt(|z|) * (cos(arg(z)/2) + i*sin(arg(z)/2))
-    llvm::Value* mag = complexMagnitude(z);
-    llvm::Value* ang = complexAngle(z);
-
-    llvm::Function* sqrt_fn = getSqrtIntrinsic();
-    llvm::Function* sin_fn = getSinIntrinsic();
-    llvm::Function* cos_fn = getCosIntrinsic();
-
-    llvm::Value* sqrt_mag = ctx_.builder().CreateCall(sqrt_fn, {mag}, "sqrt_mag");
-    llvm::Value* half_ang = ctx_.builder().CreateFMul(ang,
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.5), "half_ang");
-
-    llvm::Value* cos_half = ctx_.builder().CreateCall(cos_fn, {half_ang}, "cos_half");
-    llvm::Value* sin_half = ctx_.builder().CreateCall(sin_fn, {half_ang}, "sin_half");
-
-    llvm::Value* real = ctx_.builder().CreateFMul(sqrt_mag, cos_half, "sqrt_real");
-    llvm::Value* imag = ctx_.builder().CreateFMul(sqrt_mag, sin_half, "sqrt_imag");
-
-    return createComplex(real, imag);
+    return complexUnaryRuntime(z, "sqrt");
 }
 
 /**
- * @brief Emit IR for the complex sine: sin(a+bi) = sin(a)cosh(b) + i*cos(a)sinh(b).
- *
- * cosh(b) and sinh(b) are computed from exp(b) and exp(-b) since LLVM has no
- * direct hyperbolic-trig intrinsics.
+ * @brief Complex sine, via the shared runtime core.
  *
  * @param z Operand complex-number struct value.
- * @return Newly built complex-number struct value holding sin(z).
+ * @return Complex-number struct value holding sin(z).
  */
 llvm::Value* ComplexCodegen::complexSin(llvm::Value* z) {
-    // sin(a+bi) = sin(a)cosh(b) + i*cos(a)sinh(b)
-    // Using: cosh(x) = (exp(x) + exp(-x))/2, sinh(x) = (exp(x) - exp(-x))/2
-    llvm::Value* a = getComplexReal(z);
-    llvm::Value* b = getComplexImag(z);
-
-    llvm::Function* sin_fn = getSinIntrinsic();
-    llvm::Function* cos_fn = getCosIntrinsic();
-    llvm::Function* exp_fn = getExpIntrinsic();
-
-    llvm::Value* sin_a = ctx_.builder().CreateCall(sin_fn, {a}, "sin_a");
-    llvm::Value* cos_a = ctx_.builder().CreateCall(cos_fn, {a}, "cos_a");
-
-    // cosh(b) = (exp(b) + exp(-b)) / 2
-    llvm::Value* exp_b = ctx_.builder().CreateCall(exp_fn, {b}, "exp_b");
-    llvm::Value* neg_b = ctx_.builder().CreateFNeg(b, "neg_b");
-    llvm::Value* exp_neg_b = ctx_.builder().CreateCall(exp_fn, {neg_b}, "exp_neg_b");
-    llvm::Value* cosh_b = ctx_.builder().CreateFMul(
-        ctx_.builder().CreateFAdd(exp_b, exp_neg_b, "sum"),
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.5), "cosh_b");
-
-    // sinh(b) = (exp(b) - exp(-b)) / 2
-    llvm::Value* sinh_b = ctx_.builder().CreateFMul(
-        ctx_.builder().CreateFSub(exp_b, exp_neg_b, "diff"),
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.5), "sinh_b");
-
-    llvm::Value* real = ctx_.builder().CreateFMul(sin_a, cosh_b, "sin_real");
-    llvm::Value* imag = ctx_.builder().CreateFMul(cos_a, sinh_b, "sin_imag");
-
-    return createComplex(real, imag);
+    return complexUnaryRuntime(z, "sin");
 }
 
 /**
- * @brief Emit IR for the complex cosine: cos(a+bi) = cos(a)cosh(b) - i*sin(a)sinh(b).
- *
- * cosh(b) and sinh(b) are computed from exp(b) and exp(-b) since LLVM has no
- * direct hyperbolic-trig intrinsics.
+ * @brief Complex cosine, via the shared runtime core.
  *
  * @param z Operand complex-number struct value.
- * @return Newly built complex-number struct value holding cos(z).
+ * @return Complex-number struct value holding cos(z).
  */
 llvm::Value* ComplexCodegen::complexCos(llvm::Value* z) {
-    // cos(a+bi) = cos(a)cosh(b) - i*sin(a)sinh(b)
-    llvm::Value* a = getComplexReal(z);
-    llvm::Value* b = getComplexImag(z);
-
-    llvm::Function* sin_fn = getSinIntrinsic();
-    llvm::Function* cos_fn = getCosIntrinsic();
-    llvm::Function* exp_fn = getExpIntrinsic();
-
-    llvm::Value* sin_a = ctx_.builder().CreateCall(sin_fn, {a}, "sin_a");
-    llvm::Value* cos_a = ctx_.builder().CreateCall(cos_fn, {a}, "cos_a");
-
-    // cosh(b) and sinh(b) as above
-    llvm::Value* exp_b = ctx_.builder().CreateCall(exp_fn, {b}, "exp_b");
-    llvm::Value* neg_b = ctx_.builder().CreateFNeg(b, "neg_b");
-    llvm::Value* exp_neg_b = ctx_.builder().CreateCall(exp_fn, {neg_b}, "exp_neg_b");
-    llvm::Value* cosh_b = ctx_.builder().CreateFMul(
-        ctx_.builder().CreateFAdd(exp_b, exp_neg_b, "sum"),
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.5), "cosh_b");
-    llvm::Value* sinh_b = ctx_.builder().CreateFMul(
-        ctx_.builder().CreateFSub(exp_b, exp_neg_b, "diff"),
-        llvm::ConstantFP::get(ctx_.doubleType(), 0.5), "sinh_b");
-
-    llvm::Value* real = ctx_.builder().CreateFMul(cos_a, cosh_b, "cos_real");
-    llvm::Value* imag_pos = ctx_.builder().CreateFMul(sin_a, sinh_b, "temp");
-    llvm::Value* imag = ctx_.builder().CreateFNeg(imag_pos, "cos_imag");
-
-    return createComplex(real, imag);
+    return complexUnaryRuntime(z, "cos");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -617,18 +610,6 @@ llvm::Function* ComplexCodegen::getSinIntrinsic() {
 llvm::Function* ComplexCodegen::getCosIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::cos, {ctx_.doubleType()});
-}
-
-/** @brief Get (or declare) the LLVM `exp` double-precision intrinsic for the current module. */
-llvm::Function* ComplexCodegen::getExpIntrinsic() {
-    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
-        llvm::Intrinsic::exp, {ctx_.doubleType()});
-}
-
-/** @brief Get (or declare) the LLVM `log` double-precision intrinsic for the current module. */
-llvm::Function* ComplexCodegen::getLogIntrinsic() {
-    return ESHKOL_GET_INTRINSIC(&ctx_.module(),
-        llvm::Intrinsic::log, {ctx_.doubleType()});
 }
 
 /**
