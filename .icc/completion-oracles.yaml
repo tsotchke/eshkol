@@ -344,6 +344,13 @@ oracles:
         severity: high
         label: 'R7RS-small 5.6.1 same-unit libraries: a (define-library (m …) …) written in the compilation unit being compiled is importable by the forms below it with no filesystem search, its export surface is the union of its export clauses, only/except/rename/prefix work over it, require shares the registry, and an import written ABOVE its define-library is refused as the forward reference it is. Gated on all three substrates, because the JIT (ReplJITContext::execute), the AOT lane (process_requires) and the VM (its own reader and module machinery) resolve imports at three independent call sites.'
         action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["module_load_path_engine_parity_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'One command, one answer: a relative (load "sib.esk") resolves identically on every execution engine `eshkol-run` can pick — the persistent JIT run cache, the in-process JIT reached by every cache-bypass switch (ESHKOL_JIT_CACHE=0, -d, --dump-ast/--dump-ir, several inputs, an active $ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR), and the AOT lane. The documented order (docs/reference/language/modules.md) is the requiring FILE''s directory, then the working directory, then $ESHKOL_PATH/-I, then the install; both tiers are pinned, with a same-named decoy planted in the working directory so a cwd-rooted lane fails on a DIFFERENT ANSWER rather than merely on an error. The engines carried separate copies of the search order and disagreed, which is why the qllm suite — whose exporters load a sibling library — aborted under run_language_coverage.sh (it sets the coverage trace dir) while passing under every other harness.'
+        action: ./scripts/run_ctest_gate.sh
 
       # ─────────────────────────────────────────────────────────────
       # VM SURFACE + PARITY ROLL-UPS pulled into the release gate

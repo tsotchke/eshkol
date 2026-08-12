@@ -3604,6 +3604,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: transitive_ffi_link_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/load_path_engine_parity_test.sh")
+        # One command, one answer: the persistent JIT run cache, the in-process
+        # JIT (every bypass switch), and the AOT lane must resolve a relative
+        # (load …) identically — the requiring FILE's directory first, then the
+        # working directory, per docs/reference/language/modules.md. The lanes
+        # once carried separate copies of that order and disagreed, so the same
+        # file printed different results depending only on whether the cache was
+        # in play. See platform::resolve_module_source_path().
+        add_test(
+            NAME load_path_engine_parity_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/load_path_engine_parity_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(load_path_engine_parity_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: load_path_engine_parity_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/driver_fault_exit_code_test.sh")
         # ESH-0361 (found by the P8 escape-closure fault-injection matrix): the
         # driver must never MASK a fault with a zero exit. A missing/unreadable
