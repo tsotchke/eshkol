@@ -569,8 +569,18 @@ entries:
       DIFFERENT way on every compilation axis: jit rc=1, jit-nocache rc=139 (SIGSEGV),
       aot-o0 rc=125, aot-o2 rc=125. Six pairwise axis comparisons FAIL plus the
       differential_corpus_clean roll-up ("1/41 corpus programs diverge across axes").
-      The cached-JIT-versus-nocache split (1 vs 139) is the same object-cache signature as
-      IF-01, so the two are probably one root cause seen from two directions.
+      CORRECTED at a1c28375 — the sentence that stood here, "the cached-JIT-versus-nocache
+      split (1 vs 139) is the same object-cache signature as IF-01, so the two are probably
+      one root cause seen from two directions", was WRONG and is retained only so the
+      correction is legible. The split has nothing to do with the JIT object cache or with
+      IF-01/PR #420. With the run cache ON, `-r` compiles through an AOT subprocess that
+      already has an artifact-emission gate, so a diagnosed program exits 1. With the cache
+      OFF, `-r` reaches the in-process JIT, whose refusal path in
+      ReplJITContext::addModule destroyed the rejected module's LLVMContext before the
+      Module — a use-after-free in llvm::Module::~Module, not a miscompile. The axes
+      differed because the two REFUSAL paths differed, not because the two compilations
+      did. Merging PR #420 was not required to close this entry, and would not have
+      closed it. See `root_cause` below.
     readiness_impact: >-
       MEASURED at 9f2da2ab: icc readiness eshkol-compiler-readiness is BLOCKED at score 77,
       and this defect is the whole of the failure_free FAIL apart from one stale event.
