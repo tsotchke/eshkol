@@ -3073,6 +3073,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # ESH-0070 class: higher-order builtins must respect shadowing bindings.
+    # Static procedure-operand resolution (resolveLambdaFunction, map's
+    # compile-time closure detection, remove's predicate lookup) used to
+    # consult function_table / unscoped <name>_func entries without checking
+    # whether the name is rebound in the current function, so
+    # `(define (apply-map fn lst) (map fn lst))` silently called a same-named
+    # top-level fn. Gated on JIT + AOT (the wrong substitution was
+    # compile-time, so both native lanes must agree) and, separately below,
+    # on the VM whose manifestation was outermost-first upvalue capture.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk")
+        add_test(
+            NAME higher_order_shadowing_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(higher_order_shadowing_jit_smoke PROPERTIES
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME higher_order_shadowing_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/higher_order_shadowing_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/higher_order_shadowing_aot'"
+        )
+        set_tests_properties(higher_order_shadowing_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    endif()
+    # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
+    # arithmetic builtin must shadow the builtin dispatch. The VM lane for
+    # this file is registered next to the standalone VM target.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk")
+        add_test(
+            NAME operator_rebinding_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(operator_rebinding_jit_smoke PROPERTIES
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME operator_rebinding_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/operator_rebinding_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/operator_rebinding_aot'"
+        )
+        set_tests_properties(operator_rebinding_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     add_test(
         NAME autodiff_tensor_reductions_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -4542,6 +4598,40 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: first-class variadics on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    # ESH-0070 class on the VM engine: the upvalue search in vm_compiler.c
+    # walked the enclosing-scope chain OUTERMOST first, so a nested lambda
+    # inside a function whose parameter shadowed a same-named top-level
+    # define captured the top-level binding (top-level defines are
+    # root-chunk slots). Companion to higher_order_shadowing_{jit,aot}_smoke
+    # on the native lanes; the file is held to the VM's verified subset.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_vm_test.esk")
+        add_test(
+            NAME higher_order_shadowing_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/higher_order_shadowing_vm_test.esk"
+        )
+        set_tests_properties(higher_order_shadowing_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing \\(vm\\)"
+                FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|undefined variable|fatal runtime error")
+    endif()
+    # SW-24 isolated shape on the VM engine — the engine the defect lived on
+    # ((+ 3 4) with a rebound + emitted OP_ADD and printed 7).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk")
+        add_test(
+            NAME operator_rebinding_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/operator_rebinding_test.esk"
+        )
+        set_tests_properties(operator_rebinding_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled

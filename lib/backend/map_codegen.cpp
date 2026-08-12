@@ -11,9 +11,11 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/IR/Argument.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Instructions.h>
 
 using namespace llvm;
 
@@ -128,7 +130,40 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
 
     // CLOSURE FIX: Check if the variable contains a closure (CLOSURE_PTR)
     // If so, we need to use mapWithClosure to properly extract captured values
-    if (op->call_op.variables[0].type == ESHKOL_VAR && global_symbol_table_ && nested_function_captures_) {
+    //
+    // SHADOWING GUARD (ESH-0070 class): this branch identifies the mapped
+    // procedure from the GLOBAL <name>_func entry, so a function parameter or
+    // local binding that shadows a same-named capturing top-level lambda
+    // would be silently replaced by the global. If the name is bound to a
+    // runtime value in the current function (Argument or local alloca), skip
+    // the compile-time global-closure detection entirely — the parameter /
+    // runtime-closure fallbacks below dispatch on the local value, which is
+    // the binding lexical scope selects. resolveLambdaFunction applies the
+    // same guard, so the two static paths agree.
+    bool proc_locally_shadowed = false;
+    if (op->call_op.variables[0].type == ESHKOL_VAR && symbol_table_ &&
+        current_function_ && *current_function_) {
+        auto shadow_it = symbol_table_->find(op->call_op.variables[0].variable.id);
+        if (shadow_it != symbol_table_->end() && shadow_it->second) {
+            Value* shadow_v = shadow_it->second;
+            bool is_param = isa<Argument>(shadow_v) &&
+                cast<Argument>(shadow_v)->getParent() == *current_function_;
+            bool is_local_alloca = isa<AllocaInst>(shadow_v) &&
+                cast<AllocaInst>(shadow_v)->getFunction() == *current_function_;
+            if (is_param || is_local_alloca) {
+                std::string shadow_scoped_key =
+                    (*current_function_)->getName().str() + "." +
+                    std::string(op->call_op.variables[0].variable.id) + "_func";
+                proc_locally_shadowed =
+                    symbol_table_->find(shadow_scoped_key) == symbol_table_->end() &&
+                    (!global_symbol_table_ ||
+                     global_symbol_table_->find(shadow_scoped_key) == global_symbol_table_->end());
+            }
+        }
+    }
+
+    if (!proc_locally_shadowed &&
+        op->call_op.variables[0].type == ESHKOL_VAR && global_symbol_table_ && nested_function_captures_) {
         std::string var_name = op->call_op.variables[0].variable.id;
 
         // Check if this variable is known to hold a closure at compile time

@@ -208,6 +208,31 @@ static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
     return slot;
 }
 
+/** @return 1 when @p name is bound by USER code somewhere in scope — a
+ *          parameter or let/lambda local of any chunk on the scope chain, or
+ *          a root-chunk slot at or above the user-locals watermark.
+ *
+ * SW-24 (ESH-0070 class): the builtin-procedure fast paths in compile_expr
+ * (arithmetic/comparison opcodes, car/cdr chains, display, …) dispatch on
+ * the head SYMBOL alone, so `(define + (lambda (a b) (* a b))) (+ 3 4)`
+ * still emitted OP_ADD and printed 7. A user binding must shadow the fast
+ * path; the preamble/prelude's own bindings (root slots BELOW the
+ * watermark) must not, because the fast paths intentionally implement
+ * exactly those. A watermark of 0 means user code has not started yet (the
+ * prelude itself is being compiled), so nothing counts as a user rebinding.
+ */
+static int vm_head_user_rebound(FuncChunk* c, const char* name) {
+    for (FuncChunk* p = c; p; p = p->enclosing) {
+        int slot = resolve_local(p, name);
+        if (slot >= 0) {
+            if (p->enclosing == NULL)
+                return g_vm_user_locals_base > 0 && slot >= g_vm_user_locals_base;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
@@ -2851,6 +2876,38 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type != N_LIST || node->n_children == 0) { chunk_emit(c, OP_NIL, 0); return; }
 
     Node* head = node->children[0];
+
+    /* SW-24 (ESH-0070 class): every fast path below this point dispatches on
+     * the head SYMBOL alone, so a user binding that shadows a builtin name —
+     * `(define + (lambda (a b) (* a b)))`, `(let ((car ...)) ...)` — was
+     * silently bypassed and the opcode/native fast path ran instead
+     * ((+ 3 4) printed 7). If the head symbol resolves to a binding USER
+     * code created (see vm_head_user_rebound; preamble/prelude root slots
+     * below the watermark do not count), compile the form as a plain call
+     * through that binding — the same code the generic fallback at the end
+     * of this function emits. Macros were already dispatched above, so
+     * user-defined syntax is unaffected. */
+    if (head->type == N_SYMBOL && head->symbol &&
+        vm_head_user_rebound(c, head->symbol)) {
+        int argc = node->n_children - 1;
+        int saved_locals = c->n_locals;
+        compile_expr(c, head, 0);  /* push the (rebound) function */
+        add_local(c, "__call_func__");
+        for (int i = 1; i < node->n_children; i++) {
+            compile_expr(c, node->children[i], 0);
+            add_local(c, "__call_arg__");
+        }
+        if (vm_language_coverage_compilation_enabled()) {
+            chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
+                       (int)vm_language_coverage_name_hash(head->symbol));
+        }
+        if (tail)
+            chunk_emit(c, OP_TAIL_CALL, argc);
+        else
+            chunk_emit(c, OP_CALL, argc);
+        c->n_locals = saved_locals; /* CALL consumed func+args */
+        return;
+    }
 
     if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0);

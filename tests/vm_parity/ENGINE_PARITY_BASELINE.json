@@ -5,7 +5,6 @@
     "tests/logic/workspace_test.esk",
     "tests/parser/sexpr_test.esk",
     "tests/parser/special_forms_test.esk",
-    "tests/parser/test_function_shadowing.esk",
     "tests/v1_2_edge_cases/define_record_type_test.esk",
     "tests/v1_2_edge_cases/dual_scalar_compare_test.esk",
     "tests/v1_2_edge_cases/symbol_interning_test.esk"

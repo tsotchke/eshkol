@@ -194,6 +194,10 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: 'AD capture scoping: a differentiand lambda capturing its enclosing function''s parameter is never substituted by a same-named top-level global — and the cached (-r AOT) and uncached (in-process JIT) routes produce byte-identical output (task #114)'
+          event_names: ["higher_order_shadowing_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Lexical scope in higher-order builtins: map/for-each/filter/fold/reduce/remove call the shadowing binding (parameter or local), never a same-named top-level procedure — static procedure-operand resolution declines when locally shadowed, and the VM upvalue search is innermost-first; gated on JIT, AOT, and the standalone VM (ESH-0070 class)'
         action: ./scripts/run_icc_smoke.sh
       - runtime_event:
           event_kinds: [eshkol_smoke]
