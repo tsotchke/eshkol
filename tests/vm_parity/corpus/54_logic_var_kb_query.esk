@@ -63,6 +63,14 @@
 (kb-assert! kb3 (make-fact '(color grass green)))
 (display (kb-query kb3 '(color ?obj ?col))) (newline)
 
+;; -- a KB grows past its initial 16-fact capacity ---------------------------
+(define kbg (make-kb))
+(let loop ((i 0))
+  (if (< i 100)
+      (begin (kb-assert! kbg (make-fact 'row i (* i 2))) (loop (+ i 1)))))
+(display (kb-count kbg)) (newline)
+(display (walk ?rv (car (kb-query kbg (make-fact 'row 73 ?rv))))) (newline)
+
 ;; -- nested patterns unify structurally ------------------------------------
 (define kb4 (make-kb))
 (kb-assert! kb4 (make-fact '(edge (node a) (node b))))

@@ -8742,6 +8742,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value fact_val = vm_pop(vm), kb_val = vm_pop(vm);
         if (is_heap_type(vm, kb_val, HEAP_KB)) {
             VmKnowledgeBase* kb_obj = (VmKnowledgeBase*)vm->heap.objects[kb_val.as.ptr]->opaque.ptr;
+            /* Grow the fact array when it fills.  This used to be a bare
+             * `n_facts < capacity` guard with no growth, so the 17th
+             * kb-assert! and every one after it was SILENTLY DROPPED — a
+             * 500-fact knowledge base held 16 facts and answered queries
+             * from them without a word.  vm_logic.c's vm_kb_assert() and the
+             * native eshkol_kb_assert() both double; so does this now. */
+            if (kb_obj && kb_obj->n_facts >= kb_obj->capacity) {
+                int new_cap = kb_obj->capacity > 0 ? kb_obj->capacity * 2 : 16;
+                VmFact** grown = (VmFact**)vm_alloc(&vm->heap.regions,
+                                                    (size_t)new_cap * sizeof(VmFact*));
+                if (grown) {
+                    memcpy(grown, kb_obj->facts,
+                           (size_t)kb_obj->n_facts * sizeof(VmFact*));
+                    kb_obj->facts = grown;
+                    kb_obj->capacity = new_cap;
+                }
+            }
             if (kb_obj && kb_obj->n_facts < kb_obj->capacity) {
                 VmFact* f = (VmFact*)vm_alloc(&vm->heap.regions, sizeof(VmFact));
                 if (f) {
