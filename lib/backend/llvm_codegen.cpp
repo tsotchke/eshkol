@@ -14353,75 +14353,13 @@ private:
             Value* base = typedValueToTaggedValue(tv_base);
             Value* exp_val = typedValueToTaggedValue(tv_exp);
 
-            // Check if base is complex — needs complex exponentiation
-            Value* base_type = builder->CreateExtractValue(base, {0}, "expt_base_type");
-            Value* base_is_complex = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
-
-            Function* cur_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* complex_expt_bb = BasicBlock::Create(*context, "expt_complex", cur_func);
-            BasicBlock* regular_expt_bb = BasicBlock::Create(*context, "expt_regular", cur_func);
-            BasicBlock* expt_merge_bb = BasicBlock::Create(*context, "expt_merge", cur_func);
-
-            builder->CreateCondBr(base_is_complex, complex_expt_bb, regular_expt_bb);
-
-            // Complex exponentiation: z^n via exp(n * ln(z))
-            builder->SetInsertPoint(complex_expt_bb);
-            Value* z = unpackComplexFromTagged(base);
-            Value* re = getComplexReal(z);
-            Value* im = getComplexImag(z);
-
-            // Compute ln(z) = ln(|z|) + i*atan2(imag, real)
-            Function* sqrt_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sqrt, {double_type});
-            Function* log_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::log, {double_type});
-            Function* cos_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::cos, {double_type});
-            Function* sin_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sin, {double_type});
-            Function* exp_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::exp, {double_type});
-
-            // |z| = sqrt(re^2 + im^2)
-            Value* re2 = builder->CreateFMul(re, re);
-            Value* im2 = builder->CreateFMul(im, im);
-            Value* mag = builder->CreateCall(sqrt_fn, {builder->CreateFAdd(re2, im2)});
-
-            // atan2(im, re)
-            FunctionType* atan2_ft = FunctionType::get(double_type, {double_type, double_type}, false);
-            FunctionCallee atan2_fn = module->getOrInsertFunction("atan2", atan2_ft);
-            Value* carg = builder->CreateCall(atan2_fn, {im, re}, "carg");
-
-            // ln(z) = ln(|z|) + i*arg
-            Value* ln_r = builder->CreateCall(log_fn, {mag}, "ln_mag");
-
-            // n (exponent as double)
-            Value* n = extractDoubleFromTagged(exp_val);
-
-            // n * ln(z) = n*ln_r + i*n*ln_i
-            Value* prod_r = builder->CreateFMul(n, ln_r);
-            Value* prod_i = builder->CreateFMul(n, carg);
-
-            // exp(prod_r + i*prod_i) = e^prod_r * (cos(prod_i) + i*sin(prod_i))
-            Value* e_pow = builder->CreateCall(exp_fn, {prod_r});
-            Value* cos_val = builder->CreateCall(cos_fn, {prod_i});
-            Value* sin_val = builder->CreateCall(sin_fn, {prod_i});
-            Value* result_re = builder->CreateFMul(e_pow, cos_val);
-            Value* result_im = builder->CreateFMul(e_pow, sin_val);
-
-            Value* result_complex = createComplexNumber(result_re, result_im);
-            Value* complex_tagged = packComplexToTagged(result_complex);
-            builder->CreateBr(expt_merge_bb);
-            BasicBlock* complex_expt_exit = builder->GetInsertBlock();
-
-            // Regular path: non-complex base
-            builder->SetInsertPoint(regular_expt_bb);
-            Value* regular_result = arith_->pow(base, exp_val);
-            builder->CreateBr(expt_merge_bb);
-            BasicBlock* regular_expt_exit = builder->GetInsertBlock();
-
-            // Merge
-            builder->SetInsertPoint(expt_merge_bb);
-            PHINode* expt_phi = builder->CreatePHI(tagged_value_type, 2);
-            expt_phi->addIncoming(complex_tagged, complex_expt_exit);
-            expt_phi->addIncoming(regular_result, regular_expt_exit);
-            return expt_phi;
+            // Complex operands are handled inside ArithmeticCodegen::pow,
+            // alongside complex +/-/*//. Task #113: the hand-rolled block that
+            // used to live here tested only the BASE for ESHKOL_VALUE_COMPLEX
+            // and then read the exponent with extractDoubleFromTagged, so a
+            // complex exponent had its heap pointer reinterpreted —
+            // `(expt i i)` returned 1 instead of e^(-pi/2) = 0.2078795763...
+            return arith_->pow(base, exp_val);
         }
 
         // Logical operators (short-circuit)

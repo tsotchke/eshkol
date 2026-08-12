@@ -1,0 +1,44 @@
+;; VM-parity differential for the complex transcendentals (task #113).
+;;
+;; Both engines used to answer a complex operand from a wrong reading of the
+;; value: the native back end reinterpreted the heap pointer as a double
+;; (`(sqrt (make-rectangular -1.0 0.0))` => 73278.56614317723) while the VM's
+;; as_number() answered 0 and computed f(0) (=> 0). Two different wrong
+;; answers, so this file's differential catches either regression on its own.
+;;
+;; Both engines now evaluate the SAME expressions from
+;; <eshkol/core/complex_math.h>, so agreement here is bit-for-bit.
+;;
+;; Components are printed with real-part/imag-part rather than displaying the
+;; complex directly: the two engines format a complex differently (native
+;; "2+i", VM "2+1i" — tests/vm_parity/found/complex_display_format.esk), which
+;; is a display divergence unrelated to the values under test.
+
+(define (show name z)
+  (display name) (display " ")
+  (display (real-part z)) (display " ")
+  (display (imag-part z)) (newline))
+
+;; The two examples documented in docs/ESHKOL_LANGUAGE_GUIDE.md.
+(show "doc-sqrt" (sqrt (make-rectangular -1.0 0.0)))
+(show "doc-exp" (exp (make-rectangular 0.0 3.14159)))
+
+(define z (make-rectangular 3.0 4.0))
+(show "sqrt" (sqrt z))
+(show "exp" (exp z))
+(show "log" (log z))
+(show "sin" (sin z))
+(show "cos" (cos z))
+(show "tan" (tan z))
+(show "asin" (asin z))
+(show "acos" (acos z))
+(show "sinh" (sinh z))
+(show "cosh" (cosh z))
+(show "tanh" (tanh z))
+(show "expt-real-exponent" (expt z 2))
+(show "expt-complex-exponent"
+      (expt (make-rectangular 0.0 1.0) (make-rectangular 0.0 1.0)))
+
+;; The negative-real promotion documented in
+;; docs/reference/language/numeric-tower.md: (sqrt -1) is +i.
+(show "sqrt-exact-negative" (sqrt -1))

@@ -1,0 +1,88 @@
+(require stdlib)
+
+; inexact->exact must return the operand's EXACT value.
+;
+; A finite double is exactly mantissa * 2^exponent. The pre-fix conversion
+; instead doubled the value until its denominator hit a 2^52 cap and then
+; truncated, so it answered with the exact value of a DIFFERENT double. The
+; measured pre-fix answers are quoted beside the assertions that catch them:
+; run this against a pre-fix build and it fails closed.
+
+(display "TEST: inexact->exact exactness and round-trip") (newline)
+
+(define (chk name ok)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+
+; (exact->inexact (inexact->exact x)) must reproduce x. `=` on two doubles is
+; bit equality for every value this suite uses (no NaN, and the one -0.0 case
+; is asserted separately, since the exact value of -0.0 is 0 and converting
+; back gives +0.0 — that is R7RS, not a defect).
+(define (roundtrip? x) (= (exact->inexact (inexact->exact x)) x))
+
+; ── The example documented in docs/ESHKOL_LANGUAGE_GUIDE.md ──────────────
+; (inexact->exact 0.1) ;; -> 3602879701896397/36028797018963968
+; pre-fix: 450359962737049/4503599627370496
+(chk "doc: (inexact->exact 0.1) = 3602879701896397/36028797018963968"
+     (= (inexact->exact 0.1) (/ 3602879701896397 36028797018963968)))
+; (inexact->exact 0.5) ;; -> 1/2
+(chk "doc: (inexact->exact 0.5) = 1/2" (= (inexact->exact 0.5) 1/2))
+
+; The exact value is exact: it must not equal the neighbouring double's.
+(chk "0.1's exact value is not the pre-fix 450359962737049/4503599627370496"
+     (not (= (inexact->exact 0.1) (/ 450359962737049 4503599627370496))))
+
+; ── Round-trip over the probe set ────────────────────────────────────────
+; pre-fix: (exact->inexact (inexact->exact 0.1)) = 0.09999999999999987
+(chk "round-trip 0.1" (roundtrip? 0.1))
+(chk "round-trip 0.2" (roundtrip? 0.2))
+(chk "round-trip 0.3" (roundtrip? 0.3))
+; nearest double to 1/3
+(chk "round-trip 1/3-nearest" (roundtrip? 0.3333333333333333))
+(chk "round-trip pi" (roundtrip? 3.141592653589793))
+(chk "round-trip -0.1 (negative)" (roundtrip? -0.1))
+(chk "round-trip -2.5 (negative, whole halves)" (roundtrip? -2.5))
+
+; Powers of two, exact on both sides of 1.
+(chk "round-trip 0.5" (roundtrip? 0.5))
+(chk "round-trip 0.25" (roundtrip? 0.25))
+(chk "round-trip 2.0" (roundtrip? 2.0))
+(chk "round-trip 1024.0" (roundtrip? 1024.0))
+(chk "round-trip 2^70" (roundtrip? 1180591620717411303424.0))
+
+; Extremes. pre-fix: (inexact->exact 1e300) = 4347791012 (fptosi past 2^63);
+; (inexact->exact 5e-324) = 0 (the 2^52 denominator cap).
+(chk "round-trip 1e300 (past int64)" (roundtrip? 1e300))
+(chk "round-trip 1e-300" (roundtrip? 1e-300))
+(chk "round-trip 5e-324 (smallest subnormal)" (roundtrip? 5e-324))
+(chk "round-trip 2.2250738585072014e-308 (smallest normal)"
+     (roundtrip? 2.2250738585072014e-308))
+
+; ± zero. R7RS: the exact value of -0.0 is 0, so the round trip lands on +0.0.
+(chk "(inexact->exact 0.0) = 0" (= (inexact->exact 0.0) 0))
+(chk "(inexact->exact -0.0) = 0" (= (inexact->exact -0.0) 0))
+(chk "round-trip 0.0" (roundtrip? 0.0))
+
+; ── Result shape ─────────────────────────────────────────────────────────
+(chk "every exact result is exact?" (and (exact? (inexact->exact 0.1))
+                                         (exact? (inexact->exact 3.0))
+                                         (exact? (inexact->exact 1e300))))
+(chk "a whole double converts to an exact integer, not a rational"
+     (exact-integer? (inexact->exact 3.0)))
+(chk "(inexact->exact 3.0) = 3" (= (inexact->exact 3.0) 3))
+(chk "(inexact->exact 1e300) is an exact integer past int64"
+     (and (exact-integer? (inexact->exact 1e300))
+          (> (inexact->exact 1e300) 1000000000000000000)))
+(chk "a fractional double converts to a rational" (rational? (inexact->exact 0.1)))
+(chk "0.1's exact numerator/denominator match the documented pair"
+     (and (= (numerator (inexact->exact 0.1)) 3602879701896397)
+          (= (denominator (inexact->exact 0.1)) 36028797018963968)))
+
+; Already-exact operands pass through untouched.
+(chk "(inexact->exact 1/2) = 1/2" (= (inexact->exact 1/2) 1/2))
+(chk "(inexact->exact 7) = 7" (= (inexact->exact 7) 7))
+
+; `exact` is the R7RS spelling of the same operation.
+(chk "(exact 0.1) agrees with (inexact->exact 0.1)"
+     (= (exact 0.1) (inexact->exact 0.1)))
+
+(display "inexact->exact tests complete") (newline)

@@ -6580,6 +6580,44 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     return 1;
 }
 
+/**
+ * @brief Task #113 — R7RS real-to-complex promotion for `sqrt` and `log`.
+ *
+ * The square root (and natural log) of a NEGATIVE EXACT real is not a real
+ * number: docs/reference/language/numeric-tower.md documents
+ * `(display (sqrt -1))` printing `+i`, and the native back end has promoted
+ * since the numeric tower landed. The VM answered NaN, so the two engines
+ * disagreed on a documented example.
+ *
+ * Promotion is exactness-aware, exactly as on the native side: an INEXACT
+ * negative keeps IEEE semantics (NaN for sqrt, -inf for log), so the
+ * documented floating-point behaviour and the infinity/NaN suite are
+ * untouched.
+ *
+ * @param vm Interpreter state.
+ * @param a Already-popped operand.
+ * @param is_sqrt Non-zero for `sqrt`, zero for `log`.
+ * @return 1 when a promoted complex result has been pushed.
+ */
+static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
+    double x, re, im;
+    VmComplex* z;
+    int32_t ptr;
+    if (a.type != VAL_INT && a.type != VAL_BIGNUM && a.type != VAL_RATIONAL) return 0;
+    x = as_number_vm(vm, a);
+    if (!(x < 0.0)) return 0;
+    if (is_sqrt) { re = 0.0; im = sqrt(-x); }
+    else         { re = log(-x); im = 3.14159265358979323846; }
+    z = vm_complex_new(&vm->heap.regions, re, im);
+    if (!z) { vm->error = 1; return 1; }
+    ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return 1; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = z;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    return 1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -6616,8 +6654,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 21)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
     case 22: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
     case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 23)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
-    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
-    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
+    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; if (vm_math_promote_negative(vm, a, 0)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
+    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; if (vm_math_promote_negative(vm, a, 1)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
      * not the exact 2 — the integral result shape must not decide the tag. */
     case 26: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
@@ -6628,6 +6666,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); break; }
+        /* Task #113: a complex base OR exponent promotes both and takes the
+         * principal a^b = exp(b log a). Without it as_number() answered 0 for
+         * the complex side and (expt z 2) silently became 0^2. */
+        if (a.type==VAL_COMPLEX || b.type==VAL_COMPLEX) {
+            VmComplex az32 = { as_number(a), 0.0 }, bz32 = { as_number(b), 0.0 };
+            VmComplex* rz32;
+            int32_t pz32;
+            if (a.type==VAL_COMPLEX) az32 = *(VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type==VAL_COMPLEX) bz32 = *(VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            rz32 = vm_complex_expt(&vm->heap.regions, &az32, &bz32);
+            if (!rz32) { vm->error = 1; break; }
+            pz32 = heap_alloc(&vm->heap);
+            if (pz32 < 0) { vm->error = 1; break; }
+            vm->heap.objects[pz32]->type = HEAP_COMPLEX;
+            vm->heap.objects[pz32]->opaque.ptr = rz32;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = pz32});
+            break;
+        }
         /* Exact integer base with a non-negative integer exponent → exact
          * result: an int64 while it fits, promoting to a bignum on overflow
          * (matching the native path). Previously always used pow() and

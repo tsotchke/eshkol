@@ -2877,6 +2877,32 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::BasicBlock* pow_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(pow_after_taylor);
 
+        // Task #113 — complex `expt`, on the same footing as complex +/-/*//.
+        //
+        // The complex case used to live in llvm_codegen.cpp's `expt` branch,
+        // where it tested only the BASE and then read the exponent with
+        // extractDoubleFromTagged: `(expt i i)` reinterpreted the exponent's
+        // heap pointer and returned 1 instead of e^(-pi/2). Promoting both
+        // operands and calling the shared runtime handles every mixture —
+        // complex base, complex exponent, or both — with one branch.
+        llvm::BasicBlock* pow_complex = llvm::BasicBlock::Create(ctx_.context(), "pow_complex", func);
+        llvm::BasicBlock* pow_after_complex = llvm::BasicBlock::Create(ctx_.context(), "pow_after_complex", func);
+        llvm::Value* pow_base_is_cpx = ctx_.builder().CreateICmpEQ(base_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+        llvm::Value* pow_exp_is_cpx = ctx_.builder().CreateICmpEQ(exp_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateOr(pow_base_is_cpx, pow_exp_is_cpx),
+            pow_complex, pow_after_complex);
+        ctx_.builder().SetInsertPoint(pow_complex);
+        llvm::Value* pow_base_z = convertToComplex(base, pow_base_is_cpx, base_base);
+        llvm::Value* pow_exp_z = convertToComplex(exponent, pow_exp_is_cpx, exp_base);
+        llvm::Value* pow_cpx = complex_.packComplexToTagged(
+            complex_.complexPow(pow_base_z, pow_exp_z));
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* pow_cpx_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(pow_after_complex);
+
         // Check for dual numbers
         llvm::Value* base_is_dual = ctx_.builder().CreateICmpEQ(base_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
@@ -2958,8 +2984,9 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
         // Merge paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "pow_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "pow_result");
         phi->addIncoming(pow_twr, pow_twr_exit);
+        phi->addIncoming(pow_cpx, pow_cpx_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(exact_result, exact_exit);
         phi->addIncoming(regular_tagged, regular_exit);

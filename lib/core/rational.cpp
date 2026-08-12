@@ -345,14 +345,63 @@ extern "C" int64_t eshkol_rational_denominator(void* r) {
     return ((eshkol_rational_t*)r)->denominator;
 }
 
-/** Convert a rational to its nearest double-precision floating-point value. */
+/** @brief Bit length of a bignum's magnitude; 0 for zero. */
+static int64_t bn_bitlen(const eshkol_bignum_t* a) {
+    const uint64_t* limbs = BIGNUM_LIMBS((eshkol_bignum_t*)a);
+    for (int64_t i = (int64_t)a->num_limbs - 1; i >= 0; --i) {
+        if (limbs[i]) {
+            uint64_t v = limbs[i];
+            int bits = 0;
+            while (v) { v >>= 1; ++bits; }
+            return i * 64 + bits;
+        }
+    }
+    return 0;
+}
+
+/** @brief Convert a rational to its nearest double-precision value.
+ *
+ *  The bignum path divides the two components AFTER scaling them into range
+ *  rather than converting each to a double first. Converting first cannot
+ *  work for the exact values `inexact->exact` now produces: the exact value
+ *  of 1e-300 is a 53-bit numerator over 2^1049, and 2^1049 exceeds DBL_MAX,
+ *  so `bignum_to_double(den)` was +inf and the whole rational came back 0 —
+ *  `(exact->inexact (inexact->exact 1e-300))` was 0, not 1e-300.
+ *
+ *  Scaling one side by a power of two leaves the quotient with ~55 significant
+ *  bits, well inside double range, and `ldexp` puts the exponent back (with
+ *  correct gradual underflow into the subnormals). */
 extern "C" double eshkol_rational_to_double(void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
-    if (rat->is_big) {
+    if (!rat->is_big) {
+        return (double)rat->numerator / (double)rat->denominator;
+    }
+    if (eshkol_bignum_is_zero(rat->big_num)) return 0.0;
+
+    arena_t* arena = arena_get_thread_local();
+    int64_t nb = bn_bitlen(rat->big_num);
+    int64_t db = bn_bitlen(rat->big_den);
+    int64_t k = 55 - (nb - db);   /* target quotient width: ~55 bits */
+
+    const eshkol_bignum_t* num = rat->big_num;
+    const eshkol_bignum_t* den = rat->big_den;
+    if (k > 0) {
+        num = eshkol_bignum_shift(arena, num, k);
+    } else if (k < 0) {
+        den = eshkol_bignum_shift(arena, den, -k);
+    }
+    if (!num || !den) {
+        /* Scratch allocation failed — fall back to the component quotient,
+         * which is at least right for in-range magnitudes. */
         return eshkol_bignum_to_double(rat->big_num) /
                eshkol_bignum_to_double(rat->big_den);
     }
-    return (double)rat->numerator / (double)rat->denominator;
+    eshkol_bignum_t* q = eshkol_bignum_div(arena, num, den);
+    if (!q) {
+        return eshkol_bignum_to_double(rat->big_num) /
+               eshkol_bignum_to_double(rat->big_den);
+    }
+    return ldexp(eshkol_bignum_to_double(q), (int)-k);
 }
 
 /** Return non-zero if the rational represents an integer (denominator == 1). */
