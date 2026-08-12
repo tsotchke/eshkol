@@ -1,0 +1,656 @@
+# Silent-wrong flaw ledger — the release gate's input.
+#
+# CONTRACT
+#   A SILENT-WRONG flaw is one where the compiler, the VM, or the runtime
+#   produces a wrong value, a wrong derivative, or a wrong memory outcome
+#   with NO diagnostic and a zero exit status. The maintainer's release
+#   philosophy is that these are tag-blocking: a loud failure is honest, a
+#   silent one is a lie told to a consumer.
+#
+#   `scripts/gate_no_silent_wrong.py` reads this file and emits the
+#   `no_open_silent_wrong` runtime_event consumed by the
+#   `eshkol-compiler-readiness` and `v1.3-evolve` oracles in
+#   .icc/completion-oracles.yaml. The gate is PASS only when every entry
+#   whose `bucket` is SILENT-WRONG has `status: closed` or a `waiver` block
+#   with an owner, a reason and an expiry date that has not passed.
+#
+#   The gate FAILS CLOSED. A missing, unparseable or schema-invalid ledger
+#   is a FAIL, never a pass — absence of the ledger is not evidence of an
+#   absence of silent-wrong defects.
+#
+# INVARIANTS (the same discipline as .icc/doc-claims-allowlist.yaml)
+#   1. Every entry cites a reproducer that a reader can run, and the exact
+#      observed-vs-correct values. "Believed fixed" is not a status.
+#   2. A waiver is scaffolding with an expiry, not a tolerance. It names an
+#      owner, a reason, and a date. An expired waiver is a FAIL.
+#   3. Entries only close by measurement at a named SHA, recorded in
+#      `closed_at`. Closing by assertion is forbidden.
+#   4. Growth is a finding: a NEW SILENT-WRONG entry appearing in a PR must
+#      be justified in that PR's body.
+#   5. The buckets other than SILENT-WRONG are carried here for one ledger,
+#      one truth — but only SILENT-WRONG gates the release.
+
+schema: eshkol.silent_wrong_ledger.v1
+generated_at: "2026-08-12"
+measured_at_sha: "9f2da2ab"
+measured_with: "build/eshkol-run (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0), build/eshkol-vm-standalone-test"
+reproducer_root: ".scratch/flaw-ledger/repro"
+
+buckets:
+  SILENT-WRONG: "Wrong value / wrong derivative / wrong memory outcome, no diagnostic, exit 0. TAG-BLOCKING."
+  LOUD-ERROR: "Fails with a visible diagnostic, crash or non-zero exit. Bad, but honest. Sub-tagged cheap-fix or structural."
+  PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
+  DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
+  IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+
+entries:
+
+  # ───────────────────────── SILENT-WRONG ─────────────────────────
+
+  - id: SW-01
+    bucket: SILENT-WRONG
+    status: open
+    title: "AD differentiates the shadowed global, not the parameter"
+    repro: "(define (f x) (* x x)) (define (g f x) (derivative f x)) (display (g (lambda (y) (* 2 y)) 3.0))"
+    observed: "native 6"
+    correct: "2"
+    cross_engine: "VM answers 2 (correct); native is the wrong side"
+    evidence: ".scratch/flaw-ledger/repro/sw_ad_shadow.esk; docs/KNOWN_ISSUES.md:249"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_adversarial_fd_oracle]
+    notes: "Named in KNOWN_ISSUES as 'the highest-priority open AD defect'. No fix lane."
+
+  - id: SW-02
+    bucket: SILENT-WRONG
+    status: open
+    title: "map resolves the mapped procedure from the global table, ignoring a shadowing binding"
+    repro: "(define (scale x) (* x 100)) (define (apply-map scale lst) (map scale lst)) (display (apply-map (lambda (x) (+ x 10)) (list 1 2 3)))"
+    observed: "native (100 200 300)"
+    correct: "(11 12 13)"
+    cross_engine: "VM answers (11 12 13) (correct)"
+    evidence: "lib/backend/map_codegen.cpp; PR #420 body, 'Adjacent defects found, deliberately NOT fixed here'"
+    caught_by: [pr-record-420, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      #420 states a candidate guard on map_codegen.cpp was built and measured to be a
+      no-op, so the substitution happens upstream in name resolution. #420 does NOT fix
+      it and explicitly says it 'wants its own task' — this is NOT in flight.
+
+  - id: SW-03
+    bucket: SILENT-WRONG
+    status: open
+    title: "The Taylor tower cannot nest: derivative-n of derivative-n returns 0"
+    repro: "(define (f x) (* x x x x)) (display (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1))"
+    observed: "0"
+    correct: "48"
+    cross_engine: "VM errors (rc=1) — loud on that side"
+    evidence: ".scratch/flaw-ledger/repro/sw_taylor_nest.esk; docs/KNOWN_ISSUES.md:256"
+    caught_by: [KNOWN_ISSUES, pr-record-417, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-04
+    bucket: SILENT-WRONG
+    status: open
+    title: "derivative-n applied to a derivative CLOSURE returns 0"
+    repro: "(define (f x) (* x x x x)) (define df (derivative f)) (display (derivative-n df 2.0 1))"
+    observed: "0"
+    correct: "48"
+    evidence: ".scratch/flaw-ledger/repro/sw_deriv_closure.esk; docs/KNOWN_ISSUES.md:288"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-05
+    bucket: SILENT-WRONG
+    status: open
+    title: "Curried gradient-of-gradient returns a zero matrix (ESH-0096)"
+    repro: "(define (f v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 0))) (define g (gradient f)) (display (jacobian g (vector 2.0)))"
+    observed: "#((0))"
+    correct: "#((12)) — (hessian f (vector 2.0)) returns #((12)) on the same build"
+    evidence: ".scratch/flaw-ledger/repro/sw_gofg.esk; docs/KNOWN_ISSUES.md:279"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, pr-record-416]
+    notes: >-
+      PR #416 measured ESH-0096 as CLOSED and proposed deleting the KNOWN_ISSUES entry.
+      Direct measurement at 9f2da2ab contradicts that for the curried jacobian route.
+      Do not accept #416's close of ESH-0096.
+
+  - id: SW-06
+    bucket: SILENT-WRONG
+    status: open
+    title: "diff on a quoted s-expression silently returns 0 on BOTH engines"
+    repro: "(display (diff '(* x x) 'x))"
+    observed: "native 0, VM 0"
+    correct: "a symbolic derivative, not 0"
+    evidence: ".scratch/flaw-ledger/repro/sw_diff_quoted.esk"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, all-differential-gates]
+    notes: >-
+      Shared-defect blindness: both engines agree on the wrong answer, so no
+      native-vs-VM differential axis can ever see it. This is the class the P8
+      reference-free property oracles were meant to close.
+
+  - id: SW-07
+    bucket: SILENT-WRONG
+    status: open
+    title: "fg-marginal returns an empty result natively"
+    repro: "(define fg (make-factor-graph 2 2)) (display (fg-marginal fg 0))"
+    observed: "native (), VM #(0.5 0.5)"
+    correct: "#(0.5 0.5) — the uniform marginal"
+    evidence: ".scratch/flaw-ledger/repro/sw_fg_marginal.esk; PR #413 Follow-ups item 2"
+    caught_by: [pr-record-413, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: "PR #413 explicitly leaves this alone. #413 is still OPEN, so even its factor-graph fixes are not in the cut."
+
+  - id: SW-08
+    bucket: SILENT-WRONG
+    status: open
+    title: "rationalize diverges between engines; the VM silently answers 0"
+    repro: "(display (rationalize (/ 1 3) 1/10000))"
+    observed: "native 1/3, VM 0"
+    correct: "1/3"
+    evidence: ".scratch/flaw-ledger/repro/sw_rationalize.esk"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, numeric_exactness_oracle]
+
+  - id: SW-09
+    bucket: SILENT-WRONG
+    status: open
+    title: "Generic + over i128 answers 0 on the VM"
+    repro: "(define a (i128 5)) (define b (i128 7)) (display (+ a b))"
+    observed: "VM 0 (exit 0); native raises a type error (exit 1)"
+    correct: "12"
+    evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, i128_native_type_oracle]
+    notes: "Native half is LOUD-ERROR (see LE-03); the VM half is the silent one."
+
+  - id: SW-10
+    bucket: SILENT-WRONG
+    status: open
+    title: "Seven documented resource-limit environment variables are accepted and never enforced"
+    repro: "ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=1 eshkol-run -r a-20M-iteration-loop.esk"
+    observed: >-
+      Runs to completion, prints 199999990000000, exit 0. ESHKOL_TIMEOUT_MS=500 prints
+      'ERROR: Execution timeout: 500ms limit exceeded' and then runs to completion and exits 0.
+    correct: "The documented limit is applied, or the variable is documented as inert"
+    variables: [ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, ESHKOL_MAX_TENSOR_ELEMS, ESHKOL_MAX_STRING_LEN, ESHKOL_ENFORCE_LIMITS, ESHKOL_LIMIT_WARNINGS]
+    evidence: >-
+      lib/core/resource_limits.cpp parses into g_limits and nothing consults it;
+      eshkol_check_tensor_size / eshkol_check_string_length / eshkol_stack_push /
+      eshkol_is_timed_out / eshkol_track_allocation have zero call sites outside their
+      own definitions. Documented as controls at docs/breakdown/RUNTIME_CONFIGURATION.md:27-33,
+      docs/reference/runtime/environment-variables.md:65-73, docs/API_REFERENCE.md:4396-4402.
+    caught_by: [pr-record-416, direct-measurement, doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      A consumer setting a heap ceiling to contain untrusted code gets no containment
+      and no warning. #416 adds honest 'Accepted, not enforced in v1.3.4' status columns
+      but #416 is UNMERGED, so the cut still documents them as controls.
+
+  - id: SW-11
+    bucket: SILENT-WRONG
+    status: open
+    title: "(the <type> expr) is a runtime no-op, so a false ascription is never caught"
+    repro: "(display (the string (+ 1 2)))"
+    observed: "3, exit 0"
+    correct: "a type error, or a doc that does not call it an assertion"
+    evidence: ".scratch/flaw-ledger/repro/sw_the.esk; docs/FEATURE_MATRIX.md:72,804"
+    caught_by: [direct-measurement, doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Documented as a 'trusted assertion to the checker; runtime no-op (byte-identical IR)'. Documented-by-design, but the word 'assertion' is the lie."
+
+  - id: SW-12
+    bucket: SILENT-WRONG
+    status: open
+    title: "Six tensor ops carry two independent backward implementations with no differential test between them"
+    ops: [matmul, layernorm, transpose, sum, embedding, attention]
+    evidence: >-
+      lib/backend/tensor_backward.cpp defines eshkol_backward_{matmul,layernorm,transpose,sum,embedding,attention};
+      lib/bridge/tensor_backward.cpp defines tensor_{matmul,layernorm,transpose,sum,embedding,attention}_backward.
+      tests/bridge/qllm_bridge_gradcheck_test.cpp gradchecks the BRIDGE half against finite
+      differences for matmul/gelu/softmax/layernorm/rmsnorm/silu/cross-entropy and explicitly
+      EXCLUDES attention and embedding. No test compares the two implementations on the same input.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, duplicate-implementations-detector]
+    notes: >-
+      ICC's duplicate-implementations detector did not flag this pair: the two files are
+      not textually similar, so a lexical clone detector cannot see a semantic duplicate.
+      That is a concrete ICC detector gap, not a scoping choice.
+
+  - id: SW-13
+    bucket: SILENT-WRONG
+    status: open
+    title: "WASM batch compile mis-evaluates the first macro when a program has two or more define-syntax forms"
+    observed: "(dbl 21) => (* 2 21) prints a garbage bignum, value varies per build"
+    correct: "42"
+    evidence: "tests/wasm_diff/EXCLUSIONS.tsv (XFAIL row, 16_define_syntax.esk); reaffirmed in PR #413 and #418"
+    caught_by: [parity-baselines, pr-record-413, pr-record-418]
+    missed_by: [icc-correctness-chain, icc-readiness]
+    notes: "Excused by an XFAIL row, so the wasm gate is green while the defect ships in the browser build."
+
+  - id: SW-14
+    bucket: SILENT-WRONG
+    status: open
+    title: "with-region on the VM never reclaims — silent unbounded memory growth"
+    observed: "A VM program using regions computes the right answer and never gets the memory back; the VM heap has no escape evacuator"
+    evidence: "docs/KNOWN_ISSUES.md:211"
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Classified silent because a long-running VM process degrades with no diagnostic and exit 0."
+
+  - id: SW-15
+    bucket: SILENT-WRONG
+    status: open
+    title: "Out-of-range tensor-set! returns without writing, natively"
+    observed: "the lost write is undetectable by the program; the VM raises"
+    evidence: "tests/vm_parity/found/tensor_set_oob_silent_native.esk"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-16
+    bucket: SILENT-WRONG
+    status: open
+    title: "Multi-dimensional tensor-ref with an out-of-range component reads the wrong element, natively"
+    observed: "reads (0 2) of a 2x2 when the flat offset happens to land in range; the VM raises"
+    evidence: "tests/vm_parity/found/tensor_ref_component_oob_native.esk"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-17
+    bucket: SILENT-WRONG
+    status: open
+    title: "Native (tensor <rectangular nested collection>) flattens the outer level and zero-fills"
+    observed: "native #(0 0) shape (2); the VM builds the correct rank-N tensor"
+    evidence: "tests/vm_parity/found/tensor_nested_collection_native.esk"
+    caught_by: [parity-baselines, KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-18
+    bucket: SILENT-WRONG
+    status: open
+    title: "Exact rational arithmetic degrades to double once a bignum is involved (ESH-0105)"
+    evidence: "docs/KNOWN_ISSUES.md:371; tests/vm_parity/found/bignum_exact_rational.esk"
+    caught_by: [KNOWN_ISSUES, parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-19
+    bucket: SILENT-WRONG
+    status: open
+    title: "A closure created inside a named-let loop that set!s a global loses the mutation (ESH-0094)"
+    evidence: "docs/KNOWN_ISSUES.md:333"
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-20
+    bucket: SILENT-WRONG
+    status: open
+    title: "Second-order gradient through a NAMED inner function returns 0 (ESH-0078)"
+    observed: "0; the inline-lambda form works"
+    evidence: "tests/ad_oracle/README.md XKNOWN table, cells nest.gofg.*.s.named/lamvar"
+    caught_by: [ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      The oracle README self-documents a possible regression: 'the ledger marks this merged
+      via #95, but the acceptance shape still returns 0 on master — regressed or never fully fixed.'
+
+  - id: SW-21
+    bucket: SILENT-WRONG
+    status: open
+    title: "Vector-param gradient over an inner derivative returns zeros (ESH-0093)"
+    evidence: "tests/ad_oracle/README.md XKNOWN, cells nest.gofd.*.v2; tests/ad_oracle/generated/ad_oracle_nest_04.esk:98,100,106,108"
+    caught_by: [ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-22
+    bucket: SILENT-WRONG
+    status: open
+    title: "eshkol_xla_broadcast does not validate broadcast compatibility"
+    evidence: "docs/breakdown/XLA_BACKEND.md:705"
+    caught_by: [doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-23
+    bucket: SILENT-WRONG
+    status: open
+    title: "A confirmed native/VM divergence is excluded from every gate by README policy"
+    evidence: "tests/differential/found/003_global_set_from_function_lost.esk; tests/differential/README.md states found/ is evidence, not gate input"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  # ───────────────────────── IN-FLIGHT ─────────────────────────
+
+  - id: IF-01
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: open
+    title: "AD capture reconstruction ignores lexical scope; the default JIT object cache miscompiles core.ad.guw"
+    observed: "in-process JIT returns -0.6868 where 0.9553 is correct; AOT segfaults"
+    fix_lane: "PR #420 (fix/jit-object-cache-miscompile) — OPEN, not in the cut"
+    evidence: "PR #420 body; tests/differential/corpus/42_ad_capture_global_shadow.esk; docs/guide/AUTOMATIC_DIFFERENTIATION.md carries ESHKOL_JIT_CACHE=0 eight times as a workaround"
+    caught_by: [pr-record-416, pr-record-420]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-02
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: open
+    title: "take/drop argument order is reversed between the native stdlib and the VM prelude"
+    fix_lane: "PR #418 — OPEN"
+    evidence: "lib/core/list/transform.esk:8,14 vs lib/backend/vm_prelude_source.h:80-81; PR #416 Escalation 4"
+    caught_by: [pr-record-416, pr-record-418]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-03
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: open
+    title: "Complex transcendentals reinterpret the complex heap pointer as a double"
+    fix_lane: "PR #419 — OPEN"
+    evidence: "lib/backend/llvm_codegen.cpp:14191-14223 routes through codegenMathFunction; PR #416 Escalation 1 calls it a memory-safety defect"
+    caught_by: [pr-record-416, pr-record-419]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, sanitizer-fuzz-lane]
+
+  - id: IF-04
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: open
+    title: "inexact->exact loses precision"
+    observed: "returns 450359962737049/4503599627370496 (0.09999999999999987) for the documented case"
+    fix_lane: "PR #419 — OPEN"
+    evidence: "docs/ESHKOL_LANGUAGE_GUIDE.md:454; PR #416 Escalation 2"
+    caught_by: [pr-record-416, pr-record-419]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-05
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: open
+    title: "free-energy returns -0.0 on the VM and in the browser build regardless of evidence"
+    fix_lane: "PR #413 — OPEN"
+    evidence: "PR #413; PR #414 'Adjacent divergences found and NOT fixed here'; examples/consciousness.esk"
+    caught_by: [pr-record-413, pr-record-414]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-06
+    bucket: IN-FLIGHT
+    silent_wrong_class: false
+    status: open
+    title: "A non-store value passed to a memory-store accessor SIGSEGVs at address 0"
+    fix_lane: "PR #418 — OPEN"
+    evidence: "lib/core/memory_store.esk; PR #416 Escalation 5. No test in tests/ exercises memory-store-append! at all."
+    caught_by: [pr-record-416]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-07
+    bucket: IN-FLIGHT
+    silent_wrong_class: false
+    status: open
+    title: "void* is not accepted as an extern type name; it warns and silently defaults to int64"
+    fix_lane: "PR #418 — OPEN"
+    evidence: "mapStringToType in lib/backend/llvm_codegen.cpp; PR #416 Escalation 6"
+    caught_by: [pr-record-416]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  # ───────────────────────── LOUD-ERROR ─────────────────────────
+
+  - id: LE-01
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "Builtins are call-position-only; passing one as a first-class value SIGSEGVs (exit 139)"
+    repro: "(define (ap f a b) (f a b)) (display (ap string<? \"a\" \"b\"))"
+    observed: "SIGSEGV at address 0x0, exit 139"
+    affected_measured: ["string<?", "string>?", "string=?", "char<?", "char=?", "string-append", "vector-ref", "car", "expt", "min", "max"]
+    unaffected_measured: ["+", "<", "eq?"]
+    evidence: ".scratch/flaw-ledger/repro/fc_tmp.esk; tests/differential/corpus/37_sort.esk"
+    caught_by: [pr-record-420, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, KNOWN_ISSUES]
+    notes: >-
+      PR #420 describes this as 'Undefined variable'. At 9f2da2ab it is a SIGSEGV, which is
+      strictly worse, and it is a FAMILY, not one builtin. It is the failure_free blocker
+      that holds icc readiness at 77 on #420's branch.
+
+  - id: LE-02
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "hessian over a lambda capturing its enclosing function's parameter fails LLVM verification"
+    repro: "(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0)) (display (hwrap 2.0))"
+    observed: "ERROR: LLVM module verification failed: Incorrect number of arguments passed to called function! exit 1"
+    evidence: "PR #420's tests/ad/ad_capture_global_shadow_test.esk lines 25-29 document it as NOT covered; hessian capture path in lib/backend/autodiff_codegen.cpp"
+    caught_by: [pr-record-420, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: "NOT in flight. #420 explicitly excludes it so its own gate is not red for the wrong reason."
+
+  - id: LE-03
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: open
+    title: "Generic + over i128 raises a type error natively"
+    observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
+    evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Paired with SW-09, the silent VM half."
+
+  - id: LE-04
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: open
+    title: "sort argument order is reversed between engines"
+    observed: "native accepts (sort lst <) and errors on (sort < lst) with 'cdr: argument is not a pair'; the VM is the exact mirror"
+    evidence: ".scratch/flaw-ledger/repro/sw_sort_order.esk, sw_sort_vmorder.esk; PR #418 body"
+    caught_by: [pr-record-418, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: "Same class as IF-02 take/drop, but sort is NOT fixed by #418 and has no test."
+
+  - id: LE-05
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "(load \"path.esk\") is not resolvable on the VM lane"
+    observed: "vm-src: WARNING undefined variable 'load' then ERROR: calling non-function, fatal"
+    evidence: ".scratch/flaw-ledger/repro/sw_load_path.esk; docs/KNOWN_ISSUES.md:269"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      KNOWN_ISSUES:269 says the VM 'silently ignores a path literal'. On the vm-src lane at
+      9f2da2ab it is LOUD. The doc overstates the severity; the entry needs correcting either way.
+
+  - id: LE-06
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "Vector-param AD op capturing a local function parameter fails LLVM verification (ESH-0097)"
+    observed: "PtrToInt source must be pointer, on both -r and AOT"
+    evidence: "tests/ad_oracle/README.md XKNOWN; docs/KNOWN_ISSUES.md:299"
+    caught_by: [KNOWN_ISSUES, ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: LE-07
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "VM frame overflow prints to stderr and then exits 0 with empty stdout"
+    evidence: "tests/vm_parity/found/frame_overflow_exit_zero.esk; tests/vm_parity/found/when_tail_call_no_tco.esk"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Loud on stderr but exit 0 — silent to any caller that checks the exit status. Borderline SILENT-WRONG."
+
+  - id: LE-08
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
+    evidence: "docs/KNOWN_ISSUES.md:195"
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  # ───────────────────────── PARITY-RATCHET ─────────────────────────
+
+  - id: PR-01
+    bucket: PARITY-RATCHET
+    status: open
+    title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
+    count: 10
+    evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
+    highest_priority: "tests/parser/test_function_shadowing.esk — a user + is ignored by opcode dispatch (VM 7, native 12)"
+    caught_by: [parity-baselines, pr-record-414]
+    missed_by: [icc-correctness-chain, icc-smoke]
+    notes: >-
+      The baseline stores program PATHS only — no operation, no per-engine outputs. Nothing in
+      the repo can reconstruct what diverges without a rebuild and a re-run. PR #413 would
+      ratchet 10 -> 8 but #413 is OPEN, so the cut carries 10.
+
+  - id: PR-02
+    bucket: PARITY-RATCHET
+    status: open
+    title: "SURFACE_BASELINE.tsv excuses 323 names native resolves and the VM does not"
+    count: 323
+    evidence: "tests/vm_parity/SURFACE_BASELINE.tsv"
+    caught_by: [parity-baselines]
+    notes: "All carry ledger status NO-ROW, i.e. absent from PARITY.tsv entirely, so the 956-row parity accounting understates the real delta by about a third."
+
+  - id: PR-03
+    bucket: PARITY-RATCHET
+    status: open
+    title: "arity_parity_baseline.json excuses 331 native-vs-VM divergence keys, 62 of them on correct-arity correct-type calls"
+    count: 331
+    correct_class_count: 62
+    evidence: "tests/escape_matrix/arity_parity_baseline.json"
+    caught_by: [parity-baselines]
+
+  - id: PR-04
+    bucket: PARITY-RATCHET
+    status: open
+    title: "five_way_baseline.json excuses doc/manifest/native/VM/provide disagreements including user-facing names"
+    evidence: "tests/escape_matrix/five_way_baseline.json; native_missing entries include force, region-open, hodge-star, geodesic-distance, tensor-reduce-sum"
+    caught_by: [parity-baselines]
+
+  - id: PR-05
+    bucket: PARITY-RATCHET
+    status: open
+    title: "PARITY.tsv carries 331 gap rows; 38 reproducers sit under tests/vm_parity/found/"
+    evidence: "tests/vm_parity/PARITY.tsv; tests/vm_parity/found/"
+    caught_by: [parity-baselines]
+
+  - id: PR-06
+    bucket: PARITY-RATCHET
+    status: open
+    title: "wasm EXCLUSIONS.tsv carries 1 XFAIL and 2 exclusions"
+    evidence: "tests/wasm_diff/EXCLUSIONS.tsv"
+    caught_by: [parity-baselines]
+    notes: "The XFAIL is SW-13, a silent wrong answer in the shipped browser build."
+
+  - id: PR-07
+    bucket: PARITY-RATCHET
+    status: open
+    title: "inexact->exact is an accepted permanent engine divergence: the VM reports a fatal error where native promotes to bignum"
+    evidence: "tests/vm_parity/PARITY.tsv inexact->exact row (added by PR #419, OPEN)"
+    caught_by: [pr-record-419]
+
+  - id: PR-08
+    bucket: PARITY-RATCHET
+    status: open
+    title: "Complex display format differs: native 2+i, VM 2+1i"
+    evidence: "tests/vm_parity/found/complex_display_format.esk (on #419's branch, OPEN)"
+    caught_by: [pr-record-419]
+
+  - id: PR-09
+    bucket: PARITY-RATCHET
+    status: open
+    title: "18 baselined ODR collisions and 57 dead guard tokens ship in the cut"
+    evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
+    caught_by: [pr-record-414, icc-odr-audit]
+
+  # ───────────────────────── DOC-DEBT ─────────────────────────
+
+  - id: DD-01
+    bucket: DOC-DEBT
+    status: open
+    title: "77 doc claims are allowlisted against ICC's doc-typed-claims detector"
+    count: 77
+    evidence: ".icc/doc-claims-allowlist.yaml on branch docs/icc-doc-probe-v134 (PR #416, OPEN)"
+    breakdown: "69 DETECTOR-MISATTRIBUTION, 8 EXEMPT-HISTORICAL; zero describe a runtime defect"
+    caught_by: [pr-record-416]
+    notes: "The allowlist itself is not shipped — #416 is unmerged — so the cut has neither the allowlist nor the doc fixes."
+
+  - id: DD-02
+    bucket: DOC-DEBT
+    status: open
+    title: "91 wrong numeric claims that two prior ICC audit passes flagged were never fixed"
+    count: 91
+    evidence: "PR #416 headline finding; docs/DESIGN.md, docs/ESHKOL_V1_ARCHITECTURE.md, press/ESHKOL_PRESS_INFORMATION_SHEET.md, docs/breakdown/COMPILER_ARCHITECTURE.md"
+    caught_by: [pr-record-416, icc-doc-typed-claims]
+    notes: "Two of the affected files are press copy that ships with the release."
+
+  - id: DD-03
+    bucket: DOC-DEBT
+    status: open
+    title: "KNOWN_ISSUES.md parity counts are stale against the shipped PARITY.tsv"
+    evidence: "docs/KNOWN_ISSUES.md:379 says 951 rows / 578 supported / 329 gap; PARITY.tsv is 956 / 581 / 331"
+    caught_by: [direct-measurement]
+    missed_by: [icc-doc-typed-claims]
+
+  - id: DD-04
+    bucket: DOC-DEBT
+    status: open
+    title: "ESH-0095 is claimed resolved in KNOWN_ISSUES and still carried as an XKNOWN excuse in the AD oracle"
+    evidence: "docs/KNOWN_ISSUES.md:45 vs tests/ad_oracle/README.md XKNOWN table"
+    measured: "(hessian f (tensor 1.0 2.0)) returns #((2 0) (0 2)) correctly at 9f2da2ab — the XKNOWN excuse is stale and should be deleted"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-readiness]
+
+  - id: DD-05
+    bucket: DOC-DEBT
+    status: open
+    title: "PR #417 would re-introduce two now-false known-limitation claims into the docs and four into the public site"
+    evidence: "PR #417 adds 'Quoted pattern-variable queries never match' (fixed by merged #414) and 'Factor-graph free energy is wrong in the browser build only' (#413 shows it is VM-wide, not browser-only), plus four site/src/main.esk strings"
+    caught_by: [pr-record-414, pr-record-416, pr-record-417]
+    notes: "Merge-blocking for #417. Both #414 and #416 flag it in writing; nobody has edited #417's branch."
+
+  - id: DD-06
+    bucket: DOC-DEBT
+    status: open
+    title: "MEMORY_MANAGEMENT.md names a file that does not exist, links to a different one, and carries a line count 3.5x the real total"
+    evidence: "docs/breakdown/MEMORY_MANAGEMENT.md; introduced by merged PR #409, flagged by #416"
+    caught_by: [pr-record-416]
+
+  - id: DD-07
+    bucket: DOC-DEBT
+    status: open
+    title: "The merged doc-example harness has three defects that make it miss the files it was built to check"
+    evidence: "scripts/doc_audit/extract_examples.py EXPECT_RE matches only =>; check_output_blocks.py collect() skips only blank lines between fences; neither runner sets ESHKOL_JIT_CACHE=0. PR #411 is merged."
+    caught_by: [pr-record-416]
+
+  - id: DD-08
+    bucket: DOC-DEBT
+    status: open
+    title: "docs/TEST_COVERAGE.md per-suite counts are the v1.1-era inventory and have drifted"
+    evidence: "PR #417 adds the provenance note; #417 is OPEN"
+    caught_by: [pr-record-417]
+
+  - id: DD-09
+    bucket: DOC-DEBT
+    status: open
+    title: "Runtime limits are documented as controls in three places while being inert"
+    evidence: "See SW-10. The honest status columns exist only on #416's unmerged branch."
+    caught_by: [pr-record-416, direct-measurement]
+
+  - id: DD-10
+    bucket: DOC-DEBT
+    status: open
+    title: "Documented no-ops in shipped surface"
+    items:
+      - "eshkol-run -D NAME[=VALUE] accepted, no macro, no warning (docs/reference/runtime/eshkol-run.md:79)"
+      - "eshkol-run -fPIC accepted as a no-op (docs/reference/runtime/eshkol-run.md:39)"
+      - "provide is advisory; the compiler generates no linkage restriction (docs/breakdown/MODULE_SYSTEM.md:444)"
+      - "manifold gyro-transport ships a first-order approximation with no signal (docs/reference/stdlib/manifold.md:144)"
+    caught_by: [doc-source-crosscheck]
+
+  - id: DD-11
+    bucket: DOC-DEBT
+    status: open
+    title: "68 header symbols and 59 shipped .esk exports have no documentation anywhere"
+    evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
+    caught_by: [pr-record-416]
