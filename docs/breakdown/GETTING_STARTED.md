@@ -328,7 +328,7 @@ Eshkol includes test scripts in `scripts/`:
 # Run specific test suite
 ./scripts/run_autodiff_tests.sh
 ./scripts/run_list_tests.sh
-./scripts/run_tensor_tests.sh
+./scripts/run_numeric_tests.sh
 
 # Run all tests
 for script in scripts/run_*_tests.sh; do

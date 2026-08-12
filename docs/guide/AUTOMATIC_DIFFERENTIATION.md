@@ -197,7 +197,7 @@ Output:
 240
 120
 0
-1.64872
+1.6487212707001282
 ```
 
 For x⁵: f‴ = 60x² = 240 at x=2; f⁽⁵⁾ = 120 (constant); f⁽⁶⁾ and up are 0.
@@ -220,9 +220,9 @@ beyond, where the old fixed 4-component jet returned a flat 0.
 Output:
 
 ```
-(1.64872 1.64872 0.824361 0.274787 0.0686967)
-1.64872
-1.64872
+(1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
+1.6487212707001282
+1.6487212707001282
 ```
 
 The coefficients of exp about 0.5 are `e^{0.5}/n!`: `1.64872, 1.64872,
@@ -314,9 +314,9 @@ primitive, just orchestration over `taylor`.
 Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
-5.30118
-4.60236
-(((0 3) . -0.877583) ((1 2) . 4.60236) ((2 1) . 5.30118) ((3 0) . 1.3903))
+5.301178820923195
+4.602357641846413
+(((0 3) . -0.8775825618903729) ((1 2) . 4.602357641846413) ((2 1) . 5.301178820923195) ((3 0) . 1.390302179763711))
 ```
 
 `mixed-partial` takes a list of variable indices *with repetition*: `(0 0 1)` is
@@ -357,7 +357,7 @@ and compose cleanly.
 Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
-36.8475
+36.84749999999999
 65.025
 7.5
 ```
@@ -398,8 +398,8 @@ optimization. Load `core.ad.taylor_models`.
 Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
-0.35127
-1.64873
+0.35127015921830285
+1.648729840781697
 #t
 ```
 
@@ -489,8 +489,8 @@ quantity that is itself a high-order derivative.
 Output:
 
 ```
--0.209809
--1.02851
+-0.20980900256803836
+-1.0285075059168876
 ```
 
 `g(v)` is the 3rd `t`-derivative of `sin(v·t)`, which analytically is
@@ -526,8 +526,8 @@ segments during the backward sweep rather than storing them all.
 Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
--3.31007e-08
--3.31007e-08
+-3.3100685786916897e-08
+-3.310068578691689e-08
 10
 ```
 
@@ -609,10 +609,10 @@ purely on `taylor`.
 Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
-0.367879
-0.367879
-1.41421
-1.41421
+0.3678794411714533
+0.36787944117144233
+1.4142135623730951
+1.4142135623730951
 (0 1 -1 2 -5 14)
 ```
 

@@ -613,10 +613,12 @@ curried form <code>(define df (derivative f))</code> …
 </tr>
 <tr>
 <td>Nested gradients</td>
-<td>Yes / Partial</td>
+<td>Yes</td>
 <td>Reverse</td>
-<td>Exact via nested scalar <code>derivative</code>; vector
-gradient-of-gradient returns zeros (ESH-0096)</td>
+<td>Exact for nested scalar <code>derivative</code> and for vector-point
+gradient-of-gradient (ESH-0096 closed); a <em>curried</em>
+<code>(define g (gradient f))</code> closure still differentiates to
+zeros</td>
 </tr>
 <tr>
 <td>Double backward</td>

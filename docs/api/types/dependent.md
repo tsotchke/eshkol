@@ -178,7 +178,7 @@ The evaluated value if it can be computed at compile time, or std::nullopt if th
 
 ### `CTValue::add`
 
-*Function* — line 187
+*Function* — line 193
 
 ```c
 CTValue add(const CTValue& other) const { ... }
@@ -188,7 +188,7 @@ Add two compile-time naturals, or Unknown if either is not evaluable.
 
 ### `CTValue::mul`
 
-*Function* — line 197
+*Function* — line 203
 
 ```c
 CTValue mul(const CTValue& other) const { ... }
@@ -198,7 +198,7 @@ Multiply two compile-time naturals, or Unknown if either is not evaluable.
 
 ### `DependentType`
 
-*class* — line 227
+*class* — line 233
 
 ```c
 class DependentType
@@ -208,7 +208,7 @@ Represents a type parameterized by compile-time values Examples: - Buffer<Float6
 
 ### `DependentType::DependentType`
 
-*Function* — line 234
+*Function* — line 240
 
 ```c
 DependentType() : base(BuiltinTypes::Value) { ... }
@@ -218,7 +218,7 @@ Construct with base type Value and no indices.
 
 ### `DependentType::DependentType`
 
-*Function* — line 237
+*Function* — line 243
 
 ```c
 DependentType(TypeId b) : base(b) { ... }
@@ -228,7 +228,7 @@ Construct a simple (non-parameterized) dependent type wrapping base type `b.`
 
 ### `DependentType::DependentType`
 
-*Function* — line 240
+*Function* — line 246
 
 ```c
 DependentType(TypeId b, std::vector<TypeId> types, std::vector<CTValue> values)
@@ -239,7 +239,7 @@ Construct a fully parameterized dependent type with type and value indices.
 
 ### `SigmaType`
 
-*Struct* — line 293
+*Struct* — line 299
 
 ```c
 struct SigmaType
@@ -249,7 +249,7 @@ Dependent pair type (Σ-type / existential type) A Σ-type represents an existen
 
 ### `SigmaType::SigmaType`
 
-*Function* — line 300
+*Function* — line 306
 
 ```c
 SigmaType()
@@ -262,7 +262,7 @@ Construct a trivial Sigma type with Value/Value components and no dependency.
 
 ### `SigmaType::SigmaType`
 
-*Function* — line 306
+*Function* — line 312
 
 ```c
 SigmaType(const std::string& name, TypeId wit_type, TypeId bod_type, bool dep = true)
@@ -276,7 +276,7 @@ Construct a Sigma type Sigma(name:wit_type).bod_type, dependent unless `dep` is 
 
 ### `SigmaValue`
 
-*Struct* — line 333
+*Struct* — line 339
 
 ```c
 struct SigmaValue
@@ -286,7 +286,7 @@ Runtime representation of a dependent pair value Holds both components of a Σ-t
 
 ### `SigmaValue::SigmaValue`
 
-*Function* — line 339
+*Function* — line 345
 
 ```c
 SigmaValue()
@@ -298,7 +298,7 @@ Construct with an Unknown witness and Value/Value runtime types.
 
 ### `SigmaValue::SigmaValue`
 
-*Function* — line 344
+*Function* — line 350
 
 ```c
 SigmaValue(const CTValue& wit, TypeId wit_type, TypeId bod_type)
@@ -311,7 +311,7 @@ Construct a dependent pair value from a witness and its component runtime types.
 
 ### `DimensionChecker`
 
-*class* — line 360
+*class* — line 366
 
 ```c
 class DimensionChecker
@@ -329,31 +329,31 @@ Static verification of array/vector dimension bounds Used to verify at compile t
 | `CTValue::expr_` | Variable | 57 |
 | `CTValue::CTValue` | Function | 59 |
 | `CTValue::tryEvalBool` | Function | 146 |
-| `CTValue::lessThan` | Function | 161 |
-| `CTValue::equals` | Function | 171 |
-| `CTValue::toString` | Function | 207 |
-| `DependentType::base` | Variable | 228 |
-| `DependentType::type_indices` | Variable | 230 |
-| `DependentType::value_indices` | Variable | 231 |
-| `DependentType::isSimple` | Function | 244 |
-| `DependentType::allValuesKnown` | Function | 249 |
-| `DependentType::getDimension` | Function | 257 |
-| `DependentType::toString` | Function | 265 |
-| `DependentType::equals` | Function | 268 |
-| `DependentType::isSubtypeOf` | Function | 271 |
-| `SigmaType::witness_name` | Variable | 294 |
-| `SigmaType::witness_type` | Variable | 295 |
-| `SigmaType::body_type` | Variable | 296 |
-| `SigmaType::is_dependent` | Variable | 297 |
-| `SigmaType::makeProduct` | Function | 313 |
-| `SigmaType::isSimpleProduct` | Function | 318 |
-| `SigmaType::firstType` | Function | 321 |
-| `SigmaType::secondType` | Function | 324 |
-| `SigmaValue::witness` | Variable | 334 |
-| `SigmaValue::witness_runtime_type` | Variable | 335 |
-| `SigmaValue::body_runtime_type` | Variable | 336 |
-| `SigmaValue::hasKnownWitness` | Function | 350 |
-| `DimensionChecker::checkBounds` | Function | 376 |
-| `DimensionChecker::checkDimensionsEqual` | Function | 380 |
-| `DimensionChecker::checkMatMulDimensions` | Function | 384 |
-| `DimensionChecker::checkDotProductDimensions` | Function | 389 |
+| `CTValue::lessThan` | Function | 167 |
+| `CTValue::equals` | Function | 177 |
+| `CTValue::toString` | Function | 213 |
+| `DependentType::base` | Variable | 234 |
+| `DependentType::type_indices` | Variable | 236 |
+| `DependentType::value_indices` | Variable | 237 |
+| `DependentType::isSimple` | Function | 250 |
+| `DependentType::allValuesKnown` | Function | 255 |
+| `DependentType::getDimension` | Function | 263 |
+| `DependentType::toString` | Function | 271 |
+| `DependentType::equals` | Function | 274 |
+| `DependentType::isSubtypeOf` | Function | 277 |
+| `SigmaType::witness_name` | Variable | 300 |
+| `SigmaType::witness_type` | Variable | 301 |
+| `SigmaType::body_type` | Variable | 302 |
+| `SigmaType::is_dependent` | Variable | 303 |
+| `SigmaType::makeProduct` | Function | 319 |
+| `SigmaType::isSimpleProduct` | Function | 324 |
+| `SigmaType::firstType` | Function | 327 |
+| `SigmaType::secondType` | Function | 330 |
+| `SigmaValue::witness` | Variable | 340 |
+| `SigmaValue::witness_runtime_type` | Variable | 341 |
+| `SigmaValue::body_runtime_type` | Variable | 342 |
+| `SigmaValue::hasKnownWitness` | Function | 356 |
+| `DimensionChecker::checkBounds` | Function | 382 |
+| `DimensionChecker::checkDimensionsEqual` | Function | 386 |
+| `DimensionChecker::checkMatMulDimensions` | Function | 390 |
+| `DimensionChecker::checkDotProductDimensions` | Function | 395 |

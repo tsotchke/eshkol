@@ -301,8 +301,8 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 
 ### Example: Higher-Order Derivatives
 
-Exact nested higher-order differentiation is done by nesting the **scalar**
-`derivative` operator (this is exact as of v1.3.0-evolve — see #75, #84, #95):
+Nested higher-order differentiation is exact by nesting the **scalar**
+`derivative` operator (see #75, #84, #95):
 
 ```scheme
 ;; Second derivative: f''(x) = d²/dx² (x³) = 6x
@@ -312,13 +312,29 @@ Exact nested higher-order differentiation is done by nesting the **scalar**
 ;; Returns: 12   ; f''(2) = 6*2 = 12
 ```
 
-> **Known limitation (ESH-0096):** nesting the **vector** `gradient` operator —
-> a gradient-of-gradient over a `(vector …)` point — currently returns zeros
-> silently rather than the true second-order value. Use the scalar `derivative`
-> form above for higher-order results. Related open items: `hessian`/`laplacian`
-> SIGSEGV on tensor points (ESH-0095) and vector-param AD combined with a
-> captured local (ESH-0072/0097). These are tracked in `.swarm/tasks/` and the
-> [CHANGELOG](../../CHANGELOG.md) Known Issues section.
+Nesting the **vector** `gradient` operator is exact too, as of v1.3.4-evolve:
+
+```scheme
+;; gradient of gradient at a vector point
+(gradient (lambda (v)
+            (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
+          (vector 2.0))
+;; Returns: #(12)
+```
+
+Four AD cells that were open through v1.3.3 are closed on this build, each
+confirmed by re-running its own minimal repro under
+[`tests/ad_oracle/found/`](../../tests/ad_oracle/found):
+
+| Cell | Was | Now |
+|------|-----|-----|
+| ESH-0096 | vector-param gradient-of-gradient returned zeros | returns `#(12)` (1-D) / `#(8 6)` (2-D) |
+| ESH-0095 | `hessian`/`laplacian` SIGSEGV at a `tensor`/`#(…)` point | every point form returns the same answer |
+| ESH-0078 | second-order gradient through a **named** inner function returned zeros | agrees with the inline-lambda form |
+| ESH-0097 | vector-param AD capturing a local failed IR verification (`PtrToInt`) | returns `#(4.42 0)` |
+
+See [reference/ad/support-matrix.md](../reference/ad/support-matrix.md) for the
+per-cell oracle evidence.
 
 ---
 
@@ -328,10 +344,10 @@ Exact nested higher-order differentiation is done by nesting the **scalar**
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 9,205 | All 3 AD modes, vector calculus |
-| **AD Runtime** | [`inc/eshkol/eshkol.h:565-603`](../../inc/eshkol/eshkol.h) | 38 | AD node structures, tape definition |
-| **Dual Numbers** | [`inc/eshkol/eshkol.h:135-144`](../../inc/eshkol/eshkol.h) | 10 | Forward-mode dual number struct |
-| **Type System** | [`lib/backend/type_system.cpp`](../../lib/backend/type_system.cpp) | 287 | AD type generation (dual_t, ad_node_t) |
+| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 13,815 | All 3 AD modes, vector calculus |
+| **AD Runtime** | [`inc/eshkol/eshkol.h:1011-1080`](../../inc/eshkol/eshkol.h) | 70 | AD node structures, tape definition |
+| **Dual Numbers** | [`inc/eshkol/eshkol.h:212-215`](../../inc/eshkol/eshkol.h) | 4 | Forward-mode dual number struct |
+| **Type System** | [`lib/backend/type_system.cpp`](../../lib/backend/type_system.cpp) | 187 | AD type generation (dual_t, ad_node_t) |
 
 ### AD Mode Detection
 
@@ -747,23 +763,22 @@ The backward pass traverses the tape in reverse order (last node first), using `
 
 ### 3. Parallel Tape Management
 
-The AD tape uses **per-thread isolation** via `thread_local` storage in `lib/core/arena_memory.cpp`:
+The AD tape uses **per-thread isolation** via `thread_local` storage in `lib/core/runtime_autodiff.cpp` (declared in `lib/core/arena_memory.h`):
 
 ```c
 // thread_local: AD tape state is per-thread to prevent corruption under parallel autodiff
-#define MAX_TAPE_DEPTH 32
-thread_local ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
+thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __ad_tape_depth = 0;
 ```
 
-This means each thread in the parallel thread pool maintains its own independent tape stack, supporting up to 32 levels of nested gradient computation per thread. The outer AD node stack is also thread-local:
+This means each thread in the parallel thread pool maintains its own independent tape stack, supporting up to 32 levels (`ESHKOL_ARENA_MAX_TAPE_DEPTH`) of nested gradient computation per thread. The outer AD node stack is also thread-local:
 
 ```c
-thread_local void* __outer_ad_node_stack[MAX_TAPE_DEPTH] = {nullptr};
+thread_local void* __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __outer_ad_node_depth = 0;
 ```
 
-However, the global AD tape pointer (`__current_ad_tape`) and the global AD mode flag (`__ad_mode_active`) in `arena_memory.cpp` are **not** thread-local -- they are plain global variables:
+However, the global AD tape pointer (`__current_ad_tape`) and the global AD mode flag (`__ad_mode_active`), also in `runtime_autodiff.cpp`, are **not** thread-local -- they are plain global variables:
 
 ```c
 ad_tape_t* __current_ad_tape = nullptr;

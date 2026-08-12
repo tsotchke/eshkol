@@ -171,7 +171,7 @@ cmake .. &amp;&amp; make -j8
 <h3 id="first-derivative">First Derivative</h3>
 <pre class="scheme"><code>;; Compute derivative of f(x) = x^2 at x = 3
 (define f (lambda (x) (* x x)))
-(display (derivative f 3.0))  ;; -&gt; 6.0</code></pre>
+(display (derivative f 3.0))  ;; -&gt; 6</code></pre>
 <hr />
 <h2 id="language-overview">Language Overview</h2>
 <p>Eshkol uses <strong>S-expression syntax</strong> familiar to
@@ -424,10 +424,10 @@ differentiation</strong> as built-in language primitives:</p>
 (<code>derivative</code>)</h4>
 <p>Numerical derivatives using dual numbers:</p>
 <pre class="scheme"><code>(define f (lambda (x) (* x x x)))  ;; f(x) = x^3
-(derivative f 2.0)                  ;; -&gt; 12.0 (f&#39;(x) = 3x^2)
+(derivative f 2.0)                  ;; -&gt; 12 (f&#39;(x) = 3x^2)
 
 (define g (lambda (x) (sin (* x x))))
-(derivative g 1.0)                  ;; -&gt; 1.0806... (2x*cos(x^2))</code></pre>
+(derivative g 1.0)                  ;; -&gt; 1.0806046117362795 (2x*cos(x^2))</code></pre>
 <h4 id="reverse-mode-ad-gradient-jacobian-hessian">3. Reverse-Mode AD
 (<code>gradient</code>, <code>jacobian</code>,
 <code>hessian</code>)</h4>
@@ -438,7 +438,7 @@ functions:</p>
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
 
-(gradient f (vector 3.0 4.0))  ;; -&gt; #(6.0 8.0)
+(gradient f (vector 3.0 4.0))  ;; -&gt; #(6 8)
 
 ;; Jacobian matrix for vector-valued functions
 (define polar-&gt;cartesian (lambda (v)
@@ -447,29 +447,35 @@ functions:</p>
             (* r (sin theta))))))
 
 (jacobian polar-&gt;cartesian (vector 1.0 0.0))
-;; -&gt; #((1.0 0.0) (0.0 1.0))
+;; -&gt; #((1 0) (0 1))
 
 ;; Hessian matrix (second derivatives)
-(hessian f (vector 1.0 1.0))  ;; -&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
+(hessian f (vector 1.0 1.0))  ;; -&gt; #((2 0) (0 2))</code></pre>
+<p>An inexact result with no fractional part prints without a decimal
+point, so the <code>6</code>, <code>8</code> and <code>2</code> above
+are the doubles 6.0, 8.0 and 2.0 — ask <code>exact?</code> if the
+distinction matters. See <a
+href="reference/language/numeric-tower.md">the numeric tower
+reference</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <p>Built-in operators for physics and engineering:</p>
 <pre class="scheme"><code>;; Divergence: div(F)
 (define F (lambda (v) (vector (* 2 (vref v 0)) (* 3 (vref v 1)))))
-(divergence F (vector 1.0 1.0))  ;; -&gt; 5.0
+(divergence F (vector 1.0 1.0))  ;; -&gt; 5
 
 ;; Curl: curl(F) (3D only)
 (define rotating (lambda (v)
   (vector (- 0 (vref v 1)) (vref v 0) 0.0)))
-(curl rotating (vector 1.0 1.0 0.0))  ;; -&gt; #(0.0 0.0 2.0)
+(curl rotating (vector 1.0 1.0 0.0))  ;; -&gt; #(0 0 2)
 
 ;; Laplacian: laplacian(f)
 (define harmonic (lambda (v)
   (- (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
-(laplacian harmonic (vector 1.0 1.0))  ;; -&gt; 0.0 (it&#39;s harmonic!)
+(laplacian harmonic (vector 1.0 1.0))  ;; -&gt; 0 (it&#39;s harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6.0</code></pre>
+(directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6</code></pre>
 <h3 id="arbitrary-order-ad-taylor-towers-v1.3.0-evolve">Arbitrary-Order
 AD: Taylor Towers (v1.3.0-evolve)</h3>
 <p>Everything above differentiates once (or, with nesting, a small fixed
@@ -500,7 +506,7 @@ function:</p>
 (define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
 
 ;; d^3f/dx dy^2 at (2.0, 3.0) -- idxs is a multi-index with repetition
-(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -&gt; 2.0
+(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -&gt; 2
 
 ;; The full order-&gt;=3 symmetric derivative tensor, as (multi-index . value) pairs
 (gradient-n f (vector 2.0 3.0) 3)</code></pre>
@@ -580,7 +586,7 @@ Precision Integers)</h3>
 (gcd (expt 2 100) (expt 6 50))
 
 ;; Comparisons are exact
-(&gt; (expt 2 256) (expt 10 77))  ;; -&gt; #f</code></pre>
+(&gt; (expt 2 256) (expt 10 77))  ;; -&gt; #t  (2^256 is about 1.158e77)</code></pre>
 <h3 id="rational-numbers">Rational Numbers</h3>
 <pre class="scheme"><code>;; Rational literals with / syntax
 (define half 1/2)
@@ -623,28 +629,32 @@ heap-allocated <code>{real:f64, imag:f64}</code> representation and
 Smith’s formula for numerically stable division.</p>
 <h3 id="creation-1">Creation</h3>
 <pre class="scheme"><code>;; Rectangular form
-(make-rectangular 3.0 4.0)     ;; -&gt; 3.0+4.0i
+(make-rectangular 3.0 4.0)     ;; -&gt; 3+4i
 
 ;; Polar form
-(make-polar 5.0 0.9273)        ;; -&gt; 3.0+4.0i (approximately)</code></pre>
+(make-polar 5.0 0.9273)        ;; -&gt; 2.9999808719721477+4.000014345949428i
+                               ;;    (3+4i, up to the rounding of the angle)</code></pre>
+<p>A component with no fractional part prints without a decimal point,
+and a zero real part or a unit imaginary part is elided, so
+<code>3+4i</code> above is the pair of doubles 3.0 and 4.0.</p>
 <h3 id="accessors">Accessors</h3>
 <pre class="scheme"><code>(define z (make-rectangular 3.0 4.0))
 
-(real-part z)      ;; -&gt; 3.0
-(imag-part z)      ;; -&gt; 4.0
-(magnitude z)      ;; -&gt; 5.0
-(angle z)          ;; -&gt; 0.9273... (radians)</code></pre>
+(real-part z)      ;; -&gt; 3
+(imag-part z)      ;; -&gt; 4
+(magnitude z)      ;; -&gt; 5
+(angle z)          ;; -&gt; 0.9272952180016122 (radians)</code></pre>
 <h3 id="arithmetic">Arithmetic</h3>
 <pre class="scheme"><code>;; All standard arithmetic works on complex numbers
 (+ (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -&gt; 4.0+6.0i
+   (make-rectangular 3.0 4.0))     ;; -&gt; 4+6i
 
 (* (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -&gt; -5.0+10.0i
+   (make-rectangular 3.0 4.0))     ;; -&gt; -5+10i
 
 ;; Division uses Smith&#39;s formula (overflow-safe)
 (/ (make-rectangular 1.0 0.0)
-   (make-rectangular 0.0 1.0))     ;; -&gt; 0.0-1.0i
+   (make-rectangular 0.0 1.0))     ;; -&gt; -i  (zero real part is elided)
 
 ;; Math functions extend to complex domain
 (sqrt (make-rectangular -1.0 0.0)) ;; -&gt; 0.0+1.0i
@@ -1118,7 +1128,7 @@ Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
 <p>Call C functions directly:</p>
 <pre class="scheme"><code>;; Declare external C functions
 (extern void printf char* ...)
-(extern void* malloc int)
+(extern ptr malloc int)          ;; `ptr`, not `void*`, is the pointer type
 (extern double sin double)
 
 ;; Use them in Eshkol
@@ -1126,8 +1136,9 @@ Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
 <h3 id="function-aliasing">Function Aliasing</h3>
 <p>Map Eshkol names to C names:</p>
 <pre class="scheme"><code>;; Map friendly names to C functions
-(extern void log-message :real printf char* ...)
-(extern void* allocate-memory :real malloc int)
+;; Modifiers such as `:real` must come LAST, after the argument types
+(extern void log-message char* ... :real printf)
+(extern ptr allocate-memory int :real malloc)
 
 (log-message &quot;Allocating %d bytes\n&quot; 1024)</code></pre>
 <hr />
@@ -1299,8 +1310,9 @@ Estimation</h3>
   (if (or (null? lst) (null? (cdr lst)))
       lst
       (let ((mid (quotient (length lst) 2)))
-        (merge (sort (take mid lst) less?)
-               (sort (drop mid lst) less?)))))
+        ;; take/drop follow SRFI-1 argument order: the list first, the count second
+        (merge (sort (take lst mid) less?)
+               (sort (drop lst mid) less?)))))
 
 (sort (list 3 1 4 1 5 9 2 6) &lt;)  ;; -&gt; (1 1 2 3 4 5 6 9)</code></pre>
 <hr />

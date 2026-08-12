@@ -1,7 +1,7 @@
 # XLA Backend — Eshkol Compiler Internals
 
 **Status**: Production (v1.2.1-scale)
-**Source**: `lib/backend/xla/xla_runtime.cpp`, `inc/eshkol/backend/xla/xla_codegen.h`, `inc/eshkol/backend/xla/xla_runtime.h`
+**Source**: `lib/backend/xla/xla_runtime.cpp` (1,298 lines), `inc/eshkol/backend/xla/xla_codegen.h`, `inc/eshkol/backend/xla/xla_runtime.h`
 **Build flag**: `-DESHKOL_XLA_ENABLED`
 
 ---
@@ -46,7 +46,7 @@ The XLA threshold governs whether `XLACodegen` emits an XLA runtime call at all;
 | TensorCodegen | `lib/backend/tensor_codegen.cpp` | SIMD/XLA dispatch gate |
 | XLACodegen | `lib/backend/xla/` (headers) | Emits `eshkol_xla_*` call IR |
 | XLA runtime | `lib/backend/xla/xla_runtime.cpp` | C functions called from IR |
-| GPU memory | `lib/backend/gpu/gpu_memory.h` | Metal/CUDA buffer abstraction |
+| GPU memory | `inc/eshkol/backend/gpu/gpu_memory.h` | Metal/CUDA buffer abstraction |
 | BLAS backend | `lib/backend/blas_backend.cpp` | AMX/NEON/AVX matmul |
 
 ### 2.2 Threshold Configuration
@@ -836,7 +836,7 @@ subtype `HEAP_SUBTYPE_TENSOR`) store raw doubles as int64 bit patterns.
 
 ## 12. See Also
 
-- `lib/backend/xla/xla_runtime.cpp` — all 11 C runtime functions
+- `lib/backend/xla/xla_runtime.cpp` — all 11 C runtime functions (1,298 lines)
 - `inc/eshkol/backend/xla/xla_codegen.h` — XLACodegen LLVM emit API
 - `inc/eshkol/backend/xla/xla_runtime.h` — XLARuntime C++ class API
 - `inc/eshkol/backend/xla/xla_types.h` — XLATypes HoTT→MLIR type mapping

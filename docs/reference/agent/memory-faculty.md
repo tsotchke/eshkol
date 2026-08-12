@@ -1,4 +1,4 @@
-# Memory Faculty — `core.memory` and `core.memory-store`
+# Memory Faculty — `core.memory` and `core.memory_store`
 
 An append-only, content-addressed, CRDT-merged **event log** for a distributed
 agent. It is composed entirely from verified core primitives — `sha256`
@@ -9,7 +9,7 @@ rendering (`core.sexp`), and the RGA / LWW-register / vector-clock CRDTs from
 Two layers ship:
 
 - `core.memory` — the in-memory event-log faculty (v0).
-- `core.memory-store` — a durable, fsync'd, replayable event log with a hash
+- `core.memory_store` — a durable, fsync'd, replayable event log with a hash
   chain and head file.
 
 Both run under `eshkol-run -r` (JIT) **and** AOT. Because the faculty calls
@@ -53,13 +53,13 @@ one log.
 
 ---
 
-## `core.memory-store` — Durable event store
+## `core.memory_store` — Durable event store
 
 ```scheme
-(require core.memory-store)
+(require core.memory_store)
 ```
 
-Source: `lib/core/memory-store.esk`. Adds fsync'd append-to-file, a `.head`
+Source: `lib/core/memory_store.esk`. Adds fsync'd append-to-file, a `.head`
 pointer file, replay-on-open, and linkage verification. Uses fixed-arity libc
 externs (`fopen`/`fwrite`/`fflush`/`fileno`/`fsync`/`fclose`) for ARM64-safe
 FFI.
@@ -69,12 +69,32 @@ FFI.
 | `make-memory-store` | `(make-memory-store log path)` |
 | `memory-store-open` | `(memory-store-open node-id path)` — open + replay |
 | `memory-store-open-fast` | `(memory-store-open-fast node-id path)` — open via head file |
-| `memory-store-append!` | `(memory-store-append! store type payload)` |
+| `memory-store-append!` | `(memory-store-append! store type payload)` — `payload` is an **alist** of `(key . string-or-number)` pairs; returns the appended **event**, or `#f` if the write was not persisted |
 | `memory-store-verify` | `(memory-store-verify store)` — verify chain linkage |
 | `memory-store-count` | `(memory-store-count store)` |
 | `memory-store-head` | `(memory-store-head store)` |
 | `memory-store?` / `memory-store-log` / `memory-store-path` | accessors |
 | `memory-store-sanitize` | payload sanitizer |
+
+`memory-store-append!` mutates the store in place and returns the **event** it
+appended, not the store. Keep using the handle `memory-store-open` gave you;
+passing the returned event to a `memory-store-*` accessor is not a store and
+crashes rather than raising a typed error:
+
+```scheme
+(require core.memory_store)
+
+(define st (memory-store-open "node-a" "store.log"))
+(memory-store-append! st "note" (list (cons "text" "first link")))
+(memory-store-append! st "note" (list (cons "text" "second link")))
+(display (memory-store-count st))   ;; => 2
+(newline)
+(display (memory-store-verify st))  ;; => #t
+(newline)
+```
+
+Reopening the same path in a later process replays the chain and reports the
+same `2` / `#t`, which is the durability property this layer exists for.
 
 Durable content-addressed storage (`core.merkle` CAS) and network fan-out
 (git / Syncthing) are the planned step-2 layers on top of this store.

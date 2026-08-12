@@ -109,7 +109,7 @@ pages and lets them fan out to their siblings.
   - [subprocess.md](reference/agent/subprocess.md) — process spawning, ownership/cleanup contract
   - [crypto.md](reference/agent/crypto.md) — SHA-256, HMAC, random bytes, UUIDv4, base64url
   - [eagle.md](reference/agent/eagle.md) — native linear-head training
-  - [memory-faculty.md](reference/agent/memory-faculty.md) — `core.memory`, `core.memory-store`
+  - [memory-faculty.md](reference/agent/memory-faculty.md) — `core.memory`, `core.memory_store`
   - [platform-utilities.md](reference/agent/platform-utilities.md) — regex, globbing, file watching, secrets, terminal/TUI, git
 - [Agent FFI (breakdown)](breakdown/AGENT_FFI.md) — native HTTP/SQLite/subprocess/fs-watch surfaces and AOT link wiring
 

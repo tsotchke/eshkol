@@ -113,7 +113,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Computational graphs | Yes | Reverse | Tape-based |
 | Gradient computation | Yes | Reverse | `gradient` |
 | Backpropagation | Yes | Reverse | Full backward pass |
-| Nested gradients | Yes / Partial | Reverse | Exact via nested scalar `derivative`; vector gradient-of-gradient returns zeros (ESH-0096) |
+| Nested gradients | Yes | Reverse | Exact for nested scalar `derivative` and for vector-point gradient-of-gradient (ESH-0096 closed); a *curried* `(define g (gradient f))` closure still differentiates to zeros |
 | Double backward | Yes | Reverse | Second derivatives via `hessian` (tensor-literal, vector, and variable-bound points, #343) or nested scalar `derivative` |
 | Jacobian matrices | Yes | Reverse | `jacobian` |
 | Hessian matrices | Yes | Reverse | `hessian` |

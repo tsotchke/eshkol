@@ -1,6 +1,6 @@
 # Eshkol Design Document
 
-## v1.3.0-evolve
+## v1.3.4-evolve
 
 Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, and a consciousness engine built on unification, active inference, and global workspace theory.
 
@@ -31,7 +31,7 @@ Source (.esk)
  Typed AST
      |
      v
- LLVM IR Generation     34 specialized codegen modules (~85,500 lines)
+ LLVM IR Generation     34 specialized codegen modules (~106,500 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
@@ -50,33 +50,33 @@ Compilation command: `eshkol-run file.esk -o binary`
 
 ### Modular Code Generation
 
-The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing. Line counts below reflect the v1.3.0-evolve tree.
+The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing. Line counts below reflect the v1.3.4-evolve tree.
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 33,962 | Main codegen, dispatch, builtins |
-| autodiff_codegen.cpp | 9,205 | Forward/reverse mode AD |
-| string_io_codegen.cpp | 3,293 | String, I/O, JSON, CSV operations |
-| parallel_llvm_codegen.cpp | 2,601 | Work-stealing parallelism codegen |
-| arithmetic_codegen.cpp | 2,491 | Numeric ops, bignum, rational, complex |
-| collection_codegen.cpp | 2,348 | Vector, list, hash table operations |
-| system_codegen.cpp | 1,752 | System, environment, time, process |
-| tensor_codegen.cpp | 1,540 | Tensor ops dispatch shell (post v1.2 split) |
-| thread_pool.cpp | 1,350 | Work-stealing thread pool |
-| tensor_backward.cpp | 1,321 | Backward-mode AD gradients |
-| blas_backend.cpp | 1,253 | BLAS dispatch, GPU cost model |
-| binding_codegen.cpp | 1,242 | let/let\*/letrec/letrec\* with TCO |
-| call_apply_codegen.cpp | 1,025 | Function calls, apply, partial application |
-| parallel_codegen.cpp | 945 | parallel-map/fold/filter/for-each |
-| map_codegen.cpp | 879 | map/for-each/fold with closures |
-| control_flow_codegen.cpp | 874 | if/cond/case/match/call-cc |
-| tagged_value_codegen.cpp | 717 | Tagged value pack/unpack |
-| hash_codegen.cpp | 603 | Hash operations |
-| homoiconic_codegen.cpp | 601 | Code-as-data, eval |
-| tail_call_codegen.cpp | 503 | TCO transformation |
-| complex_codegen.cpp | 499 | Complex number ops (Smith's formula) |
+| llvm_codegen.cpp | 42,025 | Main codegen, dispatch, builtins |
+| autodiff_codegen.cpp | 13,815 | Forward/reverse mode AD |
+| arithmetic_codegen.cpp | 3,869 | Numeric ops, bignum, rational, complex |
+| string_io_codegen.cpp | 3,860 | String, I/O, JSON, CSV operations |
+| collection_codegen.cpp | 3,164 | Vector, list, hash table operations |
+| parallel_llvm_codegen.cpp | 2,626 | Work-stealing parallelism codegen |
+| system_codegen.cpp | 2,039 | System, environment, time, process |
+| tensor_codegen.cpp | 1,867 | Tensor ops dispatch shell (post v1.2 split) |
+| binding_codegen.cpp | 1,662 | let/let\*/letrec/letrec\* with TCO |
+| thread_pool.cpp | 1,524 | Work-stealing thread pool |
+| tensor_backward.cpp | 1,446 | Backward-mode AD gradients |
+| blas_backend.cpp | 1,281 | BLAS dispatch, GPU cost model |
+| call_apply_codegen.cpp | 1,270 | Function calls, apply, partial application |
+| control_flow_codegen.cpp | 1,107 | if/cond/case/match/call-cc |
+| map_codegen.cpp | 1,107 | map/for-each/fold with closures |
+| parallel_codegen.cpp | 1,008 | parallel-map/fold/filter/for-each |
+| tagged_value_codegen.cpp | 807 | Tagged value pack/unpack |
+| tail_call_codegen.cpp | 748 | TCO transformation |
+| homoiconic_codegen.cpp | 706 | Code-as-data, eval |
+| hash_codegen.cpp | 671 | Hash operations |
+| complex_codegen.cpp | 659 | Complex number ops (Smith's formula) |
 
-The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 22,400 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 22,300 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
 
 Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 195,600 lines indexed.
 
@@ -164,7 +164,7 @@ Three theoretical frameworks unified as compiler primitives:
 
 **Global Workspace Theory** (Baars, 1988): `make-workspace`, `ws-register!`, `ws-step!`, `workspace?`
 
-Runtime implementation in logic.cpp, inference.cpp, workspace.cpp. LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
+Runtime implementation in logic.cpp (1,182 lines), inference.cpp (1,203 lines), workspace.cpp (354 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
 
 ### GPU Acceleration
 
@@ -237,11 +237,11 @@ Provides DOM manipulation, event handling, Canvas 2D drawing, Fetch API, LocalSt
 
 ### REPL JIT
 
-Interactive development via LLVM OrcJIT (2,062 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
+Interactive development via LLVM OrcJIT (4,335 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
 
 ### Package Manager
 
-`eshkol-pkg` (721 lines) with TOML manifests and git-based registry. Commands: init, build, run, add, clean. 35 auto-loaded stdlib modules (plus ~22 opt-in modules) organized under core, math, signal, ml, web, random, and types namespaces with automatic recursive module discovery.
+`eshkol-pkg` (876 lines) with TOML manifests and git-based registry. Commands: init, build, run, add, clean. 35 auto-loaded stdlib modules (plus ~22 opt-in modules) organized under core, math, signal, ml, web, random, and types namespaces with automatic recursive module discovery.
 
 ### Dual Backend Architecture
 
@@ -249,9 +249,9 @@ Eshkol has two production execution backends serving different purposes:
 
 **LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 21 specialized codegen modules. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,189 lines; roughly 46,200 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
-**Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~6,800 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
+**Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
 The LLVM and VM backends share the same language semantics but use independent value representations. The VM exists for the qLLM/transformer weight pipeline and portable bytecode execution, not as a replacement for native compilation.
 
@@ -277,20 +277,20 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 | Component | Lines | Files |
 |:---|---:|---:|
-| LLVM backend (main + modules) | ~86,000 | 21 |
-| Bytecode VM + runtime libs | ~41,000 | 29 |
-| XLA/StableHLO backend | ~4,000 | 5 |
-| GPU/Metal backend | ~8,900 | 4 |
-| Frontend (parser, macro, types) | ~10,400 | 3 |
-| Runtime (arena, logic, inference, workspace) | ~14,400 | 14 |
-| REPL JIT | ~2,100 | 1 |
-| Tools (LSP, package manager, VS Code) | ~2,800 | 3+ |
-| Headers | ~16,000 | 52 |
-| Weight matrix transformer | ~6,800 | 1 |
-| **Total compiler infrastructure** | **~232,000** | **130+** |
-| Standard library (.esk, auto-loaded) | ~4,400 | 35 modules |
-| Standard library (.esk, full tree including opt-in modules) | ~10,200 | 57 modules |
-| Test code (.esk) | ~42,900 | 586 files |
+| LLVM backend (main + modules) | ~87,300 | 21 |
+| Bytecode VM + runtime libs | ~46,200 | 33 |
+| XLA/StableHLO backend | ~3,960 | 6 |
+| GPU/Metal backend | ~11,800 | 5 |
+| Frontend (parser, macro, types) | ~16,400 | 3 |
+| Runtime (arena, logic, inference, workspace) | ~7,200 | 12 |
+| REPL JIT | ~4,335 | 1 |
+| Tools (LSP, package manager, VS Code) | ~2,200 | 4+ |
+| Headers | ~26,200 | 75 |
+| Weight matrix transformer | ~7,400 | 1 |
+| **Total compiler infrastructure** | **~322,800** | **322** |
+| Standard library (.esk, auto-loaded) | ~4,580 | 37 modules |
+| Standard library (.esk, full tree including opt-in modules) | ~17,400 | 96 modules |
+| Test code (.esk) | ~107,400 | 1,658 files |
 
 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures. Bytecode VM: 331/332 tests (99.7%). Weight matrices: 126/126 inline + 123/123 traced (3-way verified).
 
