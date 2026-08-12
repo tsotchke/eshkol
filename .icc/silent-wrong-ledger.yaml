@@ -589,6 +589,28 @@ entries:
       a criterion: the gate needs a rising floor on constructs-with-evidence, not only a
       ceiling on new divergences.
 
+  - id: PR-11
+    bucket: PARITY-RATCHET
+    status: open
+    title: "The invariant named for silent wrong answers is an existence check, not a threshold check"
+    measured: >-
+      icc architecture-verify at 9f2da2ab: INV-engine-semantic-parity, kind "exercise",
+      severity critical, incident tag "vm-parity-silent-wrong-answer", grades PASS with the
+      detail "capability 'engine_semantic_parity' exercised within 30d (1 event(s))".
+      The single event it accepted carries the payload "113/1114 constructs with differential
+      evidence (10.14%), 10 divergent program(s), 0 new".
+    evidence: "icc architecture-verify --repo eshkol-v134-release --model .icc/architecture-model.yaml"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      The invariant whose incident name is literally vm-parity-silent-wrong-answer is
+      satisfied by ONE event existing inside a 30-day window, whatever that event says. It
+      would pass identically at 1 percent coverage. An "exercise" invariant proves a probe
+      RAN; it cannot prove the probe found anything, and severity critical on an existence
+      check reads as far stronger assurance than it delivers. Pair every exercise invariant
+      with a threshold on its own payload — this is the same shape as PR-10 and the two
+      should be fixed together.
+
   # ───────────────────────── DOC-DEBT ─────────────────────────
 
   - id: DD-01
