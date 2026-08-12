@@ -377,8 +377,62 @@ jobs:
           path: ${{ runner.temp }}/eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.tar.gz
           if-no-files-found: error
 
+  # Same rationale as ci.yml's prefetch-windows-llvm-archives: the Windows
+  # lanes' own curl-from-llvm-project path (below, "Install LLVM SDK") is
+  # where a stalled/slow download can hang a job, while Linux egress to
+  # GitHub release assets is fast and reliable. Pre-fetch the raw archives
+  # on Linux into a short, in-workspace, OS-agnostic relative path via
+  # enableCrossOsArchive, kept as a separate cache key/path from the
+  # *extracted* SDK the Windows jobs restore into C:\src (an absolute,
+  # drive-lettered path outside the workspace that cross-OS archiving
+  # cannot target directly, per actions/cache's own docs). A release run is
+  # infrequent and high-stakes, so this stays self-contained here rather
+  # than assuming ci.yml's cache population already ran for this ref.
+  prefetch-windows-llvm-archives:
+    name: prefetch-windows-llvm-archives (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            llvm_suffix: aarch64
+          - arch: x64
+            llvm_suffix: x86_64
+    steps:
+      - name: Restore LLVM SDK archive cache
+        id: archive-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
+      - name: Download LLVM SDK archive
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p llvm-archive-cache
+          llvm_version='${{ env.WINDOWS_LLVM_SDK_VERSION }}'
+          suffix='${{ matrix.llvm_suffix }}'
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${llvm_version}/clang+llvm-${llvm_version}-${suffix}-pc-windows-msvc.tar.xz"
+          out="llvm-archive-cache/clang+llvm-${llvm_version}-${suffix}-pc-windows-msvc.tar.xz"
+          echo "Downloading $url"
+          curl --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output "$out" "$url"
+
+      - name: Save LLVM SDK archive cache
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
   windows-release-matrix:
     name: release-${{ matrix.name }}
+    needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -455,6 +509,18 @@ jobs:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
 
+      # Populated by prefetch-windows-llvm-archives above, which this job
+      # `needs:`. On a hit, "Install LLVM SDK" below extracts straight from
+      # this file and never calls curl at all.
+      - name: Restore prefetched LLVM SDK archive
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        id: archive-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llvm-archive-cache/clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz
+          key: windows-llvm-archive-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+          enableCrossOsArchive: true
+
       - name: Install LLVM SDK
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -463,6 +529,7 @@ jobs:
           $llvmVersion = '${{ env.WINDOWS_LLVM_SDK_VERSION }}'
           $llvmRoot = "C:\src\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc"
           $llvmCmakeDir = "$llvmRoot\lib\cmake\llvm"
+          $prefetched = "llvm-archive-cache\clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
           $archive = "$env:RUNNER_TEMP\llvm-${{ matrix.arch }}-$llvmVersion.tar.xz"
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/clang+llvm-$llvmVersion-${{ matrix.llvm_suffix }}-pc-windows-msvc.tar.xz"
 
@@ -471,16 +538,21 @@ jobs:
             Remove-Item -LiteralPath $llvmRoot -Recurse -Force
           }
 
-          Write-Host "Downloading $url"
-          # --retry only fires on curl's own error exits; a connection that
-          # opens and then goes silent (stalled transfer) is not an error to
-          # curl and --retry never sees it, so the step can hang to the job
-          # timeout. --connect-timeout bounds the TCP/TLS handshake and
-          # --speed-limit/--speed-time make curl abort (exit 28) once the
-          # transfer drops below 100 KB/s for 60s straight, which --retry-all-errors
-          # then retries like any other failure.
-          curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
-          if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+          if ('${{ steps.archive-cache.outputs.cache-hit }}' -eq 'true' -and (Test-Path $prefetched)) {
+            Write-Host "Using prefetched archive at $prefetched (skipping curl)"
+            $archive = $prefetched
+          } else {
+            Write-Host "Downloading $url"
+            # --retry only fires on curl's own error exits; a connection that
+            # opens and then goes silent (stalled transfer) is not an error to
+            # curl and --retry never sees it, so the step can hang to the job
+            # timeout. --connect-timeout bounds the TCP/TLS handshake and
+            # --speed-limit/--speed-time make curl abort (exit 28) once the
+            # transfer drops below 100 KB/s for 60s straight, which --retry-all-errors
+            # then retries like any other failure.
+            curl.exe --fail --location --connect-timeout 30 --speed-limit 102400 --speed-time 60 --retry 5 --retry-delay 5 --retry-all-errors --output $archive $url
+            if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+          }
 
           Write-Host "Extracting..."
           tar -xf $archive -C C:\src
