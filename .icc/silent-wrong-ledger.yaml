@@ -175,10 +175,12 @@ entries:
     correct: "The documented limit is applied, or the variable is documented as inert"
     variables: [ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, ESHKOL_MAX_TENSOR_ELEMS, ESHKOL_MAX_STRING_LEN, ESHKOL_ENFORCE_LIMITS, ESHKOL_LIMIT_WARNINGS]
     evidence: >-
-      lib/core/resource_limits.cpp parses into g_limits and nothing consults it;
-      eshkol_check_tensor_size / eshkol_check_string_length / eshkol_stack_push /
-      eshkol_is_timed_out / eshkol_track_allocation have zero call sites outside their
-      own definitions. Documented as controls at docs/breakdown/RUNTIME_CONFIGURATION.md:27-33,
+      lib/core/resource_limits.cpp parses into g_limits and nothing consults it.
+      Exhaustive grep over lib/, inc/ and exe/ for eshkol_check_tensor_size,
+      eshkol_check_string_length, eshkol_is_timed_out and eshkol_track_allocation returns
+      15 hits: 11 declarations in inc/eshkol/core/resource_limits.h and 4 definitions in
+      lib/core/resource_limits.cpp. ZERO call sites anywhere else — the enforcement
+      functions are written, compiled, and never invoked. Documented as controls at docs/breakdown/RUNTIME_CONFIGURATION.md:27-33,
       docs/reference/runtime/environment-variables.md:65-73, docs/API_REFERENCE.md:4396-4402.
     caught_by: [pr-record-416, direct-measurement, doc-source-crosscheck]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
