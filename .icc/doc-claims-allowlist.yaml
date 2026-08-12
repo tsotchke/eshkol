@@ -92,9 +92,9 @@ entries:
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the monolithic VM file size at the historical "Dual Backend
     Architecture (NEW)" entry, before the later vm_*.c module split
-- claim_id: b0e3c0034d6b03ef
+- claim_id: 57387765719ed7b5
   path: RELEASE_NOTES.md
-  line: 1128
+  line: 1145
   claim_type: file_path
   subject: arena_memory.cpp
   value: 3908
@@ -110,9 +110,9 @@ entries:
   disposition: EXEMPT-HISTORICAL
   reason: a completed [x] checklist row recording the before/after size of a specific historical refactor
     commit ("19,940 -> 1,280 lines, 94% reduction"), identical historical fact to the CHANGELOG:2464 entry
-- claim_id: 63dddb6baad23920
+- claim_id: 6deb77ac1ec4db80
   path: docs/API_REFERENCE.md
-  line: 7068
+  line: 7092
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 22300

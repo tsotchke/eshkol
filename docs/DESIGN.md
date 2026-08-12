@@ -54,7 +54,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 42,025 | Main codegen, dispatch, builtins |
+| llvm_codegen.cpp | 42,047 | Main codegen, dispatch, builtins |
 | autodiff_codegen.cpp | 13,815 | Forward/reverse mode AD |
 | arithmetic_codegen.cpp | 3,869 | Numeric ops, bignum, rational, complex |
 | string_io_codegen.cpp | 3,860 | String, I/O, JSON, CSV operations |
@@ -164,7 +164,7 @@ Three theoretical frameworks unified as compiler primitives:
 
 **Global Workspace Theory** (Baars, 1988): `make-workspace`, `ws-register!`, `ws-step!`, `workspace?`
 
-Runtime implementation in logic.cpp (1,182 lines), inference.cpp (1,203 lines), workspace.cpp (354 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
+Runtime implementation in logic.cpp (1,505 lines), inference.cpp (1,203 lines), workspace.cpp (354 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
 
 ### GPU Acceleration
 

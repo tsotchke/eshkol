@@ -88,13 +88,13 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (42,025 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 322,800 lines)
+**Phase 4: LLVM IR Generation** (42,047 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 322,800 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,025 | Main codegen, dispatch, builtins |
+| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,047 | Main codegen, dispatch, builtins |
 | [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 13,815 | Forward/reverse mode AD |
 | [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 3,869 | Numeric ops, bignum, rational, complex |
 | [string_io_codegen.cpp](../../lib/backend/string_io_codegen.cpp) | 3,860 | String, I/O, JSON, CSV operations |
@@ -169,7 +169,7 @@ Closures capture variables by storing **pointers** (not values) to the captured 
   (inc)) ; Returns 2 (mutates same counter)
 ```
 
-**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,182 lines, [inference.cpp](../../lib/core/inference.cpp) 1,203 lines, [workspace.cpp](../../lib/core/workspace.cpp) 354 lines):
+**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,505 lines, [inference.cpp](../../lib/core/inference.cpp) 1,203 lines, [workspace.cpp](../../lib/core/workspace.cpp) 354 lines):
 
 Three C runtime libraries implementing unification with substitutions, factor graph belief propagation, and global workspace softmax competition. LLVM codegen dispatches to these via tagged value calling conventions.
 

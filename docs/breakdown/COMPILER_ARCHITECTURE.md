@@ -62,7 +62,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,025 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,047 lines)
 |    GENERATION    |  AST -> LLVM IR via 34 codegen modules (~106,500 lines)
 +------------------+
        |
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,025 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,047 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -366,7 +366,7 @@ The LLVM backend distributes code generation across 21 specialized modules total
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 42,025 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 42,047 | Orchestrator, AST dispatch, builtins, consciousness engine |
 | **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 13,815 | Forward/reverse/symbolic AD modes |
 | **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 3,869 | +, -, *, /, bignum, rational, complex dispatch |
 | **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
@@ -457,7 +457,7 @@ Worker functions use `LinkOnceODRLinkage` to prevent duplicate symbol errors whe
 
 ### Consciousness Engine Codegen
 
-**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,182 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,203 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
+**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,203 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
 
 **Codegen:** Dispatched directly from [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (not a separate module)
 
@@ -888,7 +888,7 @@ A dynamic array of AD nodes allocated during the forward pass, topologically sor
 ### Consciousness Engine Runtime
 
 Three C runtime libraries:
-- **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp), 1,182 lines): Robinson's unification, substitution environments, knowledge base query
+- **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp), 1,505 lines): Robinson's unification, substitution environments, knowledge base query
 - **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,203 lines): Factor graph construction, belief propagation, free energy computation
 - **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp), 354 lines): Module registration, softmax competitive attention, step execution
 
