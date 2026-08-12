@@ -556,8 +556,8 @@ entries:
     bucket: LOUD-ERROR
     subtag: structural
     status: closed
-    closed_at: "80415893"
-    closed_by: "PR_NUMBER_PLACEHOLDER (branch fix/first-class-builtins)"
+    closed_at: "a1c28375"
+    closed_by: "PR #427 (branch fix/first-class-builtins)"
     title: "Builtins are call-position-only; passing one as a first-class value SIGSEGVs (exit 139)"
     repro: "(define (ap f a b) (f a b)) (display (ap string<? \"a\" \"b\"))"
     observed: "SIGSEGV at address 0x0, exit 139"
