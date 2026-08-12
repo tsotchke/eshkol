@@ -2143,7 +2143,10 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
         for (FuncChunk* p = c; p && depth < 32; p = p->enclosing)
             chain[depth++] = p;
         int found = 0;
-        for (int d = depth - 1; d >= 1 && !found; d--) {
+        /* Nearest enclosing scope first — see the read path's note. Walking
+         * outermost-first made `set!` on a shadowed name assign the TOP-LEVEL
+         * binding rather than the nearer one the reference reads. */
+        for (int d = 1; d < depth && !found; d++) {
             int enc_slot = resolve_local(chain[d], name);
             if (enc_slot >= 0) {
                 /* Check if the source variable is boxed */
@@ -2768,8 +2771,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             for (FuncChunk* p = c; p && depth < 32; p = p->enclosing)
                 chain[depth++] = p;
 
-            /* Search from the outermost scope inward */
-            for (int d = depth - 1; d >= 1; d--) {
+            /* Search from the NEAREST enclosing scope outward. chain[0] is the
+             * current chunk and chain[depth-1] is `main`, and the VM binds every
+             * top-level define to a stack slot in `main` (see resolve_local's
+             * note), so walking outermost-first resolved a free variable to the
+             * TOP-LEVEL binding whenever one shared its name — the inverse of
+             * lexical scoping. `(define qg 100.0) (define (g qg) ((lambda (t)
+             * (* qg t)) 2.0))` returned 200 instead of 3, silently, because the
+             * lambda captured main's `qg` rather than g's parameter. Nearest
+             * binding wins, as R7RS 4.1.1 requires. */
+            for (int d = 1; d < depth; d++) {
                 int enc_slot = resolve_local(chain[d], node->symbol);
                 if (enc_slot >= 0) {
                     /* Found at level d. Check if it's boxed at the source. */

@@ -1,0 +1,94 @@
+;; R7RS 4.1.1 -- a free variable resolves to the NEAREST enclosing binding,
+;; identically on both substrates.
+;;
+;; "The variable must be bound ... it refers to the binding of the innermost
+;; region containing the variable reference."  A top-level define of the same
+;; name is the OUTERMOST such region, so it must lose to any enclosing
+;; parameter or let binding.
+;;
+;; The VM's upvalue resolver walked the enclosing FuncChunk chain
+;; outermost-first, and the VM binds every top-level define to a stack slot in
+;; `main` -- the outermost chunk -- so a lambda closing over its enclosing
+;; function's parameter captured the TOP-LEVEL binding whenever the two shared
+;; a name.  Silently: no diagnostic, a plausible number, wrong.  Native has
+;; always resolved these correctly, so every line below is a native-vs-VM
+;; differential.
+;;
+;; Numeric output only -- the VM prints a procedure as <closure@N> where native
+;; prints its source form, so no procedure is ever displayed here.
+
+;; ── the base case: parameter shadows a same-named global ──────────────────
+;; qg is 100 at the top level and 1.5 as g's parameter; the lambda closes over
+;; the parameter, so this is 1.5 * 2 = 3, not 100 * 2 = 200.
+(define qg 100.0)
+(define (g qg) ((lambda (t) (* qg t)) 2.0))
+(display (g 1.5))
+(newline)
+
+;; ── the same capture reached through a let-bound lambda ───────────────────
+(define (h qg) (let ((f (lambda (t) (* qg t)))) (f 2.0)))
+(display (h 1.5))
+(newline)
+
+;; ── and through a higher-order call, where the lambda escapes its scope ───
+(define (k qg) (car (map (lambda (t) (* qg t)) (list 2.0))))
+(display (k 1.5))
+(newline)
+
+;; ── a LET binding, not a parameter, shadowing the global ──────────────────
+(define zz 100.0)
+(define (m w) (let ((zz (* w 3.0))) ((lambda (t) (* zz t)) 2.0)))
+(display (m 1.5))
+(newline)
+
+;; ── three levels deep: the MIDDLE binding wins, not the outermost ─────────
+;; p is 100 at top level, 7 in outer, 2 in mid; the innermost lambda must see
+;; mid's 2, so 2 * 10 = 20.
+(define p 100)
+(define (outer p)
+  (define (mid p) ((lambda (t) (* p t)) 10))
+  (mid 2))
+(display (outer 7))
+(newline)
+
+;; ── set! through a shadowed name must NOT reach the top-level binding ─────
+;; The inner set! targets bump's parameter, so the top-level ss is untouched
+;; and still reads 100.  The VM's set! resolver walked the same chain in the
+;; same wrong order, so it assigned main's slot and this printed 101.
+;;
+;; Only the top-level binding is asserted here, deliberately.  Reading the
+;; mutated value BACK out of the parameter exercises a separate, pre-existing
+;; VM gap -- `set!` on a captured parameter from inside a closure does not
+;; propagate to the enclosing frame, so `(define (f n) ((lambda () (set! n (+ n
+;; 1)))) n)` returns the unincremented n on the VM and the incremented one
+;; natively, with no shadowing involved at all and on unmodified master.  That
+;; is a boxing/upvalue-writeback defect in its own right; asserting it here
+;; would make this file red for a defect it is not about.
+(define ss 100)
+(define (bump ss) ((lambda () (set! ss (+ ss 1)))) 0)
+(display (bump 5))
+(newline)
+(display ss)
+(newline)
+
+;; ── controls: capture that is NOT shadowed must still reach the global ────
+(define gonly 11)
+(define (uses-global x) ((lambda (t) (* gonly t)) x))
+(display (uses-global 3))
+(newline)
+
+;; ── control: ordinary enclosing capture with no same-named global ─────────
+(define (plain a) ((lambda (t) (+ a t)) 4))
+(display (plain 6))
+(newline)
+
+;; ── control: top-level self-recursion still resolves to itself ────────────
+(define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))
+(display (fact 5))
+(newline)
+
+;; ── control: a shadowing parameter that is itself passed on ───────────────
+(define acc 1000)
+(define (chain acc) ((lambda (t) ((lambda (u) (+ acc u)) t)) 5))
+(display (chain 20))
+(newline)
