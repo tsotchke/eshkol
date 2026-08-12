@@ -808,6 +808,45 @@ static const eshkol_fact_t* fact_operand(arena_t* arena,
     return fact_from_datum(arena, tv, 0);
 }
 
+/**
+ * @brief Structural equality of two facts: same predicate, same arity, and
+ *        pairwise-equal arguments.
+ *
+ * This is EQUALITY, not unification — a logic variable matches only the same
+ * logic variable, so retracting `(p ?x)` does not remove `(p 1)`.  Exposed
+ * because `kb-retract!` needs to find a fact the caller rebuilt rather than
+ * one they kept a pointer to.
+ */
+extern "C" bool eshkol_fact_equal(const eshkol_fact_t* a,
+                                  const eshkol_fact_t* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->arity != b->arity) return false;
+    if (a->predicate != b->predicate) {
+        /* Interned predicates compare by pointer; fall back to the text, the
+         * same way eshkol_unify does when one escaped interning. */
+        const char* p1 = (const char*)(uintptr_t)a->predicate;
+        const char* p2 = (const char*)(uintptr_t)b->predicate;
+        if (!p1 || !p2 || strcmp(p1, p2) != 0) return false;
+    }
+    const eshkol_tagged_value_t* aa = FACT_ARGS(a);
+    const eshkol_tagged_value_t* ba = FACT_ARGS(b);
+    for (uint32_t i = 0; i < a->arity; i++) {
+        if (!tagged_values_equal(&aa[i], &ba[i])) return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Coerce a tagged value to a fact for the retract path.
+ * Accepts a fact or a `(predicate arg ...)` datum list, exactly as
+ * kb-assert! and kb-query do.
+ */
+extern "C" const eshkol_fact_t* eshkol_fact_operand(
+        arena_t* arena, const eshkol_tagged_value_t* tv) {
+    return fact_operand(arena, tv);
+}
+
 /* ===== Knowledge Base ===== */
 
 #define KB_INITIAL_CAPACITY 16

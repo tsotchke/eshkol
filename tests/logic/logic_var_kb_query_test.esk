@@ -177,6 +177,19 @@
      (equal? (kb-query kb '(?rel3 alice bob))
              (kb-query kb (make-fact ?rel3 'alice 'bob))) #t)
 
+;; kb-retract! names a fact by VALUE, not by the pointer you happened to keep.
+;; Native scanned by pointer identity only, so a fact rebuilt inline could
+;; never match and the call always returned #f while the VM removed it.
+(define kb-r (make-kb))
+(kb-assert! kb-r (make-fact 'r 1 2))
+(kb-assert! kb-r (make-fact 'r 2 3))
+(chk "retract a rebuilt fact succeeds" (kb-retract! kb-r (make-fact 'r 1 2)) #t)
+(chk "…and the KB shrank"              (kb-count kb-r) 1)
+(chk "retracting an absent fact is #f" (kb-retract! kb-r (make-fact 'r 9 9)) #f)
+(chk "…and the KB is unchanged"        (kb-count kb-r) 1)
+(chk "the survivor is still queryable"
+     (walk ?rb (car (kb-query kb-r (make-fact 'r 2 ?rb)))) 3)
+
 ;; ---------------------------------------------------------------------------
 ;; (5) Nested patterns unify structurally.
 ;; ---------------------------------------------------------------------------
