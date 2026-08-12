@@ -52,12 +52,23 @@ statuses:
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **951 rows — 581
-`vm-supported`, 44 `native-only-justified`, 326 `gap`** (counted from
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 581
+`vm-supported`, 44 `native-only-justified`, 331 `gap`** (counted from
 `tests/vm_parity/PARITY.tsv`; the 936/562/45 figures quoted here previously
 predated several ratchet promotions). The three most recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
 logic-variable representation was unified across the engines (task #100).
+
+**A status is a claim about the running system, and is now checked as one.**
+This audit validates the ledger against SOURCE TEXT — names scraped from the
+C++ dispatch table in `llvm_codegen.cpp` and the op enum — so it can neither
+see Scheme-level stdlib procedures nor tell whether a `vm-supported` row is
+true. `scripts/run_surface_parity.py` closes that: it probes every name on
+BOTH engines and fails when native resolves a name the VM does not while the
+ledger is silent or claims `vm-supported`. It is what found `assq`, `assv`,
+`memv`, `partition` and `string-contains` — all resolvable natively, all
+aborting the VM with "undefined variable", none of them in this ledger, while
+this audit reported OK.
 Verified behavioral divergences remain explicit `gap` rows with reproducible
 programs under `tests/vm_parity/found/`.
 

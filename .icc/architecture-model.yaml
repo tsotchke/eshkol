@@ -276,8 +276,13 @@ invariants:
     severity: high
     description: >
       Every native codegen symbol is present in the VM surface or explicitly
-      classified in PARITY.tsv, and the supported subset produces identical
-      output under native LLVM, VM source, and emitted ESKB execution.
+      classified in PARITY.tsv.  CLASSIFICATION COMPLETENESS ONLY — this
+      invariant's guard reads source text (names scraped from
+      llvm_codegen.cpp, statuses hand-typed in PARITY.tsv) and cannot tell
+      whether a `vm-supported` row is true of the running system.  The claim
+      that the supported subset "produces identical output" was previously
+      folded into this description while nothing checked it; it now lives in
+      INV-engine-semantic-parity, which executes both engines.
     invariant_name: classified-native-vm-dispatch-parity
     impl: {path: scripts/vm_parity_audit.py, symbol: audit}
     reference: {path: scripts/vm_parity_audit.py, symbol: vm_surface}
@@ -293,6 +298,34 @@ invariants:
   #    A declared FFI/system builtin must have its runtime symbol DEFINED (the
   #    link registration).  Armed by the codegen declaration; dependency is the
   #    runtime definition site.  Expected PASS (the #250 fix is in tree).
+  # 1b. engine-semantic-parity. The dangerous class: a construct that RUNS on
+  #     both engines and returns a DIFFERENT VALUE. Name-resolution parity,
+  #     ledger classification and one-engine coverage all pass through it —
+  #     `(if '() 'T 'F)` was T natively and F on the VM with every gate green,
+  #     as were kb-query's result shape, unify's argument order, logic-var?'s
+  #     answer and kb-retract!'s matching rule. Evidence is EXECUTED: the
+  #     corpus is run on both engines and stdout compared, with a VM failure
+  #     on a previously-agreeing program treated as a regression rather than
+  #     an out-of-subset reclassification. Bind the differential_fraction
+  #     threshold in the readiness oracle, as INV-language-surface-exercise
+  #     does for covered_fraction.
+  - id: INV-engine-semantic-parity
+    kind: exercise
+    incident: vm-parity-silent-wrong-answer
+    severity: critical
+    fidelity: runtime
+    description: >
+      Every corpus program must compute the SAME ANSWER under native LLVM and
+      under the bytecode VM, and the differential construct-coverage fraction
+      must hold its recorded floor.  Verified by executing both engines, not
+      by reading source text.
+    capability: engine_semantic_parity
+    window_days: 30
+    impl: {path: scripts/run_engine_parity_coverage.py, symbol: main}
+    evidence:
+      trace_event_kind: runtime_event
+      trace_name_pattern: engine_semantic_parity
+
   - id: INV-ffi-registration-completeness
     kind: dependency-presence
     incident: ffi-link-registration-missing

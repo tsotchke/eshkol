@@ -71,6 +71,11 @@ arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step)
 arithmetic-shift	vm-supported	
 asin	vm-supported	
 asinh	gap	no VM name binding
+assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
+assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 atan	vm-supported	
 atan2	gap	no VM name binding
 atanh	gap	no VM name binding
