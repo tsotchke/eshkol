@@ -430,12 +430,24 @@ entries:
     affected_measured: ["string<?", "string>?", "string=?", "char<?", "char=?", "string-append", "vector-ref", "car", "expt", "min", "max"]
     unaffected_measured: ["+", "<", "eq?"]
     evidence: ".scratch/flaw-ledger/repro/fc_tmp.esk; tests/differential/corpus/37_sort.esk"
-    caught_by: [pr-record-420, direct-measurement]
+    axis_dependent_failure: >-
+      scripts/icc_traces/differential_smoke at 9f2da2ab records 37_sort.esk failing a
+      DIFFERENT way on every compilation axis: jit rc=1, jit-nocache rc=139 (SIGSEGV),
+      aot-o0 rc=125, aot-o2 rc=125. Six pairwise axis comparisons FAIL plus the
+      differential_corpus_clean roll-up ("1/41 corpus programs diverge across axes").
+      The cached-JIT-versus-nocache split (1 vs 139) is the same object-cache signature as
+      IF-01, so the two are probably one root cause seen from two directions.
+    readiness_impact: >-
+      MEASURED at 9f2da2ab: icc readiness eshkol-compiler-readiness is BLOCKED at score 77,
+      and this defect is the whole of the failure_free FAIL apart from one stale event.
+      LE-01 is the single item standing between the cut and a green readiness run.
+    caught_by: [pr-record-420, direct-measurement, icc-readiness]
     missed_by: [icc-correctness-chain, icc-smoke, KNOWN_ISSUES]
     notes: >-
       PR #420 describes this as 'Undefined variable'. At 9f2da2ab it is a SIGSEGV, which is
-      strictly worse, and it is a FAMILY, not one builtin. It is the failure_free blocker
-      that holds icc readiness at 77 on #420's branch.
+      strictly worse, and it is a FAMILY of at least 11 builtins, not one. Note the honest
+      detector working: readiness is red BECAUSE this is real. Do not baseline 37_sort.esk
+      to make the number go green.
 
   - id: LE-02
     bucket: LOUD-ERROR
