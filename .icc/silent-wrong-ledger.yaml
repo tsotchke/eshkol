@@ -215,7 +215,10 @@ entries:
     notes: >-
       ICC's duplicate-implementations detector did not flag this pair: the two files are
       not textually similar, so a lexical clone detector cannot see a semantic duplicate.
-      That is a concrete ICC detector gap, not a scoping choice.
+      That is a concrete ICC detector gap, not a scoping choice. The correctness chain's
+      other half, `contradictions`, returned 30 findings at this SHA and every one is a
+      constant_disagreement or env_default_disagreement on a build/tuning symbol — it
+      compares symbol VALUES, never behaviour, docs or test-harness metadata.
 
   - id: SW-13
     bucket: SILENT-WRONG
