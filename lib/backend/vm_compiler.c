@@ -353,7 +353,23 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
     int n_patches = 0;
     for (int i = 1; i < node->n_children; i++) {
         Node* clause = node->children[i];
-        if (clause->type != N_LIST || clause->n_children < 2) continue;
+        if (clause->type != N_LIST || clause->n_children < 1) continue;
+        /* R7RS 4.2.1: a `(<test>)` clause with NO body evaluates to the TEST
+         * VALUE when the test is truthy, and falls through when it is not.
+         * These clauses used to be skipped outright by an `n_children < 2`
+         * guard, so `(cond ((+ 1 2)) (else 'fail))` returned `fail` on the VM
+         * and `3` natively — the whole point of the idiom, `(cond ((assoc k
+         * alist)) (else ...))`, silently produced the wrong branch. */
+        if (clause->n_children == 1 && !is_sym(clause->children[0], "else")) {
+            compile_expr(c, clause->children[0], 0);   /* test -> TOS */
+            chunk_emit(c, OP_DUP, 0);                  /* keep a copy       */
+            int jfall = placeholder(c);                /* pops the copy     */
+            if (n_patches < 64) end_patches[n_patches++] = placeholder(c);
+            patch(c, jfall, OP_JUMP_IF_FALSE, c->code_len);
+            chunk_emit(c, OP_POP, 0);                  /* falsy: discard it  */
+            continue;
+        }
+        if (clause->n_children < 2) continue;
         if (is_sym(clause->children[0], "else")) {
             /* else clause — always taken */
             for (int j = 1; j < clause->n_children; j++) {
