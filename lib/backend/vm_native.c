@@ -5032,6 +5032,99 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     return t;
 }
 
+/**
+ * @brief Flat numeric read of a factor-graph sequence operand — the ONE
+ *        reader every factor-graph native uses for its `#(...)` arguments.
+ *
+ * The consciousness surface documents factor-graph arguments as reader
+ * literals: `(make-factor-graph 2 #(2 2))`, `(fg-add-factor! fg #(0 1) #(...))`,
+ * `(free-energy fg #(1 1))`.  In the NATIVE runtime a numeric `#(...)` literal
+ * already IS a tensor, so lib/core/inference.cpp reads it straight through
+ * extract_tensor().  In the VM it is a HEAP_VECTOR — `(tensor? #(2 2))` is #f
+ * there — and each factor-graph native had hand-rolled a tensor-or-list reader
+ * that matched NEITHER form for the documented surface: var-dims collapsed to
+ * one degenerate dimension, every factor was dropped on the floor, and
+ * observations were never seen.  free-energy therefore answered -0.0 for every
+ * graph and every evidence set on every VM target (the browser/WASM VM is
+ * merely where it was first noticed, since WASM *is* the VM).
+ *
+ * Reading through vm_tensor_collection_len/at makes list, vector and tensor
+ * operands one thing here, exactly as they already are for the `tensor`
+ * constructor — so the surface cannot drift per call site again.
+ *
+ * @param v      Sequence operand: tensor, vector, proper list, or bare scalar.
+ * @param out_n  Receives the element count (0 when there is nothing to read).
+ * @return Flat doubles, valid until the enclosing region pops (the tensor case
+ *         aliases the tensor's own storage), or NULL when the count is 0.
+ */
+#define VM_FG_SEQ_MAX_DEPTH 16   /* nesting guard; a factor-graph operand is
+                                  * shape at most, never a deep structure */
+
+/** @brief Leaf count of @p v flattened row-major (-1 if it is not numeric
+ *         data at all). Nesting is shape, exactly as it is for a tensor. */
+static int vm_fg_seq_count(VM* vm, Value v, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH) return -1;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return (t && t->data) ? (int)t->total : -1;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) {                                   /* scalar leaf */
+        if (v.type == VAL_INT || v.type == VAL_FLOAT ||
+            v.type == VAL_RATIONAL || v.type == VAL_BIGNUM) return 1;
+        return -1;
+    }
+    int total = 0;
+    for (int i = 0; i < len; i++) {
+        int sub = vm_fg_seq_count(vm, vm_tensor_collection_at(vm, v, i), depth + 1);
+        if (sub < 0) return -1;
+        total += sub;
+    }
+    return total;
+}
+
+/** @brief Row-major flatten of @p v into @p out (bounded by @p cap). */
+static void vm_fg_seq_fill(VM* vm, Value v, double* out, int cap, int* pos, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH || *pos >= cap) return;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || !t->data) return;
+        for (int i = 0; i < (int)t->total && *pos < cap; i++) out[(*pos)++] = t->data[i];
+        return;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) { out[(*pos)++] = as_number_vm(vm, v); return; }
+    for (int i = 0; i < len && *pos < cap; i++)
+        vm_fg_seq_fill(vm, vm_tensor_collection_at(vm, v, i), out, cap, pos, depth + 1);
+}
+
+static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
+    if (out_n) *out_n = 0;
+    if (v.type == VAL_NIL) return NULL;              /* '() — no elements */
+
+    /* Zero-copy: a tensor operand is already a flat double buffer. */
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || !t->data || t->total <= 0) return NULL;
+        if (out_n) *out_n = (int)t->total;
+        return t->data;
+    }
+
+    /* Nesting is shape, so `#(#(0 0))` flattens to the same two elements it
+     * is natively (where that literal already IS a rank-2 tensor) — see
+     * tests/ad/free_energy_ad_test.esk, whose observation operand is exactly
+     * that. */
+    int n = vm_fg_seq_count(vm, v, 0);
+    if (n <= 0) return NULL;
+    double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+    if (!buf) return NULL;
+    int pos = 0;
+    vm_fg_seq_fill(vm, v, buf, n, &pos, 0);
+    if (pos == 0) return NULL;
+    if (out_n) *out_n = pos;
+    return buf;
+}
+
 static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
 
 /**
@@ -8838,28 +8931,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
         int nv = (int)as_number(nvars_val);
         int var_dims[64]; int nd = 0;
-        /* var_dims may be a `#(2 2 2)` tensor (canonical Eshkol API,
-         * matching the native LLVM runtime), a `(2 2 2)` list, or a
-         * bare scalar.  The VM previously only read the list/scalar
-         * forms, so a tensor collapsed to nd=1 and num_vars was clamped
-         * down to 1 — every multi-variable factor graph silently became
-         * single-variable, leaving inference and free-energy degenerate. */
-        if (dims_val.as.ptr >= 0 && dims_val.type != VAL_PAIR &&
-            vm->heap.objects[dims_val.as.ptr] &&
-            vm->heap.objects[dims_val.as.ptr]->type == HEAP_TENSOR) {
-            VmTensor* dt = (VmTensor*)vm->heap.objects[dims_val.as.ptr]->opaque.ptr;
-            if (dt && dt->data) {
-                int dn = (int)dt->total;
-                for (int i = 0; i < dn && nd < 64; i++)
-                    var_dims[nd++] = (int)dt->data[i];
-            }
-        } else if (dims_val.type == VAL_PAIR) {
-            Value cur = dims_val;
-            while (cur.type == VAL_PAIR && nd < 64) {
-                var_dims[nd++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else { var_dims[0] = (int)as_number(dims_val); nd = 1; }
+        /* var-dims is read by the one factor-graph sequence reader, so the
+         * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
+         * natively), a `(2 2 2)` list and a bare scalar all mean the same
+         * thing.  The tensor-or-list reader this replaces matched neither the
+         * documented literal nor a vector: dims collapsed to a single
+         * degenerate dimension, so every multi-variable factor graph silently
+         * became single-variable and inference/free-energy went degenerate. */
+        int dseq_n = 0;
+        const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
+        for (int i = 0; i < dseq_n && nd < 64; i++) {
+            int d = (int)dseq[i];
+            var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
+                                                 * variable domain; binary is
+                                                 * the documented default */
+        }
+        if (nd == 0) {                          /* dims omitted/unreadable */
+            int want = (nv > 0 && nv < 64) ? nv : 0;
+            for (int i = 0; i < want; i++) var_dims[nd++] = 2;
+        }
         if (nd < nv) nv = nd;
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
         if (!fg) { vm_push(vm, NIL_VAL); break; }
@@ -8876,45 +8966,46 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Extract var_indices from either a tensor `#(0 1)` or a
-                 * list `(0 1)`.  The canonical Eshkol API (and the native
-                 * LLVM runtime) passes var indices as a `#(...)` tensor;
-                 * the VM previously only read the list form, so factors
-                 * added with tensor indices were silently dropped
-                 * (n_vars stayed 0), leaving beliefs uniform and
-                 * free-energy at ~0. */
+                /* Var indices and CPT both go through the one factor-graph
+                 * sequence reader, so the documented `#(0 1)` / `#(0.9 0.1)`
+                 * literals (VECTORs in the VM), `(vector ...)` values, lists
+                 * and tensors are all read identically.  The tensor-or-list
+                 * reader this replaces silently dropped every factor added
+                 * with the documented literal form (n_vars stayed 0), which
+                 * left beliefs uniform and free-energy at -0.0. */
                 int var_idx[8], n_vars = 0;
-                if (vars.as.ptr >= 0 && vars.type != VAL_PAIR &&
-                    vm->heap.objects[vars.as.ptr] &&
-                    vm->heap.objects[vars.as.ptr]->type == HEAP_TENSOR) {
-                    VmTensor* vt = (VmTensor*)vm->heap.objects[vars.as.ptr]->opaque.ptr;
-                    if (vt && vt->data) {
-                        int vn = (int)vt->total;
-                        for (int i = 0; i < vn && n_vars < 8; i++)
-                            var_idx[n_vars++] = (int)vt->data[i];
-                    }
-                } else {
-                    Value cur = vars;
-                    while (cur.type == VAL_PAIR && n_vars < 8) {
-                        var_idx[n_vars++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                    }
-                }
-                /* Extract CPT data from tensor or list */
-                double* cpt_data = NULL;
-                if (is_heap_type(vm, cpt, HEAP_TENSOR)) {
-                    VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
-                    if (t) cpt_data = t->data;
-                }
+                int vseq_n = 0;
+                const double* vseq = vm_fg_seq_doubles(vm, vars, &vseq_n);
+                for (int i = 0; i < vseq_n && n_vars < 8; i++)
+                    var_idx[n_vars++] = (int)vseq[i];
+
+                int cpt_n = 0;
+                const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
+
                 if (n_vars > 0 && cpt_data) {
                     /* Build dims array from factor graph's var_dims */
                     int dims[8];
+                    int need = 1;
                     for (int i = 0; i < n_vars; i++) {
                         int vi = var_idx[i];
                         dims[i] = (vi >= 0 && vi < fg->num_vars) ? fg->var_dims[vi] : 2;
+                        need *= dims[i];
                     }
-                    VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
-                    if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
+                    /* vm_make_factor() copies exactly `need` doubles out of
+                     * the CPT, so a table shorter than the factor's
+                     * configuration space would read past the operand.  The
+                     * native runtime requires the length to match EXACTLY and
+                     * reports the mismatch without aborting the program
+                     * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
+                     * mirror both halves of that contract. */
+                    if (cpt_n == need) {
+                        VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
+                        if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
+                    } else {
+                        fprintf(stderr,
+                            "ERROR: fg-add-factor!: tensor has %d elements but factor expects %d\n",
+                            cpt_n, need);
+                    }
                 }
             }
         }
@@ -8926,21 +9017,47 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                int converged = vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
-                vm_push(vm, BOOL_VAL(converged));
+                vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
+                /* fg-infer! ANSWERS the converged beliefs: a rank-1 tensor of
+                 * every variable's per-state probability, var-major, in
+                 * probability space (exp of the log-space beliefs) — the same
+                 * contract as eshkol_fg_infer_tagged() natively.  The VM used
+                 * to answer a bare convergence flag instead, so
+                 * `(display (fg-infer! fg 20))` printed #t/#f here and the
+                 * belief vector natively.  A tensor stays truthy, so code that
+                 * only tested the old flag still takes the same branch. */
+                int total_beliefs = 0;
+                for (int v = 0; v < fg->num_vars; v++) total_beliefs += fg->var_dims[v];
+                if (total_beliefs > 0) {
+                    int64_t shape[1] = { total_beliefs };
+                    VmTensor* bt = vm_tensor_new(&vm->heap.regions, shape, 1);
+                    if (bt) {
+                        int idx = 0;
+                        for (int v = 0; v < fg->num_vars; v++)
+                            for (int s = 0; s < fg->var_dims[v]; s++)
+                                bt->data[idx++] = exp(fg->beliefs[v][s]);
+                        VM_PUSH_TENSOR(vm, bt);
+                        break;
+                    }
+                }
+                vm_push(vm, NIL_VAL);
                 break;
             }
         }
-        vm_push(vm, BOOL_VAL(0));
+        vm_push(vm, NIL_VAL);
         break;
     }
     case 524: { /* fg-update-cpt!(fg, factor_idx, new_cpt_tensor) */
         Value cpt = vm_pop(vm), idx = vm_pop(vm), fg_val = vm_pop(vm);
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
-            if (fg && is_heap_type(vm, cpt, HEAP_TENSOR)) {
-                VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
-                if (t) vm_fg_update_cpt(fg, (int)as_number(idx), t->data, (int)t->total);
+            if (fg) {
+                /* Same reader as fg-add-factor!: `#(...)`, `(vector ...)`, a
+                 * list or a tensor are all a CPT.  vm_fg_update_cpt() rejects
+                 * a length that does not match the factor's table. */
+                int cpt_n = 0;
+                const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
+                if (cpt_data) vm_fg_update_cpt(fg, (int)as_number(idx), cpt_data, cpt_n);
             }
         }
         vm_push(vm, NIL_VAL);
@@ -8951,37 +9068,58 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Parse observations.  Canonical Eshkol form is a flat
-                 * `#(var state)` tensor (one observation) or an even-length
-                 * `#(v0 s0 v1 s1 ...)` tensor (several), matching the native
-                 * LLVM runtime; `#()` means no evidence.  A list of
-                 * (var . state) pairs is still accepted for back-compat. */
-                int obs_pairs[32][2], n_obs = 0;
-                if (obs.as.ptr >= 0 && obs.type != VAL_PAIR &&
-                    vm->heap.objects[obs.as.ptr] &&
-                    vm->heap.objects[obs.as.ptr]->type == HEAP_TENSOR) {
-                    VmTensor* ot = (VmTensor*)vm->heap.objects[obs.as.ptr]->opaque.ptr;
-                    if (ot && ot->data) {
-                        int total = (int)ot->total;
-                        for (int i = 0; i + 1 < total && n_obs < 32; i += 2) {
-                            obs_pairs[n_obs][0] = (int)ot->data[i];
-                            obs_pairs[n_obs][1] = (int)ot->data[i + 1];
-                            n_obs++;
+                /* Observations are a FLAT `#(v0 s0 v1 s1 ...)` sequence —
+                 * `#()` means no evidence — read by the one factor-graph
+                 * sequence reader, so the documented literal (a VECTOR in the
+                 * VM), a `(vector ...)`, a flat list and a tensor all work.
+                 * A list of (var . state) pairs stays supported for
+                 * back-compat and is flattened to the same layout.
+                 *
+                 * vm_free_energy() takes a flat DOUBLE array of 2*num_obs
+                 * elements (identical to eshkol_free_energy() natively).  The
+                 * previous call built an `int obs_pairs[32][2]` and passed it
+                 * as `const double*`: a strict-aliasing violation that also
+                 * mis-strided the buffer (8-byte int pairs read as 16-byte
+                 * double pairs), so clamping consumed reinterpreted integer
+                 * bit patterns — denormals that truncate to 0 — on every
+                 * platform.  Building real doubles removes both faults. */
+                const double* obs_data = NULL;
+                int n_vals = 0;
+
+                int is_pair_list = 0;
+                if (obs.type == VAL_PAIR && is_valid_heap_ptr(vm, obs.as.ptr))
+                    is_pair_list = (vm->heap.objects[obs.as.ptr]->cons.car.type == VAL_PAIR);
+
+                if (is_pair_list) {
+                    int n_pairs = vm_tensor_collection_len(vm, obs);
+                    if (n_pairs > 0) {
+                        double* flat = (double*)vm_alloc(&vm->heap.regions,
+                            (size_t)n_pairs * 2 * sizeof(double));
+                        if (flat) {
+                            Value cur = obs;
+                            while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+                                Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
+                                if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+                                    n_vals + 1 < n_pairs * 2) {
+                                    Value car = vm->heap.objects[pair.as.ptr]->cons.car;
+                                    Value cdr = vm->heap.objects[pair.as.ptr]->cons.cdr;
+                                    /* both `(var . state)` and `(var state)` */
+                                    if (cdr.type == VAL_PAIR && is_valid_heap_ptr(vm, cdr.as.ptr))
+                                        cdr = vm->heap.objects[cdr.as.ptr]->cons.car;
+                                    flat[n_vals++] = as_number_vm(vm, car);
+                                    flat[n_vals++] = as_number_vm(vm, cdr);
+                                }
+                                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                            }
+                            obs_data = flat;
                         }
                     }
                 } else {
-                    Value cur = obs;
-                    while (cur.type == VAL_PAIR && n_obs < 32) {
-                        Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
-                        if (pair.type == VAL_PAIR) {
-                            obs_pairs[n_obs][0] = (int)as_number(vm->heap.objects[pair.as.ptr]->cons.car);
-                            obs_pairs[n_obs][1] = (int)as_number(vm->heap.objects[vm->heap.objects[pair.as.ptr]->cons.cdr.as.ptr]->cons.car);
-                            n_obs++;
-                        }
-                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                    }
+                    obs_data = vm_fg_seq_doubles(vm, obs, &n_vals);
                 }
-                double fe = vm_free_energy(fg, (const double*)obs_pairs, n_obs);
+
+                /* num_obs counts PAIRS, matching eshkol_free_energy_tagged(). */
+                double fe = vm_free_energy(fg, obs_data, n_vals / 2);
                 vm_push(vm, FLOAT_VAL(fe));
                 break;
             }

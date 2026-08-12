@@ -1032,7 +1032,8 @@ dual numbers, AD nodes, and tensors).</p>
 <p><strong>Tensor Support:</strong> Element-wise for vectors/tensors</p>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(+ 1 2)        ; =&gt; 3
-(+ 1.5 2.5)    ; =&gt; 4.0
+(+ 1.5 2.5)    ; =&gt; 4    (inexact; a double with no fractional part prints
+               ;          without a decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; =&gt; 15</code></pre>
 <h4 id="subtractionnegation">4.1.2 <code>-</code> -
 Subtraction/Negation</h4>
@@ -1244,9 +1245,15 @@ Elements</h4>
 <h4 id="fold-foldl---left-fold">4.6.3 <code>fold</code> /
 <code>foldl</code> - Left Fold</h4>
 <p><strong>Signature:</strong> <code>(fold proc init list)</code></p>
+<p><code>proc</code> is called as <code>(proc acc elt)</code> —
+<strong>accumulator first, element second</strong> — which is the R6RS
+<code>fold-left</code> convention, not the SRFI-1 <code>fold</code> one.
+<code>fold-left</code> and <code>foldl</code> are exact synonyms. See <a
+href="reference/stdlib/list_higher_order.md"><code>core.list.higher_order</code></a>.</p>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(fold + 0 &#39;(1 2 3 4))  ; =&gt; 10
-(fold cons &#39;() &#39;(1 2 3))  ; =&gt; (3 2 1)</code></pre>
+(fold cons &#39;() &#39;(1 2 3))  ; =&gt; (((() . 1) . 2) . 3)
+(fold-right cons &#39;() &#39;(1 2 3))  ; =&gt; (1 2 3)  ; use fold-right to rebuild a list</code></pre>
 <h4 id="fold-right-foldr---right-fold">4.6.4 <code>fold-right</code> /
 <code>foldr</code> - Right Fold</h4>
 <p><strong>Signature:</strong>
@@ -1589,11 +1596,16 @@ stacking)</p>
 <p>All compound car/cdr operations (caar through cddddr)</p>
 <h4 id="generate.esk">5.2.2 generate.esk</h4>
 <ul>
-<li><code>(iota n)</code> - Generate list [0, 1, …, n-1]</li>
-<li><code>(iota-from n start)</code> - Generate n numbers from
-start</li>
-<li><code>(iota-step n start step)</code> - Generate with custom
-step</li>
+<li><code>(iota n [start [step]])</code> - SRFI-1: <code>n</code>
+numbers from <code>start</code> (default <code>0</code>) in increments
+of <code>step</code> (default <code>1</code>). <code>(iota 5)</code> →
+<code>(0 1 2 3 4)</code>, <code>(iota 5 1)</code> →
+<code>(1 2 3 4 5)</code>, <code>(iota 5 1 2)</code> →
+<code>(1 3 5 7 9)</code></li>
+<li><code>(iota-from n start)</code> - the two-argument form under its
+own name</li>
+<li><code>(iota-step n start step)</code> - the three-argument form
+under its own name</li>
 <li><code>(repeat n x)</code> - Create list of n copies of x</li>
 <li><code>(make-list n fill)</code> - N-element list with fill</li>
 <li><code>(range start end)</code> - Generate [start, start+1, …,
@@ -2206,7 +2218,7 @@ derivatives</p>
 <pre class="scheme"><code>(define (radial v)
   (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
 
-(divergence radial (vector 1.0 1.0))  ; =&gt; 2.0</code></pre>
+(divergence radial (vector 1.0 1.0))  ; =&gt; 2</code></pre>
 <h4 id="curl---vector-field-curl">8.3.4 <code>curl</code> - Vector Field
 Curl</h4>
 <p><strong>Syntax:</strong> <code>(curl function point)</code></p>
@@ -2233,7 +2245,7 @@ Curl</h4>
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1))))  ; x² + y²
 
-(laplacian harmonic (vector 1.0 1.0))  ; =&gt; 4.0</code></pre>
+(laplacian harmonic (vector 1.0 1.0))  ; =&gt; 4</code></pre>
 <h4 id="directional-derivative---directional-derivative">8.3.6
 <code>directional-derivative</code> - Directional Derivative</h4>
 <p><strong>Syntax:</strong>

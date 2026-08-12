@@ -973,7 +973,13 @@ void eshkol_free_energy_tagged(
 
     const eshkol_factor_graph_t* fg = (const eshkol_factor_graph_t*)fg_tv->data.ptr_val;
 
-    /* Extract observations from tensor if provided */
+    /* Extract observations from a `#(v0 s0 …)` tensor literal or a
+     * runtime-constructed `(vector v0 s0 …)`.  Only the tensor spelling used
+     * to be read, so evidence built at run time was silently DROPPED and the
+     * call answered the no-evidence free energy — even though `equal?` says
+     * `#(1 1)` and `(vector 1 1)` are the same value.  make-factor-graph and
+     * fg-add-factor! already read both through fg_read_numeric (bug-QQ-2);
+     * observations were the site that fix missed. */
     double* obs_data = NULL;
     uint32_t num_obs = 0;
     if (obs_tv) {
@@ -983,6 +989,18 @@ void eshkol_free_energy_tagged(
             obs_data = (double*)alloca(obs_tensor->total_elements * sizeof(double));
             for (uint32_t i = 0; i < obs_tensor->total_elements; i++) {
                 obs_data[i] = tensor_get(obs_tensor, i);
+            }
+        } else if (obs_tv->type == ESHKOL_VALUE_HEAP_PTR && obs_tv->data.ptr_val) {
+            void* obs_ptr = (void*)(uintptr_t)obs_tv->data.ptr_val;
+            eshkol_object_header_t* obs_hdr = ESHKOL_GET_HEADER(obs_ptr);
+            if (obs_hdr->subtype == HEAP_SUBTYPE_VECTOR) {
+                int64_t length = *(int64_t*)obs_ptr;
+                if (length > 0) {
+                    obs_data = (double*)alloca((size_t)length * sizeof(double));
+                    uint32_t read = fg_read_numeric(obs_tv, obs_data, (uint32_t)length);
+                    num_obs = read / 2;
+                    if (num_obs == 0) obs_data = NULL;
+                }
             }
         }
     }
