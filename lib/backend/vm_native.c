@@ -4360,10 +4360,6 @@ static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
 
 #define VM_LOGIC_TERM_MAX_DEPTH 64
 
-/* Ceiling on solutions lifted out of one kb-query, so the reversal buffer is
- * bounded. A query returning more than this many matches is truncated rather
- * than overrunning the stack. */
-#define VM_KB_QUERY_MAX_SOLUTIONS 4096
 
 /** @brief Read the text of a VAL_SYMBOL / VAL_STRING value.
  * @return 1 and fills @p out_text/@p out_len (and @p out_kind with
@@ -8796,25 +8792,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * into VM heap values. */
                 VmValue solutions = vm_kb_query(&vm->heap.regions, kb_obj, pat, NULL);
 
-                /* vm_kb_query prepends while scanning forward, so its list is
-                 * in reverse insertion order; reversing it here yields KB
-                 * insertion order, which is what native now returns too. */
-                VmSubstitution* stack[VM_KB_QUERY_MAX_SOLUTIONS];
-                int n = 0;
-                VmValue cur = solutions;
-                while (cur.type == VM_VAL_HEAP_PTR && cur.data.ptr_val &&
-                       n < VM_KB_QUERY_MAX_SOLUTIONS) {
-                    VmConsPair* cell = (VmConsPair*)(uintptr_t)cur.data.ptr_val;
-                    stack[n++] = (VmSubstitution*)(uintptr_t)cell->car.data.ptr_val;
-                    cur = cell->cdr;
-                }
-
+                /* vm_kb_query prepends while scanning the KB forward, so its
+                 * list runs last-match-first.  Prepending each entry onto the
+                 * VM list therefore lands them in KB INSERTION order — no
+                 * reversal buffer, and so no cap on how many solutions a
+                 * query may return. */
                 Value result = NIL_VAL;
-                for (int i = 0; i < n; i++) {
+                for (VmValue cur = solutions;
+                     cur.type == VM_VAL_HEAP_PTR && cur.data.ptr_val; ) {
+                    VmConsPair* cell = (VmConsPair*)(uintptr_t)cur.data.ptr_val;
+                    VmSubstitution* subst =
+                        (VmSubstitution*)(uintptr_t)cell->car.data.ptr_val;
+                    cur = cell->cdr;
+
                     int32_t sp = heap_alloc(&vm->heap);
                     if (sp < 0) break;
                     vm->heap.objects[sp]->type = HEAP_SUBST;
-                    vm->heap.objects[sp]->opaque.ptr = stack[i];
+                    vm->heap.objects[sp]->opaque.ptr = subst;
                     Value sv; sv.type = VAL_SUBST; sv.as.ptr = sp;
 
                     int32_t p = heap_alloc(&vm->heap);
