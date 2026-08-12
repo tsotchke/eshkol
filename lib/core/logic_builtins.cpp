@@ -152,7 +152,6 @@ void eshkol_kb_retract_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* kb_tv,
                                const eshkol_tagged_value_t* fact_tv,
                                eshkol_tagged_value_t* result) {
-    (void)arena;
 
     if (kb_tv->type != ESHKOL_VALUE_HEAP_PTR || fact_tv->type != ESHKOL_VALUE_HEAP_PTR) {
         result->type = ESHKOL_VALUE_BOOL;
@@ -161,7 +160,9 @@ void eshkol_kb_retract_tagged(arena_t* arena,
     }
 
     eshkol_knowledge_base_t* kb = (eshkol_knowledge_base_t*)(uintptr_t)kb_tv->data.ptr_val;
-    eshkol_fact_t* fact = (eshkol_fact_t*)(uintptr_t)fact_tv->data.ptr_val;
+    /* Accept a fact or a `(predicate arg ...)` datum list, as kb-assert! and
+     * kb-query do. */
+    const eshkol_fact_t* fact = eshkol_fact_operand(arena, fact_tv);
 
     if (!kb || !fact) {
         result->type = ESHKOL_VALUE_BOOL;
@@ -169,17 +170,27 @@ void eshkol_kb_retract_tagged(arena_t* arena,
         return;
     }
 
-    /* Remove fact by pointer identity */
+    /* Remove the first matching fact: pointer identity first (the caller kept
+     * the object they asserted), then STRUCTURAL equality.
+     *
+     * Pointer identity alone made the natural spelling useless — a fact built
+     * inline, `(kb-retract! kb (make-fact 'r 1 2))`, is a fresh object, so it
+     * could never match and the call always returned #f while the bytecode VM
+     * removed the fact. Same program, two answers. Matching structurally makes
+     * the operation mean what kb-assert!'s inline-fact idiom implies, and the
+     * pointer check is kept first so callers who did retain the object are
+     * unaffected. Equality, not unification: retracting `(p ?x)` does not
+     * remove `(p 1)`. */
     bool found = false;
     for (uint32_t i = 0; i < kb->num_facts; i++) {
-        if (kb->facts[i] == fact) {
-            for (uint32_t j = i; j < kb->num_facts - 1; j++) {
-                kb->facts[j] = kb->facts[j + 1];
-            }
-            kb->num_facts--;
-            found = true;
-            break;
+        if (kb->facts[i] != fact && !eshkol_fact_equal(kb->facts[i], fact))
+            continue;
+        for (uint32_t j = i; j < kb->num_facts - 1; j++) {
+            kb->facts[j] = kb->facts[j + 1];
         }
+        kb->num_facts--;
+        found = true;
+        break;
     }
 
     result->type = ESHKOL_VALUE_BOOL;

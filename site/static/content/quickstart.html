@@ -129,18 +129,24 @@ native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
 (* 7 6)             ; =&gt; 42
 (- 10 3)            ; =&gt; 7
 
-; Division promotes to double
-(/ 10 3)            ; =&gt; 3.333...
+; Division of exact integers stays exact — it makes a rational, not a double
+(/ 10 3)            ; =&gt; 10/3
+(/ 10 2)            ; =&gt; 5
 
 ; Mixed types promote automatically
 (+ 5 2.5)           ; =&gt; 7.5
 
 ; Math functions
-(sqrt 16)           ; =&gt; 4.0
-(sin 3.14159)       ; =&gt; ~0.0
-(pow 2 10)          ; =&gt; 1024.0</code></pre>
+(sqrt 16)           ; =&gt; 4
+(sin 3.14159)       ; =&gt; 2.65358979335273e-06
+(pow 2 10)          ; =&gt; 1024</code></pre>
 <p><strong>Type System</strong>: Polymorphic arithmetic with automatic
-promotion (int64 → double when needed)</p>
+promotion (exact integer → rational → double, promoting only when a
+value actually requires it). An inexact value with no fractional part
+prints without a decimal point, so <code>4</code> above may be either
+exact or inexact — ask <code>exact?</code> if it matters. See <a
+href="reference/language/numeric-tower.md">the numeric tower
+reference</a>.</p>
 <hr />
 <h3 id="variables-and-functions">Variables and Functions</h3>
 <pre class="scheme"><code>; Define variables
@@ -154,7 +160,7 @@ promotion (int64 → double when needed)</p>
 (define (circle-area r)
   (* pi r r))
 
-(circle-area 5)  ; =&gt; 78.5398...
+(circle-area 5)  ; =&gt; 78.53975
 
 ; Lambda expressions (anonymous functions)
 (define double (lambda (x) (* 2 x)))
@@ -162,7 +168,7 @@ promotion (int64 → double when needed)</p>
 
 ; Functions are first-class values
 (define ops (list + - * /))
-(map (lambda (f) (f 10 2)) ops)  ; =&gt; (12 8 20 5.0)</code></pre>
+(map (lambda (f) (f 10 2)) ops)  ; =&gt; (12 8 20 5)</code></pre>
 <hr />
 <h2 id="part-2-lists-3-minutes">Part 2: Lists (3 minutes)</h2>
 <p>Lists are the fundamental data structure for symbolic
@@ -477,16 +483,16 @@ Optimization</strong></h3>
 ; =&gt; infinity</code></pre>
 <hr />
 <h3 id="file-io">5. <strong>File I/O</strong></h3>
-<pre class="scheme"><code>; Write to file
+<pre class="scheme"><code>; Write to file — the string comes first, the port second
 (define out (open-output-file &quot;data.txt&quot;))
-(write-line out &quot;Hello, File!&quot;)
+(write-line &quot;Hello, File!&quot; out)
 (close-port out)
 
 ; Read from file
 (define in (open-input-file &quot;data.txt&quot;))
 (define line (read-line in))
 (close-port in)
-(display line)  ; =&gt; &quot;Hello, File!&quot;</code></pre>
+(display line)  ; =&gt; Hello, File!</code></pre>
 <hr />
 <h2 id="advanced-example-optimization">Advanced Example:
 Optimization</h2>
@@ -833,21 +839,23 @@ ar rcs libmylib.a mylib.o</code></pre>
 (+ r r)             ; =&gt; 2/3 (exact)
 
 ;; R7RS: exact + inexact → inexact
-(+ big 0.5)         ; =&gt; 9.223372036854776e+18 (double)</code></pre>
+(+ big 0.5)         ; =&gt; 9223372036854776000 (a double, printed without a
+                    ;    decimal point because it has no fractional part)</code></pre>
 <hr />
 <h3 id="complex-numbers">Complex Numbers</h3>
 <pre class="scheme"><code>;; Create complex numbers
 (define z (make-rectangular 3.0 4.0))
-(magnitude z)       ; =&gt; 5.0
-(angle z)           ; =&gt; 0.9273...
+(magnitude z)       ; =&gt; 5
+(angle z)           ; =&gt; 0.9272952180016122
 
 ;; Complex arithmetic
-(+ z (make-rectangular 1.0 -1.0))  ; =&gt; 4.0+3.0i
-(* z z)             ; =&gt; -7.0+24.0i
+(+ z (make-rectangular 1.0 -1.0))  ; =&gt; 4+3i
+(* z z)             ; =&gt; -7+24i
 
 ;; Smith&#39;s formula for numerical stability
 (/ (make-rectangular 1e300 1e300)
-   (make-rectangular 1e300 1e300))  ; =&gt; 1.0+0.0i (no overflow)</code></pre>
+   (make-rectangular 1e300 1e300))  ; =&gt; 1 (no overflow; the zero imaginary
+                                    ;    part is not printed)</code></pre>
 <hr />
 <h3 id="gpu-acceleration">GPU Acceleration</h3>
 <p>GPU dispatch is automatic — no code changes needed:</p>
@@ -1044,7 +1052,7 @@ href="../examples"><code>examples/</code></a></li>
 <ul>
 <li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
 Complete function documentation (555+ builtins)</li>
-<li><strong><a href="../../examples/">Examples</a></strong> — Runnable
+<li><strong><a href="../examples/">Examples</a></strong> — Runnable
 programs demonstrating AD, tensors, parallelism, consciousness
 engine</li>
 <li><strong><a href="breakdown/CONSCIOUSNESS_ENGINE.md">Consciousness

@@ -183,10 +183,66 @@ extern "C" const char* eshkol_logic_var_name(uint64_t var_id) {
     return g_var_names[var_id];
 }
 
-/** Check whether a tagged value is a logic variable (ESHKOL_VALUE_LOGIC_VAR). */
-extern "C" bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
+/**
+ * @brief THE logic-variable predicate for the native runtime.
+ *
+ * A term is a logic variable when it is either
+ *   - an ESHKOL_VALUE_LOGIC_VAR immediate (what a `?x` literal compiles to),
+ *     or
+ *   - an interned SYMBOL whose spelling begins with `?` — which is what a
+ *     `?`-prefixed token inside a quoted datum, or a symbol produced at
+ *     runtime by `read`/`string->symbol`/`kb-load`, arrives as.
+ *
+ * Both spellings map onto the SAME variable id (the name, `?` included, is
+ * the identity), so `(kb-query kb '(parent alice ?child))` and
+ * `(kb-query kb (make-fact 'parent 'alice ?child))` bind the same variable.
+ * Every dispatch site — `logic-var?`, unification, walk, the occurs check
+ * and the KB matcher — goes through this one function, so they cannot
+ * disagree.
+ *
+ * @param tv Term to test (NULL is not a logic variable).
+ * @param out_id Receives the interned variable id when non-NULL.
+ * @return true if @p tv denotes a logic variable.
+ */
+extern "C" bool eshkol_logic_var_id_of(const eshkol_tagged_value_t* tv,
+                                        uint64_t* out_id) {
     if (!tv) return false;
-    return tv->type == ESHKOL_VALUE_LOGIC_VAR;
+    if (tv->type == ESHKOL_VALUE_LOGIC_VAR) {
+        if (out_id) *out_id = (uint64_t)tv->data.int_val;
+        return true;
+    }
+    if (tv->type == ESHKOL_VALUE_HEAP_PTR && tv->data.ptr_val) {
+        eshkol_object_header_t* h = ESHKOL_GET_HEADER((void*)tv->data.ptr_val);
+        if (h && h->subtype == HEAP_SUBTYPE_SYMBOL) {
+            const char* s = (const char*)(uintptr_t)tv->data.ptr_val;
+            if (s && s[0] == '?' && s[1] != '\0') {
+                if (out_id) *out_id = eshkol_make_logic_var(s);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/** Check whether a tagged value is a logic variable — the boolean face of
+ *  eshkol_logic_var_id_of(), and what `(logic-var? x)` answers with. */
+extern "C" bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
+    return eshkol_logic_var_id_of(tv, nullptr);
+}
+
+/** Rewrite a `?`-prefixed symbol into the canonical LOGIC_VAR immediate so
+ *  that unification, walk and the occurs check only ever see one spelling.
+ *  Any other term is returned unchanged. */
+static eshkol_tagged_value_t canonicalize_logic_var(const eshkol_tagged_value_t& tv) {
+    uint64_t id = 0;
+    if (tv.type != ESHKOL_VALUE_LOGIC_VAR && eshkol_logic_var_id_of(&tv, &id)) {
+        eshkol_tagged_value_t out;
+        memset(&out, 0, sizeof(out));
+        out.type = ESHKOL_VALUE_LOGIC_VAR;
+        out.data.int_val = (int64_t)id;
+        return out;
+    }
+    return tv;
 }
 
 /* ===== Arena Allocation Helpers ===== */
@@ -340,7 +396,10 @@ extern "C" eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
         return null_val;
     }
 
-    eshkol_tagged_value_t current = *term;
+    /* A `?`-prefixed symbol denotes the same variable as the `?x` immediate,
+     * so canonicalize before following the chain — otherwise `(walk '?x s)`
+     * would return the symbol untouched while `(walk ?x s)` resolved. */
+    eshkol_tagged_value_t current = canonicalize_logic_var(*term);
 
     /* Follow variable chains */
     while (current.type == ESHKOL_VALUE_LOGIC_VAR && subst) {
@@ -443,7 +502,10 @@ static bool occurs_impl(uint64_t var_id, const eshkol_tagged_value_t* term,
         return walked.data.int_val == (int64_t)var_id;
     }
 
-    /* Check inside facts */
+    /* Recurse into compound terms: facts AND cons cells.  The documented
+     * `(unify ?x (list ?x) s)` builds a runtime CONS, not a fact, so
+     * checking only facts let it succeed and produce the circular binding
+     * the occurs check exists to reject. */
     if (walked.type == ESHKOL_VALUE_HEAP_PTR && walked.data.ptr_val) {
         eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)walked.data.ptr_val);
         if (header->subtype == HEAP_SUBTYPE_FACT) {
@@ -452,6 +514,11 @@ static bool occurs_impl(uint64_t var_id, const eshkol_tagged_value_t* term,
             for (uint32_t i = 0; i < fact->arity; i++) {
                 if (occurs_impl(var_id, &args[i], subst, depth + 1)) return true;
             }
+        } else if (header->subtype == HEAP_SUBTYPE_CONS) {
+            const eshkol_tagged_value_t* cell =
+                (const eshkol_tagged_value_t*)(uintptr_t)walked.data.ptr_val;
+            if (occurs_impl(var_id, &cell[0], subst, depth + 1)) return true;
+            if (occurs_impl(var_id, &cell[1], subst, depth + 1)) return true;
         }
     }
 
@@ -568,6 +635,22 @@ extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
 
             return current;
         }
+
+        /* Structural unification of cons cells — step 5 of the documented
+         * algorithm: unify the cars, then unify the cdrs under the resulting
+         * substitution.  Without it a nested pattern such as
+         * `(kb-query kb '(edge (node a) ?to))` could only match by pointer
+         * identity, so a sub-list argument never unified. */
+        if (h1->subtype == HEAP_SUBTYPE_CONS && h2->subtype == HEAP_SUBTYPE_CONS) {
+            const eshkol_tagged_value_t* c1 =
+                (const eshkol_tagged_value_t*)(uintptr_t)w1.data.ptr_val;
+            const eshkol_tagged_value_t* c2 =
+                (const eshkol_tagged_value_t*)(uintptr_t)w2.data.ptr_val;
+            eshkol_substitution_t* after_car =
+                eshkol_unify(arena, &c1[0], &c2[0], subst);
+            if (!after_car) return NULL;
+            return eshkol_unify(arena, &c1[1], &c2[1], after_car);
+        }
     }
 
     /* No other cases match -> failure */
@@ -596,6 +679,172 @@ extern "C" eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
     }
 
     return f;
+}
+
+/* ===== Datum lists as facts =====
+ *
+ * `(kb-query kb '(parent alice ?child))` and `(make-fact '(parent alice bob))`
+ * hand the engine a CONS LIST, not a fact.  Before this conversion existed the
+ * tagged entry points cast that cons pointer straight to eshkol_fact_t* and
+ * read a predicate and an arity out of cons-cell bytes — the documented query
+ * form could never match, and the read itself was type confusion.  A list is
+ * now converted to a real fact: a ground symbol/string head becomes the
+ * interned predicate and the tail becomes the arguments; any other head means
+ * predicate 0 ("matches any") with every element as an argument.  Nested lists
+ * recurse, which is what lets nested patterns unify structurally.
+ */
+
+#define FACT_FROM_DATUM_MAX_DEPTH 64
+
+/** @brief Decompose a cons cell into car/cdr pointers. */
+static bool cons_parts(const eshkol_tagged_value_t* tv,
+                       const eshkol_tagged_value_t** car,
+                       const eshkol_tagged_value_t** cdr) {
+    if (!tv || !ESHKOL_IS_CONS_COMPAT(*tv)) return false;
+    const eshkol_tagged_value_t* cell =
+        (const eshkol_tagged_value_t*)(uintptr_t)tv->data.ptr_val;
+    if (!cell) return false;
+    if (car) *car = &cell[0];
+    if (cdr) *cdr = &cell[1];
+    return true;
+}
+
+/** @brief True if @p tv is a HEAP_PTR carrying header subtype @p subtype. */
+static bool heap_subtype_is(const eshkol_tagged_value_t* tv, uint8_t subtype) {
+    if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return false;
+    eshkol_object_header_t* h = ESHKOL_GET_HEADER((void*)tv->data.ptr_val);
+    return h && h->subtype == subtype;
+}
+
+static eshkol_fact_t* fact_from_datum(arena_t* arena,
+                                      const eshkol_tagged_value_t* datum,
+                                      int depth);
+
+/**
+ * @brief Convert one list element into a fact argument.
+ *
+ * A nested list stays a LIST: unification recurses through cons cells
+ * (eshkol_unify step 5 in API_REFERENCE), so nested patterns unify
+ * structurally without a second representation, and a variable bound to a
+ * sub-term walks back out as the ordinary list the caller wrote.
+ */
+static eshkol_tagged_value_t fact_arg_from_datum(arena_t* arena,
+                                                 const eshkol_tagged_value_t* el,
+                                                 int depth) {
+    (void)arena; (void)depth;
+    eshkol_tagged_value_t out;
+    memset(&out, 0, sizeof(out));
+    if (!el) { out.type = ESHKOL_VALUE_NULL; return out; }
+    return canonicalize_logic_var(*el);
+}
+
+/**
+ * @brief Build a fact from a `(predicate arg ...)` datum list.
+ * @return The new fact, or NULL for a non-list, an improper list, an
+ *         over-long list, or on allocation failure.
+ */
+static eshkol_fact_t* fact_from_datum(arena_t* arena,
+                                      const eshkol_tagged_value_t* datum,
+                                      int depth) {
+    if (!arena || !datum || depth > FACT_FROM_DATUM_MAX_DEPTH) return NULL;
+    if (!ESHKOL_IS_CONS_COMPAT(*datum)) return NULL;
+
+    /* Length, rejecting improper lists (they have no faithful fact form). */
+    uint32_t n = 0;
+    const eshkol_tagged_value_t* cur = datum;
+    const eshkol_tagged_value_t* car = NULL;
+    const eshkol_tagged_value_t* cdr = NULL;
+    while (cons_parts(cur, &car, &cdr)) {
+        if (++n > 4096) return NULL;
+        cur = cdr;
+    }
+    if (!cur || cur->type != ESHKOL_VALUE_NULL) return NULL;
+
+    /* A GROUND symbol/string head becomes the interned predicate. */
+    uint64_t predicate = 0;
+    uint32_t first_arg = 0;
+    if (cons_parts(datum, &car, &cdr) && car && !eshkol_is_logic_var(car) &&
+        (heap_subtype_is(car, HEAP_SUBTYPE_SYMBOL) ||
+         heap_subtype_is(car, HEAP_SUBTYPE_STRING))) {
+        const char* text = (const char*)(uintptr_t)car->data.ptr_val;
+        if (text) {
+            predicate = (uint64_t)(uintptr_t)eshkol_intern_predicate(text);
+            first_arg = 1;
+        }
+    }
+
+    uint32_t arity = n - first_arg;
+    eshkol_fact_t* f = alloc_fact(arena, arity);
+    if (!f) return NULL;
+    f->predicate = predicate;
+    f->arity = arity;
+
+    eshkol_tagged_value_t* args = FACT_ARGS(f);
+    cur = datum;
+    for (uint32_t i = 0; i < first_arg; i++) {
+        if (!cons_parts(cur, &car, &cdr)) return NULL;
+        cur = cdr;
+    }
+    for (uint32_t i = 0; i < arity; i++) {
+        if (!cons_parts(cur, &car, &cdr)) return NULL;
+        args[i] = fact_arg_from_datum(arena, car, depth + 1);
+        cur = cdr;
+    }
+    return f;
+}
+
+/**
+ * @brief Coerce a tagged value to a fact for KB assert/query.
+ *
+ * Accepts a real fact unchanged and converts a `(predicate arg ...)` datum
+ * list.  Returns NULL for anything else, so a stray pointer can never be
+ * reinterpreted as a fact.
+ */
+static const eshkol_fact_t* fact_operand(arena_t* arena,
+                                         const eshkol_tagged_value_t* tv) {
+    if (!tv) return NULL;
+    if (heap_subtype_is(tv, HEAP_SUBTYPE_FACT))
+        return (const eshkol_fact_t*)(uintptr_t)tv->data.ptr_val;
+    return fact_from_datum(arena, tv, 0);
+}
+
+/**
+ * @brief Structural equality of two facts: same predicate, same arity, and
+ *        pairwise-equal arguments.
+ *
+ * This is EQUALITY, not unification — a logic variable matches only the same
+ * logic variable, so retracting `(p ?x)` does not remove `(p 1)`.  Exposed
+ * because `kb-retract!` needs to find a fact the caller rebuilt rather than
+ * one they kept a pointer to.
+ */
+extern "C" bool eshkol_fact_equal(const eshkol_fact_t* a,
+                                  const eshkol_fact_t* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->arity != b->arity) return false;
+    if (a->predicate != b->predicate) {
+        /* Interned predicates compare by pointer; fall back to the text, the
+         * same way eshkol_unify does when one escaped interning. */
+        const char* p1 = (const char*)(uintptr_t)a->predicate;
+        const char* p2 = (const char*)(uintptr_t)b->predicate;
+        if (!p1 || !p2 || strcmp(p1, p2) != 0) return false;
+    }
+    const eshkol_tagged_value_t* aa = FACT_ARGS(a);
+    const eshkol_tagged_value_t* ba = FACT_ARGS(b);
+    for (uint32_t i = 0; i < a->arity; i++) {
+        if (!tagged_values_equal(&aa[i], &ba[i])) return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Coerce a tagged value to a fact for the retract path.
+ * Accepts a fact or a `(predicate arg ...)` datum list, exactly as
+ * kb-assert! and kb-query do.
+ */
+extern "C" const eshkol_fact_t* eshkol_fact_operand(
+        arena_t* arena, const eshkol_tagged_value_t* tv) {
+    return fact_operand(arena, tv);
 }
 
 /* ===== Knowledge Base ===== */
@@ -677,11 +926,14 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
         base_subst = empty;
     }
 
-    /* Build result list in reverse, then reverse at the end */
-    /* For simplicity, build a cons list as we go */
+    /* Scan the KB backwards and prepend, so the result list comes out in KB
+     * INSERTION order — the same order the bytecode VM's fid 512 produces.
+     * (Scanning forwards and prepending, as this did before, reversed it and
+     * put the two engines' result lists in opposite orders.) */
     eshkol_tagged_value_t result_list = null_val;
 
-    for (uint32_t i = 0; i < kb->num_facts; i++) {
+    for (uint32_t k = kb->num_facts; k-- > 0; ) {
+        uint32_t i = k;
         const eshkol_fact_t* fact = kb->facts[i];
 
         /* Quick check: predicate must match */
@@ -758,8 +1010,10 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
 
     eshkol_tagged_value_t result_list = null_val;
 
-    for (uint32_t i = 0; i < kb->num_facts; i++) {
-        const eshkol_fact_t* fact = kb->facts[i];
+    /* Backwards + prepend keeps the result in KB insertion order (see
+     * eshkol_kb_query). */
+    for (uint32_t k = kb->num_facts; k-- > 0; ) {
+        const eshkol_fact_t* fact = kb->facts[k];
 
         if (pattern->predicate != 0 && fact->predicate != 0 &&
             pattern->predicate != fact->predicate) {
@@ -829,8 +1083,16 @@ extern "C" void eshkol_unify_tagged(arena_t* arena,
         result->type = ESHKOL_VALUE_HEAP_PTR;
         result->data.ptr_val = (uint64_t)unified;
     } else {
-        /* Unification failed — return NULL (which displays as #f) */
-        result->type = ESHKOL_VALUE_NULL;
+        /* Unification failed.  API_REFERENCE: "(unify t1 t2 s) -> Substitution
+         * | #f".  This used to return tagged NULL with a comment claiming it
+         * "displays as #f" — it displays as `()`, which is TRUE in Scheme, so
+         * `(if (unify a b s) ...)` took the success branch on failure.  Return
+         * the boolean the contract promises.  (kb-query's no-match result stays
+         * `()`: that one really is an empty list of solutions.) */
+        result->type = ESHKOL_VALUE_BOOL;
+        result->flags = 0;
+        result->reserved = 0;
+        result->data.raw_val = 0;
     }
 }
 
@@ -874,20 +1136,64 @@ extern "C" void eshkol_make_fact_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract predicate pointer (should be a HEAP_PTR to interned symbol) */
+    /* `(make-fact '(parent alice bob))` — a single datum-list argument — is
+     * the spelling the site examples and the VM prelude use, and it means the
+     * same fact as `(make-fact 'parent 'alice 'bob)`.  Without this the list
+     * pointer was interned as if it were the predicate's characters. */
+    if (arity == 0 && ESHKOL_IS_CONS_COMPAT(*pred)) {
+        eshkol_fact_t* from_list = fact_from_datum(arena, pred, 0);
+        if (from_list) {
+            result->type = ESHKOL_VALUE_HEAP_PTR;
+            result->data.ptr_val = (uint64_t)(uintptr_t)from_list;
+        } else {
+            result->type = ESHKOL_VALUE_NULL;
+        }
+        return;
+    }
+
+    /* Extract predicate pointer (must be a GROUND symbol/string, interned so
+     * pointer equality works in unification).  A non-ground head — most often
+     * a logic variable, `(make-fact ?rel 'alice 'bob)` — is NOT a predicate:
+     * fact_from_datum() treats such a head as an ordinary first argument, and
+     * this path must agree or the two `make-fact` spellings would build
+     * different facts.  It used to leave `predicate` at 0 and keep arity 2,
+     * and a predicate of 0 means "matches any" in the query pre-filter — so
+     * the pattern reported a bogus match with an EMPTY substitution, silently
+     * dropping the variable the caller asked about. */
     uint64_t predicate = 0;
-    if (pred->type == ESHKOL_VALUE_HEAP_PTR) {
-        /* Intern the predicate string so pointer equality works in unification.
-         * The string data is at pred->data.ptr_val (after 8-byte object header). */
+    bool head_is_predicate = false;
+    if (!eshkol_is_logic_var(pred) &&
+        (heap_subtype_is(pred, HEAP_SUBTYPE_SYMBOL) ||
+         heap_subtype_is(pred, HEAP_SUBTYPE_STRING))) {
         const char* pred_str = (const char*)(uintptr_t)pred->data.ptr_val;
         if (pred_str) {
-            const char* interned = eshkol_intern_predicate(pred_str);
-            predicate = (uint64_t)(uintptr_t)interned;
+            predicate = (uint64_t)(uintptr_t)eshkol_intern_predicate(pred_str);
+            head_is_predicate = true;
         }
     }
 
+    /* Canonicalize `?`-symbol arguments so every fact carries one term
+     * representation; prepend the head when it is not a predicate. */
+    int32_t total = arity + (head_is_predicate ? 0 : 1);
+    eshkol_tagged_value_t norm_stack[16];
+    eshkol_tagged_value_t* norm = NULL;
+    if (total > 0) {
+        norm = (total <= 16) ? norm_stack
+             : (eshkol_tagged_value_t*)arena_allocate_aligned(
+                   arena, (size_t)total * sizeof(eshkol_tagged_value_t), 8);
+        if (!norm) {
+            result->type = ESHKOL_VALUE_NULL;
+            return;
+        }
+        int32_t at = 0;
+        if (!head_is_predicate) norm[at++] = fact_arg_from_datum(arena, pred, 0);
+        for (int32_t i = 0; i < arity && args; i++)
+            norm[at++] = fact_arg_from_datum(arena, &args[i], 0);
+        total = at;
+    }
+
     eshkol_fact_t* fact = eshkol_make_fact(arena, predicate,
-        args, (uint32_t)arity);
+        norm, (uint32_t)total);
 
     if (fact) {
         result->type = ESHKOL_VALUE_HEAP_PTR;
@@ -925,11 +1231,13 @@ extern "C" void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* res
 extern "C" void eshkol_kb_assert_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* fact_tv) {
     if (!arena || !kb_tv || !fact_tv) return;
-    if (kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val) return;
-    if (fact_tv->type != ESHKOL_VALUE_HEAP_PTR || !fact_tv->data.ptr_val) return;
+    if (!heap_subtype_is(kb_tv, HEAP_SUBTYPE_KNOWLEDGE_BASE)) return;
 
     eshkol_knowledge_base_t* kb = (eshkol_knowledge_base_t*)kb_tv->data.ptr_val;
-    const eshkol_fact_t* fact = (const eshkol_fact_t*)fact_tv->data.ptr_val;
+    /* Accepts a fact or a `(predicate arg ...)` datum list; anything else is
+     * rejected rather than reinterpreted as a fact. */
+    const eshkol_fact_t* fact = fact_operand(arena, fact_tv);
+    if (!fact) return;
 
     eshkol_kb_assert(arena, kb, fact);
 }
@@ -952,17 +1260,19 @@ extern "C" void eshkol_kb_query_tagged(arena_t* arena,
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
-    if (kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val) {
-        result->type = ESHKOL_VALUE_NULL;
-        return;
-    }
-    if (pattern_tv->type != ESHKOL_VALUE_HEAP_PTR || !pattern_tv->data.ptr_val) {
+    if (!heap_subtype_is(kb_tv, HEAP_SUBTYPE_KNOWLEDGE_BASE)) {
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
 
     const eshkol_knowledge_base_t* kb = (const eshkol_knowledge_base_t*)kb_tv->data.ptr_val;
-    const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
+    /* The pattern may be a fact or a `(predicate arg ...)` datum list — the
+     * documented `(kb-query kb '(parent alice ?child))` spelling. */
+    const eshkol_fact_t* pattern = fact_operand(arena, pattern_tv);
+    if (!pattern) {
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
 
     *result = eshkol_kb_query(arena, kb, pattern, NULL);
 }
@@ -981,14 +1291,17 @@ extern "C" void eshkol_kb_query_prefix_tagged(arena_t* arena,
     memset(result, 0, sizeof(*result));
 
     if (!arena || !kb_tv || !pattern_tv ||
-        kb_tv->type != ESHKOL_VALUE_HEAP_PTR || !kb_tv->data.ptr_val ||
-        pattern_tv->type != ESHKOL_VALUE_HEAP_PTR || !pattern_tv->data.ptr_val) {
+        !heap_subtype_is(kb_tv, HEAP_SUBTYPE_KNOWLEDGE_BASE)) {
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
 
     const eshkol_knowledge_base_t* kb = (const eshkol_knowledge_base_t*)kb_tv->data.ptr_val;
-    const eshkol_fact_t* pattern = (const eshkol_fact_t*)pattern_tv->data.ptr_val;
+    const eshkol_fact_t* pattern = fact_operand(arena, pattern_tv);
+    if (!pattern) {
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
 
     *result = eshkol_kb_query_prefix(arena, kb, pattern, NULL);
 }
@@ -1033,13 +1346,91 @@ extern "C" void eshkol_display_logic_var(uint64_t var_id, void* file) {
 /* Forward declaration for recursive display */
 extern "C" void eshkol_display_value_opts(const eshkol_tagged_value_t* value,
                                            eshkol_display_opts_t* opts);
+extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file);
+
+/* One term formatter for the whole logic surface: substitutions, facts and
+ * the sub-lists inside them all print through eshkol_display_logic_term(),
+ * so a bound value reads the same wherever it appears.  Before this, a
+ * compound binding printed as an opaque `#<heap:0>`. */
+static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file);
+
+/** @brief Print a cons chain as `(a b c)` (or `(a . b)` when improper),
+ *         so a variable bound to a sub-term reads back as the list it
+ *         came from. */
+static void eshkol_display_logic_list(const eshkol_tagged_value_t* tv, void* file) {
+    FILE* f = file ? (FILE*)file : stdout;
+    fprintf(f, "(");
+    const eshkol_tagged_value_t* cur = tv;
+    const eshkol_tagged_value_t* car = NULL;
+    const eshkol_tagged_value_t* cdr = NULL;
+    bool first = true;
+    int guard = 0;
+    while (cons_parts(cur, &car, &cdr) && guard++ < 4096) {
+        if (!first) fprintf(f, " ");
+        first = false;
+        eshkol_display_logic_term(car, file);
+        cur = cdr;
+    }
+    if (cur && cur->type != ESHKOL_VALUE_NULL) {
+        fprintf(f, " . ");
+        eshkol_display_logic_term(cur, file);
+    }
+    fprintf(f, ")");
+}
+
+/** @brief Print one term of the logic surface (a substitution binding, a fact
+ *         argument, or a list element). */
+static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file) {
+    FILE* f = file ? (FILE*)file : stdout;
+    if (!t) { fprintf(f, "()"); return; }
+    switch (t->type) {
+        case ESHKOL_VALUE_INT64:
+            fprintf(f, "%lld", (long long)t->data.int_val);
+            break;
+        case ESHKOL_VALUE_DOUBLE:
+            eshkol_fprint_double(f, t->data.double_val);
+            break;
+        case ESHKOL_VALUE_BOOL:
+            fprintf(f, "%s", t->data.int_val ? "#t" : "#f");
+            break;
+        case ESHKOL_VALUE_LOGIC_VAR:
+            eshkol_display_logic_var(t->data.int_val, file);
+            break;
+        case ESHKOL_VALUE_NULL:
+            fprintf(f, "()");
+            break;
+        case ESHKOL_VALUE_HEAP_PTR:
+            if (t->data.ptr_val) {
+                eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)t->data.ptr_val);
+                if (header->subtype == HEAP_SUBTYPE_SYMBOL ||
+                    header->subtype == HEAP_SUBTYPE_STRING) {
+                    /* `display` semantics: a bound string shows its text, the
+                     * same as `(display "math")`.  Printing `#<heap:1>` made
+                     * every string binding in a substitution indistinguishable
+                     * — `(kb-query kb (make-fact "likes" "alice" ?x))` read
+                     * back as two identical `{?x -> #<heap:1>}` entries. */
+                    fprintf(f, "%s", (const char*)(uintptr_t)t->data.ptr_val);
+                } else if (header->subtype == HEAP_SUBTYPE_FACT) {
+                    eshkol_display_fact(
+                        (const eshkol_fact_t*)(uintptr_t)t->data.ptr_val, file);
+                } else if (header->subtype == HEAP_SUBTYPE_CONS) {
+                    eshkol_display_logic_list(t, file);
+                } else {
+                    fprintf(f, "#<heap:%d>", header->subtype);
+                }
+            } else {
+                fprintf(f, "()");
+            }
+            break;
+        default:
+            fprintf(f, "#<type:%d>", t->type);
+            break;
+    }
+}
 
 /**
  * @brief Print a substitution as `{var -> term, var -> term, ...}` (or `{}` if @p s is NULL).
- * Each bound term is formatted per its tagged type: integers, doubles (via
- * eshkol_fprint_double()), booleans as `#t`/`#f`, nested logic variables,
- * `()` for NULL, interned symbol strings, or a generic `#<heap:N>`/`#<type:N>`
- * placeholder otherwise.
+ * Each bound term is formatted by eshkol_display_logic_term().
  * @param file Destination FILE*, or NULL to write to stdout.
  */
 extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
@@ -1062,41 +1453,7 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
             fprintf(f, "?_%llu", (unsigned long long)ids[i]);
         }
         fprintf(f, " -> ");
-
-        /* Display the bound term */
-        const eshkol_tagged_value_t* term = &terms[i];
-        switch (term->type) {
-            case ESHKOL_VALUE_INT64:
-                fprintf(f, "%lld", (long long)term->data.int_val);
-                break;
-            case ESHKOL_VALUE_DOUBLE:
-                eshkol_fprint_double(f, term->data.double_val);
-                break;
-            case ESHKOL_VALUE_BOOL:
-                fprintf(f, "%s", term->data.int_val ? "#t" : "#f");
-                break;
-            case ESHKOL_VALUE_LOGIC_VAR:
-                eshkol_display_logic_var(term->data.int_val, file);
-                break;
-            case ESHKOL_VALUE_NULL:
-                fprintf(f, "()");
-                break;
-            case ESHKOL_VALUE_HEAP_PTR:
-                if (term->data.ptr_val) {
-                    eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)term->data.ptr_val);
-                    if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
-                        fprintf(f, "%s", (const char*)term->data.ptr_val);
-                    } else {
-                        fprintf(f, "#<heap:%d>", header->subtype);
-                    }
-                } else {
-                    fprintf(f, "()");
-                }
-                break;
-            default:
-                fprintf(f, "#<type:%d>", term->type);
-                break;
-        }
+        eshkol_display_logic_term(&terms[i], file);
     }
 
     fprintf(f, "}");
@@ -1104,8 +1461,11 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
 
 /**
  * @brief Print a fact as `(predicate arg1 arg2 ...)`.
- * Prints `(fact)` if @p fact is NULL, and `?` for an unset (0) predicate.
- * Arguments use the same per-type formatting as eshkol_display_substitution().
+ *
+ * Prints `(fact)` if @p fact is NULL.  A fact with an unset (0) predicate is
+ * one built from a datum list with no ground head — `'(1 2 3)`, `'(?x b)` —
+ * so it prints as the plain list `(1 2 3)` it came from, with no predicate
+ * slot.  Arguments are formatted by eshkol_display_logic_term().
  * @param file Destination FILE*, or NULL to write to stdout.
  */
 extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
@@ -1116,51 +1476,14 @@ extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     }
 
     fprintf(f, "(");
-
-    /* Display predicate */
     if (fact->predicate) {
         fprintf(f, "%s", (const char*)fact->predicate);
-    } else {
-        fprintf(f, "?");
     }
 
-    /* Display arguments */
     const eshkol_tagged_value_t* args = FACT_ARGS(fact);
     for (uint32_t i = 0; i < fact->arity; i++) {
-        fprintf(f, " ");
-        const eshkol_tagged_value_t* arg = &args[i];
-        switch (arg->type) {
-            case ESHKOL_VALUE_INT64:
-                fprintf(f, "%lld", (long long)arg->data.int_val);
-                break;
-            case ESHKOL_VALUE_DOUBLE:
-                eshkol_fprint_double(f, arg->data.double_val);
-                break;
-            case ESHKOL_VALUE_BOOL:
-                fprintf(f, "%s", arg->data.int_val ? "#t" : "#f");
-                break;
-            case ESHKOL_VALUE_LOGIC_VAR:
-                eshkol_display_logic_var(arg->data.int_val, file);
-                break;
-            case ESHKOL_VALUE_NULL:
-                fprintf(f, "()");
-                break;
-            case ESHKOL_VALUE_HEAP_PTR:
-                if (arg->data.ptr_val) {
-                    eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)arg->data.ptr_val);
-                    if (header->subtype == HEAP_SUBTYPE_SYMBOL) {
-                        fprintf(f, "%s", (const char*)arg->data.ptr_val);
-                    } else {
-                        fprintf(f, "#<heap:%d>", header->subtype);
-                    }
-                } else {
-                    fprintf(f, "()");
-                }
-                break;
-            default:
-                fprintf(f, "#<type:%d>", arg->type);
-                break;
-        }
+        if (i > 0 || fact->predicate) fprintf(f, " ");
+        eshkol_display_logic_term(&args[i], file);
     }
 
     fprintf(f, ")");

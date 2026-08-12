@@ -545,6 +545,21 @@ probe generative_differential_oracle 'generated R7RS programs agree across chibi
 # INV-language-surface-exercise and the total-language completion oracle.
 probe language_surface_coverage_floor 'exposure-engine language coverage meets the committed monotonic floor' \
     'cd "$REPO_ROOT" && ./scripts/run_language_coverage.sh'
+# The ledger says what the VM supports; this makes the ledger prove it by
+# RUNNING both engines over the whole callable surface. Without it a row can
+# claim vm-supported for a name that aborts the VM, and vm_parity_audit.py
+# (which only scrapes source text) reports OK anyway — that is how assq,
+# assv, memv, partition and string-contains stayed invisible.
+probe surface_parity_execution_backed 'every name native resolves is resolved by the VM or recorded in PARITY.tsv (probed on both engines, ratcheted)' \
+    'cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_surface_parity.py'
+# The one that catches SILENT WRONG ANSWERS. Name-resolution parity, ledger
+# classification and one-engine coverage all pass while the two engines return
+# different VALUES; this runs the corpus on both engines and compares output,
+# and refuses to let a VM failure be reclassified as "out of subset".
+# Validated by reintroducing the '() truthiness bug: exit 1 with the bug, 0
+# without.
+probe engine_semantic_parity 'no corpus program computes a different answer on the two engines, and differential construct coverage holds its floor' \
+    'cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py'
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
 probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \

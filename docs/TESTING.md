@@ -167,9 +167,9 @@ VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
 Measured on the v1.3.4-evolve cut: the differential is **140/140** and the
-manifest is **951 rows — 578 `vm-supported`, 44 `native-only-justified`, 329
-`gap`**, of which 17 are verified behavioral divergences with reproducible
-programs under `tests/vm_parity/found/`.
+manifest is **956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
+`gap`**; verified behavioral divergences remain explicit `gap` rows with
+reproducible programs under `tests/vm_parity/found/`.
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh

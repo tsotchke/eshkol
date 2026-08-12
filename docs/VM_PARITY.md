@@ -39,25 +39,6 @@ to miss.
   ascription is a compile-time construct on the native type checker with no VM
   surface; it is a runtime no-op, so a VM program that omits it computes the
   identical result.
-- **The R7RS module forms are now `vm-supported` (#402).** The VM lane knew none
-  of `define-library` / `import` / `export`; it now resolves a library defined in
-  the same compilation unit exactly as the native and JIT engines do.
-  `op:IMPORT`, `op:PROVIDE` and `op:REQUIRE` move from `gap` to `vm-supported`
-  with **no new waivers**.
-- **The portable event loop is `vm-supported`.** `make-event-loop`,
-  `event-loop-poll`, `event-loop-add-fd!`, `event-loop-remove-fd!`,
-  `event-loop-close` and `event-loop-backend` all resolve on the bytecode VM.
-- **Region handles: the surface is shared, the reclamation is not.** `region-open?`
-  is `vm-supported`. `region-open`, `region-close` and `op:WITH_REGION` stay
-  `native-only-justified` for a precisely scoped reason: the name resolves on
-  both substrates and the handle protocol, its validation and every error message
-  are byte-identical (one shared C implementation, pinned by
-  `corpus/region_handle_contract.esk`), so **output parity holds**. What is
-  native-only is the *reclamation* — the region arena, the allocation-slot hijack
-  and the escape promotion are native-arena constructs torn down through
-  `eshkol_region_unwind_to()`, and the VM heap has no escape evacuator. A VM
-  program using regions computes the right answer; it just does not get the
-  memory back.
 
 ## The manifest
 
@@ -71,11 +52,25 @@ statuses:
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **951 rows — 578
-`vm-supported`, 44 `native-only-justified`, 329 `gap`** (v1.3.4-evolve audit).
-Of the 329 `gap` rows, **17** are verified behavioral divergences with
-reproducible programs under `tests/vm_parity/found/`; the rest are acknowledged
-holes.
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 581
+`vm-supported`, 44 `native-only-justified`, 331 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv`; the 936/562/45 figures quoted here previously
+predated several ratchet promotions). The three most recent promotions are
+`op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
+logic-variable representation was unified across the engines (task #100).
+
+**A status is a claim about the running system, and is now checked as one.**
+This audit validates the ledger against SOURCE TEXT — names scraped from the
+C++ dispatch table in `llvm_codegen.cpp` and the op enum — so it can neither
+see Scheme-level stdlib procedures nor tell whether a `vm-supported` row is
+true. `scripts/run_surface_parity.py` closes that: it probes every name on
+BOTH engines and fails when native resolves a name the VM does not while the
+ledger is silent or claims `vm-supported`. It is what found `assq`, `assv`,
+`memv`, `partition` and `string-contains` — all resolvable natively, all
+aborting the VM with "undefined variable", none of them in this ledger, while
+this audit reported OK.
+Verified behavioral divergences remain explicit `gap` rows with reproducible
+programs under `tests/vm_parity/found/`.
 
 ## The ratchet workflow
 
@@ -123,12 +118,6 @@ stages:
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
 ```
-
-Measured on the v1.3.4-evolve release cut: **140/140 checks green** across the
-audit, corpus, out-of-subset and fatal-probe stages, with zero failures. The
-gate emits `kind:"vm_parity"` trace events and is wired into the ICC release
-oracle as the `vm_parity_gate` criterion, so a parity regression turns the
-release gate red rather than being noticed by hand.
 
 Verified behavioral divergences are recorded as `gap` rows referencing a repro
 under `tests/vm_parity/found/` (for example, the VM's `display` appends a

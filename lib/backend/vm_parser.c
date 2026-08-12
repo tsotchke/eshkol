@@ -987,10 +987,28 @@ static void compile_quote(FuncChunk* c, Node* datum) {
     }
     if (datum->type == N_LIST) {
         if (datum->n_children == 0) { chunk_emit(c, OP_NIL, 0); return; }
-        /* Build proper list: (cons el0 (cons el1 ... (cons elN-1 '()))) */
-        /* Compile in reverse: push NIL, then cons each element from back to front */
-        chunk_emit(c, OP_NIL, 0);
-        for (int i = datum->n_children - 1; i >= 0; i--) {
+        /* Build the list back-to-front. For a DOTTED list the last child is
+         * the final cdr rather than an element, so it seeds the chain in
+         * place of '(). */
+        /* R7RS 7.1.2 dot notation. The reader leaves `(a b . c)` as the
+         * children [a, b, ".", c] -- the `.` stays a real child because the
+         * compiler's VARIADIC-parameter detection (`(define (f . args) ...)`)
+         * looks for exactly that symbol. Only QUOTED data reinterprets it:
+         * the element after the dot becomes the final cdr instead of '().
+         * Without this `'(a . 42)` built the three-element list `(a |.| 42)`,
+         * so `(cdr '(a . 42))` was `(. 42)` on the VM and `42` natively, and
+         * `(equal? '(:found . 42) (cons ':found 42))` was #f. */
+        int n = datum->n_children;
+        int dotted = (n >= 3 &&
+                      datum->children[n - 2]->type == N_SYMBOL &&
+                      strcmp(datum->children[n - 2]->symbol, ".") == 0);
+        if (dotted) {
+            compile_quote(c, datum->children[n - 1]);
+            n -= 2;                       /* drop the tail AND the dot */
+        } else {
+            chunk_emit(c, OP_NIL, 0);
+        }
+        for (int i = n - 1; i >= 0; i--) {
             compile_quote(c, datum->children[i]);
             chunk_emit(c, OP_CONS, 0);
         }

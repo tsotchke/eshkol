@@ -381,15 +381,6 @@ block ordinary use.
   unaffected (ESH-0103).
 
 **Knowledge base and consciousness engine**
-- **Quoted pattern-variable queries never match — silent wrong answer.**
-  `(kb-query kb '(parent alice ?child))` never returns a match, on any target
-  (native, VM, or WASM). A quoted `?x` compiles to a plain symbol, but the
-  pattern detector recognizes only string-spelled logic variables, and
-  `unify` / `logic-var?` / `kb-query` each use a different, mutually
-  incompatible representation of what counts as a logic variable. Affects
-  every knowledge-base pattern query written with the documented
-  `'(pattern ?var)` syntax. Fix (a single unified logic-variable
-  representation) is scheduled for v1.3.5.
 - **Factor-graph free energy is wrong in the browser build only.**
   `(free-energy fg evidence)` returns `-0.0` regardless of the supplied
   evidence when run under the browser's WASM VM; native `eshkol-run`
@@ -399,10 +390,10 @@ block ordinary use.
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 951 rows —
-  578 `vm-supported`, 44 `native-only-justified`, 329 `gap`, of which 17 are
-  verified behavioral divergences with reproducible programs under
-  `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
+  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. Verified
+  behavioral divergences remain explicit `gap` rows with reproducible
+  programs under `tests/vm_parity/found/`; the rest are acknowledged holes. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The differential gate is

@@ -71,6 +71,11 @@ arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step)
 arithmetic-shift	vm-supported	
 asin	vm-supported	
 asinh	gap	no VM name binding
+assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
+assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 atan	vm-supported	
 atan2	gap	no VM name binding
 atanh	gap	no VM name binding
@@ -402,7 +407,7 @@ kaiser-window	gap	signal faculty has no VM fid coverage
 kb-assert!	vm-supported	
 kb-count	vm-supported	
 kb-load	gap	KB persistence/prefix query has no VM binding
-kb-query	vm-supported	
+kb-query	vm-supported	task #100: returns a list of SUBSTITUTIONS in KB insertion order, byte-identical to native. The row was previously unqualified while the VM returned matching FACTS and matched only "?"-string patterns, so the documented '(parent alice ?child) form matched nothing. Pinned by corpus/54_logic_var_kb_query.esk
 kb-query-prefix	gap	KB persistence/prefix query has no VM binding
 kb-retract!	vm-supported	
 kb-save	vm-supported	
@@ -435,7 +440,7 @@ local-timezone-offset	vm-supported
 log	vm-supported	
 log10	gap	no VM name binding
 log2	gap	no VM name binding
-logic-var?	vm-supported	
+logic-var?	vm-supported	task #100: see op:LOGIC_VAR
 lru-clear!	vm-supported	
 lru-delete!	vm-supported	
 lru-get	vm-supported	
@@ -448,7 +453,7 @@ make-bytevector	vm-supported
 make-dataloader	gap	ml faculty has no VM fid coverage
 make-directory	gap	port/file IO surface missing in VM
 make-dnc-memory	gap	core.dnc has no VM fids
-make-fact	vm-supported	
+make-fact	vm-supported	task #100: both (make-fact 'p 'a 'b) and (make-fact '(p a b)) build the same fact on both substrates, and a fact displays as its (p a b) datum
 make-factor-graph	vm-supported	
 make-hash-table	vm-supported	
 make-kb	vm-supported	
@@ -565,7 +570,7 @@ op:LET_STAR	vm-supported	vm_compiler special-form dispatch
 op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
 op:LET_SYNTAX	gap	let-syntax not expanded by vm_macro (undefined-variable error)
 op:LET_VALUES	gap	accepted but binds wrong values (found/let_values_silent_zero.esk)
-op:LOGIC_VAR	gap	?x resolves to itself through walk (found/logic_walk_unresolved.esk)
+op:LOGIC_VAR	vm-supported	task #100: a ?-prefixed token is a logic variable bare AND inside quoted data on both substrates; logic-var? answers #t for `?x` and `'?x` and #f for a ?-prefixed STRING, a plain symbol and every other value. Was a gap because the VM's three logic-variable representations disagreed (KB matcher wanted a "?"-string, unify wanted a raw int id, logic-var? wanted a HEAP_LOGIC_VAR nothing constructed) and native had no codegen arm for a quoted logic variable. Pinned by corpus/54_logic_var_kb_query.esk
 op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501
 op:MAKE_FACT	vm-supported	prelude wrapper over _make-fact1 fid 507
 op:MAKE_FACTOR_GRAPH	vm-supported	prelude wrapper over _make-fg2 fid 520
@@ -606,7 +611,7 @@ op:UNLESS	vm-supported	vm_compiler special-form dispatch
 op:UNQUOTE	vm-supported	vm_compiler quasiquote expansion
 op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (found/splice_middle_order.esk)
 op:VALUES	vm-supported	values + call-with-values verified 2026-07
-op:WALK	gap	walk does not resolve bindings (found/logic_walk_unresolved.esk)
+op:WALK	vm-supported	task #100: resolves binding chains (?a -> ?b -> 99), returns an unbound variable and a non-variable unchanged, and returns a sub-term binding as the list it came from. Was a gap because the VM's walk only dereferenced a raw VAL_INT term. Pinned by corpus/54_logic_var_kb_query.esk
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
 op:WHEN	gap	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
 op:WITH_REGION	native-only-justified	RECLAMATION is native-only: the region arena, the allocation-slot hijack and the escape promotion are native-arena constructs torn down through eshkol_region_unwind_to(), and the VM heap has no escape evacuator to promote a body result out with (the same reason a VM region-close is bookkeeping-only). The form's VALUES AND EFFECTS are NOT waived: all three documented spellings (anonymous, 'name, ('name size)) are value-identical on both substrates and pinned by corpus/with_region_lowering.esk. Before that corpus row the VM mis-lowered the form outright — no OP_POP for non-final body expressions (stranded values shifted later top-level bindings: (+ 111 222) read back 0) and the ('name size) specifier compiled as a call (ERROR: calling non-function). ONE undocumented spelling diverges and is filed: (with-region (quote name)) with no other body is native foo / VM () plus an ERROR: line, because the VM reader collapses the 'name sugar and the explicit (quote name) list to one node and reads the sole argument as a specifier (found/with_region_explicit_quote_body_vm.esk).
@@ -905,7 +910,7 @@ ts-tree-free	vm-supported
 ts-tree-root	vm-supported	
 type-of	vm-supported	
 u8-ready?	gap	port/file IO surface missing in VM
-unify	vm-supported	
+unify	vm-supported	task #100: takes (t1 t2 subst) as documented (the VM read (subst a b)), accepts ?-symbols and logic variables, unifies facts and cons cells structurally, and fails the occurs check. Pinned by corpus/54_logic_var_kb_query.esk
 unix-socket-connect	vm-supported	
 unless	vm-supported	
 unsetenv	vm-supported	
@@ -935,7 +940,7 @@ volatile-load	native-only-justified	low-level memory/FFI primitive tied to nativ
 volatile-store!	native-only-justified	low-level memory/FFI primitive tied to native codegen
 vqe-energy-primitive	native-only-justified	LLVM-only AD_NODE_CUSTOM intrinsic; the VM tape has no custom-VJP node, and pretending plain-energy support would silently break gradient semantics
 vref	vm-supported	
-walk	gap	does not resolve bindings (found/logic_walk_unresolved.esk)
+walk	vm-supported	task #100: see op:WALK
 websocket-close	vm-supported	
 websocket-connect	vm-supported	
 websocket-receive	vm-supported	

@@ -10,8 +10,8 @@ is completion-oracle evidence rather than advice; executable language coverage
 **1,091/1,091 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**140/140** over a **951-row** manifest (578 `vm-supported`, 44
-`native-only-justified`, 329 `gap`); qLLM oracle gate **10/10**; ICC readiness
+**140/140** over a **956-row** manifest (581 `vm-supported`, 44
+`native-only-justified`, 331 `gap`); qLLM oracle gate **10/10**; ICC readiness
 **100**, verdict `ready`. See [TESTING.md](TESTING.md) for how each gate is run
 and [VM_PARITY.md](VM_PARITY.md) for the parity contract.
 

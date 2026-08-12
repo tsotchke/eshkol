@@ -814,18 +814,25 @@ Unification</h3>
 (walk ?y s2)               ;; -&gt; 2
 
 ;; Unification failure returns #f
-(unify 1 2 s)              ;; -&gt; #f</code></pre>
+(unify 1 2 s)              ;; -&gt; #f
+(unify ?x (list ?x) s)     ;; -&gt; #f  (occurs check)</code></pre>
 <h3 id="knowledge-bases">Knowledge Bases</h3>
 <pre class="scheme"><code>;; Create a knowledge base and assert facts
 (define kb (make-kb))
-(kb-assert! kb (make-fact &#39;parent (list &#39;alice &#39;bob)))
-(kb-assert! kb (make-fact &#39;parent (list &#39;bob &#39;charlie)))
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
+(kb-assert! kb (make-fact &#39;(parent bob charlie)))   ;; same shape, one datum list
 
-;; Query the knowledge base
-(kb-query kb &#39;parent)      ;; -&gt; list of matching facts
+;; Query it with a pattern. A ?-prefixed token is a logic variable, bare or
+;; quoted, and kb-query returns one substitution per matching fact, in
+;; insertion order (the empty list means no match).
+(kb-query kb &#39;(parent alice ?child))               ;; -&gt; ({?child -&gt; bob})
+(kb-query kb (make-fact &#39;parent &#39;alice ?child))    ;; -&gt; the same
+(walk ?child (car (kb-query kb &#39;(parent alice ?child))))  ;; -&gt; bob
 
 ;; Type predicates
 (logic-var? ?x)             ;; -&gt; #t
+(logic-var? &#39;?x)            ;; -&gt; #t  (quoted spelling, same variable)
+(logic-var? &quot;?x&quot;)           ;; -&gt; #f  (a string is a string)
 (substitution? s)           ;; -&gt; #t
 (kb? kb)                    ;; -&gt; #t</code></pre>
 <h3 id="factor-graphs-and-probabilistic-inference">Factor Graphs and

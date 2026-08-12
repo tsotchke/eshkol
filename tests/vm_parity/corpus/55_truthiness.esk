@@ -1,0 +1,51 @@
+;; 55_truthiness.esk — R7RS truthiness must be identical on both engines.
+;;
+;; R7RS 6.3.1: "Of all the standard Scheme values, only #f counts as false
+;; in conditional expressions. All other Scheme values, including #t, the
+;; empty list, the unspecified value, and procedures count as true."
+;;
+;; The VM's is_truthy() returned false for VAL_NIL, contradicting its OWN doc
+;; comment ("only `#f` is false, everything else (including '()) is truthy")
+;; on the line directly below it. So `(if '() 'T 'F)` was T natively and F on
+;; the VM, and with it `not`, `and`, `or`, `cond`, `when`, `unless` and every
+;; "did the search find anything" idiom inverted whenever the value was '().
+;;
+;; Nothing caught it: the corpus had no program that branched on '(), and the
+;; ledger only ever checked that names EXIST, never what they evaluate to.
+;; This row makes the contract executable on both substrates.
+
+;; -- the empty list is TRUE ------------------------------------------------
+(display (if '() 'T 'F))            (newline)
+(display (if (list) 'T 'F))         (newline)
+(display (if (cdr '(a)) 'T 'F))     (newline)
+
+;; -- everything except #f is true -----------------------------------------
+(display (if 0 'T 'F))              (newline)
+(display (if 0.0 'T 'F))            (newline)
+(display (if "" 'T 'F))             (newline)
+(display (if #\a 'T 'F))            (newline)
+(display (if (vector) 'T 'F))       (newline)
+(display (if car 'T 'F))            (newline)
+(display (if #t 'T 'F))             (newline)
+
+;; -- #f, and only #f, is false --------------------------------------------
+(display (if #f 'T 'F))             (newline)
+
+;; -- the derived conditionals inherit it ----------------------------------
+(display (not '()))                 (newline)   ; #f
+(display (not #f))                  (newline)   ; #t
+(display (not 0))                   (newline)   ; #f
+(display (and '() 'reached))        (newline)   ; reached
+(display (or '() 'skipped))         (newline)   ; ()
+(display (cond ('() 'T) (else 'F))) (newline)   ; T
+(display (when '() 'ran))           (newline)   ; ran
+(display (if (null? '()) 'T 'F))    (newline)   ; T  (null? is the right test)
+
+;; -- the idiom the bug actually broke -------------------------------------
+;; A search that returns '() on "found nothing" must still be distinguished
+;; with null?, and a search returning a value must be true.
+(define (first-or-empty lst) (if (null? lst) '() (car lst)))
+(display (if (first-or-empty '()) 'true-because-empty-list-is-true 'F))
+(newline)
+(display (if (null? (first-or-empty '())) 'correctly-empty 'F))
+(newline)

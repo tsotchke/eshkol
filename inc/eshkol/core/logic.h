@@ -97,8 +97,44 @@ uint64_t eshkol_make_logic_var(const char* name);
 /* Get the name of a logic variable by its id. Returns NULL if invalid. */
 const char* eshkol_logic_var_name(uint64_t var_id);
 
-/* Check if a tagged value is a logic variable */
+/*
+ * THE logic-variable predicate.
+ *
+ * A term is a logic variable when it is an ESHKOL_VALUE_LOGIC_VAR immediate
+ * (what a `?x` literal compiles to) OR an interned symbol whose spelling
+ * begins with `?` (what a `?`-prefixed token inside a quoted datum, or a
+ * symbol from read/string->symbol/kb-load, arrives as).  Both spellings map
+ * onto the same variable id, so the two forms name the same variable.
+ *
+ * Every dispatch site — `logic-var?`, unification, walk, the occurs check
+ * and the knowledge-base matcher — must route through this function so they
+ * cannot disagree about what a logic variable is.
+ *
+ * @param tv Term to test; NULL is not a logic variable.
+ * @param out_id Receives the interned variable id when non-NULL.
+ * @return true if the term denotes a logic variable.
+ */
+bool eshkol_logic_var_id_of(const eshkol_tagged_value_t* tv, uint64_t* out_id);
+
+/* Check if a tagged value is a logic variable — boolean face of
+ * eshkol_logic_var_id_of(), and what (logic-var? x) answers with. */
 bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv);
+
+/*
+ * Structural equality of two facts: same predicate, same arity, pairwise
+ * equal arguments. EQUALITY, not unification — a logic variable matches
+ * only the same logic variable. Used by kb-retract! so a caller can name a
+ * fact by rebuilding it rather than by retaining the pointer they asserted.
+ */
+bool eshkol_fact_equal(const eshkol_fact_t* a, const eshkol_fact_t* b);
+
+/*
+ * Coerce a tagged value to a fact: a fact passes through, a
+ * `(predicate arg ...)` datum list is converted, anything else is NULL.
+ * Same acceptance kb-assert! and kb-query use.
+ */
+const eshkol_fact_t* eshkol_fact_operand(arena_t* arena,
+                                         const eshkol_tagged_value_t* tv);
 
 /*
  * Clear the process-global logic-variable name registry AND the
