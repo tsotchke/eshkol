@@ -6547,12 +6547,13 @@ for composability and custom pipelines.</p>
 ;; =&gt; #(2.0 5.0 8.0)</code></pre>
 <hr />
 <h2 id="implementation-statistics">Implementation Statistics</h2>
-<p><strong>Codebase Size</strong>: ~232,000 lines of production C++
+<p><strong>Codebase Size</strong>: ~322,000 lines of production C++
 <strong>Main Backend</strong>: <a
-href="lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 34,928 lines
+href="lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 42,025 lines
 <strong>Tensor Codegen</strong>: <a
-href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — 20,000+
-lines <strong>Compiler Modules</strong>: 21 specialized code generators
+href="lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — thin
+dispatcher over thirteen per-domain modules (~22,300 lines total)
+<strong>Compiler Modules</strong>: 21 specialized code generators
 <strong>Test Suite</strong>: 37 suites, 528 self-reported tests
 <strong>Verified Operations</strong>: 555+ builtins, 300+ standard
 library functions</p>

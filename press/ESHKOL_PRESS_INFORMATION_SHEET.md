@@ -185,9 +185,9 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 
 Total compiler infrastructure is approximately 286,000 lines of C17 and C++20
 across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
-added roughly 12,600 lines of Doxygen-format documentation across 116 files —
-50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
-previously-undocumented implementation files under `lib/` (≈7,478 lines) —
+added Doxygen-format documentation across 116 files —
+50 of the 64 public headers under `inc/eshkol/` and 56
+previously-undocumented implementation files under `lib/` —
 comments only, no behaviour change; v1.3.2-evolve added a further
 `eshkol-doc` reference generator (`docs/api/`) that harvests those comments
 automatically.

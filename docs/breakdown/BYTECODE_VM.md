@@ -132,7 +132,7 @@ ESKB files contain:
 
 ## Web Compilation Server
 
-`exe/eshkol-server.cpp` (490 lines) provides an HTTP API for on-demand compilation:
+`exe/eshkol-server.cpp` provides an HTTP API for on-demand compilation:
 
 ```
 POST /compile  — compile Eshkol code to WASM
