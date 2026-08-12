@@ -37,6 +37,26 @@
 
 #include <math.h>
 
+/* MSVC/clang-cl only expose the POSIX math constants (M_PI, M_LN2, ...)
+ * when _USE_MATH_DEFINES is defined before <math.h> is first included, and
+ * that define is out of this header's control (it comes from whichever
+ * translation unit includes us first). Guard each constant this header
+ * actually uses so both engines (native runtime + bytecode VM) build on
+ * Windows without relying on caller-side defines. Mirrors the M_PI/M_E
+ * guard already used for the same reason in lib/quantum/quantum_rng.c.
+ */
+#ifndef M_LN2
+#define M_LN2 0.693147180559945309417232121458176568
+#endif
+
+#ifndef M_LN10
+#define M_LN10 2.302585092994045684017991454684364208
+#endif
+
+#ifndef M_PI_2
+#define M_PI_2 1.570796326794896619231321691639751442
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
