@@ -140,12 +140,17 @@ typedef struct {
 #define PAIR_VAL(p) ((Value){.type = VAL_PAIR, .as.ptr = (p)})
 #define CLOSURE_VAL(p) ((Value){.type = VAL_CLOSURE, .as.ptr = (p)})
 
-/** @brief R7RS truthiness: only `#f` is false, everything else (including
- *         '()) is truthy. */
+/** @brief R7RS truthiness: only `#f` is false, everything else — including
+ *         '(), 0 and "" — is truthy.
+ *
+ *  The `VAL_NIL` line below used to return 0, contradicting this very
+ *  comment: `(if '() 'T 'F)` was `F` on the VM and `T` natively, and with it
+ *  `not`/`and`/`or`/`cond`/`when`/`unless` and every `assq`/`memq`-style
+ *  "did it find anything" idiom inverted.  R7RS 6.3.1 is unambiguous, and
+ *  the native engine has always been right, so this is the VM's bug. */
 static int is_truthy(Value v) {
     if (v.type == VAL_BOOL) return v.as.b;
-    if (v.type == VAL_NIL) return 0;
-    return 1;  /* everything else is truthy */
+    return 1;  /* everything that is not #f is true */
 }
 
 /** @brief Coerce a plain (non-heap-boxed) numeric Value to a double; 0.0
