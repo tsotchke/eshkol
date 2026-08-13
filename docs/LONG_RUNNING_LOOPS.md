@@ -131,13 +131,17 @@ In order of preference:
 **Threading state without consing:** prefer a single accumulator value, or
 a small `define-record-type` instance passed by reference, over
 reconstructing a fresh list every iteration. Consing a new list per
-iteration is extra per-tick allocation for no benefit — the arena reclaims
-it at the same rate either way, but a record/scalar avoids the allocation
-and the cons-traversal entirely. This project's automatic per-iteration
-arena-scope reclamation work (ESH-0214/ESH-0214b, `fix/loop-arena-reclamation`,
-not yet merged as of this writing) is complementary: once merged, it
+iteration is extra per-tick allocation for no benefit — on the native engine
+the arena reclaims it at the same rate either way, but a record/scalar avoids
+the allocation and the cons-traversal entirely. Automatic per-iteration
+arena-scope reclamation (ESH-0214/ESH-0214b) shipped and is complementary: it
 further bounds RSS for named-let loops whose static shape qualifies for
 automatic per-iteration scoping, independent of whether guard is used.
+
+All of that is the **native engine**. The bytecode VM reclaims nothing yet —
+neither automatically nor through an explicit `(with-region ...)` — so a
+long-running loop belongs on `eshkol-run`; see
+[memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 `guard`/`call/cc` bodies are expected to be on that feature's rejection
 list for automatic scoping (their handler/continuation state must survive
 past a naive iteration boundary), so the flat-outside-guard pattern remains

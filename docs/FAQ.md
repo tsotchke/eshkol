@@ -112,6 +112,8 @@ Eshkol compiles to native machine code via LLVM. Arithmetic and tensor operation
 
 No. Eshkol uses Ownership-Aware Lexical Regions (OALR) — arena-based allocation where memory is freed deterministically at scope boundaries. This provides microsecond-scale worst-case guarantees suitable for real-time systems. As of v1.3.4, a resident tick/daemon loop reclaims its per-iteration garbage automatically — even when it mutates persistent state every iteration — so RSS stays flat without any explicit `with-region` annotation (`with-region` remains available for scratch regions but is no longer required).
 
+This describes the **native engine** (`eshkol-run`, JIT and AOT). The **bytecode VM** does not reclaim yet: `with-region` and the region handles evaluate identically there and return the same values, but nothing is freed, so a resident VM workload grows monotonically. The VM says so at the first region form and again when the growth crosses a heap budget; the VM evacuator is the v1.3.5 flagship item. Use `eshkol-run` for workloads that depend on reclamation — see [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
+
 ### How does GPU dispatch work?
 
 Tensor operations dispatch through a four-tier hierarchy based on operand size:

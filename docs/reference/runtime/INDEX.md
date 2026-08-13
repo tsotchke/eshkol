@@ -19,7 +19,8 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
   sandbox.
 - [Memory model](memory-model.md) — 16-byte tagged values, the arena allocator,
   the hybrid global/per-thread model, and `with-region` semantics (incl. the
-  PR #81 reclamation fix).
+  PR #81 reclamation fix). Reclamation is a NATIVE-engine capability; the
+  bytecode VM evaluates the same forms and does not reclaim yet.
 - [Parallelism & threading](parallelism.md) — `parallel-map`/`-fold`/`-filter`/
   `-execute`, `future`/`force`, the work-stealing pool, the serialized-state
   pattern, and the AD-mode-flag limitation.

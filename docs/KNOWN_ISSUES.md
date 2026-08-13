@@ -12,7 +12,9 @@
   leaked one iteration's transient garbage forever. It is now lowered with a
   per-loop nursery region (ESH-0214e), so such a loop is flat at 34 MB —
   identical to its explicit `with-region` twin. `with-region` is no longer
-  required to get flat RSS in a resident loop. See
+  required to get flat RSS in a resident loop. Native engine only — the
+  bytecode VM reclaims neither way (see "Region handles and `with-region` on
+  the VM" below). See
   [memory-model](reference/runtime/memory-model.md#automatic-per-iteration-reclamation-in-resident-loops-esh-0214e).
 - **`parallel-map` corrupted collection-valued results past the parallel
   threshold.** A closure whose body used per-iteration scope reclamation (an
@@ -238,11 +240,19 @@ the host gives out.
   cause. `ESHKOL_VM_HEAP_BUDGET_FATAL=1` makes it exit nonzero so a lane can
   gate on it; `ESHKOL_VM_HEAP_BUDGET_MB=0` disables the watchdog.
 
-Neither guard changes any answer. **Real VM reclamation remains a build item**,
-and its prerequisite is unchanged: a VM-heap escape evacuator (root enumeration
-over the operand stack and the VM's side tables, per-subtype interior
-traversal for all 27 heap types, and index-space recycling). Use `eshkol-run`
-for workloads that depend on reclamation.
+Neither guard changes any answer. **Real VM reclamation is the v1.3.5 flagship
+item** (maintainer ruling 2026-08-13): an OALR Stage-1 port of the native
+engine's design — Cheney-style copying evacuation with a forwarding map and a
+mutation write barrier — with root enumeration over the operand stack and the
+VM's side tables, index-space recycling, and all 27 heap subtypes **deep-walked
+rather than leaf-copied**. That last clause is the ESH-0214d lesson written into
+the scope up front: natively, the subtypes left as shallow leaf copies were
+exactly the ones that had to be reopened later.
+
+Until then, **use `eshkol-run` (the native engine) for workloads that depend on
+reclamation.** Tracked as SW-14 in `.icc/silent-wrong-ledger.yaml`, bucket
+LOUD-LIMITATION — the limitation is announced rather than discovered, and the
+entry stays open until the RSS measurement above goes flat.
 
 ### Reverse-mode gradient on the VM
 `gradient` now runs on the bytecode VM at full parity with native codegen
@@ -353,6 +363,8 @@ block ordinary use.
   from automatic reclamation by design. Wrap each optimization step in an
   explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
   now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
+  Native engine only; on the bytecode VM a per-step `with-region` reclaims
+  nothing (see "Region handles and `with-region` on the VM" above).
   A lighter-weight tape mark/release API is planned so a bare training loop can
   reclaim without a per-step region.
 

@@ -1047,7 +1047,9 @@ Eshkol uses **arena-based memory management** for deterministic, low-latency per
 **Benefits:**
 - **No GC pauses** - Critical for real-time applications
 - **Cache-friendly** - Sequential allocation
-- **Deterministic cleanup** - Memory freed when scope exits
+- **Deterministic cleanup** - Memory freed when scope exits (native engine;
+  the bytecode VM does not reclaim yet — see
+  [memory model](reference/runtime/memory-model.md#which-engine-reclaims))
 - **Fast allocation** - O(1) bump-pointer allocation
 
 ### Tagged Value System

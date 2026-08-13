@@ -47,6 +47,15 @@ reproducer_root: ".scratch/flaw-ledger/repro"
 buckets:
   SILENT-WRONG: "Wrong value / wrong derivative / wrong memory outcome, no diagnostic, exit 0. TAG-BLOCKING."
   LOUD-ERROR: "Fails with a visible diagnostic, crash or non-zero exit. Bad, but honest. Sub-tagged cheap-fix or structural."
+  LOUD-LIMITATION: >-
+    A capability the engine does not implement, which ANNOUNCES itself at the
+    point of use and again when it starts to bite. Not a wrong answer and not a
+    failure: the program is correct, and the gap is named on stderr and in the
+    docs rather than discovered. Distinct from LOUD-ERROR, which fails; a
+    LOUD-LIMITATION succeeds while doing less than the surface suggests, so the
+    announcement IS the honesty. Not tag-blocking. An entry may only enter this
+    bucket by maintainer ruling, and only once the announcement is gated by a
+    test that fails if it is removed.
   PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
   DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
@@ -627,10 +636,10 @@ entries:
     notes: "Excused by an XFAIL row, so the wasm gate is green while the defect ships in the browser build."
 
   - id: SW-14
-    bucket: SILENT-WRONG
+    bucket: LOUD-LIMITATION
     status: open
-    resolution: NEEDS-DECISION
-    title: "with-region on the VM never reclaims — silent unbounded memory growth"
+    disposition: "v1.3.5 flagship: VM OALR Stage-1 evacuator port"
+    title: "The bytecode VM does not reclaim: with-region is a pass-through there (native reclaims; VM announces that it does not)"
     observed: "A VM program using regions computes the right answer and never gets the memory back; the VM heap has no escape evacuator"
     evidence: >-
       docs/KNOWN_ISSUES.md, section "Region handles and `with-region` on the
@@ -639,7 +648,46 @@ entries:
       icc-smoke probe vm_region_growth_watchdog
     caught_by: [KNOWN_ISSUES]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Classified silent because a long-running VM process degrades with no diagnostic and exit 0."
+    reclassified:
+      from: SILENT-WRONG
+      to: LOUD-LIMITATION
+      "on": "2026-08-13"
+      by: "maintainer ruling"
+      why: >-
+        The entry was filed SILENT because a long-running VM process degraded
+        with no diagnostic and exit 0. That premise no longer holds: the two
+        guards below announce the limitation at the point of use and again when
+        it starts to bite, and a gate fails if either is removed. What remains
+        is a capability the VM does not implement, stated plainly — a
+        limitation, not a wrong answer. The reclassification is a change of
+        CATEGORY, not a claim that anything was fixed: the VM still reclaims
+        nothing, and status stays `open` until the evacuator lands.
+        NOT a waiver — waivers expire and this has a build item instead.
+    guard: >-
+      (a) the first region form executed on the VM prints a one-time note to
+          stderr naming the boundary (vm_region_reclaim_notice(),
+          lib/backend/vm_core.c; called from compile_form_with_region() and
+          from native 2210 region-open). ESHKOL_VM_REGION_QUIET=1 silences it.
+      (b) the VM arena is sampled every 4096 allocations and crossing
+          ESHKOL_VM_HEAP_BUDGET_MB (default 1024) prints a diagnostic naming
+          the size, the budget and the cause (heap_check_budget()).
+          ESHKOL_VM_HEAP_BUDGET_FATAL=1 makes it exit nonzero so a lane can
+          gate on it; ESHKOL_VM_HEAP_BUDGET_MB=0 disables it.
+      Neither changes any answer — the gate asserts that too
+      (vm_region_growth_watchdog_test.sh::answers_unchanged).
+    docs_corrected: >-
+      Maintainer ruling 2026-08-13 also required the docs to stop promising
+      reclamation engine-neutrally. docs/reference/runtime/memory-model.md,
+      docs/KNOWN_ISSUES.md and docs/reference/runtime/environment-variables.md
+      now state plainly that the NATIVE engine implements region reclaim (OALR)
+      and the VM engine does not yet reclaim, with the watchdog and budget
+      environment variables documented as the current VM behaviour.
+    notes: >-
+      Filed as SILENT on the premise that the growth was undiagnosed; see
+      `reclassified` for why that premise no longer holds. The measurement
+      below is the reason the entry is not merely "with-region is weaker on the
+      VM": the VM has NO reclamation at all, so `with-region` is not degraded
+      there, it is inert.
     measured:
       at_sha: "2ae3787f"
       with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
@@ -665,10 +713,11 @@ entries:
       object graph the body just returned, because the VM heap has no escape
       evacuator to promote a kept value out with. The missing evacuator, not
       the missing bracket, is the defect.
-    why_not_fixed_here: >-
-      NEEDS-DECISION: a correct fix is a VM-heap escape evacuator, which is a
-      campaign of the same size as the native ESH-0214c/ESH-0214d work
-      (multiple dedicated PRs), not a patch. It requires, at minimum:
+    scope_of_the_real_fix: >-
+      Sized before the ruling and unchanged by it — this is the v1.3.5 flagship
+      brief. A correct fix is a VM-heap escape evacuator, a campaign of the
+      same size as the native ESH-0214c/ESH-0214d work (multiple dedicated
+      PRs), not a patch. It requires, at minimum:
       (1) ROOT ENUMERATION over the operand stack plus ~15 Value-carrying side
           tables inside `struct VM` (outputs, handler_stack.promise_mark,
           current_exception, wind_stack, parameter_bindings, promise_eval_head,
@@ -690,33 +739,34 @@ entries:
       The failure mode of a partial implementation is STRICTLY WORSE than the
       defect: a missed root or an uncovered subtype turns an honest leak into
       a dangling object index, which on the VM aliases a live object and
-      produces a silently wrong VALUE rather than a crash. Shipping that under
-      a SILENT-WRONG closure would invert the ledger's own contract.
-    interim_guard_landed: >-
-      The SILENT half is closed on this branch even though the reclamation is
-      not. Two guards, neither of which changes any answer:
-      (a) the first region form executed on the VM prints a one-time note to
-          stderr naming the boundary (vm_region_reclaim_notice(),
-          lib/backend/vm_core.c; called from compile_form_with_region() and
-          from native 2210 region-open). ESHKOL_VM_REGION_QUIET=1 silences it.
-      (b) the VM arena is sampled every 4096 allocations and crossing
-          ESHKOL_VM_HEAP_BUDGET_MB (default 1024) prints a diagnostic naming
-          the size, the budget and the cause (heap_check_budget()).
-          ESHKOL_VM_HEAP_BUDGET_FATAL=1 makes it exit nonzero so a lane can
-          gate on it; ESHKOL_VM_HEAP_BUDGET_MB=0 disables it.
-      Gated by tests/memory/vm_region_growth_watchdog_test.sh (8/8) and by the
-      icc-smoke probe vm_region_growth_watchdog, so the guard cannot be
-      removed silently. Documented in docs/KNOWN_ISSUES.md,
-      docs/reference/runtime/memory-model.md and
-      docs/reference/runtime/environment-variables.md.
-    decision_requested: >-
-      Choose one: (A) accept the interim guard for v1.3.4 and schedule the
-      VM-heap evacuator as a v1.3.5 campaign — the growth is now loud, named
-      and gate-pinned, and the docs no longer imply otherwise; or (B) hold the
-      tag for the evacuator campaign. Recommendation: (A). Option (B) lands a
-      moving collector in the VM core days before a release, where the cost of
-      an incomplete root or subtype list is a silently wrong value.
-
+      produces a silently wrong VALUE rather than a crash. That is why the
+      ruling scopes the v1.3.5 port with all 27 subtypes DEEP-WALKED up front
+      rather than leaf-copied and revisited.
+    ruling:
+      "on": "2026-08-13"
+      by: "maintainer"
+      decision: >-
+        The loud guard ships for v1.3.4. The full VM evacuator is the v1.3.5
+        FLAGSHIP item: an OALR Stage-1 port of the native engine's design —
+        Cheney-style copying evacuation with a forwarding map and a mutation
+        write barrier — with all 27 heap subtypes DEEP-WALKED rather than
+        leaf-copied. That last clause is the ESH-0214d lesson written into the
+        scope up front: natively, the subtypes left as shallow leaf copies were
+        exactly the ones that later had to be reopened, so the VM port does not
+        get to defer them.
+      consequences:
+        - "this entry moves SILENT-WRONG -> LOUD-LIMITATION and stops gating the tag"
+        - "status stays open; the evacuator is the close condition, not the guard"
+        - "docs must state the engine split plainly rather than promise reclaim neutrally"
+    close_condition: >-
+      This entry closes when a VM program measurably gets its memory back:
+      the fixture in tests/memory/vm_region_growth_watchdog_test.esk must hold
+      FLAT peak RSS across its iteration count instead of the ~1.5 GB measured
+      above, with the region-escape semantics of
+      docs/reference/runtime/memory-model.md preserved and every one of the 27
+      subtypes covered by a deep-walk test in the shape of
+      tests/memory/region_evac_subtype_coverage_test.sh. Closing by assertion
+      is forbidden (ledger invariant 3); the RSS number is the proof.
   - id: SW-15
     bucket: SILENT-WRONG
     status: closed

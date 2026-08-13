@@ -10,9 +10,9 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.4--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
-**v1.3.4-evolve** — a resident-correctness release. Automatic per-iteration
-memory reclamation now matches explicit `with-region` even for loops that mutate
-persistent state; `parallel-map` is race-free for collection-valued closures;
+**v1.3.4-evolve** — a resident-correctness release. On the native engine,
+automatic per-iteration memory reclamation now matches explicit `with-region`
+even for loops that mutate persistent state; `parallel-map` is race-free for collection-valued closures;
 gradients are exact through every callable form (indirect and curried, no
 finite-difference fallback); printed floats round-trip (R7RS 6.2.6); and the
 strict type checker accepts idiomatic dynamic-but-validated code. It also lands
@@ -182,12 +182,15 @@ Automatic differentiation is not a library feature—it is intrinsic to the lang
 
 Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates garbage collection entirely, providing O(1) allocation and deterministic deallocation. This architecture ensures predictable performance characteristics essential for real-time systems and production machine learning deployments. As of v1.3.4, **automatic per-iteration reclamation matches explicit `with-region`** even in a resident tick/daemon loop that mutates persistent state every iteration: such a loop is lowered with a per-loop nursery whose write barriers promote escapees and whose back edge resets the nursery, so RSS stays flat without any explicit region annotation. `with-region` remains available for scratch regions but is no longer *required* to get flat RSS in a long-running loop.
 
+**Which engine reclaims.** Everything in this section describes the **native engine** (`eshkol-run`, JIT and AOT). The **bytecode VM** (`eshkol-vm-standalone-test`) evaluates `with-region` and the region handles identically and returns the same values, but **does not reclaim** — the VM heap has no escape evacuator yet, so a resident VM workload grows monotonically. The VM announces this at the first region form and again when the growth crosses a heap budget, and the VM evacuator is the v1.3.5 flagship item (maintainer ruling 2026-08-13). Use `eshkol-run` for workloads that depend on reclamation; see [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#which-engine-reclaims).
+
 ```scheme
-;; Automatic scope-based memory management
+;; Automatic scope-based memory management (native engine)
 (with-region 'computation
   (let ((large-dataset (load-training-data)))
     (train-model large-dataset)))
 ;; All memory automatically freed - no GC pauses, ever
+;; (bytecode VM: same value, no reclamation yet)
 
 ;; Explicit ownership semantics when needed
 (define resource (owned (acquire-expensive-resource)))
@@ -355,12 +358,13 @@ differentiable control flow, and tower numerics — every example runnable.
 
 #### Advanced Memory Management
 ```scheme
-;; Arena-based regions with automatic cleanup
+;; Arena-based regions with automatic cleanup (native engine)
 (with-region 'training-session
   (let ((model (initialize-large-model))
         (data (load-training-batch)))
     (gradient-descent-step model data)))
 ;; Memory deterministically freed
+;; (bytecode VM: same value, no reclamation yet)
 
 ;; Ownership and borrowing semantics
 (define resource (owned (acquire-gpu-buffer)))
@@ -741,8 +745,8 @@ multi-pillar adversarial-testing infrastructure.
 - **Robustness**: mutual tail calls are proper O(1)-stack R7RS tail calls on
   AArch64; named-let TCO covers every tail position including through
   `guard`; the closure-capture ceiling is raised 16 → 64; a class of
-  unbounded RSS growth in long-running loops is fixed with automatic
-  per-iteration arena reclamation; a shutdown-teardown race and a deep-
+  unbounded RSS growth in long-running loops is fixed, on the native engine,
+  with automatic per-iteration arena reclamation; a shutdown-teardown race and a deep-
   recursion `SIGILL`-with-no-diagnostic bug are both fixed; `eshkol-run -r`/AOT
   caching now invalidates correctly on transitive `(load ...)`/`(require ...)`
   dependency changes.
