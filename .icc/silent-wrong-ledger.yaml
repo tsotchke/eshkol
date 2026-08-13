@@ -1124,6 +1124,68 @@ entries:
       a real piece of work — the VM's expander does gensym renaming that is applied
       inconsistently between binder and reference — so it is filed rather than fixed here.
 
+  - id: SW-31
+    bucket: SILENT-WRONG
+    status: open
+    title: "VM numeric type predicates and eqv? answer #f across whole numeric classes: number?/real? on rationals and bignums, rational? on integers and flonums, integer? on bignums, positive? on rationals and bignums, eqv? on rationals and bignums"
+    measured: >-
+      Full row-by-row probe, native -r vs VM standalone, columns
+      (number? integer? rational? real? exact? zero? positive? negative?):
+        5           native (#t #t #t #t #t #f #t #f)   VM (#t #t #f #t #t #f #t #f)
+        5.0         native (#t #t #t #t #f #f #t #f)   VM (#t #t #f #t #f #f #t #f)
+        1/3         native (#t #f #t #t #t #f #t #f)   VM (#f #f #t #f #t #f #f #f)
+        (expt 2 100) native (#t #t #t #t #t #f #t #f)  VM (#f #f #f #f #t #f #f #f)
+      and (eqv? 1/3 1/3) native #t / VM #f, (eqv? (expt 2 100) (expt 2 100)) native #t / VM #f.
+    observed: "the VM answers #f, exit 0, no diagnostic — a type predicate that denies a value's own type"
+    correct: "the native column, which is R7RS 6.2.2/6.1"
+    discovered_by: >-
+      Found while probing the exactness surface around the SW-18 fix, NOT by that fix.
+      Confirmed PRE-EXISTING and independent: (rational? 5) and (rational? 5.0) are #f on
+      the VM and involve no rational, no bignum and nothing this branch touched. The SW-18
+      fix only made the gap easier to hit, because expressions like (/ (expt 2 100) 3) now
+      correctly yield a VAL_RATIONAL where they used to yield a double, and the double was
+      accepted by these predicates.
+    root_cause_hypothesis: >-
+      Missing tag arms rather than a computation defect: each predicate tests an explicit
+      list of Value tags and VAL_RATIONAL / VAL_BIGNUM are absent from several of them,
+      while `rational?` is missing VAL_INT and VAL_FLOAT. eqv? likewise has no
+      VAL_RATIONAL / VAL_BIGNUM comparison arm and falls through to a tag-and-payload
+      compare that cannot match two distinct heap boxes. Not verified line-by-line —
+      filed for scoping, not fixed here.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      This is a wide surface — every numeric-tower predicate crossed with every non-fixnum
+      numeric class — and it is invisible to the parity corpus because no corpus program
+      asks a predicate about a rational or a bignum. The escape analysis is a predicate x
+      value-class MATRIX probe, which is cheap to generate and would have caught all of it.
+  - id: SW-32
+    bucket: SILENT-WRONG
+    status: open
+    title: "Native max/min return the WRONG operand for bignum-backed rationals, disagreeing with native's own < on the same pair"
+    repro: "(define a (/ (expt 2 100) 3)) (define b (/ (+ (expt 2 100) 1) 3)) (display (list (max a b) (min a b) (< a b)))"
+    observed: >-
+      native -r prints (1267650600228229401496703205376/3 1267650600228229401496703205376/3 #t)
+      — max and min BOTH answer a, while native's own < on the same pair correctly says a < b
+    correct: "(…377/3 …376/3 #t)"
+    measured: >-
+      Scoped by value class: small rationals are correct ((max 1/3 1/2) = 1/2) and plain
+      bignums are correct ((max (expt 2 100) (+ (expt 2 100) 1)) = …377). ONLY the
+      bignum-backed rational pair is wrong. The VM is CORRECT on all three after the SW-18
+      fix, so this is now a native-only defect and a live engine divergence.
+    root_cause_hypothesis: >-
+      Same int64-shadow class as SW-29: the comparison used by max/min reads a rational's
+      int64 numerator/denominator fields, which are 0 and 1 on the bignum path, so both
+      operands compare equal and the first is returned. Not the same code path as the `<`
+      opcode, which is why < is right and max is wrong in the same program.
+    discovered_by: "Adjacent probe while verifying the SW-18 fix did not regress ordering."
+    relationship_to_sw_29: >-
+      Almost certainly one root cause with SW-29 (native rounding functions reading the
+      int64 shadow). Filed separately because the symptom, the entry points and the ABI
+      constraint differ: SW-29 is blocked on an int64 return type, whereas max/min return
+      an OPERAND and can be fixed without any ABI change once the comparison is exact.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
   - id: SW-33
     bucket: SILENT-WRONG
     status: closed
@@ -1195,7 +1257,6 @@ entries:
       A control worth keeping: `(define (r . xs) (set! xs (cons 3 xs)) (car xs))`
       — mutated but NOT captured — was a LOUD refusal before this change
       ("variable 'xs' is not mutable"), not a wrong answer, and now answers 3.
-
   - id: SW-34
     bucket: SILENT-WRONG
     status: open
