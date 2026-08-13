@@ -664,7 +664,7 @@ entries:
     verified: >-
       ASAN clean on 16_define_syntax.esk and the new corpus program; XFAIL row removed from
       tests/wasm_diff/EXCLUSIONS.tsv (PR-06 drops to 0 XFAIL); new gated corpus program
-      tests/vm_parity/corpus/59_multi_macro_batch.esk (4 define-syntax, first macro used
+      tests/vm_parity/corpus/61_multi_macro_batch.esk (4 define-syntax, first macro used
       after later registrations, mutual use, nested self-application, exactness and char
       preservation, conditional-valued operands) matches native byte-for-byte on both
       engines.
@@ -753,9 +753,9 @@ entries:
       contagion is preserved: a FLOAT operand still routes to doubles.
     verified: >-
       Both filed reproducers now match native and were PROMOTED out of found/ into the
-      gated corpus (tests/vm_parity/corpus/61_bignum_exact_rational.esk,
-      62_bignum_rational_mixed.esk), plus a new class-kill program
-      tests/vm_parity/corpus/60_exact_bignum_rational.esk covering all three degradation
+      gated corpus (tests/vm_parity/corpus/63_bignum_exact_rational.esk,
+      64_bignum_rational_mixed.esk), plus a new class-kill program
+      tests/vm_parity/corpus/62_exact_bignum_rational.esk covering all three degradation
       sites, bignum numerators AND denominators, exact? assertions, exact comparison of
       values sharing a flonum, and the small-rational fast path. PARITY.tsv row for `/`
       updated; the ESH-0105 line removed from docs/KNOWN_ISSUES.md.
@@ -1052,7 +1052,7 @@ entries:
       An unknown entry blocks an optimization rather than enabling a miscompile, and an
       allocation failure skips optimizing entirely.
     verified: >-
-      All four arms match native in tests/vm_parity/corpus/59_multi_macro_batch.esk
+      All four arms match native in tests/vm_parity/corpus/61_multi_macro_batch.esk
       ((+ 1 (my-if2 #t 5 0)) = 6, (+ 1 (my-if2 #f 5 0)) = 1, (* 3 (my-if2 #t 5 1)) = 15,
       (* 3 (my-if2 #f 5 1)) = 3); ctest 164/164, vm-parity 166/0, differential 288/288.
     caught_by: [direct-measurement, sw-13-unmasking]

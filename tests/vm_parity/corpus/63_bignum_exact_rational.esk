@@ -11,6 +11,6 @@
 ; native eshkol_rational_t), so both engines print the exact value.  The wider
 ; class — bignum denominators, int64 overflow with no bignum operand at all,
 ; exact comparison of values that share a flonum — is gated by
-; corpus/60_exact_bignum_rational.esk.
+; corpus/62_exact_bignum_rational.esk.
 (display (/ (expt 2 100) 3))
 (newline)
