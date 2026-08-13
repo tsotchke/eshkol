@@ -3567,6 +3567,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # `hessian` over a lambda that CAPTURES free variables. A capturing lambda
+    # is lowered with one extra pointer parameter per capture; the scalar
+    # Hessian arm called it with the seeded jet ALONE, so
+    # `(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0))` failed LLVM
+    # module verification ("Incorrect number of arguments passed to called
+    # function") on every route. BOTH lanes: the failure was a verifier abort
+    # in the JIT and a compile failure in AOT, and `laplacian` delegates to
+    # `hessian`, so both operators regress together.
+    add_test(
+        NAME hessian_capture_arity_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hessian_capture_arity_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(hessian_capture_arity_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME hessian_capture_arity_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_arity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hessian_capture_arity_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_arity_aot'"
+    )
+    set_tests_properties(hessian_capture_arity_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
