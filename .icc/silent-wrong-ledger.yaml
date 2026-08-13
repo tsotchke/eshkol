@@ -452,6 +452,10 @@ entries:
       deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
       non-tail recursion working to 250000 frames, which the documented 100000 default
       would break. Recorded in docs/reference/runtime/environment-variables.md.
+      RULED (maintainer, 2026-08-13): ESH-0101 stack-guard COVERAGE stays open as a
+      ledgered v1.3.5 item. Wiring the variable where guards already exist — which is
+      what this entry does — is the correct and complete v1.3.4 scope. Not a blocker
+      for the v1.3.4 tag.
       Second residual, and the important one: every ceiling is OPT-IN. A limit
       binds a run only when that run sets its variable (or sets the matching
       ESHKOL_LIMIT_ACTIVE_* bit before eshkol_set_limits()); the documented
@@ -465,8 +469,12 @@ entries:
       entry records is that ESHKOL_MAX_HEAP=1 did nothing; fixing that does not
       require imposing a ceiling on every program that sets nothing.
       Whether the defaults should ALSO bind an unconfigured run is a release
-      decision about defaults, not a bug fix. NEEDS-DECISION for the maintainer;
-      documented at docs/reference/runtime/environment-variables.md
+      decision about defaults, not a bug fix.
+      RULED (maintainer, 2026-08-13): ceilings stay OPT-IN for v1.3.4. Shipping
+      behaviour is unchanged for every existing program — a run that sets nothing is
+      bounded by nothing, exactly as before. Whether the documented defaults should
+      also bind an unconfigured run is deferred as a v1.3.5 policy question, not a
+      v1.3.4 defect. Documented at docs/reference/runtime/environment-variables.md
       ("Limits are opt-in") and pinned by a dedicated case in
       tests/limits/resource_limits_enforcement_gate.sh.
 

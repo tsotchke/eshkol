@@ -79,7 +79,10 @@ variable (or setting the corresponding `ESHKOL_LIMIT_ACTIVE_*` bit before
 `eshkol_set_limits()`). The defaults in the table are the values a limit takes
 *when you turn it on*; they are not ceilings every program is silently held to.
 
-This is a deliberate distinction, not an omission. The defaults are real
+This is a deliberate distinction, not an omission, and it is the ruled v1.3.4
+behaviour: ceilings are opt-in, so shipping behaviour is unchanged for every
+existing program. Whether the documented defaults should also bind an
+unconfigured run is deferred as a v1.3.5 policy question. The defaults are real
 numbers that real programs pass: `tests/features/blc_test.esk` in this
 repository allocates past 1 GiB, and the bytecode VM's computed-goto dispatch
 never had an instruction guard at all. Applying every documented default to
@@ -134,6 +137,10 @@ when `ESHKOL_TIMEOUT_MS` is present in the environment (`eshkol_runtime_init()`)
 so a run that does not set it is not on a clock. Arming a 30-second wall-clock
 kill on every invocation would also bound AOT compilation and interactive REPL
 sessions.
+
+The `ESHKOL_MAX_STACK` gap above (ESH-0101) is likewise a ledgered v1.3.5 item:
+wiring the variable where the guard already runs is the v1.3.4 scope, extending
+guard coverage to every top-level `define` is not.
 
 ## Parallelism & threading
 
