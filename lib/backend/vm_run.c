@@ -817,6 +817,11 @@ void vm_run(VM* vm) {
      * vm_raise_error_msg() in vm_native.c. */
     lbl_VEC_REF: {
         Value idx = vm_pop(vm), vec_val = vm_pop(vm);
+        if (vec_val.type == VAL_TENSOR) {
+            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+            vm_vecref_tensor_path(vm, vec_val, idx);
+            DISPATCH();
+        }
         if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); DISPATCH(); }
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
         int i = (int)as_number(idx);
@@ -838,6 +843,9 @@ void vm_run(VM* vm) {
                 DISPATCH();
             }
             vec->items[i] = val;
+        } else if (vec_val.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) DISPATCH();
         }
         vm_push(vm, NIL_VAL);
         DISPATCH();
@@ -848,6 +856,9 @@ void vm_run(VM* vm) {
         if (vec_val.type == VAL_VECTOR) {
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vec ? vec->len : 0));
+        } else if (vec_val.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
         } else vm_push(vm, INT_VAL(0));
         DISPATCH();
     }
@@ -1602,6 +1613,11 @@ vm_exit:
          * codegen — see vm_raise_error_msg() in vm_native.c. */
         case OP_VEC_REF: {
             Value idx = vm_pop(vm), vec_val = vm_pop(vm);
+            if (vec_val.type == VAL_TENSOR) {
+                /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+                vm_vecref_tensor_path(vm, vec_val, idx);
+                break;
+            }
             if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); break; }
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
@@ -1623,6 +1639,9 @@ vm_exit:
                     break;
                 }
                 vec->items[i] = val;
+            } else if (vec_val.type == VAL_TENSOR) {
+                /* SW-26 sibling gap. */
+                if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) break;
             }
             vm_push(vm, NIL_VAL);
             break;
@@ -1633,6 +1652,9 @@ vm_exit:
             if (vec_val.type == VAL_VECTOR) {
                 VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
                 vm_push(vm, INT_VAL(vec ? vec->len : 0));
+            } else if (vec_val.type == VAL_TENSOR) {
+                /* SW-26 sibling gap. */
+                vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
             } else vm_push(vm, INT_VAL(0));
             break;
         }

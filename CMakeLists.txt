@@ -4167,6 +4167,28 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/frec
         PASS_REGULAR_EXPRESSION "0 failed")
 endif()
 
+# SW-12: direct differential check between the two independent tensor-backward
+# implementations (lib/backend/tensor_backward.cpp "native" raw-buffer kernels
+# vs lib/bridge/tensor_backward.cpp "bridge" node-based rules) for matmul,
+# layernorm, transpose, sum and attention on identical inputs, plus central
+# finite differences as the tie-breaking oracle. Embedding's bridge-vs-native
+# comparison lives in tensor_embedding_backward_gradcheck_test.cpp above.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")
+    add_executable(tensor_backward_dual_impl_gradcheck_test
+        tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp)
+    target_compile_features(tensor_backward_dual_impl_gradcheck_test PRIVATE cxx_std_17)
+    target_include_directories(tensor_backward_dual_impl_gradcheck_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(tensor_backward_dual_impl_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(tensor_backward_dual_impl_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(tensor_backward_dual_impl_gradcheck_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME tensor_backward_dual_impl_gradcheck
+             COMMAND tensor_backward_dual_impl_gradcheck_test)
+    set_tests_properties(tensor_backward_dual_impl_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "0 failed")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_arena_core_test.cpp")
     add_executable(runtime_arena_core_test tests/core/runtime_arena_core_test.cpp)
     target_compile_features(runtime_arena_core_test PRIVATE cxx_std_17)
