@@ -136,7 +136,7 @@ entries:
   - id: SW-03
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "ESH-0402-SHA"
+    closed_at: "5886b91e"
     closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
     title: "The Taylor tower cannot nest: derivative-n of derivative-n returns 0"
     repro: "(define (f x) (* x x x x)) (display (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1))"
@@ -200,7 +200,7 @@ entries:
   - id: SW-04
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "ESH-0402-SHA"
+    closed_at: "5886b91e"
     closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
     title: "derivative-n applied to a derivative CLOSURE returns 0"
     repro: "(define (f x) (* x x x x)) (define df (derivative f)) (display (derivative-n df 2.0 1))"
@@ -232,7 +232,7 @@ entries:
     subtag: structural
     status: fixed
     reclassified_from: SILENT-WRONG
-    closed_at: "ESH-0402-SHA"
+    closed_at: "5886b91e"
     closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
     title: "Curried gradient-of-gradient now raises instead of answering a zero matrix (ESH-0096)"
     repro: "(define (f v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 0))) (define g (gradient f)) (display (jacobian g (vector 2.0)))"
