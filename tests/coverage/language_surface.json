@@ -16,9 +16,9 @@
   "counts": {
     "builtins_total": 1025,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 694,
+    "builtins_in_vm_table": 695,
     "builtins_in_llvm_aot_dispatch": 788,
-    "builtins_aot_only": 286,
+    "builtins_aot_only": 285,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -5470,9 +5470,12 @@
     },
     {
       "name": "integer?",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        1717
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"

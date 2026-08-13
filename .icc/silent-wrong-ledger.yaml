@@ -1328,7 +1328,7 @@ entries:
       the same operands, in both operand orders, so it cannot pass by agreeing with a wrong
       expectation. Covers int64 across 2^53, small rationals, bignums, bignum-backed
       rationals, mixed exactness, and R7RS 6.2.6 inexactness contagion. Also added to the
-      compilation-axis differential corpus as 49_numeric_tower_tail.esk.
+      compilation-axis differential corpus as 50_numeric_tower_tail.esk.
     revert_validated: >-
       Forcing the rational and int64 tiers off in emitExactFirstOrderingI1 reproduces the
       native symptom exactly (max …376/3, min …993); removing the both-exact guard from VM
@@ -1514,61 +1514,6 @@ entries:
       first, so the repair here is now a no-op and only this ledger entry remains. Both
       arrived at byte-identical edits, which is itself corroboration of the diagnosis.
       GATE repair only — no product code.
-  - id: SW-35
-    bucket: SILENT-WRONG
-    status: open
-    title: "A derivative taken through min/max is silently 0 on the VM"
-    repro: "(define (f x) (max (* x x) (* 2 x))) (display ((derivative f) 3.0))"
-    observed: "VM prints 0; native prints 6"
-    correct: "6 — d/dx of x^2 at 3, since x^2 > 2x there"
-    measured: >-
-      Both arms and both operators: with f = (max (* x x) (* 2 x)) and
-      g = (min (* x x) (* 2 x)), native gives derivatives 6 and 2 at x=3 and 2 and 2 at
-      x=1; the VM gives 0 for every one of them while returning the correct PRIMAL value
-      (9/6 and 2/1). A zero derivative is the worst shape of silent-wrong for an AD
-      system: it looks like a legitimate stationary point.
-    root_cause_hypothesis: >-
-      Native ArithmeticCodegen::min/max open with an explicit DUAL-NUMBER path that
-      promotes both operands to duals, compares primals and packs the CHOSEN dual, so the
-      tangent survives the selection. The VM's min/max (vm_native.c natives 33/34) have no
-      dual arm at all: they fall through to as_number_vm(), which returns a dual's primal
-      and discards its tangent, so the value that comes back is a bare flonum and the
-      derivative reads 0. Not verified line-by-line beyond that read.    discovered_by: >-
-      Probing AD through min/max while fixing SW-32, because that fix touches the very
-      dispatch the dual path sits in front of. Confirmed PRE-EXISTING and NOT caused by
-      the SW-32 work: the same program gives the same zeros on a VM built with all of this
-      branch's VM changes reverted, and the SW-32 guard cannot fire for a dual operand
-      (a dual is not an exact tag).
-    caught_by: [direct-measurement, sw-32-adjacent-probe]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, ad-oracle]
-    notes: >-
-      Filed rather than fixed here: it is an AD-completeness gap in the VM, not part of
-      the exactness family this branch was scoped to, and the VM's AD surface has its own
-      oracle that should own the acceptance shape.
-
-  - id: SW-36
-    bucket: PARITY-RATCHET
-    status: open
-    title: "complex? cannot be used as a first-class value natively, though the VM binds it"
-    repro: "(display (map complex? (list 1 2)))"
-    observed: >-
-      native -r fails to compile: "Undefined variable: complex?" followed by
-      "Failed to resolve procedure for map". The VM resolves it and answers (#t #t).
-    correct: "both engines should bind it; it is an R7RS 6.2.1 procedure"
-    measured: >-
-      In CALL position (complex? 5) works on both engines. Only the value position
-      diverges. Found while building the SW-31 predicate matrix, which had to drop
-      complex? from its first-class section for exactly this reason — the file says so in
-      a comment rather than quietly omitting it.
-    caught_by: [direct-measurement, sw-31-corpus-authoring]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
-    notes: >-
-      Classified PARITY-RATCHET rather than SILENT-WRONG: native fails LOUDLY at compile
-      time, so nothing computes a wrong answer. It is a binding-table gap on the native
-      side, and it blocks one row of the predicate matrix from being gated.
-
-  # ───────────────────────── IN-FLIGHT ─────────────────────────
-
   - id: IF-01
     bucket: IN-FLIGHT
     silent_wrong_class: true
