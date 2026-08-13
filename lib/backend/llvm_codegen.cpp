@@ -4933,19 +4933,74 @@ private:
      * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
      * produce byte-identical closures (same packed_info / return_type_info
      * layout the closure-call path decodes). */
-    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params) {
+    /* Is `name` a REST-ARG (variadic) procedure, and if so how many FIXED
+     * parameters does it take? Consults both registries, exactly as the call
+     * path in codegenCall does: `variadic_function_info` for the ordinary
+     * compile, `g_repl_variadic_functions` for REPL/`-e` batches. Both are
+     * keyed by the user-visible name ("append"), never by the mangled LLVM
+     * symbol REPL hot-reload produces ("append__rv0"), so callers pass the
+     * user name first and the mangled form only as a fallback. */
+    bool lookupVariadicProcedure(const std::string& name,
+                                 uint64_t* fixed_params_out) {
+        auto it = variadic_function_info.find(name);
+        if (it != variadic_function_info.end() && it->second.second) {
+            if (fixed_params_out) *fixed_params_out = it->second.first;
+            return true;
+        }
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto rit = g_repl_variadic_functions.find(name);
+            if (rit != g_repl_variadic_functions.end() && rit->second.second) {
+                if (fixed_params_out) *fixed_params_out = rit->second.first;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Turn an LLVM function into a first-class Eshkol callable.
+     *
+     * SW-27 — the variadic arguments are not decoration. A rest-arg procedure
+     * `(define (append . lists) …)` is called through a DIFFERENT ABI from a
+     * fixed-arity one: the closure dispatcher (codegenClosureCall) conses the
+     * caller's surplus arguments into a list and passes `fixed_params` values
+     * plus that one list. It selects that path from the closure metadata —
+     * bit 63 of `packed_info`, which the allocator turns into
+     * CLOSURE_FLAG_VARIADIC, and, for the 0-capture case where `env` is null,
+     * the `input_arity` byte, which it reads back as `fixed_params`.
+     *
+     * Before this, every function-as-value site packed a plain arity and no
+     * variadic bit, so a rest-arg procedure referenced as a value was called
+     * as if fixed-arity: its rest parameter received a bare argument instead
+     * of a list. `(h append '(1) '(2))` answered `1` — the first argument,
+     * silently — and `(h string-copy "abc")` SIGSEGV'd under AOT walking a
+     * non-list as a list. Call position was always correct; only the value
+     * representation lied about the procedure's shape.
+     *
+     * NOTE the asymmetry in what `input_arity` must hold: for a fixed-arity
+     * closure it is the parameter count, but for a variadic one the dispatcher
+     * reads it as the FIXED count (the rest parameter is not among them). A
+     * rest-arg procedure with one fixed parameter stores 1, not 2.
+     */
+    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
+                                       bool is_variadic = false,
+                                       uint64_t fixed_params = 0) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31)
-        uint64_t packed_info = (num_params & 0xFFFF) << 16;
+        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // variadic (bit 63). For a variadic procedure the arity slot carries
+        // the FIXED parameter count, which is what the dispatcher unpacks.
+        uint64_t arity_field = is_variadic ? fixed_params : num_params;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        if (is_variadic) packed_info |= (uint64_t)1 << 63;
         Value* packed_info_val = sizeConst(packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
         Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -4953,6 +5008,21 @@ private:
                                                  {arena_ptr, func_ptr_int, packed_info_val,
                                                   sexpr_ptr, return_type_info, closure_name});
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* emitFunctionAsCallableValue for a NAMED procedure: resolves the
+     * rest-arg shape from the registries so callers cannot forget to. Every
+     * "this name is being read as a value" site should use this rather than
+     * packing arity by hand. */
+    Value* emitNamedFunctionAsCallableValue(Function* func,
+                                            const std::string& user_name,
+                                            uint64_t num_params) {
+        uint64_t fixed_params = 0;
+        bool is_variadic = lookupVariadicProcedure(user_name, &fixed_params);
+        if (!is_variadic && func) {
+            is_variadic = lookupVariadicProcedure(func->getName().str(), &fixed_params);
+        }
+        return emitFunctionAsCallableValue(func, num_params, is_variadic, fixed_params);
     }
 
     /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
@@ -4989,8 +5059,15 @@ private:
             return;
         }
 
+        // SW-27: a redefined name bound to a REST-ARG procedure is stored
+        // through this location as a value, so it needs the variadic shape
+        // for the same reason any other function-as-value reference does.
         uint64_t arity = ast->operation.define_op.num_params;
-        Value* callable = emitFunctionAsCallableValue(declared_it->second, arity);
+        Value* callable = ast->operation.define_op.is_variadic
+            ? emitFunctionAsCallableValue(declared_it->second, arity,
+                                          /*is_variadic=*/true, arity)
+            : emitNamedFunctionAsCallableValue(declared_it->second,
+                                               name ? name : "", arity);
         if (!callable) return;
 
         builder->CreateStore(callable, location);
@@ -11228,16 +11305,21 @@ private:
             auto arity_it = function_arity_table.find(var_name);
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
+                // SW-27: resolve the REST-ARG shape here rather than packing a
+                // plain arity. `(define (append . lists) …)` referenced as a
+                // value used to be handed to the dispatcher as fixed-arity,
+                // so its rest parameter received a bare argument instead of a
+                // list — `(h append '(1) '(2))` answered `1`, silently.
                 uint64_t num_params = arity_it->second;
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                return emitFunctionAsCallableValue(func, num_params);
+                return emitNamedFunctionAsCallableValue(func, var_name, num_params);
             }
 
             // LE-01: a bare Function* is NOT an Eshkol value. Handing one back
             // makes the closure dispatcher call a foreign-ABI symbol with the
-            // closure calling convention — `(h remainder 7 3)` SIGSEGV'd and
-            // `(h append '(1) '(2))` answered `1`. If the name is a builtin we
+            // closure calling convention — `(h remainder 7 3)` SIGSEGV'd. If
+            // the name is a builtin we
             // can wrap with the closure ABI, do that instead; the raw pointer
             // stays only as the last resort for symbols we have no spec for.
             if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
@@ -11634,16 +11716,33 @@ private:
                 }
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-                // Pack closure info: no captures, arity in bits 16-31
+                // SW-27: the REPL/`-e` lane needs the rest-arg shape too. It
+                // cannot share emitFunctionAsCallableValue because the hot-
+                // reload path substitutes a dynamically LOADED function
+                // pointer for the baked-in one, so the packing is repeated
+                // here — but it must agree with that helper exactly, including
+                // the rule that a variadic closure's arity field carries the
+                // FIXED parameter count rather than the total.
+                uint64_t repl_fixed_params = 0;
+                bool repl_is_variadic =
+                    lookupVariadicProcedure(var_name, &repl_fixed_params) ||
+                    lookupVariadicProcedure(repl_func->getName().str(),
+                                            &repl_fixed_params);
+                uint64_t arity_field =
+                    repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
+
+                // Pack closure info: no captures, arity in bits 16-31,
+                // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (num_params & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 16;
+                if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
                 Value* packed_info_val = sizeConst(packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
 
                 // Return type unknown
-                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 

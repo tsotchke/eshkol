@@ -476,6 +476,77 @@ entries:
       as three unrelated tickets. A user who redefines + gets a wrong number and no
       diagnostic — the most basic Scheme capability there is.
 
+  - id: SW-27
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "168bd8a4"
+    closed_by: "PR #427 (branch fix/first-class-builtins)"
+    title: "A REST-ARG procedure referenced as a VALUE loses its variadic shape; the rest parameter receives a bare argument instead of a list"
+    repro: "(define (h f a b) (f a b)) (display (h append (list 1) (list 2)))"
+    observed: "1 — the FIRST ARGUMENT, exit 0, no diagnostic"
+    correct: "(1 2), which the same call in call position returns"
+    affected_measured:
+      - "append -> silently returns the first argument"
+      - "make-list -> raises 'cdr: argument is not a pair'"
+      - "iota with a rest argument -> the rest argument is ignored, (iota 3 10) as a value gives (0 1 2)"
+      - "string-copy -> SIGSEGV under AOT; wrong answer under JIT"
+      - "partial, json-get -> raise 'car: argument is not a pair'"
+      - "every user (define (f a . rest) …) referenced as a value, at any fixed-parameter count"
+    discovered_by: >-
+      Found while closing LE-01, as the residue that the LE-01 fix deliberately did NOT
+      absorb: `append` and `string-copy` are not inline builtins but rest-arg Scheme
+      procedures (lib/core/list/transform.esk, lib/core/strings.esk), so they never reached
+      LE-01's wrapper path and stayed broken after it. Reported as a finding rather than
+      folded in, then ruled in scope as the same mechanism family.
+    root_cause: >-
+      A rest-arg procedure is called through a DIFFERENT ABI from a fixed-arity one: the
+      closure dispatcher (codegenClosureCall) conses the caller's surplus arguments into a
+      list and passes fixed_params values plus that list. It selects that path from the
+      closure metadata — bit 63 of packed_info, which the allocator turns into
+      CLOSURE_FLAG_VARIADIC, and, for the capture-less case where env is null, the
+      input_arity byte, which it reads back as fixed_params. Every function-as-value site
+      (emitFunctionAsCallableValue in lib/backend/llvm_codegen.cpp, the function_table
+      branch of codegenVariable, and the REPL hot-reload branch) packed a plain arity and
+      no variadic bit, so the dispatcher called a rest-arg procedure as if fixed-arity.
+      The ABI itself was never wrong; only the VALUE representation lied about the
+      procedure's shape. Call position was always correct, which is why no gate saw it.
+    fix: >-
+      The reference paths now resolve the rest-arg shape from the same two registries the
+      call path consults (variadic_function_info, g_repl_variadic_functions) via a shared
+      lookupVariadicProcedure helper, and pack the variadic bit plus the FIXED parameter
+      count. NO ABI CHANGE was required — the dispatcher already implemented the rest-arg
+      calling convention and already read these fields; the value side simply never set
+      them. Note the asymmetry the fix has to respect: for a fixed-arity closure the arity
+      field is the parameter count, but for a variadic one the dispatcher reads it as the
+      FIXED count, so a 1-fixed rest-arg procedure stores 1, not 2.
+    verified_at: >-
+      tests/integration/first_class_variadics_test.esk, gated on JIT (cache on and off) and
+      both AOT levels, plus first_class_variadics_vm_test.esk on the VM. The oracle is
+      DIFFERENTIAL by construction: each check compares the value obtained through a
+      higher-order function against the identical call in call position, in the same
+      program, so it cannot pass by agreeing with a wrong expectation. Covers stdlib
+      rest-arg procedures at 0, 1 and 2 fixed parameters (append, make-list, iota,
+      string-copy, partial, json-get), user rest-arg procedures at each fixed count with
+      both empty and non-empty rest, and the builtin variadics (list, +, string-append)
+      as a non-regression check. Revert-validated: with the fix disabled all four native
+      gates go red and the VM gate stays green.
+    vm_status: >-
+      NOT AFFECTED, verified rather than assumed. The VM's closures carry their rest-arg
+      shape natively and its CALL opcode consumes it; pinned by
+      tests/integration/first_class_variadics_vm_test.esk.
+    caught_by: [direct-measurement, le-01-residue-analysis]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The `missed_by` list is the interesting part. Every gate we own was green while
+      `(h append '(1) '(2))` returned 1: the differential corpus compares AXES against each
+      other and all four axes were wrong identically; vm-parity excuses native-only
+      programs; and no test passed a rest-arg procedure as a value at all. A defect that is
+      wrong the same way everywhere is invisible to differential testing by construction —
+      the escape analysis for this one is "add a value-position axis to the HOF sweep", not
+      "add a corpus program". Adjacent and still OPEN, found by the same sweep and NOT this
+      defect: (zset-union …) in core.dbsp SIGSEGVs in CALL POSITION too, so it is a
+      different bug and this entry's oracle can say nothing about it.
+
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
   - id: IF-01

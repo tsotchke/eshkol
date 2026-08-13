@@ -4498,6 +4498,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # SW-27, VM side. The VM's closures carry their rest-arg shape natively, so
+    # this defect class does not exist on this engine either. Pinned for the
+    # same reason as the builtins case above.
+    add_test(
+        NAME first_class_variadics_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_variadics_vm_test.esk"
+    )
+    set_tests_properties(first_class_variadics_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics on the VM — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
@@ -4616,6 +4631,58 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
             FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
+    # both AOT levels because the failure mode differed by axis and by
+    # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised
+    # error (`(h make-list 3 7)` -> "cdr: argument is not a pair"), and a
+    # SIGSEGV under AOT (`(h string-copy "abc")`). A silent wrong answer is the
+    # reason this one is gated on every axis rather than trusted to crash
+    # somewhere.
+    add_test(
+        NAME first_class_variadics_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_variadics_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_variadics_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o0' tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o0'"
+    )
+    set_tests_properties(first_class_variadics_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o2' tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o2'"
+    )
+    set_tests_properties(first_class_variadics_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")
