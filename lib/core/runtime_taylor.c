@@ -1549,6 +1549,296 @@ void eshkol_taylor_lift_ad_node(arena_t* arena, void* node, int32_t order_k,
     *out = taylor_to_tagged(t);
 }
 
+/* ----------------------------------------------------------------------- */
+/* ESH-0402: nested-AD carrier composition (SW-03 / SW-04)                  */
+/* ----------------------------------------------------------------------- */
+/*
+ * Eshkol carries forward-mode derivatives in TWO representations: the 8-jet
+ * (three independent FIRST-order perturbations e1/e2/ep, used by `derivative`
+ * / `gradient` / `hessian`) and the heap Taylor tower (ONE perturbation to
+ * arbitrary order, used by `derivative-n` / `taylor`). Until this change the
+ * boundary between them was lossy in BOTH directions:
+ *
+ *   - eshkol_taylor_seed_tagged() read only the SCALAR value of its point
+ *     (`tagged_scalar_value`, i.e. c[0] of an outer tower or the primal of an
+ *     outer jet) and seeded a tangent-free tower, so an enclosing pass's
+ *     perturbation was dropped at the seed;
+ *   - the tower's extraction returned a bare double, which an enclosing pass
+ *     then read as "no dependence".
+ *
+ * The result was a SILENT ZERO for every composition involving `derivative-n`
+ * or `taylor` (ledger SW-03/SW-04):
+ *
+ *     (derivative   (lambda (y) (derivative-n f y 1)) 2.0)     => 0
+ *     (derivative-n (lambda (y) (derivative   f y))   2.0 1)   => 0
+ *     (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1)   => 0
+ *     (derivative-n (derivative f) 2.0 1)                      => 0
+ *
+ * while the jet-over-jet spellings of the same mathematics answered correctly.
+ *
+ * The fix does NOT need a second full series (the deferred "jets of jets"
+ * work). A tower already carries a parallel FIRST-ORDER companion series --
+ * the P5 seed tangent (ESH_TAYLOR_TANGENT_FLAG) -- and every recurrence in
+ * this file already propagates it (see eshkol_taylor_binary_tagged's dual
+ * tier and the ddual_* kernels). A first-order companion is exactly what one
+ * extra `derivative`-class pass needs. So the two carriers compose whenever
+ * ONE of the two passes is first order, by putting that pass on the tangent
+ * dimension:
+ *
+ *   RIDE      the INNER pass is first order: it rides the OUTER tower's
+ *             tangent. The seed keeps the outer's value series and epoch
+ *             untouched and sets tangent = {1,0,...}; after the body runs, the
+ *             tangent series IS d(body)/d(inner argument) as a series in the
+ *             outer perturbation, so extraction just promotes the tangent
+ *             series to the value series of a tower at the OUTER epoch.
+ *             The outer pass then reads it exactly as it reads any tower.
+ *             Outer order is unrestricted.
+ *
+ *   CARRY     the OUTER pass is first order: it rides the INNER tower's
+ *             tangent. The seed builds the ordinary fresh-epoch tower
+ *             {x0,1,0,...} and additionally sets tangent[0] = the outer's
+ *             first-order coefficient, so the tower's tangent series tracks
+ *             d(c[k])/d(outer perturbation). Extraction reports
+ *             d(f^(k))/d(outer) = k!*tangent[k] back to the outer carrier.
+ *             Inner order is unrestricted.
+ *
+ * When BOTH passes are order >= 2 the composition genuinely exceeds what one
+ * value series plus one first-order companion can represent; that case
+ * returns ESH_AD_NEST_UNSUPPORTED and the caller raises a LOUD error rather
+ * than answering zero.
+ *
+ * The route is returned PACKED so a single i32 threads from the seed site to
+ * the extraction site through codegen: low byte = route, bits 8..23 = the
+ * outer tower's epoch (needed only by CARRY_TWR, which must hand its result
+ * back in the outer epoch).
+ */
+
+/** @brief Pack a route code and an outer epoch into the i32 codegen threads from seed to extract. */
+static inline int32_t nest_pack(int route, uint32_t epoch) {
+    return (int32_t)((uint32_t)(route & 0xFF) | ((epoch & 0xFFFFu) << 8));
+}
+
+/* Copy a tower's value series into a raw double buffer, converting an EXACT
+ * (COEFF_RATIONAL) tower coefficient-by-coefficient. Nested composition is
+ * always inexact: the tangent companion is a double series, so an exact outer
+ * point cannot stay exact through a nested pass. That is a documented
+ * narrowing of exactness, not of correctness -- and it replaces a zero. */
+static void nest_copy_values(const esh_taylor_t* t, double* dst, uint32_t n) {
+    uint32_t m = t->order_k + 1u;
+    if (m > n) m = n;
+    if (taylor_is_exact(t)) {
+        const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+        for (uint32_t i = 0; i < m; i++) dst[i] = tagged_any_to_double(&c[i]);
+    } else {
+        memcpy(dst, t->c, (size_t)m * sizeof(double));
+    }
+}
+
+/** @brief Read coefficient `i` of a tower as a double, whatever its coefficient type. */
+static double nest_coeff(const esh_taylor_t* t, uint32_t i) {
+    if (i > t->order_k) return 0.0;
+    if (taylor_is_exact(t)) return tagged_any_to_double(&taylor_exact_c_const(t)[i]);
+    return t->c[i];
+}
+
+/**
+ * @brief Decide and perform the seeding for a differentiation pass whose
+ *        evaluation point is ALREADY an enclosing AD pass's carrier.
+ *
+ * Returns ESH_AD_NEST_NONE (0) and writes nothing when the point is an
+ * ordinary value -- the caller then seeds exactly as it did before, so every
+ * non-nested pass is byte-for-byte unchanged.
+ *
+ * @param arena       allocation arena (NULL -> global).
+ * @param point       the evaluation point as handed to this pass.
+ * @param order_k     this pass's own order (1 for the 8-jet path).
+ * @param pert_level  the runtime forward perturbation level on entry.
+ * @param tower_pass  1 when the caller is the Taylor-tower arm, 0 for the jet arm.
+ * @param out         receives the seeded carrier when the route is not NONE.
+ * @return the packed route (see nest_pack), or ESH_AD_NEST_UNSUPPORTED.
+ */
+int32_t eshkol_ad_nested_seed(arena_t* arena, const eshkol_tagged_value_t* point,
+                              int32_t order_k, int64_t pert_level, int32_t tower_pass,
+                              eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    if (!point || !out) return ESH_AD_NEST_NONE;
+    if (order_k < 0) order_k = 0;
+
+    const esh_taylor_t* outer = tagged_as_taylor(point);
+    if (outer) {
+        uint32_t oep = ESH_TAYLOR_GET_EPOCH(outer->flags);
+
+        /* RIDE: this pass is first order, so it becomes the outer tower's
+         * tangent dimension. Value series and epoch are the outer's, so the
+         * outer's own arithmetic keeps working on the result unchanged. */
+        if (order_k <= 1) {
+            esh_taylor_t* t = eshkol_taylor_alloc(arena, outer->order_k,
+                ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, oep) | ESH_TAYLOR_TANGENT_FLAG);
+            if (!t) return ESH_AD_NEST_UNSUPPORTED;
+            nest_copy_values(outer, t->c, outer->order_k + 1u);
+            taylor_tan(t)[0] = 1.0;
+            *out = taylor_to_tagged(t);
+            return nest_pack(ESH_AD_NEST_RIDE, oep);
+        }
+
+        /* CARRY_TWR: this pass needs its own order-k series, so the OUTER --
+         * which must then be first order -- rides this tower's tangent. */
+        if (outer->order_k == 1) {
+            uint32_t epoch = eshkol_taylor_next_epoch();
+            esh_taylor_t* t = eshkol_taylor_alloc(arena, (uint32_t)order_k,
+                ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
+            if (!t) return ESH_AD_NEST_UNSUPPORTED;
+            t->c[0] = nest_coeff(outer, 0);
+            t->c[1] = 1.0;
+            taylor_tan(t)[0] = nest_coeff(outer, 1);
+            *out = taylor_to_tagged(t);
+            return nest_pack(ESH_AD_NEST_CARRY_TWR, oep);
+        }
+
+        /* Both passes want order >= 2: beyond one value series plus one
+         * first-order companion. The caller raises. */
+        return ESH_AD_NEST_UNSUPPORTED;
+    }
+
+    /* An outer 8-jet perturbation. Only the tower arm needs help here: the jet
+     * arm already nests through the e1/e2/ep slots, and case A of the nesting
+     * matrix (jet over jet) has always been correct. */
+    if (!tower_pass) return ESH_AD_NEST_NONE;
+    if ((uint8_t)(point->type & 0x0F) != ESHKOL_VALUE_DUAL_NUMBER || !point->data.ptr_val)
+        return ESH_AD_NEST_NONE;
+    if (pert_level < 1) return ESH_AD_NEST_NONE;
+
+    const double* d = (const double*)(uintptr_t)point->data.ptr_val;
+    /* The enclosing pass seeded the slot for ITS level, and the level was
+     * pushed on the way in, so the live perturbation is slot(pert_level - 1):
+     * level 1 -> e1. Deeper jet nesting writes e2/ep, which the tower's single
+     * tangent companion cannot be handed back through (the extraction site
+     * reports its dependence in e1); those raise rather than answer zero. */
+    if (pert_level != 1) return ESH_AD_NEST_UNSUPPORTED;
+    if (d[1] == 0.0) return ESH_AD_NEST_NONE;   /* no live dependence to carry */
+
+    uint32_t epoch = eshkol_taylor_next_epoch();
+    esh_taylor_t* t = eshkol_taylor_alloc(arena, (uint32_t)order_k,
+        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
+    if (!t) return ESH_AD_NEST_UNSUPPORTED;
+    t->c[0] = d[0];
+    if (order_k >= 1) t->c[1] = 1.0;
+    taylor_tan(t)[0] = d[1];
+    *out = taylor_to_tagged(t);
+    return nest_pack(ESH_AD_NEST_CARRY_JET, 0u);
+}
+
+/**
+ * @brief Extraction counterpart of eshkol_ad_nested_seed for the routes whose
+ *        result cannot be produced by the caller's ordinary extraction.
+ *
+ * Only RIDE and CARRY_TWR reach here; CARRY_JET is handled by the tower arm's
+ * existing has-tangent branch, which already hands a jet back to the enclosing
+ * forward pass, and NONE by the unchanged code.
+ *
+ * @param arena        allocation arena (NULL -> global).
+ * @param result       the differentiated body's raw return value.
+ * @param route_packed the value eshkol_ad_nested_seed returned.
+ * @param order_k      this pass's own order.
+ * @param out          receives the result in the ENCLOSING pass's carrier.
+ */
+void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* result,
+                              int32_t route_packed, int32_t order_k,
+                              eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    if (!out) return;
+    int route = route_packed & 0xFF;
+    uint32_t oep = ((uint32_t)route_packed >> 8) & 0xFFFFu;
+    if (order_k < 0) order_k = 0;
+
+    if (route == ESH_AD_NEST_RIDE) {
+        /* The tangent series holds d(body)/d(this pass's argument) as a series
+         * in the OUTER perturbation. Promote it to a value series so the outer
+         * pass reads it as an ordinary tower of its own epoch. A body that did
+         * not depend on the argument comes back without a tangent -- its
+         * derivative is 0, which a plain scalar states correctly. */
+        const esh_taylor_t* r = result ? tagged_as_taylor(result) : NULL;
+        const double* rt = (r && ESH_TAYLOR_HAS_TANGENT(r->flags))
+                         ? (const double*)(r->c + ((size_t)r->order_k + 1)) : NULL;
+        if (!r || !rt) { *out = eshkol_make_double(0.0); return; }
+        esh_taylor_t* o = eshkol_taylor_alloc(arena, r->order_k,
+            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, ESH_TAYLOR_GET_EPOCH(r->flags)));
+        if (!o) { *out = eshkol_make_double(0.0); return; }
+        memcpy(o->c, rt, ((size_t)r->order_k + 1) * sizeof(double));
+        *out = taylor_to_tagged(o);
+        return;
+    }
+
+    if (route == ESH_AD_NEST_CARRY_TWR) {
+        /* f^(k) and d(f^(k))/d(outer perturbation), handed back as the order-1
+         * tower of the OUTER epoch that the enclosing tower pass expects. */
+        double v  = eshkol_taylor_extract(result, (uint32_t)order_k);
+        double dv = eshkol_taylor_extract_tangent(result, (uint32_t)order_k);
+        esh_taylor_t* o = eshkol_taylor_alloc(arena, 1u,
+            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, oep));
+        if (!o) { *out = eshkol_make_double(v); return; }
+        o->c[0] = v;
+        o->c[1] = dv;
+        *out = taylor_to_tagged(o);
+        return;
+    }
+
+    *out = result ? *result : eshkol_make_double(0.0);
+}
+
+/**
+ * @brief Report a nested differentiation the two AD carriers cannot represent.
+ *
+ * Called from codegen when eshkol_ad_nested_seed returns
+ * ESH_AD_NEST_UNSUPPORTED. Raising is deliberate: the answer this replaces was
+ * a silent zero, and a wrong number that looks like a derivative is worse than
+ * a stopped program (ledger SW-03/SW-04).
+ */
+void eshkol_ad_nested_unsupported(int32_t order_k) {
+    eshkol_error(
+        "unsupported nested differentiation: an order-%d `derivative-n`/`taylor` "
+        "pass inside another differentiation of order 2 or higher. Eshkol's "
+        "forward carriers compose when at least one of the two passes is first "
+        "order; rewrite the inner or outer pass as a first-order `derivative`, "
+        "or compute the higher-order term with a single `(derivative-n f x k)`.",
+        (int)order_k);
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR,
+        "unsupported nested differentiation (both passes order >= 2)");
+    eshkol_raise(exc);
+}
+
+/**
+ * @brief Report a curried/first-class `gradient` reached with reverse-tape
+ *        inputs, which the runtime-closure gradient cannot differentiate.
+ *
+ * The vector arm of emitRuntimeClosureGradient() reads its point's components
+ * as raw doubles. When an ENCLOSING reverse pass (`jacobian`, `gradient`) hands
+ * it a point whose components are `ad_node_t*` tape nodes, that bitcast turns a
+ * heap pointer into a subnormal ~1e-310, so the inner gradient is evaluated at
+ * ~0 rather than at the real point, AND the result carries no edge back to the
+ * outer tape. Ledger SW-05 (ESH-0096): `(jacobian (gradient f) (vector 2.0))`
+ * answered `#((0))` where `(hessian f (vector 2.0))` answers `#((12))`, and for
+ * `f(v) = v0*v0` the bogus element bits were classified as a pointer and
+ * dereferenced (SIGBUS).
+ *
+ * Until the curried route learns the forward-over-reverse composition the
+ * direct `hessian` already performs, this raises: the alternative is a wrong
+ * derivative with no diagnostic, or a crash.
+ */
+void eshkol_ad_curried_gradient_unsupported(void) {
+    eshkol_error(
+        "unsupported nested differentiation: a first-class `gradient` closure "
+        "differentiated again by an enclosing reverse-mode pass. Use "
+        "`(hessian f point)` for the second derivative of a scalar function, or "
+        "`(jacobian (lambda (v) (gradient f v)) point)` is NOT a substitute -- "
+        "it is the same unsupported composition. Tracked as ESH-0096.");
+    eshkol_exception_t* exc = eshkol_make_exception(
+        ESHKOL_EXCEPTION_ERROR,
+        "unsupported nested differentiation of a first-class gradient (ESH-0096)");
+    eshkol_raise(exc);
+}
+
 /* f^(n)(x0) = n! * c[n], PRESERVING exactness (P6, ESH-0191): when the
  * source tower is COEFF_RATIONAL, n! and the product with c[n] are computed
  * through the exact numeric tower (arbitrary-precision, via exact_mul's

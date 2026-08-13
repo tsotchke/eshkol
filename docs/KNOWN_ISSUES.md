@@ -253,12 +253,23 @@ block ordinary use.
   differentiation tier (#393) uses a whitelist — a body may mention only its own
   parameter — rather than accepting arbitrary bodies. Silent-wrong class; the
   highest-priority open AD defect.
-- **The Taylor tower cannot nest.** `derivative-n` applied to the result of
-  `derivative-n` silently returns `0` where the jet path gives the correct
-  value. Every *well-defined* single-level route is exact; see the
-  derivative-closure entry under **Automatic differentiation** below, which is
-  the same root cause seen from the closure side. Closing it needs a
-  "differentiate a tower" runtime step inside the emitted derivative wrapper.
+- **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
+  forward-mode derivatives in two representations — the 8-jet (`derivative`,
+  first order, three independent perturbations) and the heap Taylor tower
+  (`derivative-n` / `taylor`, one perturbation to arbitrary order). Until this
+  release *every* composition that crossed between them returned a silent `0`,
+  in both directions and through a first-class derivative closure, while the
+  jet-over-jet spelling of the same mathematics was correct. All of
+  `(derivative (lambda (y) (derivative-n f y k)) x)`,
+  `(derivative-n (lambda (y) (derivative f y)) x k)`,
+  `(derivative-n (lambda (y) (derivative-n f y j)) x k)`,
+  `(derivative-n (derivative f) x k)` and the `taylor` forms of the same now
+  answer exactly. **Remaining limit, and it is loud:** a composition in which
+  *both* passes are order ≥ 2 exceeds what one value series plus one first-order
+  companion series can represent, and raises `unsupported nested
+  differentiation` rather than answering. Rewrite one of the two passes as a
+  first-order `derivative`, or ask for the combined order with a single
+  `(derivative-n f x k)`.
 - **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
   `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
   is complete and bit-identical on both engines. Generic arithmetic and
@@ -288,26 +299,26 @@ block ordinary use.
   pass is not yet closed out.
 
 **Automatic differentiation**
-- Vector gradient-of-gradient silently returns zeros — use nested scalar
-  `derivative` for exact higher-order results (ESH-0096). The same shape reached
-  through a **curried** gradient closure behaves the same way: with
-  `(define g (gradient f))`, `(jacobian g point)` returns a zero matrix, and
-  `(gradient g)` correctly refuses (the gradient of an ℝⁿ→ℝⁿ function is
-  undefined) with a diagnostic naming `jacobian`. Use `(hessian f point)` — it is
-  exact. The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
-  byte-identical to `(gradient f point)`. Curried *scalar* higher-order
-  derivatives are exact to 3rd order (ESH-0369).
-- **`derivative-n` / `taylor` applied to a derivative *closure* returns 0.** With
-  `(define df (derivative f))`, `(derivative-n df x k)` yields `0` — the tower
-  path seeds a heap Taylor tower, but the closure `(derivative f)` returns is
-  jet-transparent, not tower-transparent, so it reads the tower-tagged argument
-  as a jet and the result carries no tower for extraction to read. Every
-  *well-defined* route to the same number is exact: `(derivative-n f x k)` on the
-  base function, `(derivative df)` / `(derivative (derivative f))` (the curried
-  spelling, ESH-0369), and `(derivative (lambda (x) (df x)) x0)`. Closing this
-  needs a "differentiate a tower" runtime step (`c_k(f') = (k+1)·c_{k+1}(f)`)
-  inside the emitted derivative wrapper — a build item, not a limit of the
-  mathematics.
+- **Differentiating a first-class `gradient` closure again with an enclosing
+  *reverse* pass raises (ESH-0096).** With `(define g (gradient f))`,
+  `(jacobian g point)` used to return a zero matrix, silently, where
+  `(hessian f point)` returns the correct Hessian on the same build — and for
+  some shapes it read a tape pointer as a double and crashed. It now raises
+  `unsupported nested differentiation`. The cause is specific and shallow: the
+  runtime-closure gradient reads its point's components as raw doubles, so the
+  `ad_node_t*` components an enclosing reverse pass hands it became a subnormal.
+  Closing it exactly means evaluating the inner gradient forward-over-reverse —
+  the route `(hessian f point)` already takes. **Use `(hessian f point)`; it is
+  exact.** The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
+  byte-identical to `(gradient f point)`, and `(gradient g)` still refuses with a
+  diagnostic naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined).
+  Curried *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
+- **`derivative-n` / `taylor` applied to a derivative *closure* is exact (fixed,
+  ESH-0402).** With `(define df (derivative f))`, `(derivative-n df x k)` used to
+  yield `0`; it now answers exactly, as do `(derivative df x)` and
+  `(derivative (lambda (x) (df x)) x0)`. This was the closure-side view of the
+  one carrier-boundary defect described under the correctness-wave section
+  above, not a separate limitation.
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
 - **Resident training loops accumulate RSS unless each step is scoped.** The

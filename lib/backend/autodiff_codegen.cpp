@@ -442,6 +442,33 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
 }
+/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, out tagged*) -> i32 route (ESH-0402). */
+llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(),
+        {p /*arena*/, p /*point*/, ctx.int32Type() /*order*/, ctx.int64Type() /*level*/,
+         ctx.int32Type() /*tower_pass*/, p /*out*/}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_ad_nested_seed", &ctx.module());
+}
+/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i32, order i32, out tagged*) -> void (ESH-0402). */
+llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_ad_nested_extract")) return f;
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p /*arena*/, p /*result*/, ctx.int32Type() /*route*/, ctx.int32Type() /*order*/,
+         p /*out*/}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_ad_nested_extract", &ctx.module());
+}
+/** @brief Get or declare `eshkol_ad_nested_unsupported` (order i32) -> void, the LOUD diagnostic for a nesting neither carrier can represent (ESH-0402). */
+llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_ad_nested_unsupported")) return f;
+    auto* ft = llvm::FunctionType::get(ctx.voidType(), {ctx.int32Type()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_ad_nested_unsupported", &ctx.module());
+}
 } // namespace
 
 /**
@@ -464,6 +491,93 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     auto& b = ctx_.builder();
     llvm::Value* level = adPertLevelLoad();
     if (out_level) *out_level = level;
+    nestedRouteSlot_ = nullptr;
+
+    // ── ESH-0402: nested-carrier probe (ledger SW-03/SW-04) ─────────────────
+    // Both forward carriers used to collapse an incoming carrier to its scalar
+    // value here, so every composition through `derivative-n`/`taylor` answered
+    // a silent zero. eshkol_ad_nested_seed inspects the point at RUNTIME and
+    // returns ESH_AD_NEST_NONE for anything that is not already an enclosing
+    // pass's carrier — which is every non-nested pass, so the code below is
+    // reached unchanged in the overwhelmingly common case. When it IS nested,
+    // the runtime seeds the composed carrier (see the block comment above
+    // eshkol_ad_nested_seed in lib/core/runtime_taylor.c) and the route is
+    // recorded for the matching popAndExtractForward.
+    if (!b.GetInsertBlock() || !b.GetInsertBlock()->getParent())
+        return seedForwardAndPushCore(point_tagged, level);
+
+    llvm::Function* nfn = b.GetInsertBlock()->getParent();
+    llvm::AllocaInst* np_slot;
+    llvm::AllocaInst* nout_slot;
+    llvm::AllocaInst* nroute_slot;
+    llvm::AllocaInst* nseed_slot;
+    {
+        llvm::IRBuilder<> eb(&nfn->getEntryBlock(), nfn->getEntryBlock().begin());
+        np_slot     = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_point");
+        nout_slot   = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_seed_out");
+        nroute_slot = eb.CreateAlloca(ctx_.int32Type(), nullptr, "nest_route");
+        nseed_slot  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_seeded");
+    }
+    b.CreateStore(point_tagged, np_slot);
+
+    const bool tower_pass = (adTowerMode_ != TowerMode::NONE && adTowerOrder_);
+    llvm::Value* nest_order = tower_pass
+        ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
+    llvm::Value* route = b.CreateCall(getAdNestedSeedFunc(ctx_),
+        {getArenaPtr(), np_slot, nest_order, level,
+         llvm::ConstantInt::get(ctx_.int32Type(), tower_pass ? 1 : 0), nout_slot});
+    b.CreateStore(route, nroute_slot);
+    nestedRouteSlot_ = nroute_slot;
+
+    // ESH_AD_NEST_UNSUPPORTED: both passes want order >= 2, which one value
+    // series plus one first-order companion cannot represent. Raise rather than
+    // answer the zero this replaces.
+    llvm::BasicBlock* unsup_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_unsupported", nfn);
+    llvm::BasicBlock* ok_bb    = llvm::BasicBlock::Create(ctx_.context(), "nest_ok", nfn);
+    b.CreateCondBr(b.CreateICmpEQ(route, llvm::ConstantInt::get(ctx_.int32Type(), -1)),
+                   unsup_bb, ok_bb);
+    b.SetInsertPoint(unsup_bb);
+    b.CreateCall(getAdNestedUnsupportedFunc(ctx_), {nest_order});
+    b.CreateBr(ok_bb);   // eshkol_raise does not return; keeps the CFG well-formed
+
+    b.SetInsertPoint(ok_bb);
+    llvm::BasicBlock* nest_bb  = llvm::BasicBlock::Create(ctx_.context(), "nest_seed", nfn);
+    llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_plain", nfn);
+    llvm::BasicBlock* seed_done = llvm::BasicBlock::Create(ctx_.context(), "nest_seed_done", nfn);
+    b.CreateCondBr(b.CreateICmpNE(route, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+                   nest_bb, plain_bb);
+
+    // Nested: the runtime already built the composed carrier. Keep the tower
+    // differentiation context balanced with the pop in popAndExtractForward.
+    b.SetInsertPoint(nest_bb);
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nout_slot), nseed_slot);
+    if (tower_pass) towerCtxPush(adTowerOrder_);
+    b.CreateBr(seed_done);
+
+    // Not nested: the pass seeds exactly as it always has.
+    b.SetInsertPoint(plain_bb);
+    llvm::Value* plain_seed = seedForwardAndPushCore(point_tagged, level);
+    b.CreateStore(plain_seed ? plain_seed : tagged_.packNull(), nseed_slot);
+    b.CreateBr(seed_done);
+
+    b.SetInsertPoint(seed_done);
+    return b.CreateLoad(ctx_.taggedValueType(), nseed_slot, "nest_seed_sel");
+}
+
+/**
+ * @brief The unchanged seeding for a pass whose point is an ordinary value.
+ *
+ * Split out of seedForwardAndPush() by ESH-0402 so the nested-carrier probe can
+ * select between this and the composed carrier without disturbing a single
+ * instruction of the non-nested path.
+ *
+ * @param point_tagged the evaluation point as a tagged value.
+ * @param level the perturbation level already loaded by the caller.
+ * @return the seeded point as a tagged dual number or tower.
+ */
+llvm::Value* AutodiffCodegen::seedForwardAndPushCore(llvm::Value* point_tagged,
+                                                     llvm::Value* level) {
+    auto& b = ctx_.builder();
 
     // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
     // requested order under a fresh perturbation epoch instead of a jet. The
@@ -549,6 +663,72 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
  */
 llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
                                                    llvm::Value* level) {
+    auto& b = ctx_.builder();
+
+    // ── ESH-0402: nested-carrier extraction (ledger SW-03/SW-04) ────────────
+    // The route recorded at the matching seed site says how this pass composed
+    // with the enclosing one. NONE (no nesting) and CARRY_JET (the enclosing
+    // 8-jet rides this tower's tangent, which the tower arm's existing
+    // has-tangent branch already hands back correctly) fall through to the
+    // unchanged extraction; RIDE and CARRY_TWR need the result restated in the
+    // ENCLOSING pass's carrier, which only the runtime can build.
+    llvm::AllocaInst* route_slot = nestedRouteSlot_;
+    nestedRouteSlot_ = nullptr;
+    if (route_slot && b.GetInsertBlock() && b.GetInsertBlock()->getParent()) {
+        llvm::Function* xfn = b.GetInsertBlock()->getParent();
+        llvm::AllocaInst* xres_slot;
+        llvm::AllocaInst* xin_slot;
+        llvm::AllocaInst* xout_slot;
+        {
+            llvm::IRBuilder<> eb(&xfn->getEntryBlock(), xfn->getEntryBlock().begin());
+            xres_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_ex_res");
+            xin_slot  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_ex_in");
+            xout_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_ex_out");
+        }
+        llvm::Value* route = b.CreateLoad(ctx_.int32Type(), route_slot, "nest_route_ld");
+        llvm::Value* route_lo = b.CreateAnd(route, llvm::ConstantInt::get(ctx_.int32Type(), 0xFF));
+        llvm::Value* needs_nested = b.CreateICmpSGE(route_lo,
+            llvm::ConstantInt::get(ctx_.int32Type(), ESH_AD_NEST_RIDE));
+
+        llvm::BasicBlock* xnest_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_extract", xfn);
+        llvm::BasicBlock* xcore_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_ex_core", xfn);
+        llvm::BasicBlock* xdone_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_ex_done", xfn);
+        b.CreateCondBr(needs_nested, xnest_bb, xcore_bb);
+
+        b.SetInsertPoint(xnest_bb);
+        adPertLevelStore(level);
+        if (adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
+        b.CreateStore(result_tagged, xin_slot);
+        llvm::Value* x_order = (adTowerMode_ != TowerMode::NONE && adTowerOrder_)
+            ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
+        b.CreateCall(getAdNestedExtractFunc(ctx_),
+            {getArenaPtr(), xin_slot, route, x_order, xout_slot});
+        b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), xout_slot), xres_slot);
+        b.CreateBr(xdone_bb);
+
+        b.SetInsertPoint(xcore_bb);
+        llvm::Value* core_res = popAndExtractForwardCore(result_tagged, level);
+        b.CreateStore(core_res ? core_res : tagged_.packNull(), xres_slot);
+        b.CreateBr(xdone_bb);
+
+        b.SetInsertPoint(xdone_bb);
+        return b.CreateLoad(ctx_.taggedValueType(), xres_slot, "nest_ex_sel");
+    }
+    return popAndExtractForwardCore(result_tagged, level);
+}
+
+/**
+ * @brief The unchanged extraction for a pass whose point was an ordinary value.
+ *
+ * Split out of popAndExtractForward() by ESH-0402 so the nested-carrier arm can
+ * be selected without disturbing a single instruction of the non-nested path.
+ *
+ * @param result_tagged the differentiated closure's raw tagged return value.
+ * @param level the perturbation level saved by seedForwardAndPush, to restore.
+ * @return the extracted derivative (or vector of derivatives), tagged.
+ */
+llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagged,
+                                                       llvm::Value* level) {
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
@@ -4594,6 +4774,27 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.CreateCondBr(b.CreateICmpULT(rvt_jv, rvt_n), rvt_sb, rvt_se);
                     b.SetInsertPoint(rvt_sb);
                     Value* rvt_ebits = b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), rvt_elems, rvt_jv));
+                    // ESH-0096 (ledger SW-05): this bitcast reads the component
+                    // as a raw double. When an ENCLOSING reverse pass handed us
+                    // its tape nodes, the bits are an `ad_node_t*` and the cast
+                    // silently produces a subnormal ~1e-310 -- so the inner
+                    // gradient was evaluated at ~0, and its result carried no
+                    // edge back to the outer tape. Probe residency FIRST (the
+                    // probe never dereferences a non-resident candidate) and
+                    // raise instead of differentiating garbage.
+                    {
+                        Value* rvt_is_node = emitAdNodeProbe(rvt_ebits, /*any type=*/-1);
+                        BasicBlock* rvt_unsup = BasicBlock::Create(ctx_.context(), "rvt_nested_unsup", current_func);
+                        BasicBlock* rvt_ok    = BasicBlock::Create(ctx_.context(), "rvt_seed_ok", current_func);
+                        b.CreateCondBr(rvt_is_node, rvt_unsup, rvt_ok);
+                        b.SetInsertPoint(rvt_unsup);
+                        FunctionCallee rvt_raise = ctx_.module().getOrInsertFunction(
+                            "eshkol_ad_curried_gradient_unsupported",
+                            FunctionType::get(ctx_.voidType(), {}, false));
+                        b.CreateCall(rvt_raise, {});
+                        b.CreateBr(rvt_ok);   // eshkol_raise does not return
+                        b.SetInsertPoint(rvt_ok);
+                    }
                     Value* rvt_edbl = b.CreateBitCast(rvt_ebits, ctx_.doubleType());
                     Value* rvt_node = createADVariable(rvt_edbl, 0);
                     b.CreateStore(rvt_node, b.CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_jv));
@@ -8261,7 +8462,25 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     // closure_call_callback_ when `f` resolves to a runtime closure.
     // Delegate to it.  v1.3 should re-extract this logic into a shared
     // helper rather than keeping two parallel implementations.
-    return codegenDerivativeMonolith(op);
+    //
+    // ESH-0402: clear the Taylor-tower mode across this call. taylorApiCore
+    // leaves adTowerMode_/adTowerOrder_ set for the WHOLE emission of the
+    // differentiated body, so a `derivative` written inside a
+    // `(derivative-n f x k)` body used to inherit the OUTER pass's tower mode
+    // and order — it seeded an order-k tower and extracted the k-th derivative
+    // where the source asked for the first. The outer answer was zero either
+    // way, which hid it; with nested composition working, the conflation would
+    // become a wrong number. This `derivative` is a first-order jet pass
+    // whatever encloses it, and the composition with the enclosing tower is
+    // decided at the seed site by the runtime route, not by an inherited flag.
+    TowerMode saved_tower_mode = adTowerMode_;
+    llvm::Value* saved_tower_order = adTowerOrder_;
+    adTowerMode_ = TowerMode::NONE;
+    adTowerOrder_ = nullptr;
+    llvm::Value* mono_res = codegenDerivativeMonolith(op);
+    adTowerMode_ = saved_tower_mode;
+    adTowerOrder_ = saved_tower_order;
+    return mono_res;
 }
 
 // === Arbitrary-order Taylor-tower AD entry points (ESH-0186, P1) ===

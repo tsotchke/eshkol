@@ -27,32 +27,32 @@
              (display " fd=") (display fd) (newline))))
 
 ;; probe loop.fixed50.poly.s.named.capnone
-(define (f232 x) (+ (- (* 1.5 x x x) (* 2.0 x x)) (* 3.0 x)))
-(define ad232 (let loop ((i 0) (acc 0.0)) (if (>= i 50) acc (loop (+ i 1) (+ acc (derivative f232 1.3))))))
-(define fd232 (* 50.0 (/ (- (f232 (+ 1.3 1e-5)) (f232 (- 1.3 1e-5))) (* 2.0 1e-5))))
-(chk "loop.fixed50.poly.s.named.capnone" ad232 fd232 1e-5 1e-4)
+(define (f246 x) (+ (- (* 1.5 x x x) (* 2.0 x x)) (* 3.0 x)))
+(define ad246 (let loop ((i 0) (acc 0.0)) (if (>= i 50) acc (loop (+ i 1) (+ acc (derivative f246 1.3))))))
+(define fd246 (* 50.0 (/ (- (f246 (+ 1.3 1e-5)) (f246 (- 1.3 1e-5))) (* 2.0 1e-5))))
+(chk "loop.fixed50.poly.s.named.capnone" ad246 fd246 1e-5 1e-4)
 
 ;; probe loop.vary20.expsin.s.named.capnone
-(define (f233 x) (* (exp (* 0.3 x)) (sin x)))
-(define (fdc233 x) (/ (- (f233 (+ x 1e-5)) (f233 (- x 1e-5))) (* 2.0 1e-5)))
-(define ad233 (let loop ((i 0) (acc 0.0)) (if (>= i 20) acc (loop (+ i 1) (+ acc (derivative f233 (+ 1.0 (* 0.05 i))))))))
-(define fd233 (let loop ((i 0) (acc 0.0)) (if (>= i 20) acc (loop (+ i 1) (+ acc (fdc233 (+ 1.0 (* 0.05 i))))))))
-(chk "loop.vary20.expsin.s.named.capnone" ad233 fd233 1e-5 1e-4)
+(define (f247 x) (* (exp (* 0.3 x)) (sin x)))
+(define (fdc247 x) (/ (- (f247 (+ x 1e-5)) (f247 (- x 1e-5))) (* 2.0 1e-5)))
+(define ad247 (let loop ((i 0) (acc 0.0)) (if (>= i 20) acc (loop (+ i 1) (+ acc (derivative f247 (+ 1.0 (* 0.05 i))))))))
+(define fd247 (let loop ((i 0) (acc 0.0)) (if (>= i 20) acc (loop (+ i 1) (+ acc (fdc247 (+ 1.0 (* 0.05 i))))))))
+(chk "loop.vary20.expsin.s.named.capnone" ad247 fd247 1e-5 1e-4)
 
 ;; probe loop.gradloop10.poly.v2.named.capnone
-(define (f234 v) (* (vref v 0) (vref v 0) (vref v 1)))
-(define (gc234 x) (vref (gradient f234 (vector x 2.0)) 0))
-(define (fdc234 x) (/ (- (f234 (vector (+ x 1e-5) 2.0)) (f234 (vector (- x 1e-5) 2.0))) (* 2.0 1e-5)))
-(define ad234 (let loop ((i 0) (acc 0.0)) (if (>= i 10) acc (loop (+ i 1) (+ acc (gc234 (+ 1.0 (* 0.1 i))))))))
-(define fd234 (let loop ((i 0) (acc 0.0)) (if (>= i 10) acc (loop (+ i 1) (+ acc (fdc234 (+ 1.0 (* 0.1 i))))))))
-(chk "loop.gradloop10.poly.v2.named.capnone" ad234 fd234 1e-5 1e-4)
+(define (f248 v) (* (vref v 0) (vref v 0) (vref v 1)))
+(define (gc248 x) (vref (gradient f248 (vector x 2.0)) 0))
+(define (fdc248 x) (/ (- (f248 (vector (+ x 1e-5) 2.0)) (f248 (vector (- x 1e-5) 2.0))) (* 2.0 1e-5)))
+(define ad248 (let loop ((i 0) (acc 0.0)) (if (>= i 10) acc (loop (+ i 1) (+ acc (gc248 (+ 1.0 (* 0.1 i))))))))
+(define fd248 (let loop ((i 0) (acc 0.0)) (if (>= i 10) acc (loop (+ i 1) (+ acc (fdc248 (+ 1.0 (* 0.1 i))))))))
+(chk "loop.gradloop10.poly.v2.named.capnone" ad248 fd248 1e-5 1e-4)
 
 ;; probe loop.newton5.poly.s.named.capnone
-(define (f235 x) (- (* x x) 2.0))
-(define (fdc235 x) (/ (- (f235 (+ x 1e-5)) (f235 (- x 1e-5))) (* 2.0 1e-5)))
-(define ad235 (let loop ((i 0) (x 1.5)) (if (>= i 5) x (loop (+ i 1) (- x (/ (f235 x) (derivative f235 x)))))))
-(define fd235 (let loop ((i 0) (x 1.5)) (if (>= i 5) x (loop (+ i 1) (- x (/ (f235 x) (fdc235 x)))))))
-(chk "loop.newton5.poly.s.named.capnone" ad235 fd235 1e-6 1e-4)
+(define (f249 x) (- (* x x) 2.0))
+(define (fdc249 x) (/ (- (f249 (+ x 1e-5)) (f249 (- x 1e-5))) (* 2.0 1e-5)))
+(define ad249 (let loop ((i 0) (x 1.5)) (if (>= i 5) x (loop (+ i 1) (- x (/ (f249 x) (derivative f249 x)))))))
+(define fd249 (let loop ((i 0) (x 1.5)) (if (>= i 5) x (loop (+ i 1) (- x (/ (f249 x) (fdc249 x)))))))
+(chk "loop.newton5.poly.s.named.capnone" ad249 fd249 1e-6 1e-4)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

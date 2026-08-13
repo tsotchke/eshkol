@@ -1,0 +1,97 @@
+;; ESH-0402 / ledger SW-03 + SW-04 — cross-carrier AD composition.
+;;
+;; Eshkol carries forward-mode derivatives in two representations: the 8-jet
+;; (`derivative`, first order, three independent perturbations) and the heap
+;; Taylor tower (`derivative-n` / `taylor`, one perturbation to arbitrary
+;; order). Every composition that crossed between them used to return a SILENT
+;; ZERO — the tower seeder collapsed an incoming carrier to its scalar value,
+;; and the tower extraction handed back a bare double that the enclosing pass
+;; read as "no dependence". Only the jet-over-jet spelling was ever correct:
+;;
+;;     (derivative   (lambda (y) (derivative   f y))   2.0)     => 48   correct
+;;     (derivative   (lambda (y) (derivative-n f y 1)) 2.0)     => 0    SW-03
+;;     (derivative-n (lambda (y) (derivative   f y))   2.0 1)   => 0    SW-04
+;;     (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1)   => 0    SW-03
+;;     (derivative-n (derivative f) 2.0 1)                      => 0    SW-04
+;;
+;; Every expected value below is exact analytic, not a finite difference:
+;;   f(x) = x^4   f'(2)=32  f''(2)=48  f'''(2)=48  f''''(2)=24
+;;   g(x) = x^3   g'(2)=12  g''(2)=12  g'''(2)=6
+;; and the transcendental rows are checked against closed forms of sin/exp.
+
+(define failures 0)
+
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+(define (check name got want)
+  (if (near? got want 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+(define (f x) (* x x x x))
+(define (g x) (* x x x))
+
+;; --- baseline: the single-carrier spellings must not move -----------------
+(check "dn1"            (derivative-n f 2.0 1) 32.0)
+(check "dn2"            (derivative-n f 2.0 2) 48.0)
+(check "dn3"            (derivative-n f 2.0 3) 48.0)
+(check "dn4"            (derivative-n f 2.0 4) 24.0)
+(check "dn0"            (derivative-n f 2.0 0) 16.0)
+(check "d"              (derivative f 2.0) 32.0)
+(check "jet-over-jet"   (derivative (lambda (y) (derivative f y)) 2.0) 48.0)
+
+;; --- SW-03: a Taylor tower as the INNER pass, under a jet ------------------
+(check "jet-over-tower-1" (derivative (lambda (y) (derivative-n f y 1)) 2.0) 48.0)
+(check "jet-over-tower-2" (derivative (lambda (y) (derivative-n f y 2)) 2.0) 48.0)
+(check "jet-over-tower-3" (derivative (lambda (y) (derivative-n f y 3)) 2.0) 24.0)
+
+;; --- SW-03: tower over tower ----------------------------------------------
+(check "tower-over-tower-1x1" (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1) 48.0)
+(check "tower-over-tower-2x1" (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 2) 48.0)
+(check "tower-over-tower-3x1" (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 3) 24.0)
+(check "tower-over-tower-1x2" (derivative-n (lambda (y) (derivative-n f y 2)) 2.0 1) 48.0)
+(check "tower-over-tower-1x3" (derivative-n (lambda (y) (derivative-n f y 3)) 2.0 1) 24.0)
+
+;; --- SW-04: a jet as the INNER pass, under a tower -------------------------
+(check "tower-over-jet-1" (derivative-n (lambda (y) (derivative f y)) 2.0 1) 48.0)
+(check "tower-over-jet-2" (derivative-n (lambda (y) (derivative f y)) 2.0 2) 48.0)
+(check "tower-over-jet-3" (derivative-n (lambda (y) (derivative f y)) 2.0 3) 24.0)
+
+;; --- SW-04: a first-class derivative CLOSURE under a tower -----------------
+(define df (derivative f))
+(check "closure-value"     (df 2.0) 32.0)
+(check "jet-over-closure"  (derivative df 2.0) 48.0)
+(check "tower-over-closure-1" (derivative-n df 2.0 1) 48.0)
+(check "tower-over-closure-2" (derivative-n df 2.0 2) 48.0)
+
+;; --- the same matrix on a lower-degree shape ------------------------------
+(check "g tower-over-tower" (derivative-n (lambda (y) (derivative-n g y 1)) 2.0 1) 12.0)
+(check "g jet-over-tower"   (derivative (lambda (y) (derivative-n g y 1)) 2.0) 12.0)
+(check "g tower-over-jet"   (derivative-n (lambda (y) (derivative g y)) 2.0 1) 12.0)
+
+;; --- transcendentals: the tower's own recurrences, composed ---------------
+(define (e x) (exp x))
+(define (s x) (sin x))
+(check "exp tower-over-tower" (derivative-n (lambda (y) (derivative-n e y 1)) 0.0 1) 1.0)
+(check "exp carry-tower"      (derivative-n (lambda (y) (derivative-n e y 2)) 0.0 1) 1.0)
+(check "exp ride-tower"       (derivative-n (lambda (y) (derivative-n e y 1)) 0.0 2) 1.0)
+(check "exp tower-over-jet"   (derivative-n (lambda (y) (derivative e y)) 0.0 1) 1.0)
+;; sin''(1) = -sin(1), sin'''(1) = -cos(1)
+(check "sin tower-over-tower" (derivative-n (lambda (y) (derivative-n s y 1)) 1.0 1) (- (sin 1.0)))
+(check "sin carry-tower"      (derivative-n (lambda (y) (derivative-n s y 2)) 1.0 1) (- (cos 1.0)))
+(check "sin ride-tower"       (derivative-n (lambda (y) (derivative-n s y 1)) 1.0 2) (- (cos 1.0)))
+(check "sin jet-over-tower"   (derivative (lambda (y) (derivative-n s y 2)) 1.0) (- (cos 1.0)))
+
+;; --- `taylor` composes too: the coefficient list of f' around 2 ------------
+;; f'(2+t) = 4(2+t)^3 = 32 + 48t + 24t^2 + 4t^3
+(define tay (taylor (lambda (y) (derivative f y)) 2.0 2))
+(check "taylor-over-jet c0" (car tay) 32.0)
+(check "taylor-over-jet c1" (car (cdr tay)) 48.0)
+(check "taylor-over-jet c2" (car (cdr (cdr tay))) 24.0)
+
+(if (= failures 0)
+    (begin (display "PASS: cross-carrier AD composition") (newline))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)))
