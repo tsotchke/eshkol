@@ -541,6 +541,7 @@ entries:
   - id: SW-12
     bucket: SILENT-WRONG
     status: closed
+    closed_at: "1b2682f6"
     title: "Six tensor ops carry two independent backward implementations with no differential test between them"
     ops: [matmul, layernorm, transpose, sum, embedding, attention]
     evidence: >-
