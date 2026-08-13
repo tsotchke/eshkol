@@ -5226,6 +5226,94 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     return NULL;
 }
 
+/**
+ * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
+ *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
+ *         fix every vector-ref call site (native cases 219/OP_VEC_REF/
+ *         lbl_VEC_REF) matched only VAL_VECTOR and silently answered `()`
+ *         for anything else, even though `display` on the same tensor value
+ *         formats it correctly (the value itself is fine; only indexed
+ *         access was missing the arm).
+ *
+ * Mirrors CollectionCodegen::vectorRef's native-codegen tensor dispatch
+ * (collection_codegen.cpp) exactly: a tensor of rank <= 1 bounds-checks
+ * `idx` against the total element count and answers the scalar element; a
+ * tensor of rank > 1 bounds-checks `idx` against shape[0] (row count) and
+ * answers a view of rank n_dims-1 that shares the source's backing store
+ * (vm_tensor_slice — no copy), exactly like indexing the first axis of a
+ * nested vector would.
+ *
+ * On success PUSHES the result and returns 1. On an out-of-range index this
+ * RAISES a catchable "vector-ref: index out of bounds" error and returns 0
+ * without pushing. `vm_tensor_operand` returning NULL without having raised
+ * (the corrupted-heap-pointer sentinel case) is likewise a silent "return 0,
+ * push nothing" per its own documented contract above.
+ */
+static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-ref");
+    if (!t) return 0;
+    int64_t idx = (int64_t)as_number(idx_val);
+    if (t->n_dims <= 1) {
+        if (idx < 0 || idx >= t->total) {
+            vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+            return 0;
+        }
+        vm_push(vm, FLOAT_VAL(t->data[idx]));
+        return 1;
+    }
+    if (idx < 0 || idx >= t->shape[0]) {
+        vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+        return 0;
+    }
+    VmTensor* row = vm_tensor_slice(&vm->heap.regions, t, idx);
+    if (!row) {
+        vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+        return 0;
+    }
+    int32_t p = heap_alloc(&vm->heap);
+    if (p < 0) { vm->error = 1; return 0; }
+    vm->heap.objects[p]->type = HEAP_TENSOR;
+    vm->heap.objects[p]->opaque.ptr = row;
+    vm_push(vm, (Value){.type = VAL_TENSOR, .as.ptr = p});
+    return 1;
+}
+
+/**
+ * @brief SW-26 sibling: `(vector-set! t idx val)` where `t` is a HEAP_TENSOR.
+ *
+ * Mirrors CollectionCodegen::vectorSet's tensor path: unlike vector-ref,
+ * native does NOT special-case N-D row addressing here — `idx` is always
+ * bounds-checked against the FLAT total element count regardless of rank,
+ * and the value is stored as a double directly into the flat data buffer.
+ *
+ * Returns 1 on success (caller still pushes the void result, matching the
+ * VAL_VECTOR path's convention). On an out-of-range index this RAISES a
+ * catchable "vector-set!: index out of bounds" error and returns 0.
+ */
+static int vm_vecset_tensor_path(VM* vm, Value tensor_val, Value idx_val, Value val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-set!");
+    if (!t) return 0;
+    int64_t idx = (int64_t)as_number(idx_val);
+    if (idx < 0 || idx >= t->total) {
+        vm_raise_error_msg(vm, "vector-set!: index out of bounds");
+        return 0;
+    }
+    t->data[idx] = as_number(val);
+    return 1;
+}
+
+/**
+ * @brief SW-26 sibling: `(vector-length t)` where `t` is a HEAP_TENSOR.
+ * Mirrors CollectionCodegen::vectorLength's tensor path: the flat total
+ * element count, not shape[0]. Silently answers 0 for a malformed operand,
+ * matching vector-length's existing non-VAL_VECTOR fallback (this builtin
+ * has never raised on a type mismatch).
+ */
+static int64_t vm_veclen_tensor_path(VM* vm, Value tensor_val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-length");
+    return t ? t->total : 0;
+}
+
 /* quantum-random / -int / -range (dispatch cases 1860-1862 below) used to be
  * backed by a VM-only xorshift64* PRNG that was numerically divergent from
  * the eshkol_qrng_* generator the LLVM AOT/JIT backend used for the same
@@ -13653,6 +13741,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             vm_push(vm, v->items[idx]);
+        } else if (vec_v.type == VAL_TENSOR) {
+            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+            vm_vecref_tensor_path(vm, vec_v, idx_v);
         } else vm_push(vm, NIL_VAL); break; }
     case 220: { /* vector-set! */
         Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
@@ -13664,12 +13755,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             v->items[idx] = val;
-        } vm_push(vm, NIL_VAL); break; }
+        } else if (vec_v.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            if (!vm_vecset_tensor_path(vm, vec_v, idx_v, val)) break;
+        }
+        vm_push(vm, NIL_VAL); break; }
     case 221: { /* vector-length */
         Value v = vm_pop(vm);
         if (v.type == VAL_VECTOR) {
             VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vec ? vec->len : 0));
+        } else if (v.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, v)));
         } else vm_push(vm, INT_VAL(0)); break; }
     case 222: { /* string->list */
         Value s_val = vm_pop(vm);
