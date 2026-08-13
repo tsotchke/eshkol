@@ -629,12 +629,93 @@ entries:
   - id: SW-14
     bucket: SILENT-WRONG
     status: open
+    resolution: NEEDS-DECISION
     title: "with-region on the VM never reclaims — silent unbounded memory growth"
     observed: "A VM program using regions computes the right answer and never gets the memory back; the VM heap has no escape evacuator"
-    evidence: "docs/KNOWN_ISSUES.md:211"
+    evidence: >-
+      docs/KNOWN_ISSUES.md, section "Region handles and `with-region` on the
+      VM"; reproducer tests/memory/vm_region_growth_watchdog_test.esk; guard
+      gated by tests/memory/vm_region_growth_watchdog_test.sh and the
+      icc-smoke probe vm_region_growth_watchdog
     caught_by: [KNOWN_ISSUES]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
     notes: "Classified silent because a long-running VM process degrades with no diagnostic and exit 0."
+    measured:
+      at_sha: "2ae3787f"
+      with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
+      fixture: "20000 iterations x 200 conses per iteration, /usr/bin/time -l peak RSS"
+      with_region_wrapper: "1,503,297,536 bytes"
+      without_region_wrapper: "1,504,067,584 bytes"
+      finding: >-
+        The two are the SAME to within 0.06% — the wrapped run is fractionally
+        SMALLER, i.e. the difference is allocator noise, not reclamation.
+        `with-region` does not reclaim
+        less than native — it reclaims NOTHING, and so does everything else:
+        the bytecode VM has no heap reclamation of any kind. heap_alloc()
+        (lib/backend/vm_core.c) bump-allocates from an arena that is never
+        released and hands out a monotonically increasing object index that is
+        never recycled; vm_region_pop() exists (lib/backend/vm_arena.h) but no
+        bytecode ever calls it, because compile_form_with_region()
+        (lib/backend/vm_compiler.c) lowers the form to `begin`.
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_with_region() emits no region
+      bracket at all: the region specifier is recognised and skipped and the
+      body is lowered exactly like `begin`. That is deliberate and documented
+      in the function's own comment — a real push/pop there would free the
+      object graph the body just returned, because the VM heap has no escape
+      evacuator to promote a kept value out with. The missing evacuator, not
+      the missing bracket, is the defect.
+    why_not_fixed_here: >-
+      NEEDS-DECISION: a correct fix is a VM-heap escape evacuator, which is a
+      campaign of the same size as the native ESH-0214c/ESH-0214d work
+      (multiple dedicated PRs), not a patch. It requires, at minimum:
+      (1) ROOT ENUMERATION over the operand stack plus ~15 Value-carrying side
+          tables inside `struct VM` (outputs, handler_stack.promise_mark,
+          current_exception, wind_stack, parameter_bindings, promise_eval_head,
+          lru_caches, event_emitters, channels, timers, exit_handlers, ...) —
+          a missed root frees live memory;
+      (2) PER-SUBTYPE INTERIOR TRAVERSAL for all 27 HeapTypes plus their
+          arena-allocated payloads (VmVector.items, VmString.data,
+          VmBignum.limbs, VmSubstitution.terms, VmFact.args/datum_ptr,
+          VmFactorGraph's five pointer arrays, VmContinuation's six saved
+          arrays, VmParameter.save_stack, ...) — this is exactly the coverage
+          problem ESH-0214d had to close natively, and it still carries a
+          documented watchlist there;
+      (3) a MUTATION WRITE BARRIER at every VM channel that can store a Value
+          into a longer-lived container (~130 candidate sites across
+          vm_native.c/vm_run.c) or, in its place, a full mark from roots;
+      (4) INDEX-SPACE recycling or compaction, because the object table index
+          is a monotone counter — freeing only the arena still leaks 8 bytes
+          per object and still terminates at ESHKOL_VM_HEAP_MAX_SIZE.
+      The failure mode of a partial implementation is STRICTLY WORSE than the
+      defect: a missed root or an uncovered subtype turns an honest leak into
+      a dangling object index, which on the VM aliases a live object and
+      produces a silently wrong VALUE rather than a crash. Shipping that under
+      a SILENT-WRONG closure would invert the ledger's own contract.
+    interim_guard_landed: >-
+      The SILENT half is closed on this branch even though the reclamation is
+      not. Two guards, neither of which changes any answer:
+      (a) the first region form executed on the VM prints a one-time note to
+          stderr naming the boundary (vm_region_reclaim_notice(),
+          lib/backend/vm_core.c; called from compile_form_with_region() and
+          from native 2210 region-open). ESHKOL_VM_REGION_QUIET=1 silences it.
+      (b) the VM arena is sampled every 4096 allocations and crossing
+          ESHKOL_VM_HEAP_BUDGET_MB (default 1024) prints a diagnostic naming
+          the size, the budget and the cause (heap_check_budget()).
+          ESHKOL_VM_HEAP_BUDGET_FATAL=1 makes it exit nonzero so a lane can
+          gate on it; ESHKOL_VM_HEAP_BUDGET_MB=0 disables it.
+      Gated by tests/memory/vm_region_growth_watchdog_test.sh (8/8) and by the
+      icc-smoke probe vm_region_growth_watchdog, so the guard cannot be
+      removed silently. Documented in docs/KNOWN_ISSUES.md,
+      docs/reference/runtime/memory-model.md and
+      docs/reference/runtime/environment-variables.md.
+    decision_requested: >-
+      Choose one: (A) accept the interim guard for v1.3.4 and schedule the
+      VM-heap evacuator as a v1.3.5 campaign — the growth is now loud, named
+      and gate-pinned, and the docs no longer imply otherwise; or (B) hold the
+      tag for the evacuator campaign. Recommendation: (A). Option (B) lands a
+      moving collector in the VM core days before a release, where the cost of
+      an incomplete root or subtype list is a silently wrong value.
 
   - id: SW-15
     bucket: SILENT-WRONG
@@ -802,6 +883,84 @@ entries:
       PR #428 (tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the two
       changes touch different functions in vm_compiler.c and are independent.
 
+  - id: SW-25
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-region-and-upvalue"
+    title: "VM set! on a captured parameter inside an immediately-invoked inner closure doesn't propagate back to the outer binding"
+    repro: "(define (f n) ((lambda () (set! n (+ n 1)))) n) (display (f 5))"
+    observed: "VM 5"
+    correct: "6 — native answers 6"
+    cross_engine: "native prints 6 (correct) under both default and ESHKOL_JIT_CACHE=0 JIT"
+    observed_after: >-
+      the VM answers 6. Verified together with the whole class at depths 1-3, with
+      stored as well as immediately-invoked closures, with two closures sharing one
+      capture, from inside a loop, through a closure that outlives the frame that
+      bound the parameter, on `lambda` parameters as well as `define` parameters, and
+      on let* / letrec / letrec* bindings — byte-identical to native on every line
+      (tests/vm_parity/corpus/62_mutable_capture_writeback.esk).
+    root_cause: >-
+      lib/backend/vm_compiler.c: compile_form_let() had always run needs_boxing()
+      (lib/backend/vm_parser.c:941) over its bindings, so a `let`-bound variable that
+      is both `set!`-mutated and captured by a nested lambda is stored in a shared
+      1-element vector and every closure reads and writes the same cell. PARAMETERS
+      never got that treatment: compile_form_define() (the fixed-parameter loop),
+      compile_form_lambda() and compile_form_lambda_2() called add_local() for each
+      parameter and went straight to the body. OP_CLOSURE therefore copied the
+      parameter's VALUE into the closure's upvalue array and the inner `set!` mutated
+      a private copy that was discarded when the closure returned. The open-slot relay
+      (native calls 151/252) is not an alternative: it aliases an absolute VM stack
+      slot and is deliberately restricted to the top-level chunk, because a function's
+      frame is destroyed on return. The same gap existed in compile_form_let_star(),
+      whose own doc comment said "No mutable-capture boxing (unlike plain `let`)", and
+      in compile_form_letrec() / compile_form_letrec_star().
+    fix: >-
+      vm_box_mutable_captured_params() (lib/backend/vm_compiler.c) heap-boxes every
+      parameter that needs_boxing() reports as mutated-and-captured, by emitting
+      GET_LOCAL / VEC_CREATE 1 / SET_LOCAL at function entry — after OP_PACK_REST,
+      which reads the raw argument window — and marking the Local `boxed`, so every
+      later read and write compiles through the existing boxed paths and a nested
+      closure captures the BOX. Called from all three parameter-binding forms.
+      let* boxes at its binding site with the scan widened to the later initializers
+      plus the body (sequential binding); letrec and letrec* create the box with the
+      placeholder, before any initializer runs, so the box pointer is already final
+      when an initializer's closure captures it, and store initializers through
+      VEC_SET. One mechanism, four binding forms, no new opcode and no ABI change.
+    evidence: >-
+      tests/vm_parity/corpus/62_mutable_capture_writeback.esk (VM-vs-native on the
+      native, vm-src and vm-eskb axes; scripts/run_vm_parity.sh) and
+      tests/differential/corpus/50_mutable_capture_writeback.esk (native axes).
+      tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk carried a comment
+      declining to assert this defect; the comment now points at the fix instead.
+      Revert-validated: restoring lib/backend/vm_compiler.c alone reproduces VM 5.
+    renumbered: >-
+      The corpus files were 59_ (vm_parity) and 47_ (differential) when this
+      branch was written. Master's #433 then took both numbers for
+      vector_ref_tensor_indexed_access. Because these are ADDED files with
+      different names at the same index, git reports no conflict and the two
+      would simply have coexisted — the numbering would have stopped being a
+      total order silently. Renumbered on rebase to 62_ and 50_, the next free
+      indices on master once PR #438's 61_/49_ are accounted for.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      Same FAMILY as SW-01/SW-02/SW-24 (a binding is not honoured across a closure
+      boundary) but a distinct mechanism: not name resolution, which PR #428/#429
+      fixed, but the absence of a shared binding CELL. Two adjacent defects were
+      measured while class-killing this one and are NOT fixed here, because both are
+      native-side and out of this entry's scope:
+      (1) a mutated+captured REST parameter does not write back on the NATIVE axes —
+          `(define (r . xs) ((lambda () (set! xs (cons 99 xs)))) (car xs))` is 99 on
+          the VM after this fix and 1 natively;
+      (2) `(do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i)))))`
+          is killed by SIGKILL (exit 137) natively and answers 0 on the VM.
+      Neither is baked into a gate here; both are recorded so the next pass starts
+      from measurement rather than rediscovery. A third, pre-existing and LOUD, is
+      that an internal `(define (bump) (set! n ...))` capturing an enclosing
+      parameter is a fatal VM runtime error on unmodified master — loud, so not a
+      silent-wrong entry.
+
   - id: SW-26
     bucket: SILENT-WRONG
     status: closed
@@ -855,6 +1014,7 @@ entries:
       those closures, on the same builtin family — the SW-07 fix corrected fg-marginal's VALUE
       but not every VM consumer of it. Maintainer ruling 2026-08-13 reversed the earlier
       waive-to-v1.3.5 default for this entry: fixed before tag, no waiver.
+
 
   - id: SW-27
     bucket: SILENT-WRONG

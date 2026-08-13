@@ -96,6 +96,22 @@ reclamation on either surface; when it lands, `with-region` should bracket
 through that evacuator's unwind entry point rather than grow a second teardown
 mechanism.
 
+The VM has **no heap reclamation of any kind** — `with-region` is the
+designated mechanism, not an optimisation on top of one. Measured on
+`tests/memory/vm_region_growth_watchdog_test.esk`, a VM run peaks at the same
+RSS with and without the wrapper, so a resident VM workload grows
+monotonically.
+
+Since the point of reaching for a region is the memory, the VM now **says so
+rather than staying quiet** (SW-14). The first region form executed on the VM
+prints a one-time note to stderr; the VM arena is sampled as it grows and
+crossing `ESHKOL_VM_HEAP_BUDGET_MB` prints a diagnostic that names the size,
+the budget and the cause. Neither changes an answer, and both are
+configurable — see
+[Environment variables](environment-variables.md). The behaviour is gated by
+`tests/memory/vm_region_growth_watchdog_test.sh` so it cannot be silently
+dropped.
+
 ```scheme
 ;; Allocations inside the body are freed at region exit; the result escapes.
 (define total
@@ -339,7 +355,9 @@ implementation backs both — but a close reclaims nothing: the VM heap has no
 escape evacuator, which is also why `with-region` is a pass-through there. See
 `tests/vm_parity/PARITY.tsv`. Observable program output is byte-identical
 (`tests/vm_parity/corpus/region_handle_contract.esk` pins it); only the
-reclamation is absent.
+reclamation is absent. `region-open` on the VM emits the same one-time note as
+`with-region` does, for the same reason — see
+[Substrate support](#substrate-support) above.
 
 ## Parallel workers: commit-only reclamation
 

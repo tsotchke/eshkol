@@ -218,6 +218,32 @@ as native — it simply does not get the memory back, because the region arena,
 the allocation-slot hijack and the escape promotion are native-arena constructs
 and the VM heap has no escape evacuator.
 
+**This is not a property of `with-region` alone: the bytecode VM has no heap
+reclamation of any kind.** Measured on
+`tests/memory/vm_region_growth_watchdog_test.esk`, peak RSS is identical with
+and without the `with-region` wrapper — 1.503 GB either way at 20k iterations
+of 200 conses. `with-region` is the designated reclamation mechanism and it is
+inert on this substrate, so a resident VM workload grows monotonically until
+the host gives out.
+
+**That growth is no longer silent.** Two guards now name it (SW-14 in
+`.icc/silent-wrong-ledger.yaml`), gated by
+`tests/memory/vm_region_growth_watchdog_test.sh`:
+
+- The first region form executed on the VM prints a one-time note to stderr
+  saying that regions reclaim nothing here. `ESHKOL_VM_REGION_QUIET=1`
+  silences it.
+- The VM arena is sampled as it grows; crossing `ESHKOL_VM_HEAP_BUDGET_MB`
+  (default 1024) prints a diagnostic naming the size, the budget and the
+  cause. `ESHKOL_VM_HEAP_BUDGET_FATAL=1` makes it exit nonzero so a lane can
+  gate on it; `ESHKOL_VM_HEAP_BUDGET_MB=0` disables the watchdog.
+
+Neither guard changes any answer. **Real VM reclamation remains a build item**,
+and its prerequisite is unchanged: a VM-heap escape evacuator (root enumeration
+over the operand stack and the VM's side tables, per-subtype interior
+traversal for all 27 heap types, and index-space recycling). Use `eshkol-run`
+for workloads that depend on reclamation.
+
 ### Reverse-mode gradient on the VM
 `gradient` now runs on the bytecode VM at full parity with native codegen
 (#337): forward/reverse-mode, arity-resolved (scalar / N-argument / arity-1

@@ -500,6 +500,16 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
+probe vm_region_growth_watchdog 'SW-14 interim guard: the bytecode VM NAMES its unbounded heap growth (with-region reclaims nothing there) instead of growing silently — note, budget diagnostic, fail-closed mode, and no change to answers' \
+    'cd "$REPO_ROOT";
+     ## SW-14: the VM heap has no reclamation at all; (with-region ...) is a
+     ## pass-through because the VM heap has no escape evacuator. Measured at
+     ## the branch point: identical peak RSS with and without the wrapper.
+     ## Reclamation is a separate build item; this probe gates the guard that
+     ## makes the growth LOUD, so the guard cannot be silently removed.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_growth_watchdog_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "vm_region_growth_watchdog_test.sh: PASS"'
+
 probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
     'cd "$REPO_ROOT";
      ## ESH-0214e: iter-scope partial reclamation. A guard-wrapped self-tail

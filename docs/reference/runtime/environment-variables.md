@@ -72,6 +72,20 @@ Read by `lib/core/resource_limits.cpp`. Size vars accept `K`/`M`/`G` suffixes.
 | `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (abort on exceed). | true |
 | `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true |
 
+### Bytecode-VM heap growth watchdog
+
+The bytecode VM has no heap reclamation: `(with-region ...)` is the designated
+mechanism and is a pass-through there, so a resident VM workload grows
+monotonically (SW-14; see [Memory model](memory-model.md) and
+`docs/KNOWN_ISSUES.md`). These knobs control the guards that make that growth
+loud instead of silent. Neither guard changes any answer.
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `ESHKOL_VM_HEAP_BUDGET_MB` | VM arena size past which a diagnostic names the growth and its cause. `0` disables the watchdog. | 1024 |
+| `ESHKOL_VM_HEAP_BUDGET_FATAL` | Make crossing the budget exit nonzero instead of advisory, so a lane can gate on it. | off |
+| `ESHKOL_VM_REGION_QUIET` | Suppress the one-time note that region forms reclaim nothing on the VM. | off |
+
 ## Parallelism & threading
 
 | Variable | Effect | Default |

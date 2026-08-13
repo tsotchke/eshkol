@@ -31,6 +31,34 @@
 #endif
 #endif
 
+/* ── Host policy hooks ──
+ *
+ * The VM CORE component (lib/backend/vm_core.c and friends) is freestanding by
+ * contract — tests/toolchain/vm_source_boundary_test.cpp fails the build if it
+ * so much as names `getenv(`. Core code that needs a host-configurable policy
+ * knob therefore reads it through these two helpers, which live here in the
+ * HOSTED component and are included ahead of vm_core.c in the unity build
+ * (lib/backend/eshkol_vm.c). A freestanding VM supplies its own stubs.
+ */
+
+/** @return the integer value of environment variable @p name, or @p dflt when
+ *          it is unset, empty or unparseable. Negative values are rejected. */
+static long vm_host_env_long(const char* name, long dflt) {
+    const char* e = getenv(name);
+    if (!e || !*e) return dflt;
+    char* end = NULL;
+    long v = strtol(e, &end, 10);
+    if (end == e || v < 0) return dflt;
+    return v;
+}
+
+/** @return 1 when environment variable @p name is set to anything other than
+ *          the empty string or "0". */
+static int vm_host_env_flag(const char* name) {
+    const char* e = getenv(name);
+    return e && *e && *e != '0';
+}
+
 /* ── Port Types ── */
 
 typedef enum { VM_PORT_FILE, VM_PORT_STRING } VmPortKind;

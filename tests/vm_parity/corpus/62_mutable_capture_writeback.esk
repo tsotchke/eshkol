@@ -1,0 +1,115 @@
+;; SW-25 -- `set!` on a captured PARAMETER must write back through the shared
+;; binding, on the VM exactly as natively.
+;;
+;; THE DEFECT. `(define (f n) ((lambda () (set! n (+ n 1)))) n)` answered 5 on
+;; the bytecode VM where native answers 6: silently, exit 0, no diagnostic.
+;; compile_form_let() had always run needs_boxing() over its bindings, so a
+;; `let`-bound variable that is both `set!`-mutated and captured by a nested
+;; lambda lives in a shared 1-element vector.  PARAMETERS never got that
+;; treatment -- compile_form_define(), compile_form_lambda() and
+;; compile_form_lambda_2() bound each parameter with add_local() and went
+;; straight to the body -- so OP_CLOSURE copied the parameter's value into the
+;; closure's upvalue array and the inner `set!` mutated a private copy.
+;;
+;; The same gap existed in `let*`, `letrec` and `letrec*`, which is why they
+;; are exercised here too: one root cause, four binding forms.
+;;
+;; Every line below is a native-vs-VM differential.  Numeric and list output
+;; only: the VM prints a procedure as <closure@N> where native prints its
+;; source form, so no procedure is ever displayed.
+
+;; -- the filed reproducer: immediately-invoked closure, depth 1 -------------
+(define (d1 n) ((lambda () (set! n (+ n 1)))) n)
+(display (d1 5))
+(newline)
+
+;; -- a STORED closure called twice, so the writeback must accumulate --------
+(define (s1 n) (let ((b (lambda () (set! n (* n 2))))) (b) (b) n))
+(display (s1 3))
+(newline)
+
+;; -- depth 2 and depth 3: the box must relay through every intervening chunk
+(define (d2 n) ((lambda () ((lambda () (set! n (+ n 10)))))) n)
+(display (d2 1))
+(newline)
+
+(define (d3 n) ((lambda () ((lambda () ((lambda () (set! n (+ n 100)))))))) n)
+(display (d3 1))
+(newline)
+
+;; -- TWO closures over ONE capture: the mutator and the reader must agree ---
+(define (share n)
+  (let ((inc (lambda () (set! n (+ n 1))))
+        (get (lambda () n)))
+    (inc) (inc) (inc) (get)))
+(display (share 0))
+(newline)
+
+;; -- mutation from inside a loop -------------------------------------------
+(define (loopy n)
+  (let lp ((i 0))
+    (if (< i 5) (begin ((lambda () (set! n (+ n i)))) (lp (+ i 1))) n)))
+(display (loopy 0))
+(newline)
+
+;; -- a closure that OUTLIVES the frame that bound the parameter -------------
+;; The box is heap-allocated, so the counter keeps counting after make-counter
+;; has returned; the stack-slot alias the VM uses at top level could not.
+(define (make-counter n) (lambda () (set! n (+ n 1)) n))
+(define counter-a (make-counter 10))
+(counter-a)
+(counter-a)
+(display (counter-a))
+(newline)
+
+;; -- two instantiations must NOT share one box -----------------------------
+(define c1 (make-counter 0))
+(define c2 (make-counter 0))
+(c1)
+(c1)
+(display (c1))
+(newline)
+(display (c2))
+(newline)
+
+;; -- a `lambda` parameter, not a `define` parameter -------------------------
+(define anon (lambda (n) ((lambda () (set! n (- n 1)))) n))
+(display (anon 9))
+(newline)
+
+;; -- let* : the binding is in scope for later initializers AND the body -----
+(define (ls v) (let* ((x v)) ((lambda () (set! x (+ x 7)))) x))
+(display (ls 1))
+(newline)
+
+(define (ls2 v) (let* ((x v) (f (lambda () (set! x (* x 3))))) (f) x))
+(display (ls2 2))
+(newline)
+
+;; -- letrec / letrec* : the box is created before any initializer runs ------
+(define (lr v) (letrec ((x v)) ((lambda () (set! x (+ x 3)))) x))
+(display (lr 1))
+(newline)
+
+(define (lrs v) (letrec* ((x v)) ((lambda () (set! x (+ x 4)))) x))
+(display (lrs 1))
+(newline)
+
+;; -- controls: an unmutated capture must still read by value ---------------
+(define (plain a) ((lambda (t) (+ a t)) 4))
+(display (plain 6))
+(newline)
+
+;; -- control: a parameter mutated WITHOUT being captured stays unboxed ------
+(define (direct n) (set! n (+ n 1)) n)
+(display (direct 41))
+(newline)
+
+;; -- control: mutation of a captured parameter must not leak to a same-named
+;; top-level binding (the SW-24/PR #428 shadowing family, re-asserted here) --
+(define shadowed 100)
+(define (bump shadowed) ((lambda () (set! shadowed (+ shadowed 1)))) shadowed)
+(display (bump 5))
+(newline)
+(display shadowed)
+(newline)
