@@ -1,0 +1,11 @@
+;; SW-24 (ESH-0070 class): a user rebinding of an arithmetic builtin must
+;; shadow the builtin dispatch on every axis. Isolated shape only — + is
+;; rebound before any other use of + (rebind-after-use is a separate,
+;; pre-existing hoisting divergence between the engines).
+(define (let-rebound-star)
+  (let ((* (lambda (a b) (- a b))))
+    (* 10 4)))
+(display (let-rebound-star)) (newline)
+
+(define + (lambda (a b) (* a b)))
+(display (+ 3 4)) (newline)

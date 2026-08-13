@@ -599,6 +599,30 @@ probe ad_capture_global_shadow_oracle 'AD capture reconstruction respects lexica
      d=$("$bin" 2>/dev/null); rd=$?; rm -f "$bin";
      [ "$rd" -eq 0 ] && [ "$d" = "$c" ] || exit 1;
      exit 0'
+# ESH-0070 class: higher-order builtins must respect shadowing bindings.
+# `(define (apply-map fn lst) (map fn lst))` with a same-named top-level fn
+# silently called the GLOBAL fn (map / reduce / remove — static
+# procedure-operand resolution never checked local shadowing; the VM's
+# outermost-first upvalue search had the same class of bug for nested-lambda
+# captures). Gated on JIT + AOT + the standalone VM in one probe because the
+# defect reproduced differently per engine and no differential axis could see
+# it — every engine was wrong the same way on the map case.
+probe higher_order_shadowing_oracle 'map/for-each/filter/fold/reduce/remove call the shadowing binding, not a same-named top-level procedure — JIT, AOT, and VM engines' \
+    'cd "$REPO_ROOT"; t=tests/codegen/higher_order_shadowing_test.esk;
+     a=$(ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$t" -L"$BUILD_DIR_PATH" 2>/dev/null) || exit 1;
+     printf "%s" "$a" | grep -q "PASS: higher-order shadowing" || exit 1;
+     printf "%s" "$a" | grep -q "FAIL:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     "$ESHKOL_RUN" "$t" -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     b=$("$bin" 2>/dev/null); rb=$?; rm -f "$bin";
+     [ "$rb" -eq 0 ] || exit 1;
+     printf "%s" "$b" | grep -q "PASS: higher-order shadowing" || exit 1;
+     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     [ -x "$vm" ] || exit 1;
+     c=$(ESHKOL_VM_NO_DISASM=1 "$vm" tests/codegen/higher_order_shadowing_vm_test.esk 2>/dev/null) || exit 1;
+     printf "%s" "$c" | grep -q "PASS: higher-order shadowing (vm)" || exit 1;
+     printf "%s" "$c" | grep -q "FAIL:" && exit 1;
+     exit 0'
 probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solver reaches full-f64 residual (<=1e-12, computed in-test) on well-conditioned/identity systems and raises catchably on singular/dimension-mismatch — verified on JIT, AOT, and the VM' \
     'cd "$REPO_ROOT"; t=tests/features/linear_solve_test.esk;
      out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;

@@ -37511,15 +37511,23 @@ private:
         }
 
         Value* proc = resolveLambdaFunction(&op->call_op.variables[0], 2);
-        if (!proc) {
-            eshkol_error("Failed to resolve function for reduce");
-            return nullptr;
-        }
+        Function* proc_fn = proc ? dyn_cast<Function>(proc) : nullptr;
 
-        Function* proc_fn = dyn_cast<Function>(proc);
+        // RUNTIME CLOSURE FALLBACK (ESH-0070 class): when the procedure is
+        // not statically resolvable — a function parameter, a binding that
+        // shadows a same-named top-level function, or a closure produced at
+        // runtime — evaluate the operand and fold by calling the closure
+        // value per element, exactly as map does. Without this, reduce
+        // either substituted the shadowed global (silent wrong results) or
+        // emitted nothing for the call and crashed at runtime.
+        Value* proc_closure = nullptr;
         if (!proc_fn) {
-            eshkol_error("reduce function must be a procedure");
-            return nullptr;
+            proc_closure = codegenAST(&op->call_op.variables[0]);
+            if (!proc_closure) {
+                eshkol_error("Failed to resolve function for reduce");
+                return nullptr;
+            }
+            proc_closure = ensureTaggedValue(proc_closure);
         }
 
         Value* init_val = nullptr;
@@ -37596,8 +37604,16 @@ private:
         Value* elem = extractCarAsTaggedValue(curr);
         Value* acc = builder->CreateLoad(tagged_value_type, acc_ptr);
 
-        // Call proc(acc, elem)
-        Value* new_acc = builder->CreateCall(proc_fn, {acc, elem});
+        // Call proc(acc, elem) — direct call when statically resolved,
+        // closure dispatch otherwise (see fallback above).
+        Value* new_acc = proc_fn
+            ? builder->CreateCall(proc_fn, {acc, elem})
+            : codegenClosureCall(proc_closure, {acc, elem}, "reduce");
+        if (!new_acc) {
+            eshkol_error("reduce: closure dispatch failed");
+            return nullptr;
+        }
+        new_acc = ensureTaggedValue(new_acc);
         builder->CreateStore(new_acc, acc_ptr);
 
         // Move to next
@@ -38023,6 +38039,38 @@ private:
 
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
+    /**
+     * @brief True when @p name is lexically shadowed by a runtime binding of
+     *        the current function (ESH-0070 class).
+     *
+     * A function parameter (llvm::Argument) or local variable (AllocaInst
+     * owned by the current function) shadows any same-named top-level
+     * function. The unscoped <name>_func entries leak into every scope
+     * (preGenerateTopLevelLambdas writes both symbol_table and
+     * global_symbol_table) and function_table is global, so static
+     * procedure resolution MUST decline when this returns true — the only
+     * resolution that agrees with lexical scope is runtime dispatch on the
+     * local value. A scoped <current>.<name>_func entry exempts the name:
+     * it proves the local binding itself is a statically-known lambda
+     * (let-bound or local define), which static resolution handles
+     * correctly via the scoped lookup.
+     */
+    bool isShadowedByLocalRuntimeBinding(const std::string& name) {
+        if (!current_function) return false;
+        auto it = symbol_table.find(name);
+        if (it == symbol_table.end() || !it->second) return false;
+        Value* v = it->second;
+        bool is_param = isa<Argument>(v) &&
+            cast<Argument>(v)->getParent() == current_function;
+        bool is_local_alloca = isa<AllocaInst>(v) &&
+            cast<AllocaInst>(v)->getFunction() == current_function;
+        if (!is_param && !is_local_alloca) return false;
+        std::string scoped_key =
+            current_function->getName().str() + "." + name + "_func";
+        return symbol_table.find(scoped_key) == symbol_table.end() &&
+               global_symbol_table.find(scoped_key) == global_symbol_table.end();
+    }
+
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
         if (!func_ast) {
             eshkol_error("resolveLambdaFunction: func_ast is nullptr");
@@ -38088,6 +38136,26 @@ private:
         if (func_ast->type == ESHKOL_VAR) {
             std::string func_name = func_ast->variable.id;
             eshkol_debug("resolveLambdaFunction: looking for variable '%s'", func_name.c_str());
+
+            // SHADOWING GUARD (ESH-0070 class): a function parameter or local
+            // alloca binding lexically shadows any same-named top-level
+            // function, so the static lookups below would silently
+            // substitute the shadowed top-level function for the local
+            // binding — e.g.
+            //   (define fn (lambda (x) (* x 100)))
+            //   (define (apply-map fn lst) (map fn lst))   ; used global fn
+            // Decline static resolution — callers fall back to runtime
+            // closure dispatch on the local value, which is the only
+            // resolution that agrees with lexical scope. See
+            // isShadowedByLocalRuntimeBinding for the exemption that keeps
+            // let-bound / locally defined lambdas on the scoped static path.
+            if (isShadowedByLocalRuntimeBinding(func_name)) {
+                eshkol_debug("resolveLambdaFunction: '%s' is shadowed by a local "
+                             "binding in '%s' — deferring to runtime dispatch",
+                             func_name.c_str(),
+                             current_function->getName().str().c_str());
+                return nullptr;
+            }
 
             // BUILTIN FIRST-CLASS FIX: Check for builtin math functions FIRST before raw function_table lookup
             // These need wrapper functions that take/return tagged_value_type
@@ -38886,17 +38954,29 @@ private:
         } else if (first_arg->type == ESHKOL_VAR) {
             // Variable - check if it's a function
             std::string var_name = first_arg->variable.id;
-            // Check function table first
-            auto func_it = function_table.find(var_name);
-            if (func_it != function_table.end() && func_it->second) {
-                is_predicate = true;
-                pred_func = func_it->second;
-            } else {
-                // Check for lambda reference
-                auto sym_it = symbol_table.find(var_name + "_func");
-                if (sym_it != symbol_table.end()) {
-                    pred_func = dyn_cast<Function>(sym_it->second);
-                    is_predicate = (pred_func != nullptr);
+
+            // SHADOWING GUARD (ESH-0070 class): function_table and the
+            // unscoped <name>_func entries describe top-level bindings, so
+            // when the name is rebound to a runtime value in the current
+            // function (parameter or local alloca) the lookups below would
+            // substitute the shadowed global as the predicate. Decline
+            // static predicate resolution in that case: the local binding is
+            // a runtime value, and remove's element-based path compares
+            // against exactly that value — the same behavior a non-shadowed
+            // runtime argument gets today.
+            if (!isShadowedByLocalRuntimeBinding(var_name)) {
+                // Check function table first
+                auto func_it = function_table.find(var_name);
+                if (func_it != function_table.end() && func_it->second) {
+                    is_predicate = true;
+                    pred_func = func_it->second;
+                } else {
+                    // Check for lambda reference
+                    auto sym_it = symbol_table.find(var_name + "_func");
+                    if (sym_it != symbol_table.end()) {
+                        pred_func = dyn_cast<Function>(sym_it->second);
+                        is_predicate = (pred_func != nullptr);
+                    }
                 }
             }
         }
@@ -38905,12 +38985,24 @@ private:
         if (!list) return nullptr;
         Value* list_int = safeExtractInt64(list);
 
-        // For element-based removal, get the item value
+        // For non-static-predicate removal, evaluate the operand ONCE.
+        // The value may still be a procedure at runtime — a function
+        // parameter, a binding that shadows a same-named top-level function
+        // (ESH-0070 class), or a closure produced by a call — and SRFI-1
+        // remove semantics require calling it as the predicate. Keep the
+        // tagged value for a runtime CALLABLE dispatch alongside the
+        // element-equality path.
         Value* item_int = nullptr;
+        Value* item_tagged = nullptr;
+        Value* item_is_callable = nullptr;
         if (!is_predicate) {
             Value* item = codegenAST(&op->call_op.variables[0]);
             if (!item) return nullptr;
-            item_int = safeExtractInt64(item);
+            item_tagged = ensureTaggedValue(item);
+            item_int = safeExtractInt64(item_tagged);
+            Value* item_base = getBaseType(getTaggedValueType(item_tagged));
+            item_is_callable = builder->CreateICmpEQ(item_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -38959,12 +39051,39 @@ private:
             // Check if result is truthy (non-zero, non-false)
             Value* pred_result_int = safeExtractInt64(pred_result);
             is_match = builder->CreateICmpNE(pred_result_int, ConstantInt::get(int64_type, 0));
-        } else if (comparison_type == "equal" || comparison_type == "eqv") {
-            // Element-based: Value equality comparison
-            is_match = builder->CreateICmpEQ(input_element, item_int);
-        } else if (comparison_type == "eq") {
-            // Element-based: Pointer equality comparison
-            is_match = builder->CreateICmpEQ(input_element, item_int);
+        } else {
+            // Runtime dispatch (ESH-0070 class): the operand was not a
+            // statically-resolvable predicate — it may be a runtime
+            // procedure value (function parameter / shadowed binding /
+            // closure from a call) or a plain item. Branch on the tagged
+            // type: CALLABLE → call it as the predicate; anything else →
+            // element equality (eq/eqv/equal all compare the extracted
+            // value here, matching the previous behavior).
+            BasicBlock* pred_call_bb = BasicBlock::Create(*context, "remove_pred_call", current_func);
+            BasicBlock* item_cmp_bb = BasicBlock::Create(*context, "remove_item_cmp", current_func);
+            BasicBlock* match_merge_bb = BasicBlock::Create(*context, "remove_match_merge", current_func);
+            builder->CreateCondBr(item_is_callable, pred_call_bb, item_cmp_bb);
+
+            builder->SetInsertPoint(pred_call_bb);
+            Value* rt_pred_result = codegenClosureCall(item_tagged, {input_element_tagged}, "remove");
+            if (!rt_pred_result) {
+                eshkol_error("remove: closure dispatch failed");
+                return nullptr;
+            }
+            Value* rt_pred_int = safeExtractInt64(ensureTaggedValue(rt_pred_result));
+            Value* rt_pred_match = builder->CreateICmpNE(rt_pred_int, ConstantInt::get(int64_type, 0));
+            BasicBlock* pred_call_end = builder->GetInsertBlock();
+            builder->CreateBr(match_merge_bb);
+
+            builder->SetInsertPoint(item_cmp_bb);
+            Value* item_cmp_match = builder->CreateICmpEQ(input_element, item_int);
+            builder->CreateBr(match_merge_bb);
+
+            builder->SetInsertPoint(match_merge_bb);
+            PHINode* match_phi = builder->CreatePHI(int1_type, 2, "remove_is_match");
+            match_phi->addIncoming(rt_pred_match, pred_call_end);
+            match_phi->addIncoming(item_cmp_match, item_cmp_bb);
+            is_match = match_phi;
         }
 
         // If it matches (predicate true or equals item), skip it; otherwise keep it
