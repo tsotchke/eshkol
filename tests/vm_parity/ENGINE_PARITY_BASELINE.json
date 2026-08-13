@@ -104,6 +104,8 @@
     "tests/vm_parity/corpus/54_logic_var_kb_query.esk",
     "tests/vm_parity/corpus/55_truthiness.esk",
     "tests/vm_parity/corpus/56_factor_graph_inference.esk",
+    "tests/vm_parity/corpus/57_factor_graph_marginal.esk",
+    "tests/vm_parity/corpus/58_rationalize_r7rs.esk",
     "tests/vm_parity/corpus/read_write_roundtrip.esk",
     "tests/vm_parity/corpus/region_handle_contract.esk",
     "tests/vm_parity/corpus/with_region_lowering.esk"

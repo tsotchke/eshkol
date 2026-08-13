@@ -934,8 +934,14 @@ extern "C" void eshkol_rationalize_tagged(
     double eps = tagged_to_double(epsilon);
     if (eps < 0) eps = -eps;
 
-    /* Handle exact integers: if x is int and eps >= 0, return x */
-    if (x->type == ESHKOL_VALUE_INT64 && eps >= 0.0) {
+    /* A zero tolerance pins the answer to x itself. Taking it here keeps an
+     * exact integer exact past 2^53, where the double round-trip below would
+     * not. This must stay narrowed to eps == 0: the old form fired for EVERY
+     * exact-integer x and any tolerance at all, so `(rationalize 3 1)`
+     * answered 3 while the VM answered 2. R7RS-small 6.2.6 makes 2 right —
+     * with q1 = q2 = 1, r1 is simpler than r2 when |p1| <= |p2|, so the
+     * simplest rational in [2,4] is the one nearest zero. */
+    if ((x->type & 0x0F) == ESHKOL_VALUE_INT64 && eps == 0.0) {
         result->type = ESHKOL_VALUE_INT64;
         result->data.int_val = x->data.int_val;
         return;
@@ -968,27 +974,26 @@ extern "C" void eshkol_rationalize_tagged(
     int64_t a_num = 0, a_den = 1;  /* left bound: 0/1 */
     int64_t b_num = 1, b_den = 0;  /* right bound: 1/0 = infinity */
 
-    /* First, advance past integers: floor(lo) */
-    int64_t int_part = (int64_t)lo;
-    if ((double)int_part > lo) int_part--;
+    /* If an integer is in range it is the simplest rational there, and the
+     * simplest INTEGER in range is the one with the smallest |numerator| —
+     * on this already-non-negative domain that is ceil(lo), not floor(lo)+1.
+     * Testing floor(lo)+1 first answered 3 for [2,4] where 2 is simpler.
+     * Same rule as the VM's vm_rationalize(), which this must agree with. */
+    int64_t lo_int = (int64_t)ceil(lo);
+    if ((double)lo_int <= hi) {
+        int64_t val = negative ? -lo_int : lo_int;
+        result->type = ESHKOL_VALUE_INT64;
+        result->data.int_val = val;
+        return;
+    }
+
+    /* No integer in range: bracket the interval by its two nearest integers
+     * and start the Stern-Brocot mediant search between them. */
+    int64_t int_part = lo_int - 1;
     a_num = int_part;
     a_den = 1;
     b_num = int_part + 1;
     b_den = 1;
-
-    /* If an integer is in range, return it */
-    if ((double)b_num >= lo && (double)b_num <= hi) {
-        int64_t val = negative ? -b_num : b_num;
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = val;
-        return;
-    }
-    if ((double)a_num >= lo && (double)a_num <= hi) {
-        int64_t val = negative ? -a_num : a_num;
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = val;
-        return;
-    }
 
     /* Mediant search between a_num/a_den and b_num/b_den */
     for (int iter = 0; iter < 1000; iter++) {
