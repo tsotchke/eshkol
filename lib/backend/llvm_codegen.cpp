@@ -32213,7 +32213,57 @@ private:
             eshkol_error("Invalid diff operation");
             return nullptr;
         }
-        
+
+        // SW-06 (skipped-flaws ledger, .icc/silent-wrong-ledger.yaml):
+        // `(diff 'expr 'x)` — a QUOTED s-expression, e.g. `(diff '(* x x)
+        // 'x)` — used to reach buildSymbolicDerivative() with a top-level
+        // ESHKOL_QUOTE_OP node. differentiateOperationSymbolic() has no rule
+        // for it, so it fell through `op->op != ESHKOL_CALL_OP` and returned
+        // the AST for the constant 0 — indistinguishable from a correct "this
+        // expression doesn't depend on x" answer. Symbolic differentiation of
+        // already-quoted DATA is not implemented (unlike an unquoted
+        // expression literal, e.g. `(diff (* x x) x)`, which the rules below
+        // DO handle correctly — this check does not touch that path). Raise
+        // a real, guard-catchable Scheme exception instead of fabricating a
+        // derivative, mirroring the non-exhaustive `match` diagnostic below.
+        if (op->diff_op.expression->type == ESHKOL_OP &&
+            op->diff_op.expression->operation.op == ESHKOL_QUOTE_OP) {
+            Function* raise_func = module->getFunction("eshkol_raise");
+            if (!raise_func) {
+                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy()}, false);
+                raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                    "eshkol_raise", module.get());
+                raise_func->setDoesNotReturn();
+            }
+            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+            }
+            Value* error_msg = codegenString(
+                "diff: symbolic differentiation of a quoted expression is not yet "
+                "implemented (pass an unquoted expression, e.g. (diff (* x x) x), "
+                "not (diff '(* x x) 'x))");
+            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+            builder->CreateCall(raise_func, {exception});
+            builder->CreateUnreachable();
+            // codegenAST callers expect to keep emitting into the block this
+            // function leaves the builder positioned in (e.g. `guard`'s
+            // try-block epilogue branches to its merge block right after
+            // this call returns) — CreateUnreachable() above terminates the
+            // current block, so a fresh, unreachable-but-unterminated block
+            // is required here, exactly like the borrow-violation raise
+            // above (codegenSet's "mutation of borrowed value" path).
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* after_raise_bb = BasicBlock::Create(*context, "diff_quote_unreachable", current_func);
+            builder->SetInsertPoint(after_raise_bb);
+            return packNullToTaggedValue();
+        }
+
         const char* var = op->diff_op.variable;
         eshkol_info("Building symbolic derivative S-expression for %s", var);
         

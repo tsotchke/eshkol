@@ -895,6 +895,30 @@ extern "C" void* eshkol_xla_broadcast(
 
     if (!data || tgt_rank <= 0) return nullptr;
     if (tgt_rank > 16 || src_rank > 16) return nullptr;  // P1: tgt_strides[16]/src_strides[16] stack arrays
+    if (src_rank < 0) return nullptr;
+    if (src_rank > tgt_rank) return nullptr;  // SW-22: broadcasting never reduces rank
+
+    // SW-22: validate NumPy-style broadcast compatibility per right-aligned
+    // dimension pair before computing any strides. A source dimension may
+    // broadcast only if it equals the corresponding target dimension or
+    // equals 1 (docs/breakdown/XLA_BACKEND.md "Broadcast Semantics"; mirrors
+    // XLATypes::broadcastShape() in lib/backend/xla/xla_types.cpp, which
+    // already applies this rule at compile time — this is the runtime's own
+    // guard for callers that reach this entry point directly). Previously
+    // nothing checked this here: an incompatible source dimension > 1 fed
+    // straight into the stride multiplication below, and whenever that
+    // dimension was NARROWER than the target it produced an out-of-bounds
+    // read of `data` — a memory-safety defect, not merely a wrong answer.
+    {
+        const int64_t rank_offset = tgt_rank - src_rank;
+        for (int64_t d = 0; d < tgt_rank; d++) {
+            const int64_t src_d = d - rank_offset;
+            if (src_d < 0) continue;  // implicit leading 1 — always compatible
+            const uint64_t src_dim = src_shape[src_d];
+            const uint64_t tgt_dim = tgt_shape[d];
+            if (src_dim != tgt_dim && src_dim != 1) return nullptr;
+        }
+    }
 
     uint64_t total = 1;
     for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];

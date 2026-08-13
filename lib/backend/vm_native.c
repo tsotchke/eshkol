@@ -8091,6 +8091,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        /* SW-06: `diff` compiles to this same native call (see
+         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
+         * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
+         * from_native() silently returns NIL_VAL for anything that isn't
+         * VAL_CLOSURE, which then falls into "non-dual result = constant
+         * function" below and pushes a fabricated 0 — indistinguishable
+         * from a correct zero derivative. Symbolic differentiation of
+         * already-quoted data is not implemented (v1.3.5 tracker); raise
+         * instead of guessing. */
+        if (f_val.type != VAL_CLOSURE) {
+            vm_raise_error_msg(vm,
+                "derivative: the first argument must be a callable function; "
+                "symbolic differentiation of a quoted expression (e.g. "
+                "(diff '(* x x) 'x)) is not yet implemented on the VM");
+            break;
+        }
         /* ESH-0369: the VM's forward-mode carrier is a FLAT VmDual {value,
          * tangent} — one perturbation, no nesting level. A point that is
          * ALREADY a dual therefore means an enclosing differentiation is live
