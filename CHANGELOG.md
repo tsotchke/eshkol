@@ -487,7 +487,10 @@ and a release gate that finally reads CTest results as oracle evidence.
   `arena_allocate_tensor_full()` and, because native codegen assembles tensors
   from three separate allocations rather than calling it, at the point codegen
   computes the element count; `ESHKOL_TIMEOUT_MS` as a cooperative poll emitted
-  on every tail-call loop back-edge and run at every guarded function entry.
+  on every tail-call loop back-edge of hosted native codegen (the profiles that
+  link no hosted watchdog — freestanding objects and `--wasm` modules — have
+  nothing that could request an interrupt, so the poll is not emitted there)
+  and run at every guarded function entry.
   `ESHKOL_MAX_STACK` now drives the recursion-depth guard that codegen already
   emitted, which had been comparing against a hard-coded 100000 with no
   connection to the configurable limit the variable fed — two mechanisms with

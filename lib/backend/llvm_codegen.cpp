@@ -1904,6 +1904,23 @@ private:
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
+    // SW-10: the cooperative execution-timeout poll on the tail-call back-edge
+    // only exists where something can request an interrupt. The requester is
+    // the hosted watchdog thread in lib/core/resource_limits.cpp, which is not
+    // in the freestanding source set and is not linked into a standalone wasm
+    // module at all — so in those profiles the poll can never observe an
+    // interrupt, and emitting it only creates a dependency on a symbol the
+    // profile does not have. On wasm32 that dependency is an `env` import the
+    // JS glue would have to stub, and the stub would then be called across the
+    // JS boundary on every iteration of every loop in the program.
+    //
+    // Same direction as the VM's limit installer (see
+    // eshkol_vm_install_limits): a build with no hosted runtime to push the
+    // configuration in keeps the compiled-in default and links nothing extra.
+    bool timeoutInterruptPollEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
+
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
@@ -28027,7 +28044,10 @@ private:
         // interrupt is pending, and no timer is even armed unless the user
         // asked for one. It reads and writes no program value, so it cannot
         // perturb arithmetic — gradients stay bit-identical.
-        {
+        //
+        // Only where a hosted watchdog can raise the interrupt in the first
+        // place: see timeoutInterruptPollEnabled().
+        if (timeoutInterruptPollEnabled()) {
             Function* poll_fn = module->getFunction("eshkol_limit_poll_interrupt");
             if (!poll_fn) {
                 FunctionType* poll_type =

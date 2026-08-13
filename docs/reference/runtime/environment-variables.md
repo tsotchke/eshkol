@@ -124,6 +124,13 @@ the execution-timeout poll run once per 4096 instructions and once per tail-call
 loop back-edge respectively. No check reads or writes a program value, so
 enabling limits cannot change a computed result.
 
+The timeout poll is emitted for hosted native codegen only. The watchdog that
+raises the interrupt lives in the hosted runtime, which a standalone
+freestanding object and a `--wasm` module do not link at all — so in those
+profiles there is nothing that could request an interrupt, and the back-edge
+poll is not emitted rather than left calling a symbol the profile does not
+have. The environment variables above describe hosted `eshkol-run` execution.
+
 ### Two limits that are narrower than the table suggests
 
 `ESHKOL_MAX_STACK` bounds the recursion the runtime's depth guard observes.
