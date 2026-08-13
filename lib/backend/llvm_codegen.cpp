@@ -4933,19 +4933,74 @@ private:
      * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
      * produce byte-identical closures (same packed_info / return_type_info
      * layout the closure-call path decodes). */
-    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params) {
+    /* Is `name` a REST-ARG (variadic) procedure, and if so how many FIXED
+     * parameters does it take? Consults both registries, exactly as the call
+     * path in codegenCall does: `variadic_function_info` for the ordinary
+     * compile, `g_repl_variadic_functions` for REPL/`-e` batches. Both are
+     * keyed by the user-visible name ("append"), never by the mangled LLVM
+     * symbol REPL hot-reload produces ("append__rv0"), so callers pass the
+     * user name first and the mangled form only as a fallback. */
+    bool lookupVariadicProcedure(const std::string& name,
+                                 uint64_t* fixed_params_out) {
+        auto it = variadic_function_info.find(name);
+        if (it != variadic_function_info.end() && it->second.second) {
+            if (fixed_params_out) *fixed_params_out = it->second.first;
+            return true;
+        }
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto rit = g_repl_variadic_functions.find(name);
+            if (rit != g_repl_variadic_functions.end() && rit->second.second) {
+                if (fixed_params_out) *fixed_params_out = rit->second.first;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Turn an LLVM function into a first-class Eshkol callable.
+     *
+     * SW-27 — the variadic arguments are not decoration. A rest-arg procedure
+     * `(define (append . lists) …)` is called through a DIFFERENT ABI from a
+     * fixed-arity one: the closure dispatcher (codegenClosureCall) conses the
+     * caller's surplus arguments into a list and passes `fixed_params` values
+     * plus that one list. It selects that path from the closure metadata —
+     * bit 63 of `packed_info`, which the allocator turns into
+     * CLOSURE_FLAG_VARIADIC, and, for the 0-capture case where `env` is null,
+     * the `input_arity` byte, which it reads back as `fixed_params`.
+     *
+     * Before this, every function-as-value site packed a plain arity and no
+     * variadic bit, so a rest-arg procedure referenced as a value was called
+     * as if fixed-arity: its rest parameter received a bare argument instead
+     * of a list. `(h append '(1) '(2))` answered `1` — the first argument,
+     * silently — and `(h string-copy "abc")` SIGSEGV'd under AOT walking a
+     * non-list as a list. Call position was always correct; only the value
+     * representation lied about the procedure's shape.
+     *
+     * NOTE the asymmetry in what `input_arity` must hold: for a fixed-arity
+     * closure it is the parameter count, but for a variadic one the dispatcher
+     * reads it as the FIXED count (the rest parameter is not among them). A
+     * rest-arg procedure with one fixed parameter stores 1, not 2.
+     */
+    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
+                                       bool is_variadic = false,
+                                       uint64_t fixed_params = 0) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31)
-        uint64_t packed_info = (num_params & 0xFFFF) << 16;
+        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // variadic (bit 63). For a variadic procedure the arity slot carries
+        // the FIXED parameter count, which is what the dispatcher unpacks.
+        uint64_t arity_field = is_variadic ? fixed_params : num_params;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        if (is_variadic) packed_info |= (uint64_t)1 << 63;
         Value* packed_info_val = sizeConst(packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
         Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -4953,6 +5008,21 @@ private:
                                                  {arena_ptr, func_ptr_int, packed_info_val,
                                                   sexpr_ptr, return_type_info, closure_name});
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* emitFunctionAsCallableValue for a NAMED procedure: resolves the
+     * rest-arg shape from the registries so callers cannot forget to. Every
+     * "this name is being read as a value" site should use this rather than
+     * packing arity by hand. */
+    Value* emitNamedFunctionAsCallableValue(Function* func,
+                                            const std::string& user_name,
+                                            uint64_t num_params) {
+        uint64_t fixed_params = 0;
+        bool is_variadic = lookupVariadicProcedure(user_name, &fixed_params);
+        if (!is_variadic && func) {
+            is_variadic = lookupVariadicProcedure(func->getName().str(), &fixed_params);
+        }
+        return emitFunctionAsCallableValue(func, num_params, is_variadic, fixed_params);
     }
 
     /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
@@ -4989,8 +5059,15 @@ private:
             return;
         }
 
+        // SW-27: a redefined name bound to a REST-ARG procedure is stored
+        // through this location as a value, so it needs the variadic shape
+        // for the same reason any other function-as-value reference does.
         uint64_t arity = ast->operation.define_op.num_params;
-        Value* callable = emitFunctionAsCallableValue(declared_it->second, arity);
+        Value* callable = ast->operation.define_op.is_variadic
+            ? emitFunctionAsCallableValue(declared_it->second, arity,
+                                          /*is_variadic=*/true, arity)
+            : emitNamedFunctionAsCallableValue(declared_it->second,
+                                               name ? name : "", arity);
         if (!callable) return;
 
         builder->CreateStore(callable, location);
@@ -11228,10 +11305,25 @@ private:
             auto arity_it = function_arity_table.find(var_name);
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
+                // SW-27: resolve the REST-ARG shape here rather than packing a
+                // plain arity. `(define (append . lists) …)` referenced as a
+                // value used to be handed to the dispatcher as fixed-arity,
+                // so its rest parameter received a bare argument instead of a
+                // list — `(h append '(1) '(2))` answered `1`, silently.
                 uint64_t num_params = arity_it->second;
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                return emitFunctionAsCallableValue(func, num_params);
+                return emitNamedFunctionAsCallableValue(func, var_name, num_params);
+            }
+
+            // LE-01: a bare Function* is NOT an Eshkol value. Handing one back
+            // makes the closure dispatcher call a foreign-ABI symbol with the
+            // closure calling convention — `(h remainder 7 3)` SIGSEGV'd. If
+            // the name is a builtin we
+            // can wrap with the closure ABI, do that instead; the raw pointer
+            // stays only as the last resort for symbols we have no spec for.
+            if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+                return first_class;
             }
 
             // Fallback: return raw function pointer (for C functions, builtins, etc.)
@@ -11624,16 +11716,33 @@ private:
                 }
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-                // Pack closure info: no captures, arity in bits 16-31
+                // SW-27: the REPL/`-e` lane needs the rest-arg shape too. It
+                // cannot share emitFunctionAsCallableValue because the hot-
+                // reload path substitutes a dynamically LOADED function
+                // pointer for the baked-in one, so the packing is repeated
+                // here — but it must agree with that helper exactly, including
+                // the rule that a variadic closure's arity field carries the
+                // FIXED parameter count rather than the total.
+                uint64_t repl_fixed_params = 0;
+                bool repl_is_variadic =
+                    lookupVariadicProcedure(var_name, &repl_fixed_params) ||
+                    lookupVariadicProcedure(repl_func->getName().str(),
+                                            &repl_fixed_params);
+                uint64_t arity_field =
+                    repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
+
+                // Pack closure info: no captures, arity in bits 16-31,
+                // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (num_params & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 16;
+                if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
                 Value* packed_info_val = sizeConst(packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
 
                 // Return type unknown
-                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -11695,6 +11804,17 @@ private:
         if (var_name == "list" || var_name == "values") {
             std::string wrapper_name = "builtin_" + var_name + "_varargs";
             return makeVariadicIdentityClosureValue(wrapper_name);
+        }
+
+        // LE-01: the general case. Every builtin that codegenCall lowers
+        // inline reaches this point as a bare name with nothing behind it —
+        // that is what produced "Undefined variable: string<?" for
+        // `(sort xs string<?)`, a program with no undefined variable in it.
+        // Synthesize the closure-ABI wrapper from the call-site lowering.
+        // Reached only after every binding lookup above has declined, so a
+        // user definition of the same name still wins.
+        if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+            return first_class;
         }
 
         codegen_error_at(ast, "Undefined variable: %s", var_name.c_str());
@@ -39643,6 +39763,241 @@ private:
         auto it = table.find(var_name);
         if (it == table.end()) return nullptr;
         return &it->second;
+    }
+
+    /* ------------------------------------------------------------------
+     * FIRST-CLASS REFERENCES TO CALL-POSITION-ONLY BUILTINS  (LE-01)
+     * ------------------------------------------------------------------
+     *
+     * Most of Eshkol's builtin surface is lowered INLINE at the call site:
+     * `codegenCall` string-matches the head name and emits the operation
+     * directly (`string<?` -> StringIOCodegen::stringCompare, `vector-ref`
+     * -> the tensor/vector path, `expt`/`min`/`max` -> ArithmeticCodegen,
+     * and so on). That is the right lowering for `(string<? a b)`, but it
+     * means the NAME by itself never denotes a value: there is no LLVM
+     * function to point a closure at.
+     *
+     * Before this, each builtin that someone needed as a value got its own
+     * hand-written factory (createBuiltinComparisonFunction,
+     * createBuiltinPredicateFunction, createBuiltinCharFunction, …), each
+     * re-implementing the operation's semantics a SECOND time in IR. Two
+     * consequences, both observed:
+     *
+     *   1. Coverage was whatever had been asked for. Everything else fell
+     *      off the end of codegenVariable into "Undefined variable: <name>"
+     *      — or, worse, into the raw-Function* fallback below, which hands
+     *      the closure dispatcher a pointer to a function with a FOREIGN
+     *      ABI. Calling that is undefined behaviour: `(h2 remainder 7 3)`
+     *      SIGSEGV'd and `(h2 append '(1) '(2))` returned `1`.
+     *   2. The second implementation could drift from the call-site one
+     *      with nothing to catch it.
+     *
+     * The fix generalises the wrapper-closure IDIOM but not the duplicated
+     * bodies: we synthesise `builtin_fc_<name>` with the closure ABI
+     * (tagged_value…)->tagged_value whose body is generated by re-entering
+     * `codegenCall` on a synthetic `(name p0 … pN-1)` AST whose arguments
+     * are the wrapper's own parameters. The authoritative call-site lowering
+     * IS the wrapper body, so a first-class reference cannot disagree with a
+     * direct call, and adding a builtin to the first-class surface is one
+     * row of data rather than a new IR implementation.
+     *
+     * Placement: this is consulted only where the old code would otherwise
+     * have produced a garbage callable or an "Undefined variable" error, so
+     * it never changes which binding a name resolves to. Shadowing order —
+     * user definitions, locals, captures, REPL namespaces — is decided
+     * strictly before we get here and is untouched.
+     */
+    struct InlineBuiltinSpec {
+        size_t arity;
+    };
+
+    /* Fixed arity is the closure ABI's requirement, not a claim about the
+     * procedure: R7RS `min`/`max`/`string-append` accept any number of
+     * arguments, and referencing them as values yields the binary form —
+     * the same compromise the pre-existing `+`/`-`/`*`/`/` wrappers make
+     * (createBuiltinArithmeticFunction(name, 2)). Higher-order use is
+     * overwhelmingly binary (`(sort xs string<?)`, `(fold max 0 xs)`). */
+    const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const {
+        static const std::unordered_map<std::string, InlineBuiltinSpec> table = {
+            // Strings — comparisons
+            {"string=?",  {2}}, {"string<?",  {2}}, {"string>?",  {2}},
+            {"string<=?", {2}}, {"string>=?", {2}},
+            {"string-ci=?",  {2}}, {"string-ci<?",  {2}}, {"string-ci>?",  {2}},
+            {"string-ci<=?", {2}}, {"string-ci>=?", {2}},
+            // Strings — accessors and constructors
+            {"string-append", {2}}, {"string-length", {1}}, {"string-ref", {2}},
+            {"substring", {3}},
+            {"string->list", {1}}, {"list->string", {1}},
+            {"string->number", {1}}, {"number->string", {1}},
+            {"string->symbol", {1}}, {"symbol->string", {1}},
+            {"string-upcase", {1}}, {"string-downcase", {1}},
+            {"string-set!", {3}}, {"string-fill!", {2}}, {"make-string", {1}},
+            // Characters
+            {"char=?",  {2}}, {"char<?",  {2}}, {"char>?",  {2}},
+            {"char<=?", {2}}, {"char>=?", {2}},
+            {"char-ci=?",  {2}}, {"char-ci<?",  {2}}, {"char-ci>?",  {2}},
+            {"char-ci<=?", {2}}, {"char-ci>=?", {2}},
+            {"char->integer", {1}}, {"integer->char", {1}},
+            {"char-alphabetic?", {1}}, {"char-numeric?", {1}},
+            {"char-whitespace?", {1}}, {"char-upper-case?", {1}},
+            {"char-lower-case?", {1}}, {"digit-value", {1}},
+            // Vectors
+            {"vector-ref", {2}}, {"vector-set!", {3}}, {"vector-length", {1}},
+            {"vector-fill!", {2}}, {"make-vector", {1}},
+            {"vector->list", {1}}, {"list->vector", {1}},
+            // Numerics
+            {"expt", {2}}, {"min", {2}}, {"max", {2}},
+            {"modulo", {2}}, {"quotient", {2}}, {"remainder", {2}},
+            {"gcd", {2}}, {"lcm", {2}},
+            {"exact->inexact", {1}}, {"inexact->exact", {1}},
+            {"exact", {1}}, {"inexact", {1}},
+            {"numerator", {1}}, {"denominator", {1}},
+            {"square", {1}},
+            // Booleans / symbols / general predicates
+            {"not", {1}}, {"boolean=?", {2}}, {"symbol=?", {2}},
+            {"number?", {1}}, {"integer?", {1}}, {"real?", {1}},
+            {"rational?", {1}}, {"exact?", {1}}, {"inexact?", {1}},
+            {"exact-integer?", {1}}, {"string?", {1}}, {"symbol?", {1}},
+            {"vector?", {1}}, {"boolean?", {1}}, {"char?", {1}},
+            {"procedure?", {1}}, {"list?", {1}},
+            // Lists
+            // NOTE: `append` and `string-copy` are deliberately absent. Neither
+            // is lowered inline: both are REST-ARG stdlib procedures —
+            // `(define (append . lists) …)` in lib/core/list/transform.esk and
+            // `(define (string-copy str . bounds) …)` in lib/core/strings.esk —
+            // so a reference to either resolves to the stdlib function long
+            // before this table is consulted. Both are still broken as values:
+            // `(h append '(1) '(2))` answers `1`, and `(h string-copy "abc")`
+            // SIGSEGVs under AOT. A rest-arg procedure referenced as a value
+            // loses its variadic flag; that is a separate defect in the
+            // stdlib-procedure-as-value path, reported rather than papered
+            // over by a table row that would never be reached anyway.
+            {"list-tail", {2}}, {"set-car!", {2}}, {"set-cdr!", {2}},
+        };
+        auto it = table.find(name);
+        if (it == table.end()) return nullptr;
+        return &it->second;
+    }
+
+    // Names currently having a wrapper body generated, so a builtin whose
+    // call-site lowering ends up resolving its own head as a variable cannot
+    // recurse into this factory forever.
+    std::set<std::string> inline_builtin_wrapper_in_progress_;
+    // Stable storage for the synthetic parameter identifiers handed to the
+    // AST (`variable.id` is a char*; a std::deque never invalidates).
+    std::deque<std::string> inline_builtin_synthetic_names_;
+
+    Function* createInlineBuiltinWrapper(const std::string& name, size_t arity) {
+        std::string func_name = "builtin_fc_";
+        for (char c : name) {
+            if (std::isalnum(static_cast<unsigned char>(c))) func_name += c;
+            else func_name += '_' + std::to_string(static_cast<int>(c));
+        }
+
+        if (Function* existing = module->getFunction(func_name)) {
+            return existing;
+        }
+        if (inline_builtin_wrapper_in_progress_.count(name)) {
+            return nullptr;
+        }
+
+        std::vector<Type*> param_types(arity, tagged_value_type);
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, param_types, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            func_name, module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrap_fn);
+        builder->SetInsertPoint(entry);
+        current_function = wrap_fn;
+
+        // Bind the wrapper's parameters under synthetic identifiers and build
+        // `(name p0 … pN-1)`. Any prior symbol_table entry for those names is
+        // saved and restored so a nested wrapper cannot clobber an outer one.
+        std::vector<eshkol_ast_t> arg_asts(arity);
+        std::vector<std::pair<std::string, Value*>> saved_bindings;
+        saved_bindings.reserve(arity);
+        auto arg_it = wrap_fn->arg_begin();
+        for (size_t i = 0; i < arity; ++i) {
+            inline_builtin_synthetic_names_.push_back(
+                "__fc_builtin_arg" + std::to_string(i));
+            const std::string& arg_name = inline_builtin_synthetic_names_.back();
+            Argument* param = &*arg_it++;
+            param->setName(arg_name);
+
+            auto prev = symbol_table.find(arg_name);
+            saved_bindings.push_back(
+                {arg_name, prev == symbol_table.end() ? nullptr : prev->second});
+            symbol_table[arg_name] = param;
+
+            arg_asts[i] = eshkol_ast_t{};
+            arg_asts[i].type = ESHKOL_VAR;
+            arg_asts[i].variable.id = const_cast<char*>(arg_name.c_str());
+        }
+
+        inline_builtin_synthetic_names_.push_back(name);
+        eshkol_ast_t head_ast{};
+        head_ast.type = ESHKOL_VAR;
+        head_ast.variable.id =
+            const_cast<char*>(inline_builtin_synthetic_names_.back().c_str());
+
+        eshkol_operations_t call{};
+        call.op = ESHKOL_CALL_OP;
+        call.call_op.func = &head_ast;
+        call.call_op.variables = arg_asts.empty() ? nullptr : arg_asts.data();
+        call.call_op.num_vars = arity;
+
+        inline_builtin_wrapper_in_progress_.insert(name);
+        Value* result = codegenCall(&call);
+        inline_builtin_wrapper_in_progress_.erase(name);
+
+        for (const auto& [arg_name, prev] : saved_bindings) {
+            if (prev) symbol_table[arg_name] = prev;
+            else symbol_table.erase(arg_name);
+        }
+
+        bool ok = false;
+        if (builder->GetInsertBlock() &&
+            builder->GetInsertBlock()->getTerminator()) {
+            // The lowering ended the block itself (e.g. a raise/exit path).
+            ok = true;
+        } else if (result) {
+            Value* tagged = ensureTaggedValue(result);
+            if (tagged && tagged->getType() == tagged_value_type) {
+                builder->CreateRet(tagged);
+                ok = true;
+            }
+        }
+
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+
+        if (!ok) {
+            // Never leave a body-less definition in the module: it would
+            // verify-fail the whole unit. Drop it and let the caller fall
+            // back to its previous behaviour for this name.
+            wrap_fn->eraseFromParent();
+            return nullptr;
+        }
+        return wrap_fn;
+    }
+
+    /* Give a call-position-only builtin an honest first-class value, or
+     * nullptr if the name is not one we can wrap. */
+    Value* codegenInlineBuiltinAsValue(const std::string& name) {
+        const InlineBuiltinSpec* spec = lookupInlineBuiltin(name);
+        if (!spec) return nullptr;
+        Function* wrapper = createInlineBuiltinWrapper(name, spec->arity);
+        if (!wrapper) return nullptr;
+        return emitFunctionAsCallableValue(wrapper, spec->arity);
     }
 
     // Create wrapper function for builtin unary math functions (abs, etc.)

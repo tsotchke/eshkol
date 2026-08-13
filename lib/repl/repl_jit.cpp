@@ -1813,14 +1813,28 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // Throwing is the right shape for both callers. The driver's existing
     // handlers turn it into a non-zero exit, and an interactive REPL reports
     // the failed form and keeps the session — in both cases without running
-    // the code. `module` and `module_context` are destroyed by the unwind, so
-    // refusing to admit a module leaks nothing.
+    // the code.
+    //
+    // TEARDOWN ORDER IS LOAD-BEARING. `module` and `module_context` are both
+    // parameters of this frame, and the order in which an exception unwind
+    // destroys function parameters is unspecified. An `llvm::Module` holds a
+    // bare reference to its `LLVMContext` and calls `Context.removeModule(this)`
+    // from its destructor, so if the context is torn down first the refusal
+    // path dereferences freed memory — observed as SIGSEGV at address 0x0 in
+    // `LLVMContext::removeModule`, i.e. the compiler crashing while *rejecting*
+    // a program it had already diagnosed correctly. That turned a clean
+    // "exit 1 + diagnostic" into exit 139 on exactly the axes that reach the
+    // in-process JIT (`ESHKOL_JIT_CACHE=0 -r`), which is how a plain
+    // "Undefined variable" read as a memory-safety defect. Destroy them here,
+    // explicitly, module first, so the refusal is deterministic on every axis.
     if (eshkol_diagnostic_error_count() != diagnostics_at_unit_start_) {
+        const unsigned long reported =
+            eshkol_diagnostic_error_count() - diagnostics_at_unit_start_;
+        module.reset();
+        module_context.reset();
         throw std::runtime_error(
             "refusing to execute: compilation reported " +
-            std::to_string(eshkol_diagnostic_error_count() -
-                           diagnostics_at_unit_start_) +
-            " error(s)");
+            std::to_string(reported) + " error(s)");
     }
 
     if (!jit_) {
