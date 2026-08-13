@@ -1305,6 +1305,58 @@ entries:
       right, and because the class-kill measurement that found it is the only
       thing that makes a VM fix verifiable.
 
+  - id: PR-12
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "c8449f8a"
+    closed_by: "PR #436 — landed on master independently while this branch was in review"
+    title: "The release readiness oracle was UNPARSEABLE on master and silently fell back to a 2-criterion generic oracle that always scores 100"
+    measured: >-
+      At origin/master 2ae3787f, .icc/completion-oracles.yaml does not parse:
+      "ParserError: while parsing a block mapping, line 217". `icc readiness --target
+      eshkol-compiler-readiness` reports the error in an "Oracle Config Errors" section and
+      then proceeds anyway with `Oracle source: generic` — grading TWO generic criteria
+      (runtime_evidence_present, no_unmarked_stubbed_prod_paths) and printing
+      `Status: ready  Score: 100`.
+      With the file repaired the SAME command on the SAME tree loads the real oracle
+      (`Oracle source: .icc/completion-oracles.yaml`, 43 criteria) and reports
+      `Status: blocked  Score: 28`.
+    observed: "readiness ready/100 from a 2-criterion fallback"
+    correct: "the 43-criterion eshkol-compiler-readiness oracle actually being graded"
+    root_cause: >-
+      A botched merge spliced two adjacent runtime_event criteria together: the
+      `ad_capture_global_shadow_oracle` entry lost its `action:` line and the
+      `higher_order_shadowing_oracle` entry lost its `- runtime_event:` and
+      `event_kinds:` header, so its `event_names:`/`event_values:` keys landed inside the
+      previous entry's mapping at the wrong indentation. Almost certainly introduced by
+      PR #429, the commit that ADDED higher_order_shadowing_oracle and is the tip of
+      master this branch forked from.
+    why_it_matters: >-
+      Every "readiness 100" recorded against this oracle since the corruption landed is
+      vacuous — it measured two generic criteria, not the release gate. The handoff recipe
+      treats `icc readiness ... --target eshkol-compiler-readiness` as the v1.3.4 tag gate,
+      so this is the gate that was supposed to hold the tag reporting green while grading
+      almost nothing. Exactly the genre of PR-10, and worse: PR-10's probes at least graded
+      something real.
+    fix: >-
+      The three missing lines are restored so the real oracle parses and is graded. This
+      branch carried an identical repair, independently diagnosed; #436 reached master
+      first, so the repair here is now a no-op and only this ledger entry remains. Both
+      arrived at byte-identical edits, which is itself corroboration of the diagnosis.
+      GATE repair only — no product code.
+    discovered_by: >-
+      Running the mandatory ICC readiness leg of the handoff recipe for this PR and reading
+      the "Oracle Config Errors" section instead of the headline score.
+    followup_needed: >-
+      The 28/43 score is an EVIDENCE gap, not 15 failing behaviours: the failing criteria
+      report `Evidence: 0` because their trace emitters (scripts/run_ctest_gate.sh,
+      scripts/run_icc_smoke.sh) had not been run into scripts/icc_traces in this worktree.
+      Both were then run and the score re-measured. The durable lesson is that `icc
+      readiness` should FAIL CLOSED on an oracle config error rather than silently
+      substituting a generic oracle — filed upstream against ICC, not against Eshkol.
+    caught_by: [direct-measurement, icc-readiness-config-error-section]
+    missed_by: [icc-readiness, icc-correctness-chain, icc-smoke, ctest, CI]
+
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
   - id: IF-01
