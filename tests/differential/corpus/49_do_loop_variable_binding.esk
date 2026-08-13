@@ -1,0 +1,164 @@
+;; SW-34 / LE-10 companion on the NATIVE axes.
+;;
+;; The two defects these programs pin are VM-side (compile_form_do never popped
+;; its loop variables, and a captured+mutated loop variable was captured by
+;; value); this file is the native-axis half, so a later native change cannot
+;; drift the answers these programs are asserted against on the VM. The
+;; VM-vs-native assertion for the same programs lives in
+;; tests/vm_parity/corpus/61_do_loop_variable_binding.esk.
+;;
+;; Four `do` shapes were held out of both files while they were written,
+;; because the native engine was wrong or failed on them (capture in a STEP,
+;; capture in a RESULT, a step expression that must see a body closure's
+;; mutation, and a read-only capture). PR #437 fixed the native side; all four
+;; are now asserted at the end of this file.
+
+;; -- LE-10: a `do` must not strand its loop variables -----------------------
+;; The classic slot-shift tell: a top-level binding made AFTER a do loop.
+(do ((i 0 (+ i 1))) ((= i 2)) 1)
+(define after-do 42)
+(display after-do)
+(newline)
+
+;; Two sequential do loops: the second used to inherit the first's slots.
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) (set! a (+ a 1))))
+(newline)
+(display (do ((k 0 (+ k 1)) (b 0)) ((= k 4) b) (set! b (+ b 10))))
+(newline)
+
+;; A closure-carrying do followed by a plain do -- the shape LE-10 was filed
+;; for, where the stranded junk landed on a loop counter or a callee.
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) ((lambda () (set! a (+ a 1))))))
+(newline)
+(display (do ((k 0 (+ k 1)) (b 0)) ((= k 4) b) (set! b (+ b 10))))
+(newline)
+
+;; Three in a row, alternating shapes.
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 2) a) ((lambda () (set! a (+ a 5))))))
+(newline)
+(display (do ((i 0 (+ i 1)) (a 100)) ((= i 2) a) (set! a (+ a 1))))
+(newline)
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 6) a) ((lambda () (set! a (+ a 2))))))
+(newline)
+
+;; -- SW-34: a captured + mutated loop variable is one shared cell -----------
+;; Inside a procedure, with a runtime trip count. The filed reproducer.
+(define (accumulate n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      ((lambda () (set! a (+ a 1))))))
+(display (accumulate 5))
+(newline)
+(display (accumulate 0))
+(newline)
+
+;; Nested loops, the inner body closing over the OUTER loop's variable.
+(display (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t)
+             (do ((j 0 (+ j 1))) ((= j 2))
+                 ((lambda () (set! t (+ t 1)))))))
+(newline)
+
+;; A stored closure called twice per iteration, so the writeback accumulates.
+;; Also the shape that exposed defect 4: a boxed set! in an inline loop body.
+(define (stored n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      (let ((bump (lambda () (set! a (+ a 3)))))
+        (bump)
+        (bump))))
+(display (stored 4))
+(newline)
+
+;; Depth 2 and depth 3 closures over the loop variable.
+(define (deep2 n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      ((lambda () ((lambda () (set! a (+ a 1))))))))
+(display (deep2 4))
+(newline)
+
+(define (deep3 n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      ((lambda () ((lambda () ((lambda () (set! a (+ a 10))))))))))
+(display (deep3 3))
+(newline)
+
+;; Two closures over ONE loop variable: the mutator and the reader must agree.
+(define (share n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      (let ((inc (lambda () (set! a (+ a 1))))
+            (get (lambda () a)))
+        (inc)
+        (set! a (get)))))
+(display (share 4))
+(newline)
+
+;; A do loop inside a lambda rather than a define.
+(display ((lambda (n)
+            (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+                ((lambda () (set! a (+ a 4))))))
+          3))
+(newline)
+
+;; -- controls --------------------------------------------------------------
+;; Parallel update: each step sees the PRE-step values of the others.
+(display (do ((x 1 y) (y 2 x) (n 0 (+ n 1))) ((= n 3) (list x y)) 1))
+(newline)
+
+;; A do with no closure at all is unchanged.
+(display (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s) 1))
+(newline)
+
+;; A body lambda whose PARAMETER shadows the loop variable must win.
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+             (set! a ((lambda (a) (+ a 1)) 10))))
+(newline)
+
+;; An empty body.
+(display (do ((i 0 (+ i 1))) ((= i 4) i)))
+(newline)
+
+;; A do in tail position of a procedure.
+(define (tail-do n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) (set! a (+ a 7))))
+(display (tail-do 3))
+(newline)
+
+;; Multiple result expressions: the sequence runs, the last is the value.
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 2) (set! a (+ a 1)) a) (set! a (+ a 100))))
+(newline)
+
+;; -- promoted from the SCOPE exclusion list ---------------------------------
+;; These four shapes were excluded when this file was written: the VM answered
+;; each correctly after the fix above, but the NATIVE engine was wrong or
+;; failed on all four at that base commit. PR #437 fixed the native side, and
+;; with both changes present the two engines agree on every one -- at exactly
+;; the values the VM already produced. Promoted rather than left in a comment,
+;; because an exclusion nobody re-runs is an exclusion that becomes permanent.
+
+;; A step expression that must observe the body closure's mutation.
+;; Per iteration: body +10, then step +1. Was VM 33 / native 30.
+(define (stepped n)
+  (do ((i 0 (+ i 1)) (a 0 (+ a 1))) ((= i n) a)
+      ((lambda () (set! a (+ a 10))))))
+(display (stepped 3))
+(newline)
+
+;; A capture in the STEP position. Was VM 8 / native 0.
+(define (step-capture n)
+  (do ((i 0 (+ i 1)) (a 0 ((lambda () (+ a 2))))) ((= i n) a)
+      1))
+(display (step-capture 4))
+(newline)
+
+;; A capture in the RESULT position. Was VM 10 / native: LLVM module
+;; verification failed (Instruction does not dominate all uses).
+(define (result-capture n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) ((lambda () (* a 2))))
+      (set! a (+ a 1))))
+(display (result-capture 5))
+(newline)
+
+;; A read-only capture -- mutation is not required to trip the native defect.
+;; Was VM 6 / native: no output.
+(define (readonly-capture n)
+  (do ((i 0 (+ i 1)) (s 0)) ((= i n) s)
+      (set! s (+ s ((lambda () i))))))
+(display (readonly-capture 4))
+(newline)

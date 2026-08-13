@@ -1001,48 +1001,72 @@ entries:
 
   - id: SW-34
     bucket: SILENT-WRONG
-    status: open
-    title: "VM: a `do` loop variable captured and mutated by a body closure loses the mutation inside a procedure and in a nested loop"
-    repro: >-
-      (define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (display (f 5))
-    observed: "VM 0 — exit 0, no diagnostic"
-    correct: "5 — native answers 5 after the LE-09 fix"
-    affected_measured:
-      - "(define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (f 5) -> VM 0, native 5"
-      - "(do ((i 0 (+ i 1)) (t 0)) ((= i 3) t) (do ((j 0 (+ j 1))) ((= j 2)) ((lambda () (set! t (+ t 1)))))) -> VM 2, native 6"
-    unaffected_measured:
-      - "the same loop at TOP LEVEL: (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i))))) -> VM 3, native 3"
-      - "a read-only capture: (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i))))) -> VM 6, native 6"
-    discovered_by: >-
-      class-killing LE-09 on the native side. Every `do` shape the native fix
-      had to handle was run on both engines; these two are the ones where the VM
-      answers wrongly and native answers correctly.
-    not_fixed_here: >-
-      NOT a native defect and NOT closed by branch fix/native-rest-capture-and-do-loop,
-      which changes lib/backend/llvm_codegen.cpp only. Measured against BOTH the
-      VM at this SHA and the VM on the SW-25 branch fix/vm-region-and-upvalue:
-      identical wrong answers, so PR #435's parameter/let boxing does not reach
-      `do` bindings. The likely shape of the fix is the same mechanism applied to
-      compile_form_do()'s bindings — the SW-25 entry's own root_cause names
-      compile_form_let() as the only binding form that had ever run
-      needs_boxing() — but that is a VM-compiler change and wants its own
-      measurement lane.
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-do-loop-capture"
+    title: "A `do` loop variable captured and mutated by a body closure loses the mutation inside a procedure"
+    repro: "(define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (display (f 5))"
+    observed: "VM 0"
+    correct: "5 — native answers 5"
+    cross_engine: >-
+      the nested-loop form
+      (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t) (do ((j 0 (+ j 1))) ((= j 2)) ((lambda () (set! t (+ t 1))))))
+      was VM 2, native 6. The same loop at TOP LEVEL was already correct on the
+      VM (3), which is the tell: only the root chunk has the open-slot relay.
+    observed_after: "VM 5 and VM 6, byte-identical to native across 19 shapes"
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_do() bound its loop variables
+      with a bare add_local(). compile_form_let() has always run needs_boxing()
+      (lib/backend/vm_parser.c) over its bindings, so a `let` variable that is
+      both set!-mutated and captured by a nested lambda lives in a shared
+      1-element vector; a `do` variable never got that treatment, so OP_CLOSURE
+      copied its VALUE into the closure's upvalue array and the inner set!
+      mutated a private copy discarded at the end of the iteration. The
+      top-level case was correct only because the root chunk aliases an
+      absolute VM stack slot through the open-slot relay (native calls
+      151/252), which is deliberately restricted to the root chunk because a
+      function's frame dies on return.
+    fix: >-
+      compile_form_do() boxes every loop variable needs_boxing() reports as
+      mutated-and-captured, scanning the test, the results, the body AND every
+      step expression, since a do variable is in scope for all four. A boxed
+      variable's step store goes through VEC_SET into the same cell. The step
+      values are held in anonymous locals first so that parallel update (R7RS
+      4.2.4 — every step sees the pre-step values) is preserved while still
+      giving VEC_SET its box and index UNDER the value.
+    residue_found_and_fixed: >-
+      Boxing a `do` variable exposed a PRE-EXISTING defect in
+      compile_form_set(): both of its boxed paths (local and upvalue) left TWO
+      values on the operand stack, because OP_VEC_SET pushes NIL and the shared
+      tail pushes the NIL that `set!` evaluates to, while every caller pops
+      one. Inside a frame about to RETURN the surplus was absorbed and
+      invisible, which is why it had never been seen; in a `do` body — inline
+      statements each followed by exactly one OP_POP — it accumulated once per
+      iteration until the operand stack overflowed (STACK OVERFLOW, fatal).
+      Fixed at the root by discarding VEC_SET's NIL in both paths.
     evidence: >-
-      tests/vm_parity/corpus/60_do_loop_closure_capture.esk documents both
-      shapes in its SCOPE comment and deliberately does NOT assert them, so this
-      entry is visible from the corpus rather than only from the ledger. The
-      native side of both shapes IS gated, in
-      tests/integration/rest_capture_and_do_closure_test.esk and
-      tests/differential/corpus/48_rest_capture_and_do_closure.esk.
-    caught_by: [direct-measurement, le-09-class-kill]
+      tests/vm_parity/corpus/61_do_loop_variable_binding.esk and
+      tests/differential/corpus/49_do_loop_variable_binding.esk.
+      Revert-validated: restoring lib/backend/vm_compiler.c reproduces VM 0 for
+      the filed reproducer and VM 2 for the nested form.
+    caught_by: [pr-437-class-kill]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
     notes: >-
-      Growth justified per invariant 4: this is a NEW SILENT-WRONG entry opened
-      by a PR that closes two others. It is recorded rather than fixed because
-      fixing it means changing the VM compiler's binding forms days before a
-      tag, on a mechanism whose native counterpart took this whole lane to get
-      right, and because the class-kill measurement that found it is the only
-      thing that makes a VM fix verifiable.
+      The fourth binding form of the SW-25 family (parameters, let*, letrec,
+      letrec* were closed by PR #435; `do` is closed here), and the same root
+      cause: a binding that is mutated across a closure boundary needs a shared
+      CELL, and only `let` ever had one.
+      FOUR native-side `do` shapes were held out of the corpus while this fix
+      was written, because the NATIVE engine was wrong or failed on them at the
+      pre-#437 base — capture in a STEP (native 0, VM 8), capture in a RESULT
+      (native: LLVM module verification failed, VM 10), a step that must see a
+      body closure's mutation (native 30, VM 33), and a read-only capture
+      (native: no output, VM 6). PR #437 landed on master and fixed the native
+      side of all four; on the rebased tree the two engines AGREE on every one,
+      at exactly the values the VM already produced, and all four are now
+      asserted in both corpus files. The exclusion list is empty — which is the
+      point of having written the measured pairs down rather than only naming
+      the shapes.
 
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
@@ -1418,42 +1442,78 @@ entries:
 
   - id: LE-10
     bucket: LOUD-ERROR
-    subtag: codegen
-    status: open
-    title: "VM: a `do` loop with a body closure poisons a LATER `do` loop in the same program — heap-object limit, fatal call, or hang"
-    repro: >-
-      (display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i)))))) (newline)
-      (display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99)))
+    subtag: cheap-fix
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-do-loop-capture"
+    title: "A `do` loop poisons a LATER `do` in the same program (VM heap object limit / calling non-function / hang)"
+    repro: "(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) ((lambda () (set! a (+ a 1)))))) (display (do ((k 0 (+ k 1)) (b 0)) ((= k 4) b) (set! b (+ b 10))))"
     observed: >-
-      "ERROR: VM heap object limit reached (ESHKOL_VM_HEAP_MAX_SIZE=16777216
-      objects)" then "VM terminated on a fatal runtime error", exit 1, after the
-      FIRST loop has already printed its correct answer.
-    correct: "6 then 3 — native prints both"
-    affected_measured:
-      - "second `do` after a body-closure `do`: heap-object limit, exit 1"
-      - "a let-bound (not immediately invoked) body closure, when any top-level form precedes the loop: \"ERROR: calling non-function\", exit 1"
-      - "a longer sequence of the same shapes: hangs until the CPU limit fires (exit 152)"
-    unaffected_measured:
-      - "either loop ALONE in its own program: both correct"
-      - "two body-closure `do` loops with disjoint variable names: both correct"
-    discovered_by: >-
-      assembling tests/vm_parity/corpus/60_do_loop_closure_capture.esk while
-      class-killing LE-09. Each candidate line was correct on the VM in
-      isolation and the file still failed, which is what identified the defect
-      as sequence-dependent rather than shape-dependent.
-    not_fixed_here: >-
-      VM-side. Branch fix/native-rest-capture-and-do-loop changes
-      lib/backend/llvm_codegen.cpp only. Reproduces identically on the VM at
-      this SHA and on the SW-25 branch fix/vm-region-and-upvalue, so PR #435
-      neither causes nor fixes it. LOUD, so it does not gate the release, but it
-      is the reason the vm-parity corpus file added by that branch is two lines
-      long, and that constraint should not be mistaken for a small class.
+      as filed: "ERROR: VM heap object limit reached
+      (ESHKOL_VM_HEAP_MAX_SIZE=16777216 objects)", exit 1, after the first loop
+      printed its correct answer; a let-bound body closure additionally gave
+      "ERROR: calling non-function" whenever a top-level form preceded the
+      loop, and longer sequences hung. Each shape was correct ALONE, which is
+      what identified it as sequence-dependent.
+    measured: >-
+      RE-MEASURED at 2ae3787f and found WIDER, and partly SILENT, than filed.
+      The reproducer above answers 3 then 13 on the VM where native answers 3
+      then 40 — a wrong VALUE with exit 0 and no diagnostic, not a loud error.
+      It also needs NEITHER a closure NOR a capture: two ordinary sequential
+      `do` loops diverge the same way, and the minimal case is a `do` followed
+      by a `define`:
+        (do ((i 0 (+ i 1))) ((= i 2)) 1) (define q 42) (display q)
+      which is 2 on the VM and 42 natively. The loud shapes this entry was
+      filed for are the same corruption landing on a slot whose stranded junk
+      happens to be a loop counter or a callee.
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_do() never popped its loop
+      variables. compile_form_let() ends with OP_POPN; compile_form_do() ended
+      by decrementing the compiler's own c->n_locals — a COMPILE-TIME
+      bookkeeping change with no runtime effect — so every `do` form stranded
+      one operand-stack value per loop variable. Top-level bindings live in
+      stack slots handed out by counting (add_local), and the top-level driver
+      emits exactly one OP_POP per expression that grew no local, so the
+      stranded values shift every later slot. This is the SAME slot-shift
+      corruption already documented on compile_form_require() and
+      compile_form_with_region() in that file, reached a third way.
+    fix: >-
+      compile_form_do() emits OP_POPN for its loop variables at the loop exit,
+      keeping the result on top, exactly as compile_form_let() does; the result
+      expressions are compiled out of tail position when there are locals to
+      pop, because a TAIL_CALL would skip the OP_POPN. The same rewrite removed
+      a second latent hazard: the function used to emit a complete first
+      version of the loop and then "discard" it with `c->code_len = loop_top`,
+      leftover debugging scaffolding that compiled the body and steps TWICE.
+      Rewinding code_len un-emits code and none of the constant-pool, upvalue,
+      closure-PC or global repatch-array side effects the discarded pass had
+      already caused.
     evidence: >-
-      tests/vm_parity/corpus/60_do_loop_closure_capture.esk SCOPE comment names
-      both shapes; the native side of both runs green in
-      tests/differential/corpus/48_rest_capture_and_do_closure.esk.
-    caught_by: [direct-measurement, le-09-class-kill]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+      tests/vm_parity/corpus/61_do_loop_variable_binding.esk (VM-vs-native on
+      the native, vm-src and vm-eskb axes) and
+      tests/differential/corpus/49_do_loop_variable_binding.esk.
+      Revert-validated: with lib/backend/vm_compiler.c restored, the corpus
+      file HANGS on the VM (killed at 25s) and the individual shapes answer 2,
+      00, 2 and 0 where the fixed VM and native both answer 42, 50, 6 and 4.
+    filed_shapes_measured: >-
+      The two shapes PR #437 filed this entry against, carried over from its
+      wording so the union loses no evidence, and re-run on the fixed VM:
+        (display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i))))))
+        (display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99)))
+      filed as "heap object limit reached" then a fatal error, exit 1, after
+      the first loop had printed its correct answer; correct is 6 then 3, which
+      native prints. Also filed: a let-bound (not immediately invoked) body
+      closure gave "ERROR: calling non-function" whenever any top-level form
+      preceded the loop, and longer sequences hung.
+    caught_by: [pr-437-class-kill, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Filed as LOUD-ERROR by PR #437's class-kill, on the shapes it happened to
+      hit. Re-measurement found the same root cause also produces SILENT wrong
+      values, so the entry was closed on the wider evidence rather than on the
+      loud shapes alone. Had it been closed only against the filed reproducer,
+      the `do`-then-`define` case would still be shipping.
+
 
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
