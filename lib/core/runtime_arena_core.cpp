@@ -60,7 +60,11 @@ static arena_block_t* create_arena_block(size_t size) {
     // bump-pointer fast path in arena_allocate_aligned() byte-for-byte as it
     // was. It cannot perturb any computation: it either admits the block or
     // ends the process.
-    if (!eshkol_track_allocation(size)) {
+    // The heap ceiling only binds a run that asked for one (ESHKOL_MAX_HEAP).
+    // eshkol_track_allocation() still accounts every block either way, so
+    // eshkol_get_heap_usage()/peak stay accurate for diagnostics.
+    if (!eshkol_track_allocation(size) &&
+        eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_HEAP)) {
         // Terminates under ESHKOL_ENFORCE_LIMITS=true. If it returns, limits
         // are advisory: record the breach and hand the block over anyway. The
         // arena's callers treat a null block as a fatal allocation failure, so

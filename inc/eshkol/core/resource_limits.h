@@ -99,7 +99,42 @@ typedef struct eshkol_resource_limits {
     // Behavior flags
     bool enforce_hard_limits;        // Kill on hard limit (vs return error)
     bool enable_warnings;            // Log soft limit warnings
+
+    // Which ceilings are ACTIVE, as a bitmask of ESHKOL_LIMIT_ACTIVE_*.
+    //
+    // The values above are the documented defaults *for a limit you turn on* —
+    // they are not ceilings every program is silently held to. A limit becomes
+    // active when you ask for it: its environment variable is present, or you
+    // set the bit yourself before eshkol_set_limits(). An inactive ceiling is
+    // never checked and cannot terminate anything.
+    //
+    // This matters because the defaults are not idle documentation: 1 GiB of
+    // heap is a real number that real programs pass. Turning them all on at
+    // once would not be "enforcing what the docs say", it would be imposing a
+    // ceiling on every existing program that never had one — this repository's
+    // own tests/features/blc_test.esk allocates past 1 GiB, and the bytecode
+    // VM's computed-goto dispatch never had an instruction guard at all.
+    // Whether the defaults should also bind an unconfigured run is a release
+    // decision, recorded in docs/reference/runtime/environment-variables.md.
+    uint32_t active_limits;
 } eshkol_resource_limits_t;
+
+// Bits for eshkol_resource_limits_t::active_limits.
+#define ESHKOL_LIMIT_ACTIVE_HEAP    (1u << 0)  // ESHKOL_MAX_HEAP
+#define ESHKOL_LIMIT_ACTIVE_STACK   (1u << 1)  // ESHKOL_MAX_STACK
+#define ESHKOL_LIMIT_ACTIVE_TENSOR  (1u << 2)  // ESHKOL_MAX_TENSOR_ELEMS
+#define ESHKOL_LIMIT_ACTIVE_STRING  (1u << 3)  // ESHKOL_MAX_STRING_LEN
+#define ESHKOL_LIMIT_ACTIVE_TIMEOUT (1u << 4)  // ESHKOL_TIMEOUT_MS
+#define ESHKOL_LIMIT_ACTIVE_VM_INSN (1u << 5)  // ESHKOL_VM_MAX_INSN
+#define ESHKOL_LIMIT_ACTIVE_ALL     0x3Fu
+
+/**
+ * @brief Whether a given ceiling is active for this process.
+ *
+ * @param which One of the `ESHKOL_LIMIT_ACTIVE_*` bits.
+ * @return true if that limit was asked for and should be enforced.
+ */
+bool eshkol_limit_is_active(uint32_t which);
 
 // ============================================================================
 // Environment Variables

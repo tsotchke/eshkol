@@ -184,7 +184,8 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
     // It also closes a silent truncation: hdr->size below is a uint32_t, so a
     // length past 4GiB used to wrap and produce a string whose header disagreed
     // with its contents.
-    if (!eshkol_check_string_length(length)) {
+    if (eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_STRING) &&
+        !eshkol_check_string_length(length)) {
         char detail[64];
         snprintf(detail, sizeof(detail), "requested %zu bytes", length);
         // Terminates under ESHKOL_ENFORCE_LIMITS=true. If it returns, limits

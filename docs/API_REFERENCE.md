@@ -4416,7 +4416,12 @@ Malformed runtime-limit values are ignored and preserve the default limit. Size
 variables accept optional `K`, `M`, or `G` suffixes, with an optional trailing
 `B`.
 
-Exceeding a hard limit prints one `eshkol: fatal: …` line to stderr naming the
+Each ceiling is opt-in: it binds a run only when that run sets the variable
+(or sets the matching `ESHKOL_LIMIT_ACTIVE_*` bit before `eshkol_set_limits()`).
+The defaults above are the values a limit takes when turned on, not ceilings
+applied to every program.
+
+Exceeding an active hard limit prints one `eshkol: fatal: …` line to stderr naming the
 limit, the ceiling and the variable that set it, and exits with a status
 specific to that limit — `120` heap, `121` stack, `122` tensor elements, `123`
 string length, `124` execution timeout (matching GNU coreutils `timeout(1)`),

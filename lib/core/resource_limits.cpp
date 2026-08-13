@@ -46,6 +46,8 @@ eshkol_resource_limits_t make_default_limits() {
     limits.max_vm_instructions = ESHKOL_DEFAULT_MAX_VM_INSTRUCTIONS;
     limits.enforce_hard_limits = true;
     limits.enable_warnings = true;
+    // No ceiling is active until something asks for one. See the header.
+    limits.active_limits = 0;
     return limits;
 }
 
@@ -230,6 +232,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     if (max_heap) {
         limits.max_heap_bytes = parse_size_or_default(max_heap, limits.max_heap_bytes);
         limits.heap_soft_limit_bytes = (limits.max_heap_bytes * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_HEAP;
         eshkol_debug("Max heap from env: %zu bytes", limits.max_heap_bytes);
     }
 
@@ -237,6 +240,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* timeout = std::getenv("ESHKOL_TIMEOUT_MS");
     if (timeout) {
         limits.max_execution_time_ms = parse_u64_or_default(timeout, limits.max_execution_time_ms);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_TIMEOUT;
         eshkol_debug("Timeout from env: %llu ms", (unsigned long long)limits.max_execution_time_ms);
     }
 
@@ -244,6 +248,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_stack = std::getenv("ESHKOL_MAX_STACK");
     if (max_stack) {
         limits.max_stack_depth = parse_size_or_default(max_stack, limits.max_stack_depth);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STACK;
         eshkol_debug("Max stack from env: %zu", limits.max_stack_depth);
     }
 
@@ -251,6 +256,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_tensor = std::getenv("ESHKOL_MAX_TENSOR_ELEMS");
     if (max_tensor) {
         limits.max_tensor_elements = parse_size_or_default(max_tensor, limits.max_tensor_elements);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_TENSOR;
         eshkol_debug("Max tensor elements from env: %zu", limits.max_tensor_elements);
     }
 
@@ -258,6 +264,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_string = std::getenv("ESHKOL_MAX_STRING_LEN");
     if (max_string) {
         limits.max_string_length = parse_size_or_default(max_string, limits.max_string_length);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STRING;
         eshkol_debug("Max string length from env: %zu", limits.max_string_length);
     }
 
@@ -268,6 +275,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     if (max_vm_insn) {
         limits.max_vm_instructions =
             parse_u64_or_default(max_vm_insn, limits.max_vm_instructions);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_VM_INSN;
         eshkol_debug("Max VM instructions from env: %llu",
                      (unsigned long long)limits.max_vm_instructions);
     }
@@ -311,6 +319,11 @@ void eshkol_set_limits(const eshkol_resource_limits_t* limits) {
                 g_limits.max_heap_bytes / (1024 * 1024),
                 (unsigned long long)g_limits.max_execution_time_ms,
                 g_limits.max_stack_depth);
+}
+
+/** Whether a given ceiling was asked for and should be enforced. */
+bool eshkol_limit_is_active(uint32_t which) {
+    return (g_limits.active_limits & which) != 0;
 }
 
 /** Return a pointer to the currently active resource limits. */
@@ -758,6 +771,7 @@ void eshkol_limit_enforce(eshkol_limit_error_t error, const char* detail) {
 /** @brief Apply the tensor-element ceiling to a count computed by generated code. */
 void eshkol_enforce_tensor_elements(int64_t num_elements) {
     if (num_elements <= 0) return;
+    if (!eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR)) return;
     if (eshkol_check_tensor_size((size_t)num_elements)) return;
 
     char detail[64];

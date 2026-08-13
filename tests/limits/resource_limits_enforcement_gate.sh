@@ -99,6 +99,21 @@ cat > "$WORK/vm_loop.esk" <<'EOF'
 (display (count 3000000 0))
 EOF
 
+# --- ceilings are OPT-IN ----------------------------------------------------
+#
+# The defaults in the docs are the values a limit takes WHEN YOU TURN IT ON,
+# not a ceiling every program is silently held to. This case pins that, and it
+# is not hypothetical: the first cut of this fix enforced the documented 1 GiB
+# heap default unconditionally and killed tests/features/blc_test.esk, a
+# program that had run for years and had never been under any ceiling. An
+# unconfigured run must behave exactly as it did before limits were enforced.
+
+if [ -f "tests/features/blc_test.esk" ]; then
+    unset_all_limits
+    check "a run that sets nothing gets no ceiling, even past the 1 GiB default" 0 "-" -- \
+        "$ESHKOL_RUN" -r tests/features/blc_test.esk
+fi
+
 # --- ESHKOL_MAX_HEAP --------------------------------------------------------
 
 unset_all_limits

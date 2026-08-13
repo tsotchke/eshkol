@@ -72,9 +72,28 @@ Read by `lib/core/resource_limits.cpp`. Size vars accept `K`/`M`/`G` suffixes.
 | `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (terminate on exceed). | true | — |
 | `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true | — |
 
+### Limits are opt-in
+
+A ceiling binds a run **only when that run asks for it** — by setting the
+variable (or setting the corresponding `ESHKOL_LIMIT_ACTIVE_*` bit before
+`eshkol_set_limits()`). The defaults in the table are the values a limit takes
+*when you turn it on*; they are not ceilings every program is silently held to.
+
+This is a deliberate distinction, not an omission. The defaults are real
+numbers that real programs pass: `tests/features/blc_test.esk` in this
+repository allocates past 1 GiB, and the bytecode VM's computed-goto dispatch
+never had an instruction guard at all. Applying every documented default to
+every run would not be enforcing what the docs say — it would impose a new
+ceiling on every existing program. Whether the defaults should also bind an
+unconfigured run is a release decision, not a bug fix.
+
+So: `eshkol-run prog.esk` is unbounded, exactly as before.
+`ESHKOL_MAX_HEAP=512M eshkol-run prog.esk` is bounded at 512 MiB and will be
+terminated if it exceeds that.
+
 ### What "enforced" means
 
-With `ESHKOL_ENFORCE_LIMITS=true` (the default), exceeding a hard limit ends
+With `ESHKOL_ENFORCE_LIMITS=true` (the default), exceeding an active limit ends
 the run immediately. The runtime flushes whatever the program has already
 written, prints one line to stderr naming the limit, the configured ceiling and
 the variable that set it —
@@ -110,13 +129,11 @@ function (tracked as ESH-0101, `tests/stress/found/deep_recursion_270k_no_diagno
 so deep non-tail recursion in such a function can still exhaust the native stack
 before the ceiling is consulted.
 
-**The execution timer is opt-in.** `30000` is the default *value* of
-`max_execution_time_ms`, but the watchdog is armed only when
-`ESHKOL_TIMEOUT_MS` is actually present in the environment
-(`eshkol_runtime_init()`); a run that does not set it is not on a clock. Arming
-a 30-second wall-clock kill on every invocation by default would also bound
-AOT compilation and interactive REPL sessions, which is a release decision
-rather than a bug fix, so it is recorded here rather than changed.
+The execution timer follows the same opt-in rule: the watchdog is armed only
+when `ESHKOL_TIMEOUT_MS` is present in the environment (`eshkol_runtime_init()`),
+so a run that does not set it is not on a clock. Arming a 30-second wall-clock
+kill on every invocation would also bound AOT compilation and interactive REPL
+sessions.
 
 ## Parallelism & threading
 

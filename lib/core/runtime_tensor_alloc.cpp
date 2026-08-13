@@ -516,7 +516,8 @@ eshkol_tensor_t* arena_allocate_tensor_full(
         // caller (make-tensor, arange, matmul, the BLAS paths, model loading)
         // but they all converge here to allocate, so this is the one place that
         // sees every tensor and the only place the ceiling has to be applied.
-        if (!eshkol_check_tensor_size((size_t)total_elements)) {
+        if (eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR) &&
+            !eshkol_check_tensor_size((size_t)total_elements)) {
             char detail[64];
             snprintf(detail, sizeof(detail), "requested %llu elements",
                      (unsigned long long)total_elements);

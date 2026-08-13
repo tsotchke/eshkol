@@ -3766,7 +3766,8 @@ static void execute_chunk(FuncChunk* chunk) {
 
     while (!halted && !error && pc < chunk->code_len) {
         if (frame_count > max_depth) max_depth = frame_count;
-        if (max_insn > 0 && (uint64_t)(++insn_count) > max_insn) {
+        if (max_insn > 0 && (uint64_t)(++insn_count) > max_insn &&
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN)) {
             printf("RUNAWAY (%llu insns, depth=%d, heap=%d)\n",
                    (unsigned long long)max_insn, max_depth, heap_next);
             error = 1;

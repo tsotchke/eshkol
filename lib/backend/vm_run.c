@@ -60,7 +60,8 @@ static uint64_t vm_resolve_max_insn(void) {
 static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
     *executed += VM_CHECK_INTERVAL;
 
-    if (max_insn > 0 && *executed > max_insn) {
+    if (max_insn > 0 && *executed > max_insn &&
+        eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN)) {
         char detail[128];
         snprintf(detail, sizeof(detail),
                  "bytecode VM executed %llu instructions (pc=%d)",

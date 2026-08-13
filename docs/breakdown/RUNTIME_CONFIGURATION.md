@@ -37,7 +37,12 @@ Malformed runtime-limit values are ignored and leave the documented default in
 place. Size variables accept optional `K`, `M`, or `G` suffixes, with an optional
 trailing `B`.
 
-Exceeding a hard limit under the default `ESHKOL_ENFORCE_LIMITS=true` flushes
+Each ceiling is **opt-in**: it binds a run only when that run sets the
+variable. The defaults above are the values a limit takes when you turn it on,
+not ceilings every program is silently held to — see
+[environment-variables.md](../reference/runtime/environment-variables.md#limits-are-opt-in).
+
+Exceeding an active hard limit under the default `ESHKOL_ENFORCE_LIMITS=true` flushes
 pending output, prints one `eshkol: fatal: …` line to stderr naming the limit,
 the ceiling and the variable that set it, and exits with a status specific to
 that limit:
