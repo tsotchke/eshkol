@@ -446,6 +446,62 @@ entries:
       other half, `contradictions`, returned 30 findings at this SHA and every one is a
       constant_disagreement or env_default_disagreement on a build/tuning symbol — it
       compares symbol VALUES, never behaviour, docs or test-harness metadata.
+    measured: >-
+      Direct differential built on branch fix/vector-ref-tensor-and-backward-diff (commit f55e0336)
+      (tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp, new; plus one added check in
+      tests/backend/tensor_embedding_backward_gradcheck_test.cpp): identical inputs and an
+      identical upstream cotangent fed to BOTH implementations, diffed directly against each
+      other, with central finite differences of a THIRD, independently-written forward as the
+      tie-breaking oracle per the task ruling ("finite differences arbitrate").
+
+      5 of 6 ops AGREE, to machine precision or exactly:
+        matmul     max|native-bridge| = 0.0 (both operands), FD max diff 1.8e-10 / 9.6e-11
+        layernorm  max|native-bridge| = 6.9e-17 (dx) / 0.0 (dgamma), FD max diff 2.9e-10 / 1.9e-10
+        transpose  max|native-bridge| = 0.0, FD max diff 5.1e-11
+        sum        max|native-bridge| = 0.0, FD max diff 9.2e-12
+        embedding  max|native-bridge| = 0.0 (exact scatter-add on both sides; already had
+                   independent FD/closed-form coverage in ESH-0230's test, this adds the direct
+                   bridge-vs-native diff on the identical fixture)
+      transpose and sum have no AD_NODE_TENSOR_{TRANSPOSE,SUM} forward producer anywhere in the
+      tree (same situation embedding was in before PR #392 / ESH-0230), so their bridge side was
+      exercised by hand-building the node per tensor_{transpose,sum}_backward's documented
+      contract, the same technique tests/backend/tensor_embedding_backward_gradcheck_test.cpp
+      already used for embedding.
+
+      attention is NOT a numeric disagreement: eshkol_backward_attention (native) is exact and
+      FD-validated here (max diff 2.3e-11 / 6.5e-11 / 4.2e-11 across dQ/dK/dV). tensor_attention_backward
+      (bridge) unconditionally calls eshkol_fatal() by design — asserted via a fork-based death
+      test, PASS (it does refuse). ad_tensor_attention's forward (lib/bridge/qllm_bridge.cpp)
+      does not retain the `causal` flag or the softmax attention weights on the node, so an
+      exact bridge adjoint cannot be computed from what the node carries even in principle: this
+      is a forward-plumbing gap, not a wrong formula to arbitrate between two answers.
+    ops_status:
+      matmul: agree
+      layernorm: agree
+      transpose: agree
+      sum: agree
+      embedding: agree
+      attention: "NEEDS-DECISION — native exact+FD-validated; bridge unconditionally refuses
+        (loud, not silent) because its forward does not retain enough state (causal flag,
+        attention weights) for an exact adjoint. Implementing the bridge side needs a
+        forward-contract change (thread `causal` through AD_NODE_TENSOR_ATTENTION's params,
+        retain or recompute the attention-weight matrix) — a real feature addition, not a
+        differential-test fix. `scaled-dot-attention` already provides an exact,
+        scalar-decomposed, differentiable attention path elsewhere in the tree, which is why the
+        bridge node has had no producer's backward filled in. Maintainer must decide: implement
+        the bridge backward now, or accept the loud refusal as the standing contract."
+    status_rationale: >-
+      Ledger ruling: SW-12 closes only if all six ops are verified agreeing or fixed. 5/6
+      verified agreeing to machine precision; attention has no comparable bridge VALUE to
+      arbitrate (one side refuses loudly), so it is neither "agreeing" nor "fixed" by this PR.
+      Left OPEN with the measurement above rather than guessing whether the maintainer wants the
+      bridge attention backward implemented or the refusal accepted as the standing contract.
+    evidence_new: >-
+      tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp (matmul/layernorm/transpose/sum
+      direct diff + FD; attention native FD + bridge refusal assertion);
+      tests/backend/tensor_embedding_backward_gradcheck_test.cpp check 10 (direct bridge-vs-native
+      diff, added to the existing ESH-0230 coverage); tests/bridge/qllm_bridge_gradcheck_test.cpp
+      header comment updated to point at both instead of describing them as excluded.
 
   - id: SW-13
     bucket: SILENT-WRONG
@@ -633,6 +689,60 @@ entries:
       walking the enclosing-scope chain outermost-first — was fixed separately by
       PR #428 (tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the two
       changes touch different functions in vm_compiler.c and are independent.
+
+  - id: SW-26
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "b6b2d32f"
+    closed_by: "branch fix/vector-ref-tensor-and-backward-diff, commit b6b2d32f"
+    title: "vector-ref into an fg-marginal result answers empty on the VM"
+    repro: "(define fg (make-factor-graph 2 2)) (define m (fg-marginal fg 0)) (display (vector-ref m 0))"
+    observed: "VM ()"
+    correct: "0.5 — native answers 0.5"
+    cross_engine: >-
+      native prints 0.5 under both default and ESHKOL_JIT_CACHE=0 JIT. Displaying the whole
+      marginal, `(display m)`, prints #(0.5 0.5) correctly on BOTH engines (the SW-07 fix from
+      PR #424 holds) — only indexing into the result with vector-ref diverged on the VM.
+    root_cause: >-
+      fg-marginal returns a HEAP_TENSOR (VAL_TENSOR) value, not a HEAP_VECTOR. Every VM
+      vector-ref call site — the threaded-dispatch fast path (lbl_VEC_REF), the switch-dispatch
+      fallback (OP_VEC_REF), and the indirect/higher-order native call (vm_native.c case 219) —
+      matched only `vec_val.type == VAL_VECTOR` and fell through to a fabricated NIL_VAL for
+      anything else, including VAL_TENSOR, with no diagnostic. `vector-set!` (case 220,
+      OP_VEC_SET, lbl_VEC_SET) and `vector-length` (case 221, OP_VEC_LEN, lbl_VEC_LEN) had the
+      identical gap — silently a no-op and 0 respectively. Native's collection codegen
+      (CollectionCodegen::vectorRef/vectorSet/vectorLength, lib/backend/collection_codegen.cpp)
+      already dispatches on the heap-object header subtype and has always had a tensor arm,
+      which is why native was correct and only the VM diverged.
+    fixed_by: >-
+      lib/backend/vm_native.c: added a VAL_TENSOR arm to native calls 219 (vector-ref), 220
+      (vector-set!) and 221 (vector-length), backed by three new static helpers
+      (vm_vecref_tensor_path, vm_vecset_tensor_path, vm_veclen_tensor_path) that mirror
+      CollectionCodegen's native semantics exactly: vector-ref on a rank<=1 tensor returns the
+      flat-indexed scalar element (bounds-checked against total element count); on a rank>1
+      tensor it returns a row VIEW of rank n_dims-1 via the existing vm_tensor_slice() (no
+      copy), bounds-checked against shape[0]; vector-set! always bounds-checks against the flat
+      total (native does not special-case N-D row addressing for the mutating op either);
+      vector-length answers the flat total element count. lib/backend/vm_run.c: added the same
+      VAL_TENSOR arm to both interpreter loops (lbl_VEC_REF/lbl_VEC_SET/lbl_VEC_LEN and
+      OP_VEC_REF/OP_VEC_SET/OP_VEC_LEN), calling the shared helpers so the two dispatch
+      implementations cannot re-diverge.
+    evidence: >-
+      tests/vm_parity/corpus/59_vector_ref_tensor_indexed_access.esk (both engines: vector-ref
+      and vector-length on the fg-marginal 1-D tensor, vector-set!+vector-ref round-trip on an
+      independent tensor, vector-ref row-view on a rank-2 tensor, and a catchable out-of-range
+      vector-ref); tests/differential/corpus/47_vector_ref_tensor_indexed_access.esk (native
+      JIT/AOT axes). Revert-validated: reverting the vm_native.c/vm_run.c hunks alone reproduces
+      the VM FAIL on all vector-ref/vector-length assertions in the corpus file with the fix
+      applied everywhere else; reapplying restores 0 FAIL.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      Found by #424's author during the correctness wave, filed here after independent
+      re-measurement. Distinct from SW-07/SW-08 (both closed): this is a residual found after
+      those closures, on the same builtin family — the SW-07 fix corrected fg-marginal's VALUE
+      but not every VM consumer of it. Maintainer ruling 2026-08-13 reversed the earlier
+      waive-to-v1.3.5 default for this entry: fixed before tag, no waiver.
 
   - id: SW-27
     bucket: SILENT-WRONG
