@@ -1,0 +1,203 @@
+;;; rest_capture_and_do_closure_test.esk
+;;;
+;;; Class-kill test for two NATIVE-engine capture defects.
+;;;
+;;; SW-33 (silent wrong) — a REST parameter that is both set!-mutated and
+;;; captured by a nested closure did not write back:
+;;;
+;;;   (define (f . rest) ((lambda () (set! rest (cons 99 rest)))) (car rest))
+;;;   (f 1 2 3)   => 1        ; exit 0, no diagnostic. Correct answer: 99
+;;;
+;;; Assignment conversion (ESH-0074) boxes a set!-mutated parameter into an
+;;; alloca so set! has a storage location and every closure capturing it shares
+;;; ONE cell. Both boxing loops walked only the FIXED parameters, so the rest
+;;; parameter stayed a by-value LLVM Argument: the closure copied the list
+;;; VALUE into its environment and the inner set! mutated a private copy that
+;;; was discarded on return.
+;;;
+;;; LE-09 (loud crash) — a `do` loop whose body creates a closure over a loop
+;;; variable was SIGKILLed (exit 137):
+;;;
+;;;   (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+;;;       ((lambda () (set! acc (+ acc i)))))
+;;;
+;;; codegenDo cached the stack alloca it had allocated for each loop variable
+;;; and wrote step results there, while every READ went through the symbol
+;;; table — which the closure-capture machinery rebinds to fresh arena storage
+;;; mid-body. The step then read the arena cell and wrote the stack alloca the
+;;; header test had already been compiled against, so `(= i 3)` never became
+;;; true: an infinite loop allocating one closure per iteration until the arena
+;;; exhausted memory. Merely READING a loop variable from a body closure was
+;;; enough; mutation was not required.
+;;;
+;;; Each check states the R7RS-required answer, so the test cannot pass by
+;;; agreeing with a wrong expectation, and the controls at the end pin the
+;;; behaviour the fixes must NOT change.
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got ") (display got)
+             (display " want ") (display want) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; SW-33 — mutated + captured REST parameter
+;; ---------------------------------------------------------------------------
+
+;; depth 1, immediately-invoked closure, rest-only signature
+(define (r-only . xs) ((lambda () (set! xs (cons 99 xs)))) (car xs))
+(check "rest-only, depth 1, immediately invoked" (r-only 1 2 3) 99)
+
+;; fixed parameters before the rest parameter (the boxing walk must land on the
+;; argument that follows them)
+(define (r-fixed a b . xs) ((lambda () (set! xs (cons 99 xs)))) (list a b (car xs)))
+(check "rest after two fixed params" (r-fixed 7 8 1 2) (list 7 8 99))
+
+;; depth 2 and depth 3
+(define (r-d2 . xs) ((lambda () ((lambda () (set! xs (cons 88 xs)))))) (car xs))
+(check "rest, depth 2" (r-d2 1) 88)
+
+(define (r-d3 . xs) ((lambda () ((lambda () ((lambda () (set! xs (cons 77 xs)))))))) (car xs))
+(check "rest, depth 3" (r-d3 1) 77)
+
+;; STORED closure rather than immediately invoked, called twice
+(define (r-stored . xs)
+  (define bump (lambda () (set! xs (cons 5 xs))))
+  (bump)
+  (bump)
+  (length xs))
+(check "rest, stored closure called twice" (r-stored 1 2) 4)
+
+;; a closure that OUTLIVES the frame that bound the rest parameter
+(define (r-escape . xs) (lambda () (set! xs (cons 1 xs)) (length xs)))
+(define counter (r-escape 9))
+(check "rest, escaped closure, first call" (counter) 2)
+(check "rest, escaped closure, second call" (counter) 3)
+
+;; two closures sharing ONE cell
+(define (r-shared . xs)
+  (let ((push (lambda () (set! xs (cons 1 xs))))
+        (size (lambda () (length xs))))
+    (push)
+    (push)
+    (size)))
+(check "rest, two closures share one cell" (r-shared 7) 3)
+
+;; a variadic LAMBDA's rest parameter, not only a define's
+(define r-lambda (lambda xs ((lambda () (set! xs (cons 42 xs)))) (car xs)))
+(check "variadic lambda rest parameter" (r-lambda 1 2) 42)
+
+;; two instantiations must NOT share a cell
+(define a-counter (r-escape 1))
+(define b-counter (r-escape 1))
+(check "two instantiations, independent cells (a)" (a-counter) 2)
+(check "two instantiations, independent cells (b)" (b-counter) 2)
+
+;; controls: mutated but NOT captured, and captured but NOT mutated
+(define (r-nocapture . xs) (set! xs (cons 3 xs)) (car xs))
+(check "control: rest mutated, not captured" (r-nocapture 1) 3)
+
+(define (r-nomutate . xs) ((lambda () (car xs))))
+(check "control: rest captured, not mutated" (r-nomutate 4 5) 4)
+
+;; ---------------------------------------------------------------------------
+;; LE-09 — `do` loop variable captured by a body closure
+;; ---------------------------------------------------------------------------
+
+;; the ledger reproducer: mutated capture
+(check "do: closure mutates a loop variable"
+       (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+           ((lambda () (set! acc (+ acc i)))))
+       3)
+
+;; READ-ONLY capture is enough to trigger the defect
+(check "do: closure only reads a loop variable"
+       (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s)
+           (set! s (+ s ((lambda () i)))))
+       6)
+
+;; the capture happens in a `let`-bound closure inside the body
+(check "do: let-bound closure captures a loop variable"
+       (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+           (let ((f (lambda () (set! a (+ a i))))) (f)))
+       3)
+
+;; a named let in the body captures the loop variables
+(check "do: named let in the body captures loop variables"
+       (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+           (let loop ((k 0))
+             (if (< k 2)
+                 (begin (set! a (+ a i)) (loop (+ k 1)))
+                 a)))
+       6)
+
+;; nested `do`, inner body closing over the OUTER loop variable
+(check "do: nested loop, closure over the outer variable"
+       (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t)
+           (do ((j 0 (+ j 1))) ((= j 2))
+               ((lambda () (set! t (+ t 1))))))
+       6)
+
+;; the loop runs inside a procedure, with a runtime trip count
+(define (do-in-proc n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      ((lambda () (set! a (+ a 1))))))
+(check "do: inside a procedure, runtime bound" (do-in-proc 5) 5)
+
+;; closures STORED out of the loop, then called after it finished
+(define stored-closures
+  (do ((i 0 (+ i 1)) (acc '())) ((= i 3) acc)
+      (set! acc (cons (lambda () i) acc))))
+(check "do: closures stored out of the loop, count" (length stored-closures) 3)
+(check "do: closures stored out of the loop, values"
+       (map (lambda (f) (f)) stored-closures)
+       (list 3 3 3))
+
+;; the loop runs inside a lambda rather than a define
+(define do-in-lambda
+  (lambda (n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a i)))))))
+(check "do: inside a lambda" (do-in-lambda 4) 6)
+
+;; the capture is in the STEP, the TEST and the RESULT position rather than the
+;; body. These are the ordering hazards the storage-class decision exists to
+;; remove: a capture in the test or the step is compiled AFTER the header was
+;; emitted, so a decision made on the fly could never have been consistent.
+(check "do: closure in a step expression"
+       (do ((i 0 ((lambda () (+ i 1)))) (a 0)) ((= i 3) a) (set! a (+ a i)))
+       3)
+
+(check "do: closure in the test expression"
+       (do ((i 0 (+ i 1)) (a 0)) (((lambda () (= i 3))) a) (set! a (+ a i)))
+       3)
+
+(check "do: closure in the result expression"
+       (do ((i 0 (+ i 1)) (a 0)) ((= i 3) ((lambda () a))) (set! a (+ a i)))
+       3)
+
+;; both defects at once: a rest parameter captured and mutated from inside a
+;; `do` body
+(define (rest-in-do . xs)
+  (do ((i 0 (+ i 1))) ((= i 2) (length xs))
+      ((lambda () (set! xs (cons i xs))))))
+(check "rest parameter captured inside a do body" (rest-in-do 9) 3)
+
+;; controls
+(check "control: do with no closure at all"
+       (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) (set! a (+ a i)))
+       3)
+
+(check "control: lambda parameter shadows the loop variable"
+       (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99))
+       3)
+
+;; ---------------------------------------------------------------------------
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: rest capture and do closure - 0 failures") (newline))
+    (begin (display "FAIL: rest capture and do closure - ")
+           (display failures) (display " failures") (newline)))

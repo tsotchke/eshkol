@@ -1,0 +1,42 @@
+;; LE-09 — a `do` loop whose body creates a closure over a loop variable must
+;; produce the same value on the VM and natively.
+;;
+;; codegenDo cached the stack alloca it allocated for each loop variable and
+;; wrote step results there, while every read went through the symbol table —
+;; which the closure-capture machinery rebinds to fresh arena storage mid-body.
+;; The step then read the arena cell and wrote the alloca the loop test had
+;; already been compiled against, so the test never became true: an infinite
+;; loop allocating one closure per iteration until memory was exhausted
+;; (SIGKILL, exit 137). The VM answered 3 all along, which is what makes this a
+;; parity case rather than a native-only differential.
+;;
+;; SCOPE — deliberately two lines. This file asserts only the shapes the VM is
+;; ALREADY correct on at this SHA. Every adjacent shape was MEASURED, and the
+;; ones excluded are excluded because the VM, not native, is wrong on them:
+;;
+;;   * `do` inside a procedure, body closure mutating a loop variable — VM 0,
+;;     native 5                                                      (SW-34)
+;;   * nested `do`, inner body closing over the OUTER loop variable — VM 2,
+;;     native 6                                                      (SW-34)
+;;   * a second `do` in the same program after one whose body closes over a
+;;     loop variable — VM exhausts ESHKOL_VM_HEAP_MAX_SIZE and dies, or hangs
+;;                                                                   (LE-10)
+;;   * a let-bound (not immediately invoked) body closure, when any top-level
+;;     form precedes the loop — VM "calling non-function"            (LE-10)
+;;
+;; All of those DO run on the native axes, in
+;; tests/differential/corpus/48_rest_capture_and_do_closure.esk and
+;; tests/integration/rest_capture_and_do_closure_test.esk. Pinning them here
+;; would gate this PR on VM defects it does not fix.
+;;
+;; Numeric output only.
+
+;; the LE-09 reproducer: a body closure mutates a loop variable
+(display (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+             ((lambda () (set! acc (+ acc i))))))
+(newline)
+
+;; control: the same arithmetic with no closure, so the loop variable keeps its
+;; stack alloca and the storage-class decision is not exercised
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) (set! a (+ a i))))
+(newline)

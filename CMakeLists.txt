@@ -4860,6 +4860,60 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # SW-33 / LE-09: capture of a REST parameter and of a `do` loop variable.
+    # Gated on all four native axes because the two defects failed differently
+    # and at different times: SW-33 was a SILENT wrong answer on every axis
+    # (`(f 1 2 3)` -> 1 instead of 99, exit 0), while LE-09 was an infinite loop
+    # that exhausted the arena (SIGKILL, exit 137) under the JIT and, for the
+    # let-bound-closure shape, IR that failed LLVM verification with
+    # "Instruction does not dominate all uses" under AOT. A TIMEOUT alone would
+    # not catch the silent half and the PASS regex alone would not catch the
+    # runaway, so both are set.
+    add_test(
+        NAME rest_capture_and_do_closure_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o0' tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o0'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o2' tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o2'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")

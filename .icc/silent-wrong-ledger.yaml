@@ -817,6 +817,123 @@ entries:
       defect: (zset-union …) in core.dbsp SIGSEGVs in CALL POSITION too, so it is a
       different bug and this entry's oracle can say nothing about it.
 
+  - id: SW-33
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/native-rest-capture-and-do-loop"
+    title: "NATIVE: a mutated + captured REST parameter does not write back; the closure mutates a private copy"
+    repro: "(define (f . rest) ((lambda () (set! rest (cons 99 rest)))) (car rest)) (display (f 1 2 3))"
+    observed: "native 1 — exit 0, no diagnostic, on every native axis"
+    correct: "99"
+    cross_engine: >-
+      the VM is wrong the same way at this SHA (also 1) and is fixed on the
+      SW-25 branch fix/vm-region-and-upvalue, measured with that branch's build:
+      VM 99. So the two halves of one class are closed by two PRs; neither
+      engine is the oracle for the other here, which is why this entry's gates
+      are the four NATIVE axes and an absolute expected value, not a parity
+      comparison.
+    discovered_by: >-
+      recorded as adjacent finding (1) in SW-25's notes while class-killing the
+      VM half. Measured rather than rediscovered.
+    root_cause: >-
+      ASSIGNMENT CONVERSION (ESH-0074) boxes a set!-mutated parameter into an
+      alloca so that (a) codegenSet has a storage location and (b) every closure
+      capturing it shares ONE cell — codegenLambda's capture emission then
+      pointer-passes that alloca instead of copying its value. Both boxing loops
+      iterated only the FIXED parameters: lib/backend/llvm_codegen.cpp:12692
+      (codegenFunctionDefinition, `for i < op->define_op.num_params`) and
+      lib/backend/llvm_codegen.cpp:29678 (codegenLambda, same shape). The REST
+      parameter is the LLVM argument that FOLLOWS the fixed ones — the
+      symbol-table loops twenty lines above each site walk exactly that order —
+      so it never got a box, stayed a by-value Argument, and the closure copied
+      the list VALUE into its environment slot. The inner set! then mutated a
+      private copy discarded on return, while the outer read still read the raw
+      Argument. Confirmed in IR: `define @f(%eshkol_tagged_value %rest)` with
+      `store %rest, ptr %<env slot>` and `(car rest)` reading `%rest` directly,
+      versus the boxed `%n = alloca` a fixed parameter gets.
+      The outer guards also required `op->define_op.parameters` /
+      `op->lambda_op.parameters` to be non-null, so a rest-ONLY signature could
+      not have been reached even if the loop had run.
+    fix: >-
+      Both sites now box the rest parameter on the same terms as a fixed one —
+      `astSetsVar(body, rest_param)` decides, the box is the alloca that the
+      iterator already points at after the fixed loop, and the outer guard no
+      longer requires a non-empty fixed parameter list. No new mechanism, no ABI
+      change: the existing capture machinery pointer-passes the box because it
+      is an alloca like any other.
+    evidence: >-
+      tests/integration/rest_capture_and_do_closure_test.esk, 23/23 checks on
+      all four native axes (ctest lanes rest_capture_and_do_closure_{smoke,
+      nocache_smoke,aot_o0_smoke,aot_o2_smoke}); the rest-parameter half covers
+      depths 1-3, immediately-invoked AND stored closures, a closure that
+      outlives the frame that bound the rest parameter, two closures sharing one
+      cell, two instantiations NOT sharing one, `lambda` as well as `define`
+      rest parameters, a rest parameter after two fixed parameters, and the two
+      controls (mutated-but-uncaptured, captured-but-unmutated).
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk covers the
+      native axes.
+      Revert-validated against a build of the same tree without the codegen
+      change (worktree eshkol-wt-vmmem, whose diff touches no native codegen):
+      it answers 1 for the reproducer and cannot compile the class-kill test at
+      all, refusing with "set!: variable 'xs' is not mutable (not an alloca,
+      global, or capture pointer)".
+    caught_by: [direct-measurement, sw-25-adjacent-finding]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Same FAMILY as SW-25 — a binding is not honoured across a closure boundary
+      because there is no shared CELL — but the opposite engine and a different
+      omission: the VM's parameter loop never boxed ANY parameter, native's
+      boxed every parameter except the one the loop bound could not reach.
+      A control worth keeping: `(define (r . xs) (set! xs (cons 3 xs)) (car xs))`
+      — mutated but NOT captured — was a LOUD refusal before this change
+      ("variable 'xs' is not mutable"), not a wrong answer, and now answers 3.
+
+  - id: SW-34
+    bucket: SILENT-WRONG
+    status: open
+    title: "VM: a `do` loop variable captured and mutated by a body closure loses the mutation inside a procedure and in a nested loop"
+    repro: >-
+      (define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (display (f 5))
+    observed: "VM 0 — exit 0, no diagnostic"
+    correct: "5 — native answers 5 after the LE-09 fix"
+    affected_measured:
+      - "(define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (f 5) -> VM 0, native 5"
+      - "(do ((i 0 (+ i 1)) (t 0)) ((= i 3) t) (do ((j 0 (+ j 1))) ((= j 2)) ((lambda () (set! t (+ t 1)))))) -> VM 2, native 6"
+    unaffected_measured:
+      - "the same loop at TOP LEVEL: (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i))))) -> VM 3, native 3"
+      - "a read-only capture: (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i))))) -> VM 6, native 6"
+    discovered_by: >-
+      class-killing LE-09 on the native side. Every `do` shape the native fix
+      had to handle was run on both engines; these two are the ones where the VM
+      answers wrongly and native answers correctly.
+    not_fixed_here: >-
+      NOT a native defect and NOT closed by branch fix/native-rest-capture-and-do-loop,
+      which changes lib/backend/llvm_codegen.cpp only. Measured against BOTH the
+      VM at this SHA and the VM on the SW-25 branch fix/vm-region-and-upvalue:
+      identical wrong answers, so PR #435's parameter/let boxing does not reach
+      `do` bindings. The likely shape of the fix is the same mechanism applied to
+      compile_form_do()'s bindings — the SW-25 entry's own root_cause names
+      compile_form_let() as the only binding form that had ever run
+      needs_boxing() — but that is a VM-compiler change and wants its own
+      measurement lane.
+    evidence: >-
+      tests/vm_parity/corpus/60_do_loop_closure_capture.esk documents both
+      shapes in its SCOPE comment and deliberately does NOT assert them, so this
+      entry is visible from the corpus rather than only from the ledger. The
+      native side of both shapes IS gated, in
+      tests/integration/rest_capture_and_do_closure_test.esk and
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk.
+    caught_by: [direct-measurement, le-09-class-kill]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Growth justified per invariant 4: this is a NEW SILENT-WRONG entry opened
+      by a PR that closes two others. It is recorded rather than fixed because
+      fixing it means changing the VM compiler's binding forms days before a
+      tag, on a mechanism whose native counterpart took this whole lane to get
+      right, and because the class-kill measurement that found it is the only
+      thing that makes a VM fix verifiable.
+
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
   - id: IF-01
@@ -1098,6 +1215,135 @@ entries:
     evidence: "docs/KNOWN_ISSUES.md:195"
     caught_by: [KNOWN_ISSUES]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: LE-09
+    bucket: LOUD-ERROR
+    subtag: codegen
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/native-rest-capture-and-do-loop"
+    title: "NATIVE: a `do` loop whose body creates a closure over a loop variable never terminates and is SIGKILLed (exit 137)"
+    repro: "(display (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i))))))"
+    observed: >-
+      killed by SIGKILL, exit 137, under the default `-r` and under
+      ESHKOL_JIT_CACHE=0. Under an explicit CPU limit the same run exits 152
+      (SIGXCPU) with no output, which is what identifies it as a runaway loop
+      rather than an allocator fault.
+    correct: "3 — the VM answers 3"
+    affected_measured:
+      - "mutating capture: ((lambda () (set! acc (+ acc i)))) -> runaway"
+      - "READ-ONLY capture: (set! s (+ s ((lambda () i)))) -> runaway; mutation is not required"
+      - "let-bound body closure -> LLVM verification failure, \"Instruction does not dominate all uses\" on the arena_allocate, i.e. the compile is rejected rather than run"
+      - "named let in the body capturing the loop variables -> same verification failure"
+    unaffected_measured:
+      - "a `do` body with no closure at all"
+      - "a body lambda whose PARAMETER shadows the loop variable, so nothing is captured"
+    root_cause: >-
+      lib/backend/llvm_codegen.cpp, codegenDo (var_allocas at ~24282, step store
+      at ~24371 before this change). A `do` variable is READ from three places
+      emitted at three different times — the header test first, the body second,
+      the step expressions third — but codegenDo wrote the step result to the
+      stack alloca it had cached in var_allocas, while every read went through
+      symbol_table. codegenLambda's capture emission ("CLOSURE ESCAPE FIX",
+      ~30036) REBINDS a captured stack alloca to fresh arena storage mid-body
+      and repoints symbol_table at it, seeding the new cell ONCE in the
+      pre-header. The variable therefore split in two: the step read the arena
+      cell and wrote the stack alloca that the header test had already been
+      compiled against. IR at the defect:
+        do_loop_step: %i.load68 = load ptr %8        ; arena cell, never advanced
+                      %99 = add %i.load68, 1
+                      store %99, ptr %i_do           ; stack alloca
+        do_loop_header: %i.load = load ptr %i_do     ; reads 1 forever
+      `(= i 3)` never became true, and each iteration allocated a fresh closure
+      in the arena, so the loop consumed memory without bound until the OS
+      killed it. The same rebinding, when it happened inside the loop body
+      rather than the pre-header, produced an arena_allocate that did not
+      dominate its uses — invalid IR, which is the AOT-side symptom.
+    fix: >-
+      The storage class is now decided BEFORE the loop is emitted, mirroring
+      codegenNamedLet, which has always arena-moved its captured cells up front.
+      doFormCapturesVar() asks whether any lambda or named let in the bindings,
+      test, results or body captures the variable; if so the loop variable's
+      cell is arena storage from the start, which is what the capture machinery
+      would have converged on anyway — and being an already-pointer-typed
+      CallInst it takes codegenLambda's "existing arena storage" branch, which
+      pointer-passes WITHOUT rebinding anything. Otherwise the variable keeps
+      its stack alloca and stays promotable, so closure-free `do` loops are
+      byte-identical to before. The predicate reuses astSetsVar's traversal
+      rather than a second copy of it: that walk is now astScanVar(ast, var,
+      VarScanMode), with SetTarget and ClosureCapture node tests over one
+      shared, already-proven-complete recursion.
+      An INVARIANT backs it up at the end of codegenDo: if any loop variable was
+      arena-moved anyway, the capture analysis missed a form, and codegen now
+      FAILS LOUDLY with a diagnostic instead of emitting a loop that cannot
+      terminate. That guard is what caught the two design corrections below
+      during class-kill.
+    evidence: >-
+      tests/integration/rest_capture_and_do_closure_test.esk, 23/23 checks on
+      all four native axes (ctest lanes rest_capture_and_do_closure_*): mutating
+      and read-only captures, an immediately-invoked closure and a let-bound
+      one, a named let in the body, a nested `do` closing over the OUTER
+      variable, a loop inside a procedure with a runtime trip count, closures
+      stored out of the loop and called after it finished, and the two controls.
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk on the native
+      axes; tests/vm_parity/corpus/60_do_loop_closure_capture.esk pins the
+      reproducer VM-vs-native.
+      Revert-validated against a build of the same tree without the codegen
+      change (worktree eshkol-wt-vmmem): the reproducer runs until the CPU limit
+      fires, and the let-bound and named-let shapes fail LLVM verification.
+    caught_by: [direct-measurement, sw-25-adjacent-finding]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Two design corrections were forced by the codegenDo invariant during
+      class-kill, and both are recorded because they are the non-obvious part.
+      (1) An internal `(define (bump) …)` in the body is NOT a ClosureCapture
+      site: codegenFunctionDefinition captures through module-level storage
+      (`<fn>_nested_N_capture_<var>`) re-seeded from the enclosing binding on
+      every execution, which does not split the loop — forcing arena storage for
+      it turned a correct 3 into a type error, measured. `(define bump (lambda …))`
+      is a different shape and IS caught, by the LAMBDA_OP case.
+      (2) The invariant is narrowed to the arena-move signature (a pointer-typed
+      CallInst) for the same reason, so the legitimate module-storage rebinding
+      is not flagged.
+
+  - id: LE-10
+    bucket: LOUD-ERROR
+    subtag: codegen
+    status: open
+    title: "VM: a `do` loop with a body closure poisons a LATER `do` loop in the same program — heap-object limit, fatal call, or hang"
+    repro: >-
+      (display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i)))))) (newline)
+      (display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99)))
+    observed: >-
+      "ERROR: VM heap object limit reached (ESHKOL_VM_HEAP_MAX_SIZE=16777216
+      objects)" then "VM terminated on a fatal runtime error", exit 1, after the
+      FIRST loop has already printed its correct answer.
+    correct: "6 then 3 — native prints both"
+    affected_measured:
+      - "second `do` after a body-closure `do`: heap-object limit, exit 1"
+      - "a let-bound (not immediately invoked) body closure, when any top-level form precedes the loop: \"ERROR: calling non-function\", exit 1"
+      - "a longer sequence of the same shapes: hangs until the CPU limit fires (exit 152)"
+    unaffected_measured:
+      - "either loop ALONE in its own program: both correct"
+      - "two body-closure `do` loops with disjoint variable names: both correct"
+    discovered_by: >-
+      assembling tests/vm_parity/corpus/60_do_loop_closure_capture.esk while
+      class-killing LE-09. Each candidate line was correct on the VM in
+      isolation and the file still failed, which is what identified the defect
+      as sequence-dependent rather than shape-dependent.
+    not_fixed_here: >-
+      VM-side. Branch fix/native-rest-capture-and-do-loop changes
+      lib/backend/llvm_codegen.cpp only. Reproduces identically on the VM at
+      this SHA and on the SW-25 branch fix/vm-region-and-upvalue, so PR #435
+      neither causes nor fixes it. LOUD, so it does not gate the release, but it
+      is the reason the vm-parity corpus file added by that branch is two lines
+      long, and that constraint should not be mistaken for a small class.
+    evidence: >-
+      tests/vm_parity/corpus/60_do_loop_closure_capture.esk SCOPE comment names
+      both shapes; the native side of both runs green in
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk.
+    caught_by: [direct-measurement, le-09-class-kill]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
 
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
