@@ -573,7 +573,8 @@ output formatting** (the VM's newline-per-call behaviour splits lines differentl
 The baseline conflated cosmetic drift with a wrong answer and hid the wrong answer among nine
 harmless rows.
 
-**Contrast, in the same repo, done right.** `tests/value_position/BASELINE.json` requires
+**Contrast, done right, on the in-flight `fix/value-position-axis` branch.**
+`tests/value_position/BASELINE.json` requires
 every entry to name the ledger ID it stands for and says so in its own `_comment`: *"Every
 entry must carry a reason naming the ledger ID it stands for — an entry without one is
 indistinguishable from hiding a bug. NEVER regenerate this file to turn a red gate green."*
@@ -618,11 +619,12 @@ is precisely the kind the detector cannot see.
 nothing checks that the detector they prescribe was built, and nothing notices when one is
 skipped.
 
-**Evidence.** The doctrine exists and is a standing maintainer directive (2026-07-24, recorded
-at `CODEX_HANDOFF.md:92-101`): *every externally-reported bug gets an escape analysis — why did
-our framework miss it — leading to a new generator axis or gate, not just a point regression
-test*. The P8 pillar (`scripts/run_p8_escape.sh`, 8 axes, `.swarm/P8_ESCAPE_ANALYSIS.md`) is
-that doctrine executed once, well.
+**Evidence.** The doctrine already exists as a standing project rule: *every reported bug gets
+an escape analysis — why did our own framework miss it — and that analysis leads to a new
+generator axis or gate, not merely a point regression test*. The P8 escape-closure pillar
+(`scripts/run_p8_escape.sh`) is that doctrine executed once and executed well: eight axes, each
+one targeting a specific class of defect that had previously escaped, each documented in the
+runner's own header with the escape it closes.
 
 Since then it has been a per-PR courtesy. Every PR from #420 to #440 carries an escape
 analysis in its **body**, several of which prescribe a detector in words. Exactly **one** of
@@ -653,14 +655,14 @@ first version: S = 1-2d, M = 3-5d, L = 6-12d, XL = a campaign.
 | D-06 | **Threshold-bearing invariants.** Add an invariant kind that grades a *payload field* against a bound, and convert `INV-engine-semantic-parity` and `INV-language-surface-exercise` to it. Then add a meta-check: any invariant whose `severity` is `critical` and whose `kind` is `exercise` is itself a finding | ICC detector + `.icc/architecture-model.yaml` | M | `kind: perturbation` and `kind: key-space-equality` already exist in the model; ICC `vacuous-assertions` is the adjacent detector |
 | D-07 | **Gate self-verification.** (i) A CI job that parses and schema-validates every `.icc/*.yaml` on every PR — this is a ten-line job that would have caught PR-12 at review time. (ii) `icc readiness` must print `criterion_count` and its delta against the previous run, and **fail loudly** on a drop rather than scoring the remainder. (iii) A trace-bundle assertion that the criteria graded are the criteria declared | CI lane + ICC | S (i), M (ii-iii) | `icc readiness-diff` already computes per-criterion added/removed; PR #436 |
 | D-08 | **The behavioral-probe plane for ICC.** A detector class whose evidence is executed output rather than source text, built as lettered detectors on the existing Detector I-L contract. Minimum viable set, each modelled on a defect this campaign found: (a) **declared-versus-observed** — for every documented env var / CLI flag, run a program with and without it and assert the documented difference (would have caught SW-10); (b) **implementation-pair differential** — given two symbols declared to implement one rule, run both on generated inputs and compare (would have caught SW-12 and SW-32); (c) **route-equivalence** — the same call reached by two lowering routes must agree (would have caught LE-01, SW-27, SW-35); (d) **claim-execution** — every doc code fence executed and its stated output asserted (D-09). Then **add the semantic members to ICC's `correctness` chain**, which today is two static detectors corroborating at 0% | ICC detector plane | XL (the plane) / M per probe class | task #120; `capture-baseline`/`verify-baseline`, `numeric-diff`, `execution-source-gate`, `invariants --emit-trace` and the Detector I-L contract are all shipped and unused here; `icc runtime-evidence` already ingests 4,437 events across 27 kinds; `.icc/architecture-model.yaml` `fidelity: runtime` invariants are the in-repo precedent |
-| D-09 | **Executable documentation claims.** Every documented *control* (env var, flag, `provide`, `(the …)`) gets a claim record with a runnable assertion; the gate executes them all and fails on any claim whose asserted effect does not occur. Bidirectional: a doc that claims a limitation the binary does not have is equally a finding (LE-05) | repo gate + ICC `doc-typed-claims` extension | M | `scripts/doc_audit/` and the #411 harness (fix DD-07's three defects first); `.icc/doc-claims-allowlist.yaml`'s expiry discipline |
+| D-09 | **Executable documentation claims.** Every documented *control* (env var, flag, `provide`, `(the …)`) gets a claim record with a runnable assertion; the gate executes them all and fails on any claim whose asserted effect does not occur. Bidirectional: a doc that claims a limitation the binary does not have is equally a finding (LE-05) | repo gate + ICC `doc-typed-claims` extension | M | `scripts/doc_audit/` and the #411 harness (fix DD-07's three defects first); for the waiver discipline, the same shape as `.icc/silent-wrong-ledger.yaml` — an allowlisted claim carries an owner and an expiry, so it is scaffolding rather than a tolerance |
 | D-10 | **Layout and ABI contracts.** (i) `static_assert` on `sizeof` and `offsetof` for every struct pair that is cast between — starting with `Node`/`MacroNode`, and generalised as a rule: a cast between two named struct types requires a layout contract in the same translation unit. (ii) An ICC detector for cross-type casts lacking such a contract (a natural sibling of `odr-audit`, which is name-based and therefore blind here). (iii) **An ASan VM-standalone lane in CI** — that is how #432 reproduced a wasm-only defect natively, in seconds | repo gate + ICC detector + CI lane | S (i), M (ii), S (iii) | #432's ASan reproduction recipe; `icc odr-audit` |
 | D-11 | **Build fingerprint preamble.** One shared preamble that records the SHA, the build directory mtime and a hash of the binary under test into every emitted event, refuses to run against a binary older than the working tree, and pins a private copy for the duration of the run. Adopt in `run_differential.sh`, `run_vm_parity.sh`, `run_engine_parity_coverage.py`, `run_reference_differential.sh` first | repo gate (shared library) | S | `scripts/run_p8_escape.sh`'s pin-the-binary preamble, verbatim |
 | D-12 | **Ledger protocol as code.** (i) **ID allocation**: IDs are reserved by appending to a single append-only allocation file on master before a lane uses one; the gate fails on a duplicate ID, and on a lane-local ID absent from the allocation file. (ii) **No-loss merge check**: the gate fails if the ledger on a PR branch has fewer entries than its merge base, unless each removal is justified in the PR body. (iii) **Expiry enforcement** already exists; add: closure without a `closed_at` SHA becomes a hard failure after a stated grace date. (iv) **Unmerged-fix awareness**: a criterion that reports how many ledger entries are closed only on unmerged branches | repo gate extension | S (i-iii), M (iv) | `scripts/gate_no_silent_wrong.py` (schema validation, fail-closed, and the `CLOSED WITHOUT A RE-MEASUREMENT SHA` report already exist) |
 | D-13 | **Run the gates.** A `correctness-nightly` workflow invoking every trace-gated harness on a real runner, uploading the trace bundle, and running `icc readiness` on the result — so the trace-gated suites gate something. A `correctness-pr` subset (fast axes only) on every PR. Every harness that `exit 0`s by design must be paired here with the readiness step that reads its trace | CI lane | M | `adversarial-nightly.yml` is the working template (it already runs P8, TSan and packaging on a schedule) |
 | D-14 | **Evidence-bearing ratchets.** A shared schema for every baseline file: per entry, the ledger ID it stands for, the per-engine normalized outputs (or their hashes), and a classification of `cosmetic` versus `value`. A `value` classification is never an acceptable baseline entry — it is a ledger entry. Migrate `ENGINE_PARITY_BASELINE.json`, `SURFACE_BASELINE.tsv`, `arity_parity_baseline.json`, `five_way_baseline.json`, `PARITY.tsv`, `EXCLUSIONS.tsv` | repo gate + schema | M | `tests/value_position/BASELINE.json`'s `_comment` is the schema statement; PR-01..PR-08 name the six files |
 | D-15 | **Semantic-duplicate detector (ICC Detector M).** Two complementary halves: (a) a **declarative registry** — `.icc/implementation-pairs.yaml` naming every pair of symbols that implement one rule, with a required differential test per pair, gated; and (b) an ICC detector on the Detector I-L contract that *proposes* candidates for the registry by structure rather than text (two functions reachable from one dispatch name; two definitions of the same builtin id; a switch arm and a computed-goto arm of the same opcode; two `_backward` symbols for one op). (b) is research; (a) is buildable now and would have gated SW-12, SW-32, SW-09 and LE-01 | repo gate (a) + ICC detector (b) | M (a), L (b) | PR #433's `tensor_backward_dual_impl_gradcheck_test.cpp` is a working instance of (a) — one pair, native versus bridge, with central finite differences of an independently written third forward as the tie-breaking oracle. `duplicate-implementations` already ranks 80-99% divergent copies first, which is the right ranking on the wrong (lexical) similarity measure |
-| D-16 | **Escape analysis as a gate.** (i) A PR template with a required `## Escape analysis` section answering *why did no gate catch this* and choosing one of: extended detector X, filed detector build-item Y, or justified N/A. (ii) A CI check that fails a PR touching `lib/`, `inc/` or `exe/` whose body lacks the section. (iii) `.icc/detector-backlog.yaml` — every prescribed-but-unbuilt detector, with the defect IDs that motivated it, gated the same way the silent-wrong ledger is: growth is allowed, silence is not | CI lane + repo gate | S (i-ii), S (iii) | `CODEX_HANDOFF.md:92-101` (the standing doctrine); `.swarm/P8_ESCAPE_ANALYSIS.md` (the format); `.icc/silent-wrong-ledger.yaml` (the gating pattern) |
+| D-16 | **Escape analysis as a gate.** (i) A PR template with a required `## Escape analysis` section answering *why did no gate catch this* and choosing one of: extended detector X, filed detector build-item Y, or justified N/A. (ii) A CI check that fails a PR touching `lib/`, `inc/` or `exe/` whose body lacks the section. (iii) `.icc/detector-backlog.yaml` — every prescribed-but-unbuilt detector, with the defect IDs that motivated it, gated the same way the silent-wrong ledger is: growth is allowed, silence is not | CI lane + repo gate | S (i-ii), S (iii) | `.icc/silent-wrong-ledger.yaml` (the gating pattern to copy: fail-closed, owner and expiry per entry, closure only by measurement); `scripts/run_p8_escape.sh` (an existing pillar whose axes are each named for the escape they close, i.e. the format an entry should take) |
 
 ---
 
@@ -769,8 +771,8 @@ it actionable later:
 
 Three pieces, all in wave 1 (B-07):
 
-1. `.github/PULL_REQUEST_TEMPLATE.md` gains a required `## Escape analysis` section with the
-   three facts as prompts.
+1. A `.github/PULL_REQUEST_TEMPLATE.md` carrying a required `## Escape analysis` section with
+   the three facts above as prompts.
 2. A CI check fails a PR that touches `lib/`, `inc/` or `exe/` and whose body has no
    `## Escape analysis` section containing one of the three outcome keywords
    (`EXTENDED` / `FILED` / `N/A`).
@@ -815,10 +817,13 @@ by construction), `odr-audit` (same-name different-shape C types), `duplicate-im
 `invariants` (registry absent — task #112), `default-off-ledger` (107 gates, 0 ledgered),
 `failure-signature-linkage` (passes on an empty set).
 
-**Named ICC tool gaps carried from the audit passes:** T1-T10 in
-`ICC_PASS3_2026-08-12.md:832-883`; the six `doc-typed-claims` detector gaps in
-`.icc/doc-claims-allowlist.yaml`; U-1 (`quality-campaign` never binds `oracle_status`, so any
-stage declaring `oracle:` is permanently pending).
+**Named ICC tool gaps carried forward.** Ten detector-precision gaps identified during the
+v1.3.4 ICC audit passes (misattribution classes in `doc-typed-claims`, C++ qualified-name
+head-patterns collapsing every `.cpp` to file scope, substring matches falsely clearing a
+check); and one defect that silences a whole command — `quality-campaign` never binds
+`oracle_status`, so any campaign stage declaring `oracle:` is permanently `pending` regardless
+of what the completion oracle says. These are tracked against the ICC methodology task (#112),
+which is a prerequisite for the behavioral-probe plane in B-17.
 
 ---
 
@@ -862,7 +867,7 @@ not a target.
 |---|---|---|
 | Distinct ledgered defect IDs (master `2ae3787f`) | 64 | `.icc/silent-wrong-ledger.yaml` |
 | Distinct ledgered defect IDs across all lanes | 81 | all `refs/heads` |
-| Ledgered defects found by the ICC correctness chain | 0 of 62 | `SKIPPED_FLAWS_LEDGER_2026-08-12.md:193` |
+| Ledgered defects found by the ICC correctness chain | 0 of 62 | the `missed_by:` field of `.icc/silent-wrong-ledger.yaml`, which names `icc-correctness-chain` on 43 entries |
 | Language-surface execution coverage | 1091 / 1091 = 100.00% | `run_language_coverage.sh` |
 | Engine differential construct coverage | 136 / 1114 = 12.21% (floor 10.95%) | `run_engine_parity_coverage.py`, PR #424 |
 | Correctness harnesses reachable from CI | 14 of ~90 | `.github/workflows/` |
