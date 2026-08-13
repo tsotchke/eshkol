@@ -218,6 +218,24 @@ int64_t eshkol_rational_truncate(void* r);
  */
 int64_t eshkol_rational_round(void* r);
 
+/* Rounding for the FULL rational substrate (SW-29 / ESH-0105).
+ *
+ * The int64-returning variants above read `numerator`/`denominator` directly.
+ * On the bignum path those fields are the inert 0/1 shadow, so every one of
+ * them answered 0 for a bignum-backed rational: `(floor (/ (expt 2 100) 3))`
+ * printed 0 instead of 422550200076076467165567735125, with exit 0 and no
+ * diagnostic. The exact result can itself exceed int64, so it cannot be
+ * signalled through an `int64_t` return at all — these write a TAGGED value
+ * instead, exactly as eshkol_rational_from_bignums_tagged() already does, and
+ * so can answer with an INT64 or a bignum as the value requires.
+ *
+ * The int64 variants are kept for callers that have already established the
+ * operand is on the int64 fast path. */
+void eshkol_rational_floor_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_ceil_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_truncate_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_round_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+
 /**
  * @brief Exact IEEE-754 double to rational (R7RS `inexact->exact`).
  *

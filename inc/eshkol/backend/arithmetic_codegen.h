@@ -350,6 +350,33 @@ public:
     llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
 
     /**
+     * Emit the EXACT-FIRST numeric ordering test shared by the comparison
+     * operators and by min/max, and return it as an i1 (not a tagged bool).
+     *
+     * SW-32: min/max used to run their own two-tier test — "either operand is
+     * a bignum" then straight to a double comparison — while `<` ran a
+     * three-tier one that also routes exact RATIONALs to the exact rational
+     * kernel. A bignum-backed rational is a HEAP_PTR with the RATIONAL
+     * subtype, not a bignum, so min/max fell through to doubles and both
+     * operands of `(max (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))` rounded
+     * to the same flonum: max returned the SMALLER operand while `<` in the
+     * same program correctly reported them ordered. Two exact int64s beyond
+     * 2^53 had the same problem for the same reason.
+     *
+     * The tiers here are the ones `compare()` uses, in the same order, so the
+     * two can no longer drift apart: bignum, then rational, then exact int64,
+     * then the inexact double fallback.
+     *
+     * @param left Left operand (tagged_value); must not be a dual/AD node —
+     *             callers handle those before ordering.
+     * @param right Right operand (tagged_value).
+     * @param op_code Comparison code, matching compare(): 0=lt, 1=gt, 2=eq,
+     *                3=le, 4=ge.
+     * @return i1 result of the comparison.
+     */
+    llvm::Value* emitExactFirstOrderingI1(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
      * Emit code to raise a type error at runtime. Public so other codegen
      * classes (e.g. CallApplyCodegen for (apply min '())) can surface the
      * same architected exception instead of inventing their own mechanism.

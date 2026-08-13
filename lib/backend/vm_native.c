@@ -5900,6 +5900,10 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
  * `eq?` on distinct mutable strings is unspecified; retaining deterministic
  * content equality for VAL_STRING preserves the VM's established behavior.
  */
+/* Exact numeric comparator, defined below with the bignum helpers; needed here
+ * so a heap-boxed number compares by value rather than by box identity (SW-31). */
+static int vm_bignum_compare_vals(VM* vm, Value a, Value b);
+
 static int vm_identity_equal(VM* vm, Value a, Value b) {
     if (a.type != b.type) return 0;
     switch ((int)a.type) {
@@ -5919,6 +5923,23 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
             VmString* bs = vm_value_as_string(vm, b);
             return as && bs && as->byte_len == bs->byte_len &&
                    memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        /* SW-31: a HEAP-BOXED NUMBER must compare by VALUE, not by box identity.
+         * `eqv?` shares this helper with `eq?` (both are native id 133), so the
+         * default heap-pointer branch below made (eqv? 1/3 1/3) and
+         * (eqv? (expt 2 100) (expt 2 100)) answer #f — two separately allocated
+         * boxes are never the same pointer. R7RS 6.1 requires eqv? to be value
+         * equality on numbers of the SAME exactness; the tags are equal here
+         * (checked above), so exactness already matches and the comparison is
+         * purely on value. Answering #t for `eq?` on equal bignums is a legal
+         * choice — R7RS leaves eq? on numbers unspecified. */
+        case VAL_RATIONAL:
+        case VAL_BIGNUM:
+            return vm_bignum_compare_vals(vm, a, b) == 0;
+        case VAL_COMPLEX: {
+            VmComplex* az = (VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            VmComplex* bz = (VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            return az && bz && az->real == bz->real && az->imag == bz->imag;
         }
         default: return a.as.ptr == b.as.ptr;
     }
@@ -6056,6 +6077,83 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
 /** @brief True when either operand is a heap-boxed bignum. */
 static inline int vm_either_bignum(Value a, Value b) {
     return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * R7RS numeric-tower TAG CLASSIFICATION (SW-31)
+ *
+ * Every numeric type predicate on the VM used to spell its own tag test inline,
+ * and each spelled a DIFFERENT, shorter list than the tower actually has. The
+ * result was a predicate family that denied whole numeric classes: (number? 1/3)
+ * and (number? (expt 2 100)) were #f, (rational? 5) and (rational? 5.0) were #f,
+ * (complex? 5) was #f, and (integer? 5.5) was #t because `integer?` was compiled
+ * to the very same opcode as `number?`. Routing every predicate through these
+ * four functions means a tag can only be forgotten in one place, and adding a
+ * numeric tag later updates the whole family at once.
+ *
+ * Semantics follow R7RS 6.2.1's tower (number > complex > real > rational >
+ * integer) and are pinned against the native engine, which was already correct:
+ *   number?/complex?  every numeric tag
+ *   real?             every numeric tag except COMPLEX
+ *   rational?         every real that is FINITE (so 5.5 is rational, +inf.0 is not)
+ *   integer?          every real with no fractional part (so 5.0 is an integer,
+ *                     5.5 and 1/3 are not; a normalized rational never is)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** @brief `number?` / `complex?` — every tag in the numeric tower. */
+static inline int vm_tag_is_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_COMPLEX || v.type == VAL_I128;
+}
+
+/** @brief `real?` — the tower minus COMPLEX. */
+static inline int vm_tag_is_real(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_I128;
+}
+
+/** @brief `rational?` — a real with a finite value (NaN and the infinities are
+ *         real but not rational). */
+static inline int vm_num_is_rational(Value v) {
+    if (v.type == VAL_FLOAT) return isfinite(v.as.f);
+    return vm_tag_is_real(v);
+}
+
+/** @brief `integer?` — a real whose value has no fractional part. An exact
+ *         rational is always normalized, so a live VAL_RATIONAL never has
+ *         denominator 1 and is never an integer. */
+static int vm_num_is_integer(VM* vm, Value v) {
+    if (v.type == VAL_INT || v.type == VAL_BIGNUM || v.type == VAL_I128) return 1;
+    if (v.type == VAL_FLOAT) return isfinite(v.as.f) && v.as.f == floor(v.as.f);
+    if (v.type == VAL_RATIONAL && vm) {
+        VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!r) return 0;
+        return r->is_big ? vm_bn_is_i64(r->big_den, 1) : (r->denom == 1);
+    }
+    return 0;
+}
+
+/** @brief `odd?` — parity of an integer-valued operand, exact for bignums.
+ *         A bignum's parity is the low bit of its least significant limb; the
+ *         old code truncated as_number()'s 0.0 and answered "even" for every
+ *         bignum. */
+static int vm_num_parity_is_odd(VM* vm, Value v) {
+    if (v.type == VAL_INT || v.type == VAL_CHAR) return (v.as.i & 1) != 0;
+    if (v.type == VAL_BIGNUM && vm) {
+        VmBignum* b = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!b || b->n_limbs == 0) return 0;   /* zero is even */
+        return (b->limbs[0] & 1u) != 0;
+    }
+    double d = as_number_vm(vm, v);
+    return fmod(d, 2.0) != 0.0;
+}
+
+/** @brief True when @p v is an exact number (used by the sign predicates so a
+ *         heap-boxed exact value is compared exactly instead of through a
+ *         double that reads it as 0.0). */
+static inline int vm_tag_is_exact_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_I128;
 }
 
 /** @brief True when either operand is an EXACT value too wide for the plain
@@ -7223,9 +7321,32 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; if (vm_math_promote_negative(vm, a, 1)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
      * not the exact 2 — the integral result shape must not decide the tag. */
-    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
-    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
-    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
+    /* SW-29: floor/ceiling/truncate/round of an EXACT operand must stay exact.
+     * These went through as_number_vm() unconditionally, so a rational came
+     * back as an inexact double — and a bignum-backed one lost every digit past
+     * the 53rd. An exact integer is already its own floor/ceiling/truncation/
+     * rounding, and a ratnum routes to the exact rational natives (342-345),
+     * which compute in the bignum domain. Only a genuinely inexact operand
+     * takes the double path. */
+    case 26: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 342); break; }
+        vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
+    case 27: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 343); break; }
+        vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
+    case 28: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 345); break; }
+        vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
+    /* SW-29: `truncate` had NO implementation at all — the BUILTINS table bound
+     * it to native id 190, which no case handled, so every call warned
+     * "unhandled native call ID 190" and produced the empty list. */
+    case 190: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
+        vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
     case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
     case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
     case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
@@ -7267,10 +7388,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
         }
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
+    /* SW-32: min/max must ORDER EXACTLY whenever both operands are exact.
+     * The vm_either_exact_wide() guard alone covers bignums and rationals but
+     * NOT two plain fixnums, which fell through to the double path where
+     * everything past 2^53 collapses: (max 9007199254740993 9007199254740992)
+     * answered the SMALLER value because both operands round to one flonum.
+     * Native had the mirror-image bug in its own copy of this dispatch. */
     case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && vm_tag_is_exact_number(b)) {
+            vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
         if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da<db?da:db)); break; }
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && vm_tag_is_exact_number(b)) {
+            vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
         if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
@@ -7311,13 +7442,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Predicates (40-50)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 40: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > 0)); break; }
-    case 41: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < 0)); break; }
-    case 42: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL((int64_t)as_number(a) % 2 != 0)); break; }
-    case 43: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL((int64_t)as_number(a) % 2 == 0)); break; }
-    case 44: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == 0)); break; }
+    /* SW-31: the sign and parity predicates used as_number(), which reads a
+     * heap-boxed value's .as union as an int64 and answers 0.0 — so every
+     * rational, bignum and i128 was reported as neither positive nor negative,
+     * (zero? 1/3) answered #t, and (odd? <bignum>) was always #f. The exact
+     * tags are compared through the exact comparator the ordering opcodes use;
+     * only a genuinely inexact operand goes through a double.
+     * These are the FIRST-CLASS routes ((map positive? xs)); the inline
+     * compiled forms lower to opcodes that were already exact. */
+    case 40: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) > 0
+            : as_number_vm(vm, a) > 0)); break; }
+    case 41: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) < 0
+            : as_number_vm(vm, a) < 0)); break; }
+    case 42: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_parity_is_odd(vm, a))); break; }
+    case 43: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!vm_num_parity_is_odd(vm, a))); break; }
+    case 44: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) == 0
+            : as_number_vm(vm, a) == 0)); break; }
     case 45: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; }
-    case 46: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT)); break; }
+    case 46: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(a))); break; } /* number? (SW-31) */
     case 47: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; }
     case 48: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }
     case 49: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }
@@ -7610,7 +7758,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else { vm_push(vm, FLOAT_VAL(fabs(as_number(z_val)))); }
         } else if (fid == 317) { /* complex? */
             Value v = vm_pop(vm);
-            vm_push(vm, BOOL_VAL(v.type == VAL_COMPLEX));
+            /* SW-31: R7RS 6.2.1 — EVERY number is complex, not only a boxed one. */
+            vm_push(vm, BOOL_VAL(vm_tag_is_number(v)));
         } else {
             int is_binary = (fid >= 307 && fid <= 310) || fid == 318 || fid == 319;
             if (is_binary) {
@@ -13616,7 +13765,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 203: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_NIL)); break; }  /* null? */
     case 204: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; } /* pair? */
     case 205: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }      /* not */
-    case 206: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT)); break; } /* number? */
+    case 206: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(a))); break; } /* number? (SW-31) */
     case 207: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; } /* string? */
     case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
@@ -14203,8 +14352,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Type predicates (1697-1699)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 1697: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT || a.type == VAL_RATIONAL)); break; }
-    case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_RATIONAL)); break; }
+    /* SW-31: real?/rational?/integer? route through the shared tower
+     * classification. real? used to omit BIGNUM, rational? answered only for a
+     * boxed ratnum (so (rational? 5) and (rational? 5.0) were #f), and
+     * integer? did not exist as a native at all — the compiler aliased it to
+     * the number? opcode, which is why (integer? 5.5) answered #t. */
+    case 1697: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_real(a))); break; }
+    case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_rational(a))); break; }
+    case 1717: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_integer(vm, a))); break; }
     case 1699: { Value a = vm_pop(vm);
         vm_push(vm, BOOL_VAL(a.type == VAL_TENSOR)); break; }
 
@@ -14218,7 +14373,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * on the VM against #t natively. */
     case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL ||
                                                            a.type == VAL_BIGNUM || a.type == VAL_I128)); break; } /* exact? */
-    case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT)); break; } /* inexact? */
+    case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT || a.type == VAL_COMPLEX)); break; } /* inexact? (SW-31: complex is inexact) */
     case 164: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isnan(a.as.f))); break; } /* nan? */
     case 165: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isinf(a.as.f))); break; } /* infinite? */
     case 166: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type != VAL_FLOAT || isfinite(a.as.f))); break; } /* finite? */

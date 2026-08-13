@@ -3328,7 +3328,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */
-    if (is_sym(head, "integer?") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return; }
+    /* SW-31: integer? is NOT number?. Aliasing it to OP_NUM_P made
+     * (integer? 5.5) answer #t and (integer? <bignum>) answer #f. It lowers to
+     * its own native (1717) which asks whether the value has no fractional
+     * part, across the whole tower. */
+    if (is_sym(head, "integer?") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1717); return; }
 
     /* abs and modulo are opcodes, not native calls — keep as special cases.
      * NOTE: remainder must NOT map to OP_MOD. OP_MOD implements R7RS `modulo`
@@ -4136,8 +4140,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_VEC_REF, 0); return;
     }
 
+    /* SW-31: real? lowers to native 1697 (the whole tower minus COMPLEX)
+     * instead of aliasing the number? opcode, which omitted RATIONAL/BIGNUM. */
     if (is_sym(head, "real?") && node->n_children == 2) {
-        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return;
+        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1697); return;
     }
 
     /* `derivative` curried form (ESH-0369): `(derivative f)` with no point is
