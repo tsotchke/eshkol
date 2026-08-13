@@ -7594,6 +7594,36 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    /* Compound list accessors (77-106; 100-101 are reserved).  The compiler lowers call-position
+     * c[ad]+r forms to the same CAR/CDR sequence.  Builtin values reach this
+     * dispatcher through the preamble closure, so keep the family in one
+     * path table rather than adding one implementation per spelling. */
+    case 77: case 78: case 79: case 80: case 81: case 82: case 83:
+    case 84: case 85: case 86: case 87: case 88: case 89: case 90:
+    case 91: case 92: case 93: case 94: case 95: case 96: case 97:
+    case 98: case 99: case 102: case 103: case 104: case 105: case 106: {
+        static const char* const accessor_paths[107] = {
+            [77] = "da",   [78] = "dd",   [79] = "aa",   [80] = "dda",  [81] = "ad",
+            [82] = "aaa",  [83] = "daa",  [84] = "ada",  [85] = "aad",  [86] = "dad",
+            [87] = "add",  [88] = "ddd",  [89] = "aaaa", [90] = "daaa", [91] = "adaa",
+            [92] = "ddaa", [93] = "aada", [94] = "dada", [95] = "adda", [96] = "ddda",
+            [97] = "aaad", [98] = "daad", [99] = "adad", [102] = "ddad", [103] = "aadd",
+            [104] = "dadd", [105] = "addd", [106] = "dddd"
+        };
+        Value result = vm_pop(vm);
+        const char* path = accessor_paths[fid];
+        for (const char* step = path; *step; step++) {
+            if (result.type != VAL_PAIR) {
+                result = NIL_VAL;
+                break;
+            }
+            HeapObject* pair = vm->heap.objects[result.as.ptr];
+            result = (*step == 'a') ? pair->cons.car : pair->cons.cdr;
+        }
+        vm_push(vm, result);
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * List search: member (137), assoc (138)
      * ══════════════════════════════════════════════════════════════════════ */
@@ -9811,8 +9841,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             int cp = vm_string_ref(s, k);
-            vm_push(vm, INT_VAL(cp >= 0 ? cp : 0));
-        } else vm_push(vm, INT_VAL(0));
+            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0});
+        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
         break;
     }
     case 552: { /* string-set!(str, idx, char) → new string */

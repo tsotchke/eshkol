@@ -4689,6 +4689,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 
+    # SW-38/SW-39: VM builtin families must retain the same value semantics
+    # when passed to a higher-order procedure or stored in a binding.
+    add_test(
+        NAME vm_first_class_builtin_families_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/vm_first_class_builtin_families_test.esk"
+    )
+    set_tests_properties(vm_first_class_builtin_families_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: VM first-class builtin families"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
     # SW-27, VM side. The VM's closures carry their rest-arg shape natively, so
     # this defect class does not exist on this engine either. Pinned for the
     # same reason as the builtins case above.
