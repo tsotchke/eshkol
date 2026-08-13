@@ -33,6 +33,14 @@
 schema: eshkol.silent_wrong_ledger.v1
 generated_at: "2026-08-12"
 measured_at_sha: "9f2da2ab"
+# Partial re-measurement pass. NOT every entry was re-run at this SHA — only the
+# ones whose closed_at says 019ab413 (IF-01..IF-05, which had merged fixes and
+# unclosed entries, plus SW-06/SW-09/SW-09b which were terminal on committed-test
+# evidence but carried no lookup-able SHA). Every other entry's evidence still
+# dates from measured_at_sha above. Do not read this field as "the whole ledger
+# is current at 019ab413"; that is exactly the kind of blanket claim this file
+# exists to stop.
+remeasured_at_sha: "019ab413"
 measured_with: "build/eshkol-run (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0), build/eshkol-vm-standalone-test"
 reproducer_root: ".scratch/flaw-ledger/repro"
 
@@ -119,6 +127,13 @@ entries:
     subtag: cheap-fix
     status: fixed
     reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build — this is the SHA
+      the gate can look up, distinct from the branch the fix landed on.
+      (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no) prints `caught` on BOTH
+      native -r and the VM, and tests/differential/corpus/42_diff_quoted_raises.esk
+      prints `caught` then `ok` across the native axes, exit 0.
     title: "diff on a quoted s-expression now raises a catchable error on BOTH engines"
     repro: "(display (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no))"
     observed_before: "native 0, VM 0 (both silently fabricated a derivative of 0)"
@@ -230,6 +245,11 @@ entries:
     subtag: cheap-fix
     status: fixed
     reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build:
+      (guard (e (#t 'caught)) (+ a b) 'no) over two i128 values prints `caught`
+      on the VM, where it used to print `no` (guard body completed, silent 0).
     title: "Generic + over i128 now raises a catchable error on the VM (native was already loud)"
     repro: "(define a (i128 5)) (define b (i128 7)) (display (guard (e (#t 'caught)) (+ a b) 'no))"
     observed_before: "VM 0 (exit 0); native raises a type error (exit 1) — see LE-03"
@@ -258,6 +278,12 @@ entries:
     subtag: cheap-fix
     status: fixed
     reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build: all eleven
+      remaining i128 operations — - * / modulo, unary -, abs, and = < > <= >=
+      — each print `caught` under a guard on the VM. Eleven of eleven, none
+      silently answering a fabricated value.
     title: >-
       The rest of the generic arithmetic/comparison family over i128 (-, *,
       /, modulo, unary -, abs, =, <, >, <=, >=) now raises on the VM, same
@@ -605,10 +631,21 @@ entries:
   - id: IF-01
     bucket: IN-FLIGHT
     silent_wrong_class: true
-    status: open
+    status: closed
+    closed_at: "019ab413"
     title: "AD capture reconstruction ignores lexical scope; the default JIT object cache miscompiles core.ad.guw"
-    observed: "in-process JIT returns -0.6868 where 0.9553 is correct; AOT segfaults"
-    fix_lane: "PR #420 (fix/jit-object-cache-miscompile) — OPEN, not in the cut"
+    observed_before: "in-process JIT returned -0.6868 where 0.9553 is correct; AOT segfaulted"
+    measured: >-
+      Re-measured at 019ab413 on a fresh RelWithDebInfo LLVM-21 build.
+      tests/ad/ad_capture_global_shadow_test.esk passes 19/19 checks
+      (derivative/derivative-n/taylor/GUW, gradient, directional) in THREE
+      configurations that used to disagree: JIT with the object cache ON (the
+      default, which is where the miscompile lived), JIT with
+      ESHKOL_JIT_CACHE=0, and AOT — the AOT arm exits 0 rather than
+      segfaulting. tests/differential/corpus/42_ad_capture_global_shadow.esk
+      produces byte-identical output (3 / 1000 / #(7 7) / #(5 5)) on
+      jit-cached, jit-nocache and aot-O2.
+    fixed_by: "PR #420, merged as 6dcdd168"
     evidence: "PR #420 body; tests/differential/corpus/42_ad_capture_global_shadow.esk; docs/guide/AUTOMATIC_DIFFERENTIATION.md carries ESHKOL_JIT_CACHE=0 eight times as a workaround"
     caught_by: [pr-record-416, pr-record-420]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
@@ -616,9 +653,15 @@ entries:
   - id: IF-02
     bucket: IN-FLIGHT
     silent_wrong_class: true
-    status: open
+    status: closed
+    closed_at: "019ab413"
     title: "take/drop argument order is reversed between the native stdlib and the VM prelude"
-    fix_lane: "PR #418 — OPEN"
+    measured: >-
+      Re-measured at 019ab413. tests/vm_parity/corpus/54_take_drop_srfi1_order.esk
+      produces byte-identical output on native -r and the VM:
+      (a b c) / (d e) / () / () / (1 2 3) / (), i.e. SRFI-1 order (take lst n)
+      on both engines, including the over-long-count edge rows.
+    fixed_by: "PR #418, merged as 9b3fd14d"
     evidence: "lib/core/list/transform.esk:8,14 vs lib/backend/vm_prelude_source.h:80-81; PR #416 Escalation 4"
     caught_by: [pr-record-416, pr-record-418]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
@@ -626,9 +669,21 @@ entries:
   - id: IF-03
     bucket: IN-FLIGHT
     silent_wrong_class: true
-    status: open
+    status: closed
+    closed_at: "019ab413"
     title: "Complex transcendentals reinterpret the complex heap pointer as a double"
-    fix_lane: "PR #419 — OPEN"
+    measured: >-
+      Re-measured at 019ab413. tests/numeric/complex_transcendentals_test.esk
+      passes end to end, exit 0, including the two rows that name this exact
+      defect — "sin of an exact rational uses its value, not its pointer" and
+      "sqrt of an exact rational uses its value, not its pointer". Spot values
+      are mathematically correct on both engines: (sqrt -4) = 2i,
+      (exp i*pi) = -1+1.2246467991473532e-16i, (log -1) = pi*i,
+      (magnitude 3+4i) = 5.
+      NOTE the residue: native prints +2i where the VM prints 0+2i. That is
+      the display-format divergence already carried as PR-08, not a value
+      defect, and it is deliberately NOT folded into this closure.
+    fixed_by: "PR #419, merged as a83b309e"
     evidence: "lib/backend/llvm_codegen.cpp:14191-14223 routes through codegenMathFunction; PR #416 Escalation 1 calls it a memory-safety defect"
     caught_by: [pr-record-416, pr-record-419]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, sanitizer-fuzz-lane]
@@ -636,10 +691,20 @@ entries:
   - id: IF-04
     bucket: IN-FLIGHT
     silent_wrong_class: true
-    status: open
+    status: closed
+    closed_at: "019ab413"
     title: "inexact->exact loses precision"
-    observed: "returns 450359962737049/4503599627370496 (0.09999999999999987) for the documented case"
-    fix_lane: "PR #419 — OPEN"
+    observed_before: "returned 450359962737049/4503599627370496 (0.09999999999999987) for the documented case"
+    measured: >-
+      Re-measured at 019ab413. Both engines answer
+      (inexact->exact 0.1) = 3602879701896397/36028797018963968, which is the
+      exact value of the IEEE-754 double 0.1 (the pre-fix answer was wrong by a
+      factor of 8 in both terms and did not round-trip). (inexact->exact 0.5)
+      = 1/2 and (exact->inexact (inexact->exact 0.1)) = 0.1, so the round trip
+      is now lossless. tests/numeric/inexact_exact_roundtrip_test.esk passes
+      end to end, exit 0, including "0.1's exact numerator/denominator match
+      the documented pair".
+    fixed_by: "PR #419, merged as a83b309e"
     evidence: "docs/ESHKOL_LANGUAGE_GUIDE.md:454; PR #416 Escalation 2"
     caught_by: [pr-record-416, pr-record-419]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
@@ -647,9 +712,16 @@ entries:
   - id: IF-05
     bucket: IN-FLIGHT
     silent_wrong_class: true
-    status: open
+    status: closed
+    closed_at: "019ab413"
     title: "free-energy returns -0.0 on the VM and in the browser build regardless of evidence"
-    fix_lane: "PR #413 — OPEN"
+    measured: >-
+      Re-measured at 019ab413. tests/vm_parity/corpus/56_factor_graph_inference.esk
+      — the regression gate whose whole purpose is that free energy must MOVE
+      when the evidence moves — produces byte-identical output on native -r and
+      the VM: extents (4) and (6) plus 26 assertions, every one #t. The
+      evidence-insensitive -0.0 is gone on the engine that produced it.
+    fixed_by: "PR #413, merged as f1ded1ed"
     evidence: "PR #413; PR #414 'Adjacent divergences found and NOT fixed here'; examples/consciousness.esk"
     caught_by: [pr-record-413, pr-record-414]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
