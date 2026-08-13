@@ -1,0 +1,133 @@
+;;; first_class_predicates_test.esk
+;;;
+;;; SW-34 class-kill test: the ENTIRE R7RS predicate family must work as a
+;;; FIRST-CLASS VALUE, on both engines.
+;;;
+;;; `complex?` was the row missing from the codegen's first-class builtin
+;;; table. Reading the bare name as a value was a LOUD compile-time failure —
+;;;
+;;;     (define (h1 f a) (f a))
+;;;     (display (h1 complex? 1))
+;;;     => error: Undefined variable: complex?
+;;;
+;;; — while `(complex? 1)` in call position answered `#t`, and the VM bound the
+;;; name fine. That asymmetry is why a predicate matrix elsewhere carried a
+;;; documented exclusion for `complex?`: the test had to route around a
+;;; compiler gap, and the comment explaining why is the kind of note that
+;;; quietly becomes permanent.
+;;;
+;;; The fix listed the numeric-tower predicates as a FAMILY rather than
+;;; name-by-name as need arises, because name-by-name is how the gap appeared.
+;;; This test pins the family the same way, for the same reason: the next
+;;; predicate added to the language should fail here on the day it is added,
+;;; not the next time somebody happens to pass one to `filter`.
+;;;
+;;; THE ORACLE IS DIFFERENTIAL. Every check compares the predicate applied
+;;; through a higher-order procedure against the identical application in call
+;;; position, in the same program. Nothing hard-codes what `rational?` ought to
+;;; answer for `5.0`, so the test cannot pass by agreeing with a wrong
+;;; expectation, and it keeps holding if a predicate's semantics legitimately
+;;; change.
+;;;
+;;; Written in the core-Scheme subset so it runs on the native engine (JIT and
+;;; AOT) and on the bytecode VM unchanged.
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (display (string-append "PASS: " name))
+      (begin (set! failures (+ failures 1))
+             (display (string-append "FAIL: " name)))))
+
+(define (h1 f a) (f a))
+
+;; Two routes, because they are two different codegen sites: a USER
+;; higher-order procedure resolves the name through codegenVariable, while a
+;; BUILTIN combinator resolves it through resolveLambdaFunction. SW-35 was live
+;; in both and each needed its own fix.
+(define (via-hof p v) (h1 p v))
+(define (via-map p v) (car (map p (list v))))
+
+(define (agrees name p v direct)
+  (check (string-append name " via HOF") (eq? (via-hof p v) direct))
+  (check (string-append name " via map") (eq? (via-map p v) direct)))
+
+;; --------------------------------------------------------------------
+;; The numeric tower. complex? is the one that used to fail to compile.
+;; --------------------------------------------------------------------
+(agrees "number? on 42"      number?   42   (number? 42))
+(agrees "number? on 2.5"     number?   2.5  (number? 2.5))
+(agrees "number? on string"  number?   "s"  (number? "s"))
+
+(agrees "complex? on 42"     complex?  42   (complex? 42))
+(agrees "complex? on 2.5"    complex?  2.5  (complex? 2.5))
+(agrees "complex? on string" complex?  "s"  (complex? "s"))
+(agrees "complex? on symbol" complex?  'foo (complex? 'foo))
+
+(agrees "real? on 42"        real?     42   (real? 42))
+(agrees "real? on 2.5"       real?     2.5  (real? 2.5))
+(agrees "real? on string"    real?     "s"  (real? "s"))
+
+(agrees "rational? on 42"    rational? 42   (rational? 42))
+(agrees "rational? on 2.5"   rational? 2.5  (rational? 2.5))
+
+(agrees "integer? on 42"     integer?  42   (integer? 42))
+(agrees "integer? on 2.5"    integer?  2.5  (integer? 2.5))
+
+(agrees "exact? on 42"       exact?    42   (exact? 42))
+(agrees "inexact? on 2.5"    inexact?  2.5  (inexact? 2.5))
+
+;; NOT tested here: `exact-integer?`. It is an undefined variable on the VM in
+;; CALL POSITION too — a standing surface gap ratcheted in
+;; tests/vm_parity/SURFACE_BASELINE.tsv, a different defect from this one, and
+;; not smuggled into this test's scope so that this file can run unchanged on
+;; both engines. The native side covers it through
+;; scripts/run_value_position_sweep.py, which skips a name per-engine rather
+;; than per-file.
+
+;; --------------------------------------------------------------------
+;; Sign and zero predicates.
+;; --------------------------------------------------------------------
+(agrees "zero? on 0"         zero?     0    (zero? 0))
+(agrees "zero? on 5"         zero?     5    (zero? 5))
+(agrees "positive? on 5"     positive? 5    (positive? 5))
+(agrees "negative? on 5"     negative? 5    (negative? 5))
+(agrees "even? on 4"         even?     4    (even? 4))
+(agrees "odd? on 4"          odd?      4    (odd? 4))
+
+;; --------------------------------------------------------------------
+;; Type predicates.
+;; --------------------------------------------------------------------
+(agrees "string? on string"  string?   "s"  (string? "s"))
+(agrees "string? on 42"      string?   42   (string? 42))
+(agrees "symbol? on symbol"  symbol?   'foo (symbol? 'foo))
+(agrees "char? on char"      char?     #\a  (char? #\a))
+(agrees "boolean? on #t"     boolean?  #t   (boolean? #t))
+(agrees "vector? on vector"  vector?   (vector 1 2) (vector? (vector 1 2)))
+(agrees "pair? on list"      pair?     (list 1) (pair? (list 1)))
+(agrees "null? on empty"     null?     '()  (null? '()))
+(agrees "list? on list"      list?     (list 1 2) (list? (list 1 2)))
+(agrees "procedure? on car"  procedure? car (procedure? car))
+
+;; --------------------------------------------------------------------
+;; A predicate is only useful first-class if it survives the routes that make
+;; it first-class in real programs.
+;; --------------------------------------------------------------------
+(define stored-predicate complex?)
+(check "stored in a variable"
+       (eq? (h1 stored-predicate 42) (complex? 42)))
+
+(define (predicate-factory) complex?)
+(check "returned from a procedure"
+       (eq? (h1 (predicate-factory) 42) (complex? 42)))
+
+(check "read out of a list"
+       (eq? (h1 (car (list complex?)) 42) (complex? 42)))
+
+(check "used by filter"
+       (equal? (filter number? (list 1 "a" 2)) (list 1 2)))
+
+(if (= failures 0)
+    (display "PASS: first-class predicates — 0 failures")
+    (display "FAIL: first-class predicates"))

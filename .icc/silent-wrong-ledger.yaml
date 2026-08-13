@@ -1993,6 +1993,250 @@ entries:
     caught_by: [pr-record-416]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
+  - id: SW-41
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "complex? cannot be used as a first-class value natively, though the VM binds it"
+    repro: "(display (map complex? (list 1 2)))"
+    observed: >-
+      native -r fails to compile: "Undefined variable: complex?" followed by
+      "Failed to resolve procedure for map". The VM resolves it and answers (#t #t).
+    correct: "both engines should bind it; it is an R7RS 6.2.1 procedure"
+    measured: >-
+      In CALL position (complex? 5) works on both engines. Only the value position
+      diverges. Found while building the SW-31 predicate matrix, which had to drop
+      complex? from its first-class section for exactly this reason — the file says so in
+      a comment rather than quietly omitting it.
+    caught_by: [direct-measurement, sw-31-corpus-authoring]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Classified PARITY-RATCHET rather than SILENT-WRONG: native fails LOUDLY at compile
+      time, so nothing computes a wrong answer. It is a binding-table gap on the native
+      side, and it blocks one row of the predicate matrix from being gated.
+    root_cause: >-
+      complex? had no row in the codegen's first-class builtin table
+      (lookupInlineBuiltin, lib/backend/llvm_codegen.cpp). Reading a bare builtin name as
+      a value consults that table; a name absent from it falls through to
+      "Undefined variable". Call position never consults it, which is why the two
+      positions disagreed.
+    fix: >-
+      The R7RS numeric-tower predicate family is now listed as a FAMILY — number?,
+      complex?, real?, rational?, integer?, exact?, inexact?, exact-integer?, nan?,
+      infinite?, finite? — together with the type predicates, rather than name-by-name
+      as need arises. Name-by-name is how the gap appeared, so the fix removes the
+      mode of failure and not just the instance.
+    verified_at: >-
+      tests/integration/first_class_predicates_test.esk, gated on the JIT lane, the AOT
+      lane and the VM (first_class_predicates_{runtime,aot,vm}_smoke). The oracle is
+      differential: every predicate is compared against the identical application in call
+      position in the same program, through BOTH value-position routes (a user
+      higher-order procedure, and map). The predicate matrix no longer needs its
+      complex? exclusion.
+    id_collision_note: >-
+      The ID SW-34 was allocated concurrently by more than one lane. THIS closure refers
+      to the entry whose title is "complex? cannot be used as a first-class value
+      natively, though the VM binds it", filed on branch
+      fix/numeric-tower-bignum-tail with repro "(display (map complex? (list 1 2)))".
+      It does not speak to whatever else may carry the number SW-34 elsewhere;
+      reconciliation happens at merge.
+    renumbered_from: >-
+      Filed as SW-34 on branch fix/numeric-tower-bignum-tail (PR #439), which did not carry
+      the entry into master. Renumbered TWICE as master moved underneath this PR, each time
+      because the number had been taken by a defect that reached master first and which is
+      not renumbered here:
+        SW-34 -> SW-40   master's SW-34 is #438's "`do` loop variable captured and mutated
+                         by a body closure loses the mutation"
+        SW-40 -> SW-41   master's SW-40 is #443's "a derivative taken through min/max is
+                         silently 0 on the VM"
+      Cite this defect as SW-41. Note for anyone auditing the second hop: git reported NO
+      conflict on that rebase, because the two SW-40 entries landed in different regions of
+      the file. A clean auto-merge is not evidence of a correct ledger; the duplicate was
+      caught by parsing the YAML and counting IDs, which is the check worth keeping.
+
+  - id: SW-35
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "Natively, floor/ceiling/truncate/round used as FIRST-CLASS VALUES return a rational's heap pointer as a number"
+    repro: "(display (map floor (list 7/3 -7/3 (/ (expt 2 100) 3))))"
+    observed: >-
+      native prints something like (4966570936 4966571152 4966571728) — the values are
+      HEAP ADDRESSES, they change between runs of the same binary, and (exact? …) on each
+      is #f. The same call in CALL position, (floor 7/3), correctly prints 2.
+    correct: "(2 -3 422550200076076467165567735125), which the VM prints"
+    measured: >-
+      Whole-list probe across the tower: (map floor (list 7/3 -7/3 (/ (expt 2 100) 3) 2.7 5))
+      gives garbage for the three RATIONALS and correct answers for 2.7 and 5, on all four
+      of floor/ceiling/truncate/round. The VM is correct for every element. Varies per run,
+      which is the signature of an address being printed rather than a value.
+    root_cause_hypothesis: >-
+      The exactness/rational handling for these four lives in the CALL-POSITION lowering
+      (the rational_path block in lib/backend/llvm_codegen.cpp). The value-position route —
+      the builtin wrapper `map` receives — does not go through that lowering and appears to
+      extract the tagged operand as a plain number, which for a rational HEAP_PTR reads the
+      pointer. Same FAMILY as SW-27 (rest-arg procedures referenced as values taking a
+      different ABI from the same procedure in call position), though a different mechanism.
+      Not traced to a line; filed for scoping.
+    discovered_by: >-
+      Probing the first-class route while closing SW-29, because SW-31 had just shown that
+      the value-position route of a builtin can carry its own independent defect.
+    pre_existing: >-
+      Confirmed, NOT introduced by the SW-29 fix. Reproduced on a native binary built with
+      llvm_codegen.cpp, rational.cpp and rational.h reverted to 92bbacd4 (and stdlib.o
+      rebuilt so the comparison was honest): the same per-run-varying addresses appear.
+      The SW-29 fix touches only the call-position block, which is why call position is
+      correct on both the old and new binaries.
+    caught_by: [direct-measurement, sw-29-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The escape analysis is the same one SW-27 already wrote down and which SW-31 just
+      confirmed a second time: builtins need a VALUE-POSITION axis in the higher-order
+      sweep, not only call-position coverage. Three independent defects have now been
+      found in that blind spot.
+    root_cause: >-
+      CONFIRMED, and the filed hypothesis was right. These four have TWO implementations.
+      The call-position lowering (codegenMathFunction, the is_rounding_func block in
+      lib/backend/llvm_codegen.cpp) dispatches on exactness: exact integers and bignums
+      are the identity, rationals go through eshkol_rational_<op>_tagged, only inexact
+      reals reach libm. The value-position route used createBuiltinUnaryMathFunction, a
+      SECOND hand-written wrapper that unpacks the tagged operand as a double — which for
+      a rational reads its HEAP POINTER. There were also TWO value-position routes, and
+      both were wrong: codegenVariable (a builtin reached through a user higher-order
+      procedure) and resolveLambdaFunction (a builtin reached through map/for-each/
+      filter/sort). Fixing only the first left (h floor 7/3) correct while
+      (map floor (list 7/3)) still printed an address.
+    fix: >-
+      Both routes now go through the generic inline-builtin wrapper, which GENERATES its
+      body by re-entering codegenCall — so the exactness-aware lowering IS the wrapper
+      body and cannot drift from it. This is the LE-01 mechanism applied to a second
+      instance of the LE-01 shape (a duplicated implementation diverging from the
+      authoritative one), rather than a second patch to the duplicate.
+    verified_at: >-
+      tests/integration/first_class_rounding_test.esk, gated on the JIT and AOT lanes.
+      Covers all four operators over rationals (positive and negative), a rational whose
+      floor EXCEEDS int64 — (/ (expt 2 100) 3), which an int64-returning entry point
+      cannot carry at all — exact integers, bignums, inexact reals including R7RS
+      round-half-to-even, and exactness of the results. Both value-position routes are
+      exercised. The ledger's stated correct answer
+      (2 -3 422550200076076467165567735125) is reproduced exactly.
+    id_provenance: >-
+      Filed as SW-35 on branch fix/numeric-tower-bignum-tail (PR #439) and NOT carried by
+      that PR's merge, so SW-35 was free on master and the number is retained unchanged.
+
+  - id: SW-36
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "make-string as a first-class value silently DROPPED a supplied fill character"
+    repro: "(define (h2 f a b) (f a b)) (display (h2 make-string 3 #\\x))"
+    observed: '"   " — three spaces, exit 0, no diagnostic'
+    correct: '"xxx", which (make-string 3 #\\x) returns in call position'
+    root_cause: >-
+      The first-class builtin table introduced by LE-01 (#427) listed make-string at
+      arity 1. A fixed-arity closure passes exactly `arity` arguments to the wrapper, so
+      the second argument never reached the lowering at all. The name-to-arity table is
+      maintained by hand, and a row that disagrees with the builtin it wraps produces a
+      wrong answer rather than an error.
+    fix: >-
+      Row corrected to arity 2. R7RS 6.7 makes make-string optional-argument —
+      (make-string k [char]) — and the closure ABI carries ONE arity, so the row wraps
+      the FULL form. That choice is not arbitrary: R7RS says that when char is omitted
+      "the contents are unspecified", so the 1-argument value reference differing from
+      the 1-argument call is CONFORMING, whereas dropping a fill character the caller
+      supplied is a wrong answer. Wrap the form whose result is specified.
+    discovered_by: >-
+      scripts/run_value_position_sweep.py, on its first run. This defect had been live
+      on master since #427 merged and no other gate saw it.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Worth recording as evidence about the sweep rather than about make-string: the
+      defect was introduced BY a fix for this same family, and found by the gate built
+      alongside it, on the first run, in under two minutes. A hand-maintained arity table
+      needs a mechanical check; this is that check.
+
+  - id: SW-37
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "pow as a first-class value SIGSEGVs"
+    repro: "(define (h2 f a b) (f a b)) (display (h2 pow 2 10))"
+    observed: "SIGSEGV; (pow 2 10) in call position returns 1024"
+    correct: "1024"
+    root_cause: >-
+      Residue of the LE-01 class. `pow` sits in the codegen function table as a raw libm
+      symbol with a double,double->double signature, and it appears in neither the
+      math-builtin set nor the first-class builtin table, so a reference to it reached
+      the raw-Function* fallback in codegenVariable. The closure dispatcher then called a
+      foreign-ABI symbol with the closure calling convention, which is undefined
+      behaviour.
+    fix: >-
+      Added to the first-class builtin table at arity 2, so the reference is lowered as a
+      closure-ABI wrapper whose body is generated from the call-position lowering.
+    discovered_by: "scripts/run_value_position_sweep.py, first run"
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+
+  - id: SW-38
+    bucket: SILENT-WRONG
+    status: open
+    title: "On the VM, cadr and caddr used as FIRST-CLASS VALUES return the empty list"
+    repro: "(define (h1 f a) (f a)) (display (h1 cadr (list 1 2 3)))"
+    observed: "VM prints () — exit 0, no diagnostic. Call position (cadr (list 1 2 3)) prints 2."
+    correct: "2 for cadr, 6 for caddr — what call position returns on the same engine"
+    measured: >-
+      All four value-position routes on the VM (passed to a higher-order procedure,
+      stored in a variable, returned from a procedure, reached through map) answer ().
+      All four NATIVE axes answer correctly. Reproduced by
+      scripts/run_value_position_sweep.py --axis vm.
+    discovered_by: >-
+      The value-position sweep's VM axis, on its first full run. This is the case the VM
+      axis exists for: the four native axes agree with each other, so no axis-versus-axis
+      differential can see a VM-only value-position defect.
+    scope_note: >-
+      NOT fixed here, deliberately. The lane that built the sweep works on the NATIVE
+      value-position lowering; this defect is in the VM's own value representation for
+      the c[ad]+r accessors, a different subsystem. Filed precisely rather than fixed
+      badly. Ratcheted in tests/value_position/BASELINE.json so the gate stays honest
+      about it instead of silently tolerating it.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      SILENT-WRONG on the VM: () is a legitimate Scheme value, so a caller sees a wrong
+      answer rather than an error, and () is truthy in Scheme, so a predicate written
+      over it takes the wrong branch.
+
+  - id: SW-39
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "On the VM, string-length / string-ref / vref used as FIRST-CLASS VALUES abort the VM"
+    repro: "(define (h1 f a) (f a)) (display (h1 string-length \"hello\"))"
+    observed: >-
+      The VM terminates with a fatal runtime error and produces no output for the probe;
+      call position (string-length "hello") answers 5 on the same engine.
+    correct: "5 — what call position returns"
+    measured: >-
+      Three value-position routes on the VM (passed, stored, returned) abort;
+      string-ref and vref behave the same way. All four NATIVE axes are correct.
+      Reproduced by scripts/run_value_position_sweep.py --axis vm.
+    discovered_by: "The value-position sweep's VM axis, first full run"
+    scope_note: >-
+      NOT fixed here, deliberately — same reasoning as SW-38. Ratcheted in
+      tests/value_position/BASELINE.json.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Loud rather than silent, so it does not gate a release on its own — but it means
+      any VM program that passes one of these accessors to a higher-order procedure dies
+      rather than running.
+
   # ───────────────────────── LOUD-ERROR ─────────────────────────
 
   - id: LE-01

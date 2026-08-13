@@ -4721,7 +4721,23 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing \\(vm\\)"
                 FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|undefined variable|fatal runtime error")
-    endif()
+    
+    # SW-34: the ENTIRE predicate family first-class, on the VM. `complex?`
+    # was a loud compile-time failure natively while the VM bound it fine, so
+    # this file runs unchanged on both engines and the two gates below and
+    # here are the same assertions on two implementations.
+    add_test(
+        NAME first_class_predicates_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_predicates_test.esk"
+    )
+    set_tests_properties(first_class_predicates_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+endif()
     # SW-24 isolated shape on the VM engine — the engine the defect lived on
     # ((+ 3 4) with a rebound + emitted OP_ADD and printed 7).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk")
@@ -4961,6 +4977,77 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+    # SW-34: the ENTIRE R7RS predicate family as first-class values, on both
+    # native axes. `complex?` was a LOUD compile-time "Undefined variable" the
+    # moment the bare name was read as a value, while call position answered
+    # correctly. The file also exercises both value-position ROUTES — a user
+    # higher-order procedure (codegenVariable) and `map`
+    # (resolveLambdaFunction) — because those are separate codegen sites that
+    # have disagreed before.
+    add_test(
+        NAME first_class_predicates_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_predicates_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_predicates_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_predicates_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_predicates_aot' tests/integration/first_class_predicates_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_predicates_aot'"
+    )
+    set_tests_properties(first_class_predicates_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # SW-35: the exactness-aware rounding builtins reached as VALUES through
+    # BOTH routes. The whole-tower probe is the one that showed heap addresses
+    # where numbers belonged.
+    add_test(
+        NAME first_class_rounding_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_rounding_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_rounding_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class rounding — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_rounding_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_rounding_aot' tests/integration/first_class_rounding_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_rounding_aot'"
+    )
+    set_tests_properties(first_class_rounding_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class rounding — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # THE VALUE-POSITION AXIS itself, as a ctest lane.
+    #
+    # The four gates above pin four specific families. This one pins the
+    # PROPERTY over the whole builtin table the manifest can type: no builtin
+    # may answer differently as a value than it does in call position. It is
+    # the gate that makes the next SW-27/SW-31/SW-34/SW-35 fail here on the
+    # day it is introduced instead of being found by hand months later.
+    add_test(
+        NAME value_position_axis_sweep
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && BUILD_DIR='${CMAKE_CURRENT_BINARY_DIR}' python3 scripts/run_value_position_sweep.py --quiet"
+    )
+    set_tests_properties(value_position_axis_sweep
+        PROPERTIES
+            TIMEOUT 1800
+            PASS_REGULAR_EXPRESSION "value-position sweep: OK"
+            FAIL_REGULAR_EXPRESSION "value-position discrepancy")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")
