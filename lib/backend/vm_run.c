@@ -43,25 +43,43 @@ static int vm_is_exact_number(Value v) {
  * per instruction. */
 #define VM_CHECK_INTERVAL 4096u
 
-/** Resolve the instruction ceiling once per vm_run().
+/* VM-OWNED limit state.
  *
- * The value comes from the active resource-limit configuration, not from the
- * environment directly: these VM sources are freestanding-safe and may not read
- * environment variables at all (enforced by
- * tests/toolchain/vm_source_boundary_test.cpp), so `ESHKOL_VM_MAX_INSN` is
- * parsed by eshkol_init_limits_from_env() alongside the other ceilings and
- * arrives here through eshkol_get_limits(). 0 = unlimited. */
-static uint64_t vm_resolve_max_insn(void) {
-    const eshkol_resource_limits_t* limits = eshkol_get_limits();
-    return limits ? limits->max_vm_instructions : ESHKOL_VM_DEFAULT_MAX_INSN;
+ * These deliberately do NOT reach into the hosted resource-limit layer. The VM
+ * sources are freestanding-safe and are also compiled to WebAssembly, where
+ * lib/core/resource_limits.cpp is not linked at all — an earlier cut of this
+ * fix called eshkol_get_limits() straight from here and every WASM run died
+ * with `missing function: eshkol_get_limits`, taking the whole
+ * wasm_execute_diff_oracle corpus (65 programs) down with it.
+ *
+ * So the dependency runs the other way: hosted entry points RESOLVE the
+ * configuration and PUSH it in via eshkol_vm_install_limits(). A build that
+ * never calls that installer — WASM, or any freestanding profile — keeps the
+ * compiled-in defaults below and links nothing extra. */
+uint64_t g_eshkol_vm_max_insn = ESHKOL_VM_DEFAULT_MAX_INSN;
+int      g_eshkol_vm_insn_limit_active = 0;   /* opt-in, like every ceiling */
+int      g_eshkol_vm_enforce_hard_limits = 1;
+void   (*g_eshkol_vm_poll_interrupt)(void) = 0;
+
+/** Install the resolved limit configuration from a hosted entry point.
+ *
+ * @param max_insn   Instruction ceiling (0 = unlimited).
+ * @param active     Non-zero if ESHKOL_VM_MAX_INSN was actually asked for.
+ * @param enforce    Non-zero to terminate rather than merely record a breach.
+ * @param poll       Cooperative timeout poll, or NULL for none. */
+void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
+                              void (*poll)(void)) {
+    g_eshkol_vm_max_insn = max_insn;
+    g_eshkol_vm_insn_limit_active = active;
+    g_eshkol_vm_enforce_hard_limits = enforce;
+    g_eshkol_vm_poll_interrupt = poll;
 }
 
 /** Periodic limit checkpoint. Returns 1 if the VM should keep running. */
 static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
     *executed += VM_CHECK_INTERVAL;
 
-    if (max_insn > 0 && *executed > max_insn &&
-        eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN)) {
+    if (max_insn > 0 && *executed > max_insn && g_eshkol_vm_insn_limit_active) {
         char detail[128];
         snprintf(detail, sizeof(detail),
                  "bytecode VM executed %llu instructions (pc=%d)",
@@ -70,7 +88,7 @@ static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
         fprintf(stderr, "eshkol: fatal: %s, limit %llu, set by ESHKOL_VM_MAX_INSN\n",
                 detail, (unsigned long long)max_insn);
         fflush(stderr);
-        if (eshkol_get_limits()->enforce_hard_limits) {
+        if (g_eshkol_vm_enforce_hard_limits) {
             _Exit(ESHKOL_EXIT_LIMIT_VM_INSN);
         }
         vm->error = 1;  /* advisory mode: stop this run, do not kill the process */
@@ -78,8 +96,9 @@ static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
     }
 
     /* Same cooperative timeout poll the native engine does at loop back-edges;
-     * the watchdog thread can only request the interrupt, someone has to act. */
-    eshkol_limit_poll_interrupt();
+     * the watchdog thread can only request the interrupt, someone has to act.
+     * NULL in builds with no hosted runtime (WASM, freestanding). */
+    if (g_eshkol_vm_poll_interrupt) g_eshkol_vm_poll_interrupt();
     return 1;
 }
 
@@ -251,7 +270,7 @@ void vm_run(VM* vm) {
 
     Instr instr;
     uint64_t vm_insns_executed = 0;
-    const uint64_t vm_max_insn = vm_resolve_max_insn();
+    const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
     unsigned vm_check_budget = VM_CHECK_INTERVAL;
     DISPATCH();
 
@@ -1116,7 +1135,7 @@ vm_exit:
      * above, so the two dispatch implementations of this one interpreter agree
      * about when a program has run away. */
     uint64_t vm_insns_executed = 0;
-    const uint64_t vm_max_insn = vm_resolve_max_insn();
+    const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
     unsigned vm_check_budget = VM_CHECK_INTERVAL;
     while (!vm->halted && !vm->error && vm->pc < vm->code_len) {
         if (--vm_check_budget == 0) {

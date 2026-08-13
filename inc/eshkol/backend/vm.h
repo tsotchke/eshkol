@@ -167,6 +167,28 @@ int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn
  * success, -1 if `slot` is out of range or already free. */
 int eshkol_vm_unregister_host_native(int slot);
 
+/* ===== Resource limits (SW-10) =====
+ *
+ * The VM owns this state rather than reading the hosted resource-limit layer,
+ * because these sources also build for WebAssembly and freestanding profiles
+ * where lib/core/resource_limits.cpp is not linked. A hosted entry point
+ * resolves the configuration and installs it here; anything that does not call
+ * the installer keeps the compiled-in defaults and links nothing extra. */
+extern uint64_t g_eshkol_vm_max_insn;            /* 0 = unlimited */
+extern int      g_eshkol_vm_insn_limit_active;   /* opt-in, like every ceiling */
+extern int      g_eshkol_vm_enforce_hard_limits;
+extern void   (*g_eshkol_vm_poll_interrupt)(void);
+
+/**
+ * @brief Install the resolved limit configuration from a hosted entry point.
+ * @param max_insn Instruction ceiling (0 = unlimited).
+ * @param active   Non-zero if ESHKOL_VM_MAX_INSN was actually asked for.
+ * @param enforce  Non-zero to terminate rather than merely record a breach.
+ * @param poll     Cooperative timeout poll, or NULL for none.
+ */
+void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
+                              void (*poll)(void));
+
 /* Helpers callable only from a registered host-native callback. */
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out);
 int eshkol_vm_host_push_int64(VM* vm, int64_t value);

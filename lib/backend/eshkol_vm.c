@@ -2098,7 +2098,14 @@ int main(int argc, char** argv) {
      * anything runs. The VM sources themselves are freestanding-safe and never
      * touch the environment; this hosted entry point is where ESHKOL_VM_MAX_INSN
      * (and its siblings) become the active configuration that vm_run() reads. */
-    eshkol_init_limits_from_env();
+    {
+        eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+        eshkol_vm_install_limits(
+            limits.max_vm_instructions,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
+            limits.enforce_hard_limits,
+            eshkol_limit_poll_interrupt);
+    }
 
     if (argc > 1) {
         /* Parse flags */

@@ -3762,12 +3762,12 @@ static void execute_chunk(FuncChunk* chunk) {
      * the documented "unlimited". Both come from the shared resource-limit
      * configuration now, so this companion interpreter and vm_run() answer
      * "has this program run away" the same way. */
-    const uint64_t max_insn = eshkol_get_limits()->max_vm_instructions;
+    const uint64_t max_insn = g_eshkol_vm_max_insn;
 
     while (!halted && !error && pc < chunk->code_len) {
         if (frame_count > max_depth) max_depth = frame_count;
         if (max_insn > 0 && (uint64_t)(++insn_count) > max_insn &&
-            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN)) {
+            g_eshkol_vm_insn_limit_active) {
             printf("RUNAWAY (%llu insns, depth=%d, heap=%d)\n",
                    (unsigned long long)max_insn, max_depth, heap_next);
             error = 1;
@@ -6252,7 +6252,14 @@ int main(int argc, char** argv) {
     /* SW-10: resolve the documented resource-limit environment variables —
      * ESHKOL_VM_MAX_INSN among them — into the active configuration that
      * execute_chunk() reads, before any bytecode runs. */
-    eshkol_init_limits_from_env();
+    {
+        eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+        eshkol_vm_install_limits(
+            limits.max_vm_instructions,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
+            limits.enforce_hard_limits,
+            eshkol_limit_poll_interrupt);
+    }
 
     printf("=== Eshkol Compiler (targeting 38-opcode VM) ===\n\n");
 
