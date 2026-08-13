@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include "eshkol/core/resource_limits.h"
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -3753,12 +3754,23 @@ static void execute_chunk(FuncChunk* chunk) {
     int64_t insn_count = 0;
     int max_depth = 0;
     int trace_on = g_trace_on; /* set by --trace flag */
+
+    /* SW-10: one resolution of the instruction ceiling for the whole run.
+     * This used to call getenv() and atoll() on EVERY instruction, inside the
+     * hottest loop in this interpreter. It also disagreed with the ceiling the
+     * main VM now applies: a value of 0 meant "stop immediately" rather than
+     * the documented "unlimited". Both come from the shared resource-limit
+     * configuration now, so this companion interpreter and vm_run() answer
+     * "has this program run away" the same way. */
+    const uint64_t max_insn = eshkol_get_limits()->max_vm_instructions;
+
     while (!halted && !error && pc < chunk->code_len) {
         if (frame_count > max_depth) max_depth = frame_count;
-        { int64_t max_insn = 10000000LL;
-          const char* env_max = getenv("ESHKOL_VM_MAX_INSN");
-          if (env_max) max_insn = atoll(env_max);
-          if (++insn_count > max_insn) { printf("RUNAWAY (%lld insns, depth=%d, heap=%d)\n", (long long)max_insn, max_depth, heap_next); error=1; break; }
+        if (max_insn > 0 && (uint64_t)(++insn_count) > max_insn) {
+            printf("RUNAWAY (%llu insns, depth=%d, heap=%d)\n",
+                   (unsigned long long)max_insn, max_depth, heap_next);
+            error = 1;
+            break;
         }
         if (trace_on && insn_count < 500) {
             printf("  [%04d] op=%2d sp=%d fp=%d", pc-1, chunk->code[pc-1].op, sp, fp);
@@ -6236,6 +6248,11 @@ static void compile_and_run(const char* source) {
  *        reads it, and calls compile_and_run().
  */
 int main(int argc, char** argv) {
+    /* SW-10: resolve the documented resource-limit environment variables —
+     * ESHKOL_VM_MAX_INSN among them — into the active configuration that
+     * execute_chunk() reads, before any bytecode runs. */
+    eshkol_init_limits_from_env();
+
     printf("=== Eshkol Compiler (targeting 38-opcode VM) ===\n\n");
 
     /* Check for --emit-eskb and --trace flags */
