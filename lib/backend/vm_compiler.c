@@ -2152,11 +2152,21 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     }
 
     if (slot >= 0 && is_boxed) {
-        /* Boxed local: emit GET_LOCAL(box), CONST(0), compile(value), VEC_SET */
+        /* Boxed local: emit GET_LOCAL(box), CONST(0), compile(value), VEC_SET.
+         *
+         * OP_VEC_SET pops its three operands and PUSHES NIL, but the shared
+         * tail below already pushes the NIL that `set!` evaluates to. Without
+         * this POP the boxed paths left TWO values where every caller pops
+         * one, so each execution stranded one operand-stack value. Inside a
+         * frame that is about to RETURN the surplus was absorbed and invisible;
+         * in a bytecode loop compiled into the SAME chunk — a `do` body, whose
+         * statements are followed by exactly one OP_POP each — it accumulated
+         * once per iteration until the operand stack overflowed. */
         chunk_emit(c, OP_GET_LOCAL, slot);  /* push box (vector) */
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0))); /* index 0 */
         compile_expr(c, node->children[2], 0); /* compile new value */
         chunk_emit(c, OP_VEC_SET, 0);       /* box[0] = value */
+        chunk_emit(c, OP_POP, 0);           /* discard VEC_SET's NIL */
     } else if (slot >= 0) {
         /* Unboxed local: direct SET_LOCAL */
         compile_expr(c, node->children[2], 0);
@@ -2212,11 +2222,14 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                 }
                 if (final_uv >= 0) {
                     if (var_boxed) {
-                        /* Boxed upvalue: GET_UPVALUE(box), CONST 0, value, VEC_SET */
+                        /* Boxed upvalue: GET_UPVALUE(box), CONST 0, value,
+                         * VEC_SET — then discard VEC_SET's NIL, for the same
+                         * reason as the boxed-local path above. */
                         chunk_emit(c, OP_GET_UPVALUE, final_uv);
                         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
                         compile_expr(c, node->children[2], 0);
                         chunk_emit(c, OP_VEC_SET, 0);
+                        chunk_emit(c, OP_POP, 0);
                     } else {
                         compile_expr(c, node->children[2], 0);
                         chunk_emit(c, OP_SET_UPVALUE, final_uv);
@@ -2234,129 +2247,188 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
 
 /**
  * @brief Compile `(do ((var init [step])...) (test result...) body...)`.
- *        Initializes loop variables, then loops: evaluate the exit test;
- *        if true, evaluate the result expressions (last one in tail
- *        position) and exit; if false, run the body, evaluate all step
- *        expressions before storing any of them (so each step can
- *        reference the pre-step values of the others — parallel update),
- *        then loop back. Note: the function briefly emits a first,
- *        differently-structured attempt at this loop (see the inline
- *        commentary explaining the JUMP_IF_FALSE polarity confusion) before
- *        resetting `c->code_len` back to loop_top and re-emitting the
- *        correct version — the first attempt's bytecode is discarded.
+ *
+ * Emits: bind the loop variables, then loop — evaluate the exit test; if true,
+ * evaluate the result expressions (last one in tail position when the scope
+ * needs no cleanup) and leave the loop; if false, run the body, evaluate ALL
+ * step expressions before storing any of them (so each step sees the pre-step
+ * values of the others — R7RS 4.2.4 parallel update), then loop back.
+ *
+ * THREE DEFECTS THIS REPLACES.
+ *
+ *  1. THE LOOP VARIABLES WERE NEVER POPPED (LE-10, and a silent-wrong case
+ *     wider than the one that entry was filed for). `compile_form_let()` ends
+ *     with `OP_POPN n_let_locals`; this function ended by decrementing
+ *     `c->n_locals` — a COMPILE-TIME bookkeeping change with no runtime
+ *     effect — so every `do` form stranded one operand-stack value per loop
+ *     variable. Top-level bindings live in stack slots the compiler hands out
+ *     by counting (`add_local`), and the top-level driver emits exactly one
+ *     `OP_POP` per expression that grew no local, so the stranded values shift
+ *     every later slot. This is the same corruption documented on
+ *     compile_form_require() and compile_form_with_region(), reached a third
+ *     way. It needed no closure and no capture to bite:
+ *
+ *         (do ((i 0 (+ i 1))) ((= i 2)) 1)
+ *         (define q 42)
+ *         (display q)          ; VM 2, native 42 — q read the stranded `i`
+ *
+ *     Two sequential `do` loops miscompiled the second one the same way
+ *     (VM 13, native 40). The loud shapes LE-10 records — "VM heap object
+ *     limit reached", "calling non-function", and hangs — are the same
+ *     stranding landing on a slot whose junk happens to be a loop counter or
+ *     a callee.
+ *
+ *  2. THE BODY AND STEPS WERE COMPILED TWICE. The function used to emit a
+ *     complete first version of the loop, then "discard" it with
+ *     `c->code_len = loop_top` and re-emit — leftover scaffolding from a
+ *     debugging session, its reasoning still in the source as commentary about
+ *     JUMP_IF_FALSE polarity. Rewinding `code_len` un-emits CODE and nothing
+ *     else: the discarded pass had already appended to the constant pool,
+ *     registered upvalues, written closure PC constants pointing into the
+ *     region about to be overwritten, and pushed entries onto the global
+ *     forward-reference repatch arrays. Compiling a body for its side effects
+ *     and throwing the code away is not a discard; the correct structure is
+ *     simply emitted once below.
+ *
+ *  3. A MUTATED-AND-CAPTURED LOOP VARIABLE WAS CAPTURED BY VALUE (SW-34).
+ *     `compile_form_let()` has always run `needs_boxing()` over its bindings;
+ *     this function bound its variables with a bare `add_local()`, so
+ *     `OP_CLOSURE` copied the variable's VALUE into the closure's upvalue
+ *     array and an inner `set!` mutated a private copy:
+ *
+ *         (define (f n)
+ *           (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+ *               ((lambda () (set! a (+ a 1))))))
+ *         (f 5)                ; VM 0, native 5
+ *
+ *     The same loop at TOP LEVEL was correct, which is the tell: the top-level
+ *     chunk has the open-slot relay (native calls 151/252) aliasing an
+ *     absolute VM stack slot, and that relay is deliberately restricted to the
+ *     root chunk because a function's frame dies on return. Boxing is the
+ *     mechanism that works at every depth — the same fix, and the same
+ *     `needs_boxing()` predicate, that the `let` binding form already used.
+ *
+ * A do variable is in scope for the test, the results, the body AND every step
+ * expression, so the capture scan covers all four; a variable captured only by
+ * a step or a result is boxed just the same.
  */
 static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
-    (void)head; (void)tail;
+    (void)head;
+    int saved_locals = c->n_locals;
     c->scope_depth++;
     Node* vars = node->children[1];
     Node* test = node->children[2];
 
-    /* Initialize loop variables */
+    /* Everything a do variable is in scope for, for needs_boxing(). */
+    Node* scope_nodes[64];
+    int n_scope = 0;
+    if (test && test->type == N_LIST)
+        for (int i = 0; i < test->n_children && n_scope < 64; i++)
+            scope_nodes[n_scope++] = test->children[i];
+    for (int i = 3; i < node->n_children && n_scope < 64; i++)
+        scope_nodes[n_scope++] = node->children[i];
+    for (int i = 0; i < vars->n_children && n_scope < 64; i++) {
+        Node* b = vars->children[i];
+        if (b->type == N_LIST && b->n_children >= 3) scope_nodes[n_scope++] = b->children[2];
+    }
+
+    /* Bind the loop variables, boxing the ones a nested lambda both captures
+     * and `set!`s so every closure shares one cell (SW-34). */
     for (int i = 0; i < vars->n_children; i++) {
         Node* b = vars->children[i];
         if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
+            const char* vname = b->children[0]->symbol;
+            int box = needs_boxing(scope_nodes, n_scope, vname);
             compile_expr(c, b->children[1], 0);
-            add_local(c, b->children[0]->symbol);
+            if (box) chunk_emit(c, OP_VEC_CREATE, 1);
+            add_local(c, vname);
+            if (box) c->locals[c->n_locals - 1].boxed = 1;
         }
     }
+    int n_do_locals = c->n_locals - saved_locals;
 
-    /* Loop top */
-    int loop_top = c->code_len;
+    if (test && test->type == N_LIST && test->n_children >= 1) {
+        int loop_top = c->code_len;
 
-    /* Test */
-    if (test->type == N_LIST && test->n_children >= 1) {
+        /* Exit test. TRUE means leave the loop, so the body is the FALSE arm. */
         compile_expr(c, test->children[0], 0);
-        int jexit = placeholder(c);
+        int jbody = placeholder(c);           /* JUMP_IF_FALSE -> body */
 
-        /* Body (if any) */
-        for (int i = 3; i < node->n_children; i++) {
-            compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_POP, 0);
-        }
-
-        /* Step — evaluate ALL step expressions, then store (parallel) */
-        int step_count = 0;
-        for (int i = 0; i < vars->n_children; i++) {
-            Node* b = vars->children[i];
-            if (b->type == N_LIST && b->n_children >= 3) {
-                compile_expr(c, b->children[2], 0);
-                step_count++;
+        /* Exit arm: the result sequence. Not in tail position when locals
+         * still have to be popped — a TAIL_CALL would skip the OP_POPN. */
+        int result_tail = (n_do_locals > 0) ? 0 : tail;
+        if (test->n_children >= 2) {
+            for (int i = 1; i < test->n_children; i++) {
+                int is_last = (i == test->n_children - 1);
+                compile_expr(c, test->children[i], is_last ? result_tail : 0);
+                if (!is_last) chunk_emit(c, OP_POP, 0);
             }
-        }
-        /* Store in reverse order */
-        for (int i = vars->n_children - 1; i >= 0; i--) {
-            Node* b = vars->children[i];
-            if (b->type == N_LIST && b->n_children >= 3) {
-                int slot = resolve_local(c, b->children[0]->symbol);
-                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
-            }
-        }
-
-        /* Loop back */
-        chunk_emit(c, OP_LOOP, loop_top);
-
-        /* Exit: evaluate result expression */
-        patch(c, jexit, OP_JUMP_IF_FALSE, c->code_len - 1);
-        /* Wait — JUMP_IF_FALSE jumps when false. The test is the EXIT condition.
-         * When test is TRUE → exit. When FALSE → continue loop.
-         * So: if test is true → DON'T jump (fall through to exit).
-         *     if test is false → jump back to loop.
-         * Need: JUMP_IF_FALSE → loop_body, then after body+step → LOOP back.
-         * After LOOP: exit point. */
-        /* Actually restructure: test → if FALSE, do body+step+loop. If TRUE, exit. */
-        /* Current: test → jexit (JUMP_IF_FALSE to ???). Body. Step. LOOP.
-         * jexit should point to AFTER the LOOP (the exit point).
-         * But JUMP_IF_FALSE jumps when FALSE. If test is FALSE → continue loop body.
-         * If test is TRUE → skip to exit.
-         * So JUMP_IF_FALSE should jump PAST the exit... no.
-         *
-         * Let me use: NOT test → JUMP_IF_FALSE to exit. */
-        /* Restart: */
-        c->code_len = loop_top; /* redo from loop top */
-        compile_expr(c, test->children[0], 0);
-        /* test is TRUE when loop should exit */
-        int jbody = placeholder(c); /* JUMP_IF_FALSE → body (continue loop) */
-        /* Exit: result */
-        if (test->n_children >= 2)
-            compile_expr(c, test->children[1], tail);
-        else
+        } else {
             chunk_emit(c, OP_NIL, 0);
-        int jexit2 = placeholder(c); /* JUMP over body+step */
+        }
+        int jexit = placeholder(c);           /* JUMP -> past body+step */
 
-        /* Body */
-        int body_start = c->code_len;
-        patch(c, jbody, OP_JUMP_IF_FALSE, body_start);
-
+        /* Body. */
+        patch(c, jbody, OP_JUMP_IF_FALSE, c->code_len);
         for (int i = 3; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_POP, 0);
         }
 
-        /* Step */
-        step_count = 0;
+        /* Steps: evaluate every step expression BEFORE storing any of them, so
+         * each one sees the pre-step values (R7RS parallel update). The values
+         * are held in anonymous locals rather than being consumed straight off
+         * the stack, because a boxed variable is written with VEC_SET, which
+         * needs its box and index UNDER the value — an order a bare push/store
+         * pair cannot produce. The placeholder name is unspellable as a Scheme
+         * symbol, so resolve_local() can never match it. */
+        int n_steps = 0;
         for (int i = 0; i < vars->n_children; i++) {
             Node* b = vars->children[i];
             if (b->type == N_LIST && b->n_children >= 3) {
                 compile_expr(c, b->children[2], 0);
-                step_count++;
+                add_local(c, " do step");
+                n_steps++;
             }
         }
-        for (int i = vars->n_children - 1; i >= 0; i--) {
+        int step_base = c->n_locals - n_steps;
+        int step_i = 0;
+        for (int i = 0; i < vars->n_children; i++) {
             Node* b = vars->children[i];
-            if (b->type == N_LIST && b->n_children >= 3) {
-                int slot = resolve_local(c, b->children[0]->symbol);
-                if (slot >= 0) chunk_emit(c, OP_SET_LOCAL, slot);
+            if (!(b->type == N_LIST && b->n_children >= 3)) continue;
+            int tmp_slot = c->locals[step_base + step_i].slot;
+            step_i++;
+            int slot = resolve_local(c, b->children[0]->symbol);
+            if (slot < 0) continue;
+            int boxed = 0;
+            for (int li = c->n_locals - 1; li >= 0; li--)
+                if (c->locals[li].slot == slot && c->locals[li].boxed) { boxed = 1; break; }
+            if (boxed) {
+                chunk_emit(c, OP_GET_LOCAL, slot);                       /* box   */
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0))); /* index */
+                chunk_emit(c, OP_GET_LOCAL, tmp_slot);                   /* value */
+                chunk_emit(c, OP_VEC_SET, 0);
+                chunk_emit(c, OP_POP, 0);       /* VEC_SET pushes NIL */
+            } else {
+                chunk_emit(c, OP_GET_LOCAL, tmp_slot);
+                chunk_emit(c, OP_SET_LOCAL, slot);
             }
         }
+        for (int i = 0; i < n_steps; i++) chunk_emit(c, OP_POP, 0);
+        c->n_locals -= n_steps;
 
         chunk_emit(c, OP_LOOP, loop_top);
-        patch(c, jexit2, OP_JUMP, c->code_len);
+        patch(c, jexit, OP_JUMP, c->code_len);
+    } else {
+        /* Malformed `(do (bindings))` with no test clause: still leave exactly
+         * one value, so the caller's balancing OP_POP has something to take. */
+        chunk_emit(c, OP_NIL, 0);
     }
 
-    /* Pop locals */
-    while (c->n_locals > 0 && c->locals[c->n_locals-1].depth == c->scope_depth)
-        c->n_locals--;
+    /* Drop the loop variables, keeping the result on top (LE-10). */
+    if (n_do_locals > 0) chunk_emit(c, OP_POPN, n_do_locals);
+    c->n_locals = saved_locals;
     c->scope_depth--;
     return;
 }
