@@ -479,7 +479,7 @@ entries:
   - id: SW-27
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "168bd8a4"
+    closed_at: "256c31a8"
     closed_by: "PR #427 (branch fix/first-class-builtins)"
     title: "A REST-ARG procedure referenced as a VALUE loses its variadic shape; the rest parameter receives a bare argument instead of a list"
     repro: "(define (h f a b) (f a b)) (display (h append (list 1) (list 2)))"
@@ -627,7 +627,7 @@ entries:
     bucket: LOUD-ERROR
     subtag: structural
     status: closed
-    closed_at: "a1c28375"
+    closed_at: "9387bbdf"
     closed_by: "PR #427 (branch fix/first-class-builtins)"
     title: "Builtins are call-position-only; passing one as a first-class value SIGSEGVs (exit 139)"
     repro: "(define (ap f a b) (f a b)) (display (ap string<? \"a\" \"b\"))"
