@@ -758,6 +758,22 @@ probe event_loop_works \
      echo "$aot" | grep -qE "^FAIL:" && exit 1;
      exit 0'
 
+# ───────────────────────────────────────────────────────────────────
+# Silent-wrong flaw gate. Every probe above certifies that something
+# WORKS; none of them can certify that nothing silently LIES. This one
+# grades .icc/silent-wrong-ledger.yaml — the enumeration of defects that
+# return a wrong value with no diagnostic and exit 0 — and is the gate
+# that holds the tag while any of them is open and unwaived. It fails
+# closed: a missing or unparseable ledger is a FAIL, never a pass.
+#
+# The grader writes its own trace file, so this probe deliberately runs
+# it with --no-trace and lets the probe helper emit the eshkol_smoke
+# event, keeping exactly one no_open_silent_wrong event in the bundle.
+# ───────────────────────────────────────────────────────────────────
+probe no_open_silent_wrong \
+    'No open, unwaived SILENT-WRONG flaw in .icc/silent-wrong-ledger.yaml (wrong value / wrong derivative / wrong memory outcome with no diagnostic and exit 0 is tag-blocking)' \
+    'cd "$REPO_ROOT"; python3 scripts/gate_no_silent_wrong.py --no-trace'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
