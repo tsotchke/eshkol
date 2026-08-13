@@ -2126,7 +2126,7 @@ All standard arithmetic operators (`+`, `-`, `*`, `/`, `quotient`, `remainder`, 
 
 #### Conversion
 - `(exact->inexact n)` — Converts to double (may lose precision for large bignums)
-- `(inexact->exact n)` — Converts double to nearest integer
+- `(inexact->exact n)` — Returns the operand's exact value: an exact integer for a whole double (a bignum when it exceeds int64), a rational otherwise. `(inexact->exact 0.1)` is `3602879701896397/36028797018963968`, the exact value of that double, so `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit
 - `(number->string n)` — Works correctly with bignums (not pointer bits)
 - `(string->number s)` — Parses large integers as bignums when they exceed int64 range
 
@@ -2170,6 +2170,16 @@ First-class complex number type with full AD support.
 
 ### Arithmetic
 All standard operators (`+`, `-`, `*`, `/`) work with complex numbers. Division uses Smith's formula for numerical stability with large magnitudes.
+
+### Transcendental Functions
+`sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` and `expt` all accept complex arguments, on the principal branch with C99 Annex G branch cuts. `floor`, `ceiling`, `truncate`, `round`, `cbrt` and `abs` are real-domain only and signal a catchable type error on a complex (use `magnitude` for `|z|`).
+
+```scheme
+(sqrt (make-rectangular -1.0 0.0))    ; => 0.0+1.0i
+(exp (make-rectangular 0.0 3.14159))  ; => -1.0+0.0i (approximately)
+(expt (make-rectangular 0.0 1.0)
+      (make-rectangular 0.0 1.0))     ; => 0.20787957635076193 (i^i)
+```
 
 ```scheme
 (define z1 (make-rectangular 3.0 4.0))

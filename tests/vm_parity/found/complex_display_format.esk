@@ -1,0 +1,17 @@
+;; VERIFIED DIVERGENCE (pre-existing, display only): the two engines format a
+;; complex number differently. Native suppresses a unit imaginary part and a
+;; zero real part; the VM always prints both components in full.
+;;
+;;   (display (make-rectangular 2.0 1.0))   native: 2+i     VM: 2+1i
+;;   (display (make-rectangular 0.0 1.0))   native: +i      VM: 0+1i
+;;
+;; The VALUES agree bit-for-bit on both engines — see
+;; tests/vm_parity/corpus/54_complex_transcendentals.esk, which prints
+;; real-part/imag-part precisely so this formatting difference cannot mask a
+;; value regression. Only the printed spelling differs.
+;;
+;; Filed while fixing the complex transcendentals (task #113); untouched by
+;; that fix, which changed no display code on either engine.
+(display (make-rectangular 2.0 1.0)) (newline)
+(display (make-rectangular 0.0 1.0)) (newline)
+(display (make-rectangular 3.0 4.0)) (newline)

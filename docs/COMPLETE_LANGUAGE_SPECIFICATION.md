@@ -3073,7 +3073,7 @@ exact    exact     exact    inexact   inexact
 1. Arithmetic on two exact values produces an exact result when mathematically defined.
 2. Arithmetic involving at least one inexact operand produces an inexact result.
 3. `exact->inexact` converts to the nearest IEEE 754 double. Precision loss is possible for bignums with magnitude > 2^53.
-4. `inexact->exact` converts a double to the nearest rational representation via continued fraction expansion.
+4. `inexact->exact` returns the operand's EXACT value, never a nearby one. A finite IEEE 754 double is exactly `mantissa * 2^exponent` with a 53-bit integer mantissa, and that is what the conversion returns: `(inexact->exact 0.1)` is `3602879701896397/36028797018963968`. A whole-valued double becomes an exact integer (promoting to a bignum past int64 range, so `(inexact->exact 1e300)` is an exact 301-digit integer); a fractional one becomes a rational with a power-of-two denominator (subnormals need a bignum denominator, up to 2^1074). The conversion is therefore lossless in both directions: `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit for every finite `x`. Infinities and NaN have no exact value and signal an error.
 
 #### 14.3.2 Mixed-Exactness Dispatch
 
@@ -3186,7 +3186,28 @@ result_imag = (b - a * r) / denom
 - `(real-part z)` -- Returns the real component as a double.
 - `(imag-part z)` -- Returns the imaginary component as a double.
 
-#### 15.3.3 Promotion from Real
+#### 15.3.3 Transcendental Functions
+
+The math builtins extend to the complex domain on the principal branch, with
+the branch cuts of C99 Annex G (signed zero selects the branch, so
+`(sqrt (make-rectangular -1.0 0.0))` is `0.0+1.0i` and
+`(sqrt (make-rectangular -1.0 -0.0))` is `0.0-1.0i`):
+
+`sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
+`acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, and `expt`
+with a complex base, a complex exponent, or both.
+
+The remaining math builtins are defined on the reals only — `floor`,
+`ceiling`, `truncate`, `round`, `cbrt` and `abs` (the complex counterpart of
+`abs` is `magnitude`). Applying one to a complex signals a catchable type
+error naming the procedure; it never coerces.
+
+**Implementation:** one shared core, `inc/eshkol/core/complex_math.h`. The
+native runtime exposes each function as `eshkol_complex_<name>` for the LLVM
+back end to call, and the bytecode VM compiles the same header in, so both
+engines return identical bits.
+
+#### 15.3.4 Promotion from Real
 
 When a real number is used in a context requiring a complex (e.g., arithmetic with a complex operand), it is promoted to complex with `imag = 0.0`. The `convertToComplex` codegen path handles INT64, DOUBLE, and HEAP_PTR (bignum) inputs, converting bignums via `eshkol_bignum_to_double` before constructing the complex.
 

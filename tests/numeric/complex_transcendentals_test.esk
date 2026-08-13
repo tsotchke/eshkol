@@ -1,0 +1,111 @@
+(require stdlib)
+
+; Task #113 — complex transcendentals.
+;
+; Before this suite existed, every unary math builtin applied to a complex
+; read the tagged value's HEAP POINTER as an IEEE double. The measured
+; pre-fix answers are quoted next to the assertions that catch them, so this
+; file fails closed on the original defect rather than merely covering the
+; fix: run it against a pre-fix build and the first two cases print FAIL.
+
+(display "TEST: Complex transcendental functions (task #113)") (newline)
+
+(define (chk name ok)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+
+; `<=` not `<`: an exactness assertion passes tol 0.0.
+(define (near? a b tol) (<= (abs (- a b)) tol))
+
+; A complex result is checked component-wise. `complex?` is true for reals
+; too (R7RS: every real is a complex), so it can never detect the defect —
+; only the component values can.
+(define (chk-z name z re im tol)
+  (chk name (and (near? (real-part z) re tol)
+                 (near? (imag-part z) im tol))))
+
+(define pi 3.141592653589793)
+
+; ── The two examples documented in docs/ESHKOL_LANGUAGE_GUIDE.md ──────────
+; (sqrt (make-rectangular -1.0 0.0)) ;; -> 0.0+1.0i
+; (exp (make-rectangular 0.0 3.14159)) ;; -> -1.0+0.0i (approximately)
+
+(define doc-sqrt (sqrt (make-rectangular -1.0 0.0)))
+; pre-fix: 73278.56614317723 (an address read as a double)
+(chk "doc: (sqrt (make-rectangular -1.0 0.0)) real part is exactly 0.0"
+     (= (real-part doc-sqrt) 0.0))
+(chk "doc: (sqrt (make-rectangular -1.0 0.0)) imag part is exactly 1.0"
+     (= (imag-part doc-sqrt) 1.0))
+
+(define doc-exp (exp (make-rectangular 0.0 3.14159)))
+; pre-fix: +inf.0
+(chk-z "doc: (exp (make-rectangular 0.0 3.14159)) is -1.0+0.0i approximately"
+       doc-exp -1.0 0.0 1.0e-5)
+
+; ── Exact-valued cases ───────────────────────────────────────────────────
+(chk-z "sqrt(3+4i) = 2+1i exactly"
+       (sqrt (make-rectangular 3.0 4.0)) 2.0 1.0 0.0)
+(chk-z "sqrt(-4+0i) = 0+2i exactly"
+       (sqrt (make-rectangular -4.0 0.0)) 0.0 2.0 0.0)
+
+; Branch cut: sqrt is continuous from above on the negative real axis, so the
+; sign of a zero imaginary part selects the root. (* -1.0 0.0) is -0.0 at run
+; time and in the constant folder.
+(chk-z "sqrt(-1-0i) = 0-1i (principal branch cut)"
+       (sqrt (make-rectangular -1.0 (* -1.0 0.0))) 0.0 -1.0 0.0)
+
+(chk-z "log(-1+0i) = 0+pi i" (log (make-rectangular -1.0 0.0)) 0.0 pi 1.0e-15)
+(chk-z "exp(0+pi i) = -1+0i (Euler)" (exp (make-rectangular 0.0 pi))
+       -1.0 0.0 1.0e-15)
+
+; ── Identities over the whole implemented surface ────────────────────────
+(define z (make-rectangular 0.7 -1.3))
+
+(define (z-near? a b tol)
+  (and (near? (real-part a) (real-part b) tol)
+       (near? (imag-part a) (imag-part b) tol)))
+
+(chk "exp(log z) = z" (z-near? (exp (log z)) z 1.0e-12))
+(chk "sqrt(z)^2 = z" (z-near? (let ((r (sqrt z))) (* r r)) z 1.0e-12))
+(chk "sin^2 z + cos^2 z = 1"
+     (z-near? (+ (* (sin z) (sin z)) (* (cos z) (cos z)))
+              (make-rectangular 1.0 0.0) 1.0e-12))
+(chk "tan z = sin z / cos z" (z-near? (tan z) (/ (sin z) (cos z)) 1.0e-12))
+(chk "cosh^2 z - sinh^2 z = 1"
+     (z-near? (- (* (cosh z) (cosh z)) (* (sinh z) (sinh z)))
+              (make-rectangular 1.0 0.0) 1.0e-12))
+(chk "tanh z = sinh z / cosh z" (z-near? (tanh z) (/ (sinh z) (cosh z)) 1.0e-12))
+(chk "sin(asin z) = z" (z-near? (sin (asin z)) z 1.0e-12))
+(chk "cos(acos z) = z" (z-near? (cos (acos z)) z 1.0e-12))
+(chk "tan(atan z) = z" (z-near? (tan (atan z)) z 1.0e-12))
+(chk "sinh(asinh z) = z" (z-near? (sinh (asinh z)) z 1.0e-12))
+(chk "cosh(acosh z) = z" (z-near? (cosh (acosh z)) z 1.0e-12))
+(chk "tanh(atanh z) = z" (z-near? (tanh (atanh z)) z 1.0e-12))
+(chk "exp2 z = exp(z log 2)"
+     (z-near? (exp2 z) (exp (* z (log (make-rectangular 2.0 0.0)))) 1.0e-12))
+(chk "log2 z = log z / log 2"
+     (z-near? (log2 z) (/ (log z) (log 2.0)) 1.0e-12))
+(chk "log10 z = log z / log 10"
+     (z-near? (log10 z) (/ (log z) (log 10.0)) 1.0e-12))
+
+; i^i = e^(-pi/2), the classic real-valued complex power.
+(chk-z "expt(i, i) = e^(-pi/2)"
+       (expt (make-rectangular 0.0 1.0) (make-rectangular 0.0 1.0))
+       0.20787957635076193 0.0 1.0e-12)
+
+; ── The same reinterpretation, reached through an exact rational ─────────
+; The scalar fallback that misread complex pointers misread rational and
+; bignum pointers too: pre-fix (sin (/ 1 2)) was 0.9241426121154859, the
+; sine of an address.
+(chk "sin of an exact rational uses its value, not its pointer"
+     (near? (sin (/ 1 2)) 0.479425538604203 1.0e-15))
+(chk "sqrt of an exact rational uses its value, not its pointer"
+     (near? (sqrt (/ 1 4)) 0.5 1.0e-15))
+
+; ── Negative real sqrt/log stay in the documented promotion ──────────────
+; docs/reference/language/numeric-tower.md: (display (sqrt -1)) prints "+i".
+(chk-z "(sqrt -1) promotes an exact negative to +i"
+       (sqrt -1) 0.0 1.0 0.0)
+(chk "(sqrt -1.0) keeps IEEE semantics for an inexact negative"
+     (not (= (sqrt -1.0) (sqrt -1.0))))   ; NaN is not equal to itself
+
+(display "Complex transcendental tests complete") (newline)
