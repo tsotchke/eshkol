@@ -1,0 +1,48 @@
+;; syntax-rules hygiene for template-introduced bindings (R7RS 4.3.2), SW-30.
+;;
+;; The parity row lives in tests/vm_parity/corpus/68_syntax_rules_hygiene.esk;
+;; this file pins the same semantics across the NATIVE axes (jit-cache,
+;; jit-nocache, aot-O0, aot-O2). The axis that matters here is the JIT one:
+;; the REPL re-feeds saved define-syntax ASTs into a FRESH MacroExpander on
+;; every evaluation, so the fresh-name counter restarts. These programs would
+;; diverge across axes if a renamed binder ever escaped its own scope.
+
+(define-syntax hyg
+  (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e)))))
+
+(define tmp 7)
+(display (hyg 1)) (newline)                  ; 101 — template binding survives
+(display tmp) (newline)                      ; 7   — user variable untouched
+(display (hyg tmp)) (newline)                ; 107 — operand is NOT captured
+(display (let ((tmp 99)) (hyg tmp))) (newline)   ; 199 — use-site binding safe
+(display (hyg (hyg 1))) (newline)            ; 201 — two invocations, two bindings
+
+;; A recursive macro whose template binds, with a colliding global.
+(define-syntax my-or
+  (syntax-rules ()
+    ((_ a) a)
+    ((_ a b ...) (let ((t a)) (if t t (my-or b ...))))))
+(define t 42)
+(display (my-or #f #f t)) (newline)          ; 42
+
+;; Nested macro invocation, both templates binding the same name.
+(define-syntax mac-a
+  (syntax-rules () ((_ x) (let ((s 10)) (+ s x)))))
+(define-syntax mac-b
+  (syntax-rules () ((_ y) (let ((s 200)) (+ s (mac-a y))))))
+(display (mac-b 1)) (newline)                ; 211
+
+;; set! on a pattern variable, plus a colliding template binder.
+(define-syntax swap!
+  (syntax-rules () ((_ x y) (let ((tv x)) (set! x y) (set! y tv)))))
+(define tv 5)
+(define other 9)
+(swap! tv other)
+(display tv) (newline)                       ; 9
+(display other) (newline)                    ; 5
+
+;; A quoted symbol is data: the renamer must not leak a gensym into output.
+(define-syntax qm
+  (syntax-rules () ((_ e) (let ((z 5)) (list 'z z e)))))
+(define z 3)
+(display (qm z)) (newline)                   ; (z 5 3)

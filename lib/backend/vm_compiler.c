@@ -3705,9 +3705,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* (define-syntax name (syntax-rules (literals...) (pattern template) ...)) */
+    /* (define-syntax name (syntax-rules (literals...) (pattern template) ...))
+     *
+     * The OP_NIL is not decorative — same discipline as (provide)/(export)
+     * directly above.  define-syntax binds no runtime local, and every
+     * top-level and body driver POPs after a form that bound nothing, so
+     * returning without pushing makes that POP discard a LIVE value and
+     * shift every later local down one slot.  That was the real mechanism
+     * behind SW-30's VM column: the template's `let` wrote slot k while the
+     * body read slot k+1, so (hyg 1) printed 1 instead of 101 and the user's
+     * same-named top-level variable read back as (). */
     if (is_sym(head, "define-syntax") && node->n_children >= 3) {
         vm_macro_define_syntax((const MacroNode*)node);
+        chunk_emit(c, OP_NIL, 0);
         return;
     }
 
