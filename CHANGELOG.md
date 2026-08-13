@@ -493,6 +493,17 @@ and a release gate that finally reads CTest results as oracle evidence.
   connection to the configurable limit the variable fed — two mechanisms with
   the same default and no wire between them, now one.
 
+  Each ceiling is **opt-in**: it binds a run only when that run sets its
+  variable (or sets the matching `ESHKOL_LIMIT_ACTIVE_*` bit before
+  `eshkol_set_limits()`). The documented defaults are the values a limit takes
+  when you turn it on, not ceilings every program is silently held to —
+  `tests/features/blc_test.esk` allocates past the 1 GiB heap default, and the
+  VM's computed-goto dispatch never had an instruction guard at all, so
+  applying every default to every run would impose new ceilings rather than
+  enforce documented ones. Whether the defaults should also bind an
+  unconfigured run is a release decision about defaults, recorded in
+  `docs/reference/runtime/environment-variables.md`.
+
   A violation is loud and terminal by default: pending output is flushed, one
   `eshkol: fatal: …` line names the limit, the ceiling and the variable that
   set it, and the process exits with a status specific to that limit — 120

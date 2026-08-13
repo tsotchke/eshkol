@@ -392,7 +392,7 @@ entries:
   - id: SW-10
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "b4b98473"
+    closed_at: "45877dde"
     closed_by: "PR (branch fix/resource-limits-and-ascription)"
     title: "Seven documented resource-limit environment variables are accepted and never enforced"
     repro: "ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=1 eshkol-run -r a-20M-iteration-loop.esk"
@@ -452,18 +452,28 @@ entries:
       deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
       non-tail recursion working to 250000 frames, which the documented 100000 default
       would break. Recorded in docs/reference/runtime/environment-variables.md.
-      Second residual: ESHKOL_TIMEOUT_MS is fully enforced WHEN SET, but the
-      watchdog is armed only if the variable is present in the environment
-      (lib/core/runtime_lifecycle_hosted.cpp:149), so the documented default of
-      30000 does not put an unattended run on a clock. Arming it by default
-      would also bound AOT compilation and interactive REPL sessions — a
-      release decision, not a bug fix — so it is documented rather than
-      changed. NEEDS-DECISION for the maintainer.
+      Second residual, and the important one: every ceiling is OPT-IN. A limit
+      binds a run only when that run sets its variable (or sets the matching
+      ESHKOL_LIMIT_ACTIVE_* bit before eshkol_set_limits()); the documented
+      defaults are the values a limit takes when turned on, not ceilings every
+      program is held to. This was learned the hard way inside this PR: the
+      first cut enforced the documented defaults unconditionally and killed
+      tests/features/blc_test.esk, which allocates past the 1 GiB heap default
+      and had run fine for years, with 'Heap hard limit exceeded' and exit 120.
+      The VM's computed-goto dispatch likewise never had an instruction guard,
+      so applying the 10M default there had the same character. The defect this
+      entry records is that ESHKOL_MAX_HEAP=1 did nothing; fixing that does not
+      require imposing a ceiling on every program that sets nothing.
+      Whether the defaults should ALSO bind an unconfigured run is a release
+      decision about defaults, not a bug fix. NEEDS-DECISION for the maintainer;
+      documented at docs/reference/runtime/environment-variables.md
+      ("Limits are opt-in") and pinned by a dedicated case in
+      tests/limits/resource_limits_enforcement_gate.sh.
 
   - id: SW-11
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "b4b98473"
+    closed_at: "45877dde"
     closed_by: "PR (branch fix/resource-limits-and-ascription)"
     title: "(the <type> expr) is a runtime no-op, so a false ascription is never caught"
     repro: "(display (the string (+ 1 2)))"
