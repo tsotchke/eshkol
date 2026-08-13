@@ -102,11 +102,21 @@ the execution-timeout poll run once per 4096 instructions and once per tail-call
 loop back-edge respectively. No check reads or writes a program value, so
 enabling limits cannot change a computed result.
 
+### Two limits that are narrower than the table suggests
+
 `ESHKOL_MAX_STACK` bounds the recursion the runtime's depth guard observes.
 Codegen does not yet emit that guard at the entry of every top-level `define`d
 function (tracked as ESH-0101, `tests/stress/found/deep_recursion_270k_no_diagnostic.esk`),
 so deep non-tail recursion in such a function can still exhaust the native stack
 before the ceiling is consulted.
+
+**The execution timer is opt-in.** `30000` is the default *value* of
+`max_execution_time_ms`, but the watchdog is armed only when
+`ESHKOL_TIMEOUT_MS` is actually present in the environment
+(`eshkol_runtime_init()`); a run that does not set it is not on a clock. Arming
+a 30-second wall-clock kill on every invocation by default would also bound
+AOT compilation and interactive REPL sessions, which is a release decision
+rather than a bug fix, so it is recorded here rather than changed.
 
 ## Parallelism & threading
 

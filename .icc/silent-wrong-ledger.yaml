@@ -452,6 +452,13 @@ entries:
       deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
       non-tail recursion working to 250000 frames, which the documented 100000 default
       would break. Recorded in docs/reference/runtime/environment-variables.md.
+      Second residual: ESHKOL_TIMEOUT_MS is fully enforced WHEN SET, but the
+      watchdog is armed only if the variable is present in the environment
+      (lib/core/runtime_lifecycle_hosted.cpp:149), so the documented default of
+      30000 does not put an unattended run on a clock. Arming it by default
+      would also bound AOT compilation and interactive REPL sessions — a
+      release decision, not a bug fix — so it is documented rather than
+      changed. NEEDS-DECISION for the maintainer.
 
   - id: SW-11
     bucket: SILENT-WRONG
