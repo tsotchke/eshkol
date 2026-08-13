@@ -23,23 +23,22 @@
  *
  * Coverage: every bridge op whose forward/backward pair fits this file's
  * single-scalar-loss pipeline shape — matmul, gelu, softmax, layernorm,
- * rmsnorm, silu and cross-entropy. Embedding and attention are covered
- * elsewhere instead of being silently skipped here (SW-12):
+ * rmsnorm, silu, cross-entropy, and attention (causal and non-causal). No op
+ * is excluded from the suite; the one that does not fit the pipeline shape is
+ * gradchecked elsewhere and named here (SW-12):
  *   - embedding's backward (tensor_embedding_backward, an indexed
- *     scatter-add) IS implemented and exact; it takes an index tensor rather
- *     than this file's x/w pipeline shape, so it is gradchecked in
+ *     scatter-add) takes an index tensor rather than this file's x/w pipeline
+ *     shape, so it is gradchecked in
  *     tests/backend/tensor_embedding_backward_gradcheck_test.cpp, which also
  *     diffs it directly against the non-bridge implementation
  *     (eshkol_backward_embedding) on identical inputs.
- *   - attention's backward (tensor_attention_backward) still unconditionally
- *     refuses (eshkol_fatal) — its forward, ad_tensor_attention, does not
- *     retain the causal flag or the softmax weights an exact adjoint would
- *     need, a real forward-plumbing gap rather than a wrong formula. This is
- *     asserted (not silently skipped) in
- *     tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp, alongside
- *     an FD-validated check that the non-bridge implementation
- *     (eshkol_backward_attention) is exact. See that file's block comment for
- *     the NEEDS-DECISION on whether to implement the bridge side.
+ *
+ * Attention runs through the same pipeline as everything else here: a
+ * [1, ROWS, COLS] attention followed by cross-entropy, once unmasked and once
+ * causally masked. Its forward retains the softmax weights and the causal flag
+ * the exact adjoint needs, so both masking modes are gradcheckable; the direct
+ * bridge-vs-native differential for the op lives in
+ * tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp.
  *
  * Also covered: the float32 interop round-trip and the bridge lifecycle, which
  * are the other four symbols the header declared and nothing defined.
@@ -148,7 +147,8 @@ static void init_fixtures(void) {
 
 /* Which pipeline a check runs. Each ends in cross-entropy so the loss is a
  * scalar and the finite-difference reference is well defined. */
-enum Pipeline { P_MATMUL_GELU, P_LAYERNORM, P_RMSNORM, P_SILU, P_SOFTMAX };
+enum Pipeline { P_MATMUL_GELU, P_LAYERNORM, P_RMSNORM, P_SILU, P_SOFTMAX,
+                P_ATTENTION, P_ATTENTION_CAUSAL };
 
 /**
  * @brief Run one pipeline. With @p tape non-null the ops are recorded;
@@ -177,6 +177,18 @@ static double run_pipeline(Pipeline p, ad_tape_t* tape,
         ad_node_t* mm = ad_tensor_matmul(tape, xn, wn);
         if (!mm) return NAN;
         h = ad_tensor_gelu(tape, mm);
+    } else if (p == P_ATTENTION || p == P_ATTENTION_CAUSAL) {
+        /* Attention wants [batch, seq, dim]; the same ROWS*COLS input viewed as
+         * one batch of ROWS tokens. Q, K and V are the SAME node on purpose:
+         * the finite-difference sweep then validates dQ + dK + dV together, so
+         * a rule that dropped any one of the three paths (which is exactly
+         * what the old value-passthrough stub did) shows up immediately. The
+         * three are separated again, against the non-bridge kernel, in
+         * tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp. */
+        const int64_t sh_attn[3] = { 1, ROWS, COLS };
+        xn = var_node(x, sh_attn, 3);
+        h = ad_tensor_attention(tape, xn, xn, xn, /*num_heads=*/1,
+                                /*causal=*/p == P_ATTENTION_CAUSAL);
     } else {
         /* The remaining ops are elementwise / row-wise: drive them directly
          * with a [ROWS, COLS] input so no matmul is in the path. */
@@ -330,6 +342,8 @@ int main(void) {
         { P_RMSNORM,     "rmsnorm+xent"     },
         { P_SILU,        "silu+xent"        },
         { P_SOFTMAX,     "softmax+xent"     },
+        { P_ATTENTION,        "attention+xent"        },
+        { P_ATTENTION_CAUSAL, "causal attention+xent" },
     };
     for (auto& c : cases) {
         if (check(c.p, c.name) < TOLERANCE) ++passed; else ++failed;

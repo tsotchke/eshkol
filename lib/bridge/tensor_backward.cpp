@@ -1278,28 +1278,268 @@ extern "C" void tensor_frechet_mean_backward(ad_node_t* node) {
     }
 }
 
-/** @brief Backward pass for attention: a conservative identity-like
- *  pass-through for the value input only. Proper scaled-dot-product
- *  backward requires the Q/K/V split in the node — stubbed here to at
- *  least propagate a non-zero signal. The exact formulation (5-step chain
- *  through softmax(QK^T/√d)V) lands with the full attention codegen
- *  rewrite. */
+/*******************************************************************************
+ * Attention Backward — exact adjoint of multi-head scaled dot-product
+ * attention, causal and non-causal (SW-12)
+ *
+ * FORWARD (ad_tensor_attention, lib/bridge/qllm_bridge.cpp). Q, K, V are
+ * [batch, seq, dim] with dim = num_heads * head_dim, so head h of batch b owns
+ * the column slice [h*head_dim, (h+1)*head_dim) of every row. Per (b, h):
+ *
+ *     S[i][j] = scale * <Q[b,i,h], K[b,j,h]>,   scale = 1/sqrt(head_dim)
+ *     A[i][j] = softmax_j(S[i][j])              (row-wise; causal => j <= i)
+ *     O[b,i,h] = sum_j A[i][j] * V[b,j,h]
+ *
+ * BACKWARD. Each (b, h) pair is an independent single-head attention — the
+ * heads never mix in the forward, so their adjoints never mix either, and the
+ * whole rule is that 2-D adjoint applied on each column slice:
+ *
+ *     dV[j] = sum_i A[i][j] * dO[i]                    (seq x head_dim)
+ *     dA[i][j] = <dO[i], V[j]>                         (seq x seq)
+ *     dS[i][j] = A[i][j] * (dA[i][j] - sum_k A[i][k] dA[i][k]) * scale
+ *     dQ[i] = sum_j dS[i][j] * K[j]
+ *     dK[j] = sum_i dS[i][j] * Q[i]
+ *
+ * The dS line IS the softmax Jacobian: for a row y = softmax(s),
+ * dL/ds = J^T dL/dy with J = diag(y) - y y^T, i.e.
+ * dL/ds_j = y_j (dL/dy_j - sum_k y_k dL/dy_k). The row dot product is computed
+ * once per row, which is what makes the rule O(seq^2) rather than O(seq^3).
+ *
+ * CAUSAL MASKING is handled entirely by the retained weights. The forward
+ * leaves A[i][j] at EXACTLY zero for j > i, and every term above carries a
+ * factor A[i][j]: dV and dA vanish there, the row dot product picks up nothing
+ * from the masked tail, and dS[i][j] = 0 * (...) = 0 kills the dQ/dK
+ * contributions. So the masked positions contribute exactly zero without a
+ * single mask test, and the summations still run over the full [0, seq) range
+ * — which keeps the accumulation ORDER identical between the causal and
+ * non-causal cases and identical to the non-bridge kernel's
+ * (eshkol_backward_attention, lib/backend/tensor_backward.cpp), as the
+ * bit-for-bit determinism rule requires. Skipping the masked j instead would
+ * change nothing numerically (x + 0.0 == x for every finite x) but would make
+ * the two implementations' orders diverge for no gain.
+ *
+ * NODE CONTRACT
+ *   node->input1/2/3        Q, K, V nodes, each [batch, seq, dim]
+ *   node->shape/ndim        output shape, [batch, seq, dim]
+ *   node->tensor_gradient   upstream dL/dO, batch*seq*dim doubles
+ *   node->saved_tensors[0]  retained attention weights A, dense
+ *                           [batch, num_heads, seq, seq], masked entries zero
+ *   node->num_saved         >= 1
+ *   node->params as int64[6]  [num_heads, head_dim, causal, scale_bits, 0, 0]
+ *
+ * This rule is written independently of eshkol_backward_attention rather than
+ * delegating to it: the two implementations are the two sides of the SW-12
+ * differential check, and a delegation would make that check compare a thing
+ * to itself.
+ ******************************************************************************/
+
+/** @brief Backward pass for the qLLM-bridge attention node: the exact adjoint
+ *  of multi-head scaled dot-product attention (dQ, dK, dV through the softmax
+ *  Jacobian), with causal masking carried by the forward's retained weights.
+ *  See the block comment above for the derivation and the node contract. */
 extern "C" void tensor_attention_backward(ad_node_t* node) {
-    (void)node;
+    if (!node || !node->tensor_gradient) return;
+
+    ad_node_t* q_node = node->input1;
+    ad_node_t* k_node = node->input2;
+    ad_node_t* v_node = node->input3;
+
     /* HARD CONSTRAINT (exact AD or an explicit error, never a silent/plausible
-     * zero): the qLLM-bridge attention AD node has no exact backward. The former
-     * value-passthrough stub flowed dy into V only — skipping Q, K, and the
-     * softmax(Q K^T / sqrt(d)) chain — so it returned a plausible-but-WRONG
-     * gradient. Rather than corrupt a training run, refuse the operation.
-     *
-     * NOTE: the differentiable attention path used by `(gradient …
-     * (scaled-dot-attention …))` decomposes to scalar AD nodes in
-     * tensor_transformer_codegen.cpp and does NOT reach here; this stub only
-     * fires if the bridge AD_NODE_TENSOR_ATTENTION node is ever backpropagated. */
-    eshkol_fatal("unsupported AD op: exact backward for the qLLM-bridge tensor "
-                 "attention node is not implemented; refusing to return an "
-                 "approximate (wrong) gradient. Differentiate attention through "
-                 "scaled-dot-attention instead (that path is exact).");
+     * zero). Before this rule existed the node carried neither the attention
+     * weights nor the causal flag, and the backward could only refuse. Both are
+     * now part of the contract, so a node arriving without them means the
+     * PRODUCER did not follow it — refusing here is what stops a mis-wired
+     * forward from training on a gradient reconstructed from guesses. */
+    if (!q_node || !k_node || !v_node) {
+        eshkol_fatal("attention backward: node->input1/2/3 must carry the Q, K "
+                     "and V operands (SW-12 contract: inputs [batch, seq, dim], "
+                     "saved_tensors[0] = attention weights "
+                     "[batch, num_heads, seq, seq], params = "
+                     "[num_heads, head_dim, causal, scale_bits]); refusing to "
+                     "invent an operand.");
+        return;
+    }
+    if (!node->saved_tensors || node->num_saved < 1 || !node->saved_tensors[0]) {
+        eshkol_fatal("attention backward: node->saved_tensors[0] must carry the "
+                     "softmax attention weights retained by the forward "
+                     "(ad_tensor_attention). Recomputing them here would have to "
+                     "re-derive the causal mask and the softmax shift, and any "
+                     "drift from the forward is a silently-wrong gradient; "
+                     "refusing instead.");
+        return;
+    }
+
+    const int64_t* p = (const int64_t*)&node->params;
+    int64_t num_heads = p[0];
+    int64_t head_dim  = p[1];
+    int64_t causal    = p[2];
+    double scale;
+    std::memcpy(&scale, &p[3], sizeof scale);
+
+    if (node->ndim != 3 || !node->shape) {
+        eshkol_fatal("attention backward: expected a [batch, seq, dim] node "
+                     "(got %zu-D); the bridge forward records exactly that "
+                     "shape.", node->ndim);
+        return;
+    }
+    int64_t batch = node->shape[0];
+    int64_t seq   = node->shape[1];
+    int64_t dim   = node->shape[2];
+
+    if (num_heads <= 0 || head_dim <= 0 || num_heads * head_dim != dim) {
+        eshkol_fatal("attention backward: params [num_heads=%lld, head_dim=%lld] "
+                     "do not partition dim=%lld; the forward must record the "
+                     "head split it actually used.",
+                     (long long)num_heads, (long long)head_dim, (long long)dim);
+        return;
+    }
+    if (batch <= 0 || seq <= 0) {
+        eshkol_fatal("attention backward: degenerate shape (batch=%lld, seq=%lld).",
+                     (long long)batch, (long long)seq);
+        return;
+    }
+    /* scale is bit-cast out of the params; a zero/non-finite slot means the
+     * producer never wrote it, and silently substituting 1/sqrt(head_dim) would
+     * hide a forward that used something else. */
+    if (!(scale > 0.0) || scale != scale || scale > 1e300) {
+        eshkol_fatal("attention backward: params[3] holds %.17g, not a usable "
+                     "softmax scale; the forward must bit-cast its scale into "
+                     "that slot.", scale);
+        return;
+    }
+    const double* dO = (const double*)node->tensor_gradient;
+    const double* A  = (const double*)node->saved_tensors[0];
+    const double* Q  = (const double*)q_node->tensor_value;
+    const double* K  = (const double*)k_node->tensor_value;
+    const double* V  = (const double*)v_node->tensor_value;
+    if (!Q || !K || !V) {
+        eshkol_fatal("attention backward: Q/K/V nodes must still carry their "
+                     "forward values; refusing to differentiate against a "
+                     "released operand.");
+        return;
+    }
+
+    /* Q, K and V are indexed with the OUTPUT's strides, the same way the
+     * forward indexed them, so an operand of a different shape would be read
+     * and written out of bounds. The forward already refuses that; check it
+     * here too, because this rule also has to hold for nodes it did not
+     * build. */
+    size_t total = (size_t)(batch * seq * dim);
+    const ad_node_t* operands[3] = { q_node, k_node, v_node };
+    const char* operand_names[3] = { "Q", "K", "V" };
+    for (int idx = 0; idx < 3; idx++) {
+        size_t have = (operands[idx]->shape && operands[idx]->ndim > 0)
+                    ? tensor_size(operands[idx]->shape, operands[idx]->ndim) : 0;
+        if (have != total) {
+            eshkol_fatal("attention backward: operand %s holds %zu elements but "
+                         "the output shape [%lld, %lld, %lld] needs %zu; every "
+                         "operand is indexed with the output's strides.",
+                         operand_names[idx], have,
+                         (long long)batch, (long long)seq, (long long)dim, total);
+            return;
+        }
+    }
+
+    if (q_node->tensor_gradient == NULL) q_node->tensor_gradient = alloc_grad(total);
+    if (k_node->tensor_gradient == NULL) k_node->tensor_gradient = alloc_grad(total);
+    if (v_node->tensor_gradient == NULL) v_node->tensor_gradient = alloc_grad(total);
+    double* dQ = (double*)q_node->tensor_gradient;
+    double* dK = (double*)k_node->tensor_gradient;
+    double* dV = (double*)v_node->tensor_gradient;
+    if (!dQ || !dK || !dV) return;
+
+    /* The causal flag and the retained weights are two records of the same
+     * fact, and the adjoint trusts the weights. If they disagree — a forward
+     * that masked differently from what it recorded, or params written by a
+     * different producer — every masked position would silently pick up a
+     * gradient it must not have. Cross-check them instead: under a causal mask
+     * the forward leaves j > i at EXACTLY zero, so this is an equality test,
+     * not a tolerance. */
+    if (causal) {
+        for (int64_t bh = 0; bh < batch * num_heads; bh++) {
+            const double* Ah = &A[(size_t)(bh * seq * seq)];
+            for (int64_t i = 0; i < seq; i++)
+                for (int64_t j = i + 1; j < seq; j++)
+                    if (Ah[i * seq + j] != 0.0) {
+                        eshkol_fatal("attention backward: params say causal but "
+                                     "the retained weight A[%lld][%lld][%lld] is "
+                                     "%.17g, not zero; the mask the forward ran "
+                                     "and the mask it recorded disagree.",
+                                     (long long)bh, (long long)i, (long long)j,
+                                     Ah[i * seq + j]);
+                        return;
+                    }
+        }
+    }
+
+    /* Per-head scratch. Plain std::vector, not the arena: the dispatcher runs
+     * this rule inside a scope it pops on return, and the persistent gradient
+     * buffers above must not share a lifetime with these. (Same reasoning as
+     * FrechetGeometry earlier in this file.) */
+    std::vector<double> dA((size_t)(seq * seq));
+    std::vector<double> dS((size_t)(seq * seq));
+
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t h = 0; h < num_heads; h++) {
+            const int64_t off = h * head_dim;
+            const double* Ah = &A[(size_t)(((b * num_heads) + h) * seq * seq)];
+
+            /* dV[j][d] = sum_i A[i][j] * dO[i][d] — j-major, matching the
+             * non-bridge kernel's loop nest. */
+            for (int64_t j = 0; j < seq; j++) {
+                double* dVj = &dV[(size_t)((b * seq + j) * dim + off)];
+                for (int64_t d = 0; d < head_dim; d++) {
+                    double acc = 0.0;
+                    for (int64_t i = 0; i < seq; i++)
+                        acc += Ah[i * seq + j] * dO[(b * seq + i) * dim + off + d];
+                    dVj[d] += acc;
+                }
+            }
+
+            /* dA[i][j] = <dO[i], V[j]> */
+            for (int64_t i = 0; i < seq; i++) {
+                const double* dOi = &dO[(size_t)((b * seq + i) * dim + off)];
+                for (int64_t j = 0; j < seq; j++) {
+                    const double* Vj = &V[(size_t)((b * seq + j) * dim + off)];
+                    double acc = 0.0;
+                    for (int64_t d = 0; d < head_dim; d++) acc += dOi[d] * Vj[d];
+                    dA[(size_t)(i * seq + j)] = acc;
+                }
+            }
+
+            /* Softmax Jacobian, one row dot product per row. */
+            for (int64_t i = 0; i < seq; i++) {
+                double dot = 0.0;
+                for (int64_t j = 0; j < seq; j++)
+                    dot += Ah[i * seq + j] * dA[(size_t)(i * seq + j)];
+                for (int64_t j = 0; j < seq; j++)
+                    dS[(size_t)(i * seq + j)] =
+                        Ah[i * seq + j] * (dA[(size_t)(i * seq + j)] - dot) * scale;
+            }
+
+            /* dQ[i][d] = sum_j dS[i][j] * K[j][d] */
+            for (int64_t i = 0; i < seq; i++) {
+                double* dQi = &dQ[(size_t)((b * seq + i) * dim + off)];
+                for (int64_t d = 0; d < head_dim; d++) {
+                    double acc = 0.0;
+                    for (int64_t j = 0; j < seq; j++)
+                        acc += dS[(size_t)(i * seq + j)] * K[(b * seq + j) * dim + off + d];
+                    dQi[d] += acc;
+                }
+            }
+
+            /* dK[j][d] = sum_i dS[i][j] * Q[i][d] */
+            for (int64_t j = 0; j < seq; j++) {
+                double* dKj = &dK[(size_t)((b * seq + j) * dim + off)];
+                for (int64_t d = 0; d < head_dim; d++) {
+                    double acc = 0.0;
+                    for (int64_t i = 0; i < seq; i++)
+                        acc += dS[(size_t)(i * seq + j)] * Q[(b * seq + i) * dim + off + d];
+                    dKj[d] += acc;
+                }
+            }
+        }
+    }
 }
 
 /*******************************************************************************
