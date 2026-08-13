@@ -60,17 +60,53 @@ built against a different runtime layout.
 
 Read by `lib/core/resource_limits.cpp`. Size vars accept `K`/`M`/`G` suffixes.
 
-| Variable | Effect | Default |
-|----------|--------|---------|
-| `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB |
-| `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 |
-| `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB |
-| `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB |
-| `ESHKOL_MAX_TENSOR_ELEMS` | Max tensor element count. | 1e9 |
-| `ESHKOL_TIMEOUT_MS` | Max execution time (ms). | 30000 |
-| `ESHKOL_VM_MAX_INSN` | VM runaway-instruction guard. | 10000000 |
-| `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (abort on exceed). | true |
-| `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true |
+| Variable | Effect | Default | Exit status when exceeded |
+|----------|--------|---------|---------------------------|
+| `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB | 120 |
+| `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 | 121 |
+| `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB | — |
+| `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB | 123 |
+| `ESHKOL_MAX_TENSOR_ELEMS` | Max tensor element count. | 1e9 | 122 |
+| `ESHKOL_TIMEOUT_MS` | Max execution time (ms); `0` = unlimited. | 30000 | 124 |
+| `ESHKOL_VM_MAX_INSN` | Bytecode-VM runaway-instruction guard; `0` = unlimited. | 10000000 | 125 |
+| `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (terminate on exceed). | true | — |
+| `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true | — |
+
+### What "enforced" means
+
+With `ESHKOL_ENFORCE_LIMITS=true` (the default), exceeding a hard limit ends
+the run immediately. The runtime flushes whatever the program has already
+written, prints one line to stderr naming the limit, the configured ceiling and
+the variable that set it —
+
+```
+eshkol: fatal: Heap hard limit exceeded (limit 1048576 bytes, set by ESHKOL_MAX_HEAP): arena block
+```
+
+— and exits with the status in the table above. The statuses are distinct per
+limit so a supervising process can tell which ceiling was hit without parsing
+the message; `124` for the execution timeout matches GNU coreutils `timeout(1)`
+and the convention already used by `run-command` / `run-argv`. They are defined
+as `ESHKOL_EXIT_LIMIT_*` in `inc/eshkol/core/resource_limits.h`.
+
+With `ESHKOL_ENFORCE_LIMITS=false` the ceilings become advisory: a breach is
+recorded (readable from C via `eshkol_get_last_limit_error()`), reported as a
+warning when `ESHKOL_LIMIT_WARNINGS` is on, and the program continues to
+completion.
+
+Enforcement is placed so that staying under a limit costs nothing measurable:
+the heap ceiling is checked once per arena *block* (a megabyte at a time), not
+per allocation, leaving the bump-pointer path untouched; the tensor and string
+ceilings are checked once per object created; the VM's instruction guard and
+the execution-timeout poll run once per 4096 instructions and once per tail-call
+loop back-edge respectively. No check reads or writes a program value, so
+enabling limits cannot change a computed result.
+
+`ESHKOL_MAX_STACK` bounds the recursion the runtime's depth guard observes.
+Codegen does not yet emit that guard at the entry of every top-level `define`d
+function (tracked as ESH-0101, `tests/stress/found/deep_recursion_270k_no_diagnostic.esk`),
+so deep non-tail recursion in such a function can still exhaust the native stack
+before the ceiling is consulted.
 
 ## Parallelism & threading
 

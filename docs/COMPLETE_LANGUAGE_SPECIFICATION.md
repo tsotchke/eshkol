@@ -811,14 +811,37 @@ also work inside a `#(...)` vector literal under quasiquote:
 (the <type> expr)
 ```
 Asserts to the type checker that `expr` has type `<type>`. It is a **trusted
-assertion**: the checker narrows its view of `expr` to `<type>` and does not
-re-derive it. It is a pure **runtime no-op** — the emitted IR is byte-identical
-to `expr` alone (no runtime tag check, no cost), so `(the <type> expr)` evaluates
-to exactly the same value as `expr`.
+assertion**: the checker adopts `<type>` as the type of the whole form and does
+not re-derive it from `expr`. It is a pure **runtime no-op** — the emitted IR is
+byte-identical to `expr` alone (no runtime tag check, no cost), so
+`(the <type> expr)` evaluates to exactly the same value as `expr`.
+
+Trusted does not mean unexamined. The checker still synthesizes `expr`, and if
+the type it finds is **provably disjoint** from `<type>` — no value inhabits
+both — it reports the ascription rather than adopting it. That is a compile-time
+diagnostic only: a warning under gradual typing, fatal under `--strict-types`
+(§ [`--strict-types`](reference/runtime/eshkol-run.md)), and in neither case
+does it add anything to the emitted code.
+
+The check is deliberately narrow, so the form stays useful:
+
+- **Narrowing is always accepted** — the primary use. `(the integer (car xs))`
+  over a dynamically-typed container is exactly what the form is for.
+- **Widening is always accepted**: `(the number 1)`.
+- Anything whose type the checker does not know (the dynamic `any`/`value`
+  root, an unresolved name) is trusted, not questioned.
+- **Numeric-tower ascriptions are always accepted.** `integer`, `rational`,
+  `real` and `complex` are siblings under `number` in this type graph rather
+  than a chain, so no subtyping relation holds between them in either
+  direction; `(the real 1)` and `(the float64 (+ 1 2))` are ordinary.
+
+Only a genuine contradiction is reported:
 
 ```scheme
 (the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)
+(the real 1)                    ; fine — moving inside the numeric tower
+(the string (+ 1 2))            ; reported: no value is both Int64 and String
 ```
 
 `<type>` may be any parenthesised type form, or any **bare type name the type

@@ -8,10 +8,12 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 
 extern "C" {
 
@@ -510,6 +512,21 @@ eshkol_tensor_t* arena_allocate_tensor_full(
     }
 
     if (total_elements > 0) {
+        // SW-10: ESHKOL_MAX_TENSOR_ELEMS. The element count is computed by each
+        // caller (make-tensor, arange, matmul, the BLAS paths, model loading)
+        // but they all converge here to allocate, so this is the one place that
+        // sees every tensor and the only place the ceiling has to be applied.
+        if (!eshkol_check_tensor_size((size_t)total_elements)) {
+            char detail[64];
+            snprintf(detail, sizeof(detail), "requested %llu elements",
+                     (unsigned long long)total_elements);
+            // Terminates under ESHKOL_ENFORCE_LIMITS=true; if it returns,
+            // limits are advisory and the tensor is built anyway. See the
+            // matching note in runtime_object_alloc.cpp for why this does not
+            // fail the allocation instead.
+            eshkol_limit_enforce(ESHKOL_LIMIT_TENSOR_SIZE, detail);
+        }
+
         if (total_elements > SIZE_MAX / sizeof(int64_t)) {
             eshkol_error("Tensor elements allocation overflow (total_elements=%llu)",
                          (unsigned long long)total_elements);

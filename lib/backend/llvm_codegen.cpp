@@ -28013,6 +28013,32 @@ private:
             builder->CreateCall(stackrestore_fn, {tco_ctx.loop_stack_save});
         }
 
+        // SW-10: cooperative execution-timeout poll on the tail-call back-edge.
+        //
+        // This is the ONE place every self-tail-call back-edge is emitted, for
+        // both `define`-TCO and named-let, and a TCO loop is precisely the
+        // shape that runs forever without entering a new frame — so the
+        // function-entry guard never sees it and `ESHKOL_TIMEOUT_MS` had
+        // nothing to act on. The watchdog thread can only *request* an
+        // interrupt; this is the code that notices.
+        //
+        // Cost is a load of the interrupt flag and a not-taken branch per
+        // iteration: eshkol_limit_poll_interrupt() returns immediately when no
+        // interrupt is pending, and no timer is even armed unless the user
+        // asked for one. It reads and writes no program value, so it cannot
+        // perturb arithmetic — gradients stay bit-identical.
+        {
+            Function* poll_fn = module->getFunction("eshkol_limit_poll_interrupt");
+            if (!poll_fn) {
+                FunctionType* poll_type =
+                    FunctionType::get(Type::getVoidTy(*context), {}, false);
+                poll_fn = Function::Create(poll_type, Function::ExternalLinkage,
+                                           "eshkol_limit_poll_interrupt",
+                                           module.get());
+            }
+            builder->CreateCall(poll_fn, {});
+        }
+
         // Create unreachable sentinel BEFORE the branch (can't add instructions
         // after terminator). Caller never observes this value — the block ends
         // with the unconditional jump back to the loop header.

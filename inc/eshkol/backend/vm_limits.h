@@ -44,6 +44,16 @@
 #define ESHKOL_VM_MAX_CODE 100000
 #endif
 
+/* Runaway-instruction guard for the bytecode interpreter: the number of
+ * instructions vm_run() will execute before deciding the program is not going
+ * to terminate. Unlike the capacities above this is a *default*, not a fixed
+ * ceiling — `ESHKOL_VM_MAX_INSN` overrides it per run, and 0 means unlimited.
+ * Enforced in lib/backend/vm_run.c by both the computed-goto and the switch
+ * dispatch paths. */
+#ifndef ESHKOL_VM_DEFAULT_MAX_INSN
+#define ESHKOL_VM_DEFAULT_MAX_INSN 10000000ULL
+#endif
+
 #if ESHKOL_VM_HEAP_SIZE <= 0
 #error "ESHKOL_VM_HEAP_SIZE must be positive"
 #endif

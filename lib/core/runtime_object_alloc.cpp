@@ -8,10 +8,12 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 
 // Allocate object with header prepended.
 // Returns pointer to data (after header), or nullptr on failure.
@@ -174,6 +176,25 @@ char* arena_allocate_string_with_header(arena_t* arena, size_t length) {
     if (length >= SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
         eshkol_error("String length overflow (length=%zu)", length);
         return nullptr;
+    }
+
+    // SW-10: ESHKOL_MAX_STRING_LEN. Every string the runtime builds — literals,
+    // make-string, string-append, substring, number->string — reaches the heap
+    // through this one function, so one check here covers the whole surface.
+    // It also closes a silent truncation: hdr->size below is a uint32_t, so a
+    // length past 4GiB used to wrap and produce a string whose header disagreed
+    // with its contents.
+    if (!eshkol_check_string_length(length)) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "requested %zu bytes", length);
+        // Terminates under ESHKOL_ENFORCE_LIMITS=true. If it returns, limits
+        // are advisory: the breach is recorded (readable via
+        // eshkol_get_last_limit_error()) and warned about, and the allocation
+        // proceeds. Deliberately NOT a null return — no caller of this function
+        // handles a null string, so failing the allocation here would turn
+        // "limits are not enforced" into a segfault, which is strictly worse
+        // than both documented behaviours.
+        eshkol_limit_enforce(ESHKOL_LIMIT_STRING_LENGTH, detail);
     }
 
     size_t data_size = length + 1;

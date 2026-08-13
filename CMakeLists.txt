@@ -3937,6 +3937,31 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resourc
     add_test(NAME resource_limits_test COMMAND resource_limits_test)
 endif()
 
+# SW-10 end-to-end gate: the documented resource-limit environment variables
+# actually bound a running program. resource_limits_test above covers the
+# configuration layer in-process (parsing, tracking, the check predicates);
+# this one drives real eshkol-run / bytecode-VM processes and asserts the
+# documented exit status, the diagnostic, and — just as important — that a
+# ceiling the program never reaches leaves it byte-for-byte unaffected.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh")
+    if(TARGET eshkol-vm-standalone-test)
+        set(ESHKOL_LIMITS_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_LIMITS_GATE_VM "none")
+    endif()
+    add_test(NAME resource_limits_enforcement_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LIMITS_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/resource-limits-gate")
+    set_tests_properties(resource_limits_enforcement_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: resource limits enforced"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)

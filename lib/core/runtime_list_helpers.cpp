@@ -11,6 +11,7 @@
  */
 
 #include "arena_memory.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <cstdint>
 #include <cstring>
@@ -521,15 +522,31 @@ int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
 // Per-thread recursion depth counter.
 // thread_local is correct: recursion depth tracks the call stack, per thread.
 static thread_local int64_t __eshkol_recursion_depth = 0;
-static const int64_t ESHKOL_MAX_RECURSION_DEPTH = 100000;  // 100K frames
 
 /**
  * @brief Increment and check the calling thread's recursion-depth counter.
  *
  * Emitted inline by codegen at the entry of recursive-call sites to guard
- * against native stack overflow. If the counter exceeds
- * ESHKOL_MAX_RECURSION_DEPTH (100,000), resets it to 0 and raises a fatal
- * ESHKOL_EXCEPTION_ERROR rather than letting the recursion continue.
+ * against native stack overflow. Exceeding the ceiling resets the counter and
+ * terminates with the documented ESHKOL_EXIT_LIMIT_STACK status rather than
+ * letting the recursion run the native stack into the ground.
+ *
+ * SW-10: the ceiling is `ESHKOL_MAX_STACK` (via eshkol_get_limits()), not the
+ * hard-coded 100000 this used to compare against. There were two stack-depth
+ * mechanisms in the tree with the same default and no connection between them
+ * — this one, which codegen actually calls, and the configurable
+ * `max_stack_depth` the environment variable fed, which nothing consulted.
+ * They are now the same mechanism, which is what makes the documented variable
+ * take effect. Reading the limit costs a load from an already-hot global, and
+ * the depth counter itself is unchanged, so a program that stays under the
+ * ceiling behaves exactly as before.
+ *
+ * Since this already runs at every guarded function entry, it is also the
+ * natural place to notice a pending execution-timeout interrupt: the watchdog
+ * thread can only request one, and something running user code has to act on
+ * it. Recursive and call-heavy programs are covered here; tail-call loops,
+ * which enter no new frames, are covered by the poll codegen emits at the loop
+ * back-edge.
  *
  * @return The thread-local recursion depth after incrementing (only
  *         reachable if under the limit; otherwise this call does not
@@ -537,12 +554,21 @@ static const int64_t ESHKOL_MAX_RECURSION_DEPTH = 100000;  // 100K frames
  */
 int64_t eshkol_check_recursion_depth(void) {
     __eshkol_recursion_depth++;
-    if (__eshkol_recursion_depth > ESHKOL_MAX_RECURSION_DEPTH) {
+
+    const eshkol_resource_limits_t* limits = eshkol_get_limits();
+    const int64_t max_depth = (int64_t)limits->max_stack_depth;
+    if (max_depth > 0 && __eshkol_recursion_depth > max_depth) {
         __eshkol_recursion_depth = 0;
+        eshkol_limit_enforce(ESHKOL_LIMIT_STACK_OVERFLOW, nullptr);
+        // Advisory mode (ESHKOL_ENFORCE_LIMITS=false) still must not let the
+        // recursion continue into a real stack overflow, so it stays fatal —
+        // just via the catchable runtime condition it has always used.
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                              "maximum recursion depth (%lld) exceeded",
-                             (long long)ESHKOL_MAX_RECURSION_DEPTH);
+                             (long long)max_depth);
     }
+
+    eshkol_limit_poll_interrupt();
     return __eshkol_recursion_depth;
 }
 
