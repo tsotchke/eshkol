@@ -485,6 +485,15 @@ entries:
   - id: SW-22
     bucket: SILENT-WRONG
     status: guarded
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413. tests/xla/xla_codegen_test.cpp
+      required its own -DESHKOL_XLA_ENABLED=ON build (build-xla), which is why
+      this entry lagged the other three; built and run here, the suite is 11/11
+      passed / 0 failed, exit 0, with both of the rows that matter green:
+      "XLA Broadcast Compatible Shapes... PASS" and "XLA Broadcast Incompatible
+      Shapes... PASS". The runtime entry point now rejects incompatible shapes
+      instead of broadcasting them into a wrong answer.
     title: "eshkol_xla_broadcast now validates broadcast compatibility at its runtime entry point"
     guarded_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
     guard: >-
