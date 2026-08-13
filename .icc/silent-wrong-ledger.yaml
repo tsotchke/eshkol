@@ -1778,7 +1778,7 @@ entries:
   - id: SW-40
     bucket: SILENT-WRONG
     status: closed
-    closed_at: "VMDUAL-SHA"
+    closed_at: "6e6afd22"
     closed_by: "PR fix(vm): min/max lose the tangent (branch fix/vm-minmax-dual)"
     renumbered_from: >-
       SW-33 (as filed) -> SW-36 -> SW-40, two hops, both forced by collisions
