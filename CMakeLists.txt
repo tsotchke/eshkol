@@ -3105,6 +3105,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: GUW multivariate"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Task #114: AD capture reconstruction must resolve free variables with the
+    # same local-then-global scope rule codegenLambda used, so an enclosing
+    # function's parameter is never replaced by a same-named top-level global.
+    # Run under BOTH engines: the run-cache-ON `-r` route (which compiles AOT in
+    # a child process, where every top-level global is pre-registered before any
+    # body is emitted) and the in-process JIT route. The defect was AOT-fatal
+    # (SIGSEGV) and JIT-silent (wrong derivative), so one route alone is not a
+    # gate — cf. PR #407's rule that cached and uncached must be identical.
+    add_test(
+        NAME ad_capture_global_shadow_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_capture_global_shadow_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_capture_global_shadow_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: ad_capture_global_shadow"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_capture_global_shadow_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_capture_global_shadow_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_capture_global_shadow_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ad_capture_global_shadow"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME sparse_tensors_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

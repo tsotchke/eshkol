@@ -3386,13 +3386,37 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
             // This handles lambdas inside functions where captures are function parameters
             // (not stored as GlobalVariables with _capture_ keys)
             // Also handles top-level global variables that are captured by lambdas
+            //
+            // ESH-0070 SCOPING INVARIANT (see resolveGradientCaptures, and the
+            // "Try local symbol table first" loop in llvm_codegen.cpp's nested-
+            // function capture emission): the raw-name lookup MUST prefer the
+            // LOCAL symbol table, because it has to resolve the SAME storage the
+            // lambda's own free-variable capture resolved. codegenLambda searches
+            // local-then-global, so a parameter/let binding lexically shadows a
+            // same-named top-level global there; searching global-first here
+            // silently picks the shadowed global instead.
+            //
+            // Task #114: this is what miscompiled core.ad.guw. `taylor-propagate`
+            // is `(define (taylor-propagate f xs v K) (taylor (lambda (t) (f (guw-line-point xs v t))) 0.0 K))`,
+            // so the tower lambda captures the PARAMETERS `f`/`xs`/`v`. A user
+            // program that merely defines a top-level `(define xs (vector ...))`
+            // made this lookup find `@eshkol_g_xs` and pack its ADDRESS as the
+            // capture, so the callee read the global's storage cell as if it were
+            // the base-point vector — `vector-ref: index out of bounds`. Every
+            // documented core.ad.guw example uses `xs` as the base-point name,
+            // which is why the AD guide carried an ESHKOL_JIT_CACHE=0 workaround
+            // (the `-r` persistent run cache compiles AOT, where all top-level
+            // globals are pre-registered; the in-process JIT happened not to have
+            // the colliding global installed yet, so it silently did the right
+            // thing and the divergence looked like a cache defect).
             if (!found) {
-                it = global_symbol_table_->find(var_name);
-                found_in_global = (it != global_symbol_table_->end());
-                if (!found_in_global) {
-                    it = symbol_table_->find(var_name);
+                it = symbol_table_->find(var_name);
+                found = (it != symbol_table_->end());
+                if (!found) {
+                    it = global_symbol_table_->find(var_name);
+                    found = (it != global_symbol_table_->end());
+                    found_in_global = found;
                 }
-                found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
                 if (found) {
                     eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
                 }
@@ -6697,14 +6721,20 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
             bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
 
-            // FALLBACK: Try raw variable name (for top-level global variables)
+            // FALLBACK: Try raw variable name, LOCAL first (ESH-0070 / task #114).
+            // The lambda's own capture emission resolves free variables
+            // local-then-global, so a parameter or let binding lexically shadows a
+            // same-named top-level global; this reconstruction must agree with it
+            // or it forwards the wrong storage in the wrong ABI. See the long note
+            // in codegenDerivativeMonolith.
             if (!found) {
-                it = global_symbol_table_->find(var_name);
-                found_in_global = (it != global_symbol_table_->end());
-                if (!found_in_global) {
-                    it = symbol_table_->find(var_name);
+                it = symbol_table_->find(var_name);
+                found = (it != symbol_table_->end());
+                if (!found) {
+                    it = global_symbol_table_->find(var_name);
+                    found = (it != global_symbol_table_->end());
+                    found_in_global = found;
                 }
-                found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
                 if (found) {
                     eshkol_debug("Gradient: found capture '%s' via raw variable name", var_name.c_str());
                 }
@@ -11070,14 +11100,17 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
 
         bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
 
-        // FALLBACK: Try raw variable name (for top-level global variables)
+        // FALLBACK: Try raw variable name, LOCAL first (ESH-0070 / task #114).
+        // Must agree with codegenLambda's own local-then-global free-variable
+        // resolution; see the long note in codegenDerivativeMonolith.
         if (!found) {
-            it = global_symbol_table_->find(var_name);
-            found_in_global = (it != global_symbol_table_->end());
-            if (!found_in_global) {
-                it = symbol_table_->find(var_name);
+            it = symbol_table_->find(var_name);
+            found = (it != symbol_table_->end());
+            if (!found) {
+                it = global_symbol_table_->find(var_name);
+                found = (it != global_symbol_table_->end());
+                found_in_global = found;
             }
-            found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
             if (found) {
                 eshkol_debug("%s: found capture '%s' via raw variable name", context_name.c_str(), var_name.c_str());
             }
