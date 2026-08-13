@@ -1303,6 +1303,14 @@ vm_exit:
                     "native backend");
                 break;
             }
+            /* SW-40: this switch arm is the twin of lbl_ABS and must carry the
+             * SAME carrier arms. It was missing both AD ones, so on a build
+             * that uses the switch dispatch (no computed-goto — the Windows/
+             * MSVC lane) a derivative through `abs` fell to the double path,
+             * which discards the tangent and answers 0. The computed-goto loop
+             * has had these two lines all along; the twin simply drifted. */
+            if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); break; }
+            if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); break; }
             if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); break; }
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); break; }

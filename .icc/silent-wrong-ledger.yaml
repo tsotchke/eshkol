@@ -1774,6 +1774,107 @@ entries:
       first, so the repair here is now a no-op and only this ledger entry remains. Both
       arrived at byte-identical edits, which is itself corroboration of the diagnosis.
       GATE repair only — no product code.
+
+  - id: SW-40
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "VMDUAL-SHA"
+    closed_by: "PR fix(vm): min/max lose the tangent (branch fix/vm-minmax-dual)"
+    renumbered_from: >-
+      SW-33 (as filed) -> SW-36 -> SW-40, two hops, both forced by collisions
+      across unmerged branches. FILED as SW-33 on branch
+      fix/numeric-tower-bignum-tail, which found it while working on SW-32. That
+      ID was already taken by the native rest-parameter defect on branch
+      fix/native-rest-capture-and-do-loop, so the two collided; master has since
+      absorbed that lane's entry, and SW-33/SW-34 on master are now canonical and
+      are NOT this defect. Renumbered here first to SW-36 (the free ID at the
+      time), which two further lanes -- fix/numeric-tower-bignum-tail and
+      fix/value-position-axis -- then also claimed while this PR was open, so it
+      moved again to SW-40. SW-25..SW-39 are all claimed across master and the
+      in-flight branches as of this rebase; SW-40 is the first truly free ID. The
+      filing lane's text is preserved; only the ID and the status/evidence fields
+      changed, and no other lane's entry is touched.
+    title: "A derivative taken through min/max is silently 0 on the VM"
+    repro: "(define (f x) (max (* x x) (* 2 x))) (display (derivative f 3.0))"
+    observed_before: "VM prints 0; native prints 6"
+    correct: "6 — d/dx of x^2 at 3, since x^2 > 2x there"
+    observed_after: >-
+      6, and the VM agrees with native on every cell of the selection matrix. Both
+      operators and both arms: with f = (max (* x x) (* 2 x)) and
+      g = (min (* x x) (* 2 x)) the VM now gives 6 and 2 at x=3 and 2 and 2 at x=1,
+      matching native exactly, and the primal values (9, 6) are unchanged.
+    root_cause: >-
+      CONFIRMED, and the filing lane's hypothesis was right line-for-line. min/max
+      are SELECTION operators — the result IS one of the operands — so the
+      derivative must carry the SELECTED operand's tangent. Native
+      ArithmeticCodegen::min (lib/backend/arithmetic_codegen.cpp:3016) and ::max
+      (:3121) each open with an explicit DUAL NUMBER PATH that promotes both sides
+      via convertToDual, compares primals with FCmpOLE / FCmpOGE and packs the
+      chosen dual. The VM's natives 33/34 (lib/backend/vm_native.c:7106, reached as
+      _min2/_max2 — lib/backend/eshkol_vm.c:294 — under the variadic prelude min/max)
+      had no dual arm at all: both operands fell through to as_number_vm(), which
+      returns a dual's primal and discards its tangent, so the result was pushed as
+      a bare flonum by number_val_contagious and every derivative through min/max
+      read 0. The PRIMAL was correct throughout, which is what kept it invisible.
+    fixed_by: >-
+      lib/backend/vm_native.c natives 33/34 — a VAL_DUAL arm that promotes both
+      operands, compares primals and pushes the CHOSEN dual, with tie-breaking
+      mirroring native's FCmpOLE/FCmpOGE (left operand wins a tie on both engines);
+      plus the second-order VAL_HYPER_DUAL twin, matching how lbl_ABS already
+      treats the two carriers. The bignum and double paths are byte-for-byte the
+      previous logic.
+    class_kill: >-
+      The class is "selection-style numeric operator loses the tangent". Audited
+      every member on BOTH engines by measurement, not by reading: min, max, abs,
+      floor, ceiling, round, truncate. floor/ceiling/round/truncate are correct on
+      both engines (their derivative is 0 almost everywhere, which the plain
+      numeric path already produces). abs was correct on the VM's computed-goto
+      loop, which has had a VAL_DUAL arm all along — but its SWITCH-DISPATCH TWIN
+      (lib/backend/vm_run.c case OP_ABS, the lane a build without computed-goto
+      takes) was missing BOTH the VAL_DUAL and VAL_HYPER_DUAL arms, so a derivative
+      through abs answered 0 there. That twin is repaired in the same change. This
+      is the same both-loops discipline SW-09b established. Native has no gap in
+      this family: all seven measured correct.
+    evidence: >-
+      tests/vm_parity/corpus/66_minmax_dual_selection.esk (22 rows, EXACT analytic
+      derivatives, never a finite difference) on native / vm-src / vm-eskb, and the
+      same program as tests/differential/corpus/50_minmax_dual_selection.esk across
+      the four native axes. Revert-validated on a pristine VM rebuilt from HEAD in
+      the same worktree: 14 of the 22 rows diverge pre-fix, every one of them
+      answering 0 where native answers non-zero; all 22 agree post-fix. The 8 rows
+      that agreed pre-fix are the 5 primal rows, the 2 abs rows the computed-goto
+      loop already handled, and — notably — the constant-selected row whose CORRECT
+      answer is 0. That row is the reason a value table alone is not a sufficient
+      oracle here, and why every other derivative row in the corpus is non-zero.
+    discovered_by: >-
+      Probing AD through min/max while fixing SW-32 on branch
+      fix/numeric-tower-bignum-tail, because that fix touches the very dispatch the
+      dual path sits in front of. Confirmed PRE-EXISTING and NOT caused by the
+      SW-32 work: the same program gives the same zeros on a VM built with all of
+      that branch's VM changes reverted, and re-confirmed here on a clean worktree
+      off origin/master that contains none of them. Fixed independently of that
+      branch — the fix touches neither the exactness paths nor the rational tower.
+    caught_by: [direct-measurement, sw-32-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, ad-oracle]
+    notes: >-
+      Escape analysis: the AD oracle generates its probes from an arithmetic shape
+      table that contains no SELECTION operator at all, so no min/max/abs
+      derivative was ever exercised on either engine — the gate was green because
+      the operator family was absent from the generator, not because it was
+      correct. The corpus entries added here are the point fix; the generator axis
+      ("every numeric builtin whose result is one of its operands, differentiated
+      on both engines") is the durable one and is recommended for the AD-oracle
+      shape table. Separate finding, NOT filed as silent-wrong because it is absent
+      surface rather than a wrong answer: the VM's hyper-dual natives (1900-1921,
+      the {f,f1,f2,f12} second-order carrier) have no name bindings in
+      lib/backend/eshkol_vm.c, so they are unreachable from Eshkol source on the VM.
+      The VAL_HYPER_DUAL arm added here is therefore correct-by-construction and
+      symmetric with lbl_ABS, but is NOT exercised by any test and must not be
+      counted as covered. Nested/second-order `derivative` on the VM raises a LOUD,
+      honest "not supported on the VM" error today, so no silent path reaches it.
+
+  # ───────────────────────── IN-FLIGHT ─────────────────────────
+
   - id: IF-01
     bucket: IN-FLIGHT
     silent_wrong_class: true
