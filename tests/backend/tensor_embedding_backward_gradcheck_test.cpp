@@ -237,6 +237,12 @@ int main() {
     Fixture f;
     f.dispatch();
     const double* got = f.grad();
+    /* Snapshot now: check 5 below dispatches a SECOND time to test arena-scope
+     * survival, which doubles w.tensor_gradient's contents via +=. Checks 2-4
+     * run before that second dispatch and read the live pointer safely; check
+     * 10 runs after it, so it needs its own single-dispatch copy. */
+    std::vector<double> got_snapshot;
+    if (got) got_snapshot.assign(got, got + w_total);
     if (!got) {
         report("scatter-add vs closed form", false, "no gradient buffer produced");
     } else {
@@ -356,18 +362,37 @@ int main() {
 #endif
 
     /* ---- 9. the native (non-bridge) scatter also accumulates ----------- */
+    std::vector<double> dW(w_total, 0.0);
     {
         /* eshkol_backward_embedding is the AD_NODE_EMBEDDING rule; it takes the
          * indices as int64 rather than off the node. Same duplicate-index
          * property, so cover it here rather than leaving it unexercised. */
         const int64_t idx_i64[kNumIndices] = { 3, 0, 3, 1 };
-        std::vector<double> dW(w_total, 0.0);
         eshkol_backward_embedding(kCotangent, idx_i64, dW.data(),
                                   kNumIndices, kDModel, kVocab);
         double worst = max_abs_diff(dW.data(), want.data(), w_total);
         char detail[96];
         std::snprintf(detail, sizeof detail, "max abs err = %.3e", worst);
         report("native scatter accumulates duplicates", worst == 0.0, detail);
+    }
+
+    /* ---- 10. SW-12: DIRECT bridge-vs-native comparison on the same inputs --
+     * Checks 1 and 9 each compare their own implementation against the closed
+     * form `want` separately; both landing on zero error makes them equal to
+     * each other only transitively. This check diffs got_snapshot (bridge,
+     * AD_NODE_TENSOR_EMBEDDING via the Fixture above, captured after its
+     * single dispatch in check 1 — check 5 below deliberately dispatches a
+     * second time, which would otherwise double `got`) against `dW` (native,
+     * eshkol_backward_embedding called directly above) element-by-element on
+     * the identical kWeights/kIndices/kCotangent fixture — the direct
+     * differential comparison SW-12 asks for. */
+    if (!got_snapshot.empty()) {
+        double worst = max_abs_diff(got_snapshot.data(), dW.data(), w_total);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max abs err = %.3e", worst);
+        report("SW-12: bridge vs native, same inputs", worst == 0.0, detail);
+    } else {
+        report("SW-12: bridge vs native, same inputs", false, "no bridge gradient");
     }
 
     std::printf("=== Results: %d passed, %d failed ===\n", g_passed, g_failed);

@@ -21,11 +21,25 @@
  * precision, so the finite-difference floor sits far below the 1e-6 bar the
  * SDNC gradient check already uses.
  *
- * Coverage: every bridge op that has an exact backward rule registered in
- * get_tensor_backward_fn — matmul, gelu, softmax, layernorm, rmsnorm, silu and
- * cross-entropy. Attention and embedding are deliberately excluded: their
- * backward rules raise an explicit unsupported-op error rather than return an
- * approximate gradient, which is the existing hard constraint in this area.
+ * Coverage: every bridge op whose forward/backward pair fits this file's
+ * single-scalar-loss pipeline shape — matmul, gelu, softmax, layernorm,
+ * rmsnorm, silu and cross-entropy. Embedding and attention are covered
+ * elsewhere instead of being silently skipped here (SW-12):
+ *   - embedding's backward (tensor_embedding_backward, an indexed
+ *     scatter-add) IS implemented and exact; it takes an index tensor rather
+ *     than this file's x/w pipeline shape, so it is gradchecked in
+ *     tests/backend/tensor_embedding_backward_gradcheck_test.cpp, which also
+ *     diffs it directly against the non-bridge implementation
+ *     (eshkol_backward_embedding) on identical inputs.
+ *   - attention's backward (tensor_attention_backward) still unconditionally
+ *     refuses (eshkol_fatal) — its forward, ad_tensor_attention, does not
+ *     retain the causal flag or the softmax weights an exact adjoint would
+ *     need, a real forward-plumbing gap rather than a wrong formula. This is
+ *     asserted (not silently skipped) in
+ *     tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp, alongside
+ *     an FD-validated check that the non-bridge implementation
+ *     (eshkol_backward_attention) is exact. See that file's block comment for
+ *     the NEEDS-DECISION on whether to implement the bridge side.
  *
  * Also covered: the float32 interop round-trip and the bridge lifecycle, which
  * are the other four symbols the header declared and nothing defined.
