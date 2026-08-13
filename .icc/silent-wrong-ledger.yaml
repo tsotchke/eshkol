@@ -617,14 +617,56 @@ entries:
 
   - id: SW-13
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
     title: "WASM batch compile mis-evaluates the first macro when a program has two or more define-syntax forms"
     observed: "(dbl 21) => (* 2 21) prints a garbage bignum, value varies per build"
     correct: "42"
     evidence: "tests/wasm_diff/EXCLUSIONS.tsv (XFAIL row, 16_define_syntax.esk); reaffirmed in PR #413 and #418"
     caught_by: [parity-baselines, pr-record-413, pr-record-418]
     missed_by: [icc-correctness-chain, icc-readiness]
-    notes: "Excused by an XFAIL row, so the wasm gate is green while the defect ships in the browser build."
+    root_cause: >-
+      NOT a wasm bug and NOT in the macro expander's ordering: a TYPE-PUNNING heap
+      over-read that is undefined behaviour on every platform and only became VISIBLE in
+      wasm32. vm_macro.c casts between `MacroNode*` and the hub's `Node*`, and the two
+      structs were separate declarations that merely CLAIMED to be layout-compatible
+      (lib/backend/vm_parser.c:27-40 pre-fix). They were not: the VM hub's Node carries
+      four trailing fields MacroNode did not — is_char/is_inexact/is_int/ival at offsets
+      156/160/164/168, sizeof 176 — while MacroNode was 160 bytes with `_cap` sitting
+      exactly on top of `is_char`. Every macro-expanded node is
+      calloc(sizeof(MacroNode))'d in macro_node_deep_copy (vm_macro.c:81) and read back
+      through Node* by the compiler, so `is_char` aliased the children-array CAPACITY and
+      `is_inexact`/`is_int`/`ival` were read 0..16 bytes PAST the allocation. The exact-
+      integer constant folder in compile_expr_impl (lib/backend/vm_compiler.c:3108) reads
+      `is_int` and `ival` to decide whether to fold exactly; on wasm32 those out-of-bounds
+      bytes are nonzero, so the first macro's (* 2 21) folded from heap garbage and printed
+      a garbage bignum. On 64-bit hosts the bytes past a 160-byte chunk happened to read
+      zero, which is why the defect was invisible natively while shipping wrong answers in
+      the browser build. A second define-syntax merely perturbs the malloc layout, which is
+      why "two or more" and "value varies per build".
+    measured: >-
+      Reproduced NATIVELY (no wasm toolchain needed) by building the VM standalone with
+      -fsanitize=address: "heap-buffer-overflow ... READ of size 4 at 4 bytes after
+      160-byte region", read at vm_compiler.c:3108, region allocated by
+      macro_node_deep_copy at vm_macro.c:81. Offsets re-verified independently:
+      sizeof(Node)=176, sizeof(MacroNode)=160, is_char=156 aliases _cap=156,
+      is_inexact=160, is_int=164, ival=168.
+    fix: >-
+      MacroNode is now literally the hub's Node (`typedef struct Node MacroNode;`) with
+      `_cap` added to Node and maintained by every append site, so the casts are
+      well-defined by construction rather than by coincidence of field ordering
+      (lib/backend/vm_parser.c, lib/backend/eshkol_compiler.c). macro_node_deep_copy copies
+      the WHOLE struct instead of three hand-picked fields, which also closed three
+      exactness bugs it had been silently causing: a literal travelling through a macro
+      lost its exactness tags, so (dbl 2.0) folded to the exact 2, an exact literal past
+      2^53 degraded to a double, and #\a decayed to its codepoint 97.
+    verified: >-
+      ASAN clean on 16_define_syntax.esk and the new corpus program; XFAIL row removed from
+      tests/wasm_diff/EXCLUSIONS.tsv (PR-06 drops to 0 XFAIL); new gated corpus program
+      tests/vm_parity/corpus/59_multi_macro_batch.esk (4 define-syntax, first macro used
+      after later registrations, mutual use, nested self-application, exactness and char
+      preservation, conditional-valued operands) matches native byte-for-byte on both
+      engines.
 
   - id: SW-14
     bucket: SILENT-WRONG
@@ -665,11 +707,56 @@ entries:
 
   - id: SW-18
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
     title: "Exact rational arithmetic degrades to double once a bignum is involved (ESH-0105)"
     evidence: "docs/KNOWN_ISSUES.md:371; tests/vm_parity/found/bignum_exact_rational.esk"
     caught_by: [KNOWN_ISSUES, parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    observed: "(/ (expt 2 100) 3) printed 4.2255020007607644e+29 on the VM, exit 0, no diagnostic"
+    correct: "1267650600228229401496703205376/3, which the native engine already printed"
+    root_cause: >-
+      VM-ONLY, and a REPRESENTATION gap rather than a dispatch gap: the native runtime's
+      rational became bignum-capable in PR #247 (eshkol_rational_t.is_big/big_num/big_den),
+      but the VM's VmRational stayed a bare int64/int64 pair (lib/backend/vm_numeric.h).
+      Three sites therefore rounded an EXACT result to a double, each with an in-code
+      comment excusing it as "outside this VM's numeric tower":
+        1. lib/backend/vm_native.c vm_bignum_arith case '/' — a bignum division that does
+           not divide evenly pushed FLOAT_VAL(bignum_to_double(a)/bignum_to_double(b)).
+        2. lib/backend/vm_native.c rational natives 331-334 — ANY VAL_BIGNUM operand was
+           routed to the double path before the exact path was reached.
+        3. lib/backend/vm_native.c rational natives 331-334 — when vm_rational_* returned
+           NULL for int64 overflow after reduction. This one needs NO bignum operand at
+           all: (+ 1/4611686018427387903 1/4611686018427387905) overflows on its own.
+      Two further consequences fell out of the same representation gap: comparison guarded
+      its exact path with vm_either_bignum() alone, so a pair of RATIONALs was compared as
+      doubles and two distinct exact values that round to the same flonum compared EQUAL;
+      and vm_parallel.c copied a rational struct by assignment, which would have handed the
+      other VM two dangling bignum pointers.
+    fix: >-
+      VmRational now mirrors the native eshkol_rational_t: is_big / big_num / big_den with
+      the int64 pair kept as the fast path and the representation CANONICAL (big only when
+      the reduced pair genuinely does not fit int64, so equality stays a field comparison).
+      lib/backend/vm_rational.c gains an exact layer — vm_rational_alloc_bn (sign
+      canonicalization, bignum GCD reduction, demotion when it fits) and
+      vm_rational_arith_exact / neg / abs / inv / compare / equal plus bignum-domain
+      floor/ceil/truncate/round — whose contract is that an exact operation on exact
+      operands NEVER returns NULL for "too big", so no caller has a reason to fall back to
+      a double. NULL now means only division by an exact zero or an allocation failure.
+      All three degradation sites now build the exact value; results funnel through
+      vm_push_rational_norm so a denominator reducing to 1 still collapses to an integer.
+      Comparison is guarded by the wider vm_either_exact_wide() at all 17 sites that call
+      vm_bignum_compare_vals, and vm_parallel.c deep-copies both bignum halves. Display,
+      as_number_vm, numerator/denominator and exact->inexact are all big-aware. Inexact
+      contagion is preserved: a FLOAT operand still routes to doubles.
+    verified: >-
+      Both filed reproducers now match native and were PROMOTED out of found/ into the
+      gated corpus (tests/vm_parity/corpus/61_bignum_exact_rational.esk,
+      62_bignum_rational_mixed.esk), plus a new class-kill program
+      tests/vm_parity/corpus/60_exact_bignum_rational.esk covering all three degradation
+      sites, bignum numerators AND denominators, exact? assertions, exact comparison of
+      values sharing a flonum, and the small-rational fast path. PARITY.tsv row for `/`
+      updated; the ESH-0105 line removed from docs/KNOWN_ISSUES.md.
 
   - id: SW-19
     bucket: SILENT-WRONG
@@ -926,6 +1013,116 @@ entries:
       "add a corpus program". Adjacent and still OPEN, found by the same sweep and NOT this
       defect: (zset-union …) in core.dbsp SIGSEGVs in CALL POSITION too, so it is a
       different bug and this entry's oracle can say nothing about it.
+
+  - id: SW-28
+    bucket: SILENT-WRONG
+    status: closed
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
+    title: "The VM peephole deletes an arithmetic operation by folding CONST 0 + ADD across a jump target"
+    repro: "(display (+ 1 (if #t 5 0)))"
+    observed: "5 on the VM, exit 0, no diagnostic"
+    correct: "6, which native prints"
+    discovered_by: >-
+      Found while fixing SW-13, not looked for. The SW-13 fix removed an ACCIDENTAL MASK:
+      pre-fix, macro_node_add_child wrote its capacity into `_cap`, which aliased `is_char`
+      on the VM hub's Node, so macro-expanded conditional nodes carried a nonzero is_char
+      and took a different compile path. With the node types unified those nodes behave
+      like parser-built ones and reached this pre-existing defect, which turned a
+      macro-expanded `(+ (dbl a) (my-if2 #t b 0))` from 25 into 5. Confirmed PRE-EXISTING
+      by re-running the reproducer on unmodified master: `(+ 1 (cond (#t 5) (else 0)))`
+      answers 5 there with no macro involved at all.
+    root_cause: >-
+      lib/backend/vm_peephole.c rewrites the instruction PAIR (i, i+1) assuming the only
+      way to reach i+1 is by falling through i. Nothing checked whether anything BRANCHES
+      to i+1. `(+ x (if p a 0))` compiles to
+      `CONST x; <test>; JIF Lelse; <a>; JUMP Lend; Lelse: CONST 0; Lend: ADD`, where
+      `CONST 0` is the ELSE ARM's value and `ADD` is the OUTER `+`. The "CONST 0 + ADD is
+      an identity" rule matched that pair across the Lend label and NOP'd both, deleting
+      the enclosing addition whenever the THEN arm was taken. `CONST 1 + MUL` and
+      `DUP + POP` have the same shape. Only the then-branch is affected, which is why
+      `(+ 1 (cond (#f 9) (else 7)))` was correct and looked like the optimizer worked.
+    fix: >-
+      peephole_optimize now builds a conservative basic-block entry map before rewriting
+      anything — every OP_JUMP / OP_JUMP_IF_FALSE / OP_LOOP / OP_PUSH_HANDLER operand,
+      every OP_CLOSURE body entry PC (low 32 bits of the referenced constant), and every
+      ChunkEntry.code_offset — and skips any pair whose SECOND instruction is an entry.
+      An unknown entry blocks an optimization rather than enabling a miscompile, and an
+      allocation failure skips optimizing entirely.
+    verified: >-
+      All four arms match native in tests/vm_parity/corpus/59_multi_macro_batch.esk
+      ((+ 1 (my-if2 #t 5 0)) = 6, (+ 1 (my-if2 #f 5 0)) = 1, (* 3 (my-if2 #t 5 1)) = 15,
+      (* 3 (my-if2 #f 5 1)) = 3); ctest 164/164, vm-parity 166/0, differential 288/288.
+    caught_by: [direct-measurement, sw-13-unmasking]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The escape analysis is uncomfortable: this needed only a literal 0 or 1 in the else
+      arm of a conditional used as an arithmetic operand, which is ordinary code, and every
+      gate was green. It survived because no corpus program put a two-armed conditional in
+      an operand position with a folding-identity literal in the far arm. Worth a
+      generative axis: emit conditionals in operand position with identity literals.
+
+  - id: SW-29
+    bucket: SILENT-WRONG
+    status: open
+    title: "floor/ceiling/truncate/round of a bignum-backed rational returns 0 natively, and an inexact double on the VM"
+    repro: "(display (floor (/ (expt 2 100) 3)))"
+    observed: "native -r prints 0; the VM prints 4.2255020007607644e+29"
+    correct: "422550200076076467165567735125 — both engines are wrong, and they disagree"
+    discovered_by: >-
+      Found while closing SW-18, by probing the exactness surface around the fix rather
+      than only the filed reproducer.
+    root_cause: >-
+      Native: lib/core/rational.cpp:1054 eshkol_rational_floor (and ceil/truncate/round
+      beside it) read rat->numerator / rat->denominator UNCONDITIONALLY. On the bignum path
+      those int64 shadow fields are 0 and 1, so the function answers 0/1 = 0. This is the
+      SAME class of defect SW-18 closed on the VM — an int64 shadow read on the big path —
+      and PR #247 did not carry it into the rounding functions. VM: the `floor` builtin
+      never reaches rational native 342 for this shape and takes a generic double path.
+    blocked_on: >-
+      An ABI change. These four runtime entry points return int64_t
+      (inc/eshkol/core/rational.h:198-219) and are called from a single LLVM codegen block
+      (lib/backend/llvm_codegen.cpp:21298) that packs the result straight into an exact
+      integer tagged value. The exact floor of a big rational can itself exceed int64, so
+      it CANNOT be signalled through the current signature; there is no in-ABI fix that is
+      not itself a silent wrong. The precedent for the change already exists in the same
+      header: eshkol_rational_from_bignums_tagged returns a tagged value via an out-param.
+    decision_needed: >-
+      Either (a) convert the four functions to tagged out-params mirroring
+      eshkol_rational_from_bignums_tagged and update the one codegen block, which makes
+      them exact and closes this entry, or (b) raise a loud "exactness cannot be preserved"
+      error when the result leaves int64. NOT acceptable: leaving native answering 0.
+      Deliberately NOT folded into the SW-13/SW-18 branch — it is an ABI change on a
+      surface neither filed defect names, and it is native-side where SW-18 is VM-side.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+
+  - id: SW-30
+    bucket: SILENT-WRONG
+    status: open
+    title: "VM syntax-rules hygiene loses a template-introduced binding and corrupts a same-named top-level variable; native captures instead"
+    repro: "(define-syntax hyg (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e))))) (define tmp 7) (display (hyg 1)) (display tmp)"
+    observed: "VM prints 1 then (); native prints 101 then 7"
+    correct: "101 then 7 for this shape; for (hyg tmp) R7RS requires 107, and native prints 200 — so BOTH engines are wrong on capture, and they diverge on the binding itself"
+    measured: >-
+      Three shapes measured side by side. (hyg 1): native 101, VM 1 — the VM loses the
+      template's `let` binding entirely, so (+ tmp e) reads an unbound tmp as 0.
+      (display tmp) after (define tmp 7): native 7, VM () — the VM's expansion corrupts the
+      user's same-named top-level variable. (sw 3 4) with template ((_ a b) (let ((t a))
+      (+ t b))): native 7, VM 4. Confirmed PRE-EXISTING and unchanged by the SW-13 fix:
+      identical outputs before and after.
+    discovered_by: >-
+      Found while writing the SW-13 multi-macro corpus program, which was asked to include
+      hygiene checks. It could not: no template-binder hygiene shape agrees between the two
+      engines, so none can be pinned as a parity row. Reported here instead of being
+      quietly dropped from the test file, and the corpus program says so in a comment.
+    caught_by: [direct-measurement, sw-13-corpus-authoring]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      tests/vm_parity/corpus/16_define_syntax.esk already carried the hint in a comment
+      ("recursive macros and macros that set! their operands diverge"), but the plain
+      template-introduced `let` binding was not among the shapes it named. Sizing this is
+      a real piece of work — the VM's expander does gensym renaming that is applied
+      inconsistently between binder and reference — so it is filed rather than fixed here.
 
   - id: SW-33
     bucket: SILENT-WRONG
@@ -1511,11 +1708,17 @@ entries:
 
   - id: PR-06
     bucket: PARITY-RATCHET
-    status: open
+    status: closed
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
     title: "wasm EXCLUSIONS.tsv carries 1 XFAIL and 2 exclusions"
     evidence: "tests/wasm_diff/EXCLUSIONS.tsv"
     caught_by: [parity-baselines]
-    notes: "The XFAIL is SW-13, a silent wrong answer in the shipped browser build."
+    notes: >-
+      The XFAIL was SW-13, a silent wrong answer in the shipped browser build. SW-13 is
+      fixed at the root, so the XFAIL row is REMOVED and 16_define_syntax.esk is now fully
+      gated. The two remaining rows are genuine EXCLUSIONS (no filesystem, no file
+      descriptors in the wasm sandbox), not excused defects: this bucket now carries
+      0 XFAIL.
 
   - id: PR-07
     bucket: PARITY-RATCHET

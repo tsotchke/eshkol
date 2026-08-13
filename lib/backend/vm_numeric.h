@@ -81,12 +81,6 @@ typedef struct {
     double imag;
 } VmComplex;
 
-/* ── Rational Number (always normalized: gcd(|num|,denom)=1, denom>0) ── */
-typedef struct {
-    int64_t num;
-    int64_t denom;
-} VmRational;
-
 /* ── Bignum (sign-magnitude, base 2^32 limbs, little-endian) ── */
 typedef struct {
     int sign;           /* -1, 0, or 1 */
@@ -94,6 +88,30 @@ typedef struct {
     int n_limbs;
     int capacity;
 } VmBignum;
+
+/* ── Rational Number (always normalized: gcd(|num|,denom)=1, denom>0) ──
+ *
+ * SW-18 / ESH-0105: this used to be a bare int64/int64 pair, so the moment an
+ * exact operation produced a numerator or denominator outside int64 the VM
+ * pushed the correctly-rounded DOUBLE instead — `(/ (expt 2 100) 3)` printed
+ * 4.2255020007607644e+29 where the native engine prints the exact
+ * 1267650600228229401496703205376/3, with exit 0 and no diagnostic.  The
+ * representation now mirrors the native runtime's eshkol_rational_t
+ * (inc/eshkol/core/rational.h), which PR #247 already made bignum-capable:
+ *
+ *   is_big == 0  fast path — num/denom hold the reduced int64 pair
+ *   is_big == 1  exact path — big_num/big_den hold the reduced bignum pair
+ *
+ * The representation is CANONICAL: a value is stored big only when the reduced
+ * pair genuinely does not fit int64, so equality and eqv? stay a field
+ * comparison and every existing int64 fast path keeps working unchanged. */
+typedef struct {
+    int64_t num;        /* valid iff is_big == 0 */
+    int64_t denom;      /* valid iff is_big == 0; > 0 */
+    int32_t is_big;     /* 0 = int64 fast path, 1 = bignum path */
+    VmBignum* big_num;  /* valid iff is_big == 1 */
+    VmBignum* big_den;  /* valid iff is_big == 1; > 0 */
+} VmRational;
 
 /* ── Dual Number (forward-mode AD: primal + tangent*ε) ── */
 typedef struct {

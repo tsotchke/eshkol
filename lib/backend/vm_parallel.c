@@ -528,7 +528,18 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             VmRational* src_r = (VmRational*)src->opaque.ptr;
             VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&worker->heap.regions, sizeof(VmRational)) : NULL;
             if (src_r && !dst_r) return 0;
-            if (src_r) *dst_r = *src_r;
+            if (src_r) {
+                *dst_r = *src_r;
+                /* SW-18: a bignum-backed rational owns two pointers into the
+                 * SOURCE region stack.  Copying the struct alone would hand the
+                 * other VM two dangling pointers, so clone both halves the same
+                 * way HEAP_BIGNUM below does. */
+                if (src_r->is_big) {
+                    dst_r->big_num = vm_bignum_clone_to(&worker->heap.regions, src_r->big_num);
+                    dst_r->big_den = vm_bignum_clone_to(&worker->heap.regions, src_r->big_den);
+                    if (!dst_r->big_num || !dst_r->big_den) return 0;
+                }
+            }
             dst->opaque.ptr = dst_r;
             return 1;
         }
@@ -841,7 +852,18 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             VmRational* src_r = (VmRational*)src->opaque.ptr;
             VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&main_vm->heap.regions, sizeof(VmRational)) : NULL;
             if (src_r && !dst_r) return 0;
-            if (src_r) *dst_r = *src_r;
+            if (src_r) {
+                *dst_r = *src_r;
+                /* SW-18: a bignum-backed rational owns two pointers into the
+                 * SOURCE region stack.  Copying the struct alone would hand the
+                 * other VM two dangling pointers, so clone both halves the same
+                 * way HEAP_BIGNUM below does. */
+                if (src_r->is_big) {
+                    dst_r->big_num = vm_bignum_clone_to(&main_vm->heap.regions, src_r->big_num);
+                    dst_r->big_den = vm_bignum_clone_to(&main_vm->heap.regions, src_r->big_den);
+                    if (!dst_r->big_num || !dst_r->big_den) return 0;
+                }
+            }
             dst->opaque.ptr = dst_r;
             return 1;
         }

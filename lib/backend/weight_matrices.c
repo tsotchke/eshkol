@@ -35,8 +35,10 @@
  *       vm_string.c is included transitively via vm_io.c. */
 #include "vm_numeric.h"
 #include "vm_complex.c"
-#include "vm_rational.c"
+/* vm_bignum.c FIRST: the rational tower is bignum-capable (SW-18/ESH-0105),
+ * so vm_rational.c calls the bignum primitives directly. */
 #include "vm_bignum.c"
+#include "vm_rational.c"
 #include "vm_dual.c"
 #include "vm_autodiff.c"
 #include "vm_tensor_ops.c"

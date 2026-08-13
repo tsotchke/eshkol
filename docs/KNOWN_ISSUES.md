@@ -391,8 +391,6 @@ block ordinary use.
   catchable "Type error in sleep-ms: expected number" on any non-number. Fixed
   in `lib/core/system_builtins.c` and `lib/backend/vm_native.c`; regression
   test `tests/system/sleep_ms_test.esk`.
-- Exact rational arithmetic degrades to double once a bignum is involved
-  (ESH-0105).
 - Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
   are not fully wired (ESH-0104, ESH-0107).
 - JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is

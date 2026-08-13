@@ -686,6 +686,9 @@ static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_CHAR) return (double)v.as.i; /* codepoint */
     if (v.type == VAL_RATIONAL && vm) {
         VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        /* SW-18: a bignum-backed rational has num/denom = 0/1, so reading the
+         * int64 halves unconditionally answered 0.0 for every big rational. */
+        if (r && r->is_big) return vm_rational_to_double(r);
         if (r && r->denom != 0) return (double)r->num / (double)r->denom;
     }
     if (v.type == VAL_BIGNUM && vm) {
@@ -892,7 +895,15 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             if (obj && obj->opaque.ptr) {
                 VmRational* r = (VmRational*)obj->opaque.ptr;
-                if (r->denom == 1) printf("%lld", (long long)r->num);
+                if (r->is_big) {
+                    /* SW-18: print the exact bignum halves, not the int64
+                     * shadow (which is 0/1 on the big path). */
+                    char* ns = bignum_to_string(&vm->heap.regions, r->big_num);
+                    char* ds = bignum_to_string(&vm->heap.regions, r->big_den);
+                    if (ns && ds) printf("%s/%s", ns, ds);
+                    else printf("<rational>");
+                }
+                else if (r->denom == 1) printf("%lld", (long long)r->num);
                 else printf("%lld/%lld", (long long)r->num, (long long)r->denom);
             } else printf("<rational>");
             break;

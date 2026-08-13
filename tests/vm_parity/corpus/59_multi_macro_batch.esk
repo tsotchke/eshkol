@@ -1,0 +1,68 @@
+; SW-13 class-kill: batch compilation of a program with THREE OR MORE
+; define-syntax forms, where an EARLIER macro is still used after LATER macros
+; have been registered.
+;
+; The defect this pins: MacroNode and the compiler's Node were two different
+; structs that code cast between.  On the VM hub Node carries four trailing
+; fields the 160-byte MacroNode did not (is_char/is_inexact/is_int/ival), so
+; every macro-expanded literal was read 0..16 bytes past its allocation by the
+; constant folder, and `_cap` aliased `is_char`.  On wasm32 those bytes are
+; nonzero, so the FIRST macro's arithmetic folded from garbage and `(dbl 21)`
+; printed a garbage bignum while native printed 42.
+;
+; Coverage here is deliberately wider than the original one-line repro:
+;   * 4 define-syntax forms, with the first one re-used AFTER the later ones
+;     are registered (the ordering that made the over-read visible)
+;   * macros used inside other macros' expansions (mutual use)
+;   * nested self-application, so an expansion is itself re-expanded
+;   * literal EXACTNESS carried through expansion (deep-copy used to drop the
+;     exactness tags): inexact stays inexact, exact stays exact, an exact
+;     literal past 2^53 keeps every digit, and a char stays a char
+;   * an arithmetic operand that expands to a two-armed conditional, which is
+;     where the VM peephole used to splice `CONST 0 + ADD` across the `else`
+;     label and delete the enclosing `+` outright
+;
+; NOT covered here, deliberately: syntax-rules HYGIENE for a binding introduced
+; by the template.  Both engines are wrong and they disagree with each other
+; (native captures, the VM loses the binding and corrupts a same-named
+; top-level variable), so it cannot be pinned as a parity row yet — filed
+; separately rather than folded into this file.
+
+(define-syntax dbl
+  (syntax-rules () ((_ e) (* 2 e))))
+
+(define-syntax my-if2
+  (syntax-rules () ((_ c a b) (cond (c a) (else b)))))
+
+(define-syntax quad
+  (syntax-rules () ((_ e) (dbl (dbl e)))))
+
+(define-syntax swap-sum
+  (syntax-rules () ((_ a b) (+ (dbl a) (my-if2 #t b 0)))))
+
+; The first macro, expanded AFTER all four are registered.
+(display (dbl 21)) (newline)
+(display (my-if2 #t "yes" "no")) (newline)
+
+; Nested self-application and macro-inside-macro.
+(display (dbl (dbl 5))) (newline)
+(display (quad 3)) (newline)
+(display (swap-sum 10 5)) (newline)
+
+; Exactness must survive template instantiation and argument substitution.
+(display (dbl 2.0)) (newline)          ; 4.0 — inexact in, inexact out
+(display (exact? (dbl 21))) (newline)  ; #t
+(display (exact? (dbl 2.0))) (newline) ; #f
+(display (dbl 4611686018427387904)) (newline) ; 9223372036854775808, every digit
+
+; A character literal must not decay to its codepoint.
+(define-syntax idm (syntax-rules () ((_ e) e)))
+(display (char? (idm #\a))) (newline)
+(display (idm #\a)) (newline)
+
+; A macro expanding to a two-armed conditional, used as an arithmetic operand.
+; The enclosing operation must survive on BOTH arms.
+(display (+ 1 (my-if2 #t 5 0))) (newline)   ; 6
+(display (+ 1 (my-if2 #f 5 0))) (newline)   ; 1
+(display (* 3 (my-if2 #t 5 1))) (newline)   ; 15
+(display (* 3 (my-if2 #f 5 1))) (newline)   ; 3

@@ -132,8 +132,10 @@ typedef void regex_t;
 
 /* Runtime type libraries */
 #include "vm_complex.c"
-#include "vm_rational.c"
+/* vm_bignum.c FIRST: the rational tower is bignum-capable (SW-18/ESH-0105), so
+ * vm_rational.c calls the bignum primitives directly. */
 #include "vm_bignum.c"
+#include "vm_rational.c"
 #include "vm_dual.c"
 #include "vm_hyperdual.c"
 #include "vm_autodiff.c"

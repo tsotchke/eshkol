@@ -1,0 +1,16 @@
+; SW-18 / ESH-0105 regression, promoted from tests/vm_parity/found/ once fixed.
+;
+; FILED (now FIXED): an exact bignum division that does not divide evenly lost
+; exactness on the VM.  Native carried a bignum numerator through the rational
+; tower; the VM's VmRational was int64/int64, so it could not represent the
+; result and fell back to the correctly-rounded double:
+;   native -r : 1267650600228229401496703205376/3
+;   vm        : 4.2255020007607644e+29
+;
+; VmRational is bignum-capable now (is_big / big_num / big_den, mirroring the
+; native eshkol_rational_t), so both engines print the exact value.  The wider
+; class — bignum denominators, int64 overflow with no bignum operand at all,
+; exact comparison of values that share a flonum — is gated by
+; corpus/60_exact_bignum_rational.esk.
+(display (/ (expt 2 100) 3))
+(newline)
