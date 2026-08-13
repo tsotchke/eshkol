@@ -12689,20 +12689,40 @@ private:
         // set!-mutated bindings (make-counter, make-account sibling closures).
         // Skip when TCO already promoted parameters to *_tco allocas (the
         // self-recursive / named-let path keeps its own loopvar handling).
-        if (!use_tco && op->define_op.parameters && op->define_op.value) {
+        if (!use_tco && op->define_op.value) {
             auto box_arg_it = function->arg_begin();
-            for (uint64_t i = 0; i < op->define_op.num_params && box_arg_it != function->arg_end(); ++i, ++box_arg_it) {
-                if (op->define_op.parameters[i].type == ESHKOL_VAR &&
-                    op->define_op.parameters[i].variable.id) {
-                    std::string pname = op->define_op.parameters[i].variable.id;
-                    if (astSetsVar(op->define_op.value, pname)) {
-                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
-                        builder->CreateStore(&(*box_arg_it), box);
-                        symbol_table[pname] = box;
-                        eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
-                                     pname.c_str(), func_name);
+            if (op->define_op.parameters) {
+                for (uint64_t i = 0; i < op->define_op.num_params && box_arg_it != function->arg_end(); ++i, ++box_arg_it) {
+                    if (op->define_op.parameters[i].type == ESHKOL_VAR &&
+                        op->define_op.parameters[i].variable.id) {
+                        std::string pname = op->define_op.parameters[i].variable.id;
+                        if (astSetsVar(op->define_op.value, pname)) {
+                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            builder->CreateStore(&(*box_arg_it), box);
+                            symbol_table[pname] = box;
+                            eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
+                                         pname.c_str(), func_name);
+                        }
                     }
                 }
+            }
+            // ESH-0074b: the REST parameter is a binding exactly like a fixed one.
+            // It arrives as the by-value Argument that follows the fixed params (the
+            // symbol-table loop above walks the same order), so without a box a
+            // nested closure capturing it copies the LIST VALUE into its environment
+            // and the inner set! mutates a private copy that is discarded on return:
+            //   (define (f . rest) ((lambda () (set! rest (cons 99 rest)))) (car rest))
+            // answered 1 instead of 99, with exit 0 and no diagnostic. Boxing here
+            // routes every later read/write through the same alloca, so the existing
+            // capture machinery pointer-passes ONE cell.
+            if (is_variadic && box_arg_it != function->arg_end() &&
+                astSetsVar(op->define_op.value, op->define_op.rest_param)) {
+                std::string pname = op->define_op.rest_param;
+                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                builder->CreateStore(&(*box_arg_it), box);
+                symbol_table[pname] = box;
+                eshkol_debug("Assignment conversion: boxed set!-mutated rest param %s in %s",
+                             pname.c_str(), func_name);
             }
         }
 
@@ -24228,6 +24248,21 @@ private:
     //                   call_op.variables = body expressions
     // Where bindings-list is CALL_OP with CONS bindings (var, CONS(init, step))
     // And test-clause is CONS(test, results-list)
+    // ESH-0074c: does any closure created ANYWHERE in this `do` form capture
+    // `var`? `main_cons` carries the bindings (inits and steps), the test and the
+    // result expressions; `op->call_op.variables[]` carries the body commands.
+    // Every one of them can build a closure, and any of them doing so forces the
+    // loop variable onto a shared cell — see codegenDo's storage-class comment.
+    bool doFormCapturesVar(const eshkol_operations_t* op,
+                           const eshkol_ast_t* main_cons,
+                           const std::string& var) {
+        if (astVarCapturedByNestedClosure(main_cons, var)) return true;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            if (astVarCapturedByNestedClosure(&op->call_op.variables[i], var)) return true;
+        }
+        return false;
+    }
+
     Value* codegenDo(const eshkol_operations_t* op) {
         if (!op->call_op.func || op->call_op.func->type != ESHKOL_CONS) {
             eshkol_warn("do requires properly formed structure");
@@ -24278,8 +24313,49 @@ private:
                 var_names.push_back(var_name);
                 step_exprs.push_back(step_ast);
 
-                // Create alloca for loop variable
-                Value* alloca = builder->CreateAlloca(tagged_value_type, nullptr, var_name + "_do");
+                // ESH-0074c: choose the loop variable's STORAGE CLASS *before* any
+                // of the loop is emitted.
+                //
+                // A `do` variable is read from three places emitted at three
+                // different times — the header test (first), the body (second) and
+                // the step expressions (third) — but codegenDo writes the step
+                // result to the cell it cached here. The closure-capture machinery
+                // (codegenLambda, "CLOSURE ESCAPE FIX") *rebinds* a captured stack
+                // alloca to fresh arena storage mid-body and repoints symbol_table
+                // at it, so a closure over a `do` variable used to split the
+                // variable in two: the step read the arena cell and wrote the stack
+                // alloca, while the header test kept reading the stale alloca it had
+                // already been emitted against. `(= i 3)` then never became true —
+                // an INFINITE LOOP whose every iteration allocated a fresh closure,
+                // i.e. unbounded arena growth ending in SIGKILL (exit 137):
+                //     (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+                //         ((lambda () (set! acc (+ acc i)))))
+                // Merely *reading* a loop variable from a body closure was enough;
+                // mutation was not required.
+                //
+                // Deciding up front removes the ordering hazard entirely rather than
+                // patching one of its three symptoms: when a closure in this form
+                // captures the variable, the cell is arena storage from the start,
+                // which is what the capture machinery would have converged on anyway
+                // — and because arena storage is already a pointer-typed CallInst it
+                // takes codegenLambda's "existing arena storage" branch, which
+                // pointer-passes WITHOUT rebinding anything. Otherwise the variable
+                // keeps its stack alloca and stays promotable by mem2reg, so
+                // closure-free `do` loops are unchanged.
+                const bool needs_shared_cell = doFormCapturesVar(op, main_cons, var_name);
+
+                Value* alloca = nullptr;
+                if (needs_shared_cell) {
+                    Value* arena_ptr = builder->CreateLoad(
+                        PointerType::getUnqual(*context), global_arena);
+                    alloca = builder->CreateCall(getArenaAllocateFunc(),
+                                                 {arena_ptr, sizeConst(16)},
+                                                 var_name + "_do_cell");
+                    eshkol_debug("do: loop variable '%s' is captured by a closure, "
+                                 "using shared arena storage", var_name.c_str());
+                } else {
+                    alloca = builder->CreateAlloca(tagged_value_type, nullptr, var_name + "_do");
+                }
                 var_allocas.push_back(alloca);
 
                 // Evaluate init expression and store
@@ -24361,6 +24437,35 @@ private:
             }
             Value* step_val = typedValueToTaggedValue(step_tv);
             new_values.push_back(step_val);
+        }
+
+        // ESH-0074c: INVARIANT — no loop variable may have been arena-moved while
+        // the loop was being compiled.
+        //
+        // The arena move is the rebinding that splits the loop: it seeds the new
+        // cell ONCE, in the pre-header, so a step that reads the moved cell and
+        // writes the stack alloca the header test was compiled against never makes
+        // the test true. The storage-class decision above is supposed to make that
+        // move unnecessary by handing the capture machinery arena storage from the
+        // start, so seeing one here means the capture analysis missed a form — and
+        // the symptom would be an infinite loop that exhausts the arena, not a
+        // wrong answer. Fail loudly at compile time instead.
+        //
+        // Deliberately narrow: a nested `(define (f) …)` capture legitimately
+        // repoints the binding at module-level capture storage, and re-seeds it
+        // from the loop's own cell on every iteration, so it does NOT split the
+        // loop and is not flagged. The arena move is identified by its signature —
+        // a pointer-typed CallInst that is not the cell we chose.
+        for (size_t i = 0; i < var_names.size(); i++) {
+            auto sym_it = symbol_table.find(var_names[i]);
+            if (sym_it == symbol_table.end() || sym_it->second == var_allocas[i]) continue;
+            if (isa<CallInst>(sym_it->second) && sym_it->second->getType()->isPointerTy()) {
+                eshkol_error("do: loop variable '%s' was arena-moved while the loop "
+                             "body was compiled; the loop test and the step update "
+                             "no longer share a cell",
+                             var_names[i].c_str());
+                markFatalCodegenError();
+            }
         }
 
         // NORETURN SAFETY: Only update variables and loop back if block is not terminated
@@ -28025,6 +28130,46 @@ private:
     }
     // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
 
+    // ESH-0074c: which node test astScanVar() applies while walking. See the
+    // comment on astScanVar for the contract.
+    enum class VarScanMode { SetTarget, ClosureCapture };
+
+    // True iff `var` is bound by this parameter list (so an inner reference to it
+    // is the PARAMETER, not a capture of the enclosing binding).
+    bool paramListShadows(const eshkol_ast_t* params, uint64_t num_params,
+                          const char* rest_param, const std::string& var) {
+        if (rest_param && var == rest_param) return true;
+        if (!params) return false;
+        for (uint64_t i = 0; i < num_params; i++) {
+            if (params[i].type == ESHKOL_VAR && params[i].variable.id &&
+                var == params[i].variable.id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Same question for a let/named-let binding list, whose entries are
+    // (variable value) pairs.
+    bool bindingListShadows(const eshkol_ast_t* bindings, uint64_t num_bindings,
+                            const std::string& var) {
+        if (!bindings) return false;
+        for (uint64_t i = 0; i < num_bindings; i++) {
+            const eshkol_ast_t* b = &bindings[i];
+            const eshkol_ast_t* name_ast = nullptr;
+            if (b->type == ESHKOL_CONS) {
+                name_ast = b->cons_cell.car;
+            } else if (b->type == ESHKOL_VAR) {
+                name_ast = b;
+            }
+            if (name_ast && name_ast->type == ESHKOL_VAR && name_ast->variable.id &&
+                var == name_ast->variable.id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Helper function to find free variables in a lambda body
     // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
     // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
@@ -28048,7 +28193,20 @@ private:
     // `false` silently miscompiles a mutation. So every structural container the
     // parser can produce is walked, and `default: return false` is now reached
     // only by genuine leaves (literals, quote, type annotations, macro defs).
-    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+    //
+    // ESH-0074c: that completeness is scarce, so the traversal is shared rather
+    // than copied. `VarScanMode` selects which NODE TEST is applied while the
+    // walk itself stays byte-identical:
+    //   SetTarget      — `var` is the target of a set! (the original predicate).
+    //   ClosureCapture — `var` is referenced from inside a form whose capture
+    //                    machinery SHARES the enclosing cell by pointer, and which
+    //                    arena-moves a stack alloca to do it: a lambda or a named
+    //                    let. Internal function defines capture through
+    //                    module-level storage instead and are excluded on purpose
+    //                    (see the DEFINE_OP case).
+    // The second mode drives codegenDo's storage-class decision; see
+    // doFormCapturesVar().
+    bool astScanVar(const eshkol_ast_t* ast, const std::string& var, VarScanMode mode) {
         if (!ast) return false;
         // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
         // clauses and every other list-shaped payload live in CONS cells, not in
@@ -28057,15 +28215,16 @@ private:
         // node, so walking cons cells cannot manufacture a false positive out of
         // a literal list.
         if (ast->type == ESHKOL_CONS) {
-            return astSetsVar(ast->cons_cell.car, var) ||
-                   astSetsVar(ast->cons_cell.cdr, var);
+            return astScanVar(ast->cons_cell.car, var, mode) ||
+                   astScanVar(ast->cons_cell.cdr, var, mode);
         }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
-                if (op->set_op.name && var == op->set_op.name) return true;
-                return astSetsVar(op->set_op.value, var);
+                if (mode == VarScanMode::SetTarget &&
+                    op->set_op.name && var == op->set_op.name) return true;
+                return astScanVar(op->set_op.value, var, mode);
             // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
@@ -28117,9 +28276,9 @@ private:
             case ESHKOL_SDNC_IMPROVE_OP:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP: {
-                if (op->call_op.func && astSetsVar(op->call_op.func, var)) return true;
+                if (op->call_op.func && astScanVar(op->call_op.func, var, mode)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astSetsVar(&op->call_op.variables[i], var)) return true;
+                    if (astScanVar(&op->call_op.variables[i], var, mode)) return true;
                 }
                 return false;
             }
@@ -28128,128 +28287,168 @@ private:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astSetsVar(&op->sequence_op.expressions[i], var)) return true;
+                    if (astScanVar(&op->sequence_op.expressions[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
             case ESHKOL_LETREC_STAR_OP: {
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astSetsVar(&op->let_op.bindings[i], var)) return true;
+                // ESH-0074c: a NAMED let compiles to a loop procedure that takes
+                // its free variables as capture arguments, so it captures `var`
+                // exactly like a lambda would.
+                if (mode == VarScanMode::ClosureCapture &&
+                    op->op == ESHKOL_LET_OP && op->let_op.name &&
+                    !bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var) &&
+                    astReferencesVar(op->let_op.body, var)) {
+                    return true;
                 }
-                return astSetsVar(op->let_op.body, var);
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (astScanVar(&op->let_op.bindings[i], var, mode)) return true;
+                }
+                return astScanVar(op->let_op.body, var, mode);
             }
             case ESHKOL_LAMBDA_OP:
-                return astSetsVar(op->lambda_op.body, var);
+                if (mode == VarScanMode::ClosureCapture &&
+                    !paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                      op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                      var) &&
+                    astReferencesVar(op->lambda_op.body, var)) {
+                    return true;
+                }
+                return astScanVar(op->lambda_op.body, var, mode);
             case ESHKOL_DEFINE_OP:
-                return astSetsVar(op->define_op.value, var);
+                // NOT a ClosureCapture site, deliberately. An internal
+                // `(define (bump) …)` is compiled by codegenFunctionDefinition,
+                // whose capture mechanism is MODULE-LEVEL capture storage
+                // (`<fn>_nested_N_capture_<var>`) re-seeded from the enclosing
+                // binding at every execution of the define — it never arena-moves
+                // the enclosing cell, so it does not split a `do` loop and it does
+                // not want one either. Measured: forcing arena storage for
+                //     (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+                //         (define (bump) (set! a (+ a i))) (bump))
+                // turned a correct 3 into a type error. `(define bump (lambda …))`
+                // is a different shape and is caught by the LAMBDA_OP case above.
+                return astScanVar(op->define_op.value, var, mode);
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                    if (astSetsVar(&op->guard_op.clauses[i], var)) return true;
+                    if (astScanVar(&op->guard_op.clauses[i], var, mode)) return true;
                 }
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->guard_op.body[i], var)) return true;
+                    if (astScanVar(&op->guard_op.body[i], var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_WITH_REGION_OP:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->with_region_op.body[i], var)) return true;
+                    if (astScanVar(&op->with_region_op.body[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_RAISE_OP:
-                return astSetsVar(op->raise_op.exception, var);
+                return astScanVar(op->raise_op.exception, var, mode);
             case ESHKOL_VALUES_OP:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                    if (astSetsVar(&op->values_op.expressions[i], var)) return true;
+                    if (astScanVar(&op->values_op.expressions[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_CALL_WITH_VALUES_OP:
-                return astSetsVar(op->call_with_values_op.producer, var) ||
-                       astSetsVar(op->call_with_values_op.consumer, var);
+                return astScanVar(op->call_with_values_op.producer, var, mode) ||
+                       astScanVar(op->call_with_values_op.consumer, var, mode);
             case ESHKOL_LET_VALUES_OP:
             case ESHKOL_LET_STAR_VALUES_OP: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-                    if (astSetsVar(&op->let_values_op.producers[i], var)) return true;
+                    if (astScanVar(&op->let_values_op.producers[i], var, mode)) return true;
                 }
-                return astSetsVar(op->let_values_op.body, var);
+                return astScanVar(op->let_values_op.body, var, mode);
             }
             case ESHKOL_MATCH_OP: {
-                if (astSetsVar(op->match_op.expr, var)) return true;
+                if (astScanVar(op->match_op.expr, var, mode)) return true;
                 for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                    if (astSetsVar(op->match_op.clauses[i].guard, var)) return true;
-                    if (astSetsVar(op->match_op.clauses[i].body, var)) return true;
+                    if (astScanVar(op->match_op.clauses[i].guard, var, mode)) return true;
+                    if (astScanVar(op->match_op.clauses[i].body, var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_CALL_CC_OP:
-                return astSetsVar(op->call_cc_op.proc, var);
+                return astScanVar(op->call_cc_op.proc, var, mode);
             case ESHKOL_DYNAMIC_WIND_OP:
-                return astSetsVar(op->dynamic_wind_op.before, var) ||
-                       astSetsVar(op->dynamic_wind_op.thunk, var) ||
-                       astSetsVar(op->dynamic_wind_op.after, var);
+                return astScanVar(op->dynamic_wind_op.before, var, mode) ||
+                       astScanVar(op->dynamic_wind_op.thunk, var, mode) ||
+                       astScanVar(op->dynamic_wind_op.after, var, mode);
             case ESHKOL_OWNED_OP:
-                return astSetsVar(op->owned_op.value, var);
+                return astScanVar(op->owned_op.value, var, mode);
             case ESHKOL_MOVE_OP:
-                return astSetsVar(op->move_op.value, var);
+                return astScanVar(op->move_op.value, var, mode);
             case ESHKOL_BORROW_OP: {
-                if (astSetsVar(op->borrow_op.value, var)) return true;
+                if (astScanVar(op->borrow_op.value, var, mode)) return true;
                 for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->borrow_op.body[i], var)) return true;
+                    if (astScanVar(&op->borrow_op.body[i], var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_SHARED_OP:
-                return astSetsVar(op->shared_op.value, var);
+                return astScanVar(op->shared_op.value, var, mode);
             case ESHKOL_WEAK_REF_OP:
-                return astSetsVar(op->weak_ref_op.value, var);
+                return astScanVar(op->weak_ref_op.value, var, mode);
             case ESHKOL_COMPOSE_OP:
-                return astSetsVar(op->compose_op.func_a, var) ||
-                       astSetsVar(op->compose_op.func_b, var);
+                return astScanVar(op->compose_op.func_a, var, mode) ||
+                       astScanVar(op->compose_op.func_b, var, mode);
             case ESHKOL_TENSOR_OP:
                 for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
-                    if (astSetsVar(&op->tensor_op.elements[i], var)) return true;
+                    if (astScanVar(&op->tensor_op.elements[i], var, mode)) return true;
                 }
                 return false;
             // ---- automatic-differentiation ops: each has its OWN union member
             // (function/point/…), NOT the call_op layout — see eshkol.h.
             case ESHKOL_DIFF_OP:
-                return astSetsVar(op->diff_op.expression, var);
+                return astScanVar(op->diff_op.expression, var, mode);
             case ESHKOL_DERIVATIVE_OP:
-                return astSetsVar(op->derivative_op.function, var) ||
-                       astSetsVar(op->derivative_op.point, var);
+                return astScanVar(op->derivative_op.function, var, mode) ||
+                       astScanVar(op->derivative_op.point, var, mode);
             case ESHKOL_TAYLOR_OP:
             case ESHKOL_DERIVATIVE_N_OP:
-                return astSetsVar(op->taylor_op.function, var) ||
-                       astSetsVar(op->taylor_op.point, var) ||
-                       astSetsVar(op->taylor_op.order, var);
+                return astScanVar(op->taylor_op.function, var, mode) ||
+                       astScanVar(op->taylor_op.point, var, mode) ||
+                       astScanVar(op->taylor_op.order, var, mode);
             case ESHKOL_GRADIENT_OP:
-                return astSetsVar(op->gradient_op.function, var) ||
-                       astSetsVar(op->gradient_op.point, var);
+                return astScanVar(op->gradient_op.function, var, mode) ||
+                       astScanVar(op->gradient_op.point, var, mode);
             case ESHKOL_JACOBIAN_OP:
-                return astSetsVar(op->jacobian_op.function, var) ||
-                       astSetsVar(op->jacobian_op.point, var);
+                return astScanVar(op->jacobian_op.function, var, mode) ||
+                       astScanVar(op->jacobian_op.point, var, mode);
             case ESHKOL_HESSIAN_OP:
-                return astSetsVar(op->hessian_op.function, var) ||
-                       astSetsVar(op->hessian_op.point, var);
+                return astScanVar(op->hessian_op.function, var, mode) ||
+                       astScanVar(op->hessian_op.point, var, mode);
             case ESHKOL_DIVERGENCE_OP:
-                return astSetsVar(op->divergence_op.function, var) ||
-                       astSetsVar(op->divergence_op.point, var);
+                return astScanVar(op->divergence_op.function, var, mode) ||
+                       astScanVar(op->divergence_op.point, var, mode);
             case ESHKOL_CURL_OP:
-                return astSetsVar(op->curl_op.function, var) ||
-                       astSetsVar(op->curl_op.point, var);
+                return astScanVar(op->curl_op.function, var, mode) ||
+                       astScanVar(op->curl_op.point, var, mode);
             case ESHKOL_LAPLACIAN_OP:
-                return astSetsVar(op->laplacian_op.function, var) ||
-                       astSetsVar(op->laplacian_op.point, var);
+                return astScanVar(op->laplacian_op.function, var, mode) ||
+                       astScanVar(op->laplacian_op.point, var, mode);
             case ESHKOL_DIRECTIONAL_DERIV_OP:
-                return astSetsVar(op->directional_deriv_op.function, var) ||
-                       astSetsVar(op->directional_deriv_op.point, var) ||
-                       astSetsVar(op->directional_deriv_op.direction, var);
+                return astScanVar(op->directional_deriv_op.function, var, mode) ||
+                       astScanVar(op->directional_deriv_op.point, var, mode) ||
+                       astScanVar(op->directional_deriv_op.direction, var, mode);
             default:
                 return false;
         }
+    }
+
+    // Returns true iff `var` is the target of a set! anywhere in `ast`.
+    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::SetTarget);
+    }
+
+    // ESH-0074c: returns true iff some closure created inside `ast` captures
+    // `var` THROUGH THE POINTER-SHARING PATH — i.e. `var` is referenced from the
+    // body of a lambda or a named let and is not shadowed by that form's own
+    // bindings. Drives codegenDo's storage-class decision.
+    bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::ClosureCapture);
     }
 
     bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
@@ -29675,19 +29874,32 @@ private:
         // set!-mutated needs a mutable cell so set! works and so nested closures
         // capturing it share ONE cell. Skip when TCO already promoted params to
         // *_tco allocas (use_binding_tco re-binds params above).
-        if (!use_binding_tco && op->lambda_op.parameters && op->lambda_op.body) {
+        if (!use_binding_tco && op->lambda_op.body) {
             auto box_arg_it = lambda_func->arg_begin();
-            for (uint64_t i = 0; i < op->lambda_op.num_params && box_arg_it != lambda_func->arg_end(); ++i, ++box_arg_it) {
-                if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
-                    op->lambda_op.parameters[i].variable.id) {
-                    std::string pname = op->lambda_op.parameters[i].variable.id;
-                    if (astSetsVar(op->lambda_op.body, pname)) {
-                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
-                        builder->CreateStore(&(*box_arg_it), box);
-                        symbol_table[pname] = box;
-                        eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
+            if (op->lambda_op.parameters) {
+                for (uint64_t i = 0; i < op->lambda_op.num_params && box_arg_it != lambda_func->arg_end(); ++i, ++box_arg_it) {
+                    if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
+                        op->lambda_op.parameters[i].variable.id) {
+                        std::string pname = op->lambda_op.parameters[i].variable.id;
+                        if (astSetsVar(op->lambda_op.body, pname)) {
+                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            builder->CreateStore(&(*box_arg_it), box);
+                            symbol_table[pname] = box;
+                            eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
+                        }
                     }
                 }
+            }
+            // ESH-0074b: same gap for a variadic LAMBDA's rest parameter. The rest
+            // argument sits immediately after the fixed params and before the
+            // capture parameters, which is exactly where box_arg_it now points.
+            if (is_variadic && box_arg_it != lambda_func->arg_end() &&
+                astSetsVar(op->lambda_op.body, op->lambda_op.rest_param)) {
+                std::string pname = op->lambda_op.rest_param;
+                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                builder->CreateStore(&(*box_arg_it), box);
+                symbol_table[pname] = box;
+                eshkol_debug("Assignment conversion: boxed set!-mutated lambda rest param %s", pname.c_str());
             }
         }
 
