@@ -3256,6 +3256,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
             FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
+    # ESH-0402 (ledger SW-03 + SW-04): the two forward carriers — the 8-jet
+    # (`derivative`) and the heap Taylor tower (`derivative-n`/`taylor`) — did
+    # not compose. Every crossing between them answered a SILENT ZERO, in both
+    # directions and through a first-class derivative closure, while the
+    # jet-over-jet spelling of the same mathematics was correct. The matrix is
+    # asserted against EXACT analytic values (never a finite difference) so a
+    # regression to zero cannot hide in a tolerance. Both lanes.
+    add_test(
+        NAME ad_carrier_nesting_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_carrier_nesting_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_carrier_nesting_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_carrier_nesting_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_carrier_nesting_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_carrier_nesting_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_carrier_nesting_aot'"
+    )
+    set_tests_properties(ad_carrier_nesting_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
+    # again with an enclosing REVERSE pass is not supported — the runtime-closure
+    # gradient reads its point components as raw doubles, so the outer pass's
+    # tape-node components were bitcast into a subnormal. It answered `#((0))`
+    # where `(hessian f point)` answers `#((12))`, and crashed for other shapes.
+    # It now RAISES. This pins the raise so a regression to the silent zero (or
+    # to the memory-unsafe read) fails instead of shipping a wrong derivative.
+    add_test(
+        NAME ad_curried_gradient_nested_loud_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_curried_gradient_nested_loud_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_curried_gradient_nested_loud_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot'"
+    )
+    set_tests_properties(ad_curried_gradient_nested_loud_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/

@@ -270,6 +270,17 @@ typedef struct esh_taylor {
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
      (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
 
+// ESH-0402: nested-AD carrier composition route codes. Returned by
+// eshkol_ad_nested_seed() at a differentiation whose evaluation point is
+// already an ENCLOSING pass's carrier, and threaded (packed with the outer
+// tower's epoch in bits 8..23) to the matching eshkol_ad_nested_extract().
+// See the block comment above eshkol_ad_nested_seed in lib/core/runtime_taylor.c.
+#define ESH_AD_NEST_NONE         0   // not nested: caller seeds exactly as before
+#define ESH_AD_NEST_CARRY_JET    1   // outer 8-jet rides this tower's tangent
+#define ESH_AD_NEST_RIDE         2   // this first-order pass rides the outer tower's tangent
+#define ESH_AD_NEST_CARRY_TWR    3   // outer order-1 tower rides this tower's tangent
+#define ESH_AD_NEST_UNSUPPORTED (-1) // neither pass is first order: caller raises
+
 /**
  * @brief Complex number for signal processing, FFT, and complex analysis.
  *

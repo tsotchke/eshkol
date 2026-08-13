@@ -135,41 +135,153 @@ entries:
 
   - id: SW-03
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
     title: "The Taylor tower cannot nest: derivative-n of derivative-n returns 0"
     repro: "(define (f x) (* x x x x)) (display (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1))"
     observed: "0"
     correct: "48"
     cross_engine: "VM errors (rc=1) — loud on that side"
-    evidence: ".scratch/flaw-ledger/repro/sw_taylor_nest.esk; docs/KNOWN_ISSUES.md:256"
+    observed_after: >-
+      48, on the JIT and the AOT lane. ROOT CAUSE (shared with SW-04): Eshkol has
+      TWO forward-mode carriers — the 8-jet (`derivative`, first order, three
+      independent perturbations) and the heap Taylor tower (`derivative-n` /
+      `taylor`, one perturbation to arbitrary order) — and the boundary between
+      them was lossy in BOTH directions. eshkol_taylor_seed_tagged() read only
+      the SCALAR value of its point (tagged_scalar_value: c[0] of an outer tower,
+      the primal of an outer jet), so an enclosing pass's perturbation was
+      dropped at the seed; and the tower's extraction returned a bare double,
+      which an enclosing pass then read as "no dependence". Neither direction
+      needed jets-of-jets: a tower ALREADY carries a parallel first-order
+      companion series (the P5 seed tangent, ESH_TAYLOR_TANGENT_FLAG) and every
+      recurrence in lib/core/runtime_taylor.c already propagates it. The fix puts
+      whichever of the two passes is first order onto that companion dimension —
+      RIDE when the inner pass is first order (it rides the outer tower's tangent
+      and its result is promoted back to a tower of the OUTER epoch), CARRY when
+      the outer pass is first order (the inner tower's tangent tracks
+      d(c[k])/d(outer perturbation)). The 8-jet arm is untouched for every
+      non-nested pass: eshkol_ad_nested_seed() returns ESH_AD_NEST_NONE for any
+      point that is not already a carrier.
+    fixed_by: >-
+      ESH-0402 — eshkol_ad_nested_seed / eshkol_ad_nested_extract in
+      lib/core/runtime_taylor.c, wired through
+      AutodiffCodegen::seedForwardAndPush / popAndExtractForward
+      (lib/backend/autodiff_codegen.cpp), which now wrap the unchanged
+      seedForwardAndPushCore / popAndExtractForwardCore. Second defect fixed in
+      the same change: taylorApiCore leaves adTowerMode_/adTowerOrder_ set for
+      the WHOLE emission of the differentiated body, so a `derivative` written
+      inside a `derivative-n` body inherited the outer pass's tower order —
+      AutodiffCodegen::derivative() now clears the tower mode across its
+      codegenDerivativeMonolith call.
+    evidence: >-
+      tests/ad/ad_carrier_nesting_test.esk (36 EXACT analytic checks, never a
+      finite difference) on the ad_carrier_nesting_runtime_smoke and
+      ad_carrier_nesting_aot_smoke ctest lanes; the new `carrier` section of
+      tests/ad_oracle/gen_ad_oracle.py emits 14 probe files (154 checks) that
+      the ad_oracle gate runs on BOTH the JIT and the AOT lane, each composed
+      value checked against an in-language finite difference AND against the
+      equivalent single-carrier spelling. Revert-validated: on a pre-fix build
+      of the same tree tests/ad/ad_carrier_nesting_test.esk reports 24 failures,
+      every one `got=0`, and ad_oracle_carrier_01.esk reports 11/11 FAIL with
+      ad=0; after the fix both are clean.
     caught_by: [KNOWN_ISSUES, pr-record-417, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]
+    notes: >-
+      Escape analysis: the ad_oracle's `nest` section only ever exercised
+      jet-over-jet composition, so the entire cross-carrier quadrant had no
+      probe at all — the gate was green because the defect lived in the shapes
+      it did not generate. The new `carrier` section closes that quadrant as a
+      generator axis, not as a point regression test. RESIDUAL, documented in
+      docs/KNOWN_ISSUES.md: a composition in which BOTH passes are order >= 2
+      exceeds one value series plus one first-order companion; it now RAISES
+      (eshkol_ad_nested_unsupported) instead of answering 0.
 
   - id: SW-04
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
     title: "derivative-n applied to a derivative CLOSURE returns 0"
     repro: "(define (f x) (* x x x x)) (define df (derivative f)) (display (derivative-n df 2.0 1))"
     observed: "0"
     correct: "48"
-    evidence: ".scratch/flaw-ledger/repro/sw_deriv_closure.esk; docs/KNOWN_ISSUES.md:288"
+    observed_after: >-
+      48, on the JIT and the AOT lane. SAME ROOT CAUSE as SW-03 — this is the
+      tower-over-jet direction of the one carrier-boundary defect, reached
+      through a first-class closure rather than a lexically nested form. The
+      derivative closure's body seeds an 8-jet; before the fix, that seeder
+      collapsed the incoming tower to a scalar (safeUnpackDualFromTagged's
+      scalar arm) and returned a bare double the outer tower read as 0. It now
+      takes the RIDE route: the first-order jet pass rides the outer tower's
+      tangent dimension, and its result is promoted back to a tower of the outer
+      epoch. Note the closure was never the defect — `(derivative df 2.0)`
+      answered 48 correctly before and after; only the crossing into the tower
+      was broken.
+    fixed_by: "ESH-0402 — same change as SW-03 (see that entry for the sites)."
+    evidence: >-
+      tests/ad/ad_carrier_nesting_test.esk rows `tower-over-jet-1/2/3`,
+      `tower-over-closure-1/2`, `jet-over-closure` and `closure-value`, on both
+      ctest lanes; the ad_oracle `carrier` section's `overclosure` and
+      `toweroverjet` probes on both lanes. Revert-validated with SW-03.
     caught_by: [KNOWN_ISSUES, direct-measurement]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]
 
   - id: SW-05
-    bucket: SILENT-WRONG
-    status: open
-    title: "Curried gradient-of-gradient returns a zero matrix (ESH-0096)"
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+    title: "Curried gradient-of-gradient now raises instead of answering a zero matrix (ESH-0096)"
     repro: "(define (f v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 0))) (define g (gradient f)) (display (jacobian g (vector 2.0)))"
-    observed: "#((0))"
-    correct: "#((12)) — (hessian f (vector 2.0)) returns #((12)) on the same build"
-    evidence: ".scratch/flaw-ledger/repro/sw_gofg.esk; docs/KNOWN_ISSUES.md:279"
+    observed_before: "#((0)), exit 0 — where (hessian f (vector 2.0)) returns #((12)) on the same build"
+    observed_after: >-
+      a catchable error: "unsupported nested differentiation: a first-class
+      `gradient` closure differentiated again by an enclosing reverse-mode
+      pass". ROOT CAUSE, measured: this is NOT the SW-03/SW-04 carrier defect
+      and NOT the deferred dense-tape-spine rework. `jacobian` is reverse mode —
+      it packs one `ad_node_t*` per input component into the point tensor's
+      element array and publishes the active column as the reverse seed. The
+      vector arm of AutodiffCodegen::emitRuntimeClosureGradient() then reads
+      those components with a raw `CreateBitCast(elem_bits, double)`, so a heap
+      pointer became a subnormal ~1e-310: the inner gradient was evaluated at ~0
+      AND its result carried no edge back to the outer tape. For f(v) = v0*v0
+      the same bogus bits were classified as a pointer and dereferenced, so the
+      route also SIGBUSed. The element load is now residency-probed
+      (eshkol_ad_node_probe, which never dereferences a non-resident candidate)
+      and raises rather than differentiating garbage.
+    fixed_by: >-
+      ESH-0402 — eshkol_ad_curried_gradient_unsupported() in
+      lib/core/runtime_taylor.c, called from the AD-node probe guarding the
+      element bitcast in emitRuntimeClosureGradient()'s reverse-tensor arm
+      (lib/backend/autodiff_codegen.cpp).
+    evidence: >-
+      tests/ad/ad_curried_gradient_nested_loud_test.esk on the
+      ad_curried_gradient_nested_loud_runtime_smoke and _aot_smoke ctest lanes.
+      It pins BOTH halves: the supported spellings still answer ((g (vector 2.0))
+      => #(12), (gradient f (vector 2.0)) => #(12), (hessian f (vector 2.0)) =>
+      #((12))), and the composed one is caught by `guard`, so a regression to
+      the silent zero — or back to the memory-unsafe read — fails the lane.
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, pr-record-416]
     notes: >-
-      PR #416 measured ESH-0096 as CLOSED and proposed deleting the KNOWN_ISSUES entry.
-      Direct measurement at 9f2da2ab contradicts that for the curried jacobian route.
-      Do not accept #416's close of ESH-0096.
+      PR #416 measured ESH-0096 as CLOSED and proposed deleting the KNOWN_ISSUES
+      entry. Direct measurement at 9f2da2ab and again at 2ae3787f contradicts
+      that for the curried jacobian route. Do not accept #416's close of
+      ESH-0096; the KNOWN_ISSUES entry stays, restated as a loud limitation.
+      NEEDS-DECISION: the exact fix is forward-over-reverse — evaluate the inner
+      gradient with 8-jets whose ep slot carries eshkol_ad_seed_flag of each
+      incoming tape node, and let popAndExtractForward's existing
+      eshkol_ad_mixed_record hook write the composition back onto the outer tape
+      (the identical machinery the direct `hessian` already uses, and the
+      identical machinery `jacobian` already installs at its call site for the
+      forward-over-reverse case). That is a new emission path inside
+      emitRuntimeClosureGradient's vector arm, estimated 3-5 days with the AD
+      oracle as the acceptance gate. It is NOT blocked on the dense resident
+      tape spine: no second reverse tape is required, because the inner pass
+      becomes forward.
 
   - id: SW-06
     bucket: LOUD-ERROR

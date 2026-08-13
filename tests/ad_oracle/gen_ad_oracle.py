@@ -973,6 +973,65 @@ class Gen:
         ]
         self.add("loop", "loop.newton5.poly.s.named.capnone", lines, 1)
 
+    # ------------------------------------------------------------------
+    # carrier composition (ESH-0402 / ledger SW-03, SW-04)
+    # ------------------------------------------------------------------
+    # Eshkol carries forward derivatives in two representations -- the 8-jet
+    # (`derivative`, first order, nests through e1/e2/ep) and the heap Taylor
+    # tower (`derivative-n`/`taylor`, arbitrary order). Every composition that
+    # crossed between them used to answer a SILENT ZERO, because the tower
+    # seeder collapsed an incoming carrier to its scalar value and the tower
+    # extractor returned a bare double the enclosing pass read as "no
+    # dependence". Only the jet-over-jet spelling was ever exercised, so the
+    # whole cross-carrier quadrant escaped this oracle.
+    #
+    # This section pins the FULL matrix, in both directions, for the pure
+    # `derivative` closure form too. Each composed value is checked twice: once
+    # against an in-language finite difference (an independent oracle) and once
+    # against the equivalent single-carrier spelling (exact against exact, so a
+    # regression to zero cannot hide inside the FD tolerance).
+    def gen_carrier(self):
+        for sh, fn in SCALAR_SHAPES:
+            for b in ("inline", "named"):
+                u = self.uid()
+                body = fn("x")
+                lines, fexpr, fdn = self.bind_fn(b, u, "x", body)
+                inner_lam = f"(lambda (y) (derivative-n {fexpr} y 1))"
+                inner_jet = f"(lambda (y) (derivative {fexpr} y))"
+                lines += [
+                    # second order, reached four different ways
+                    f"(define twr{u} (derivative-n {inner_lam} {X0} 1))",
+                    f"(define jot{u} (derivative {inner_lam} {X0}))",
+                    f"(define toj{u} (derivative-n {inner_jet} {X0} 1))",
+                    f"(define clo{u} (derivative {fexpr}))",
+                    f"(define tcl{u} (derivative-n clo{u} {X0} 1))",
+                    # single-carrier references for the same quantities
+                    f"(define ref2{u} (derivative-n {fexpr} {X0} 2))",
+                    f"(define ref3{u} (derivative-n {fexpr} {X0} 3))",
+                    f"(define fd2{u} {self.fd2_diag(fdn, 's', [X0], 0, multi=True)})",
+                    # third order: one pass first order, the other order two,
+                    # in both role assignments
+                    f"(define ct{u} (derivative-n (lambda (y) "
+                    f"(derivative-n {fexpr} y 2)) {X0} 1))",
+                    f"(define rd{u} (derivative-n {inner_lam} {X0} 2))",
+                    # a `taylor` tower whose body differentiates: c0 = f', c1 = f''
+                    f"(define tay{u} (taylor {inner_jet} {X0} 1))",
+                ]
+                for nm, v in (("towerovertower", f"twr{u}"),
+                              ("jetovertower", f"jot{u}"),
+                              ("toweroverjet", f"toj{u}"),
+                              ("overclosure", f"tcl{u}")):
+                    pid = f"carrier.{nm}.{sh}.s.{b}.capnone"
+                    lines.append(self.chk(pid, v, f"fd2{u}", second=True))
+                    lines.append(self.chk(f"{pid}[agree]", v, f"ref2{u}"))
+                for nm, v in (("carrytower", f"ct{u}"), ("ridetower", f"rd{u}")):
+                    pid = f"carrier.{nm}.{sh}.s.{b}.capnone"
+                    lines.append(self.chk(f"{pid}[agree]", v, f"ref3{u}"))
+                pid = f"carrier.taylorovers.{sh}.s.{b}.capnone"
+                lines.append(self.chk(f"{pid}[c1]", f"(car (cdr tay{u}))",
+                                      f"ref2{u}"))
+                self.add("carrier", f"carrier.{sh}.s.{b}.capnone", lines, 11)
+
     def generate(self):
         self.gen_deriv()
         self.gen_grad()
@@ -982,6 +1041,7 @@ class Gen:
         self.gen_curl()
         self.gen_lap()
         self.gen_nest()
+        self.gen_carrier()
         self.gen_loop()
         return self.probes
 
@@ -1052,7 +1112,7 @@ def write_files(probes, outdir):
         by_section.setdefault(p["section"], []).append(p)
 
     for section in ("deriv", "grad", "hess", "jac", "div", "curl", "lap",
-                    "nest", "loop"):
+                    "nest", "carrier", "loop"):
         plist = by_section.get(section, [])
         chunk, nchk, idx = [], 0, 0
         for p in plist:

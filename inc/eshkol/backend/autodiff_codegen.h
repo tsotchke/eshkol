@@ -199,6 +199,9 @@ public:
     // already carries) and PUSH the level (store level+1) for the callee body.
     // Returns the seeded dual (tagged) and writes the pre-push level to *out_level.
     llvm::Value* seedForwardAndPush(llvm::Value* point_tagged, llvm::Value** out_level);
+    // ESH-0402: the seeding this pass would do if its point were an ordinary
+    // value. seedForwardAndPush() wraps it with the nested-carrier probe.
+    llvm::Value* seedForwardAndPushCore(llvm::Value* point_tagged, llvm::Value* level);
     // POP (restore `level`) and extract the derivative w.r.t. this level's slot:
     // a scalar double at level 0, the e2-slice dual when nested.
     // ESH-0093: at level 0, when a reverse tape is live and the gradient pass
@@ -207,6 +210,15 @@ public:
     // AD node so an outer reverse-mode gradient sees the dependency on
     // captured tape variables.
     llvm::Value* popAndExtractForward(llvm::Value* result_tagged, llvm::Value* level);
+    // ESH-0402: the extraction this pass would do if its point had been an
+    // ordinary value. popAndExtractForward() wraps it with the nested-carrier
+    // arm selected by the route seedForwardAndPush() recorded.
+    llvm::Value* popAndExtractForwardCore(llvm::Value* result_tagged, llvm::Value* level);
+    // ESH-0402: slot holding the packed nested-composition route returned by
+    // eshkol_ad_nested_seed at the seed site, read at the matching extraction
+    // site. Set by seedForwardAndPush, consumed (and cleared) by
+    // popAndExtractForward; null means "this pass did not probe" (no nesting).
+    llvm::AllocaInst* nestedRouteSlot_ = nullptr;
 
     // ESH-0093: if `operand_tagged` is a reverse-tape AD node AND a forward-
     // mode perturbation is live (__ad_pert_level > 0), freeze it to a dual
