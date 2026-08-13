@@ -49,32 +49,81 @@ entries:
 
   - id: SW-01
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
     title: "AD differentiates the shadowed global, not the parameter"
     repro: "(define (f x) (* x x)) (define (g f x) (derivative f x)) (display (g (lambda (y) (* 2 y)) 3.0))"
     observed: "native 6"
     correct: "2"
     cross_engine: "VM answers 2 (correct); native is the wrong side"
-    evidence: ".scratch/flaw-ledger/repro/sw_ad_shadow.esk; docs/KNOWN_ISSUES.md:249"
+    observed_after: >-
+      both engines answer 2. The AD operators reach their differentiand through
+      resolveLambdaFunction, the same static procedure-operand resolution map and
+      reduce use, so the shared guard fixes AD and the higher-order builtins at
+      one site: isShadowedByLocalRuntimeBinding() (lib/backend/llvm_codegen.cpp)
+      declines static resolution when the name is bound to an llvm::Argument of
+      the current function or an AllocaInst it owns, and AD falls back to its
+      runtime-closure dispatch. The unshadowed static path is unchanged —
+      (derivative sqf 3.0) still resolves statically and still answers 6.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — isShadowedByLocalRuntimeBinding() in lib/backend/llvm_codegen.cpp, resolveLambdaFunction VAR branch"
+    evidence: >-
+      tests/codegen/higher_order_shadowing_test.esk checks 'derivative-param-shadow'
+      (2.0) and 'derivative-global-static' (6.0) on the JIT and AOT ctest lanes;
+      tests/codegen/higher_order_shadowing_vm_test.esk pins the same pair on the VM;
+      tests/differential/corpus/45_higher_order_shadowing.esk agrees on every native
+      axis. Revert-validated: with isShadowedByLocalRuntimeBinding() forced to
+      return false and the compiler rebuilt, the shadowing shapes regress and the
+      builtin-name crossing shape SIGSEGVs; restored, all pass.
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_adversarial_fd_oracle]
-    notes: "Named in KNOWN_ISSUES as 'the highest-priority open AD defect'. No fix lane."
+    notes: >-
+      Named in KNOWN_ISSUES as 'the highest-priority open AD defect'. Closed as one
+      of the three-entry shadowing family SW-01 / SW-02 / SW-24 — one root cause
+      (name resolution ignoring lexical shadowing), two engines, three subsystems.
+      Gated by the higher_order_shadowing_oracle smoke probe (JIT + AOT + VM).
 
   - id: SW-02
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
     title: "map resolves the mapped procedure from the global table, ignoring a shadowing binding"
     repro: "(define (scale x) (* x 100)) (define (apply-map scale lst) (map scale lst)) (display (apply-map (lambda (x) (+ x 10)) (list 1 2 3)))"
     observed: "native (100 200 300)"
     correct: "(11 12 13)"
     cross_engine: "VM answers (11 12 13) (correct)"
-    evidence: "lib/backend/map_codegen.cpp; PR #420 body, 'Adjacent defects found, deliberately NOT fixed here'"
+    observed_after: >-
+      native answers (11 12 13). #420's finding was right about the mechanism: the
+      substitution happens upstream of map_codegen.cpp, in resolveLambdaFunction,
+      which is why a map-only guard measured as a no-op — the resolver ran first
+      on the non-capturing repro. BOTH sites needed the guard, plus a third:
+      MapCodegen::map's compile-time closure detection reads the GLOBAL <name>_func
+      entry independently of the resolver (so a shadowed CAPTURING top-level lambda
+      was substituted even with the resolver guarded), and codegenRemove's predicate
+      lookup did the same function_table / unscoped-_func scan. reduce gained the
+      runtime-closure fallback map already had, since declining static resolution
+      without one would have traded the silent wrong answer for a crash.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — three native sites guarded by isShadowedByLocalRuntimeBinding(): resolveLambdaFunction, MapCodegen::map, codegenRemove"
+    evidence: >-
+      tests/codegen/higher_order_shadowing_test.esk, 26 checks across
+      map / for-each / filter / fold-left / fold-right / reduce / remove with
+      shadowing parameters, the capturing-global map shadow, let-bound shadows,
+      and the unshadowed static paths pinned so the guard cannot regress them
+      (ctest lanes higher_order_shadowing_{jit,aot}_smoke);
+      tests/differential/corpus/45_higher_order_shadowing.esk agrees on every
+      native axis. Revert-validated per SW-01.
     caught_by: [pr-record-420, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
     notes: >-
-      #420 states a candidate guard on map_codegen.cpp was built and measured to be a
-      no-op, so the substitution happens upstream in name resolution. #420 does NOT fix
-      it and explicitly says it 'wants its own task' — this is NOT in flight.
+      Identical-by-construction on every native axis, so no differential pairing
+      could ever have seen it — every axis was wrong the same way. That is the
+      escape-analysis finding, and why the closing gate is a self-checking
+      expected-value test on three engines rather than an axis comparison.
+      Interaction pinned with PR #427 (first-class builtin wrappers): a local
+      binding of a BUILTIN name must beat the wrapper, and an unshadowed builtin
+      name must still reach it — both halves in the same test files and corpus
+      entry, on both engines.
 
   - id: SW-03
     bucket: SILENT-WRONG
@@ -456,16 +505,33 @@ entries:
 
   - id: SW-24
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
     title: "The VM ignores a user redefinition of + : opcode dispatch bypasses the user binding"
     repro: "(define + (lambda (a b) (* a b))) (display (+ 3 4))"
     observed: "VM 7"
     correct: "12 — native answers 12"
+    observed_after: >-
+      the VM answers 12, and tests/parser/test_function_shadowing.esk prints
+      "PASS: Function shadowing works!" on both engines. vm_head_user_rebound()
+      (lib/backend/vm_compiler.c) walks the scope chain before any of
+      compile_expr's builtin fast paths: a head symbol bound by USER code — a
+      local of any chunk on the chain, or a root-chunk slot at or above the
+      user-locals watermark — compiles as a plain call through that binding.
+      Preamble and prelude slots sit BELOW the watermark and keep the fast
+      paths, so the stdlib cannot be hijacked and the prelude compiles exactly
+      as before; a watermark of 0 means user code has not started, so nothing
+      counts as a rebinding while the prelude itself is being compiled.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — vm_head_user_rebound() in lib/backend/vm_compiler.c"
     evidence: >-
-      tests/parser/test_function_shadowing.esk, run on both engines at 9f2da2ab. The test
-      prints its own verdict: native "PASS: Function shadowing works!", VM "FAIL: Expected 12".
-      The program is listed in ENGINE_PARITY_BASELINE.json divergent_programs, so the parity
-      gate is green while the test says FAIL out loud.
+      tests/codegen/operator_rebinding_test.esk on the JIT, AOT and VM ctest lanes
+      (operator_rebinding_{jit,aot,vm}_smoke);
+      tests/differential/corpus/46_operator_rebinding.esk on the native axes;
+      tests/parser/test_function_shadowing.esk REMOVED from
+      ENGINE_PARITY_BASELINE.json divergent_programs — the parity ratchet
+      tightens rather than the gate being told to expect the divergence.
+      Revert-validated: reverting vm_compiler.c alone reproduces VM 7.
     caught_by: [parity-baselines, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
     notes: >-
@@ -474,7 +540,11 @@ entries:
       binding in AD (SW-01) and in map (SW-02); the VM ignores it in arithmetic opcode
       dispatch (this entry). Treat the three as one defect family with one root cause, not
       as three unrelated tickets. A user who redefines + gets a wrong number and no
-      diagnostic — the most basic Scheme capability there is.
+      diagnostic — the most basic Scheme capability there is. All three closed together
+      by PR #429. The VM's OTHER manifestation of the family — the upvalue search
+      walking the enclosing-scope chain outermost-first — was fixed separately by
+      PR #428 (tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the two
+      changes touch different functions in vm_compiler.c and are independent.
 
   - id: SW-27
     bucket: SILENT-WRONG
