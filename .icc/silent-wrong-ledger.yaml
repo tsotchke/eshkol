@@ -618,7 +618,8 @@ entries:
   - id: SW-13
     bucket: SILENT-WRONG
     status: closed
-    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
     title: "WASM batch compile mis-evaluates the first macro when a program has two or more define-syntax forms"
     observed: "(dbl 21) => (* 2 21) prints a garbage bignum, value varies per build"
     correct: "42"
@@ -708,7 +709,8 @@ entries:
   - id: SW-18
     bucket: SILENT-WRONG
     status: closed
-    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
     title: "Exact rational arithmetic degrades to double once a bignum is involved (ESH-0105)"
     evidence: "docs/KNOWN_ISSUES.md:371; tests/vm_parity/found/bignum_exact_rational.esk"
     caught_by: [KNOWN_ISSUES, parity-baselines]
@@ -1017,7 +1019,8 @@ entries:
   - id: SW-28
     bucket: SILENT-WRONG
     status: closed
-    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
     title: "The VM peephole deletes an arithmetic operation by folding CONST 0 + ADD across a jump target"
     repro: "(display (+ 1 (if #t 5 0)))"
     observed: "5 on the VM, exit 0, no diagnostic"
@@ -1770,7 +1773,8 @@ entries:
   - id: PR-06
     bucket: PARITY-RATCHET
     status: closed
-    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness"
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
     title: "wasm EXCLUSIONS.tsv carries 1 XFAIL and 2 exclusions"
     evidence: "tests/wasm_diff/EXCLUSIONS.tsv"
     caught_by: [parity-baselines]
