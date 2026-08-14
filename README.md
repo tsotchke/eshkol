@@ -705,8 +705,8 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   are now completion-oracle evidence in their own right, so a red suite turns
   the release gate red.
 - **Explicit VM scope**: this is not a claim of complete backend parity. The
-  951-row ratchet classifies 578 VM-supported entries, 44 justified
-  native-only entries, and 329 explicit gaps in
+  956-row ratchet classifies 581 VM-supported entries, 44 justified
+  native-only entries, and 331 explicit gaps in
   [`tests/vm_parity/PARITY.tsv`](tests/vm_parity/PARITY.tsv); see
   [VM Parity](docs/VM_PARITY.md) for the enforced contract.
 

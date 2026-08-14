@@ -42,7 +42,7 @@ coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 184/184;
 qLLM oracle gate 10/10; ICC readiness 100, verdict `ready`. The VM parity
-manifest is 951 rows — 578 `vm-supported`, 44 `native-only-justified`, 329
+manifest is 956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
 `gap`, of which 17 are verified behavioral divergences with reproducible
 programs under `tests/vm_parity/found/`.
 

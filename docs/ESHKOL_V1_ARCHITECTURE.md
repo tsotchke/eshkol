@@ -48,7 +48,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Total backend (`lib/backend/`) | ~199,200 lines indexed |
 | LLVM backend | 35 codegen modules, ~108,400 lines |
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~49,200 lines |
-| Main codegen | 42,969 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
+| Main codegen | 42,974 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
 | Parser | 11,116 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
 | Memory manager | 4,259 lines ([`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_*` siblings) |
 | Weight matrix transformer | ~7,400 lines, 126/126 inline + 123/123 traced, 3-way verified |
@@ -997,7 +997,7 @@ All implemented in **pure Eshkol** using tensor operations and autodiff.
 
 ```
 eshkol/
-├── CMakeLists.txt          # Build system (6,457 lines)
+├── CMakeLists.txt          # Build system (6,484 lines)
 ├── README.md               # Project overview
 ├── LICENSE                 # MIT license
 │
@@ -1040,7 +1040,7 @@ eshkol/
 │   ├── math.esk            # Math library (412 lines)
 │   │
 │   ├── backend/            # 35 codegen modules (~106.5K lines)
-│   │   ├── llvm_codegen.cpp      # Main engine (42,969 lines)
+│   │   ├── llvm_codegen.cpp      # Main engine (42,974 lines)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
 │   │   ├── autodiff_codegen.cpp  # AD operations (14,083 lines)
 │   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,867 lines); per-domain in tensor_*_codegen.cpp
@@ -1161,7 +1161,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (6,457 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (6,484 lines)
 
 ### Requirements
 
@@ -1284,7 +1284,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 ### Primary Source Files (analyzed in detail)
 
 - [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (2,990 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (42,969 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (42,974 lines)
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (634 lines; 4,259 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,116 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (3,910 lines)

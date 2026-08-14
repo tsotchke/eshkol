@@ -54,7 +54,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 42,969 | Main codegen, dispatch, builtins |
+| llvm_codegen.cpp | 42,974 | Main codegen, dispatch, builtins |
 | autodiff_codegen.cpp | 14,083 | Forward/reverse mode AD |
 | arithmetic_codegen.cpp | 4,012 | Numeric ops, bignum, rational, complex |
 | string_io_codegen.cpp | 3,860 | String, I/O, JSON, CSV operations |

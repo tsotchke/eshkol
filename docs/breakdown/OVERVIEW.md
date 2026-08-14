@@ -88,13 +88,13 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (42,969 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
+**Phase 4: LLVM IR Generation** (42,974 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,969 | Main codegen, dispatch, builtins |
+| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,974 | Main codegen, dispatch, builtins |
 | [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse mode AD |
 | [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | Numeric ops, bignum, rational, complex |
 | [string_io_codegen.cpp](../../lib/backend/string_io_codegen.cpp) | 3,860 | String, I/O, JSON, CSV operations |

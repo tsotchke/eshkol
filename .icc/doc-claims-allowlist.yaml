@@ -7,9 +7,9 @@ description: 'Allowlist for icc doc-typed-claims ''wrong'' findings that are not
   row describing a past point-in-time fact, correct as written, now superseded by later code changes)
   and DETECTOR-MISATTRIBUTION (the underlying doc text is accurate but icc doc-typed-claims bound the
   wrong subject file to a numeric/file_path claim -- see reason for the specific detector gap).'
-generated_at: '2026-08-12T18:06:37Z'
-generated_from: 'icc doc-typed-claims --repo eshkol-docprobe --format json, HEAD f9dfc9d1 (PR #416 branch
-  docs/icc-doc-probe-v134) + 6 doc fixes on top'
+generated_at: '2026-08-14T15:43:58Z'
+generated_from: 'icc doc-typed-claims --repo eshkol-pr416-reconcile --format json, final integrated worktree
+  based on HEAD eec11a1c with current source measurements (llvm_codegen.cpp 42,974; CMakeLists.txt 6,484)'
 detector_fix_references:
 - gap: family-sum misattribution
   detail: When a sentence states an aggregate line count across a list of files (e.g. 'totalling roughly
@@ -44,7 +44,7 @@ detector_fix_references:
     ... under inc/eshkol/ (~4,650 lines)'') is parsed as a claim about inc/eshkol/''s current total size.
     Same class of fix as the estimate-vs-current-size gap: a claim scoped by a named past version should
     not be checked against present-day totals.'
-  affected_count: 5
+  affected_count: 2
 - gap: illustrative/hypothetical example read as a file citation
   detail: Prose using a made-up filename to illustrate a bug ('for a 3-line entry file requiring a module,
     the reported location was entry.esk:6:13') is parsed as a real file_path claim. A fix would recognise
@@ -759,34 +759,6 @@ entries:
   reason: prose "Newton's root finder in 10 lines using derivative" is a rhetorical description of the
     core solver's conciseness, not a file-size claim; the table's explicit LOC column already states the
     correct total (70), and is grounded
-- claim_id: 54010cb43295398c
-  path: press/ESHKOL_DESCRIPTION_COPY.md
-  line: 224
-  claim_type: numeric
-  subject: inc/eshkol/
-  value: 4650
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: per-release documentation delta ("v1.3.1-evolve added Doxygen-format documentation across 50
-    of the 64 public headers under inc/eshkol/ (~4,650 lines)") -- describes lines of comments ADDED IN
-    THAT RELEASE, not the current total size of inc/eshkol/
-- claim_id: 72d08c18bbdb943c
-  path: press/ESHKOL_DESCRIPTION_COPY.md
-  line: 225
-  claim_type: numeric
-  subject: lib/
-  value: 7478
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: combined-total delta ("116 files and roughly 12,600 lines total") for the same v1.3.1-evolve
-    documentation pass, misattributed to lib/ alone by the same-line dual match
-- claim_id: f50ae35a1e430ee2
-  path: press/ESHKOL_DESCRIPTION_COPY.md
-  line: 225
-  claim_type: numeric
-  subject: lib/
-  value: 12600
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: combined-total delta ("116 files and roughly 12,600 lines total") for the same v1.3.1-evolve
-    documentation pass, misattributed to lib/ alone by the same-line dual match
 - claim_id: 76a6e7fc4c80ce09
   path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
   line: 189

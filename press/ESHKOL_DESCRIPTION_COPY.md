@@ -249,7 +249,7 @@ Each item below cites the file or measurement that grounds the claim.
   across all five chapters under both `-r` and AOT; reference-Scheme
   differential oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity
   differential 184/184 over a 956-row manifest (581 VM-supported, 44 justified
-  native-only, 329 explicit gaps); qLLM oracle gate 10/10; ICC readiness 100,
+  native-only, 331 explicit gaps); qLLM oracle gate 10/10; ICC readiness 100,
   verdict `ready`. See *docs/TESTING.md*.
 
 - **Binary Lambda Calculus (`core.blc`, v1.3.2-evolve).** A pure-Eshkol
