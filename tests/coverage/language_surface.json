@@ -14,11 +14,11 @@
     }
   },
   "counts": {
-    "builtins_total": 1025,
+    "builtins_total": 1040,
     "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 695,
+    "builtins_in_vm_table": 722,
     "builtins_in_llvm_aot_dispatch": 788,
-    "builtins_aot_only": 285,
+    "builtins_aot_only": 276,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -30,9 +30,9 @@
     "numeric": 90,
     "predicate": 76,
     "geometry": 61,
+    "list_pair": 53,
     "io_port": 52,
     "string_char": 42,
-    "list_pair": 38,
     "consciousness": 37,
     "misc": 28,
     "vector": 23,
@@ -1628,19 +1628,69 @@
       "category": "predicate"
     },
     {
-      "name": "caaar",
-      "ids": [],
-      "arity": null,
+      "name": "caaaar",
+      "ids": [
+        89
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "caaadr",
+      "ids": [
+        90
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "caaar",
+      "ids": [
+        82
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
     },
     {
-      "name": "caadr",
-      "ids": [],
-      "arity": null,
+      "name": "caadar",
+      "ids": [
+        91
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "caaddr",
+      "ids": [
+        92
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "caadr",
+      "ids": [
+        83
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -1659,19 +1709,58 @@
       "category": "list_pair"
     },
     {
-      "name": "cadar",
-      "ids": [],
-      "arity": null,
+      "name": "cadaar",
+      "ids": [
+        93
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cadadr",
+      "ids": [
+        94
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cadar",
+      "ids": [
+        84
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
     },
     {
-      "name": "cadddr",
-      "ids": [],
-      "arity": null,
+      "name": "caddar",
+      "ids": [
+        95
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cadddr",
+      "ids": [
+        96
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -1762,46 +1851,149 @@
       "category": "numeric"
     },
     {
-      "name": "cdaar",
-      "ids": [],
-      "arity": null,
+      "name": "cdaaar",
+      "ids": [
+        97
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cdaadr",
+      "ids": [
+        98
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cdaar",
+      "ids": [
+        85
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
     },
     {
-      "name": "cdadr",
-      "ids": [],
-      "arity": null,
+      "name": "cdadar",
+      "ids": [
+        99
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cdaddr",
+      "ids": [
+        102
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cdadr",
+      "ids": [
+        86
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
     },
     {
       "name": "cdar",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        81
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cddaar",
+      "ids": [
+        103
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cddadr",
+      "ids": [
+        104
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
       ],
       "category": "list_pair"
     },
     {
       "name": "cddar",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        87
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
     },
     {
-      "name": "cdddr",
-      "ids": [],
-      "arity": null,
+      "name": "cdddar",
+      "ids": [
+        105
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cddddr",
+      "ids": [
+        106
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "list_pair"
+    },
+    {
+      "name": "cdddr",
+      "ids": [
+        88
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -9337,11 +9529,13 @@
     {
       "name": "string-length",
       "ids": [
-        56
+        56,
+        550
       ],
       "arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -9393,11 +9587,13 @@
     {
       "name": "string-ref",
       "ids": [
-        57
+        57,
+        551
       ],
       "arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -11191,11 +11387,13 @@
     {
       "name": "vref",
       "ids": [
-        -1
+        -1,
+        219
       ],
       "arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
