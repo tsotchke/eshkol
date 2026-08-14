@@ -1,4 +1,4 @@
-# Compiler Architecture in Eshkol (v1.3.0-evolve)
+# Compiler Architecture in Eshkol (v1.3.4-evolve)
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ The architecture combines:
 - **S-expression parser** for R7RS-compatible Scheme syntax
 - **Hygienic macro expander** via `syntax-rules` pattern matching
 - **HoTT-inspired type checker** for gradual typing (warnings, not errors)
-- **Modular LLVM backend** with roughly thirty specialized codegen modules (~85,500 lines)
+- **Modular LLVM backend** with 34 specialized codegen modules (~108,400 lines)
 - **JIT compiler** for interactive REPL via LLVM OrcJIT (LLJIT)
 - **Pre-compiled standard library** (40 modules, compiled to `stdlib.o`)
 - **GPU dispatch** with SIMD/cBLAS/Metal cost model selection
@@ -44,26 +44,26 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (861 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,658 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
        v
 +------------------+
-| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (8,368 lines)
+| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (11,116 lines)
 |    PARSING       |  Builds eshkol_ast_t tree, 94 operation types
 +------------------+
        |
        v
 +------------------+
-| 3. HoTT TYPE     |  lib/types/type_checker.cpp (2,048 lines)
+| 3. HoTT TYPE     |  lib/types/type_checker.cpp (3,910 lines)
 |    CHECKING      |  Constraint generation + unification (non-blocking)
 +------------------+
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (33,962 lines)
-|    GENERATION    |  AST -> LLVM IR via ~30 codegen modules (~85,500 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,974 lines)
+|    GENERATION    |  AST -> LLVM IR via 35 codegen modules (~108,400 lines)
 +------------------+
        |
        v
@@ -84,7 +84,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,658 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -109,7 +109,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,116 lines)
 
 The parser is a recursive descent processor that builds an AST from S-expressions:
 
@@ -155,7 +155,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (3,910 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,974 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -360,33 +360,33 @@ Subtypes 12-19 are new in v1.1-accelerate. The consolidation of 8 legacy pointer
 
 ## Modular Codegen Architecture
 
-The LLVM backend distributes code generation across 21 specialized modules totaling approximately 232,000 lines. Each module is a C++ class instantiated as a `std::unique_ptr` member of the main `LLVMCodeGenerator`.
+The LLVM backend distributes code generation across 21 specialized modules totaling approximately 87,300 lines. Each module is a C++ class instantiated as a `std::unique_ptr` member of the main `LLVMCodeGenerator`.
 
 ### Complete Module Table
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 33,962 | Orchestrator, AST dispatch, builtins, consciousness engine |
-| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 9,205 | Forward/reverse/symbolic AD modes |
-| **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,293 | String ops, display/write, file I/O, JSON, CSV |
-| **Parallel LLVM** | [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) | 2,601 | Work-stealing parallelism LLVM IR generation |
-| **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 2,491 | +, -, *, /, bignum, rational, complex dispatch |
-| **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 2,348 | Vector, list, cons, bytevector operations |
-| **System** | [`system_codegen.cpp`](../../lib/backend/system_codegen.cpp) | 1,752 | System, environment, time, process, eval support |
-| **Tensor (dispatch)** | [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) | 1,540 | Entry/dispatch shell; per-domain ops live in `tensor_*_codegen.cpp` siblings |
-| **Thread Pool** | [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) | 1,350 | Work-stealing thread pool runtime |
-| **Tensor Backward** | [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) | 1,321 | Backward-mode AD gradient computation for tensors |
-| **BLAS Backend** | [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) | 1,253 | BLAS dispatch, GPU cost model calibration |
-| **Bindings** | [`binding_codegen.cpp`](../../lib/backend/binding_codegen.cpp) | 1,242 | let/let*/letrec/letrec* with TCO context save/restore |
-| **Call/Apply** | [`call_apply_codegen.cpp`](../../lib/backend/call_apply_codegen.cpp) | 1,025 | Function calls, apply, partial application, variadic |
-| **Parallel** | [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) | 945 | parallel-map/fold/filter/for-each runtime |
-| **Map** | [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp) | 879 | map/for-each/fold with closure dispatch |
-| **Control Flow** | [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) | 874 | if/cond/case/match/when/unless/call-cc/guard |
-| **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 717 | Pack/unpack tagged values, type extraction |
-| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 603 | make-hash, hash-ref, hash-set!, hash-for-each |
-| **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 601 | Code-as-data, quote, lambda S-expressions, eval |
-| **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 503 | TCO transformation, trampoline runtime |
-| **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 499 | Complex number arithmetic (Smith's formula division) |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 42,974 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse/symbolic AD modes |
+| **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | +, -, *, /, bignum, rational, complex dispatch |
+| **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
+| **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, cons, bytevector operations |
+| **Parallel LLVM** | [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) | 2,626 | Work-stealing parallelism LLVM IR generation |
+| **System** | [`system_codegen.cpp`](../../lib/backend/system_codegen.cpp) | 2,039 | System, environment, time, process, eval support |
+| **Tensor (dispatch)** | [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) | 1,867 | Entry/dispatch shell; per-domain ops live in `tensor_*_codegen.cpp` siblings |
+| **Bindings** | [`binding_codegen.cpp`](../../lib/backend/binding_codegen.cpp) | 1,662 | let/let*/letrec/letrec* with TCO context save/restore |
+| **Thread Pool** | [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) | 1,524 | Work-stealing thread pool runtime |
+| **Tensor Backward** | [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) | 1,446 | Backward-mode AD gradient computation for tensors |
+| **BLAS Backend** | [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model calibration |
+| **Call/Apply** | [`call_apply_codegen.cpp`](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application, variadic |
+| **Control Flow** | [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/when/unless/call-cc/guard |
+| **Map** | [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp) | 1,142 | map/for-each/fold with closure dispatch |
+| **Parallel** | [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) | 1,008 | parallel-map/fold/filter/for-each runtime |
+| **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 807 | Pack/unpack tagged values, type extraction |
+| **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation, trampoline runtime |
+| **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, quote, lambda S-expressions, eval |
+| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 671 | make-hash, hash-ref, hash-set!, hash-for-each |
+| **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 640 | Complex number arithmetic (Smith's formula division) |
 
 The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,400 lines re-exported through the dispatcher above.
 
@@ -394,14 +394,14 @@ The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domai
 
 | Component | Source Files | Lines | Purpose |
 |:---|:---|---:|:---|
-| Type System | [`type_system.cpp`](../../lib/backend/type_system.cpp) | ~300 | LLVM type creation and caching |
-| Codegen Context | [`codegen_context.cpp`](../../lib/backend/codegen_context.cpp) | ~200 | Shared state for module communication |
-| Function Cache | [`function_cache.cpp`](../../lib/backend/function_cache.cpp) | ~250 | Lazy-loaded C library function declarations |
-| Builtin Declarations | [`builtin_declarations.cpp`](../../lib/backend/builtin_declarations.cpp) | ~350 | Runtime function declarations (deep_equal, display, registry) |
-| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | ~300 | Arena allocation IR generation |
-| CPU Features | [`cpu_features.cpp`](../../lib/backend/cpu_features.cpp) | ~100 | SIMD capability detection |
-| XLA/StableHLO | 5 files in `lib/backend/xla/` | 4,003 | Tensor compilation via MLIR pipeline |
-| GPU/Metal | `lib/backend/gpu/gpu_memory.mm`, `metal_softfloat.h` | 8,888 | Metal compute, SF64 software float64, CUDA stubs |
+| Type System | [`type_system.cpp`](../../lib/backend/type_system.cpp) | 187 | LLVM type creation and caching |
+| Codegen Context | [`codegen_context.cpp`](../../lib/backend/codegen_context.cpp) | 377 | Shared state for module communication |
+| Function Cache | [`function_cache.cpp`](../../lib/backend/function_cache.cpp) | 173 | Lazy-loaded C library function declarations |
+| Builtin Declarations | [`builtin_declarations.cpp`](../../lib/backend/builtin_declarations.cpp) | 148 | Runtime function declarations (deep_equal, display, registry) |
+| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 329 | Arena allocation IR generation |
+| CPU Features | [`cpu_features.cpp`](../../lib/backend/cpu_features.cpp) | 416 | SIMD capability detection |
+| XLA/StableHLO | 6 files in `lib/backend/xla/` | 3,960 | Tensor compilation via MLIR pipeline |
+| GPU/Metal | `lib/backend/gpu/gpu_memory.mm`, `metal_softfloat.h` | 8,954 | Metal compute, SF64 software float64, CUDA stubs |
 
 ### Module Initialization Order
 
@@ -424,7 +424,7 @@ ArithmeticCodegen depends on TensorCodegen, AutodiffCodegen, and ComplexCodegen 
 
 ### GPU Dispatch (SIMD -> cBLAS -> Metal)
 
-**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm)
+**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) (1,281 lines), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines)
 
 The cost model selects the optimal compute backend based on tensor dimensions:
 
@@ -434,7 +434,7 @@ The cost model selects the optimal compute backend based on tensor dimensions:
 | cBLAS (Apple Accelerate AMX) | 1,100 GFLOPS | 5 us | 17 to ~1B elements |
 | Metal GPU (SF64 software float64) | 200 GFLOPS | 200 us | >1B elements (GPU genuinely faster) |
 
-**SF64 (Software Float64):** Metal GPUs lack native float64. SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas for ~100-bit effective precision). Implemented in [`metal_softfloat.h`](../../lib/backend/gpu/metal_softfloat.h).
+**SF64 (Software Float64):** Metal GPUs lack native float64. SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas for ~100-bit effective precision). Implemented in [`metal_softfloat.h`](../../lib/backend/gpu/metal_softfloat.h) (4,469 lines).
 
 **Cost model calibration:** Measured values are `blas_peak_gflops=1100` (Apple AMX) and `gpu_peak_gflops=200` (SF64). Configurable via environment variables `ESHKOL_BLAS_PEAK_GFLOPS` and `ESHKOL_GPU_PEAK_GFLOPS`.
 
@@ -442,7 +442,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,008 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,626 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,524 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -457,7 +457,7 @@ Worker functions use `LinkOnceODRLinkage` to prevent duplicate symbol errors whe
 
 ### Consciousness Engine Codegen
 
-**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp), [`lib/core/inference.cpp`](../../lib/core/inference.cpp), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp)
+**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,258 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
 
 **Codegen:** Dispatched directly from [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (not a separate module)
 
@@ -475,7 +475,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,012 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -503,7 +503,7 @@ All arithmetic operations (`+`, `-`, `*`, `/`, comparison, `abs`, `min`, `max`, 
 
 ### First-Class Continuations
 
-**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
+**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,107 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 
 - `call/cc` -- single-shot continuations via setjmp/longjmp
 - `dynamic-wind` -- before/after thunks with proper unwinding on non-local exit
@@ -515,7 +515,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (thin dispatcher over twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; ~22,100 lines across twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,446 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -591,7 +591,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,354 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
@@ -817,13 +817,13 @@ eshkol-repl
 
 ### eshkol-lsp (Language Server)
 
-**Source:** [`tools/lsp/eshkol_lsp.cpp`](../../tools/lsp/eshkol_lsp.cpp)
+**Source:** [`tools/lsp/eshkol_lsp.cpp`](../../tools/lsp/eshkol_lsp.cpp) (1,019 lines)
 
 LSP server providing completions, hover, go-to-definition, diagnostics, and formatting for IDE integration (VSCode extension available).
 
 ### eshkol-pkg (Package Manager)
 
-**Source:** [`tools/pkg/eshkol_pkg.cpp`](../../tools/pkg/eshkol_pkg.cpp)
+**Source:** [`tools/pkg/eshkol_pkg.cpp`](../../tools/pkg/eshkol_pkg.cpp) (876 lines)
 
 Package manager with TOML manifests and git-based registry: `eshkol-pkg init/build/run/add/clean`.
 
@@ -888,9 +888,9 @@ A dynamic array of AD nodes allocated during the forward pass, topologically sor
 ### Consciousness Engine Runtime
 
 Three C runtime libraries:
-- **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp)): Robinson's unification, substitution environments, knowledge base query
-- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp)): Factor graph construction, belief propagation, free energy computation
-- **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp)): Module registration, softmax competitive attention, step execution
+- **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp), 1,505 lines): Robinson's unification, substitution environments, knowledge base query
+- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,258 lines): Factor graph construction, belief propagation, free energy computation
+- **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp), 354 lines): Module registration, softmax competitive attention, step execution
 
 LLVM codegen dispatches to these runtime functions via tagged value calling conventions, with heap subtypes 12-17 identifying consciousness engine objects.
 

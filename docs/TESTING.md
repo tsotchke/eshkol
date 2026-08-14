@@ -65,7 +65,7 @@ Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 and three read the sibling harnesses that judge the same cut:
 `vm_surface_regression_suite` (kind `vm_surface`), `vm_parity_gate` (kind
 `vm_parity`) and `event_loop_works` (kind `eshkol_smoke`). Measured on the
-current v1.3.4 tree, CTest is **180/181** (the single red is the value-position sweep's newly-found `cadddr` call-vs-value divergence, an open item for the next fix wave).
+current v1.3.4 tree, CTest is **183/183**; the value-position and compound-accessor regression is green.
 
 ---
 
@@ -276,7 +276,7 @@ adversarial layer is enforced rather than merely available.
 
 On the v1.3.4-evolve cut the oracle reports a score of **100** with verdict
 **`ready`**. The gate figures behind it, all measured on that cut: aggregate
-suite **45/45** suites and **770** individual tests; CTest **180/181**;
+suite **45/45** suites and **770** individual tests; CTest **183/183**;
 executable language coverage **1,091/1,091** (100.0%, floor PASS); SICP
 full-book **88/88** probes under both `-r` and AOT; reference-Scheme
 differential **34/34 AGREE** against chibi-scheme 0.12.0; VM parity

@@ -401,7 +401,7 @@ static bool tagged_values_equal(const eshkol_tagged_value_t* a,
 }
 ```
 
-`eshkol_deep_equal` lives in `arena_memory.cpp` and recurses through
+`eshkol_deep_equal` lives in `lib/core/runtime_deep_equal.cpp` and recurses through
 cons cells, strings (by content), bignums (by numeric value), tensors,
 and vectors; for everything else it falls back to bit-pattern equality
 of the tagged value.
@@ -1184,7 +1184,7 @@ extern "C" eshkol_*_tagged          lib/core/{logic,inference,workspace}.cpp
 eshkol_fg_infer / eshkol_unify / …  same files
    │                       core algorithm
    ▼
-arena_allocate_with_header  lib/core/arena_memory.cpp
+arena_allocate_with_header  lib/core/runtime_object_alloc.cpp
                             attaches 8-byte object header with
                             subtype = HEAP_SUBTYPE_FACTOR_GRAPH, etc.
 ```

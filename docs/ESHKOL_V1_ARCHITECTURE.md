@@ -45,13 +45,13 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total backend (`lib/backend/`) | ~195,600 lines indexed |
-| LLVM backend | ~30 codegen modules, ~85,500 lines |
-| Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
-| Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
-| Parser | 8,368 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
-| Memory manager | 6,186 lines ([`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h)) |
-| Weight matrix transformer | ~6,800 lines, 126/126 inline + 123/123 traced, 3-way verified |
+| Total backend (`lib/backend/`) | ~199,200 lines indexed |
+| LLVM backend | 35 codegen modules, ~108,400 lines |
+| Bytecode VM | 64 core opcodes, 550+ native calls, ~49,200 lines |
+| Main codegen | 42,974 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
+| Parser | 11,116 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
+| Memory manager | 4,259 lines ([`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_*` siblings) |
+| Weight matrix transformer | ~7,400 lines, 126/126 inline + 123/123 traced, 3-way verified |
 | Test suite | 528 self-reported tests across 37 suites (0 failures) |
 
 ---
@@ -227,7 +227,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (2,990 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -282,7 +282,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,247 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (3,910 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -326,7 +326,7 @@ typedef struct {
 
 ### Layer 3: Dependent Types
 
-**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp)
+**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp) (534 lines)
 
 **Compile-Time Value Tracking**:
 ```c
@@ -355,7 +355,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (14,083 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -605,7 +605,7 @@ Enables type-directed optimizations in higher-order functions.
 
 ## N-Dimensional Tensors
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (1,540-line dispatcher; per-domain ops in twelve `tensor_*_codegen.cpp` siblings totalling ~19,200 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; per-domain ops in twelve `tensor_*_codegen.cpp` siblings totalling ~22,100 lines)
 
 ### Tensor Structure
 
@@ -755,7 +755,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (5,820 lines)
 
 ### Architecture
 
@@ -802,7 +802,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 **Symbolic names** → **file paths**:
 ```
 core.functional.compose → lib/core/functional/compose.esk
-data.json → lib/data/json.esk
+core.json → lib/core/json.esk
 ```
 
 **Private symbols** get mangled to avoid collisions:
@@ -826,7 +826,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,354 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,048 lines)
 
 ### Architecture
 
@@ -963,7 +963,7 @@ lib/
 
 ### Math Library Highlights
 
-**[`lib/math.esk`](../lib/math.esk)**:
+**[`lib/math.esk`](../lib/math.esk)** (412 lines):
 
 ```scheme
 ;; Linear algebra
@@ -997,13 +997,13 @@ All implemented in **pure Eshkol** using tensor operations and autodiff.
 
 ```
 eshkol/
-├── CMakeLists.txt          # Build system (281 lines)
+├── CMakeLists.txt          # Build system (6,484 lines)
 ├── README.md               # Project overview
 ├── LICENSE                 # MIT license
 │
 ├── inc/eshkol/             # Public headers
-│   ├── eshkol.h            # Main header (1,497 lines)
-│   ├── llvm_backend.h      # Backend API (173 lines)
+│   ├── eshkol.h            # Main header (2,990 lines)
+│   ├── llvm_backend.h      # Backend API (432 lines)
 │   ├── logger.h            # Logging system
 │   │
 │   ├── backend/            # Backend module headers
@@ -1036,61 +1036,62 @@ eshkol/
 │       └── dependent.h
 │
 ├── lib/                    # Implementation
-│   ├── stdlib.esk          # Standard library (42 lines, re-exports)
-│   ├── math.esk            # Math library (441 lines)
+│   ├── stdlib.esk          # Standard library (149 lines, re-exports)
+│   ├── math.esk            # Math library (412 lines)
 │   │
-│   ├── backend/            # 21 backend modules (~20K lines)
-│   │   ├── llvm_codegen.cpp      # Main engine (33,999 lines)
-│   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (1,478 lines)
-│   │   ├── autodiff_codegen.cpp  # AD operations (9,205 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,540 lines); per-domain in tensor_*_codegen.cpp
-│   │   ├── collection_codegen.cpp# Lists/vectors (1,560 lines)
-│   │   ├── control_flow_codegen.cpp # if/cond/and/or (780 lines)
-│   │   ├── binding_codegen.cpp   # define/let/set! (910 lines)
-│   │   ├── call_apply_codegen.cpp# apply & closures (821 lines)
-│   │   ├── map_codegen.cpp       # Higher-order map (779 lines)
-│   │   ├── homoiconic_codegen.cpp# Quote & S-expr (599 lines)
-│   │   ├── string_io_codegen.cpp # Strings & I/O (1,935 lines)
-│   │   ├── hash_codegen.cpp      # Hash tables (603 lines)
-│   │   ├── tail_call_codegen.cpp # TCO infra (299 lines)
-│   │   ├── type_system.cpp       # LLVM types (95 lines)
-│   │   ├── tagged_value_codegen.cpp # Pack/unpack (812 lines)
-│   │   ├── memory_codegen.cpp    # Arena decls (255 lines)
+│   ├── backend/            # 35 codegen modules (~106.5K lines)
+│   │   ├── llvm_codegen.cpp      # Main engine (42,974 lines)
+│   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
+│   │   ├── autodiff_codegen.cpp  # AD operations (14,083 lines)
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,867 lines); per-domain in tensor_*_codegen.cpp
+│   │   ├── collection_codegen.cpp# Lists/vectors (3,173 lines)
+│   │   ├── control_flow_codegen.cpp # if/cond/and/or (1,107 lines)
+│   │   ├── binding_codegen.cpp   # define/let/set! (1,662 lines)
+│   │   ├── call_apply_codegen.cpp# apply & closures (1,270 lines)
+│   │   ├── map_codegen.cpp       # Higher-order map (1,142 lines)
+│   │   ├── homoiconic_codegen.cpp# Quote & S-expr (706 lines)
+│   │   ├── string_io_codegen.cpp # Strings & I/O (3,860 lines)
+│   │   ├── hash_codegen.cpp      # Hash tables (671 lines)
+│   │   ├── tail_call_codegen.cpp # TCO infra (748 lines)
+│   │   ├── type_system.cpp       # LLVM types (187 lines)
+│   │   ├── tagged_value_codegen.cpp # Pack/unpack (807 lines)
+│   │   ├── memory_codegen.cpp    # Arena decls (329 lines)
 │   │   ├── builtin_declarations.cpp # Runtime funcs (148 lines)
-│   │   ├── function_cache.cpp    # C library (161 lines)
-│   │   ├── codegen_context.cpp   # Shared state (217 lines)
-│   │   └── function_codegen.cpp  # Lambda/closure (131 lines)
+│   │   ├── function_cache.cpp    # C library (173 lines)
+│   │   ├── codegen_context.cpp   # Shared state (377 lines)
+│   │   └── function_codegen.cpp  # Lambda/closure (209 lines)
 │   │
 │   ├── core/               # Core runtime (C)
-│   │   ├── arena_memory.cpp # Memory manager (6,186 lines)
-│   │   ├── arena_memory.h   # Memory header (469 lines)
-│   │   ├── ast.cpp          # AST manipulation (562 lines)
+│   │   ├── runtime_arena_core.cpp # Arena runtime core (634 lines)
+│   │   ├── runtime_regions.cpp  # OALR regions (2,296 lines)
+│   │   ├── arena_memory.h   # Memory header (925 lines)
+│   │   ├── ast.cpp          # AST manipulation (653 lines)
 │   │   ├── logger.cpp       # Logging
 │   │   ├── printer.cpp      # Display system
-│   │   └── *.esk            # Stdlib modules (25 files)
+│   │   └── *.esk            # Stdlib modules (33 files)
 │   │
 │   ├── frontend/
-│   │   ├── parser.cpp       # S-expr parser (8,368 lines)
-│   │   └── macro_expander.cpp # Macro system (1,304 lines)
+│   │   ├── parser.cpp       # S-expr parser (11,116 lines)
+│   │   └── macro_expander.cpp # Macro system (1,658 lines)
 │   │
 │   ├── types/
-│   │   ├── hott_types.cpp   # HoTT types (819 lines)
-│   │   ├── type_checker.cpp # Type inference (2,048 lines)
-│   │   └── dependent.cpp    # Dependent types (440 lines)
+│   │   ├── hott_types.cpp   # HoTT types (1,247 lines)
+│   │   ├── type_checker.cpp # Type inference (3,910 lines)
+│   │   └── dependent.cpp    # Dependent types (534 lines)
 │   │
 │   ├── repl/
-│   │   ├── repl_jit.cpp     # JIT compiler (1,108 lines)
+│   │   ├── repl_jit.cpp     # JIT compiler (4,354 lines)
 │   │   └── repl_utils.h     # REPL utilities
 │   │
 │   └── quantum/
-│       ├── quantum_rng.c    # Quantum RNG (560 lines)
+│       ├── quantum_rng.c    # Quantum RNG (614 lines)
 │       └── quantum_rng.h    # RNG header
 │
 ├── exe/
-│   ├── eshkol-run.cpp      # Compiler executable (2,260 lines)
-│   └── eshkol-repl.cpp     # REPL executable (1,051 lines)
+│   ├── eshkol-run.cpp      # Compiler executable (5,820 lines)
+│   └── eshkol-repl.cpp     # REPL executable (1,048 lines)
 │
-└── tests/                  # 400+ test files
+└── tests/                  # 1,600+ test files
     ├── autodiff/           # AD tests (40+ files)
     ├── lists/              # List tests (60+ files)
     ├── tensors/            # Tensor tests
@@ -1160,7 +1161,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt:1)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (6,484 lines)
 
 ### Requirements
 
@@ -1282,13 +1283,13 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen
-- [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) - Memory manager
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (2,990 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (42,974 lines)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (634 lines; 4,259 across all `runtime_*` memory modules)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,116 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (3,910 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,354 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (5,820 lines)
 
 ### Forward-looking design documents
 
@@ -1548,4 +1549,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.3.0-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.3.4-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*

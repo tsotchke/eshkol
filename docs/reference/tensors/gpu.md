@@ -37,7 +37,7 @@ Note: `gpu-elementwise`/`gpu-reduce` take the operator as a **bare identifier**
 
 The GPU is engaged through a **cost model**, not just the `gpu-*` names. Plain
 `tensor-matmul`/`matmul` and the `gpu-*` aliases share the same dispatch in
-`lib/core/blas_backend.cpp`:
+`lib/backend/blas_backend.cpp`:
 
 - Dispatch is gated by `ESHKOL_GPU_MATMUL_THRESHOLD` (default
   `1000000000` output elements). Below threshold → CPU BLAS/Accelerate; at or

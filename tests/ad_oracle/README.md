@@ -72,7 +72,6 @@ event is consumed by `.icc/completion-oracles.yaml::ad-oracle`.
 |------|------|---------|
 | ESH-0078 | `nest.gofg.*.s.named/lamvar` | 2nd-order gradient through a NAMED inner function returns 0 (inline lambda works). NOTE: the ledger marks this merged via #95, but the acceptance shape still returns 0 on master — regressed or never fully fixed. |
 | ESH-0093 | `nest.gofd.*.v2` | vector-param gradient over inner derivative returns zeros (mixed forward/reverse). Fix in flight at time of writing. |
-| ESH-0095 | `hess/lap poly.t2/t3` (xc files) | hessian/laplacian SIGSEGV on tensor points. **Found by this oracle.** |
 | ESH-0096 | `nest.gofg.*.v1/v2` | vector-param gradient-of-gradient returns zeros (even the 1-d form documented in AUTODIFF.md). **Found by this oracle.** |
 | ESH-0097 | `*.caplocal / *.capvrefout` for vector-param ops (xc files) | LLVM verifier: `PtrToInt source must be pointer (ptrtoint %eshkol_tagged_value %a to i64)` on both -r and AOT when the AD lambda captures a LOCAL function parameter. **Found by this oracle.** |
 

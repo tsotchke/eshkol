@@ -31,9 +31,9 @@ The R7RS-small standard defines 244 standard procedures and ~30 special forms. E
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
 **Implementation references:**
-- Parser: [parser.cpp](../../lib/frontend/parser.cpp)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp)
-- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp)
+- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,116 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (42,974 lines)
+- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (3,910 lines)
 
 ---
 
@@ -691,7 +691,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp)).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 1,658 lines).
 
 ```scheme
 ;; Pattern-based macros
@@ -1056,8 +1056,7 @@ Eshkol includes comprehensive test suites verifying Scheme compatibility:
 ./scripts/run_features_tests.sh       # Special forms, control flow
 ./scripts/run_list_tests.sh           # List operations
 ./scripts/run_stdlib_tests.sh         # Standard library procedures
-./scripts/run_string_tests.sh         # String operations
-./scripts/run_closures_tests.sh       # Closures and higher-order functions
+./scripts/run_r7rs_tests.sh           # R7RS conformance batches
 ./scripts/run_tco_tests.sh            # Tail call optimization
 ./scripts/run_macros_tests.sh         # Macro expansion
 ./scripts/run_control_flow_tests.sh   # Continuations, exceptions
@@ -1073,7 +1072,7 @@ Eshkol includes comprehensive test suites verifying Scheme compatibility:
 **Example compatibility test:**
 
 ```scheme
-;;; tests/features/r7rs_compat_test.esk
+;;; tests/r7rs/conformance_batch_test.esk
 
 ;; Test R7RS numeric tower
 (display (exact? (/ 1 3))) (newline)          ; #t

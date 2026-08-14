@@ -69,7 +69,7 @@ checkpoints, and none of them reads or writes a program value.
 |----------|---------|-------------|
 | `ESHKOL_STACK_SIZE` | 512 MB | OS-level stack size in bytes. Minimum 1 MB. Affects deep recursion capacity. |
 
-The stack size is set at process startup by `eshkol_init_stack_size()` in `lib/core/arena_memory.cpp`. On macOS, the main thread stack is also set at link time via `-Wl,-stack_size`. The `ESHKOL_STACK_SIZE` environment variable overrides the default for both the main thread (via `setrlimit`) and spawned threads.
+The stack size is set at process startup by `eshkol_init_stack_size()` in `lib/core/runtime_stack_hosted.cpp`. On macOS, the main thread stack is also set at link time via `-Wl,-stack_size`. The `ESHKOL_STACK_SIZE` environment variable overrides the default for both the main thread (via `setrlimit`) and spawned threads.
 
 The maximum recursion depth (`ESHKOL_MAX_STACK` / `ESHKOL_DEFAULT_MAX_STACK_DEPTH`) is a separate software limit tracked by `eshkol_stack_push()` / `eshkol_stack_pop()`. With the default 512 MB OS stack, approximately 80,000+ frames are supported; the software default of 100,000 frames provides a safety margin.
 
@@ -273,7 +273,8 @@ ESHKOL_STACK_GUARD_WITH_VALUE(val)   // early-return val on overflow
 |------|---------|
 | `inc/eshkol/core/config.h` | Unified configuration structure and API |
 | `inc/eshkol/core/resource_limits.h` | Resource limit definitions and tracking |
-| `lib/core/arena_memory.cpp` | Stack size initialization (`eshkol_init_stack_size`) |
+| `lib/core/resource_limits.cpp` | Limit parsing, tracking and check implementations |
+| `lib/core/runtime_stack_hosted.cpp` | Stack size initialization (`eshkol_init_stack_size`) |
 
 ---
 

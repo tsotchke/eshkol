@@ -211,15 +211,15 @@ The coverage floor and deficit ledger are ratcheted to 1,091, so nobody
 can walk the number back quietly.</li>
 <li><strong>The gates, measured on the release cut.</strong> The
 aggregate suite is 45/45 suites and 770 individual tests. CTest is
-180/181, and as of this release it is completion-oracle evidence rather
+183/183, and as of this release it is completion-oracle evidence rather
 than advice. The SICP full-book gate is 88/88 probes across all five
 chapters under both <code>-r</code> and AOT. The reference-Scheme
 differential oracle is 34/34 AGREE against chibi-scheme 0.12.0. The VM
 parity differential is 184/184. The qLLM oracle gate is 10/10. ICC
 readiness reports 100, verdict <code>ready</code>.</li>
 <li><strong>VM results are explicit, not overstated.</strong> The parity
-manifest is 951 rows: 578 <code>vm-supported</code>, 44
-<code>native-only-justified</code>, and 329 <code>gap</code>. Of those
+manifest is 956 rows: 581 <code>vm-supported</code>, 44
+<code>native-only-justified</code>, and 331 <code>gap</code>. Of those
 gaps, 17 are verified behavioral divergences with reproducible programs.
 <code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> move to
 <code>vm-supported</code> this release, so <code>gradient</code> now

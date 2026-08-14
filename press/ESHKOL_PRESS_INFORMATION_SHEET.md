@@ -159,35 +159,35 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 
 | Component | Lines | File / directory |
 |:---|---:|:---|
-| Main LLVM codegen | 33,962 | *lib/backend/llvm_codegen.cpp* |
-| Total LLVM backend (main + ~30 modules) | ≈85,500 | *lib/backend/* |
-| Autodiff codegen (order ≤ 2, incl. custom-VJP) | ≈12,600 | *lib/backend/autodiff_codegen.cpp* |
-| Taylor-tower runtime (arbitrary order) | ≈1,460 | *lib/core/runtime_taylor.c*, *lib/core/taylor_recurrences.def* |
-| Taylor-tower stdlib modules (GUW, tensor towers, models, checkpointing, numerics, sparse) | ≈2,270 | *lib/core/ad/{guw,tensor_tower,taylor_models,checkpoint,taylor_numerics,sparse_guw,interval}.esk* |
-| Backward-mode kernels | ≈1,400 | *lib/backend/tensor_backward.cpp* |
-| String / I/O / JSON / CSV | 3,293 | *lib/backend/string_io_codegen.cpp* |
-| Work-stealing parallel codegen | 2,601 | *lib/backend/parallel_llvm_codegen.cpp* |
-| Arithmetic (incl. bignum/rational/complex) | 2,491 | *lib/backend/arithmetic_codegen.cpp* |
-| Collection ops | 2,348 | *lib/backend/collection_codegen.cpp* |
-| Parser | 8,354 | *lib/frontend/parser.cpp* |
-| Macro expander | 861 | *lib/frontend/macro_expander.cpp* |
-| Type checker | 1,999 | *lib/types/type_checker.cpp* |
-| Arena memory | ≈1,535 | *lib/core/arena_memory.h* and *lib/core/runtime_arena_\*.cpp* |
-| S-expression reader (iterative as of v1.3.1-evolve) | 555 | *lib/core/runtime_reader_hosted.cpp* |
-| Logic engine | ≈1,180 | *lib/core/logic.cpp* |
-| Active-inference engine | ≈1,200 | *lib/core/inference.cpp* |
+| Main LLVM codegen | 42,025 | *lib/backend/llvm_codegen.cpp* |
+| Total LLVM backend (main + 33 codegen modules) | ≈106,500 | *lib/backend/* |
+| Autodiff codegen (order ≤ 2, incl. custom-VJP) | 13,815 | *lib/backend/autodiff_codegen.cpp* |
+| Taylor-tower runtime (arbitrary order) | ≈1,710 | *lib/core/runtime_taylor.c*, *lib/core/taylor_recurrences.def* |
+| Taylor-tower stdlib modules (GUW, tensor towers, models, checkpointing, numerics, sparse) | ≈2,570 | *lib/core/ad/{guw,tensor_tower,taylor_models,checkpoint,taylor_numerics,sparse_guw,interval}.esk* |
+| Backward-mode kernels | 1,446 | *lib/backend/tensor_backward.cpp* |
+| String / I/O / JSON / CSV | 3,860 | *lib/backend/string_io_codegen.cpp* |
+| Work-stealing parallel codegen | 2,626 | *lib/backend/parallel_llvm_codegen.cpp* |
+| Arithmetic (incl. bignum/rational/complex) | 3,869 | *lib/backend/arithmetic_codegen.cpp* |
+| Collection ops | 3,164 | *lib/backend/collection_codegen.cpp* |
+| Parser | 11,116 | *lib/frontend/parser.cpp* |
+| Macro expander | 1,483 | *lib/frontend/macro_expander.cpp* |
+| Type checker | 3,841 | *lib/types/type_checker.cpp* |
+| Arena memory | 1,784 | *lib/core/arena_memory.h* and *lib/core/runtime_arena_\*.cpp* |
+| S-expression reader (iterative as of v1.3.1-evolve) | 675 | *lib/core/runtime_reader_hosted.cpp* |
+| Logic engine | 1,182 | *lib/core/logic.cpp* |
+| Active-inference engine | 1,203 | *lib/core/inference.cpp* |
 | Global workspace | 354 | *lib/core/workspace.cpp* |
-| Quantum FFI (opt-in, v1.3.3-evolve) | ≈1,450 | *lib/agent/quantum.esk*, *lib/agent/c/agent_quantum.c* |
+| Quantum FFI (opt-in, v1.3.3-evolve) | 1,570 | *lib/agent/quantum.esk*, *lib/agent/c/agent_quantum.c* |
 | ML-KEM post-quantum KEM (opt-in, v1.3.3-evolve) | ≈520 | *lib/agent/pqc.esk*, *lib/agent/c/agent_pqc.c* |
 | Incremental dataflow (v1.3.3-evolve) | 448 | *lib/core/dbsp.esk* |
-| Weight-matrix transformer | ≈7,500 | *lib/backend/weight_matrices.c* |
-| Bytecode VM + runtime libs | ≈41,000 | *lib/backend/eshkol_vm.c* and runtime |
+| Weight-matrix transformer | 7,363 | *lib/backend/weight_matrices.c* |
+| Bytecode VM + runtime libs | ≈46,200 | *lib/backend/eshkol_vm.c* and runtime |
 
-Total compiler infrastructure is approximately 286,000 lines of C17 and C++20
-across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
-added Doxygen-format documentation across 116 files —
-50 of the 64 public headers under `inc/eshkol/` and 56
-previously-undocumented implementation files under `lib/` —
+Total compiler infrastructure is approximately 322,800 lines of C17 and C++20
+across 322 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
+added roughly 12,600 lines of Doxygen-format documentation across 116 files —
+50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
+previously-undocumented implementation files under `lib/` (≈7,478 lines) —
 comments only, no behaviour change; v1.3.2-evolve added a further
 `eshkol-doc` reference generator (`docs/api/`) that harvests those comments
 automatically.

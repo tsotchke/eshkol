@@ -64,7 +64,7 @@
 (report "x^5 - 3x + 1=0 " (newton quintic 0.5 1e-12 50))
 (newline)
 
-(display "Every call above used the same compact `newton` loop —")
+(display "Every call above used the same ten-line `newton` loop —")
 (newline)
 (display "the compiler differentiated each function inline.")
 (newline)

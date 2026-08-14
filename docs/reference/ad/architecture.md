@@ -124,10 +124,25 @@ This is exercised end-to-end by
 ;; => #(4)
 ```
 
-What is **not** yet covered by the mixed path: reverse-**over-reverse** with a
-vector outer point (`gradient` of `gradient`, vector param — **ESH-0096**) and
-`gradient` of a *named* inner function (**ESH-0078**) both fall back to the old
-path and silently return zeros. See [support-matrix.md](support-matrix.md).
+Reverse-**over-reverse** is covered as well. `gradient` of `gradient` at a
+vector point (formerly **ESH-0096**) and `gradient` of a *named* inner function
+(formerly **ESH-0078**) both return the true second-order value on this build,
+where each used to return zeros:
+
+```scheme
+(gradient (lambda (v)
+            (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
+          (vector 2.0))
+;; => #(12)
+```
+
+This holds for the *direct* nested form shown above. The **curried** route —
+`(define g (gradient f))` then `(jacobian g point)` — raises
+`unsupported nested differentiation` rather than answering (a loud refusal,
+not a silent zero; SW-05); see KNOWN_ISSUES.md. Use `(hessian f point)` for
+exact second order.
+
+See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 
 ---
 

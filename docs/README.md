@@ -109,7 +109,7 @@ pages and lets them fan out to their siblings.
   - [subprocess.md](reference/agent/subprocess.md) — process spawning, ownership/cleanup contract
   - [crypto.md](reference/agent/crypto.md) — SHA-256, HMAC, random bytes, UUIDv4, base64url
   - [eagle.md](reference/agent/eagle.md) — native linear-head training
-  - [memory-faculty.md](reference/agent/memory-faculty.md) — `core.memory`, `core.memory-store`
+  - [memory-faculty.md](reference/agent/memory-faculty.md) — `core.memory`, `core.memory_store`
   - [platform-utilities.md](reference/agent/platform-utilities.md) — regex, globbing, file watching, secrets, terminal/TUI, git
 - [Agent FFI (breakdown)](breakdown/AGENT_FFI.md) — native HTTP/SQLite/subprocess/fs-watch surfaces and AOT link wiring
 
@@ -178,7 +178,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 ## Testing and Quality Gates
 
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 180/181
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 183/183
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

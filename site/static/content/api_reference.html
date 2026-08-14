@@ -4,7 +4,7 @@
 Systems Programming</p>
 <p>This comprehensive reference documents all special forms, functions,
 and operations in the Eshkol language. All documentation is
-code-verified against the production compiler implementation (~232,000
+code-verified against the production compiler implementation (~329,100
 lines of LLVM-based C++ code, 555+ builtins).</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -6625,14 +6625,14 @@ for composability and custom pipelines.</p>
 <h2 id="implementation-statistics">Implementation Statistics</h2>
 <p><strong>Codebase Size</strong>: ~329,100 lines of production C++
 <strong>Main Backend</strong>: <a
-href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 42,969
+href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 42,974
 lines <strong>Tensor Codegen</strong>: <a
-href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — thin
-dispatcher over thirteen per-domain modules (~22,400 lines total)
-<strong>Compiler Modules</strong>: 21 specialized code generators
-<strong>Test Suite</strong>: 37 suites, 528 self-reported tests
-<strong>Verified Operations</strong>: 555+ builtins, 300+ standard
-library functions</p>
+href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> —
+1,867-line dispatcher plus ~22,400 lines across thirteen per-domain
+<code>tensor_*_codegen.cpp</code> modules <strong>Compiler
+Modules</strong>: 21 specialized code generators <strong>Test
+Suite</strong>: 37 suites, 528 self-reported tests <strong>Verified
+Operations</strong>: 555+ builtins, 300+ standard library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>

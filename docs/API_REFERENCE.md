@@ -4,7 +4,7 @@
 **Last Updated**: 2026-07-08
 **Audience**: Scientific Computing & AI Systems Programming
 
-This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~232,000 lines of LLVM-based C++ code, 555+ builtins).
+This comprehensive reference documents all special forms, functions, and operations in the Eshkol language. All documentation is code-verified against the production compiler implementation (~329,100 lines of LLVM-based C++ code, 555+ builtins).
 
 ---
 
@@ -7118,8 +7118,8 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 42,969 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — thin dispatcher over thirteen per-domain modules (~22,400 lines total)
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 42,974 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus ~22,400 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
 **Compiler Modules**: 21 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

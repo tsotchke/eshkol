@@ -499,8 +499,8 @@ block ordinary use.
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 951 rows —
-  578 `vm-supported`, 44 `native-only-justified`, 329 `gap`, of which 17 are
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
+  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`, of which 17 are
   verified behavioral divergences with reproducible programs under
   `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
