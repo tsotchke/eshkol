@@ -221,8 +221,8 @@ Each item below cites the file or measurement that grounds the claim.
 
 - **Comprehensively documented public API and implementation.** v1.3.1-evolve added
   Doxygen-format documentation across 50 of the 64 public headers under
-  `inc/eshkol/` (~4,650 lines) and 56 previously-undocumented implementation files
-  under `lib/` (~7,478 lines) — 116 files and roughly 12,600 lines total, comments
+  `inc/eshkol/` and 56 previously-undocumented implementation files
+  under `lib/` — 116 files, comments
   only; v1.3.2-evolve added `eshkol-doc`, which harvests those comments automatically
   into a generated `docs/api/` reference. A navigable per-subsystem reference index
   (*docs/reference/{language,ad,runtime,tensors,stdlib,agent}/INDEX.md*) organizes
@@ -243,11 +243,14 @@ Each item below cites the file or measurement that grounds the claim.
   probes / 436 component checks across 21 generated files under JIT and AOT; a
   zero AD gradient where finite differences are nonzero is a hard failure).
   Release gates green on the v1.3.4-evolve cut: the aggregate suite 45/45
-  suites and 770 individual tests; CTest 139/139, which as of this release is
-  itself completion-oracle evidence rather than advice; SICP full-book gate
-  88/88 probes across all five chapters under both `-r` and AOT;
-  reference-Scheme differential oracle 34/34 AGREE against chibi-scheme
-  0.12.0. See *docs/TESTING.md*.
+  suites and 770 individual tests; CTest 180/181, which as of this release is
+  itself completion-oracle evidence rather than advice; executable language
+  coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
+  across all five chapters under both `-r` and AOT; reference-Scheme
+  differential oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity
+  differential 184/184 over a 956-row manifest (581 VM-supported, 44 justified
+  native-only, 329 explicit gaps); qLLM oracle gate 10/10; ICC readiness 100,
+  verdict `ready`. See *docs/TESTING.md*.
 
 - **Binary Lambda Calculus (`core.blc`, v1.3.2-evolve).** A pure-Eshkol
   implementation of John Tromp's BLC: De Bruijn-indexed terms as homoiconic

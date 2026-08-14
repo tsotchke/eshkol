@@ -21,11 +21,21 @@ research-grade Noesis.
 
 ---
 
-## Current status (verified 2026-05-20)
+## Current status (verified 2026-07-31)
 
 **Branch**: `master`
-**Last shipped release**: v1.2.1-scale (2026-05-20)
-**Base release**: v1.2.0-scale (2026-05-01).
+**Last shipped release**: v1.3.4-evolve (2026-07-31)
+**Base release**: v1.3.3-evolve (2026-07-16).
+**Status**: v1.3.4-evolve cut — a resident-correctness release followed by a
+consumer-hardening correctness wave. Release gates measured on the cut:
+aggregate suite 45/45 suites and 770 tests, CTest 180/181, executable language
+coverage 1,091/1,091 (100.0%), SICP 88/88, reference differential 34/34 AGREE
+vs chibi-scheme 0.12.0, VM parity 184/184, ICC readiness 100 (`ready`).
+
+The v1.2.x record below is retained as the history of that milestone.
+
+### v1.2.1-scale closeout (historical, 2026-05-20)
+
 **Status**: v1.2.1-scale closeout complete — all M0 audit blockers cleared.
 
 Delivered in the v1.2.x closeout:
@@ -138,7 +148,7 @@ evidence used for that reconciliation.
 | GG | `NOESIS_TEST_VAR=42 ... bug-GG-getenv-string-predicate-mismatch.esk` prints `string?: #t` and `display: 42`. | Close as fixed. |
 | JJ | `bug-JJ-loaded-helper-variadic-rest-raw.esk` now prints `rest: (#f)`, `pair?: #t`, `car rest: #f`, exit 0. | Close as fixed. |
 | KK | `eshkol-run --version` exits 0 and prints `Eshkol Compiler v1.2.1-scale`. | Close as fixed. |
-| LL | The Noesis repro script and Eshkol's `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` both verify the positive contract: `--emit-object` is accepted, `-o requested.o` creates exactly that path, no `.o.o` artifact is produced, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. | Closed. Keep the Eshkol regression and docs as the build-system contract guard. |
+| LL | The Noesis repro script and Eshkol's `tests/v1_2_edge_cases/object_build_cli_contract_test.sh` both verify the positive contract: `--emit-object` is accepted, `-o requested.o` creates exactly that path, no `.o.o` artifact is produced, and `--shared-lib`, `-fPIC`, `-I`, and `-D` are accepted. | **Re-closed in v1.3.4-evolve (#377) — the earlier closure was premature.** The contract above only asserted that the flags were *accepted*: `--emit-object` emitted objects correctly, but `--shared-lib` never linked a shared library and exited 0 with no artifact anyway, so the guard passed on a broken flag for the whole v1.2/v1.3 line. #377 links a real, C-ABI-correct shared library in both directions (`[2 x i64]` register pair, Windows sret, 32-bit refused loudly) and adds a linkage test with teeth. Keep both the Eshkol regression and the new linkage test as the build-system contract guard. |
 
 Result: there are no currently verified Noesis M0 substrate blockers left in
 Eshkol. The remaining work is v1.3+ productization.

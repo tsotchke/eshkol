@@ -1087,8 +1087,11 @@ deterministic, low-latency performance:</p>
 <p><strong>Benefits:</strong> - <strong>No GC pauses</strong> - Critical
 for real-time applications - <strong>Cache-friendly</strong> -
 Sequential allocation - <strong>Deterministic cleanup</strong> - Memory
-freed when scope exits - <strong>Fast allocation</strong> - O(1)
-bump-pointer allocation</p>
+freed when scope exits (native engine; the bytecode VM does not reclaim
+yet — see <a
+href="reference/runtime/memory-model.md#which-engine-reclaims">memory
+model</a>) - <strong>Fast allocation</strong> - O(1) bump-pointer
+allocation</p>
 <h3 id="tagged-value-system">Tagged Value System</h3>
 <p>Every runtime value is a 16-byte tagged structure:</p>
 <pre class="c"><code>struct eshkol_tagged_value {
@@ -1470,7 +1473,16 @@ a pure <strong>runtime no-op</strong>: the emitted IR is byte-identical
 to <code>expr</code> alone (no runtime tag check, no cost), so
 <code>(the &lt;type&gt; expr)</code> and <code>expr</code> compute
 exactly the same value.</p>
-<pre class="scheme"><code>(the number (car mixed-list))   ; tell the checker this element is a number</code></pre></li>
+<p>Trusted is not unexamined. The checker still derives the type of
+<code>expr</code>, and if it is <strong>provably disjoint</strong> from
+<code>&lt;type&gt;</code> — no value inhabits both — it reports the
+ascription instead of adopting it: a warning under gradual typing, fatal
+under <code>--strict-types</code>, and nothing extra in the emitted code
+either way. Narrowing, widening, and moving between members of the
+numeric tower are all accepted.</p>
+<pre class="scheme"><code>(the number (car mixed-list))   ; tell the checker this element is a number
+(the real 1)                    ; fine — the numeric tower is flat
+(the string (+ 1 2))            ; reported: no value is both Int64 and String</code></pre></li>
 <li><p><strong>Predicate-guarded narrowing.</strong> Inside a branch
 guarded by one of eight type predicates, the checker narrows the tested
 value to that type. The eight predicates are <code>number?</code>,

@@ -1,6 +1,6 @@
 # Eshkol Examples
 
-Fourteen runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
+Twenty runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
 
 ```bash
 # Compile and run any example in one command:
@@ -32,7 +32,7 @@ The compiler differentiates through arbitrary Eshkol code — no framework, no g
 | Example | What it shows | LOC |
 |---------|--------------|----:|
 | **[gradient_descent_demo.esk](gradient_descent_demo.esk)** | Train a 3-parameter quadratic on noisy data; loss falls from 63 → 0.06 in 400 steps | 93 |
-| **[newton_method.esk](newton_method.esk)** | Newton's root finder in 15 lines using `derivative`. Cube root, square root, the Dottie number, and a quintic root — each converges in 4–5 iterations | 70 |
+| **[newton_method.esk](newton_method.esk)** | Newton's root finder in ten lines using `derivative`. Cube root, square root, the Dottie number, and a quintic root — each converges in 4–5 iterations | 70 |
 | **[symbolic_diff.esk](symbolic_diff.esk)** | Three modes of AD (`diff` / `derivative` / `gradient`) agree to machine precision on `sin(x²) + 3x`. The symbolic mode prints its rewritten AST | 87 |
 | **[differentiable_physics.esk](differentiable_physics.esk)** | Optimise a projectile launch angle by differentiating *through* a recursive Euler integrator with linear drag. Converges to the high-arc 68° solution in 200 steps with final error 1.3e-8 | 95 |
 | **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,500 epochs. Loss 1.10 → <0.001 | 123 |

@@ -404,7 +404,9 @@ exp log log10 log2 sqrt pow</code></pre>
 (factor-graph? x)  (workspace? x)</code></pre>
 <h2 id="static-type-checking-strict-mode">Static Type Checking (strict
 mode)</h2>
-<pre class="scheme"><code>;; Checked ascription — trusted assertion to the checker, runtime no-op
+<pre class="scheme"><code>;; Checked ascription — trusted assertion to the checker, runtime no-op.
+;; A provably impossible ascription is reported at compile time:
+;;   (the string (+ 1 2))  ;; warning (fatal under --strict-types)
 (the number (car xs))     ;; tell the checker this is a number
 (the string s)
 

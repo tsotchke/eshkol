@@ -695,7 +695,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   architecture-matched compiler-rt, and CUDA consumer paths are verified by
   the release workflow rather than inferred from builder-local success.
 - **Execution-backed evidence**, all measured on the release commit: the
-  aggregate suite 45/45 suites and 770 individual tests, CTest 139/139, the
+  aggregate suite 45/45 suites and 770 individual tests, CTest 180/181, the
   SICP full-book gate 88/88 probes across all five chapters under both `-r` and
   AOT, and the reference-Scheme differential oracle 34/34 AGREE against
   chibi-scheme 0.12.0. The language-surface gate enforces a monotonic floor of
@@ -796,7 +796,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.3.0-evolve
+Welcome to Eshkol REPL v1.3.4-evolve
 Type :help for commands, :quit to exit
 
 eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
@@ -950,10 +950,10 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 | **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |
 | **[Complete Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)** | Full technical specification |
 | **[Standard Library API](docs/STDLIB_V1_2_API.md)** | Stdlib module surfaces, including infrastructure modules (Appendix B) |
-| **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (37 docs) |
+| **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (36 docs) |
 | **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |
-| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 37-suite gate verifies |
-| **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and v1.3+ items |
+| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 45-suite gate verifies |
+| **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and tracked open items |
 | **[Testing & Adversarial Harnesses](docs/TESTING.md)** | SICP gate + the five adversarial harnesses and how to run them |
 | **[VM Parity](docs/VM_PARITY.md)** | Bytecode-VM vs native-codegen parity ratchet |
 | **[ROADMAP](ROADMAP.md)** | Canonical release plan |
@@ -974,10 +974,10 @@ Eshkol is designed for:
 Eshkol is released under the **MIT License**. For academic use, please cite:
 
 ```bibtex
-@software{eshkol2025,
+@software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.0-evolve},
+  version = {1.3.4-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
@@ -993,7 +993,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 44/44 suites and 716/716 tests; CTest 76/76; executable language coverage 1,078/1,078
+- **Testing**: 45/45 suites and 770 individual tests; CTest 180/181; executable language coverage 1,091/1,091 (100.0%, floor PASS); VM parity differential 184/184
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

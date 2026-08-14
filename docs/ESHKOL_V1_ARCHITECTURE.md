@@ -45,7 +45,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total backend (`lib/backend/`) | ~147,000 lines indexed |
+| Total backend (`lib/backend/`) | ~195,600 lines indexed |
 | LLVM backend | ~30 codegen modules, ~85,500 lines |
 | Bytecode VM | 64 core opcodes, 550+ native calls, ~41,000 lines |
 | Main codegen | 33,962 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
@@ -107,7 +107,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h) (6,186 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,259 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (925 lines)
 
 ### Core Principles
 
@@ -227,7 +227,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (1,497 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -282,7 +282,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (819 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (2,048 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp)
 
 **Universe Hierarchy**:
 ```scheme
@@ -326,7 +326,7 @@ typedef struct {
 
 ### Layer 3: Dependent Types
 
-**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp) (440 lines)
+**Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp)
 
 **Compile-Time Value Tracking**:
 ```c
@@ -355,7 +355,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (9,205 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -755,7 +755,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (2,260 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp)
 
 ### Architecture
 
@@ -826,7 +826,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (1,108 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,051 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp)
 
 ### Architecture
 
@@ -963,7 +963,7 @@ lib/
 
 ### Math Library Highlights
 
-**[`lib/math.esk`](../lib/math.esk)** (441 lines):
+**[`lib/math.esk`](../lib/math.esk)**:
 
 ```scheme
 ;; Linear algebra
@@ -1160,7 +1160,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (281 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt:1)
 
 ### Requirements
 
@@ -1282,13 +1282,13 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (1,912 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (33,999 lines)
-- [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h) - Memory manager (6,186 lines)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (8,368 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (2,048 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (3,382 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (3,484 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen
+- [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) - Memory manager
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable
 
 ### Forward-looking design documents
 

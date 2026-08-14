@@ -337,12 +337,19 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenMatch()</code></a></p>
 <h4 id="with-region"><code>with-region</code></h4>
 <p><strong>Syntax</strong>:
 <code>(with-region [name size-hint] body...)</code></p>
-<p>Creates a lexical memory region, automatically freed after body
-execution.</p>
+<p>Creates a lexical memory region. <strong>On the native
+engine</strong> (<code>eshkol-run</code>, JIT and AOT) the region’s
+arena is automatically freed after body execution and the body result is
+deep-copied out so it survives. <strong>On the bytecode VM</strong> the
+form evaluates identically and returns the same value but frees nothing
+— the VM heap has no escape evacuator yet; it announces this at first
+use. See <a
+href="reference/runtime/memory-model.md#which-engine-reclaims">memory
+model: which engine reclaims</a>.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(with-region
   (let ((big-data (make-vector 1000000 0)))
-    (process big-data)))  ; Memory freed after block</code></pre>
+    (process big-data)))  ; native: memory freed after block</code></pre>
 <p><strong>Type</strong>: Region-based memory management<br />
 <strong>Implementation</strong>: <a
 href="../lib/backend/llvm_codegen.cpp"><code>codegenWithRegion()</code></a></p>
@@ -1590,8 +1597,9 @@ functions) - Arena-based memory pooling (no GC pauses)</p>
 <h3 id="memory-architecture">Memory Architecture</h3>
 <p><strong>OALR</strong> (Ownership-Aware Lexical Regions): - Arena
 allocation (bump pointer, O(1) allocation) - Lexical region lifetimes
-(deterministic deallocation) - Zero-copy tensor views (reshape/slice
-without allocation)</p>
+(deterministic deallocation — native engine; the bytecode VM does not
+reclaim yet) - Zero-copy tensor views (reshape/slice without
+allocation)</p>
 <p><strong>Allocation Hierarchy</strong>: 1. Stack allocas
 (function-local) 2. Arena regions (lexical scope) 3. Global arena
 (persistent data)</p>
@@ -1691,8 +1699,12 @@ bignum values</li>
 <ul>
 <li><code>(exact-&gt;inexact n)</code> — Converts to double (may lose
 precision for large bignums)</li>
-<li><code>(inexact-&gt;exact n)</code> — Converts double to nearest
-integer</li>
+<li><code>(inexact-&gt;exact n)</code> — Returns the operand’s exact
+value: an exact integer for a whole double (a bignum when it exceeds
+int64), a rational otherwise. <code>(inexact-&gt;exact 0.1)</code> is
+<code>3602879701896397/36028797018963968</code>, the exact value of that
+double, so <code>(exact-&gt;inexact (inexact-&gt;exact x))</code>
+reproduces <code>x</code> bit-for-bit</li>
 <li><code>(number-&gt;string n)</code> — Works correctly with bignums
 (not pointer bits)</li>
 <li><code>(string-&gt;number s)</code> — Parses large integers as
@@ -1758,6 +1770,22 @@ values</li>
 <p>All standard operators (<code>+</code>, <code>-</code>,
 <code>*</code>, <code>/</code>) work with complex numbers. Division uses
 Smith’s formula for numerical stability with large magnitudes.</p>
+<h3 id="transcendental-functions">Transcendental Functions</h3>
+<p><code>sqrt</code>, <code>exp</code>, <code>log</code>,
+<code>exp2</code>, <code>log2</code>, <code>log10</code>,
+<code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>,
+<code>acos</code>, <code>atan</code>, <code>sinh</code>,
+<code>cosh</code>, <code>tanh</code>, <code>asinh</code>,
+<code>acosh</code>, <code>atanh</code> and <code>expt</code> all accept
+complex arguments, on the principal branch with C99 Annex G branch cuts.
+<code>floor</code>, <code>ceiling</code>, <code>truncate</code>,
+<code>round</code>, <code>cbrt</code> and <code>abs</code> are
+real-domain only and signal a catchable type error on a complex (use
+<code>magnitude</code> for <code>|z|</code>).</p>
+<pre class="scheme"><code>(sqrt (make-rectangular -1.0 0.0))    ; =&gt; 0.0+1.0i
+(exp (make-rectangular 0.0 3.14159))  ; =&gt; -1.0+0.0i (approximately)
+(expt (make-rectangular 0.0 1.0)
+      (make-rectangular 0.0 1.0))     ; =&gt; 0.20787957635076193 (i^i)</code></pre>
 <pre class="scheme"><code>(define z1 (make-rectangular 3.0 4.0))
 (magnitude z1)      ; =&gt; 5.0
 (angle z1)          ; =&gt; 0.9273... (atan(4/3))
@@ -4003,9 +4031,16 @@ when set</td>
 <td>Maximum string length</td>
 </tr>
 <tr>
+<td><code>ESHKOL_VM_MAX_INSN</code></td>
+<td>10000000</td>
+<td>Bytecode-VM runaway-instruction guard; <code>0</code> =
+unlimited</td>
+</tr>
+<tr>
 <td><code>ESHKOL_ENFORCE_LIMITS</code></td>
-<td>on for limit API</td>
-<td>Request runtime interrupts on hard heap/timeout limits</td>
+<td>on</td>
+<td>Terminate the process on a hard limit; when off, the breach is
+recorded and warned about and the program continues</td>
 </tr>
 <tr>
 <td><code>ESHKOL_LIMIT_WARNINGS</code></td>
@@ -4017,6 +4052,21 @@ when set</td>
 <p>Malformed runtime-limit values are ignored and preserve the default
 limit. Size variables accept optional <code>K</code>, <code>M</code>, or
 <code>G</code> suffixes, with an optional trailing <code>B</code>.</p>
+<p>Each ceiling is opt-in: it binds a run only when that run sets the
+variable (or sets the matching <code>ESHKOL_LIMIT_ACTIVE_*</code> bit
+before <code>eshkol_set_limits()</code>). The defaults above are the
+values a limit takes when turned on, not ceilings applied to every
+program.</p>
+<p>Exceeding an active hard limit prints one
+<code>eshkol: fatal: …</code> line to stderr naming the limit, the
+ceiling and the variable that set it, and exits with a status specific
+to that limit — <code>120</code> heap, <code>121</code> stack,
+<code>122</code> tensor elements, <code>123</code> string length,
+<code>124</code> execution timeout (matching GNU coreutils
+<code>timeout(1)</code>), <code>125</code> VM instructions. See
+<code>ESHKOL_EXIT_LIMIT_*</code> in
+<code>inc/eshkol/core/resource_limits.h</code> and <a
+href="reference/runtime/environment-variables.md">runtime/environment-variables.md</a>.</p>
 <h3 id="logging-debug">Logging &amp; Debug</h3>
 <table>
 <thead>
@@ -6573,14 +6623,15 @@ for composability and custom pipelines.</p>
 ;; =&gt; #(2.0 5.0 8.0)</code></pre>
 <hr />
 <h2 id="implementation-statistics">Implementation Statistics</h2>
-<p><strong>Codebase Size</strong>: ~232,000 lines of production C++
+<p><strong>Codebase Size</strong>: ~329,100 lines of production C++
 <strong>Main Backend</strong>: <a
-href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 34,928
+href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 42,969
 lines <strong>Tensor Codegen</strong>: <a
-href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> —
-20,000+ lines <strong>Compiler Modules</strong>: 21 specialized code
-generators <strong>Test Suite</strong>: 37 suites, 528 self-reported
-tests <strong>Verified Operations</strong>: 555+ builtins, 300+ standard
+href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> — thin
+dispatcher over thirteen per-domain modules (~22,400 lines total)
+<strong>Compiler Modules</strong>: 21 specialized code generators
+<strong>Test Suite</strong>: 37 suites, 528 self-reported tests
+<strong>Verified Operations</strong>: 555+ builtins, 300+ standard
 library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>
