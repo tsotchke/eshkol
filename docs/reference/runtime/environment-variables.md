@@ -149,6 +149,20 @@ The `ESHKOL_MAX_STACK` gap above (ESH-0101) is likewise a ledgered v1.3.5 item:
 wiring the variable where the guard already runs is the v1.3.4 scope, extending
 guard coverage to every top-level `define` is not.
 
+### Bytecode-VM heap growth watchdog
+
+The bytecode VM has no heap reclamation: `(with-region ...)` is the designated
+mechanism and is a pass-through there, so a resident VM workload grows
+monotonically (SW-14; see [Memory model](memory-model.md) and
+`docs/KNOWN_ISSUES.md`). These knobs control the guards that make that growth
+loud instead of silent. Neither guard changes any answer.
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `ESHKOL_VM_HEAP_BUDGET_MB` | VM arena size past which a diagnostic names the growth and its cause. `0` disables the watchdog. | 1024 |
+| `ESHKOL_VM_HEAP_BUDGET_FATAL` | Make crossing the budget exit nonzero instead of advisory, so a lane can gate on it. | off |
+| `ESHKOL_VM_REGION_QUIET` | Suppress the one-time note that region forms reclaim nothing on the VM. | off |
+
 ## Parallelism & threading
 
 | Variable | Effect | Default |

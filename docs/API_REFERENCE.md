@@ -405,13 +405,18 @@ Advanced pattern matching with support for literals, variables, cons patterns, l
 #### `with-region`
 **Syntax**: `(with-region [name size-hint] body...)`
 
-Creates a lexical memory region, automatically freed after body execution.
+Creates a lexical memory region. **On the native engine** (`eshkol-run`, JIT and
+AOT) the region's arena is automatically freed after body execution and the body
+result is deep-copied out so it survives. **On the bytecode VM** the form
+evaluates identically and returns the same value but frees nothing — the VM heap
+has no escape evacuator yet; it announces this at first use. See
+[memory model: which engine reclaims](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Examples**:
 ```scheme
 (with-region
   (let ((big-data (make-vector 1000000 0)))
-    (process big-data)))  ; Memory freed after block
+    (process big-data)))  ; native: memory freed after block
 ```
 
 **Type**: Region-based memory management  
@@ -2003,7 +2008,8 @@ Compile-time type annotations for gradual typing.
 
 **OALR** (Ownership-Aware Lexical Regions):
 - Arena allocation (bump pointer, O(1) allocation)
-- Lexical region lifetimes (deterministic deallocation)
+- Lexical region lifetimes (deterministic deallocation — native engine; the
+  bytecode VM does not reclaim yet)
 - Zero-copy tensor views (reshape/slice without allocation)
 
 **Allocation Hierarchy**:

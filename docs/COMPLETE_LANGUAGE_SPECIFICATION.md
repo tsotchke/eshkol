@@ -1855,7 +1855,8 @@ JSON parsing and serialization:
 
 #### 6.1.1 Core Concepts
 - **Arena Allocation:** Bump-pointer allocation in large blocks
-- **Scope-based Cleanup:** Memory freed when scope exits
+- **Scope-based Cleanup:** Memory freed when scope exits (native engine; the
+  bytecode VM does not reclaim yet — see 6.2.1)
 - **No Garbage Collection:** Deterministic, predictable performance
 - **Cache-Friendly:** Linear allocation pattern
 
@@ -1887,15 +1888,25 @@ struct arena {
 
 **Semantics:**
 - Creates a dedicated arena for the body
-- Memory freed when region exits
+- Memory freed when region exits, and the body result is deep-copied out so it
+  survives (**native engine**)
 - Supports nesting (stack of regions)
+
+**Substrate note.** The reclamation half of those semantics is implemented by
+the **native engine** (`eshkol-run`, JIT and AOT) only. On the **bytecode VM**
+all three spellings evaluate the body identically and return the same value —
+the form is value- and effect-transparent — but **nothing is freed**, because
+the VM heap has no escape evacuator yet. A VM program is therefore correct but
+grows monotonically; it announces this at the first region form and again when
+the growth crosses a heap budget. The VM evacuator is the v1.3.5 flagship item.
+See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Example:**
 ```scheme
 (with-region 'temp
   (define data (iota 1000))
   (process data))
-; data's memory freed here
+; native: data's memory freed here; bytecode VM: same value, not yet freed
 ```
 
 #### 6.2.2 `owned` - Mark Ownership
@@ -4188,7 +4199,8 @@ Keep original name (exported via `provide`)
 
 **Version History:**
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
-  memory reclamation that matches explicit `with-region`, race-free
+  memory reclamation on the native engine that matches explicit `with-region`,
+  race-free
   `parallel-map`, exact gradients through every callable form and at exact
   (rational/bignum) points, R7RS-correct exactness contagion on both the native
   and bytecode-VM numeric paths, same-unit `define-library`/`import` resolution

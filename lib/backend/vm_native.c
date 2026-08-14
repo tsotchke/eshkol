@@ -16021,6 +16021,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * misused handle observes identical output on both substrates.
      * See tests/vm_parity/PARITY.tsv. */
     case 2210: { /* _region-open(name-or-#f, size-or-#f) -> handle token */
+        vm_region_reclaim_notice();   /* SW-14: the close will reclaim nothing */
         Value size_val = vm_pop(vm), name_val = vm_pop(vm);
         const char* name = NULL;
         uint64_t size_hint = 0;
