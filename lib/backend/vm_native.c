@@ -7654,15 +7654,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
         };
         Value result = vm_pop(vm);
         const char* path = accessor_paths[fid];
+        int raised = 0;
         for (const char* step = path; *step; step++) {
             if (result.type != VAL_PAIR) {
-                result = NIL_VAL;
+                vm_raise_error_msg(vm, *step == 'a'
+                    ? "car: argument is not a pair"
+                    : "cdr: argument is not a pair");
+                raised = 1;
                 break;
             }
             HeapObject* pair = vm->heap.objects[result.as.ptr];
             result = (*step == 'a') ? pair->cons.car : pair->cons.cdr;
         }
-        vm_push(vm, result);
+        if (!raised) vm_push(vm, result);
         break;
     }
 

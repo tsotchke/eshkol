@@ -15,6 +15,11 @@
 (define (h1 f a) (f a))
 (define (h2 f a b) (f a b))
 
+(define (raises? thunk)
+  (guard (condition (#t #t))
+    (thunk)
+    #f))
+
 ;; Every branch has at least four elements at every level, so all c[ad]+r
 ;; accessors through four levels are valid on this shared value.
 (define access-leaf (list 1 2 3 4 5))
@@ -83,6 +88,13 @@
 (check-accessor "cddadr" cddadr stored-cddadr access-tree (cddadr access-tree))
 (check-accessor "cdddar" cdddar stored-cdddar access-tree (cdddar access-tree))
 (check-accessor "cddddr" cddddr stored-cddddr access-tree (cddddr access-tree))
+
+;; The first-class VM dispatcher must preserve the checked car/cdr failure
+;; contract too; it must not fabricate () when the path runs off the list.
+(check "cadddr passed off-end raises"
+       (raises? (lambda () (h1 cadddr (list 7 8)))) #t)
+(check "cadddr stored off-end raises"
+       (raises? (lambda () (h1 stored-cadddr (list 7 8)))) #t)
 
 (define string-value "hello")
 (define vector-value (vector 10 20 30))

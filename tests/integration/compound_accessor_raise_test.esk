@@ -1,0 +1,70 @@
+;;; Compound-accessor failure contract, shared by the native and VM engines.
+;;; Each call-position spelling is compared with the equivalent explicit
+;;; car/cdr chain. Both routes must raise on an off-end or scalar intermediate.
+
+(define failures 0)
+
+(define (check label actual expected)
+  (if (equal? actual expected)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display (string-append "FAIL: " label)))))
+
+(define (raises? thunk)
+  (guard (condition (#t #t))
+    (thunk)
+    #f))
+
+(define (check-off-end label direct composed)
+  (let ((direct-raised (raises? direct))
+        (composed-raised (raises? composed)))
+    (check (string-append label " matches composition")
+           direct-raised composed-raised)
+    (check (string-append label " raises") direct-raised #t)))
+
+;; These are all 13 c[ad]+r spellings intercepted by the native helper. The
+;; shapes deliberately run off the end or reach a scalar before completion.
+(check-off-end "cadr off-end"
+               (lambda () (cadr (list 7)))
+               (lambda () (car (cdr (list 7)))))
+(check-off-end "caddr off-end"
+               (lambda () (caddr (list 7 8)))
+               (lambda () (car (cdr (cdr (list 7 8))))))
+(check-off-end "cadddr off-end"
+               (lambda () (cadddr (list 7 8)))
+               (lambda () (car (cdr (cdr (cdr (list 7 8)))))))
+(check-off-end "caar scalar"
+               (lambda () (caar (list 7)))
+               (lambda () (car (car (list 7)))))
+(check-off-end "cdar scalar"
+               (lambda () (cdar (list 7)))
+               (lambda () (cdr (car (list 7)))))
+(check-off-end "cddr off-end"
+               (lambda () (cddr (list 7)))
+               (lambda () (cdr (cdr (list 7)))))
+(check-off-end "caaar scalar"
+               (lambda () (caaar (list 7)))
+               (lambda () (car (car (car (list 7))))))
+(check-off-end "caadr off-end"
+               (lambda () (caadr (list 7)))
+               (lambda () (car (car (cdr (list 7))))))
+(check-off-end "cadar scalar"
+               (lambda () (cadar (list 7)))
+               (lambda () (car (cdr (car (list 7))))))
+(check-off-end "cdaar scalar"
+               (lambda () (cdaar (list 7)))
+               (lambda () (cdr (car (car (list 7))))))
+(check-off-end "cdadr off-end"
+               (lambda () (cdadr (list 7)))
+               (lambda () (cdr (car (cdr (list 7))))))
+(check-off-end "cddar scalar"
+               (lambda () (cddar (list 7)))
+               (lambda () (cdr (cdr (car (list 7))))))
+(check-off-end "cdddr off-end"
+               (lambda () (cdddr (list 7 8)))
+               (lambda () (cdr (cdr (cdr (list 7 8))))))
+
+(if (= failures 0)
+    (display "PASS: compound accessors raise like car/cdr composition")
+    (display "FAIL: compound accessor raise contract"))

@@ -4703,6 +4703,33 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: VM first-class builtin families"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 
+    # Compound accessors in call position must raise exactly like their plain
+    # car/cdr composition when an intermediate value is not a pair. Run the
+    # same differential-by-construction family test on both engines.
+    add_test(
+        NAME compound_accessor_raise_native_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/compound_accessor_raise_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(compound_accessor_raise_native_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: compound accessors raise like car/cdr composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME compound_accessor_raise_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/compound_accessor_raise_test.esk"
+    )
+    set_tests_properties(compound_accessor_raise_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: compound accessors raise like car/cdr composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
     # SW-27, VM side. The VM's closures carry their rest-arg shape natively, so
     # this defect class does not exist on this engine either. Pinned for the
     # same reason as the builtins case above.

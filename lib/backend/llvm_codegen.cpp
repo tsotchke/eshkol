@@ -35588,8 +35588,37 @@ private:
 
         Value* current = codegenAST(&op->call_op.variables[0]);
         if (!current) return nullptr;
+        current = ensureTaggedValue(current);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
+
+        // Compound accessors are specified as ordinary right-to-left car/cdr
+        // composition. Guard every intermediate with the same pair contract
+        // instead of treating a null/non-pair as a value and continuing.
+        auto emitIsPair = [&](Value* value) -> Value* {
+            Value* base_type = getBaseType(getTaggedValueType(value));
+            Value* is_legacy_type = builder->CreateICmpEQ(base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CONS_PTR));
+            Value* ptr_int = safeExtractInt64(value);
+            Value* is_nonnull = builder->CreateICmpNE(ptr_int,
+                ConstantInt::get(int64_type, 0));
+            Value* is_legacy_pair = builder->CreateAnd(is_legacy_type, is_nonnull);
+            Value* is_heap_pair = tagged_->isCons(value);
+            return builder->CreateOr(is_legacy_pair, is_heap_pair);
+        };
+
+        auto emitNotPairRaise = [&](char step, const std::string& prefix) {
+            FunctionCallee raise_not_pair = module->getOrInsertFunction(
+                "eshkol_raise_not_pair",
+                FunctionType::get(void_type, {builder->getPtrTy()}, false));
+            const char* message = step == 'a'
+                ? "car: argument is not a pair"
+                : "cdr: argument is not a pair";
+            Value* error_message = builder->CreateGlobalStringPtr(
+                message, prefix + "_not_pair");
+            builder->CreateCall(raise_not_pair, {error_message});
+            builder->CreateUnreachable();
+        };
 
         // VECTOR/TENSOR OPTIMIZATION: For flat vectors, compound accessors can directly index
         // Pattern like "ad" (cadr) = element 1, "add" (caddr) = element 2, etc.
@@ -35614,6 +35643,20 @@ private:
                 Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
                     ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
 
+                BasicBlock* subtype_probe = BasicBlock::Create(*context,
+                    "compound_subtype_probe", current_func);
+                BasicBlock* vector_opt = BasicBlock::Create(*context,
+                    "compound_vector_opt", current_func);
+                BasicBlock* list_fallback = BasicBlock::Create(*context,
+                    "compound_list_fallback", current_func);
+                BasicBlock* compound_final = BasicBlock::Create(*context,
+                    "compound_final", current_func);
+
+                // Reading ptr-8 is only valid for a HEAP_PTR. Non-heap values
+                // take the checked list path and raise there.
+                builder->CreateCondBr(is_heap_ptr, subtype_probe, list_fallback);
+                builder->SetInsertPoint(subtype_probe);
+
                 // If HEAP_PTR, read the subtype from the object header to distinguish cons/vector/tensor
                 Value* obj_ptr_int = unpackInt64FromTaggedValue(current);
                 Value* obj_ptr = builder->CreateIntToPtr(obj_ptr_int, builder->getPtrTy());
@@ -35627,15 +35670,9 @@ private:
                 Value* is_tensor_subtype = builder->CreateICmpEQ(subtype,
                     ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
 
-                // It's a vector/tensor type if HEAP_PTR AND (subtype==VECTOR OR subtype==TENSOR)
+                // It's a vector/tensor type when its heap subtype says so.
                 Value* is_vector_or_tensor = builder->CreateOr(is_vector_subtype, is_tensor_subtype);
-                Value* is_vector_type = builder->CreateAnd(is_heap_ptr, is_vector_or_tensor);
-
-                BasicBlock* vector_opt = BasicBlock::Create(*context, "compound_vector_opt", current_func);
-                BasicBlock* list_fallback = BasicBlock::Create(*context, "compound_list_fallback", current_func);
-                BasicBlock* compound_final = BasicBlock::Create(*context, "compound_final", current_func);
-
-                builder->CreateCondBr(is_vector_type, vector_opt, list_fallback);
+                builder->CreateCondBr(is_vector_or_tensor, vector_opt, list_fallback);
 
                 // VECTOR OPTIMIZATION: Directly return element at index d_count
                 builder->SetInsertPoint(vector_opt);
@@ -35746,37 +35783,20 @@ private:
                 for (int i = pattern.length() - 1; i >= 0; i--) {
                     char c = pattern[i];
 
-                    // FIX: Check for NULL by type, not by data value
-                    // A NULL tagged value has type=ESHKOL_VALUE_NULL, data is irrelevant
-                    Value* result_type = getTaggedValueType(list_result);
-                    Value* result_base_type = getBaseType(result_type);
-                    Value* is_null_type = builder->CreateICmpEQ(result_base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-
-                    // Also check for CONS_PTR with null pointer (0)
-                    Value* is_cons_type = builder->CreateICmpEQ(result_base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                    Value* is_pair = emitIsPair(list_result);
                     Value* ptr_int = safeExtractInt64(list_result);
-                    Value* is_null_ptr = builder->CreateICmpEQ(ptr_int,
-                        ConstantInt::get(int64_type, 0));
-                    Value* is_cons_null = builder->CreateAnd(is_cons_type, is_null_ptr);
-
-                    // Either NULL type or cons with null pointer
-                    Value* is_null = builder->CreateOr(is_null_type, is_cons_null);
 
                     BasicBlock* null_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_null", current_func);
+                        std::string("fb_") + c + "_not_pair", current_func);
                     BasicBlock* valid_block = BasicBlock::Create(*context,
                         std::string("fb_") + c + "_valid", current_func);
                     BasicBlock* continue_block = BasicBlock::Create(*context,
                         std::string("fb_") + c + "_continue", current_func);
 
-                    builder->CreateCondBr(is_null, null_block, valid_block);
+                    builder->CreateCondBr(is_pair, valid_block, null_block);
 
                     builder->SetInsertPoint(null_block);
-                    // FIX: Use proper NULL tagged value, not Int64 with 0
-                    Value* null_tagged = packNullToTaggedValue();
-                    builder->CreateBr(continue_block);
+                    emitNotPairRaise(c, std::string("fb_") + c);
 
                     builder->SetInsertPoint(valid_block);
                     Value* cons_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
@@ -36020,8 +36040,7 @@ private:
                     builder->CreateBr(continue_block);
 
                     builder->SetInsertPoint(continue_block);
-                    PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
-                    result_phi->addIncoming(null_tagged, null_block);
+                    PHINode* result_phi = builder->CreatePHI(tagged_value_type, 1);
                     result_phi->addIncoming(extract_phi, merge_block);
 
                     list_result = result_phi;
@@ -36045,27 +36064,23 @@ private:
         for (int i = pattern.length() - 1; i >= 0; i--) {
             char c = pattern[i];
             
+            Value* is_pair = emitIsPair(current);
+
             // CRITICAL FIX: Safely extract i64 from possibly-tagged value
             Value* ptr_int = safeExtractInt64(current);
             
-            // NULL CHECK
-            Value* is_null = builder->CreateICmpEQ(ptr_int,
-                ConstantInt::get(int64_type, 0));
-            
             BasicBlock* null_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_null", current_func);
+                std::string("compound_") + c + "_not_pair", current_func);
             BasicBlock* valid_block = BasicBlock::Create(*context,
                 std::string("compound_") + c + "_valid", current_func);
             BasicBlock* continue_block = BasicBlock::Create(*context,
                 std::string("compound_") + c + "_continue", current_func);
             
-            builder->CreateCondBr(is_null, null_block, valid_block);
+            builder->CreateCondBr(is_pair, valid_block, null_block);
             
-            // NULL: return null tagged value
+            // A failed intermediate car/cdr raises; it is never a value.
             builder->SetInsertPoint(null_block);
-            // FIX: Use proper NULL tagged value, not Int64 with 0
-            Value* null_tagged = packNullToTaggedValue();
-            builder->CreateBr(continue_block);
+            emitNotPairRaise(c, std::string("compound_") + c);
             
             // VALID: extract car or cdr using tagged cons cell helpers
             builder->SetInsertPoint(valid_block);
@@ -36269,10 +36284,9 @@ private:
             extract_phi->addIncoming(tagged_int, int_block);
             builder->CreateBr(continue_block);
             
-            // Continue: merge null and valid results
+            // Continue with the successfully extracted result.
             builder->SetInsertPoint(continue_block);
-            PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2);
-            result_phi->addIncoming(null_tagged, null_block);
+            PHINode* result_phi = builder->CreatePHI(tagged_value_type, 1);
             result_phi->addIncoming(extract_phi, merge_block);
             
             current = result_phi;
