@@ -88,7 +88,7 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus roughly thirty specialised modules; the compiler tree as a whole totals about 322,000 lines)
+**Phase 4: LLVM IR Generation** (in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus roughly thirty specialised modules; the compiler tree as a whole totals about 329,100 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
@@ -139,7 +139,7 @@ Eshkol applies LLVM's standard optimization pipeline:
 
 ### Runtime Architecture
 
-**Global Arena** ([arena_memory.cpp](../../lib/core/arena_memory.h), 6,186 lines):
+**Global Arena** ([runtime_arena_core.cpp](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings, 4,259 lines total):
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy
 - No individual `free()`; memory reclaimed via arena reset

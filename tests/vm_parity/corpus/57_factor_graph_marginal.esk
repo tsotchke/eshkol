@@ -1,0 +1,68 @@
+;; VM-parity differential over `fg-marginal` on a freshly built factor graph
+;; (SW-07).
+;;
+;; A graph that has had no factor added and no inference run carries the
+;; UNIFORM PRIOR that eshkol_make_factor_graph() installs — log(1/dim) in every
+;; belief slot — so the marginal of a d-state variable is exactly 1/d in every
+;; component, on every engine, for every accepted spelling of the dims
+;; argument. That is the arithmetic, not an engine's opinion, which is why the
+;; expected values are written out here as well as compared across engines.
+;;
+;; Before the fix each engine was wrong on a different spelling and neither
+;; said so: native answered `#()` for the documented `#(2 2)` (the result
+;; tensor's extent was never written) and `()` for `'(2 2)` and `2` (dims read
+;; rejected both), while the VM answered `()` for `#(2 2)` (a `#(...)` literal
+;; reaches its mini-compiler as a VECTOR, not a tensor, so it fell through to
+;; the bare-scalar arm and built one zero-state variable) and truncated
+;; `(make-factor-graph 2 2)` to a single variable.
+;;
+;; Dims are 2 and 4 deliberately: 1/2 and 1/4 are exact binary fractions, so
+;; the printed form cannot differ between two correct engines for
+;; float-formatting reasons.
+
+(define (show label v) (display label) (display " = ") (display v) (newline))
+
+;; ---- the three accepted dims spellings must build the same graph ----
+(define fg-tensor (make-factor-graph 2 #(2 2)))
+(define fg-list   (make-factor-graph 2 '(2 2)))
+(define fg-scalar (make-factor-graph 2 2))
+
+(show "tensor-dims var0" (fg-marginal fg-tensor 0))
+(show "tensor-dims var1" (fg-marginal fg-tensor 1))
+(show "list-dims   var0" (fg-marginal fg-list 0))
+(show "list-dims   var1" (fg-marginal fg-list 1))
+(show "scalar-dims var0" (fg-marginal fg-scalar 0))
+(show "scalar-dims var1" (fg-marginal fg-scalar 1))
+
+;; ---- a ragged graph: per-variable dims must not be broadcast ----
+(define fg-ragged (make-factor-graph 2 #(2 4)))
+(show "ragged var0" (fg-marginal fg-ragged 0))
+(show "ragged var1" (fg-marginal fg-ragged 1))
+
+;; ---- the marginal is a real tensor, not just something that prints ----
+(define m (fg-marginal fg-tensor 0))
+(show "shape" (tensor-shape m))
+(show "elem0" (tensor-ref m 0))
+(show "elem1" (tensor-ref m 1))
+
+;; ---- explicit arithmetic oracle: uniform prior over d states = 1/d ----
+(display "uniform-2 ")
+(display (if (and (= (tensor-ref m 0) 0.5) (= (tensor-ref m 1) 0.5))
+             "PASS" "FAIL"))
+(newline)
+
+;; The extent has to be right too, not only the element values: the native
+;; result tensor used to carry shape (0) with the correct probabilities inside
+;; it, which prints as #() and makes every consumer read an empty distribution.
+(display "extent-2 ")
+(display (if (equal? (tensor-shape m) '(2)) "PASS" "FAIL"))
+(newline)
+
+(define r (fg-marginal fg-ragged 1))
+(display "uniform-4 ")
+(display (if (and (= (tensor-ref r 0) 0.25) (= (tensor-ref r 3) 0.25))
+             "PASS" "FAIL"))
+(newline)
+
+;; ---- an out-of-range variable index is the empty answer on both engines ----
+(show "out-of-range" (fg-marginal fg-tensor 7))

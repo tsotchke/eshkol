@@ -1761,7 +1761,8 @@ nil            ; Alias
 (with-region
   (define data (iota 1000))
   (process data))
-; Memory freed after region exits
+; Memory freed after region exits (native engine; the bytecode VM returns the
+; same value and does not reclaim yet)
 
 ; Named region
 (with-region 'temp

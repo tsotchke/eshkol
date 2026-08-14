@@ -405,13 +405,18 @@ Advanced pattern matching with support for literals, variables, cons patterns, l
 #### `with-region`
 **Syntax**: `(with-region [name size-hint] body...)`
 
-Creates a lexical memory region, automatically freed after body execution.
+Creates a lexical memory region. **On the native engine** (`eshkol-run`, JIT and
+AOT) the region's arena is automatically freed after body execution and the body
+result is deep-copied out so it survives. **On the bytecode VM** the form
+evaluates identically and returns the same value but frees nothing — the VM heap
+has no escape evacuator yet; it announces this at first use. See
+[memory model: which engine reclaims](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Examples**:
 ```scheme
 (with-region
   (let ((big-data (make-vector 1000000 0)))
-    (process big-data)))  ; Memory freed after block
+    (process big-data)))  ; native: memory freed after block
 ```
 
 **Type**: Region-based memory management  
@@ -2003,7 +2008,8 @@ Compile-time type annotations for gradual typing.
 
 **OALR** (Ownership-Aware Lexical Regions):
 - Arena allocation (bump pointer, O(1) allocation)
-- Lexical region lifetimes (deterministic deallocation)
+- Lexical region lifetimes (deterministic deallocation — native engine; the
+  bytecode VM does not reclaim yet)
 - Zero-copy tensor views (reshape/slice without allocation)
 
 **Allocation Hierarchy**:
@@ -2126,7 +2132,7 @@ All standard arithmetic operators (`+`, `-`, `*`, `/`, `quotient`, `remainder`, 
 
 #### Conversion
 - `(exact->inexact n)` — Converts to double (may lose precision for large bignums)
-- `(inexact->exact n)` — Converts double to nearest integer
+- `(inexact->exact n)` — Returns the operand's exact value: an exact integer for a whole double (a bignum when it exceeds int64), a rational otherwise. `(inexact->exact 0.1)` is `3602879701896397/36028797018963968`, the exact value of that double, so `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit
 - `(number->string n)` — Works correctly with bignums (not pointer bits)
 - `(string->number s)` — Parses large integers as bignums when they exceed int64 range
 
@@ -2170,6 +2176,16 @@ First-class complex number type with full AD support.
 
 ### Arithmetic
 All standard operators (`+`, `-`, `*`, `/`) work with complex numbers. Division uses Smith's formula for numerical stability with large magnitudes.
+
+### Transcendental Functions
+`sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` and `expt` all accept complex arguments, on the principal branch with C99 Annex G branch cuts. `floor`, `ceiling`, `truncate`, `round`, `cbrt` and `abs` are real-domain only and signal a catchable type error on a complex (use `magnitude` for `|z|`).
+
+```scheme
+(sqrt (make-rectangular -1.0 0.0))    ; => 0.0+1.0i
+(exp (make-rectangular 0.0 3.14159))  ; => -1.0+0.0i (approximately)
+(expt (make-rectangular 0.0 1.0)
+      (make-rectangular 0.0 1.0))     ; => 0.20787957635076193 (i^i)
+```
 
 ```scheme
 (define z1 (make-rectangular 3.0 4.0))
@@ -4398,12 +4414,26 @@ Eshkol behavior can be configured via environment variables. None are required �
 | `ESHKOL_MAX_STACK` | (default) | Maximum stack depth |
 | `ESHKOL_MAX_TENSOR_ELEMS` | (default) | Maximum tensor element count |
 | `ESHKOL_MAX_STRING_LEN` | (default) | Maximum string length |
-| `ESHKOL_ENFORCE_LIMITS` | on for limit API | Request runtime interrupts on hard heap/timeout limits |
+| `ESHKOL_VM_MAX_INSN` | 10000000 | Bytecode-VM runaway-instruction guard; `0` = unlimited |
+| `ESHKOL_ENFORCE_LIMITS` | on | Terminate the process on a hard limit; when off, the breach is recorded and warned about and the program continues |
 | `ESHKOL_LIMIT_WARNINGS` | on | Emit soft-limit warnings |
 
 Malformed runtime-limit values are ignored and preserve the default limit. Size
 variables accept optional `K`, `M`, or `G` suffixes, with an optional trailing
 `B`.
+
+Each ceiling is opt-in: it binds a run only when that run sets the variable
+(or sets the matching `ESHKOL_LIMIT_ACTIVE_*` bit before `eshkol_set_limits()`).
+The defaults above are the values a limit takes when turned on, not ceilings
+applied to every program.
+
+Exceeding an active hard limit prints one `eshkol: fatal: …` line to stderr naming the
+limit, the ceiling and the variable that set it, and exits with a status
+specific to that limit — `120` heap, `121` stack, `122` tensor elements, `123`
+string length, `124` execution timeout (matching GNU coreutils `timeout(1)`),
+`125` VM instructions. See `ESHKOL_EXIT_LIMIT_*` in
+`inc/eshkol/core/resource_limits.h` and
+[runtime/environment-variables.md](reference/runtime/environment-variables.md).
 
 ### Logging & Debug
 
@@ -7087,9 +7117,9 @@ for composability and custom pipelines.
 
 ## Implementation Statistics
 
-**Codebase Size**: ~322,000 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 42,025 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — thin dispatcher over thirteen per-domain modules (~22,300 lines total)
+**Codebase Size**: ~329,100 lines of production C++
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 42,969 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — thin dispatcher over thirteen per-domain modules (~22,400 lines total)
 **Compiler Modules**: 21 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

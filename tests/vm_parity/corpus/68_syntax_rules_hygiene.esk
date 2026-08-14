@@ -1,0 +1,137 @@
+; SW-30 class-kill: syntax-rules HYGIENE for bindings introduced by the
+; template (R7RS 4.3.2).
+;
+; This file is the shape 61_multi_macro_batch.esk said it could not carry:
+;
+;   "NOT covered here, deliberately: syntax-rules HYGIENE for a binding
+;    introduced by the template.  Both engines are wrong and they disagree
+;    with each other ... so it cannot be pinned as a parity row yet"
+;
+; Two independent defects made that true, and both are fixed:
+;
+;   1. The VM's column was not a hygiene defect at all.  `define-syntax`
+;      compiled to NOTHING, while every top-level and body driver POPs after
+;      a form that bound nothing.  That POP therefore discarded a LIVE value
+;      and shifted every later local down one slot, so the template's `let`
+;      wrote slot k while the body read slot k+1.  (hyg 1) printed 1 instead
+;      of 101 and a same-named user variable read back as ().  Fixed by
+;      emitting OP_NIL, exactly as (provide)/(export) already did.
+;
+;   2. NEITHER engine renamed template-introduced binders, so a template's
+;      `tmp` captured a caller's `tmp` passed in through a pattern variable.
+;      Both expanders now alpha-rename the identifiers a template BINDS
+;      itself, scope by scope, before any caller code is substituted in.
+;
+; Every row below is a value both engines now produce and R7RS requires.
+;
+; STILL NOT HYGIENIC, on BOTH engines identically (see the SW-30 ledger
+; entry): referential transparency for a template's FREE identifiers.  A
+; free identifier in a template is resolved at the USE site, not at the
+; macro-definition site, because neither engine captures a macro-definition
+; environment.  That case is deliberately absent here rather than pinned at
+; a wrong value.
+
+; ── 1. A template-introduced binding survives at all ──────────────────────
+(define-syntax hyg
+  (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e)))))
+
+(display (hyg 1)) (newline)                  ; 101
+
+; ── 2. ...and does not corrupt a same-named user variable ─────────────────
+(define tmp 7)
+(display (hyg 1)) (newline)                  ; 101
+(display tmp) (newline)                      ; 7   (untouched)
+
+; ── 3. The capture case: the operand IS the colliding name ────────────────
+; Unhygienic expansion gives (let ((tmp 100)) (+ tmp tmp)) = 200.
+(display (hyg tmp)) (newline)                ; 107
+
+; ── 4. A use-site binding of the same name is not captured either ─────────
+(display (let ((tmp 99)) (hyg tmp))) (newline)   ; 199
+
+; ── 5. Nested macro invocation, both templates binding the same name ──────
+(define-syntax mac-a
+  (syntax-rules () ((_ x) (let ((t 10)) (+ t x)))))
+(define-syntax mac-b
+  (syntax-rules () ((_ y) (let ((t 200)) (+ t (mac-a y))))))
+(display (mac-b 1)) (newline)                ; 211
+
+; ── 6. Recursive macro whose template binds, with a colliding global ──────
+(define-syntax my-or
+  (syntax-rules ()
+    ((_ a) a)
+    ((_ a b ...) (let ((t a)) (if t t (my-or b ...))))))
+(define t 42)
+(display (my-or #f #f t)) (newline)          ; 42
+(display (my-or #f t)) (newline)             ; 42
+
+; ── 7. Template-introduced lambda parameter ───────────────────────────────
+(define-syntax lam
+  (syntax-rules () ((_ e) ((lambda (q) (* q 2)) e))))
+(define q 21)
+(display (lam q)) (newline)                  ; 42
+
+; ── 8. let* binders are sequential and still fresh ────────────────────────
+(define-syntax ls
+  (syntax-rules () ((_ e) (let* ((a 1) (b (+ a 1))) (+ a b e)))))
+(define a 100)
+(define b 200)
+(display (ls a)) (newline)                   ; 103
+(display (ls b)) (newline)                   ; 203
+
+; ── 9. letrec: the binder is visible in its own init, and still fresh ─────
+(define-syntax lr
+  (syntax-rules ()
+    ((_ e) (letrec ((f (lambda (n) (if (= n 0) e (f (- n 1)))))) (f 3)))))
+(define f 9)
+(display (lr 7)) (newline)                   ; 7
+(display (lr f)) (newline)                   ; 9
+
+; ── 10. Nested template scopes: the inner binder shadows the outer one ────
+(define-syntax nest
+  (syntax-rules () ((_ e) (let ((v 1)) (let ((v 2)) (+ v e))))))
+(define v 50)
+(display (nest v)) (newline)                 ; 52
+
+; ── 11. Two invocations must not share a binding ──────────────────────────
+(display (hyg (hyg 1))) (newline)            ; 201
+
+; ── 12. Named let: loop name and loop variables are all fresh ─────────────
+(define-syntax nl
+  (syntax-rules ()
+    ((_ e) (let loop ((i 0) (acc 0))
+             (if (= i 3) (+ acc e) (loop (+ i 1) (+ acc i)))))))
+(define i 100)
+(define acc 200)
+(display (nl i)) (newline)                   ; 103
+(display (nl acc)) (newline)                 ; 203
+
+; ── 13. A quoted symbol is DATA and keeps its literal name ────────────────
+; The renamer must not leak its gensym into the program's OUTPUT.
+(define-syntax qm
+  (syntax-rules () ((_ e) (let ((z 5)) (list 'z z e)))))
+(define z 9)
+(display (qm z)) (newline)                   ; (z 5 9)
+
+; ── 14. ...and the same holds through quasiquote/unquote ──────────────────
+(define-syntax qqm
+  (syntax-rules () ((_ e) (let ((z 5)) `(z ,z ,e)))))
+(display (qqm z)) (newline)                  ; (z 5 9)
+
+; ── 15. set! on a pattern variable: the classic swap! ─────────────────────
+; The native expander substituted a set! VALUE but never its TARGET (the
+; target is a bare char*, not an AST node), so this template used to fail to
+; compile with "set!: undefined variable 'a'".  With the target substituted
+; and `tmp` renamed, the swap works even when an operand is named `tmp`.
+(define-syntax swap!
+  (syntax-rules () ((_ x y) (let ((tmp x)) (set! x y) (set! y tmp)))))
+(define s1 1)
+(define s2 2)
+(swap! s1 s2)
+(display s1) (newline)                       ; 2
+(display s2) (newline)                       ; 1
+
+(define w 5)
+(swap! w tmp)                                ; operand collides with the binder
+(display w) (newline)                        ; 7
+(display tmp) (newline)                      ; 5

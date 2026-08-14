@@ -1,0 +1,145 @@
+;;; higher_order_shadowing_vm_test.esk
+;;;
+;;; VM-engine half of tests/codegen/higher_order_shadowing_test.esk, held to
+;;; the VM mini-compiler's verified subset (no `remove` there).
+;;;
+;;; The VM's manifestation of the ESH-0070-class defect was in upvalue
+;;; capture: vm_compiler.c searched the enclosing-scope chain OUTERMOST
+;;; first, so a nested lambda inside a function whose parameter shadowed a
+;;; same-named top-level define captured the TOP-LEVEL binding (top-level
+;;; defines are root-chunk slots). `(define (go fn lst) (for-each (lambda
+;;; (x) (fn x)) lst))` called the global fn. The direct `(map fn lst)` form
+;;; resolved correctly on the VM, so both shapes are pinned here.
+
+(define fn (lambda (x) (* x 100)))
+(define cap-k 100)
+(define gn (lambda (x) (* x cap-k)))
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      #t
+      (begin
+        (display "FAIL: ") (display name)
+        (display " got ") (display got)
+        (display " want ") (display want)
+        (set! failures (+ failures 1))
+        #f)))
+
+;; 1. map with a shadowing parameter
+(define (apply-map fn lst) (map fn lst))
+(check "map-param-shadow"
+       (apply-map (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+;; 2. map with a shadowing parameter of a capturing global
+(define (apply-map-cap gn lst) (map gn lst))
+(check "map-param-shadow-capturing-global"
+       (apply-map-cap (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+;; The nested-lambda-captures-a-shadowing-parameter shapes (map with an
+;; inner lambda calling fn; for-each whose lambda captures fn) are the VM's
+;; OTHER manifestation of this class: the upvalue resolver walked the
+;; enclosing-scope chain outermost-first, so the lambda captured the
+;; TOP-LEVEL fn. That walk-order fix ships separately (read + set! paths,
+;; with tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the
+;; native halves of those shapes stay pinned in
+;; tests/codegen/higher_order_shadowing_test.esk.
+
+;; 5. filter with a shadowing predicate parameter
+(define (apply-filter fn lst) (filter fn lst))
+(check "filter-param-shadow"
+       (apply-filter (lambda (x) (> x 1)) (list 1 2 3))
+       (list 2 3))
+
+;; 6. fold-left with a shadowing parameter
+(define (apply-fold fn lst) (fold-left fn 0 lst))
+(check "fold-left-param-shadow"
+       (apply-fold (lambda (acc x) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 7. fold-right with a shadowing parameter
+(define (apply-fold-right fn lst) (fold-right fn 0 lst))
+(check "fold-right-param-shadow"
+       (apply-fold-right (lambda (x acc) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 8. reduce with a shadowing parameter
+(define (apply-reduce fn lst) (reduce fn 0 lst))
+(check "reduce-param-shadow"
+       (apply-reduce (lambda (acc x) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 9. let-bound shadow
+(define (let-shadow-map lst)
+  (let ((fn (lambda (x) (+ x 10))))
+    (map fn lst)))
+(check "map-let-shadow" (let-shadow-map (list 1 2 3)) (list 11 12 13))
+
+;; 10. derivative with a shadowing parameter (SW-01) — the VM resolved this
+;;     correctly already; pinned so both engines stay in agreement
+(define (sqf x) (* x x))
+(define (apply-deriv sqf x) (derivative sqf x))
+(check "derivative-param-shadow"
+       (apply-deriv (lambda (y) (* 2 y)) 3.0)
+       2.0)
+(check "derivative-global-static" (derivative sqf 3.0) 6.0)
+
+;; 11. Non-shadowed globals unchanged
+(check "map-global-static" (map fn (list 1 2 3)) (list 100 200 300))
+(check "map-capturing-global-static" (map gn (list 1 2 3)) (list 100 200 300))
+(check "reduce-global-static" (reduce + 0 (list 1 2 3)) 6)
+
+;; 12. let-scoped rebinding of an arithmetic operator (SW-24 class)
+(define (let-rebound-star)
+  (let ((* (lambda (a b) (- a b))))
+    (* 10 4)))
+(check "let-rebound-operator" (let-rebound-star) 6)
+
+;; 13. Interaction with first-class builtins. On the VM a builtin is a value
+;;     by construction (native dispatch table), so this side needs no
+;;     wrapper synthesis — which is exactly why it is worth pinning: the two
+;;     engines must agree that a local binding of a builtin NAME wins, and
+;;     that an unshadowed builtin name still denotes the builtin.
+(define (let-shadow-car lst)
+  (let ((car (lambda (x) 42)))
+    (map car lst)))
+(check "map-let-shadow-builtin" (let-shadow-car (list 1 2 3)) (list 42 42 42))
+
+(define (apply-map-car car lst) (map car lst))
+(check "map-param-shadow-builtin"
+       (apply-map-car (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+(define (apply-filter-pair? pair? lst) (filter pair? lst))
+(check "filter-param-shadow-builtin"
+       (apply-filter-pair? (lambda (x) (> x 1)) (list 1 2 3))
+       (list 2 3))
+
+(define (call2 f a b) (f a b))
+(define (pass-shadowed-builtin remainder) (call2 remainder 7 3))
+(check "value-param-shadow-builtin"
+       (pass-shadowed-builtin (lambda (a b) (+ a b)))
+       10)
+
+(define (let-shadow-value)
+  (let ((remainder (lambda (a b) (* a b))))
+    (call2 remainder 7 3)))
+(check "value-let-shadow-builtin" (let-shadow-value) 21)
+
+(check "value-builtin-unshadowed" (call2 remainder 7 3) 1)
+(check "map-builtin-unshadowed"
+       (map car (list (list 1 2) (list 3 4)))
+       (list 1 3))
+
+;; The SW-24 exact shape (top-level + rebind, isolated) lives in
+;; tests/codegen/operator_rebinding_test.esk, which runs on BOTH engines:
+;; rebinding + after this file's earlier uses of + would trip the separate,
+;; pre-existing rebind-after-use hoisting divergence on the native engine,
+;; and the language-coverage sweep runs every tests/codegen/*.esk natively.
+
+(if (= failures 0)
+    (display "PASS: higher-order shadowing (vm)")
+    (begin (display "TOTAL FAILURES: ") (display failures)))

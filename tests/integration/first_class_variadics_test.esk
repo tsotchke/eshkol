@@ -1,0 +1,146 @@
+;;; first_class_variadics_test.esk
+;;;
+;;; SW-27 class-kill test: a REST-ARG (variadic) procedure used as a
+;;; FIRST-CLASS VALUE must behave exactly like the same procedure in call
+;;; position.
+;;;
+;;; A rest-arg procedure is called through a different ABI from a fixed-arity
+;;; one: the closure dispatcher conses the caller's surplus arguments into a
+;;; list and passes `fixed_params` values plus that list. It selects that path
+;;; from the closure's metadata — the variadic bit of `packed_info` and, for
+;;; the capture-less case, the `input_arity` byte it reads back as the FIXED
+;;; parameter count.
+;;;
+;;; Every function-as-value site used to pack a plain arity and no variadic
+;;; bit, so a rest-arg procedure referenced as a value was dispatched as if it
+;;; were fixed-arity and its rest parameter received a bare argument instead of
+;;; a list. The failure was usually SILENT:
+;;;
+;;;   (h append '(1) '(2))       => 1          ; the first argument, no error
+;;;   (h iota 3 10)              => (0 1 2)    ; the rest argument ignored
+;;;   (h make-list 3 7)          => raises "cdr: argument is not a pair"
+;;;   (h string-copy "abc")      => SIGSEGV under AOT
+;;;
+;;; THE ORACLE IS DIFFERENTIAL, deliberately. Each check compares the value
+;;; obtained THROUGH a higher-order function against the value obtained from
+;;; the identical call in call position, in the same program. Nothing here
+;;; hard-codes what `iota` or `json-get` ought to return, so the test cannot
+;;; pass by agreeing with a wrong expectation, and it keeps pinning the
+;;; property if those procedures' semantics legitimately change.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; The higher-order call sites. `f` is a parameter, so its value must carry
+;; the procedure's real shape — there is no name for the codegen to inspect.
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+
+;; ---------------------------------------------------------------------
+;; Stdlib rest-arg procedures — zero fixed parameters.
+;; ---------------------------------------------------------------------
+(check "append 2 args"
+       (equal? (h2 append (list 1) (list 2))
+               (append (list 1) (list 2))))
+(check "append 3 args"
+       (equal? (h3 append (list 1) (list 2) (list 3))
+               (append (list 1) (list 2) (list 3))))
+(check "append 1 arg"
+       (equal? (h1 append (list 1 2))
+               (append (list 1 2))))
+(check "make-list with fill"
+       (equal? (h2 make-list 3 7) (make-list 3 7)))
+(check "make-list without fill"
+       (equal? (h1 make-list 2) (make-list 2)))
+
+;; ---------------------------------------------------------------------
+;; Stdlib rest-arg procedures — one fixed parameter.
+;; ---------------------------------------------------------------------
+(check "iota, rest omitted"
+       (equal? (h1 iota 4) (iota 4)))
+(check "iota, rest supplied"
+       (equal? (h2 iota 3 10) (iota 3 10)))
+(check "string-copy, bounds omitted"
+       (equal? (h1 string-copy "abc") (string-copy "abc")))
+(check "string-copy, bounds supplied"
+       (equal? (h3 string-copy "abcdef" 1 3) (string-copy "abcdef" 1 3)))
+(check "partial"
+       (equal? ((h2 partial + 10) 5) ((partial + 10) 5)))
+
+;; ---------------------------------------------------------------------
+;; Stdlib rest-arg procedure — two fixed parameters.
+;; ---------------------------------------------------------------------
+(check "json-get with default"
+       (equal? (h3 json-get (list) "k" 42) (json-get (list) "k" 42)))
+
+;; ---------------------------------------------------------------------
+;; USER rest-arg procedures, one per fixed-parameter count. These are what
+;; make the check about the mechanism rather than about the stdlib: the same
+;; packing has to be right for a procedure the compiler has never seen before.
+;; ---------------------------------------------------------------------
+(define (u0 . xs) xs)
+(define (u1 a . xs) (cons a xs))
+(define (u2 a b . xs) (list a b xs))
+
+(check "user rest-arg, 0 fixed"
+       (equal? (h3 u0 1 2 3) (u0 1 2 3)))
+(check "user rest-arg, 0 fixed, empty rest"
+       (equal? (h1 u0 1) (u0 1)))
+(check "user rest-arg, 1 fixed"
+       (equal? (h3 u1 1 2 3) (u1 1 2 3)))
+(check "user rest-arg, 1 fixed, empty rest"
+       (equal? (h1 u1 1) (u1 1)))
+(check "user rest-arg, 2 fixed"
+       (equal? (h4 u2 1 2 3 4) (u2 1 2 3 4)))
+(check "user rest-arg, 2 fixed, empty rest"
+       (equal? (h2 u2 1 2) (u2 1 2)))
+
+;; The rest parameter must actually be a LIST, not a bare argument. This is
+;; the property whose absence made `(h append '(1) '(2))` return `1`: the
+;; dispatcher handed the second argument straight to `lists` instead of
+;; consing it into one.
+(check "rest parameter is a list, not a bare argument"
+       (list? (h3 u0 1 2 3)))
+(check "rest parameter length is the surplus count"
+       (= (length (h4 u0 1 2 3 4)) 4))
+
+;; ---------------------------------------------------------------------
+;; Builtin variadics keep working — they take a different route (the
+;; variadic-identity wrapper and the arithmetic wrapper) and must not have
+;; been disturbed.
+;; ---------------------------------------------------------------------
+(check "list as a value"       (equal? (h3 list 1 2 3) (list 1 2 3)))
+(check "+ as a value"          (equal? (h2 + 1 2) (+ 1 2)))
+(check "string-append as a value"
+       (equal? (h2 string-append "a" "b") (string-append "a" "b")))
+
+;; Stored and returned, not only passed — the other two halves of first-class.
+(define stored-appender append)
+(check "rest-arg procedure stored in a variable"
+       (equal? (h2 stored-appender (list 1) (list 2))
+               (append (list 1) (list 2))))
+
+(define (appender-factory) append)
+(check "rest-arg procedure returned from a procedure"
+       (equal? (h2 (appender-factory) (list 1) (list 2))
+               (append (list 1) (list 2))))
+
+(check "rest-arg procedure read out of a list"
+       (equal? (h2 (car (list append)) (list 1) (list 2))
+               (append (list 1) (list 2))))
+
+(if (= failures 0)
+    (begin (display "PASS: first-class variadics — 0 failures") (newline))
+    (begin (display "FAIL: first-class variadics — ")
+           (display failures)
+           (display " failure(s)")
+           (newline)))

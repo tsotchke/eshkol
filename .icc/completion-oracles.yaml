@@ -56,6 +56,32 @@ oracles:
         label: Codegen / runtime / type-checker production paths are real
         action: wire_real_path_or_classify_stub
 
+      # ── Silent-wrong flaw gate (2026-08-12) ──────────────────────────
+      # Every other criterion in this oracle certifies that something
+      # WORKS. None of them can certify that nothing SILENTLY LIES: a
+      # defect that returns a wrong value with no diagnostic and exit 0
+      # is invisible to a probe that only asserts its own happy path.
+      # That is exactly how a release cut reached readiness 100 while
+      # carrying an AD operator that differentiates the wrong function,
+      # a `map` that ignores a shadowing binding, and seven documented
+      # resource limits that are never enforced.
+      #
+      # `.icc/silent-wrong-ledger.yaml` is the enumeration of that class;
+      # `scripts/gate_no_silent_wrong.py` grades it and emits this event.
+      # The gate fails closed — a missing or unparseable ledger is FAIL,
+      # because absence of the ledger is not evidence of absence of the
+      # defects. An entry leaves the gate only via a terminal status
+      # (closed / fixed / guarded) backed by a re-measurement SHA or a
+      # committed test, or via a waiver with an owner, a reason and an
+      # unexpired date. Nothing closes by bare assertion.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["no_open_silent_wrong"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No open, unwaived SILENT-WRONG flaw ships: every entry in .icc/silent-wrong-ledger.yaml whose bucket is SILENT-WRONG (or which is IN-FLIGHT but silent_wrong_class) is closed/fixed/guarded with evidence, or carries an owner/reason/unexpired waiver — wrong values, wrong derivatives and wrong memory outcomes with no diagnostic and exit 0 are tag-blocking'
+        action: python3 scripts/gate_no_silent_wrong.py
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
@@ -190,6 +216,20 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["ad_capture_global_shadow_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'AD capture scoping: a differentiand lambda capturing its enclosing function''s parameter is never substituted by a same-named top-level global — and the cached (-r AOT) and uncached (in-process JIT) routes produce byte-identical output (task #114)'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["higher_order_shadowing_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Lexical scope in higher-order builtins: map/for-each/filter/fold/reduce/remove call the shadowing binding (parameter or local), never a same-named top-level procedure — static procedure-operand resolution declines when locally shadowed, and the VM upvalue search is innermost-first; gated on JIT, AOT, and the standalone VM (ESH-0070 class)'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["linear_solve_full_f64_oracle"]
           event_values: ["PASS"]
         severity: high
@@ -208,6 +248,38 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: 'self-differentiating on every substrate: `gradient` on the bytecode VM (arity-resolved forward-mode dual — direct/wrapped/curried, N-arg spread, arity-1 whole-vector, non-polynomial) is 25/25 on the VM and byte-identical to native across native/vm-src/vm-eskb; the public low-level reverse-mode AD tape surface (incl. ad-pow) is green on JIT, AOT and the VM'
+        action: ./scripts/run_icc_smoke.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # THE VALUE-POSITION AXIS (scripts/run_value_position_sweep.py).
+      #
+      # Builtins are lowered inline at the call site; referencing one as a
+      # VALUE goes through different codegen. Four defects have been found
+      # living there while call position was correct — LE-01 (no value
+      # representation at all), SW-27 (rest-arg procedures lost their
+      # variadic flag, silently), SW-31, SW-35 (rounding returned a
+      # rational's heap address). None was caught by any criterion above,
+      # and structurally none could be: the differential corpus compares
+      # execution AXES against each other, and these defects are wrong
+      # identically on every axis.
+      #
+      # The sweep's oracle is differential BY CONSTRUCTION — call position
+      # versus value position for the same call in the same program — so it
+      # asserts no expected values and cannot certify a wrong answer.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["value_position_sweep"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'the VALUE-POSITION axis is clean: every builtin the manifest can type answers the same referenced as a value — passed to a higher-order procedure, stored, returned, reached through a builtin combinator — as it does in call position, on every execution axis'
+        action: python3 scripts/run_value_position_sweep.py
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["value_position_axis"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'the value-position axis probe is wired into the smoke harness, so the blind spot that produced SW-27/SW-31/SW-34/SW-35 one at a time is gated rather than rediscovered'
         action: ./scripts/run_icc_smoke.sh
 
       # ─────────────────────────────────────────────────────────────
@@ -623,6 +695,18 @@ oracles:
   - name: v1.3-evolve
     aliases: [v1.3, release-1.3, evolve]
     requires:
+      # The release-line mirror of the compiler-readiness silent-wrong gate.
+      # A v1.3.x tag is a promise to consumers about answers, not about
+      # features, so the flaw ledger gates the release target too. See the
+      # long comment on the same criterion in eshkol-compiler-readiness.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["no_open_silent_wrong"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No open, unwaived SILENT-WRONG flaw ships in the v1.3 line (.icc/silent-wrong-ledger.yaml graded by scripts/gate_no_silent_wrong.py; fails closed)'
+        action: python3 scripts/gate_no_silent_wrong.py
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["string_interpolation_works"]

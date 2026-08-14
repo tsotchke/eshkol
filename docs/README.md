@@ -60,7 +60,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 64-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 956 rows (581 `vm-supported`, 44 `native-only-justified`, 331 `gap`), differential 140/140
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 956 rows (581 `vm-supported`, 44 `native-only-justified`, 331 `gap`), differential 184/184
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`
@@ -178,7 +178,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 ## Testing and Quality Gates
 
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 140/140
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 180/181
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

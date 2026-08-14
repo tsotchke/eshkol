@@ -76,7 +76,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | tail_call_codegen.cpp | 503 | TCO transformation |
 | complex_codegen.cpp | 499 | Complex number ops (Smith's formula) |
 
-The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 22,300 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 22,400 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
 
 Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 195,600 lines indexed.
 

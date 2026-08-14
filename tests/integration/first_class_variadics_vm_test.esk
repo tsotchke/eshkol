@@ -1,0 +1,71 @@
+;;; first_class_variadics_vm_test.esk
+;;;
+;;; SW-27 class-kill test, VM engine. Companion to
+;;; tests/integration/first_class_variadics_test.esk, which covers the native
+;;; engine (JIT + AOT).
+;;;
+;;; The VM's closures carry their rest-arg shape in the closure object itself
+;;; and its CALL opcode consumes it, so a rest-arg procedure is a value there
+;;; by construction and the SW-27 defect class does not exist on this engine.
+;;; This file PINS that: if the VM ever grows a value representation that
+;;; drops the variadic flag, these checks catch it on the same day.
+;;;
+;;; Scope is deliberately USER-DEFINED rest-arg procedures. The stdlib
+;;; rest-arg procedures the native file also exercises (`iota`, `json-get`,
+;;; `partial`, `make-list`, …) are not all on the VM's surface — that is the
+;;; standing parity-ratchet gap in tests/vm_parity/SURFACE_BASELINE.tsv, a
+;;; different defect, and it is not smuggled into this test's scope. The
+;;; mechanism under test — does a rest parameter receive a LIST when the
+;;; procedure is reached through a value — is fully exercised by the user
+;;; definitions below, which need no stdlib surface at all.
+;;;
+;;; The oracle is differential, as on the native side: each check compares the
+;;; value obtained THROUGH a higher-order function against the identical call
+;;; in call position. Output is one pre-assembled string per check, because
+;;; the VM's `display` appends a newline per call.
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (display (string-append "PASS: " name))
+      (begin (set! failures (+ failures 1))
+             (display (string-append "FAIL: " name)))))
+
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+
+(define (u0 . xs) xs)
+(define (u1 a . xs) (cons a xs))
+(define (u2 a b . xs) (list a b xs))
+
+(check "user rest-arg, 0 fixed"              (equal? (h3 u0 1 2 3) (u0 1 2 3)))
+(check "user rest-arg, 0 fixed, empty rest"  (equal? (h1 u0 1) (u0 1)))
+(check "user rest-arg, 1 fixed"              (equal? (h3 u1 1 2 3) (u1 1 2 3)))
+(check "user rest-arg, 1 fixed, empty rest"  (equal? (h1 u1 1) (u1 1)))
+(check "user rest-arg, 2 fixed"              (equal? (h4 u2 1 2 3 4) (u2 1 2 3 4)))
+(check "user rest-arg, 2 fixed, empty rest"  (equal? (h2 u2 1 2) (u2 1 2)))
+
+;; The rest parameter must be a LIST, not a bare argument — the property whose
+;; absence made the native side answer the first argument instead of the list.
+(check "rest parameter is a list"            (list? (h3 u0 1 2 3)))
+(check "rest parameter length"               (= (length (h4 u0 1 2 3 4)) 4))
+
+;; append is on the VM surface and is rest-arg there too.
+(check "append as a value"
+       (equal? (h2 append (list 1) (list 2)) (append (list 1) (list 2))))
+
+;; Stored and returned, not only passed.
+(define stored-u1 u1)
+(check "stored in a variable"                (equal? (h3 stored-u1 1 2 3) (u1 1 2 3)))
+
+(define (u1-factory) u1)
+(check "returned from a procedure"           (equal? (h3 (u1-factory) 1 2 3) (u1 1 2 3)))
+
+(check "read out of a list"                  (equal? (h3 (car (list u1)) 1 2 3) (u1 1 2 3)))
+
+(if (= failures 0)
+    (display "PASS: first-class variadics on the VM — 0 failures")
+    (display "FAIL: first-class variadics on the VM"))

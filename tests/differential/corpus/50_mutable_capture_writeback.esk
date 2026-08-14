@@ -1,0 +1,73 @@
+;; SW-25: a `set!` on a captured parameter (or let*/letrec binding) must write
+;; back through the shared binding cell on every axis, not into a private
+;; by-value copy. Filed reproducer: `(define (f n) ((lambda () (set! n (+ n
+;; 1)))) n)` answered 5 on the bytecode VM and 6 natively.
+;;
+;; The native axes are the reference here; the VM axes are compared against
+;; each other (see tests/differential/README.md) and the VM-vs-native
+;; assertion for the same programs lives in
+;; tests/vm_parity/corpus/62_mutable_capture_writeback.esk.
+;;
+;; A rest parameter (`(define (f . xs) ...)`) is deliberately NOT exercised
+;; here: mutating a captured REST parameter does not write back on the native
+;; axes, which is a distinct, native-side instance of the same family and is
+;; filed separately rather than baked into a gate.
+(define (d1 n) ((lambda () (set! n (+ n 1)))) n)
+(display (d1 5)) (newline)
+
+(define (s1 n) (let ((b (lambda () (set! n (* n 2))))) (b) (b) n))
+(display (s1 3)) (newline)
+
+(define (d3 n) ((lambda () ((lambda () ((lambda () (set! n (+ n 100)))))))) n)
+(display (d3 1)) (newline)
+
+(define (share n)
+  (let ((inc (lambda () (set! n (+ n 1))))
+        (get (lambda () n)))
+    (inc) (inc) (inc) (get)))
+(display (share 0)) (newline)
+
+(define (loopy n)
+  (let lp ((i 0))
+    (if (< i 5) (begin ((lambda () (set! n (+ n i)))) (lp (+ i 1))) n)))
+(display (loopy 0)) (newline)
+
+(define (make-counter n) (lambda () (set! n (+ n 1)) n))
+(define counter-a (make-counter 10))
+(counter-a)
+(counter-a)
+(display (counter-a)) (newline)
+
+(define c1 (make-counter 0))
+(define c2 (make-counter 0))
+(c1)
+(c1)
+(display (c1)) (newline)
+(display (c2)) (newline)
+
+(define anon (lambda (n) ((lambda () (set! n (- n 1)))) n))
+(display (anon 9)) (newline)
+
+(define (ls v) (let* ((x v)) ((lambda () (set! x (+ x 7)))) x))
+(display (ls 1)) (newline)
+
+(define (ls2 v) (let* ((x v) (f (lambda () (set! x (* x 3))))) (f) x))
+(display (ls2 2)) (newline)
+
+(define (lr v) (letrec ((x v)) ((lambda () (set! x (+ x 3)))) x))
+(display (lr 1)) (newline)
+
+(define (lrs v) (letrec* ((x v)) ((lambda () (set! x (+ x 4)))) x))
+(display (lrs 1)) (newline)
+
+;; controls
+(define (plain a) ((lambda (t) (+ a t)) 4))
+(display (plain 6)) (newline)
+
+(define (direct n) (set! n (+ n 1)) n)
+(display (direct 41)) (newline)
+
+(define shadowed 100)
+(define (bump shadowed) ((lambda () (set! shadowed (+ shadowed 1)))) shadowed)
+(display (bump 5)) (newline)
+(display shadowed) (newline)

@@ -1,0 +1,33 @@
+;;; operator_rebinding_test.esk — SW-24 (ESH-0070 class)
+;;;
+;;; A user rebinding of an arithmetic builtin must shadow the builtin
+;;; dispatch. The VM's opcode fast paths dispatched on the head SYMBOL
+;;; alone, so
+;;;
+;;;   (define + (lambda (a b) (* a b)))
+;;;   (+ 3 4)
+;;;
+;;; still emitted OP_ADD and produced 7 (tests/parser/test_function_shadowing.esk
+;;; printed its own FAIL on the VM while sitting greenlit on the engine-parity
+;;; baseline). Fixed by vm_head_user_rebound() in vm_compiler.c: a head symbol
+;;; bound by USER code (any scope-chain local, or a root slot at or above the
+;;; user-locals watermark) compiles as a plain call; preamble/prelude bindings
+;;; below the watermark keep the fast paths.
+;;;
+;;; This file holds the ISOLATED shape: + is rebound before any other use.
+;;; Rebinding + after earlier uses trips a distinct, pre-existing
+;;; rebind-after-use divergence (native hoists top-level lambda defines;
+;;; the VM rebinds sequentially), which is not this test's subject.
+
+(define (let-rebound-star)
+  (let ((* (lambda (a b) (- a b))))
+    (* 10 4)))
+(define lr (let-rebound-star))
+
+(define + (lambda (a b) (* a b)))
+(define tp (+ 3 4))
+
+(if (equal? (list lr tp) (list 6 12))
+    (display "PASS: operator rebinding shadows builtin dispatch")
+    (begin (display "FAIL: got ") (display (list lr tp)) (display " want (6 12)")))
+(newline)

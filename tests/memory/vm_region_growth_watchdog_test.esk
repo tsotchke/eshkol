@@ -1,0 +1,34 @@
+;;; tests/memory/vm_region_growth_watchdog_test.esk — SW-14 fixture, gated by
+;;; vm_region_growth_watchdog_test.sh.
+;;;
+;;; A per-iteration `(with-region ...)` around a body that allocates and then
+;;; drops everything it allocated. This is the shape the memory model
+;;; documents as the way to keep a resident loop flat
+;;; (docs/reference/runtime/memory-model.md), and it IS flat natively.
+;;;
+;;; On the bytecode VM it is not flat, and nothing about the program says so:
+;;; the answer is right, the exit status is 0, and RSS climbs until the host
+;;; gives out. Measured at the branch point, this fixture peaks at the same
+;;; RSS with the `with-region` wrapper as without it — the form reclaims
+;;; nothing there.
+;;;
+;;; The gate around this file asserts the interim guard: that the growth is
+;;; NAMED. Keep the allocation volume high enough to cross a 64 MB budget
+;;; quickly and low enough to finish fast.
+(define (scratch-step k)
+  (with-region ('step 65536)
+    (let loop ((i 0) (acc '()))
+      (if (< i 120)
+          (loop (+ i 1) (cons (* i k) acc))
+          (length acc)))))
+
+(define (drive n total)
+  (if (= n 0)
+      total
+      (drive (- n 1) (+ total (scratch-step n)))))
+
+;; 4000 iterations x 120 conses: enough arena to cross a 64 MB budget on every
+;; supported host, and the sum is a pure function of the loop bounds so the
+;; printed answer pins that the guard changed no behaviour.
+(display (drive 4000 0))
+(newline)

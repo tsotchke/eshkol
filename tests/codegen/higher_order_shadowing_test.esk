@@ -1,0 +1,206 @@
+;;; higher_order_shadowing_test.esk
+;;;
+;;; Higher-order builtins must respect shadowing bindings (ESH-0070 class).
+;;;
+;;; A function parameter (or local binding) that shadows a same-named
+;;; top-level procedure must be the procedure the higher-order builtin
+;;; calls. The static procedure-operand resolution (resolveLambdaFunction,
+;;; map's compile-time closure detection, remove's predicate lookup) used to
+;;; consult the global function_table / unscoped <name>_func entries without
+;;; checking local shadowing, so
+;;;
+;;;   (define fn (lambda (x) (* x 100)))
+;;;   (define (apply-map fn lst) (map fn lst))
+;;;   (apply-map (lambda (x) (+ x 10)) '(1 2 3))
+;;;
+;;; silently returned (100 200 300) instead of (11 12 13). reduce emitted a
+;;; call to the shadowed global with the wrong arity (module verification
+;;; failure), and remove used the shadowed global as its predicate.
+;;;
+;;; Every case below runs against a top-level `fn` that multiplies by 100;
+;;; the shadowing binding always adds 10, so a wrong resolution is loud.
+
+;; The decoy: every shadowing binding below must beat this.
+(define fn (lambda (x) (* x 100)))
+
+;; A capturing decoy for map's compile-time closure branch: it identifies
+;; the mapped procedure from the GLOBAL <name>_func entry when the global
+;; lambda has captures, which is a second, independent wrong-substitution
+;; site from resolveLambdaFunction.
+(define cap-k 100)
+(define gn (lambda (x) (* x cap-k)))
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      #t
+      (begin
+        (display "FAIL: ") (display name)
+        (display " got ") (display got)
+        (display " want ") (display want) (newline)
+        (set! failures (+ failures 1))
+        #f)))
+
+;; 1. map with a shadowing parameter (was: used global fn => (100 200 300))
+(define (apply-map fn lst) (map fn lst))
+(check "map-param-shadow"
+       (apply-map (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+;; 2. map with a shadowing parameter of a CAPTURING global (map's
+;;    compile-time closure branch; was: used global gn => (100 200 300))
+(define (apply-map-cap gn lst) (map gn lst))
+(check "map-param-shadow-capturing-global"
+       (apply-map-cap (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+;; 3. map with an inline lambda whose body calls the shadowing parameter
+(define (apply-map-inner fn lst) (map (lambda (x) (fn x)) lst))
+(check "map-inner-lambda-shadow"
+       (apply-map-inner (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+;; 4. for-each: nested lambda captures the shadowing parameter (this was
+;;    the VM manifestation: outermost-first upvalue search captured the
+;;    top-level fn instead of the parameter)
+(define fe-acc '())
+(define (apply-for-each fn lst)
+  (for-each (lambda (x) (set! fe-acc (cons (fn x) fe-acc))) lst))
+(apply-for-each (lambda (x) (+ x 10)) (list 1 2 3))
+(check "for-each-capture-shadow" (reverse fe-acc) (list 11 12 13))
+
+;; 5. for-each: shadowing parameter passed directly
+(define fe2-acc '())
+(define (collect x) (set! fe2-acc (cons x fe2-acc)))
+(define (apply-for-each2 fn lst) (for-each fn lst))
+(apply-for-each2 (lambda (x) (collect (+ x 10))) (list 1 2 3))
+(check "for-each-direct-shadow" (reverse fe2-acc) (list 11 12 13))
+
+;; 6. filter with a shadowing predicate parameter
+(define (apply-filter fn lst) (filter fn lst))
+(check "filter-param-shadow"
+       (apply-filter (lambda (x) (> x 1)) (list 1 2 3))
+       (list 2 3))
+
+;; 7. fold-left with a shadowing parameter
+(define (apply-fold fn lst) (fold-left fn 0 lst))
+(check "fold-left-param-shadow"
+       (apply-fold (lambda (acc x) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 8. fold-right with a shadowing parameter
+(define (apply-fold-right fn lst) (fold-right fn 0 lst))
+(check "fold-right-param-shadow"
+       (apply-fold-right (lambda (x acc) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 9. reduce with a shadowing parameter (was: called the shadowed global
+;;    with the wrong arity => LLVM module verification failure)
+(define (apply-reduce fn lst) (reduce fn 0 lst))
+(check "reduce-param-shadow"
+       (apply-reduce (lambda (acc x) (+ acc x 10)) (list 1 2 3))
+       36)
+
+;; 10. map with a let-bound shadow (this already worked via the scoped
+;;     <fn>.<name>_func entry — pinned so the guard never regresses it)
+(define (let-shadow-map lst)
+  (let ((fn (lambda (x) (+ x 10))))
+    (map fn lst)))
+(check "map-let-shadow" (let-shadow-map (list 1 2 3)) (list 11 12 13))
+
+;; 11. remove with a shadowing predicate parameter (was: used global fn as
+;;     the predicate — everything truthy => ())
+(define (apply-remove fn lst) (remove fn lst))
+(check "remove-param-shadow"
+       (apply-remove (lambda (x) (> x 1)) (list 1 2 3))
+       (list 1))
+
+;; 12. remove with a runtime ITEM parameter named like the global — the
+;;     shadowing binding is a plain value, so element-removal semantics
+;;     must apply (the same runtime dispatch must NOT call it)
+(define (apply-remove-item fn lst) (remove fn lst))
+(check "remove-item-param-shadow"
+       (apply-remove-item 2 (list 1 2 3))
+       (list 1 3))
+
+;; 13. derivative with a shadowing parameter (SW-01): the AD operators
+;;     resolve their differentiand through the same static
+;;     procedure-operand resolution, so (g (lambda (y) (* 2 y)) 3.0)
+;;     differentiated the GLOBAL f and returned 6 instead of 2
+(define (sqf x) (* x x))
+(define (apply-deriv sqf x) (derivative sqf x))
+(check "derivative-param-shadow"
+       (apply-deriv (lambda (y) (* 2 y)) 3.0)
+       2.0)
+(check "derivative-global-static" (derivative sqf 3.0) 6.0)
+
+;; 14. Non-shadowed static paths must be unchanged
+(check "map-global-static" (map fn (list 1 2 3)) (list 100 200 300))
+(check "map-capturing-global-static" (map gn (list 1 2 3)) (list 100 200 300))
+(define (pos? x) (> x 0))
+(check "remove-global-pred-static" (remove pos? (list 1 -2 3)) (list -2))
+(check "reduce-global-static" (reduce + 0 (list 1 2 3)) 6)
+
+;; 15. let-scoped rebinding of an arithmetic operator (SW-24 class): the
+;;     binding must shadow the operator inside the let body
+(define (let-rebound-star)
+  (let ((* (lambda (a b) (- a b))))
+    (* 10 4)))
+(check "let-rebound-operator" (let-rebound-star) 6)
+
+;; 16. INTERACTION WITH FIRST-CLASS BUILTINS (LE-01, the wrapper closures
+;;     codegenVariable synthesizes for builtins that codegenCall lowers
+;;     inline). Those wrappers make a bare builtin NAME denote a callable
+;;     value; this guard makes a local binding of that same name win. The two
+;;     must compose in one order only: every binding lookup first, the
+;;     builtin wrapper as the last resort. Both halves are pinned here — a
+;;     shadowed builtin name must reach the LOCAL binding, and an unshadowed
+;;     one must still reach the wrapper.
+(define (let-shadow-car lst)
+  (let ((car (lambda (x) 42)))
+    (map car lst)))
+(check "map-let-shadow-builtin" (let-shadow-car (list 1 2 3)) (list 42 42 42))
+
+(define (apply-map-car car lst) (map car lst))
+(check "map-param-shadow-builtin"
+       (apply-map-car (lambda (x) (+ x 10)) (list 1 2 3))
+       (list 11 12 13))
+
+(define (apply-filter-pair? pair? lst) (filter pair? lst))
+(check "filter-param-shadow-builtin"
+       (apply-filter-pair? (lambda (x) (> x 1)) (list 1 2 3))
+       (list 2 3))
+
+;; A shadowed builtin passed as a VALUE (not in call position) through a
+;; user higher-order procedure: `remainder` is one of the inline builtins
+;; whose first-class wrapper LE-01 added, so the parameter binding and the
+;; wrapper are competing for the same name.
+(define (call2 f a b) (f a b))
+(define (pass-shadowed-builtin remainder) (call2 remainder 7 3))
+(check "value-param-shadow-builtin"
+       (pass-shadowed-builtin (lambda (a b) (+ a b)))
+       10)
+
+(define (let-shadow-value)
+  (let ((remainder (lambda (a b) (* a b))))
+    (call2 remainder 7 3)))
+(check "value-let-shadow-builtin" (let-shadow-value) 21)
+
+;; The unshadowed side: the LE-01 wrapper must still be reached, so the
+;; guard cannot have been implemented by simply refusing builtin names.
+(check "value-builtin-unshadowed" (call2 remainder 7 3) 1)
+(check "map-builtin-unshadowed"
+       (map car (list (list 1 2) (list 3 4)))
+       (list 1 3))
+
+;; The SW-24 exact shape (top-level (define + (lambda (a b) (* a b)))) lives
+;; in tests/codegen/operator_rebinding_test.esk: rebinding + AFTER this
+;; file's many earlier uses of + trips a distinct, pre-existing
+;; rebind-after-use divergence (native hoists top-level lambda defines, so
+;; earlier uses already see the rebound +; the VM rebinds sequentially),
+;; which would mask the shadowing defect this file pins.
+
+(if (= failures 0)
+    (begin (display "PASS: higher-order shadowing") (newline))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)))

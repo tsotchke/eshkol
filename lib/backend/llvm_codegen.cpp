@@ -1904,6 +1904,23 @@ private:
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
+    // SW-10: the cooperative execution-timeout poll on the tail-call back-edge
+    // only exists where something can request an interrupt. The requester is
+    // the hosted watchdog thread in lib/core/resource_limits.cpp, which is not
+    // in the freestanding source set and is not linked into a standalone wasm
+    // module at all — so in those profiles the poll can never observe an
+    // interrupt, and emitting it only creates a dependency on a symbol the
+    // profile does not have. On wasm32 that dependency is an `env` import the
+    // JS glue would have to stub, and the stub would then be called across the
+    // JS boundary on every iteration of every loop in the program.
+    //
+    // Same direction as the VM's limit installer (see
+    // eshkol_vm_install_limits): a build with no hosted runtime to push the
+    // configuration in keeps the compiled-in default and links nothing extra.
+    bool timeoutInterruptPollEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
+
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
@@ -2102,9 +2119,12 @@ public:
 
         // Type conversions
         function_return_types["exact->inexact"] = BuiltinTypes::Float64;
-        function_return_types["inexact->exact"] = BuiltinTypes::Int64;
+        // inexact->exact is NOT integer-valued: the exact value of a
+        // fractional double is a rational (and of a huge one, a bignum), so
+        // the static claim has to be the general Number, not Int64.
+        function_return_types["inexact->exact"] = BuiltinTypes::Number;
         function_return_types["inexact"] = BuiltinTypes::Float64;
-        function_return_types["exact"] = BuiltinTypes::Int64;
+        function_return_types["exact"] = BuiltinTypes::Number;
         function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
         function_return_types["square"] = BuiltinTypes::Number;
         function_return_types["volatile-load"] = BuiltinTypes::Value;
@@ -4930,19 +4950,74 @@ private:
      * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
      * produce byte-identical closures (same packed_info / return_type_info
      * layout the closure-call path decodes). */
-    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params) {
+    /* Is `name` a REST-ARG (variadic) procedure, and if so how many FIXED
+     * parameters does it take? Consults both registries, exactly as the call
+     * path in codegenCall does: `variadic_function_info` for the ordinary
+     * compile, `g_repl_variadic_functions` for REPL/`-e` batches. Both are
+     * keyed by the user-visible name ("append"), never by the mangled LLVM
+     * symbol REPL hot-reload produces ("append__rv0"), so callers pass the
+     * user name first and the mangled form only as a fallback. */
+    bool lookupVariadicProcedure(const std::string& name,
+                                 uint64_t* fixed_params_out) {
+        auto it = variadic_function_info.find(name);
+        if (it != variadic_function_info.end() && it->second.second) {
+            if (fixed_params_out) *fixed_params_out = it->second.first;
+            return true;
+        }
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            auto rit = g_repl_variadic_functions.find(name);
+            if (rit != g_repl_variadic_functions.end() && rit->second.second) {
+                if (fixed_params_out) *fixed_params_out = rit->second.first;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Turn an LLVM function into a first-class Eshkol callable.
+     *
+     * SW-27 — the variadic arguments are not decoration. A rest-arg procedure
+     * `(define (append . lists) …)` is called through a DIFFERENT ABI from a
+     * fixed-arity one: the closure dispatcher (codegenClosureCall) conses the
+     * caller's surplus arguments into a list and passes `fixed_params` values
+     * plus that one list. It selects that path from the closure metadata —
+     * bit 63 of `packed_info`, which the allocator turns into
+     * CLOSURE_FLAG_VARIADIC, and, for the 0-capture case where `env` is null,
+     * the `input_arity` byte, which it reads back as `fixed_params`.
+     *
+     * Before this, every function-as-value site packed a plain arity and no
+     * variadic bit, so a rest-arg procedure referenced as a value was called
+     * as if fixed-arity: its rest parameter received a bare argument instead
+     * of a list. `(h append '(1) '(2))` answered `1` — the first argument,
+     * silently — and `(h string-copy "abc")` SIGSEGV'd under AOT walking a
+     * non-list as a list. Call position was always correct; only the value
+     * representation lied about the procedure's shape.
+     *
+     * NOTE the asymmetry in what `input_arity` must hold: for a fixed-arity
+     * closure it is the parameter count, but for a variadic one the dispatcher
+     * reads it as the FIXED count (the rest parameter is not among them). A
+     * rest-arg procedure with one fixed parameter stores 1, not 2.
+     */
+    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
+                                       bool is_variadic = false,
+                                       uint64_t fixed_params = 0) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-        // Pack closure info: no captures (bits 0-15), arity (bits 16-31)
-        uint64_t packed_info = (num_params & 0xFFFF) << 16;
+        // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
+        // variadic (bit 63). For a variadic procedure the arity slot carries
+        // the FIXED parameter count, which is what the dispatcher unpacks.
+        uint64_t arity_field = is_variadic ? fixed_params : num_params;
+        uint64_t packed_info = (arity_field & 0xFFFF) << 16;
+        if (is_variadic) packed_info |= (uint64_t)1 << 63;
         Value* packed_info_val = sizeConst(packed_info);
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
         Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -4950,6 +5025,21 @@ private:
                                                  {arena_ptr, func_ptr_int, packed_info_val,
                                                   sexpr_ptr, return_type_info, closure_name});
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* emitFunctionAsCallableValue for a NAMED procedure: resolves the
+     * rest-arg shape from the registries so callers cannot forget to. Every
+     * "this name is being read as a value" site should use this rather than
+     * packing arity by hand. */
+    Value* emitNamedFunctionAsCallableValue(Function* func,
+                                            const std::string& user_name,
+                                            uint64_t num_params) {
+        uint64_t fixed_params = 0;
+        bool is_variadic = lookupVariadicProcedure(user_name, &fixed_params);
+        if (!is_variadic && func) {
+            is_variadic = lookupVariadicProcedure(func->getName().str(), &fixed_params);
+        }
+        return emitFunctionAsCallableValue(func, num_params, is_variadic, fixed_params);
     }
 
     /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
@@ -4986,8 +5076,15 @@ private:
             return;
         }
 
+        // SW-27: a redefined name bound to a REST-ARG procedure is stored
+        // through this location as a value, so it needs the variadic shape
+        // for the same reason any other function-as-value reference does.
         uint64_t arity = ast->operation.define_op.num_params;
-        Value* callable = emitFunctionAsCallableValue(declared_it->second, arity);
+        Value* callable = ast->operation.define_op.is_variadic
+            ? emitFunctionAsCallableValue(declared_it->second, arity,
+                                          /*is_variadic=*/true, arity)
+            : emitNamedFunctionAsCallableValue(declared_it->second,
+                                               name ? name : "", arity);
         if (!callable) return;
 
         builder->CreateStore(callable, location);
@@ -11134,6 +11231,38 @@ private:
             }
         }
 
+        // SW-35: the ROUNDING builtins are handled by the generic
+        // inline-builtin wrapper further down, NOT by the hand-written
+        // createBuiltinUnaryMathFunction below, and they are excluded here so
+        // they reach it.
+        //
+        // createBuiltinUnaryMathFunction is a SECOND, hand-written
+        // implementation of each math builtin: it unpacks the tagged operand
+        // as a double and calls the C library function. For sin/cos/exp that
+        // is the whole semantics. For floor/ceiling/truncate/round it is not
+        // — their call-position lowering (codegenMathFunction, the
+        // is_rounding_func block) dispatches on EXACTNESS first: exact
+        // integers and bignums are the identity, rationals go to
+        // eshkol_rational_<op>_tagged, and only inexact reals reach libm.
+        // The hand-written wrapper knew none of that, so it read a rational's
+        // HEAP POINTER as a double and returned the address as a number:
+        //
+        //   (map floor (list 7/3 -7/3 2.7 5))
+        //     => (6176988088 6176988304 2 5)   addresses, varying per run
+        //   (floor 7/3) => 2                   call position, correct
+        //
+        // That is the LE-01 failure mode exactly — a duplicated
+        // implementation drifting from the authoritative one — so the fix is
+        // the LE-01 mechanism rather than a second patch to the duplicate:
+        // the generic wrapper generates its body by re-entering codegenCall,
+        // which IS the exactness-aware lowering. The remaining math builtins
+        // stay on the old factory because it carries AD/dual dispatch they
+        // depend on; the sweep in scripts/run_value_position_sweep.py is what
+        // keeps that claim honest.
+        static const std::set<std::string> rounding_builtins = {
+            "floor", "ceil", "ceiling", "round", "trunc", "truncate"
+        };
+
         // BUILTIN FIRST-CLASS FIX: Check math builtins FIRST before function_table lookup
         // This prevents returning raw C functions (double->double) which cause ABI mismatch
         // when called through closure dispatch (tagged_value->tagged_value)
@@ -11146,11 +11275,18 @@ private:
             "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
             // Power/Root
             "sqrt", "cbrt",
-            // Absolute/Rounding
-            "abs", "fabs", "floor", "ceil", "round", "trunc",
-            // Scheme-style names
-            "ceiling", "truncate"
+            // Absolute
+            "abs", "fabs"
         };
+
+        if (rounding_builtins.count(var_name)) {
+            if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+                return first_class;
+            }
+            // Fall through to the old factory only if the generic path
+            // declined, so a missing table row degrades to the previous
+            // behaviour rather than to "Undefined variable".
+        }
 
         if (math_builtins.count(var_name)) {
             // Use createBuiltinUnaryMathFunction which creates a wrapper with proper ABI
@@ -11225,10 +11361,25 @@ private:
             auto arity_it = function_arity_table.find(var_name);
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
+                // SW-27: resolve the REST-ARG shape here rather than packing a
+                // plain arity. `(define (append . lists) …)` referenced as a
+                // value used to be handed to the dispatcher as fixed-arity,
+                // so its rest parameter received a bare argument instead of a
+                // list — `(h append '(1) '(2))` answered `1`, silently.
                 uint64_t num_params = arity_it->second;
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                return emitFunctionAsCallableValue(func, num_params);
+                return emitNamedFunctionAsCallableValue(func, var_name, num_params);
+            }
+
+            // LE-01: a bare Function* is NOT an Eshkol value. Handing one back
+            // makes the closure dispatcher call a foreign-ABI symbol with the
+            // closure calling convention — `(h remainder 7 3)` SIGSEGV'd. If
+            // the name is a builtin we
+            // can wrap with the closure ABI, do that instead; the raw pointer
+            // stays only as the last resort for symbols we have no spec for.
+            if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+                return first_class;
             }
 
             // Fallback: return raw function pointer (for C functions, builtins, etc.)
@@ -11621,16 +11772,33 @@ private:
                 }
                 Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
 
-                // Pack closure info: no captures, arity in bits 16-31
+                // SW-27: the REPL/`-e` lane needs the rest-arg shape too. It
+                // cannot share emitFunctionAsCallableValue because the hot-
+                // reload path substitutes a dynamically LOADED function
+                // pointer for the baked-in one, so the packing is repeated
+                // here — but it must agree with that helper exactly, including
+                // the rule that a variadic closure's arity field carries the
+                // FIXED parameter count rather than the total.
+                uint64_t repl_fixed_params = 0;
+                bool repl_is_variadic =
+                    lookupVariadicProcedure(var_name, &repl_fixed_params) ||
+                    lookupVariadicProcedure(repl_func->getName().str(),
+                                            &repl_fixed_params);
+                uint64_t arity_field =
+                    repl_is_variadic ? repl_fixed_params : (uint64_t)num_params;
+
+                // Pack closure info: no captures, arity in bits 16-31,
+                // variadic in bit 63
                 uint64_t packed_info = 0;
-                packed_info |= (num_params & 0xFFFF) << 16;
+                packed_info |= (arity_field & 0xFFFF) << 16;
+                if (repl_is_variadic) packed_info |= (uint64_t)1 << 63;
                 Value* packed_info_val = sizeConst(packed_info);
 
                 // No S-expression for now
                 Value* sexpr_ptr = intPtrConst(0);
 
                 // Return type unknown
-                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
                 Value* return_type_info = intPtrConst(return_type_info_val);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -11692,6 +11860,17 @@ private:
         if (var_name == "list" || var_name == "values") {
             std::string wrapper_name = "builtin_" + var_name + "_varargs";
             return makeVariadicIdentityClosureValue(wrapper_name);
+        }
+
+        // LE-01: the general case. Every builtin that codegenCall lowers
+        // inline reaches this point as a bare name with nothing behind it —
+        // that is what produced "Undefined variable: string<?" for
+        // `(sort xs string<?)`, a program with no undefined variable in it.
+        // Synthesize the closure-ABI wrapper from the call-site lowering.
+        // Reached only after every binding lookup above has declined, so a
+        // user definition of the same name still wins.
+        if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+            return first_class;
         }
 
         codegen_error_at(ast, "Undefined variable: %s", var_name.c_str());
@@ -12566,20 +12745,40 @@ private:
         // set!-mutated bindings (make-counter, make-account sibling closures).
         // Skip when TCO already promoted parameters to *_tco allocas (the
         // self-recursive / named-let path keeps its own loopvar handling).
-        if (!use_tco && op->define_op.parameters && op->define_op.value) {
+        if (!use_tco && op->define_op.value) {
             auto box_arg_it = function->arg_begin();
-            for (uint64_t i = 0; i < op->define_op.num_params && box_arg_it != function->arg_end(); ++i, ++box_arg_it) {
-                if (op->define_op.parameters[i].type == ESHKOL_VAR &&
-                    op->define_op.parameters[i].variable.id) {
-                    std::string pname = op->define_op.parameters[i].variable.id;
-                    if (astSetsVar(op->define_op.value, pname)) {
-                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
-                        builder->CreateStore(&(*box_arg_it), box);
-                        symbol_table[pname] = box;
-                        eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
-                                     pname.c_str(), func_name);
+            if (op->define_op.parameters) {
+                for (uint64_t i = 0; i < op->define_op.num_params && box_arg_it != function->arg_end(); ++i, ++box_arg_it) {
+                    if (op->define_op.parameters[i].type == ESHKOL_VAR &&
+                        op->define_op.parameters[i].variable.id) {
+                        std::string pname = op->define_op.parameters[i].variable.id;
+                        if (astSetsVar(op->define_op.value, pname)) {
+                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            builder->CreateStore(&(*box_arg_it), box);
+                            symbol_table[pname] = box;
+                            eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
+                                         pname.c_str(), func_name);
+                        }
                     }
                 }
+            }
+            // ESH-0074b: the REST parameter is a binding exactly like a fixed one.
+            // It arrives as the by-value Argument that follows the fixed params (the
+            // symbol-table loop above walks the same order), so without a box a
+            // nested closure capturing it copies the LIST VALUE into its environment
+            // and the inner set! mutates a private copy that is discarded on return:
+            //   (define (f . rest) ((lambda () (set! rest (cons 99 rest)))) (car rest))
+            // answered 1 instead of 99, with exit 0 and no diagnostic. Boxing here
+            // routes every later read/write through the same alloca, so the existing
+            // capture machinery pointer-passes ONE cell.
+            if (is_variadic && box_arg_it != function->arg_end() &&
+                astSetsVar(op->define_op.value, op->define_op.rest_param)) {
+                std::string pname = op->define_op.rest_param;
+                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                builder->CreateStore(&(*box_arg_it), box);
+                symbol_table[pname] = box;
+                eshkol_debug("Assignment conversion: boxed set!-mutated rest param %s in %s",
+                             pname.c_str(), func_name);
             }
         }
 
@@ -13909,7 +14108,8 @@ private:
     }
 
     static bool externTypeIsPointerLike(const std::string& declared) {
-        return declared == "ptr" || declared == "string" || declared == "char*";
+        return declared == "ptr" || declared == "string" || declared == "char*" ||
+               declared == "void*";
     }
 
     Value* codegenCall(const eshkol_operations_t* op) {
@@ -14350,75 +14550,13 @@ private:
             Value* base = typedValueToTaggedValue(tv_base);
             Value* exp_val = typedValueToTaggedValue(tv_exp);
 
-            // Check if base is complex — needs complex exponentiation
-            Value* base_type = builder->CreateExtractValue(base, {0}, "expt_base_type");
-            Value* base_is_complex = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
-
-            Function* cur_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* complex_expt_bb = BasicBlock::Create(*context, "expt_complex", cur_func);
-            BasicBlock* regular_expt_bb = BasicBlock::Create(*context, "expt_regular", cur_func);
-            BasicBlock* expt_merge_bb = BasicBlock::Create(*context, "expt_merge", cur_func);
-
-            builder->CreateCondBr(base_is_complex, complex_expt_bb, regular_expt_bb);
-
-            // Complex exponentiation: z^n via exp(n * ln(z))
-            builder->SetInsertPoint(complex_expt_bb);
-            Value* z = unpackComplexFromTagged(base);
-            Value* re = getComplexReal(z);
-            Value* im = getComplexImag(z);
-
-            // Compute ln(z) = ln(|z|) + i*atan2(imag, real)
-            Function* sqrt_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sqrt, {double_type});
-            Function* log_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::log, {double_type});
-            Function* cos_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::cos, {double_type});
-            Function* sin_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::sin, {double_type});
-            Function* exp_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::exp, {double_type});
-
-            // |z| = sqrt(re^2 + im^2)
-            Value* re2 = builder->CreateFMul(re, re);
-            Value* im2 = builder->CreateFMul(im, im);
-            Value* mag = builder->CreateCall(sqrt_fn, {builder->CreateFAdd(re2, im2)});
-
-            // atan2(im, re)
-            FunctionType* atan2_ft = FunctionType::get(double_type, {double_type, double_type}, false);
-            FunctionCallee atan2_fn = module->getOrInsertFunction("atan2", atan2_ft);
-            Value* carg = builder->CreateCall(atan2_fn, {im, re}, "carg");
-
-            // ln(z) = ln(|z|) + i*arg
-            Value* ln_r = builder->CreateCall(log_fn, {mag}, "ln_mag");
-
-            // n (exponent as double)
-            Value* n = extractDoubleFromTagged(exp_val);
-
-            // n * ln(z) = n*ln_r + i*n*ln_i
-            Value* prod_r = builder->CreateFMul(n, ln_r);
-            Value* prod_i = builder->CreateFMul(n, carg);
-
-            // exp(prod_r + i*prod_i) = e^prod_r * (cos(prod_i) + i*sin(prod_i))
-            Value* e_pow = builder->CreateCall(exp_fn, {prod_r});
-            Value* cos_val = builder->CreateCall(cos_fn, {prod_i});
-            Value* sin_val = builder->CreateCall(sin_fn, {prod_i});
-            Value* result_re = builder->CreateFMul(e_pow, cos_val);
-            Value* result_im = builder->CreateFMul(e_pow, sin_val);
-
-            Value* result_complex = createComplexNumber(result_re, result_im);
-            Value* complex_tagged = packComplexToTagged(result_complex);
-            builder->CreateBr(expt_merge_bb);
-            BasicBlock* complex_expt_exit = builder->GetInsertBlock();
-
-            // Regular path: non-complex base
-            builder->SetInsertPoint(regular_expt_bb);
-            Value* regular_result = arith_->pow(base, exp_val);
-            builder->CreateBr(expt_merge_bb);
-            BasicBlock* regular_expt_exit = builder->GetInsertBlock();
-
-            // Merge
-            builder->SetInsertPoint(expt_merge_bb);
-            PHINode* expt_phi = builder->CreatePHI(tagged_value_type, 2);
-            expt_phi->addIncoming(complex_tagged, complex_expt_exit);
-            expt_phi->addIncoming(regular_result, regular_expt_exit);
-            return expt_phi;
+            // Complex operands are handled inside ArithmeticCodegen::pow,
+            // alongside complex +/-/*//. Task #113: the hand-rolled block that
+            // used to live here tested only the BASE for ESHKOL_VALUE_COMPLEX
+            // and then read the exponent with extractDoubleFromTagged, so a
+            // complex exponent had its heap pointer reinterpreted —
+            // `(expt i i)` returned 1 instead of e^(-pi/2) = 0.2078795763...
+            return arith_->pow(base, exp_val);
         }
 
         // Logical operators (short-circuit)
@@ -15013,38 +15151,40 @@ private:
             BasicBlock* convert_bb = BasicBlock::Create(*context, "inexact_to_exact", cur_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_exact", cur_func);
             builder->CreateCondBr(already_exact, merge_bb, convert_bb);
-            // Convert double to exact: whole numbers → int64, fractional → rational
+            // Convert the double to its EXACT value in the runtime.
+            //
+            // This branch used to decide the result shape itself:
+            //
+            //     is_whole ? fptosi(d) : eshkol_double_to_rational(arena, d)
+            //
+            // Both arms were wrong. `fptosi` is undefined once |d| >= 2^63, so
+            // `(inexact->exact 1e300)` returned the garbage 4347791012 instead
+            // of an exact bignum integer; and the rational arm called a
+            // conversion that capped its denominator at 2^52, so
+            // `(inexact->exact 0.1)` returned 450359962737049/4503599627370496
+            // — the exact value of a DIFFERENT double — where the documented
+            // answer is 3602879701896397/36028797018963968. Both engines now
+            // call one runtime entry point that reads the operand's actual
+            // mantissa and exponent and picks int64 / bignum / rational there.
             builder->SetInsertPoint(convert_bb);
             Value* dbl_val = builder->CreateBitCast(data, double_type);
-            Function* floor_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::floor, {double_type});
-            Value* floored = builder->CreateCall(floor_fn, {dbl_val});
-            Value* is_whole = builder->CreateFCmpOEQ(dbl_val, floored);
-            BasicBlock* int_convert_bb = BasicBlock::Create(*context, "i2e_int", cur_func);
-            BasicBlock* rat_convert_bb = BasicBlock::Create(*context, "i2e_rat", cur_func);
-            builder->CreateCondBr(is_whole, int_convert_bb, rat_convert_bb);
-            // Whole number → int64
-            builder->SetInsertPoint(int_convert_bb);
-            Value* int_val = builder->CreateFPToSI(dbl_val, int64_type);
-            Value* int_converted = packInt64ToTaggedValue(int_val);
-            builder->CreateBr(merge_bb);
-            BasicBlock* int_convert_end = builder->GetInsertBlock();
-            // Fractional → rational via runtime
-            builder->SetInsertPoint(rat_convert_bb);
-            FunctionType* d2r_ft = FunctionType::get(
-                PointerType::getUnqual(*context),
-                {PointerType::getUnqual(*context), double_type}, false);
-            FunctionCallee d2r_fn = module->getOrInsertFunction("eshkol_double_to_rational", d2r_ft);
+            Value* exact_slot = builder->CreateAlloca(tagged_value_type, nullptr, "i2e_slot");
+            FunctionType* d2e_ft = FunctionType::get(
+                void_type,
+                {PointerType::getUnqual(*context), double_type,
+                 PointerType::getUnqual(*context)}, false);
+            FunctionCallee d2e_fn = module->getOrInsertFunction(
+                "eshkol_double_to_exact_tagged", d2e_ft);
             Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* rat_ptr = builder->CreateCall(d2r_fn, {arena_ptr, dbl_val}, "rat_from_dbl");
-            Value* rat_converted = packPtrToTaggedValue(rat_ptr, ESHKOL_VALUE_HEAP_PTR);
+            builder->CreateCall(d2e_fn, {arena_ptr, dbl_val, exact_slot});
+            Value* converted_exact = builder->CreateLoad(tagged_value_type, exact_slot, "i2e_result");
             builder->CreateBr(merge_bb);
-            BasicBlock* rat_convert_end = builder->GetInsertBlock();
+            BasicBlock* convert_end = builder->GetInsertBlock();
             // Merge
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
             phi->addIncoming(arg, cur_block);
-            phi->addIncoming(int_converted, int_convert_end);
-            phi->addIncoming(rat_converted, rat_convert_end);
+            phi->addIncoming(converted_exact, convert_end);
             return phi;
         }
         // R7RS exact-integer?: true if exact and integer (int64 or bignum)
@@ -20908,6 +21048,63 @@ private:
         BasicBlock* regular_path = BasicBlock::Create(*context, (func_name + "_regular_path").c_str(), current_func);
         BasicBlock* merge = BasicBlock::Create(*context, (func_name + "_merge").c_str(), current_func);
 
+        // TASK #113 — COMPLEX OPERAND PATH (memory-safety class kill).
+        //
+        // A complex tagged value carries a HEAP POINTER in its payload. Every
+        // scalar path below ends in either `extractAsDouble` or an
+        // `SIToFP(unpackInt64(...))`, both of which would read that pointer's
+        // bits as an IEEE double: `(sqrt (make-rectangular -1.0 0.0))` used to
+        // print 73278.56614317723 and `(exp (make-rectangular 0.0 3.14159))`
+        // printed +inf.0 — a different garbage value on every run, and an
+        // address leak to boot. This branch is emitted FIRST, before anything
+        // touches the payload, and it has exactly two outcomes:
+        //
+        //   * the builtin has a principal-branch complex extension: dispatch to
+        //     the shared runtime core (`<eshkol/core/complex_math.h>`, the same
+        //     code the VM compiles in) and return a complex;
+        //   * it does not (the real-domain-only `floor`/`ceiling`/`truncate`/
+        //     `round`/`fabs`/`cbrt`): raise a catchable, typed error naming the
+        //     procedure.
+        //
+        // There is no third outcome. The pointer is never reinterpreted.
+        const char* mf_cpx_suffix = eshkol::ComplexCodegen::complexRuntimeSuffix(func_name);
+        BasicBlock* mf_cpx_done = BasicBlock::Create(*context, (func_name + "_cpx_done").c_str(), current_func);
+        // The slot lives in the ENTRY block: this dispatch is emitted for every
+        // math builtin, so a math call inside a loop body would otherwise
+        // re-adjust the stack pointer on every iteration (the hazard
+        // CodegenContext::emitRaiseFmt documents for its own buffer, and the
+        // one the flat-RSS AOT gate watches).
+        Value* mf_cpx_slot = nullptr;
+        {
+            IRBuilderBase::InsertPoint mf_cpx_ip = builder->saveIP();
+            BasicBlock& mf_entry = current_func->getEntryBlock();
+            builder->SetInsertPoint(&mf_entry, mf_entry.begin());
+            mf_cpx_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_cpx_slot").c_str());
+            builder->restoreIP(mf_cpx_ip);
+        }
+        {
+            BasicBlock* cpx_path = BasicBlock::Create(*context, (func_name + "_cpx_path").c_str(), current_func);
+            BasicBlock* cpx_cont = BasicBlock::Create(*context, (func_name + "_cpx_cont").c_str(), current_func);
+            Value* arg_is_complex = builder->CreateICmpEQ(arg_base_type,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+            builder->CreateCondBr(arg_is_complex, cpx_path, cpx_cont);
+
+            builder->SetInsertPoint(cpx_path);
+            if (mf_cpx_suffix) {
+                Value* cpx_in = complex_->unpackComplexFromTagged(arg_tagged);
+                Value* cpx_res = complex_->complexUnaryRuntime(cpx_in, mf_cpx_suffix);
+                builder->CreateStore(complex_->packComplexToTagged(cpx_res), mf_cpx_slot);
+                builder->CreateBr(mf_cpx_done);
+            } else {
+                // emitRaise() closes the block with `unreachable`, so this path
+                // never reaches the merge and never needs a PHI incoming.
+                ctx_->emitRaise((func_name +
+                    ": argument is a complex number and this procedure is defined "
+                    "on the reals only (use real-part, magnitude or angle first)").c_str());
+            }
+            builder->SetInsertPoint(cpx_cont);
+        }
+
         // ESH-0186: Taylor-tower operand — route to the arbitrary-order kernel
         // before any scalar/tensor handling. Wraps the rest of the function so a
         // tower `sin`/`cos`/`exp`/`log`/... returns a tower, not a misread double.
@@ -21177,20 +21374,32 @@ private:
             // Rational path: call eshkol_rational_floor/ceil/truncate/round
             builder->SetInsertPoint(rational_path);
             {
-                // Map func_name to runtime function name
+                // SW-29: call the TAGGED rounding entry point, not the
+                // int64-returning one. The int64 variants read a rational's
+                // numerator/denominator fields directly, which on the bignum
+                // path are the inert 0/1 shadow — so `(floor (/ (expt 2 100) 3))`
+                // returned 0 with exit 0 and no diagnostic. The exact result can
+                // exceed int64, so it cannot be carried by an int64 return at
+                // all; the tagged form answers with an INT64 or a bignum as the
+                // value requires.
                 std::string rt_name = "eshkol_rational_" +
-                    (func_name == "trunc" ? std::string("truncate") : func_name);
+                    (func_name == "trunc" ? std::string("truncate") : func_name) +
+                    "_tagged";
+                auto* rndPtrTy = PointerType::getUnqual(*context);
                 Function* rat_func = module->getFunction(rt_name);
                 if (!rat_func) {
-                    FunctionType* rat_ft = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+                    FunctionType* rat_ft = FunctionType::get(Type::getVoidTy(*context),
+                        {rndPtrTy, rndPtrTy, rndPtrTy}, false);
                     rat_func = Function::Create(rat_ft, Function::ExternalLinkage, rt_name, module.get());
                 }
                 // Extract rational pointer from tagged value
                 Value* rat_ptr_int = unpackInt64FromTaggedValue(arg_tagged);
-                Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, builder->getPtrTy());
-                Value* rat_result_int = builder->CreateCall(rat_func, {rat_ptr});
-                // Pack as exact integer
-                tagged_regular_result = packInt64ToTaggedValue(rat_result_int, true);
+                Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, rndPtrTy);
+                Value* rnd_res_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "rat_round_res");
+                Value* rnd_arena = builder->CreateLoad(rndPtrTy, global_arena);
+                builder->CreateCall(rat_func, {rnd_arena, rat_ptr, rnd_res_alloca});
+                tagged_regular_result = builder->CreateLoad(tagged_value_type, rnd_res_alloca,
+                                                            "rat_round_tagged");
             }
             builder->CreateBr(regular_merge);
             BasicBlock* rational_exit = builder->GetInsertBlock();
@@ -21276,12 +21485,19 @@ private:
             promo_phi->addIncoming(real_tagged, real_exit);
             tagged_regular_result = promo_phi;
         } else {
-            // Non-rounding functions: always compute on double
-            Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* arg_double = builder->CreateSelect(arg_is_double,
-                unpackDoubleFromTaggedValue(arg_tagged),
-                builder->CreateSIToFP(unpackInt64FromTaggedValue(arg_tagged), double_type));
+            // Non-rounding functions: always compute on double.
+            //
+            // Task #113 — the two-way `select(is_double, unpackDouble,
+            // SIToFP(unpackInt64))` this replaces treated EVERY non-double tag
+            // as an int64, so a rational or bignum operand had its heap pointer
+            // sign-converted into a double: `(sin (/ 1 2))` returned
+            // 0.9241426121154859 (sin of an address) instead of sin(0.5).
+            // extractAsDouble dispatches on the real tag — int64, double,
+            // bignum, rational, Taylor primal — and yields 0.0 for anything
+            // non-numeric rather than reinterpreting a pointer. Complex is
+            // already handled by the dedicated branch at the top of this
+            // function and can never reach here.
+            Value* arg_double = arith_->extractAsDouble(arg_tagged);
             Value* result_double = builder->CreateCall(function_table[func_name], {arg_double});
             tagged_regular_result = packDoubleToTaggedValue(result_double);
         }
@@ -21314,9 +21530,14 @@ private:
             builder->CreateStore(mf_final, mf_twr_slot);
             builder->CreateBr(mf_twr_done);
             builder->SetInsertPoint(mf_twr_done);
-            return builder->CreateLoad(tagged_value_type, mf_twr_slot);
+            mf_final = builder->CreateLoad(tagged_value_type, mf_twr_slot);
         }
-        return mf_final;
+        // Task #113: merge the complex early-path (always emitted) last, so it
+        // is the outermost of the three operand-shape dispatches.
+        builder->CreateStore(mf_final, mf_cpx_slot);
+        builder->CreateBr(mf_cpx_done);
+        builder->SetInsertPoint(mf_cpx_done);
+        return builder->CreateLoad(tagged_value_type, mf_cpx_slot);
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
@@ -24095,6 +24316,21 @@ private:
     //                   call_op.variables = body expressions
     // Where bindings-list is CALL_OP with CONS bindings (var, CONS(init, step))
     // And test-clause is CONS(test, results-list)
+    // ESH-0074c: does any closure created ANYWHERE in this `do` form capture
+    // `var`? `main_cons` carries the bindings (inits and steps), the test and the
+    // result expressions; `op->call_op.variables[]` carries the body commands.
+    // Every one of them can build a closure, and any of them doing so forces the
+    // loop variable onto a shared cell — see codegenDo's storage-class comment.
+    bool doFormCapturesVar(const eshkol_operations_t* op,
+                           const eshkol_ast_t* main_cons,
+                           const std::string& var) {
+        if (astVarCapturedByNestedClosure(main_cons, var)) return true;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+            if (astVarCapturedByNestedClosure(&op->call_op.variables[i], var)) return true;
+        }
+        return false;
+    }
+
     Value* codegenDo(const eshkol_operations_t* op) {
         if (!op->call_op.func || op->call_op.func->type != ESHKOL_CONS) {
             eshkol_warn("do requires properly formed structure");
@@ -24145,8 +24381,49 @@ private:
                 var_names.push_back(var_name);
                 step_exprs.push_back(step_ast);
 
-                // Create alloca for loop variable
-                Value* alloca = builder->CreateAlloca(tagged_value_type, nullptr, var_name + "_do");
+                // ESH-0074c: choose the loop variable's STORAGE CLASS *before* any
+                // of the loop is emitted.
+                //
+                // A `do` variable is read from three places emitted at three
+                // different times — the header test (first), the body (second) and
+                // the step expressions (third) — but codegenDo writes the step
+                // result to the cell it cached here. The closure-capture machinery
+                // (codegenLambda, "CLOSURE ESCAPE FIX") *rebinds* a captured stack
+                // alloca to fresh arena storage mid-body and repoints symbol_table
+                // at it, so a closure over a `do` variable used to split the
+                // variable in two: the step read the arena cell and wrote the stack
+                // alloca, while the header test kept reading the stale alloca it had
+                // already been emitted against. `(= i 3)` then never became true —
+                // an INFINITE LOOP whose every iteration allocated a fresh closure,
+                // i.e. unbounded arena growth ending in SIGKILL (exit 137):
+                //     (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+                //         ((lambda () (set! acc (+ acc i)))))
+                // Merely *reading* a loop variable from a body closure was enough;
+                // mutation was not required.
+                //
+                // Deciding up front removes the ordering hazard entirely rather than
+                // patching one of its three symptoms: when a closure in this form
+                // captures the variable, the cell is arena storage from the start,
+                // which is what the capture machinery would have converged on anyway
+                // — and because arena storage is already a pointer-typed CallInst it
+                // takes codegenLambda's "existing arena storage" branch, which
+                // pointer-passes WITHOUT rebinding anything. Otherwise the variable
+                // keeps its stack alloca and stays promotable by mem2reg, so
+                // closure-free `do` loops are unchanged.
+                const bool needs_shared_cell = doFormCapturesVar(op, main_cons, var_name);
+
+                Value* alloca = nullptr;
+                if (needs_shared_cell) {
+                    Value* arena_ptr = builder->CreateLoad(
+                        PointerType::getUnqual(*context), global_arena);
+                    alloca = builder->CreateCall(getArenaAllocateFunc(),
+                                                 {arena_ptr, sizeConst(16)},
+                                                 var_name + "_do_cell");
+                    eshkol_debug("do: loop variable '%s' is captured by a closure, "
+                                 "using shared arena storage", var_name.c_str());
+                } else {
+                    alloca = builder->CreateAlloca(tagged_value_type, nullptr, var_name + "_do");
+                }
                 var_allocas.push_back(alloca);
 
                 // Evaluate init expression and store
@@ -24228,6 +24505,35 @@ private:
             }
             Value* step_val = typedValueToTaggedValue(step_tv);
             new_values.push_back(step_val);
+        }
+
+        // ESH-0074c: INVARIANT — no loop variable may have been arena-moved while
+        // the loop was being compiled.
+        //
+        // The arena move is the rebinding that splits the loop: it seeds the new
+        // cell ONCE, in the pre-header, so a step that reads the moved cell and
+        // writes the stack alloca the header test was compiled against never makes
+        // the test true. The storage-class decision above is supposed to make that
+        // move unnecessary by handing the capture machinery arena storage from the
+        // start, so seeing one here means the capture analysis missed a form — and
+        // the symptom would be an infinite loop that exhausts the arena, not a
+        // wrong answer. Fail loudly at compile time instead.
+        //
+        // Deliberately narrow: a nested `(define (f) …)` capture legitimately
+        // repoints the binding at module-level capture storage, and re-seeds it
+        // from the loop's own cell on every iteration, so it does NOT split the
+        // loop and is not flagged. The arena move is identified by its signature —
+        // a pointer-typed CallInst that is not the cell we chose.
+        for (size_t i = 0; i < var_names.size(); i++) {
+            auto sym_it = symbol_table.find(var_names[i]);
+            if (sym_it == symbol_table.end() || sym_it->second == var_allocas[i]) continue;
+            if (isa<CallInst>(sym_it->second) && sym_it->second->getType()->isPointerTy()) {
+                eshkol_error("do: loop variable '%s' was arena-moved while the loop "
+                             "body was compiled; the loop test and the step update "
+                             "no longer share a cell",
+                             var_names[i].c_str());
+                markFatalCodegenError();
+            }
         }
 
         // NORETURN SAFETY: Only update variables and loop back if block is not terminated
@@ -25703,8 +26009,8 @@ private:
             if (strcmp(type_str, "double") == 0 || strcmp(type_str, "f64") == 0)
                 return double_type;
             if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0 ||
-                strcmp(type_str, "ptr") == 0) {
-                return PointerType::getUnqual(*context); // char*
+                strcmp(type_str, "ptr") == 0 || strcmp(type_str, "void*") == 0) {
+                return PointerType::getUnqual(*context); // char* / void*
             }
             // Default to int32 for unknown types
             eshkol_warn("Unknown type '%s', defaulting to int32", type_str);
@@ -25834,7 +26140,12 @@ private:
             if (strcmp(type_str, "i64") == 0) return int64_type;
             if (strcmp(type_str, "f32") == 0) return Type::getFloatTy(*context);
             if (strcmp(type_str, "f64") == 0) return double_type;
-            if (strcmp(type_str, "ptr") == 0) return PointerType::getUnqual(*context);
+            // `void*` is accepted as a friendlier alias for `ptr` — a C
+            // declaration copy-pasted as `(extern ptr foo void*)` used to
+            // silently default to int64 with only a warning, corrupting the
+            // call ABI (a pointer argument/return packed as a 64-bit int).
+            if (strcmp(type_str, "ptr") == 0 || strcmp(type_str, "void*") == 0)
+                return PointerType::getUnqual(*context);
             // Default to int64 for unknown types
             eshkol_warn("Unknown type '%s', defaulting to int64", type_str);
             return int64_type;
@@ -27875,6 +28186,35 @@ private:
             builder->CreateCall(stackrestore_fn, {tco_ctx.loop_stack_save});
         }
 
+        // SW-10: cooperative execution-timeout poll on the tail-call back-edge.
+        //
+        // This is the ONE place every self-tail-call back-edge is emitted, for
+        // both `define`-TCO and named-let, and a TCO loop is precisely the
+        // shape that runs forever without entering a new frame — so the
+        // function-entry guard never sees it and `ESHKOL_TIMEOUT_MS` had
+        // nothing to act on. The watchdog thread can only *request* an
+        // interrupt; this is the code that notices.
+        //
+        // Cost is a load of the interrupt flag and a not-taken branch per
+        // iteration: eshkol_limit_poll_interrupt() returns immediately when no
+        // interrupt is pending, and no timer is even armed unless the user
+        // asked for one. It reads and writes no program value, so it cannot
+        // perturb arithmetic — gradients stay bit-identical.
+        //
+        // Only where a hosted watchdog can raise the interrupt in the first
+        // place: see timeoutInterruptPollEnabled().
+        if (timeoutInterruptPollEnabled()) {
+            Function* poll_fn = module->getFunction("eshkol_limit_poll_interrupt");
+            if (!poll_fn) {
+                FunctionType* poll_type =
+                    FunctionType::get(Type::getVoidTy(*context), {}, false);
+                poll_fn = Function::Create(poll_type, Function::ExternalLinkage,
+                                           "eshkol_limit_poll_interrupt",
+                                           module.get());
+            }
+            builder->CreateCall(poll_fn, {});
+        }
+
         // Create unreachable sentinel BEFORE the branch (can't add instructions
         // after terminator). Caller never observes this value — the block ends
         // with the unconditional jump back to the loop header.
@@ -27886,6 +28226,46 @@ private:
         return unreachable_sentinel;
     }
     // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
+
+    // ESH-0074c: which node test astScanVar() applies while walking. See the
+    // comment on astScanVar for the contract.
+    enum class VarScanMode { SetTarget, ClosureCapture };
+
+    // True iff `var` is bound by this parameter list (so an inner reference to it
+    // is the PARAMETER, not a capture of the enclosing binding).
+    bool paramListShadows(const eshkol_ast_t* params, uint64_t num_params,
+                          const char* rest_param, const std::string& var) {
+        if (rest_param && var == rest_param) return true;
+        if (!params) return false;
+        for (uint64_t i = 0; i < num_params; i++) {
+            if (params[i].type == ESHKOL_VAR && params[i].variable.id &&
+                var == params[i].variable.id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Same question for a let/named-let binding list, whose entries are
+    // (variable value) pairs.
+    bool bindingListShadows(const eshkol_ast_t* bindings, uint64_t num_bindings,
+                            const std::string& var) {
+        if (!bindings) return false;
+        for (uint64_t i = 0; i < num_bindings; i++) {
+            const eshkol_ast_t* b = &bindings[i];
+            const eshkol_ast_t* name_ast = nullptr;
+            if (b->type == ESHKOL_CONS) {
+                name_ast = b->cons_cell.car;
+            } else if (b->type == ESHKOL_VAR) {
+                name_ast = b;
+            }
+            if (name_ast && name_ast->type == ESHKOL_VAR && name_ast->variable.id &&
+                var == name_ast->variable.id) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     // Helper function to find free variables in a lambda body
     // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
@@ -27910,7 +28290,20 @@ private:
     // `false` silently miscompiles a mutation. So every structural container the
     // parser can produce is walked, and `default: return false` is now reached
     // only by genuine leaves (literals, quote, type annotations, macro defs).
-    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+    //
+    // ESH-0074c: that completeness is scarce, so the traversal is shared rather
+    // than copied. `VarScanMode` selects which NODE TEST is applied while the
+    // walk itself stays byte-identical:
+    //   SetTarget      — `var` is the target of a set! (the original predicate).
+    //   ClosureCapture — `var` is referenced from inside a form whose capture
+    //                    machinery SHARES the enclosing cell by pointer, and which
+    //                    arena-moves a stack alloca to do it: a lambda or a named
+    //                    let. Internal function defines capture through
+    //                    module-level storage instead and are excluded on purpose
+    //                    (see the DEFINE_OP case).
+    // The second mode drives codegenDo's storage-class decision; see
+    // doFormCapturesVar().
+    bool astScanVar(const eshkol_ast_t* ast, const std::string& var, VarScanMode mode) {
         if (!ast) return false;
         // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
         // clauses and every other list-shaped payload live in CONS cells, not in
@@ -27919,15 +28312,16 @@ private:
         // node, so walking cons cells cannot manufacture a false positive out of
         // a literal list.
         if (ast->type == ESHKOL_CONS) {
-            return astSetsVar(ast->cons_cell.car, var) ||
-                   astSetsVar(ast->cons_cell.cdr, var);
+            return astScanVar(ast->cons_cell.car, var, mode) ||
+                   astScanVar(ast->cons_cell.cdr, var, mode);
         }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
-                if (op->set_op.name && var == op->set_op.name) return true;
-                return astSetsVar(op->set_op.value, var);
+                if (mode == VarScanMode::SetTarget &&
+                    op->set_op.name && var == op->set_op.name) return true;
+                return astScanVar(op->set_op.value, var, mode);
             // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
@@ -27979,9 +28373,9 @@ private:
             case ESHKOL_SDNC_IMPROVE_OP:
             case ESHKOL_SDNC_PRED_OP:
             case ESHKOL_MAKE_PARAMETER_OP: {
-                if (op->call_op.func && astSetsVar(op->call_op.func, var)) return true;
+                if (op->call_op.func && astScanVar(op->call_op.func, var, mode)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (astSetsVar(&op->call_op.variables[i], var)) return true;
+                    if (astScanVar(&op->call_op.variables[i], var, mode)) return true;
                 }
                 return false;
             }
@@ -27990,128 +28384,168 @@ private:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    if (astSetsVar(&op->sequence_op.expressions[i], var)) return true;
+                    if (astScanVar(&op->sequence_op.expressions[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
             case ESHKOL_LETREC_STAR_OP: {
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    if (astSetsVar(&op->let_op.bindings[i], var)) return true;
+                // ESH-0074c: a NAMED let compiles to a loop procedure that takes
+                // its free variables as capture arguments, so it captures `var`
+                // exactly like a lambda would.
+                if (mode == VarScanMode::ClosureCapture &&
+                    op->op == ESHKOL_LET_OP && op->let_op.name &&
+                    !bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var) &&
+                    astReferencesVar(op->let_op.body, var)) {
+                    return true;
                 }
-                return astSetsVar(op->let_op.body, var);
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (astScanVar(&op->let_op.bindings[i], var, mode)) return true;
+                }
+                return astScanVar(op->let_op.body, var, mode);
             }
             case ESHKOL_LAMBDA_OP:
-                return astSetsVar(op->lambda_op.body, var);
+                if (mode == VarScanMode::ClosureCapture &&
+                    !paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                      op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                      var) &&
+                    astReferencesVar(op->lambda_op.body, var)) {
+                    return true;
+                }
+                return astScanVar(op->lambda_op.body, var, mode);
             case ESHKOL_DEFINE_OP:
-                return astSetsVar(op->define_op.value, var);
+                // NOT a ClosureCapture site, deliberately. An internal
+                // `(define (bump) …)` is compiled by codegenFunctionDefinition,
+                // whose capture mechanism is MODULE-LEVEL capture storage
+                // (`<fn>_nested_N_capture_<var>`) re-seeded from the enclosing
+                // binding at every execution of the define — it never arena-moves
+                // the enclosing cell, so it does not split a `do` loop and it does
+                // not want one either. Measured: forcing arena storage for
+                //     (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+                //         (define (bump) (set! a (+ a i))) (bump))
+                // turned a correct 3 into a type error. `(define bump (lambda …))`
+                // is a different shape and is caught by the LAMBDA_OP case above.
+                return astScanVar(op->define_op.value, var, mode);
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
                 for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                    if (astSetsVar(&op->guard_op.clauses[i], var)) return true;
+                    if (astScanVar(&op->guard_op.clauses[i], var, mode)) return true;
                 }
                 for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->guard_op.body[i], var)) return true;
+                    if (astScanVar(&op->guard_op.body[i], var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_WITH_REGION_OP:
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->with_region_op.body[i], var)) return true;
+                    if (astScanVar(&op->with_region_op.body[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_RAISE_OP:
-                return astSetsVar(op->raise_op.exception, var);
+                return astScanVar(op->raise_op.exception, var, mode);
             case ESHKOL_VALUES_OP:
                 for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                    if (astSetsVar(&op->values_op.expressions[i], var)) return true;
+                    if (astScanVar(&op->values_op.expressions[i], var, mode)) return true;
                 }
                 return false;
             case ESHKOL_CALL_WITH_VALUES_OP:
-                return astSetsVar(op->call_with_values_op.producer, var) ||
-                       astSetsVar(op->call_with_values_op.consumer, var);
+                return astScanVar(op->call_with_values_op.producer, var, mode) ||
+                       astScanVar(op->call_with_values_op.consumer, var, mode);
             case ESHKOL_LET_VALUES_OP:
             case ESHKOL_LET_STAR_VALUES_OP: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-                    if (astSetsVar(&op->let_values_op.producers[i], var)) return true;
+                    if (astScanVar(&op->let_values_op.producers[i], var, mode)) return true;
                 }
-                return astSetsVar(op->let_values_op.body, var);
+                return astScanVar(op->let_values_op.body, var, mode);
             }
             case ESHKOL_MATCH_OP: {
-                if (astSetsVar(op->match_op.expr, var)) return true;
+                if (astScanVar(op->match_op.expr, var, mode)) return true;
                 for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                    if (astSetsVar(op->match_op.clauses[i].guard, var)) return true;
-                    if (astSetsVar(op->match_op.clauses[i].body, var)) return true;
+                    if (astScanVar(op->match_op.clauses[i].guard, var, mode)) return true;
+                    if (astScanVar(op->match_op.clauses[i].body, var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_CALL_CC_OP:
-                return astSetsVar(op->call_cc_op.proc, var);
+                return astScanVar(op->call_cc_op.proc, var, mode);
             case ESHKOL_DYNAMIC_WIND_OP:
-                return astSetsVar(op->dynamic_wind_op.before, var) ||
-                       astSetsVar(op->dynamic_wind_op.thunk, var) ||
-                       astSetsVar(op->dynamic_wind_op.after, var);
+                return astScanVar(op->dynamic_wind_op.before, var, mode) ||
+                       astScanVar(op->dynamic_wind_op.thunk, var, mode) ||
+                       astScanVar(op->dynamic_wind_op.after, var, mode);
             case ESHKOL_OWNED_OP:
-                return astSetsVar(op->owned_op.value, var);
+                return astScanVar(op->owned_op.value, var, mode);
             case ESHKOL_MOVE_OP:
-                return astSetsVar(op->move_op.value, var);
+                return astScanVar(op->move_op.value, var, mode);
             case ESHKOL_BORROW_OP: {
-                if (astSetsVar(op->borrow_op.value, var)) return true;
+                if (astScanVar(op->borrow_op.value, var, mode)) return true;
                 for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
-                    if (astSetsVar(&op->borrow_op.body[i], var)) return true;
+                    if (astScanVar(&op->borrow_op.body[i], var, mode)) return true;
                 }
                 return false;
             }
             case ESHKOL_SHARED_OP:
-                return astSetsVar(op->shared_op.value, var);
+                return astScanVar(op->shared_op.value, var, mode);
             case ESHKOL_WEAK_REF_OP:
-                return astSetsVar(op->weak_ref_op.value, var);
+                return astScanVar(op->weak_ref_op.value, var, mode);
             case ESHKOL_COMPOSE_OP:
-                return astSetsVar(op->compose_op.func_a, var) ||
-                       astSetsVar(op->compose_op.func_b, var);
+                return astScanVar(op->compose_op.func_a, var, mode) ||
+                       astScanVar(op->compose_op.func_b, var, mode);
             case ESHKOL_TENSOR_OP:
                 for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
-                    if (astSetsVar(&op->tensor_op.elements[i], var)) return true;
+                    if (astScanVar(&op->tensor_op.elements[i], var, mode)) return true;
                 }
                 return false;
             // ---- automatic-differentiation ops: each has its OWN union member
             // (function/point/…), NOT the call_op layout — see eshkol.h.
             case ESHKOL_DIFF_OP:
-                return astSetsVar(op->diff_op.expression, var);
+                return astScanVar(op->diff_op.expression, var, mode);
             case ESHKOL_DERIVATIVE_OP:
-                return astSetsVar(op->derivative_op.function, var) ||
-                       astSetsVar(op->derivative_op.point, var);
+                return astScanVar(op->derivative_op.function, var, mode) ||
+                       astScanVar(op->derivative_op.point, var, mode);
             case ESHKOL_TAYLOR_OP:
             case ESHKOL_DERIVATIVE_N_OP:
-                return astSetsVar(op->taylor_op.function, var) ||
-                       astSetsVar(op->taylor_op.point, var) ||
-                       astSetsVar(op->taylor_op.order, var);
+                return astScanVar(op->taylor_op.function, var, mode) ||
+                       astScanVar(op->taylor_op.point, var, mode) ||
+                       astScanVar(op->taylor_op.order, var, mode);
             case ESHKOL_GRADIENT_OP:
-                return astSetsVar(op->gradient_op.function, var) ||
-                       astSetsVar(op->gradient_op.point, var);
+                return astScanVar(op->gradient_op.function, var, mode) ||
+                       astScanVar(op->gradient_op.point, var, mode);
             case ESHKOL_JACOBIAN_OP:
-                return astSetsVar(op->jacobian_op.function, var) ||
-                       astSetsVar(op->jacobian_op.point, var);
+                return astScanVar(op->jacobian_op.function, var, mode) ||
+                       astScanVar(op->jacobian_op.point, var, mode);
             case ESHKOL_HESSIAN_OP:
-                return astSetsVar(op->hessian_op.function, var) ||
-                       astSetsVar(op->hessian_op.point, var);
+                return astScanVar(op->hessian_op.function, var, mode) ||
+                       astScanVar(op->hessian_op.point, var, mode);
             case ESHKOL_DIVERGENCE_OP:
-                return astSetsVar(op->divergence_op.function, var) ||
-                       astSetsVar(op->divergence_op.point, var);
+                return astScanVar(op->divergence_op.function, var, mode) ||
+                       astScanVar(op->divergence_op.point, var, mode);
             case ESHKOL_CURL_OP:
-                return astSetsVar(op->curl_op.function, var) ||
-                       astSetsVar(op->curl_op.point, var);
+                return astScanVar(op->curl_op.function, var, mode) ||
+                       astScanVar(op->curl_op.point, var, mode);
             case ESHKOL_LAPLACIAN_OP:
-                return astSetsVar(op->laplacian_op.function, var) ||
-                       astSetsVar(op->laplacian_op.point, var);
+                return astScanVar(op->laplacian_op.function, var, mode) ||
+                       astScanVar(op->laplacian_op.point, var, mode);
             case ESHKOL_DIRECTIONAL_DERIV_OP:
-                return astSetsVar(op->directional_deriv_op.function, var) ||
-                       astSetsVar(op->directional_deriv_op.point, var) ||
-                       astSetsVar(op->directional_deriv_op.direction, var);
+                return astScanVar(op->directional_deriv_op.function, var, mode) ||
+                       astScanVar(op->directional_deriv_op.point, var, mode) ||
+                       astScanVar(op->directional_deriv_op.direction, var, mode);
             default:
                 return false;
         }
+    }
+
+    // Returns true iff `var` is the target of a set! anywhere in `ast`.
+    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::SetTarget);
+    }
+
+    // ESH-0074c: returns true iff some closure created inside `ast` captures
+    // `var` THROUGH THE POINTER-SHARING PATH — i.e. `var` is referenced from the
+    // body of a lambda or a named let and is not shadowed by that form's own
+    // bindings. Drives codegenDo's storage-class decision.
+    bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
+        return astScanVar(ast, var, VarScanMode::ClosureCapture);
     }
 
     bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
@@ -29537,19 +29971,32 @@ private:
         // set!-mutated needs a mutable cell so set! works and so nested closures
         // capturing it share ONE cell. Skip when TCO already promoted params to
         // *_tco allocas (use_binding_tco re-binds params above).
-        if (!use_binding_tco && op->lambda_op.parameters && op->lambda_op.body) {
+        if (!use_binding_tco && op->lambda_op.body) {
             auto box_arg_it = lambda_func->arg_begin();
-            for (uint64_t i = 0; i < op->lambda_op.num_params && box_arg_it != lambda_func->arg_end(); ++i, ++box_arg_it) {
-                if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
-                    op->lambda_op.parameters[i].variable.id) {
-                    std::string pname = op->lambda_op.parameters[i].variable.id;
-                    if (astSetsVar(op->lambda_op.body, pname)) {
-                        AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
-                        builder->CreateStore(&(*box_arg_it), box);
-                        symbol_table[pname] = box;
-                        eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
+            if (op->lambda_op.parameters) {
+                for (uint64_t i = 0; i < op->lambda_op.num_params && box_arg_it != lambda_func->arg_end(); ++i, ++box_arg_it) {
+                    if (op->lambda_op.parameters[i].type == ESHKOL_VAR &&
+                        op->lambda_op.parameters[i].variable.id) {
+                        std::string pname = op->lambda_op.parameters[i].variable.id;
+                        if (astSetsVar(op->lambda_op.body, pname)) {
+                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            builder->CreateStore(&(*box_arg_it), box);
+                            symbol_table[pname] = box;
+                            eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
+                        }
                     }
                 }
+            }
+            // ESH-0074b: same gap for a variadic LAMBDA's rest parameter. The rest
+            // argument sits immediately after the fixed params and before the
+            // capture parameters, which is exactly where box_arg_it now points.
+            if (is_variadic && box_arg_it != lambda_func->arg_end() &&
+                astSetsVar(op->lambda_op.body, op->lambda_op.rest_param)) {
+                std::string pname = op->lambda_op.rest_param;
+                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                builder->CreateStore(&(*box_arg_it), box);
+                symbol_table[pname] = box;
+                eshkol_debug("Assignment conversion: boxed set!-mutated lambda rest param %s", pname.c_str());
             }
         }
 
@@ -32195,7 +32642,57 @@ private:
             eshkol_error("Invalid diff operation");
             return nullptr;
         }
-        
+
+        // SW-06 (skipped-flaws ledger, .icc/silent-wrong-ledger.yaml):
+        // `(diff 'expr 'x)` — a QUOTED s-expression, e.g. `(diff '(* x x)
+        // 'x)` — used to reach buildSymbolicDerivative() with a top-level
+        // ESHKOL_QUOTE_OP node. differentiateOperationSymbolic() has no rule
+        // for it, so it fell through `op->op != ESHKOL_CALL_OP` and returned
+        // the AST for the constant 0 — indistinguishable from a correct "this
+        // expression doesn't depend on x" answer. Symbolic differentiation of
+        // already-quoted DATA is not implemented (unlike an unquoted
+        // expression literal, e.g. `(diff (* x x) x)`, which the rules below
+        // DO handle correctly — this check does not touch that path). Raise
+        // a real, guard-catchable Scheme exception instead of fabricating a
+        // derivative, mirroring the non-exhaustive `match` diagnostic below.
+        if (op->diff_op.expression->type == ESHKOL_OP &&
+            op->diff_op.expression->operation.op == ESHKOL_QUOTE_OP) {
+            Function* raise_func = module->getFunction("eshkol_raise");
+            if (!raise_func) {
+                FunctionType* raise_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy()}, false);
+                raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                    "eshkol_raise", module.get());
+                raise_func->setDoesNotReturn();
+            }
+            Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+            }
+            Value* error_msg = codegenString(
+                "diff: symbolic differentiation of a quoted expression is not yet "
+                "implemented (pass an unquoted expression, e.g. (diff (* x x) x), "
+                "not (diff '(* x x) 'x))");
+            Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+            builder->CreateCall(raise_func, {exception});
+            builder->CreateUnreachable();
+            // codegenAST callers expect to keep emitting into the block this
+            // function leaves the builder positioned in (e.g. `guard`'s
+            // try-block epilogue branches to its merge block right after
+            // this call returns) — CreateUnreachable() above terminates the
+            // current block, so a fresh, unreachable-but-unterminated block
+            // is required here, exactly like the borrow-violation raise
+            // above (codegenSet's "mutation of borrowed value" path).
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            BasicBlock* after_raise_bb = BasicBlock::Create(*context, "diff_quote_unreachable", current_func);
+            builder->SetInsertPoint(after_raise_bb);
+            return packNullToTaggedValue();
+        }
+
         const char* var = op->diff_op.variable;
         eshkol_info("Building symbolic derivative S-expression for %s", var);
         
@@ -37323,15 +37820,23 @@ private:
         }
 
         Value* proc = resolveLambdaFunction(&op->call_op.variables[0], 2);
-        if (!proc) {
-            eshkol_error("Failed to resolve function for reduce");
-            return nullptr;
-        }
+        Function* proc_fn = proc ? dyn_cast<Function>(proc) : nullptr;
 
-        Function* proc_fn = dyn_cast<Function>(proc);
+        // RUNTIME CLOSURE FALLBACK (ESH-0070 class): when the procedure is
+        // not statically resolvable — a function parameter, a binding that
+        // shadows a same-named top-level function, or a closure produced at
+        // runtime — evaluate the operand and fold by calling the closure
+        // value per element, exactly as map does. Without this, reduce
+        // either substituted the shadowed global (silent wrong results) or
+        // emitted nothing for the call and crashed at runtime.
+        Value* proc_closure = nullptr;
         if (!proc_fn) {
-            eshkol_error("reduce function must be a procedure");
-            return nullptr;
+            proc_closure = codegenAST(&op->call_op.variables[0]);
+            if (!proc_closure) {
+                eshkol_error("Failed to resolve function for reduce");
+                return nullptr;
+            }
+            proc_closure = ensureTaggedValue(proc_closure);
         }
 
         Value* init_val = nullptr;
@@ -37408,8 +37913,16 @@ private:
         Value* elem = extractCarAsTaggedValue(curr);
         Value* acc = builder->CreateLoad(tagged_value_type, acc_ptr);
 
-        // Call proc(acc, elem)
-        Value* new_acc = builder->CreateCall(proc_fn, {acc, elem});
+        // Call proc(acc, elem) — direct call when statically resolved,
+        // closure dispatch otherwise (see fallback above).
+        Value* new_acc = proc_fn
+            ? builder->CreateCall(proc_fn, {acc, elem})
+            : codegenClosureCall(proc_closure, {acc, elem}, "reduce");
+        if (!new_acc) {
+            eshkol_error("reduce: closure dispatch failed");
+            return nullptr;
+        }
+        new_acc = ensureTaggedValue(new_acc);
         builder->CreateStore(new_acc, acc_ptr);
 
         // Move to next
@@ -37835,6 +38348,38 @@ private:
 
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
+    /**
+     * @brief True when @p name is lexically shadowed by a runtime binding of
+     *        the current function (ESH-0070 class).
+     *
+     * A function parameter (llvm::Argument) or local variable (AllocaInst
+     * owned by the current function) shadows any same-named top-level
+     * function. The unscoped <name>_func entries leak into every scope
+     * (preGenerateTopLevelLambdas writes both symbol_table and
+     * global_symbol_table) and function_table is global, so static
+     * procedure resolution MUST decline when this returns true — the only
+     * resolution that agrees with lexical scope is runtime dispatch on the
+     * local value. A scoped <current>.<name>_func entry exempts the name:
+     * it proves the local binding itself is a statically-known lambda
+     * (let-bound or local define), which static resolution handles
+     * correctly via the scoped lookup.
+     */
+    bool isShadowedByLocalRuntimeBinding(const std::string& name) {
+        if (!current_function) return false;
+        auto it = symbol_table.find(name);
+        if (it == symbol_table.end() || !it->second) return false;
+        Value* v = it->second;
+        bool is_param = isa<Argument>(v) &&
+            cast<Argument>(v)->getParent() == current_function;
+        bool is_local_alloca = isa<AllocaInst>(v) &&
+            cast<AllocaInst>(v)->getFunction() == current_function;
+        if (!is_param && !is_local_alloca) return false;
+        std::string scoped_key =
+            current_function->getName().str() + "." + name + "_func";
+        return symbol_table.find(scoped_key) == symbol_table.end() &&
+               global_symbol_table.find(scoped_key) == global_symbol_table.end();
+    }
+
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
         if (!func_ast) {
             eshkol_error("resolveLambdaFunction: func_ast is nullptr");
@@ -37901,8 +38446,57 @@ private:
             std::string func_name = func_ast->variable.id;
             eshkol_debug("resolveLambdaFunction: looking for variable '%s'", func_name.c_str());
 
+            // SHADOWING GUARD (ESH-0070 class): a function parameter or local
+            // alloca binding lexically shadows any same-named top-level
+            // function, so the static lookups below would silently
+            // substitute the shadowed top-level function for the local
+            // binding — e.g.
+            //   (define fn (lambda (x) (* x 100)))
+            //   (define (apply-map fn lst) (map fn lst))   ; used global fn
+            // Decline static resolution — callers fall back to runtime
+            // closure dispatch on the local value, which is the only
+            // resolution that agrees with lexical scope. See
+            // isShadowedByLocalRuntimeBinding for the exemption that keeps
+            // let-bound / locally defined lambdas on the scoped static path.
+            if (isShadowedByLocalRuntimeBinding(func_name)) {
+                eshkol_debug("resolveLambdaFunction: '%s' is shadowed by a local "
+                             "binding in '%s' — deferring to runtime dispatch",
+                             func_name.c_str(),
+                             current_function->getName().str().c_str());
+                return nullptr;
+            }
+
             // BUILTIN FIRST-CLASS FIX: Check for builtin math functions FIRST before raw function_table lookup
             // These need wrapper functions that take/return tagged_value_type
+            // SW-35: THE SECOND VALUE-POSITION ROUTE.
+            //
+            // There are two of them, and they were disagreeing. A builtin
+            // reached through a USER higher-order procedure — `(define (h f a)
+            // (f a))` — resolves through codegenVariable; a builtin reached
+            // through `map`/`for-each`/`filter`/`sort` resolves through THIS
+            // function. Fixing the rounding builtins in codegenVariable alone
+            // made `(h floor 7/3)` correct while `(map floor (list 7/3))` still
+            // printed a heap address, because this site kept handing back the
+            // same hand-written createBuiltinUnaryMathFunction wrapper that
+            // reads a rational's pointer as a double.
+            //
+            // Both routes now consult the generic inline-builtin wrapper
+            // first, so the exactness-aware call-position lowering is the
+            // single source of truth for both. The value-position sweep
+            // exercises BOTH routes for exactly this reason — a fix applied to
+            // one of two parallel sites is the shape of defect that keeps
+            // coming back.
+            static const std::set<std::string> rounding_builtins = {
+                "floor", "ceil", "ceiling", "round", "trunc", "truncate"
+            };
+            if (rounding_builtins.count(func_name)) {
+                if (Function* generic = createInlineBuiltinWrapper(func_name, 1)) {
+                    return generic;
+                }
+                // Fall through to the old factory if the generic path
+                // declined, rather than failing to resolve at all.
+            }
+
             static const std::set<std::string> math_builtins = {
                 "sin", "cos", "tan", "exp", "log", "sqrt", "abs", "fabs",
                 "asin", "acos", "atan", "sinh", "cosh", "tanh",
@@ -38698,17 +39292,29 @@ private:
         } else if (first_arg->type == ESHKOL_VAR) {
             // Variable - check if it's a function
             std::string var_name = first_arg->variable.id;
-            // Check function table first
-            auto func_it = function_table.find(var_name);
-            if (func_it != function_table.end() && func_it->second) {
-                is_predicate = true;
-                pred_func = func_it->second;
-            } else {
-                // Check for lambda reference
-                auto sym_it = symbol_table.find(var_name + "_func");
-                if (sym_it != symbol_table.end()) {
-                    pred_func = dyn_cast<Function>(sym_it->second);
-                    is_predicate = (pred_func != nullptr);
+
+            // SHADOWING GUARD (ESH-0070 class): function_table and the
+            // unscoped <name>_func entries describe top-level bindings, so
+            // when the name is rebound to a runtime value in the current
+            // function (parameter or local alloca) the lookups below would
+            // substitute the shadowed global as the predicate. Decline
+            // static predicate resolution in that case: the local binding is
+            // a runtime value, and remove's element-based path compares
+            // against exactly that value — the same behavior a non-shadowed
+            // runtime argument gets today.
+            if (!isShadowedByLocalRuntimeBinding(var_name)) {
+                // Check function table first
+                auto func_it = function_table.find(var_name);
+                if (func_it != function_table.end() && func_it->second) {
+                    is_predicate = true;
+                    pred_func = func_it->second;
+                } else {
+                    // Check for lambda reference
+                    auto sym_it = symbol_table.find(var_name + "_func");
+                    if (sym_it != symbol_table.end()) {
+                        pred_func = dyn_cast<Function>(sym_it->second);
+                        is_predicate = (pred_func != nullptr);
+                    }
                 }
             }
         }
@@ -38717,12 +39323,24 @@ private:
         if (!list) return nullptr;
         Value* list_int = safeExtractInt64(list);
 
-        // For element-based removal, get the item value
+        // For non-static-predicate removal, evaluate the operand ONCE.
+        // The value may still be a procedure at runtime — a function
+        // parameter, a binding that shadows a same-named top-level function
+        // (ESH-0070 class), or a closure produced by a call — and SRFI-1
+        // remove semantics require calling it as the predicate. Keep the
+        // tagged value for a runtime CALLABLE dispatch alongside the
+        // element-equality path.
         Value* item_int = nullptr;
+        Value* item_tagged = nullptr;
+        Value* item_is_callable = nullptr;
         if (!is_predicate) {
             Value* item = codegenAST(&op->call_op.variables[0]);
             if (!item) return nullptr;
-            item_int = safeExtractInt64(item);
+            item_tagged = ensureTaggedValue(item);
+            item_int = safeExtractInt64(item_tagged);
+            Value* item_base = getBaseType(getTaggedValueType(item_tagged));
+            item_is_callable = builder->CreateICmpEQ(item_base,
+                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -38771,12 +39389,39 @@ private:
             // Check if result is truthy (non-zero, non-false)
             Value* pred_result_int = safeExtractInt64(pred_result);
             is_match = builder->CreateICmpNE(pred_result_int, ConstantInt::get(int64_type, 0));
-        } else if (comparison_type == "equal" || comparison_type == "eqv") {
-            // Element-based: Value equality comparison
-            is_match = builder->CreateICmpEQ(input_element, item_int);
-        } else if (comparison_type == "eq") {
-            // Element-based: Pointer equality comparison
-            is_match = builder->CreateICmpEQ(input_element, item_int);
+        } else {
+            // Runtime dispatch (ESH-0070 class): the operand was not a
+            // statically-resolvable predicate — it may be a runtime
+            // procedure value (function parameter / shadowed binding /
+            // closure from a call) or a plain item. Branch on the tagged
+            // type: CALLABLE → call it as the predicate; anything else →
+            // element equality (eq/eqv/equal all compare the extracted
+            // value here, matching the previous behavior).
+            BasicBlock* pred_call_bb = BasicBlock::Create(*context, "remove_pred_call", current_func);
+            BasicBlock* item_cmp_bb = BasicBlock::Create(*context, "remove_item_cmp", current_func);
+            BasicBlock* match_merge_bb = BasicBlock::Create(*context, "remove_match_merge", current_func);
+            builder->CreateCondBr(item_is_callable, pred_call_bb, item_cmp_bb);
+
+            builder->SetInsertPoint(pred_call_bb);
+            Value* rt_pred_result = codegenClosureCall(item_tagged, {input_element_tagged}, "remove");
+            if (!rt_pred_result) {
+                eshkol_error("remove: closure dispatch failed");
+                return nullptr;
+            }
+            Value* rt_pred_int = safeExtractInt64(ensureTaggedValue(rt_pred_result));
+            Value* rt_pred_match = builder->CreateICmpNE(rt_pred_int, ConstantInt::get(int64_type, 0));
+            BasicBlock* pred_call_end = builder->GetInsertBlock();
+            builder->CreateBr(match_merge_bb);
+
+            builder->SetInsertPoint(item_cmp_bb);
+            Value* item_cmp_match = builder->CreateICmpEQ(input_element, item_int);
+            builder->CreateBr(match_merge_bb);
+
+            builder->SetInsertPoint(match_merge_bb);
+            PHINode* match_phi = builder->CreatePHI(int1_type, 2, "remove_is_match");
+            match_phi->addIncoming(rt_pred_match, pred_call_end);
+            match_phi->addIncoming(item_cmp_match, item_cmp_bb);
+            is_match = match_phi;
         }
 
         // If it matches (predicate true or equals item), skip it; otherwise keep it
@@ -39575,6 +40220,283 @@ private:
         auto it = table.find(var_name);
         if (it == table.end()) return nullptr;
         return &it->second;
+    }
+
+    /* ------------------------------------------------------------------
+     * FIRST-CLASS REFERENCES TO CALL-POSITION-ONLY BUILTINS  (LE-01)
+     * ------------------------------------------------------------------
+     *
+     * Most of Eshkol's builtin surface is lowered INLINE at the call site:
+     * `codegenCall` string-matches the head name and emits the operation
+     * directly (`string<?` -> StringIOCodegen::stringCompare, `vector-ref`
+     * -> the tensor/vector path, `expt`/`min`/`max` -> ArithmeticCodegen,
+     * and so on). That is the right lowering for `(string<? a b)`, but it
+     * means the NAME by itself never denotes a value: there is no LLVM
+     * function to point a closure at.
+     *
+     * Before this, each builtin that someone needed as a value got its own
+     * hand-written factory (createBuiltinComparisonFunction,
+     * createBuiltinPredicateFunction, createBuiltinCharFunction, …), each
+     * re-implementing the operation's semantics a SECOND time in IR. Two
+     * consequences, both observed:
+     *
+     *   1. Coverage was whatever had been asked for. Everything else fell
+     *      off the end of codegenVariable into "Undefined variable: <name>"
+     *      — or, worse, into the raw-Function* fallback below, which hands
+     *      the closure dispatcher a pointer to a function with a FOREIGN
+     *      ABI. Calling that is undefined behaviour: `(h2 remainder 7 3)`
+     *      SIGSEGV'd and `(h2 append '(1) '(2))` returned `1`.
+     *   2. The second implementation could drift from the call-site one
+     *      with nothing to catch it.
+     *
+     * The fix generalises the wrapper-closure IDIOM but not the duplicated
+     * bodies: we synthesise `builtin_fc_<name>` with the closure ABI
+     * (tagged_value…)->tagged_value whose body is generated by re-entering
+     * `codegenCall` on a synthetic `(name p0 … pN-1)` AST whose arguments
+     * are the wrapper's own parameters. The authoritative call-site lowering
+     * IS the wrapper body, so a first-class reference cannot disagree with a
+     * direct call, and adding a builtin to the first-class surface is one
+     * row of data rather than a new IR implementation.
+     *
+     * Placement: this is consulted only where the old code would otherwise
+     * have produced a garbage callable or an "Undefined variable" error, so
+     * it never changes which binding a name resolves to. Shadowing order —
+     * user definitions, locals, captures, REPL namespaces — is decided
+     * strictly before we get here and is untouched.
+     */
+    struct InlineBuiltinSpec {
+        size_t arity;
+    };
+
+    /* Fixed arity is the closure ABI's requirement, not a claim about the
+     * procedure: R7RS `min`/`max`/`string-append` accept any number of
+     * arguments, and referencing them as values yields the binary form —
+     * the same compromise the pre-existing `+`/`-`/`*`/`/` wrappers make
+     * (createBuiltinArithmeticFunction(name, 2)). Higher-order use is
+     * overwhelmingly binary (`(sort xs string<?)`, `(fold max 0 xs)`). */
+    const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const {
+        static const std::unordered_map<std::string, InlineBuiltinSpec> table = {
+            // Strings — comparisons
+            {"string=?",  {2}}, {"string<?",  {2}}, {"string>?",  {2}},
+            {"string<=?", {2}}, {"string>=?", {2}},
+            {"string-ci=?",  {2}}, {"string-ci<?",  {2}}, {"string-ci>?",  {2}},
+            {"string-ci<=?", {2}}, {"string-ci>=?", {2}},
+            // Strings — accessors and constructors
+            {"string-append", {2}}, {"string-length", {1}}, {"string-ref", {2}},
+            {"substring", {3}},
+            {"string->list", {1}}, {"list->string", {1}},
+            {"string->number", {1}}, {"number->string", {1}},
+            {"string->symbol", {1}}, {"symbol->string", {1}},
+            {"string-upcase", {1}}, {"string-downcase", {1}},
+            {"string-set!", {3}}, {"string-fill!", {2}},
+            // ARITY MUST MATCH THE FORM BEING WRAPPED. `make-string` was
+            // listed here at arity 1 when LE-01 first populated this table,
+            // which made `(h make-string 3 #\x)` return "   " — the fill
+            // character silently dropped, because a fixed-arity closure passes
+            // exactly `arity` arguments and the second never reached the
+            // lowering. Found by the value-position sweep, which is the point
+            // of the sweep: a table of arities maintained by hand needs a
+            // mechanical check that each row matches what the builtin does.
+            // R7RS `(make-string k [char])` is optional-argument and the
+            // closure ABI carries ONE arity, so the row has to pick a form.
+            // It wraps the FULL one, and that choice is not arbitrary: R7RS
+            // 6.7 says that when `char` is omitted "the contents are
+            // unspecified", so the 1-argument value reference producing
+            // different filler than the 1-argument call does is CONFORMING,
+            // while dropping a fill character the caller actually supplied is
+            // a wrong answer. Wrap the form whose result is specified. The
+            // 1-argument difference is recorded, with that reasoning, in
+            // tests/value_position/BASELINE.json rather than left to be
+            // rediscovered.
+            {"make-string", {2}},
+            // Characters
+            {"char=?",  {2}}, {"char<?",  {2}}, {"char>?",  {2}},
+            {"char<=?", {2}}, {"char>=?", {2}},
+            {"char-ci=?",  {2}}, {"char-ci<?",  {2}}, {"char-ci>?",  {2}},
+            {"char-ci<=?", {2}}, {"char-ci>=?", {2}},
+            {"char->integer", {1}}, {"integer->char", {1}},
+            {"char-alphabetic?", {1}}, {"char-numeric?", {1}},
+            {"char-whitespace?", {1}}, {"char-upper-case?", {1}},
+            {"char-lower-case?", {1}}, {"digit-value", {1}},
+            // Vectors
+            {"vector-ref", {2}}, {"vector-set!", {3}}, {"vector-length", {1}},
+            {"vector-fill!", {2}}, {"make-vector", {1}},
+            {"vector->list", {1}}, {"list->vector", {1}},
+            // Numerics
+            {"expt", {2}}, {"pow", {2}}, {"min", {2}}, {"max", {2}},
+            {"modulo", {2}}, {"quotient", {2}}, {"remainder", {2}},
+            {"gcd", {2}}, {"lcm", {2}},
+            {"exact->inexact", {1}}, {"inexact->exact", {1}},
+            {"exact", {1}}, {"inexact", {1}},
+            {"numerator", {1}}, {"denominator", {1}},
+            {"square", {1}},
+            // Rounding (SW-35). These are routed here instead of to
+            // createBuiltinUnaryMathFunction because their call-position
+            // lowering is EXACTNESS-AWARE — exact integers and bignums are the
+            // identity, rationals go through eshkol_rational_<op>_tagged — and
+            // the hand-written wrapper read a rational's heap pointer as a
+            // double instead. Generating the body from codegenCall is what
+            // makes the value route inherit that lowering rather than
+            // re-implement a subset of it.
+            {"floor", {1}}, {"ceiling", {1}}, {"ceil", {1}},
+            {"truncate", {1}}, {"trunc", {1}}, {"round", {1}},
+            // Booleans / symbols / general predicates
+            {"not", {1}}, {"boolean=?", {2}}, {"symbol=?", {2}},
+            // The R7RS numeric-tower predicate family, complete (SW-34).
+            // `complex?` was the one missing row, and its absence was a LOUD
+            // compile-time "Undefined variable: complex?" the moment the name
+            // was read as a value, while the same name in call position
+            // worked — which is why the predicate matrix carried a documented
+            // exclusion for it. The family is listed as a family, not
+            // name-by-name as need arises, because that is how the gap
+            // appeared in the first place.
+            {"number?", {1}}, {"complex?", {1}}, {"real?", {1}},
+            {"rational?", {1}}, {"integer?", {1}},
+            {"exact?", {1}}, {"inexact?", {1}}, {"exact-integer?", {1}},
+            {"nan?", {1}}, {"infinite?", {1}}, {"finite?", {1}},
+            // Type predicates
+            {"string?", {1}}, {"symbol?", {1}},
+            {"vector?", {1}}, {"boolean?", {1}}, {"char?", {1}},
+            {"procedure?", {1}}, {"list?", {1}}, {"null?", {1}},
+            {"pair?", {1}},
+            // Lists
+            // NOTE: `append` and `string-copy` are deliberately absent. Neither
+            // is lowered inline: both are REST-ARG stdlib procedures —
+            // `(define (append . lists) …)` in lib/core/list/transform.esk and
+            // `(define (string-copy str . bounds) …)` in lib/core/strings.esk —
+            // so a reference to either resolves to the stdlib function long
+            // before this table is consulted. Both are still broken as values:
+            // `(h append '(1) '(2))` answers `1`, and `(h string-copy "abc")`
+            // SIGSEGVs under AOT. A rest-arg procedure referenced as a value
+            // loses its variadic flag; that is a separate defect in the
+            // stdlib-procedure-as-value path, reported rather than papered
+            // over by a table row that would never be reached anyway.
+            {"list-tail", {2}}, {"set-car!", {2}}, {"set-cdr!", {2}},
+        };
+        auto it = table.find(name);
+        if (it == table.end()) return nullptr;
+        return &it->second;
+    }
+
+    // Names currently having a wrapper body generated, so a builtin whose
+    // call-site lowering ends up resolving its own head as a variable cannot
+    // recurse into this factory forever.
+    std::set<std::string> inline_builtin_wrapper_in_progress_;
+    // Stable storage for the synthetic parameter identifiers handed to the
+    // AST (`variable.id` is a char*; a std::deque never invalidates).
+    std::deque<std::string> inline_builtin_synthetic_names_;
+
+    Function* createInlineBuiltinWrapper(const std::string& name, size_t arity) {
+        std::string func_name = "builtin_fc_";
+        for (char c : name) {
+            if (std::isalnum(static_cast<unsigned char>(c))) func_name += c;
+            else func_name += '_' + std::to_string(static_cast<int>(c));
+        }
+
+        if (Function* existing = module->getFunction(func_name)) {
+            return existing;
+        }
+        if (inline_builtin_wrapper_in_progress_.count(name)) {
+            return nullptr;
+        }
+
+        std::vector<Type*> param_types(arity, tagged_value_type);
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, param_types, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            func_name, module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrap_fn);
+        builder->SetInsertPoint(entry);
+        current_function = wrap_fn;
+
+        // Bind the wrapper's parameters under synthetic identifiers and build
+        // `(name p0 … pN-1)`. Any prior symbol_table entry for those names is
+        // saved and restored so a nested wrapper cannot clobber an outer one.
+        std::vector<eshkol_ast_t> arg_asts(arity);
+        std::vector<std::pair<std::string, Value*>> saved_bindings;
+        saved_bindings.reserve(arity);
+        auto arg_it = wrap_fn->arg_begin();
+        for (size_t i = 0; i < arity; ++i) {
+            inline_builtin_synthetic_names_.push_back(
+                "__fc_builtin_arg" + std::to_string(i));
+            const std::string& arg_name = inline_builtin_synthetic_names_.back();
+            Argument* param = &*arg_it++;
+            param->setName(arg_name);
+
+            auto prev = symbol_table.find(arg_name);
+            saved_bindings.push_back(
+                {arg_name, prev == symbol_table.end() ? nullptr : prev->second});
+            symbol_table[arg_name] = param;
+
+            arg_asts[i] = eshkol_ast_t{};
+            arg_asts[i].type = ESHKOL_VAR;
+            arg_asts[i].variable.id = const_cast<char*>(arg_name.c_str());
+        }
+
+        inline_builtin_synthetic_names_.push_back(name);
+        eshkol_ast_t head_ast{};
+        head_ast.type = ESHKOL_VAR;
+        head_ast.variable.id =
+            const_cast<char*>(inline_builtin_synthetic_names_.back().c_str());
+
+        eshkol_operations_t call{};
+        call.op = ESHKOL_CALL_OP;
+        call.call_op.func = &head_ast;
+        call.call_op.variables = arg_asts.empty() ? nullptr : arg_asts.data();
+        call.call_op.num_vars = arity;
+
+        inline_builtin_wrapper_in_progress_.insert(name);
+        Value* result = codegenCall(&call);
+        inline_builtin_wrapper_in_progress_.erase(name);
+
+        for (const auto& [arg_name, prev] : saved_bindings) {
+            if (prev) symbol_table[arg_name] = prev;
+            else symbol_table.erase(arg_name);
+        }
+
+        bool ok = false;
+        if (builder->GetInsertBlock() &&
+            builder->GetInsertBlock()->getTerminator()) {
+            // The lowering ended the block itself (e.g. a raise/exit path).
+            ok = true;
+        } else if (result) {
+            Value* tagged = ensureTaggedValue(result);
+            if (tagged && tagged->getType() == tagged_value_type) {
+                builder->CreateRet(tagged);
+                ok = true;
+            }
+        }
+
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+
+        if (!ok) {
+            // Never leave a body-less definition in the module: it would
+            // verify-fail the whole unit. Drop it and let the caller fall
+            // back to its previous behaviour for this name.
+            wrap_fn->eraseFromParent();
+            return nullptr;
+        }
+        return wrap_fn;
+    }
+
+    /* Give a call-position-only builtin an honest first-class value, or
+     * nullptr if the name is not one we can wrap. */
+    Value* codegenInlineBuiltinAsValue(const std::string& name) {
+        const InlineBuiltinSpec* spec = lookupInlineBuiltin(name);
+        if (!spec) return nullptr;
+        Function* wrapper = createInlineBuiltinWrapper(name, spec->arity);
+        if (!wrapper) return nullptr;
+        return emitFunctionAsCallableValue(wrapper, spec->arity);
     }
 
     // Create wrapper function for builtin unary math functions (abs, etc.)

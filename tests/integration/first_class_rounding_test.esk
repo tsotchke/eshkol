@@ -1,0 +1,136 @@
+;;; first_class_rounding_test.esk
+;;;
+;;; SW-35 class-kill test: floor / ceiling / truncate / round used as
+;;; FIRST-CLASS VALUES must answer exactly what they answer in call position,
+;;; across the whole numeric tower.
+;;;
+;;; These four are not plain libm wrappers. Their call-position lowering
+;;; dispatches on EXACTNESS first: an exact integer or a bignum is the
+;;; identity, a RATIONAL goes through eshkol_rational_<op>_tagged and may
+;;; produce a result too large for an int64, and only an inexact real reaches
+;;; libm. The value-position route used a separate, hand-written wrapper that
+;;; knew none of that — it unpacked the tagged operand as a double, which for
+;;; a rational is its HEAP POINTER. So:
+;;;
+;;;     (map floor (list 7/3 -7/3 (/ (expt 2 100) 3)))
+;;;       => (4966570936 4966571152 4966571728)
+;;;
+;;; Those are addresses. They changed between runs of the same binary, and
+;;; `exact?` on each answered #f. `(floor 7/3)` in call position was correct
+;;; throughout, and the VM was correct throughout, so nothing else caught it.
+;;;
+;;; The fix routes these four through the generic wrapper that GENERATES its
+;;; body from the call-position lowering, rather than patching the duplicate —
+;;; the same mechanism, and the same reasoning, as LE-01.
+;;;
+;;; THE ORACLE IS DIFFERENTIAL: every check compares the value-position result
+;;; against the identical call-position expression in the same program. That
+;;; matters more than usual here, because the correct answers include a
+;;; 31-digit bignum that no one should be hand-transcribing into a test.
+;;;
+;;; BOTH value-position routes are exercised. A user higher-order procedure
+;;; resolves the name through codegenVariable; `map` resolves it through
+;;; resolveLambdaFunction. SW-35 was live in both, and fixing only the first
+;;; left `(map floor (list 7/3))` still printing an address while
+;;; `(h floor 7/3)` had become correct.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (h1 f a) (f a))
+
+;; route 1: user higher-order procedure   route 2: builtin combinator
+(define (via-hof f v) (h1 f v))
+(define (via-map f v) (car (map f (list v))))
+
+(define (agrees name f v direct)
+  (check (string-append name " via HOF") (equal? (via-hof f v) direct))
+  (check (string-append name " via map") (equal? (via-map f v) direct)))
+
+;; --------------------------------------------------------------------
+;; RATIONALS — the case that returned heap addresses.
+;; --------------------------------------------------------------------
+(agrees "floor 7/3"        floor    7/3  (floor 7/3))
+(agrees "floor -7/3"       floor    -7/3 (floor -7/3))
+(agrees "ceiling 7/3"      ceiling  7/3  (ceiling 7/3))
+(agrees "ceiling -7/3"     ceiling  -7/3 (ceiling -7/3))
+(agrees "truncate 7/3"     truncate 7/3  (truncate 7/3))
+(agrees "truncate -7/3"    truncate -7/3 (truncate -7/3))
+(agrees "round 7/3"        round    7/3  (round 7/3))
+(agrees "round -7/3"       round    -7/3 (round -7/3))
+
+;; A rational whose floor EXCEEDS int64. This is the case an int64-returning
+;; rounding entry point cannot carry at all, so it pins that the value route
+;; reaches the tagged entry point and not merely a fixed version of the old one.
+(define big-ratio (/ (expt 2 100) 3))
+(agrees "floor 2^100/3"    floor    big-ratio (floor big-ratio))
+(agrees "ceiling 2^100/3"  ceiling  big-ratio (ceiling big-ratio))
+(agrees "truncate 2^100/3" truncate big-ratio (truncate big-ratio))
+(agrees "round 2^100/3"    round    big-ratio (round big-ratio))
+
+;; The result must be an exact integer, not a float and not an address.
+(check "floor of a rational is exact"
+       (exact? (via-hof floor 7/3)))
+(check "floor of a big rational is exact"
+       (exact? (via-hof floor big-ratio)))
+(check "floor of a big rational is an integer"
+       (integer? (via-hof floor big-ratio)))
+
+;; --------------------------------------------------------------------
+;; EXACT INTEGERS — identity, and must stay exact.
+;; --------------------------------------------------------------------
+(agrees "floor 5"          floor    5    (floor 5))
+(agrees "ceiling 5"        ceiling  5    (ceiling 5))
+(agrees "truncate -5"      truncate -5   (truncate -5))
+(agrees "round 5"          round    5    (round 5))
+(check "floor of an exact integer stays exact" (exact? (via-hof floor 5)))
+
+;; A bignum is also an exact integer and also the identity.
+(define big-int (expt 2 100))
+(agrees "floor 2^100"      floor    big-int (floor big-int))
+(agrees "round 2^100"      round    big-int (round big-int))
+
+;; --------------------------------------------------------------------
+;; INEXACT REALS — the only case that reaches libm, including R7RS
+;; round-half-to-even.
+;; --------------------------------------------------------------------
+(agrees "floor 2.7"        floor    2.7  (floor 2.7))
+(agrees "floor -2.7"       floor    -2.7 (floor -2.7))
+(agrees "ceiling 2.1"      ceiling  2.1  (ceiling 2.1))
+(agrees "truncate -2.7"    truncate -2.7 (truncate -2.7))
+(agrees "round 2.5"        round    2.5  (round 2.5))
+(agrees "round 3.5"        round    3.5  (round 3.5))
+(agrees "round -2.5"       round    -2.5 (round -2.5))
+
+;; --------------------------------------------------------------------
+;; Whole-tower probe in one list — the shape the defect was found with.
+;; --------------------------------------------------------------------
+(check "map floor over the whole tower"
+       (equal? (map floor (list 7/3 -7/3 big-ratio 2.7 5))
+               (list (floor 7/3) (floor -7/3) (floor big-ratio)
+                     (floor 2.7) (floor 5))))
+
+;; Stored and returned, not only passed.
+(define stored-floor floor)
+(check "stored in a variable" (equal? (h1 stored-floor 7/3) (floor 7/3)))
+
+(define (floor-factory) floor)
+(check "returned from a procedure"
+       (equal? (h1 (floor-factory) 7/3) (floor 7/3)))
+
+(check "read out of a list"
+       (equal? (h1 (car (list floor)) 7/3) (floor 7/3)))
+
+(if (= failures 0)
+    (begin (display "PASS: first-class rounding — 0 failures") (newline))
+    (begin (display "FAIL: first-class rounding — ")
+           (display failures)
+           (display " failure(s)")
+           (newline)))

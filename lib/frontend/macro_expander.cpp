@@ -513,6 +513,11 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
         return null_ast;
     }
 
+    // Each instantiation starts from an empty rename scope: renames are local
+    // to one expansion of one template. The counter is NOT reset, so names
+    // stay unique across the whole run.
+    active_renames_.clear();
+
     switch (tmpl->type) {
         case MACRO_TPL_LITERAL:
             // The template is stored as a literal AST
@@ -934,6 +939,33 @@ std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_a
  *
  * @return The substituted AST subtree.
  */
+/**
+ * @brief Allocate a fresh name for a template-introduced binder and bind it in
+ * the active rename scope (R7RS 4.3.2 hygiene).
+ *
+ * The counter is monotonic across the whole expansion run, so two invocations
+ * of the same macro receive distinct names — which is required, because their
+ * bindings are distinct. The `.` in the generated name mirrors the VM
+ * expander's format so the two engines are recognisably doing the same thing.
+ */
+std::string MacroExpander::freshName(const std::string& name) {
+    std::string fresh = "_h" + std::to_string(rename_counter_++) + "." + name;
+    active_renames_[name] = fresh;
+    return fresh;
+}
+
+/**
+ * @brief Reports whether a template identifier in a binder position may be
+ * alpha-renamed.
+ *
+ * Pattern variables may not: they are replaced by caller code, which must keep
+ * the caller's own names. `_` is not an identifier.
+ */
+bool MacroExpander::isRenameableBinder(const std::string& name, const Bindings& bindings) {
+    if (name.empty() || name == "_") return false;
+    return bindings.find(name) == bindings.end();
+}
+
 eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                                                  const Bindings& bindings) {
     // Check if this is a variable that should be substituted
@@ -942,6 +974,17 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
         auto it = bindings.find(name);
         if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
             return copyAst(matchTreeFirstScalar(it->second.tree));
+        }
+        // Hygiene: a template identifier bound by the template itself carries
+        // the fresh name allocated at its binder (R7RS 4.3.2). Anything else
+        // is free in the template and is emitted verbatim.
+        auto rn = active_renames_.find(name);
+        if (!in_datum_ && rn != active_renames_.end()) {
+            eshkol_ast_t result = copyAst(ast);
+            // copyAst() strdup()s the id, so this must be free()/strdup() too.
+            free(result.variable.id);
+            result.variable.id = strdup(rn->second.c_str());
+            return result;
         }
         return copyAst(ast);
     }
@@ -979,7 +1022,17 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             case ESHKOL_QUASIQUOTE_OP:
             case ESHKOL_UNQUOTE_OP:
             case ESHKOL_UNQUOTE_SPLICING_OP:
-            case ESHKOL_QUOTE_OP:
+            case ESHKOL_QUOTE_OP: {
+                // Hygiene: a symbol in quoted data is DATA, so it keeps its
+                // literal name; unquote escapes back to identifier position.
+                // Pattern-variable substitution is unaffected either way.
+                const bool saved_datum = in_datum_;
+                if (op->op == ESHKOL_QUOTE_OP || op->op == ESHKOL_QUASIQUOTE_OP) {
+                    in_datum_ = true;
+                } else if (op->op == ESHKOL_UNQUOTE_OP ||
+                           op->op == ESHKOL_UNQUOTE_SPLICING_OP) {
+                    in_datum_ = false;
+                }
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = substituteBindings(*op->call_op.func, bindings);
@@ -999,7 +1052,9 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                         op->call_op.variables = nullptr;
                     }
                 }
+                in_datum_ = saved_datum;
                 break;
+            }
 
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
@@ -1030,22 +1085,115 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_LAMBDA_OP:
+            case ESHKOL_LAMBDA_OP: {
+                // Hygiene: a template-introduced parameter is fresh in the body.
+                auto saved_renames = active_renames_;
+                if (op->lambda_op.num_params > 0 && op->lambda_op.parameters) {
+                    eshkol_ast_t* new_params = new eshkol_ast_t[op->lambda_op.num_params];
+                    for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
+                        const eshkol_ast_t& p = op->lambda_op.parameters[i];
+                        if (p.type == ESHKOL_VAR && p.variable.id &&
+                            isRenameableBinder(p.variable.id, bindings)) {
+                            freshName(p.variable.id);
+                        }
+                        new_params[i] = substituteBindings(p, bindings);
+                    }
+                    op->lambda_op.parameters = new_params;
+                }
+                if (op->lambda_op.rest_param &&
+                    isRenameableBinder(op->lambda_op.rest_param, bindings)) {
+                    op->lambda_op.rest_param =
+                        strdup(freshName(op->lambda_op.rest_param).c_str());
+                }
                 if (op->lambda_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t;
                     *new_body = substituteBindings(*op->lambda_op.body, bindings);
                     op->lambda_op.body = new_body;
                 }
+                active_renames_ = saved_renames;
                 break;
+            }
 
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
-                if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
-                    eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
+            case ESHKOL_LETREC_STAR_OP: {
+                // Hygiene: each template-introduced binder gets a fresh name,
+                // visible exactly where the binding construct makes it visible.
+                //   let          inits see the OUTER scope
+                //   let*         init i sees binders 0..i-1
+                //   letrec(*)    every init sees every binder
+                //   named let    the loop name is bound in the body
+                const bool is_rec = (op->op == ESHKOL_LETREC_OP ||
+                                     op->op == ESHKOL_LETREC_STAR_OP);
+                const bool is_seq = (op->op == ESHKOL_LET_STAR_OP);
+                auto saved_renames = active_renames_;
+
+                if (is_rec && op->let_op.num_bindings > 0 && op->let_op.bindings) {
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                        new_bindings[i] = substituteBindings(op->let_op.bindings[i], bindings);
+                        const eshkol_ast_t& b = op->let_op.bindings[i];
+                        if (b.type == ESHKOL_CONS && b.cons_cell.car &&
+                            b.cons_cell.car->type == ESHKOL_VAR &&
+                            b.cons_cell.car->variable.id &&
+                            isRenameableBinder(b.cons_cell.car->variable.id, bindings)) {
+                            freshName(b.cons_cell.car->variable.id);
+                        }
+                    }
+                }
+                if (op->let_op.name && isRenameableBinder(op->let_op.name, bindings)) {
+                    op->let_op.name = strdup(freshName(op->let_op.name).c_str());
+                }
+
+                if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
+                    const uint64_t n = op->let_op.num_bindings;
+                    eshkol_ast_t* new_bindings = new eshkol_ast_t[n];
+                    std::vector<eshkol_ast_t> inits(n);
+                    std::vector<bool> is_cons(n, false);
+
+                    // Pass 1 — inits. For plain `let` every init is substituted
+                    // while NO binder of this group is in scope (that is what
+                    // makes `let` parallel); `let*` accumulates as it goes;
+                    // `letrec` already has the whole group in scope.
+                    for (uint64_t i = 0; i < n; i++) {
+                        const eshkol_ast_t& b = op->let_op.bindings[i];
+                        if (b.type != ESHKOL_CONS || !b.cons_cell.car) continue;
+                        is_cons[i] = true;
+                        inits[i] = b.cons_cell.cdr
+                            ? substituteBindings(*b.cons_cell.cdr, bindings)
+                            : eshkol_ast_t{};
+                        if (is_seq && b.cons_cell.car->type == ESHKOL_VAR &&
+                            b.cons_cell.car->variable.id &&
+                            isRenameableBinder(b.cons_cell.car->variable.id, bindings)) {
+                            freshName(b.cons_cell.car->variable.id);
+                        }
+                    }
+
+                    // Pass 2 — binders. For plain `let` they all enter scope
+                    // together, after every init has been substituted.
+                    if (!is_rec && !is_seq) {
+                        for (uint64_t i = 0; i < n; i++) {
+                            if (!is_cons[i]) continue;
+                            const eshkol_ast_t* car = op->let_op.bindings[i].cons_cell.car;
+                            if (car->type == ESHKOL_VAR && car->variable.id &&
+                                isRenameableBinder(car->variable.id, bindings)) {
+                                freshName(car->variable.id);
+                            }
+                        }
+                    }
+
+                    for (uint64_t i = 0; i < n; i++) {
+                        const eshkol_ast_t& b = op->let_op.bindings[i];
+                        if (!is_cons[i]) {
+                            new_bindings[i] = substituteBindings(b, bindings);
+                            continue;
+                        }
+                        eshkol_ast_t nb;
+                        nb.type = ESHKOL_CONS;
+                        nb.cons_cell.car = new eshkol_ast_t;
+                        *nb.cons_cell.car = substituteBindings(*b.cons_cell.car, bindings);
+                        nb.cons_cell.cdr = new eshkol_ast_t;
+                        *nb.cons_cell.cdr = inits[i];
+                        new_bindings[i] = nb;
                     }
                     op->let_op.bindings = new_bindings;
                 }
@@ -1054,7 +1202,9 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     *new_body = substituteBindings(*op->let_op.body, bindings);
                     op->let_op.body = new_body;
                 }
+                active_renames_ = saved_renames;
                 break;
+            }
 
             case ESHKOL_MATCH_OP:
                 if (op->match_op.expr) {
@@ -1101,6 +1251,31 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
 
             case ESHKOL_SET_OP:
+                // The TARGET is a bare char*, not an AST node, so it was never
+                // reached by the substitution walk. A template like
+                //     ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))
+                // therefore emitted a literal `a`, and the classic swap! macro
+                // failed to compile with "set!: undefined variable 'a'".
+                // R7RS 4.3.2: a pattern variable is substituted wherever it
+                // occurs in the template, assignment targets included.
+                if (op->set_op.name) {
+                    std::string target = op->set_op.name;
+                    auto it = bindings.find(target);
+                    if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
+                        const eshkol_ast_t& v = matchTreeFirstScalar(it->second.tree);
+                        if (v.type == ESHKOL_VAR && v.variable.id) {
+                            op->set_op.name = strdup(v.variable.id);
+                        }
+                        // A non-identifier operand in a set! target position is
+                        // a user error; leave the name alone so the compiler
+                        // reports it rather than silently mutating something.
+                    } else {
+                        auto rn = active_renames_.find(target);
+                        if (rn != active_renames_.end()) {
+                            op->set_op.name = strdup(rn->second.c_str());
+                        }
+                    }
+                }
                 if (op->set_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = substituteBindings(*op->set_op.value, bindings);

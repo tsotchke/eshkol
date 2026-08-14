@@ -38,7 +38,8 @@ to miss.
 - **`(the <type> expr)` is `native-only-justified`.** The checked type
   ascription is a compile-time construct on the native type checker with no VM
   surface; it is a runtime no-op, so a VM program that omits it computes the
-  identical result.
+  identical result. The contradiction diagnostic added in v1.3.4 is likewise
+  compile-time and emits no code, so runtime parity is unchanged.
 
 ## The manifest
 

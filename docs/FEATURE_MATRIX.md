@@ -69,7 +69,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Function arrows (→) | Yes | `(→ A B)` types | Type inference |
 | Dependent types | Yes | Path types, universes | Proof erasure |
 | Gradual typing | Yes | Optional annotations | Warning-only errors |
-| Checked ascription `(the <type> expr)` | Yes | v1.3.4: trusted assertion to the checker; runtime no-op (byte-identical IR) | Type checker |
+| Checked ascription `(the <type> expr)` | Yes | v1.3.4: trusted assertion to the checker; a provably disjoint ascription is reported (warning under gradual typing, fatal under `--strict-types`); still a runtime no-op (byte-identical IR) | Type checker |
 | Predicate-guarded narrowing | Yes | v1.3.4: 8 predicates, honored across `if`/`and`, cancelled at `set!` | Type checker |
 | Linear `Qubit` type | Yes | v1.3.4: use-exactly-once enforcement on `define`d linear params | HoTT linear types |
 | Sum-type annotations on named-let params | Yes | v1.3.4: honored across iterations | Type checker |
@@ -105,7 +105,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Forward-Mode AD** |
 | Dual numbers | Yes | Forward | O(1) overhead/op |
 | Scalar derivatives | Yes | Forward | `derivative` |
-| Higher-order derivatives | Yes, with one known exception | Forward | Every *well-defined* spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact). **Exception**: the Taylor tower does not nest — `(derivative-n df x k)` over a derivative *closure*, and `derivative-n` of `derivative-n`, silently return `0`. See [KNOWN_ISSUES](KNOWN_ISSUES.md#tracked-open-issues) ("The Taylor tower cannot nest") |
+| Higher-order derivatives | Yes | Forward | Nested differentials; every spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact) |
 | Math function support | Yes | Forward | sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow |
 | Dual arithmetic | Yes | Forward | +, -, *, / |
 | `derivative` operator | Yes | Forward | 30+ tests |
@@ -810,7 +810,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | R7RS module forms (`op:IMPORT` / `op:PROVIDE` / `op:REQUIRE`) | Yes | v1.3.4-evolve (#402): the VM lane previously knew none of `define-library` / `import` / `export`. All three move to `vm-supported` with no new waivers; three latent VM defects were fixed with them (`provide` emitting nothing via a slot shift, a module-loader POP desync, and a fail-open forward reference now refused) |
 | Portable event loop | Yes | v1.3.4-evolve (ESH-0011): `make-event-loop`, `event-loop-poll`, `event-loop-add-fd!`, `event-loop-remove-fd!`, `event-loop-close`, `event-loop-backend` all `vm-supported` |
 | Region handles / `with-region` | Surface yes, reclamation no | `region-open?` is `vm-supported`; `region-open`, `region-close` and `op:WITH_REGION` are `native-only-justified`. The name resolves on both substrates and the handle protocol, its validation and every error message are byte-identical (one shared C implementation), so output parity holds — what is native-only is the reclamation, because the VM heap has no escape evacuator |
-| Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result |
+| Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result. The contradiction diagnostic added in v1.3.4 is likewise compile-time, so runtime parity is unchanged |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |
 | 3-way verification | Yes | Reference = simulated = matrix-based (126/126 inline, 123/123 traced) |
@@ -820,7 +820,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Complete | Zero stubs, zero stdout contamination; gated by the VM source suite, the 81/81 C-API suite, and the 140/140 VM parity differential |
+| VM Production | Complete | Zero stubs, zero stdout contamination; gated by the VM source suite, the 81/81 C-API suite, and the 184/184 VM parity differential |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)

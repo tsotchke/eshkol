@@ -5,12 +5,12 @@
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
 
 **Release gates, measured on the v1.3.4-evolve cut**: aggregate suite **45/45
-suites and 770 individual tests**; CTest **140/140**, which as of this release
+suites and 770 individual tests**; CTest **180/181** (the single red is the value-position sweep's newly-found `cadddr` call-vs-value divergence, an open item for the next fix wave), which as of this release
 is completion-oracle evidence rather than advice; executable language coverage
 **1,091/1,091 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**140/140** over a **956-row** manifest (581 `vm-supported`, 44
+**184/184** over a **956-row** manifest (581 `vm-supported`, 44
 `native-only-justified`, 331 `gap`); qLLM oracle gate **10/10**; ICC readiness
 **100**, verdict `ready`. See [TESTING.md](TESTING.md) for how each gate is run
 and [VM_PARITY.md](VM_PARITY.md) for the parity contract.
@@ -65,7 +65,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 140/140 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | 180/181 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash
@@ -73,7 +73,7 @@ Primary test command:
 ```
 
 The release gate also builds and runs `build/test_vm_c_api`, which currently
-passes 81/81 checks, and includes the VM CTest smoke in the 140/140 CTest
+passes 81/81 checks, and includes the VM CTest smoke in the CTest
 result.
 
 Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (append/ref/substring/upcase/split/join), lists (map/filter/fold/sort/assoc/member), closures (capture/mutation/composition), control flow (call/cc/guard/raise/dynamic-wind/values), automatic differentiation (derivative/gradient via dual numbers), consciousness engine (KB/factor-graph/workspace), and R7RS forms (let/letrec/named-let/do/cond/case-lambda/quasiquote).

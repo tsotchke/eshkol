@@ -23,9 +23,19 @@
 ;; generated ascription per entry, so a name added there cannot escape coverage
 ;; even if this fixture is not updated alongside it.
 ;;
-;; `the` is an UNCHECKED trust boundary, so the values below are chosen for
-;; plausibility, not enforcement — what is under test is that every name is
-;; recognised as a type and resolves to a real type instead of degrading.
+;; What is under test here is the SPELLING surface: that every name is
+;; recognised as a type and resolves to a real type instead of degrading into a
+;; call to an undefined procedure named `the`.
+;;
+;; SW-10/SW-11: `the` is still a trusted narrowing boundary and still a pure
+;; runtime no-op, but the checker now rejects an ascription it can PROVE no
+;; value satisfies (see TypeChecker::ascriptionIsBelievable). Ascriptions of an
+;; opaque or resource type — tensor, hash-table, ptr, dual, ad-node, handle,
+;; buffer, stream, qubit — therefore go through `identity-fn` below, whose
+;; untyped parameter makes the operand dynamic. That is the narrowing case the
+;; form exists for, it keeps every spelling covered, and it no longer asserts
+;; that a provably impossible ascription passes silently. The separate
+;; contradiction behaviour is pinned by ascription_contradiction_test.esk.
 ;; EXPECT-MODE: strict-types
 ;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: [ERROR]
@@ -101,26 +111,26 @@
 ;; Containers and constructors, written bare
 (display (the list (list 1 2)))     (newline)
 (display (the vector (vector 1 2))) (newline)
-(display (the tensor 3))            (newline)
+(display (the tensor (identity-fn 3)))            (newline)
 (display (the pair (cons 1 2)))     (newline)
 (display ((the procedure identity-fn) 7)) (newline)
 (display ((the closure identity-fn) 8))   (newline)
-(display (the hash-table 3))        (newline)
-(display (the hashtable 3))         (newline)
-(display (the ptr 3))               (newline)
-(display (the pointer 3))           (newline)
+(display (the hash-table (identity-fn 3)))        (newline)
+(display (the hashtable (identity-fn 3)))         (newline)
+(display (the ptr (identity-fn 3)))               (newline)
+(display (the pointer (identity-fn 3)))           (newline)
 
 ;; Autodiff
-(display (the dual 1.5))            (newline)
-(display (the dual-number 1.5))     (newline)
-(display (the ad-node 1.5))         (newline)
-(display (the adnode 1.5))          (newline)
+(display (the dual (identity-fn 1.5)))            (newline)
+(display (the dual-number (identity-fn 1.5)))     (newline)
+(display (the ad-node (identity-fn 1.5)))         (newline)
+(display (the adnode (identity-fn 1.5)))          (newline)
 
 ;; Linear resources
-(display (the handle 3))            (newline)
-(display (the buffer 3))            (newline)
-(display (the stream 3))            (newline)
-(display (the qubit 3))             (newline)
+(display (the handle (identity-fn 3)))            (newline)
+(display (the buffer (identity-fn 3)))            (newline)
+(display (the stream (identity-fn 3)))            (newline)
+(display (the qubit (identity-fn 3)))             (newline)
 
 ;; Type names are case-insensitive, matching the type environment's lookup.
 (display (the Number 3))            (newline)
@@ -133,9 +143,9 @@
 
 (display (the (list integer) (list 1 2)))          (newline)
 (display (the (vector real) (vector 1.5 2.5)))     (newline)
-(display (the (tensor real) 3))                    (newline)
+(display (the (tensor real) (identity-fn 3)))      (newline)
 (display (the (pair integer string) (cons 1 "a"))) (newline)
-(display (the (ptr integer) 3))                    (newline)
+(display (the (ptr integer) (identity-fn 3)))      (newline)
 (display ((the (-> integer integer) identity-fn) 9)) (newline)
 (display (the (+ string number) "either"))         (newline)
 (display (the (* integer string) (cons 1 "a")))    (newline)

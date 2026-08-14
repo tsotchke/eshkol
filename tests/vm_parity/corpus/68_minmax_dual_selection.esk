@@ -1,0 +1,78 @@
+;; SW-40: a forward-mode derivative taken THROUGH min/max must carry the
+;; SELECTED operand's tangent, on both engines.
+;;
+;; min/max are SELECTION operators — the result IS one of the operands — so the
+;; derivative of min(f,g) follows whichever branch was chosen. Native
+;; ArithmeticCodegen::min/max open with an explicit dual-number arm that
+;; promotes both sides, compares primals and packs the chosen dual. The VM's
+;; min/max (natives 33/34, reached as _min2/_max2 under the variadic prelude)
+;; had no such arm: both operands fell through to as_number_vm(), which returns
+;; a dual's primal and DISCARDS its tangent, so the result came back a bare
+;; flonum and every derivative through min/max read 0 — while the PRIMAL stayed
+;; correct, which is what kept it invisible.
+;;
+;; A zero derivative is the worst shape of silent-wrong for an AD system: it is
+;; indistinguishable from a legitimate stationary point. Note the
+;; "constant-selected" row below, whose correct answer IS 0 — it agreed on both
+;; engines before the fix too, which is exactly why a table of expected values
+;; is not enough on its own and every other row here is non-zero.
+;;
+;; Expected values are EXACT analytic derivatives, never finite differences.
+
+(define (d f x) (derivative f x))
+
+(define (mx x) (max (* x x) (* 2 x)))
+(define (mn x) (min (* x x) (* 2 x)))
+
+;; x^2 vs 2x: x^2 wins above 2, 2x wins below it, they meet at 2.
+(display (d mx 3.0)) (newline)          ;; 6   — d/dx x^2
+(display (d mx 1.0)) (newline)          ;; 2   — d/dx 2x
+(display (d mn 3.0)) (newline)          ;; 2
+(display (d mn 1.0)) (newline)          ;; 2
+(display (d mx 0.5)) (newline)          ;; 2
+(display (d mn 0.5)) (newline)          ;; 1
+
+;; Tie at x=2: both engines select the LEFT operand (native compares with
+;; FCmpOLE/FCmpOGE, which are true on equality; the VM now mirrors that).
+(display (d mx 2.0)) (newline)          ;; 4
+(display (d mn 2.0)) (newline)          ;; 4
+
+;; Variadic min/max fold through the prelude onto the same two natives.
+(define (mx3 x) (max (* x x) (* 2 x) (* 0.5 x)))
+(define (mn3 x) (min (* x x) (* 2 x) (* 0.5 x)))
+(display (d mx3 3.0)) (newline)         ;; 6
+(display (d mn3 3.0)) (newline)         ;; 0.5
+
+;; A constant operand: the tangent must survive when the VARIABLE side wins.
+(define (mxc x) (max (* 3 x) 1.0))
+(define (mnc x) (min (* 3 x) 100.0))
+(display (d mxc 5.0)) (newline)         ;; 3
+(display (d mnc 5.0)) (newline)         ;; 3
+
+;; ...and must be 0, not the variable's, when the CONSTANT side wins. This row
+;; passed before the fix as well — it is here to pin the other half of the
+;; selection, not to detect the original defect.
+(define (mxk x) (max (* 3 x) 100.0))
+(display (d mxk 5.0)) (newline)         ;; 0
+
+;; Nested selection: the chosen tangent must survive a second selection.
+(define (nest x) (min (max (* x x) (* 2 x)) (* 10 x)))
+(display (d nest 3.0)) (newline)        ;; 6
+
+;; abs is the third selection-style operator. The computed-goto loop always
+;; had its dual arm; the switch-dispatch twin did not (it is the lane a build
+;; without computed-goto takes), so these rows pin both.
+(define (a1 x) (abs (* 2 x)))
+(define (a2 x) (abs (- 0.0 (* 2 x))))
+(define (a3 x) (abs (max (* x x) (* 2 x))))
+(display (d a1 3.0)) (newline)          ;; 2
+(display (d a2 3.0)) (newline)          ;; 2
+(display (d a3 3.0)) (newline)          ;; 6
+
+;; The PRIMAL results must not move: exactness contagion, variadic folding and
+;; the bignum ordering path are all untouched by the dual arm.
+(display (max 1 2.0)) (newline)         ;; 2.0
+(display (min 1 2.0)) (newline)         ;; 1
+(display (max 3 1 2)) (newline)         ;; 3
+(display (min 3 1 2)) (newline)         ;; 1
+(display (abs -7)) (newline)            ;; 7

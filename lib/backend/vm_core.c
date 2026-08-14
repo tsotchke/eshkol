@@ -283,7 +283,37 @@ typedef struct {
     HeapObject** objects;    /* array of pointers to arena-allocated objects */
     int32_t next_free;
     int32_t capacity;
+    /* SW-14 growth watchdog. The VM heap has no reclamation of any kind —
+     * `(with-region ...)` is the designated mechanism and is a pass-through on
+     * this substrate (see vm_region_reclaim_notice()), so a long-running VM
+     * program's arena grows monotonically. That growth used to be entirely
+     * silent: correct answers, exit 0, and an RSS curve nobody was told about.
+     * These two fields turn it into a NAMED diagnostic at a budget. */
+    uint32_t alloc_tick;         /* allocations since the last budget probe */
+    int      budget_reported;    /* the budget diagnostic is emitted once */
 } Heap;
+
+/** @return the VM arena budget in bytes past which the growth watchdog speaks,
+ *          or 0 when the watchdog is disabled.
+ *
+ * `ESHKOL_VM_HEAP_BUDGET_MB` overrides the default; `0` disables the watchdog
+ * entirely. The default is deliberately far above any test or ordinary
+ * program, so the diagnostic means "this workload really is growing without
+ * bound", never "this program is big".
+ */
+static size_t vm_heap_budget_bytes(void) {
+    static size_t cached = (size_t)-1;
+    if (cached != (size_t)-1) return cached;
+    cached = (size_t)vm_host_env_long("ESHKOL_VM_HEAP_BUDGET_MB", 1024)
+             * 1024u * 1024u;
+    return cached;
+}
+
+/** @return 1 when crossing the budget must be fatal rather than advisory
+ *          (`ESHKOL_VM_HEAP_BUDGET_FATAL=1`), so a CI lane can gate on it. */
+static int vm_heap_budget_fatal(void) {
+    return vm_host_env_flag("ESHKOL_VM_HEAP_BUDGET_FATAL");
+}
 
 /** @brief Initialize the VM heap: sets up its arena region stack and the
  *         object-pointer table (fixed capacity HEAP_SIZE). */
@@ -292,6 +322,80 @@ static void heap_init(Heap* h) {
     h->capacity = HEAP_SIZE;
     h->objects = (HeapObject**)calloc(h->capacity, sizeof(HeapObject*));
     h->next_free = 0;
+    h->alloc_tick = 0;
+    h->budget_reported = 0;
+}
+
+/** @return total bytes the VM's arenas hold: the global arena plus every open
+ *          region's arena. This is the VM's real memory footprint, because
+ *          nothing is ever returned to the allocator (SW-14). */
+static size_t heap_arena_bytes(const Heap* h) {
+    size_t total = h->regions.global_arena.total_allocated;
+    for (int i = 0; i < h->regions.depth; i++)
+        if (h->regions.stack[i]) total += h->regions.stack[i]->arena.total_allocated;
+    return total;
+}
+
+/**
+ * @brief SW-14 growth watchdog: name the VM's unbounded heap growth once it
+ *        crosses the configured budget, instead of letting it stay silent.
+ *
+ * Sampled every 4096 allocations so the per-allocation cost is a counter
+ * increment and a compare. The message is deliberately specific: it names the
+ * substrate boundary that causes the growth, so a reader does not have to
+ * rediscover that `with-region` reclaims nothing here.
+ */
+static void heap_check_budget(Heap* h) {
+    if (h->budget_reported) return;
+    if (++h->alloc_tick < 4096u) return;
+    h->alloc_tick = 0;
+    size_t budget = vm_heap_budget_bytes();
+    if (budget == 0) return;
+    size_t used = heap_arena_bytes(h);
+    if (used < budget) return;
+    h->budget_reported = 1;
+    fprintf(stderr,
+            "eshkol-vm: heap budget exceeded — %.1f MB of arena allocated "
+            "(budget %.0f MB, ESHKOL_VM_HEAP_BUDGET_MB).\n"
+            "  The bytecode VM does not reclaim heap memory: `(with-region ...)` "
+            "is value- and effect-transparent here but frees nothing, because the "
+            "VM heap has no escape evacuator (docs/KNOWN_ISSUES.md, "
+            "docs/reference/runtime/memory-model.md).\n"
+            "  A long-running workload should use the native engine (eshkol-run) "
+            "until VM reclamation lands; set ESHKOL_VM_HEAP_BUDGET_MB=0 to silence "
+            "this, or ESHKOL_VM_HEAP_BUDGET_FATAL=1 to make it fail closed.\n",
+            (double)used / (1024.0 * 1024.0),
+            (double)budget / (1024.0 * 1024.0));
+    if (vm_heap_budget_fatal()) {
+        fprintf(stderr, "eshkol-vm: ERROR: heap budget is fatal "
+                        "(ESHKOL_VM_HEAP_BUDGET_FATAL=1); terminating.\n");
+        exit(1);
+    }
+}
+
+/**
+ * @brief One-time notice that a region form on the bytecode VM reclaims
+ *        nothing (SW-14).
+ *
+ * `with-region`, `region-open` and `region-close` all resolve and behave
+ * identically on both substrates — same handle protocol, same validation, same
+ * error messages — but on the VM they reclaim no memory. A user who reached
+ * for the memory tool and silently got no memory back is the SILENT half of
+ * SW-14; this notice is the loud half. Emitted at most once per process, on
+ * stderr, and suppressed by `ESHKOL_VM_REGION_QUIET=1`.
+ */
+static void vm_region_reclaim_notice(void) {
+    static int said = 0;
+    if (said) return;
+    said = 1;
+    if (vm_host_env_flag("ESHKOL_VM_REGION_QUIET")) return;
+    fprintf(stderr,
+            "eshkol-vm: note: region forms reclaim no memory on the bytecode VM. "
+            "The body runs and its value is returned exactly as natively, but the "
+            "arena is not freed — the VM heap has no escape evacuator "
+            "(docs/reference/runtime/memory-model.md). Use eshkol-run for "
+            "workloads that depend on reclamation; set ESHKOL_VM_REGION_QUIET=1 "
+            "to silence this note.\n");
 }
 
 /** @brief Allocate a new (zeroed) HeapObject slot from the arena and
@@ -333,6 +437,7 @@ static int32_t heap_alloc(Heap* h) {
     if (!obj) { fprintf(stderr, "ARENA OOM\n"); return -1; }
     memset(obj, 0, sizeof(HeapObject));
     h->objects[h->next_free] = obj;
+    heap_check_budget(h);
     return h->next_free++;
 }
 
@@ -686,6 +791,9 @@ static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_CHAR) return (double)v.as.i; /* codepoint */
     if (v.type == VAL_RATIONAL && vm) {
         VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        /* SW-18: a bignum-backed rational has num/denom = 0/1, so reading the
+         * int64 halves unconditionally answered 0.0 for every big rational. */
+        if (r && r->is_big) return vm_rational_to_double(r);
         if (r && r->denom != 0) return (double)r->num / (double)r->denom;
     }
     if (v.type == VAL_BIGNUM && vm) {
@@ -892,7 +1000,15 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             if (obj && obj->opaque.ptr) {
                 VmRational* r = (VmRational*)obj->opaque.ptr;
-                if (r->denom == 1) printf("%lld", (long long)r->num);
+                if (r->is_big) {
+                    /* SW-18: print the exact bignum halves, not the int64
+                     * shadow (which is 0/1 on the big path). */
+                    char* ns = bignum_to_string(&vm->heap.regions, r->big_num);
+                    char* ds = bignum_to_string(&vm->heap.regions, r->big_den);
+                    if (ns && ds) printf("%s/%s", ns, ds);
+                    else printf("<rational>");
+                }
+                else if (r->denom == 1) printf("%lld", (long long)r->num);
                 else printf("%lld/%lld", (long long)r->num, (long long)r->denom);
             } else printf("<rational>");
             break;

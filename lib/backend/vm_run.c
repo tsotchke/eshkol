@@ -26,6 +26,82 @@ static int vm_is_exact_number(Value v) {
            v.type == VAL_RATIONAL || v.type == VAL_I128;
 }
 
+/* ===== SW-10: VM runaway-instruction guard and timeout checkpoint =====
+ *
+ * `ESHKOL_VM_MAX_INSN` is documented as the VM's runaway-instruction guard,
+ * default 10,000,000. Only the MSVC `switch` fallback below ever had a guard,
+ * it was hard-coded to 10M with no environment override, and the computed-goto
+ * path that every GCC/Clang build actually runs had none at all — so the two
+ * dispatch implementations of one interpreter disagreed about when a program
+ * is runaway. Both now share the counters below.
+ *
+ * Cost discipline: the per-instruction work is a single decrement-and-branch
+ * on a local budget. Everything real — comparing the total against the cap,
+ * polling for a timeout interrupt — happens once per VM_CHECK_INTERVAL
+ * instructions inside vm_limits_checkpoint(), which is not inlined into the
+ * dispatch path. The environment variable is read once per vm_run(), not once
+ * per instruction. */
+#define VM_CHECK_INTERVAL 4096u
+
+/* VM-OWNED limit state.
+ *
+ * These deliberately do NOT reach into the hosted resource-limit layer. The VM
+ * sources are freestanding-safe and are also compiled to WebAssembly, where
+ * lib/core/resource_limits.cpp is not linked at all — an earlier cut of this
+ * fix called eshkol_get_limits() straight from here and every WASM run died
+ * with `missing function: eshkol_get_limits`, taking the whole
+ * wasm_execute_diff_oracle corpus (65 programs) down with it.
+ *
+ * So the dependency runs the other way: hosted entry points RESOLVE the
+ * configuration and PUSH it in via eshkol_vm_install_limits(). A build that
+ * never calls that installer — WASM, or any freestanding profile — keeps the
+ * compiled-in defaults below and links nothing extra. */
+uint64_t g_eshkol_vm_max_insn = ESHKOL_VM_DEFAULT_MAX_INSN;
+int      g_eshkol_vm_insn_limit_active = 0;   /* opt-in, like every ceiling */
+int      g_eshkol_vm_enforce_hard_limits = 1;
+void   (*g_eshkol_vm_poll_interrupt)(void) = 0;
+
+/** Install the resolved limit configuration from a hosted entry point.
+ *
+ * @param max_insn   Instruction ceiling (0 = unlimited).
+ * @param active     Non-zero if ESHKOL_VM_MAX_INSN was actually asked for.
+ * @param enforce    Non-zero to terminate rather than merely record a breach.
+ * @param poll       Cooperative timeout poll, or NULL for none. */
+void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
+                              void (*poll)(void)) {
+    g_eshkol_vm_max_insn = max_insn;
+    g_eshkol_vm_insn_limit_active = active;
+    g_eshkol_vm_enforce_hard_limits = enforce;
+    g_eshkol_vm_poll_interrupt = poll;
+}
+
+/** Periodic limit checkpoint. Returns 1 if the VM should keep running. */
+static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
+    *executed += VM_CHECK_INTERVAL;
+
+    if (max_insn > 0 && *executed > max_insn && g_eshkol_vm_insn_limit_active) {
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "bytecode VM executed %llu instructions (pc=%d)",
+                 (unsigned long long)*executed, vm->pc);
+        fflush(stdout);
+        fprintf(stderr, "eshkol: fatal: %s, limit %llu, set by ESHKOL_VM_MAX_INSN\n",
+                detail, (unsigned long long)max_insn);
+        fflush(stderr);
+        if (g_eshkol_vm_enforce_hard_limits) {
+            _Exit(ESHKOL_EXIT_LIMIT_VM_INSN);
+        }
+        vm->error = 1;  /* advisory mode: stop this run, do not kill the process */
+        return 0;
+    }
+
+    /* Same cooperative timeout poll the native engine does at loop back-edges;
+     * the watchdog thread can only request the interrupt, someone has to act.
+     * NULL in builds with no hosted runtime (WASM, freestanding). */
+    if (g_eshkol_vm_poll_interrupt) g_eshkol_vm_poll_interrupt();
+    return 1;
+}
+
 static size_t vm_continuation_allocation_size(const VM* vm) {
     return sizeof(VmContinuation) +
         (size_t)vm->sp * sizeof(Value) +
@@ -183,11 +259,19 @@ void vm_run(VM* vm) {
 
     #define DISPATCH() do { \
         if (vm->halted || vm->error || vm->pc >= vm->code_len) goto vm_exit; \
+        if (--vm_check_budget == 0) { \
+            vm_check_budget = VM_CHECK_INTERVAL; \
+            if (!vm_limits_checkpoint(vm, &vm_insns_executed, vm_max_insn)) \
+                goto vm_exit; \
+        } \
         instr = vm->code[vm->pc++]; \
         goto *dispatch_table[instr.op]; \
     } while(0)
 
     Instr instr;
+    uint64_t vm_insns_executed = 0;
+    const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
+    unsigned vm_check_budget = VM_CHECK_INTERVAL;
     DISPATCH();
 
     /* --- Constants & Stack --- */
@@ -249,6 +333,20 @@ void vm_run(VM* vm) {
 
     lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09: neither operand check below recognizes VAL_I128, so a
+         * generic `+` over i128 values used to fall all the way through to
+         * the double path, where as_number_vm() reads a heap-boxed i128 as
+         * 0.0 — silently answering 0 with exit 0. The VM has no i128
+         * opcodes (that is v1.3.5 scope); raise instead of fabricating a
+         * result. The native engine already raises for the same case
+         * (LE-03, "Type error in +: expected number, vector, or tensor"). */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1905); }
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
@@ -260,6 +358,16 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) + as_number_vm(vm, b))); } DISPATCH(); }
     lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09b: same family as lbl_ADD's guard — every arithmetic/
+         * comparison opcode that falls through to as_number_vm() misreads
+         * a heap-boxed VAL_I128 as 0.0. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1906); }
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
@@ -271,6 +379,14 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) - as_number_vm(vm, b))); } DISPATCH(); }
     lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09b: see lbl_ADD/lbl_SUB. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1907); }
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
@@ -282,6 +398,14 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) * as_number_vm(vm, b))); } DISPATCH(); }
     lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09b: see lbl_ADD/lbl_SUB/lbl_MUL. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1908); }
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
@@ -310,6 +434,15 @@ void vm_run(VM* vm) {
         vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
+        /* SW-09b: see lbl_ADD. modulo's double path (fmod) reads a
+         * heap-boxed VAL_I128 as 0.0 exactly like the other arithmetic ops. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "modulo: i128 arithmetic is not supported on the VM (no i128 "
+                "opcodes are implemented in the bytecode interpreter); use the "
+                "native backend");
+            DISPATCH();
+        }
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) {
             if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
@@ -324,6 +457,15 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
     lbl_NEG: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
+        /* SW-09b: see lbl_ADD. Unary negate has the same fall-through-to-
+         * double shape as the binary ops. */
+        if (a.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use the native "
+                "backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
         /* A rational must negate in the rational domain: falling through to the
@@ -335,6 +477,14 @@ void vm_run(VM* vm) {
             else vm_push(vm, INT_VAL(-a.as.i)); }
         else { VM_AD_UNARY(vm, a_sp, ad_neg); vm_push(vm, number_val_contagious1(a, -as_number_vm(vm, a))); } DISPATCH(); }
     lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
+        /* SW-09b: see lbl_NEG. */
+        if (a.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "abs: i128 arithmetic is not supported on the VM (no i128 "
+                "opcodes are implemented in the bytecode interpreter); use the "
+                "native backend");
+            DISPATCH();
+        }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
         /* See lbl_NEG: (abs 1/3) answered 0 through the double path. */
@@ -348,23 +498,67 @@ void vm_run(VM* vm) {
     /* --- Comparison --- */
 
     lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) == 0)); DISPATCH(); }
+        /* SW-09b: generic comparison over i128 has the identical bug shape
+         * as generic arithmetic — as_number_vm() reads a heap-boxed
+         * VAL_I128 as 0.0, so e.g. (= (i128 5) (i128 5)) silently answered
+         * #t via 0.0==0.0 regardless of the real values. The dedicated
+         * `i128-*?` comparison surface (KNOWN_ISSUES.md) is unaffected. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "=: i128 comparison is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use i128=? or "
+                "the native backend");
+            DISPATCH();
+        }
+        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) == 0)); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); DISPATCH(); }
         vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); DISPATCH(); }
     lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <  0)); DISPATCH(); }
+        /* SW-09b: see lbl_EQ. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "<: i128 comparison is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use i128<? or "
+                "the native backend");
+            DISPATCH();
+        }
+        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <  0)); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); DISPATCH(); }
         vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); DISPATCH(); }
     lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >  0)); DISPATCH(); }
+        /* SW-09b: see lbl_EQ. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                ">: i128 comparison is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use i128>? or "
+                "the native backend");
+            DISPATCH();
+        }
+        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >  0)); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); DISPATCH(); }
         vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); DISPATCH(); }
     lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <= 0)); DISPATCH(); }
+        /* SW-09b: see lbl_EQ. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                "<=: i128 comparison is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use i128<=? or "
+                "the native backend");
+            DISPATCH();
+        }
+        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <= 0)); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); DISPATCH(); }
         vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); DISPATCH(); }
     lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
-        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >= 0)); DISPATCH(); }
+        /* SW-09b: see lbl_EQ. */
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_raise_error_msg(vm,
+                ">=: i128 comparison is not supported on the VM (no i128 opcodes "
+                "are implemented in the bytecode interpreter); use i128>=? or "
+                "the native backend");
+            DISPATCH();
+        }
+        if (vm_either_exact_wide(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >= 0)); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); DISPATCH(); }
         vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); DISPATCH(); }
     lbl_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); DISPATCH(); }
@@ -707,6 +901,11 @@ void vm_run(VM* vm) {
      * vm_raise_error_msg() in vm_native.c. */
     lbl_VEC_REF: {
         Value idx = vm_pop(vm), vec_val = vm_pop(vm);
+        if (vec_val.type == VAL_TENSOR) {
+            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+            vm_vecref_tensor_path(vm, vec_val, idx);
+            DISPATCH();
+        }
         if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); DISPATCH(); }
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
         int i = (int)as_number(idx);
@@ -728,6 +927,9 @@ void vm_run(VM* vm) {
                 DISPATCH();
             }
             vec->items[i] = val;
+        } else if (vec_val.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) DISPATCH();
         }
         vm_push(vm, NIL_VAL);
         DISPATCH();
@@ -738,6 +940,9 @@ void vm_run(VM* vm) {
         if (vec_val.type == VAL_VECTOR) {
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vec ? vec->len : 0));
+        } else if (vec_val.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
         } else vm_push(vm, INT_VAL(0));
         DISPATCH();
     }
@@ -767,7 +972,10 @@ void vm_run(VM* vm) {
     }
 
     lbl_PAIR_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); DISPATCH(); }
-    lbl_NUM_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_INT || v.type == VAL_FLOAT)); DISPATCH(); }
+    /* SW-31: number? is the WHOLE tower, not just fixnum/flonum. This single
+     * opcode also used to serve `integer?` and `real?`, which is how
+     * (integer? 5.5) answered #t; those now lower to their own natives. */
+    lbl_NUM_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(v))); DISPATCH(); }
     lbl_STR_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_STRING)); DISPATCH(); }
     lbl_BOOL_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_BOOL)); DISPATCH(); }
     lbl_PROC_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); DISPATCH(); }
@@ -937,12 +1145,16 @@ vm_exit:
  * Fallback: standard switch dispatch for non-GCC/Clang compilers (MSVC etc.)
  * ========================================================================= */
 
-    int step_count = 0;
+    /* Same guard and the same configurable ceiling as the computed-goto path
+     * above, so the two dispatch implementations of this one interpreter agree
+     * about when a program has run away. */
+    uint64_t vm_insns_executed = 0;
+    const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
+    unsigned vm_check_budget = VM_CHECK_INTERVAL;
     while (!vm->halted && !vm->error && vm->pc < vm->code_len) {
-        if (++step_count > 10000000) {
-            fprintf(stderr, "VM: 10M steps exceeded at pc=%d op=%d fp=%d sp=%d fc=%d\n",
-                    vm->pc, vm->code[vm->pc].op, vm->fp, vm->sp, vm->frame_count);
-            vm->error = 1; break;
+        if (--vm_check_budget == 0) {
+            vm_check_budget = VM_CHECK_INTERVAL;
+            if (!vm_limits_checkpoint(vm, &vm_insns_executed, vm_max_insn)) break;
         }
         Instr instr = vm->code[vm->pc++];
 
@@ -965,6 +1177,17 @@ vm_exit:
 
         /* Arithmetic */
         case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09: see the identical guard in lbl_ADD above — this switch-
+             * based loop is the non-computed-goto twin of the same opcode
+             * and must reject i128 operands the same way, not silently
+             * coerce them to 0.0 via as_number_vm(). */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1905); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }
@@ -973,6 +1196,14 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) + as_number_vm(vm,b))); break; }
         case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_SUB. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,332); }
@@ -981,6 +1212,14 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) - as_number_vm(vm,b))); break; }
         case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_MUL. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,333); }
@@ -989,6 +1228,14 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) * as_number_vm(vm,b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_DIV. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334); }
@@ -1010,6 +1257,14 @@ vm_exit:
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) / bd)); } break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_MOD. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "modulo: i128 arithmetic is not supported on the VM (no i128 "
+                    "opcodes are implemented in the bytecode interpreter); use the "
+                    "native backend");
+                break;
+            }
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
@@ -1024,6 +1279,14 @@ vm_exit:
             break;
         }
         case OP_NEG: { Value a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_NEG. */
+            if (a.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use the native "
+                    "backend");
+                break;
+            }
             /* See the threaded lbl_NEG: a rational needs the rational domain;
              * the double path below reads its heap pointer as 0.0. */
             if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 335); break; }
@@ -1032,6 +1295,22 @@ vm_exit:
             if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
             vm_push(vm, number_val_contagious1(a, -as_number_vm(vm, a))); break; }
         case OP_ABS: { Value a = vm_pop(vm);
+            /* SW-09b: switch-based twin of lbl_ABS. */
+            if (a.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "abs: i128 arithmetic is not supported on the VM (no i128 "
+                    "opcodes are implemented in the bytecode interpreter); use the "
+                    "native backend");
+                break;
+            }
+            /* SW-40: this switch arm is the twin of lbl_ABS and must carry the
+             * SAME carrier arms. It was missing both AD ones, so on a build
+             * that uses the switch dispatch (no computed-goto — the Windows/
+             * MSVC lane) a derivative through `abs` fell to the double path,
+             * which discards the tangent and answers 0. The computed-goto loop
+             * has had these two lines all along; the twin simply drifted. */
+            if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); break; }
+            if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); break; }
             if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); break; }
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); break; }
@@ -1040,23 +1319,63 @@ vm_exit:
 
         /* Comparison — push proper booleans */
         case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; }
+            /* SW-09b: switch-based twin of lbl_EQ. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "=: i128 comparison is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use i128=? or "
+                    "the native backend");
+                break;
+            }
+            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); break; }
             vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; }
         case OP_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; }
+            /* SW-09b: switch-based twin of lbl_LT. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "<: i128 comparison is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use i128<? or "
+                    "the native backend");
+                break;
+            }
+            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); break; }
             vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; }
         case OP_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; }
+            /* SW-09b: switch-based twin of lbl_GT. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    ">: i128 comparison is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use i128>? or "
+                    "the native backend");
+                break;
+            }
+            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); break; }
             vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; }
         case OP_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; }
+            /* SW-09b: switch-based twin of lbl_LE. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    "<=: i128 comparison is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use i128<=? or "
+                    "the native backend");
+                break;
+            }
+            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); break; }
             vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; }
         case OP_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; }
+            /* SW-09b: switch-based twin of lbl_GE. */
+            if (a.type == VAL_I128 || b.type == VAL_I128) {
+                vm_raise_error_msg(vm,
+                    ">=: i128 comparison is not supported on the VM (no i128 opcodes "
+                    "are implemented in the bytecode interpreter); use i128>=? or "
+                    "the native backend");
+                break;
+            }
+            if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; }
             if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); break; }
             vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; }
         case OP_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }
@@ -1393,6 +1712,11 @@ vm_exit:
          * codegen — see vm_raise_error_msg() in vm_native.c. */
         case OP_VEC_REF: {
             Value idx = vm_pop(vm), vec_val = vm_pop(vm);
+            if (vec_val.type == VAL_TENSOR) {
+                /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+                vm_vecref_tensor_path(vm, vec_val, idx);
+                break;
+            }
             if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); break; }
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
@@ -1414,6 +1738,9 @@ vm_exit:
                     break;
                 }
                 vec->items[i] = val;
+            } else if (vec_val.type == VAL_TENSOR) {
+                /* SW-26 sibling gap. */
+                if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) break;
             }
             vm_push(vm, NIL_VAL);
             break;
@@ -1424,6 +1751,9 @@ vm_exit:
             if (vec_val.type == VAL_VECTOR) {
                 VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
                 vm_push(vm, INT_VAL(vec ? vec->len : 0));
+            } else if (vec_val.type == VAL_TENSOR) {
+                /* SW-26 sibling gap. */
+                vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
             } else vm_push(vm, INT_VAL(0));
             break;
         }
@@ -1433,12 +1763,12 @@ vm_exit:
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
                 int i = (int)as_number(idx);
-                if (!s || i < 0 || i >= s->byte_len) {
+                if (!s || i < 0 || i >= s->char_len) {
                     vm_raise_error_msg(vm, "string-ref: index out of bounds");
                     break;
                 }
                 /* R7RS string-ref returns a character, not its integer code. */
-                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
+                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = vm_string_ref(s, i)});
             } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
             break;
         }
@@ -1447,13 +1777,13 @@ vm_exit:
             Value str_val = vm_pop(vm);
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-                vm_push(vm, INT_VAL(s ? s->byte_len : 0));
+                vm_push(vm, INT_VAL(s ? vm_string_length(s) : 0));
             } else vm_push(vm, INT_VAL(0));
             break;
         }
 
         case OP_PAIR_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); break; }
-        case OP_NUM_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_INT || v.type == VAL_FLOAT)); break; }
+        case OP_NUM_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(v))); break; } /* SW-31 */
         case OP_STR_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_STRING)); break; }
         case OP_BOOL_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_BOOL)); break; }
         case OP_PROC_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); break; }

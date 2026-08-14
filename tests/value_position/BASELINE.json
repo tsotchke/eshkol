@@ -1,0 +1,22 @@
+{
+  "_comment": "Value-position ratchet for scripts/run_value_position_sweep.py. A key is <builtin>::<probe>. A NEW key fails the gate; a key listed here is reported on every run and does not. Every entry must carry a reason naming the ledger ID it stands for -- an entry without one is indistinguishable from hiding a bug. NEVER regenerate this file to turn a red gate green; that is the exact move this ratchet exists to prevent. An entry is removed when its ledger ID closes, not when it becomes inconvenient.",
+  "known_findings": {
+    "cadr::passed": "SW-38 (open) - VM only: cadr as a first-class value returns () instead of the element. Native is correct on all four axes.",
+    "cadr::stored": "SW-38 (open) - VM only, same defect reached by storing the procedure in a variable.",
+    "cadr::returned": "SW-38 (open) - VM only, same defect reached by returning the procedure.",
+    "cadr::mapped": "SW-38 (open) - VM only, same defect reached through map.",
+    "caddr::passed": "SW-38 (open) - VM only: caddr as a first-class value returns ().",
+    "caddr::stored": "SW-38 (open) - VM only, same defect via a stored binding.",
+    "caddr::returned": "SW-38 (open) - VM only, same defect via a returned procedure.",
+    "caddr::mapped": "SW-38 (open) - VM only, same defect through map.",
+    "string-length::passed": "SW-39 (open) - VM only: aborts the VM instead of answering. Native is correct.",
+    "string-length::stored": "SW-39 (open) - VM only, same abort via a stored binding.",
+    "string-length::returned": "SW-39 (open) - VM only, same abort via a returned procedure.",
+    "string-ref::passed": "SW-39 (open) - VM only: aborts the VM instead of answering.",
+    "string-ref::stored": "SW-39 (open) - VM only, same abort via a stored binding.",
+    "string-ref::returned": "SW-39 (open) - VM only, same abort via a returned procedure.",
+    "vref::passed": "SW-39 (open) - VM only: aborts the VM instead of answering.",
+    "vref::stored": "SW-39 (open) - VM only, same abort via a stored binding.",
+    "vref::returned": "SW-39 (open) - VM only, same abort via a returned procedure."
+  }
+}

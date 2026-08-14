@@ -151,12 +151,92 @@ static VmRational* vm_rational_alloc(VmArena *arena, int64_t num, int64_t denom)
     if (!r) return NULL;
     r->num = num;
     r->denom = denom;
+    /* Arena memory is not zeroed: the bignum half MUST be initialized here or
+     * every int64 rational would carry a garbage is_big flag (SW-18). */
+    r->is_big = 0;
+    r->big_num = NULL;
+    r->big_den = NULL;
     return r;
 }
 
 /* ============================================================================
  * Construction
  * ============================================================================ */
+
+/* ============================================================================
+ * Bignum-capable exact layer (SW-18 / ESH-0105)
+ *
+ * Everything below keeps the int64 pair as the FAST path and promotes to the
+ * bignum pair only when the reduced result genuinely does not fit — the same
+ * split the native runtime uses (lib/core/rational.cpp).  The contract is that
+ * an exact operation on exact operands NEVER returns NULL for "too big", so no
+ * caller has a reason to fall back to a double.  NULL now means only "division
+ * by an exact zero" or "allocation failed".
+ * ============================================================================ */
+
+/** @brief Bignum numerator of @p r, promoting the int64 fast path. */
+static VmBignum* vm_rat_num_bn(VmRegionStack *rs, const VmRational *r) {
+    return r->is_big ? r->big_num : bignum_from_int64(rs, r->num);
+}
+
+/** @brief Bignum denominator of @p r, promoting the int64 fast path. */
+static VmBignum* vm_rat_den_bn(VmRegionStack *rs, const VmRational *r) {
+    return r->is_big ? r->big_den : bignum_from_int64(rs, r->denom);
+}
+
+/** @brief True when @p b equals the int64 constant @p k. */
+static int vm_bn_is_i64(const VmBignum *b, int64_t k) {
+    int ov = 0;
+    int64_t v = bignum_to_int64(b, &ov);
+    return !ov && v == k;
+}
+
+/**
+ * @brief Exact rational from a bignum numerator/denominator pair.
+ *
+ * Canonicalizes the sign onto the numerator, reduces by the bignum GCD, and
+ * DEMOTES back to the int64 fast path whenever the reduced pair fits — which
+ * is what keeps `is_big` canonical, so equality stays a field comparison.
+ * Returns NULL only on a zero denominator or an allocation failure; it never
+ * degrades to a double.
+ */
+static VmRational* vm_rational_alloc_bn(VmRegionStack *rs,
+                                        VmBignum *num, VmBignum *den) {
+    if (!rs || !num || !den || bignum_is_zero(den)) return NULL;
+
+    if (bignum_sign(den) < 0) {
+        num = bignum_neg(rs, num);
+        den = bignum_neg(rs, den);
+        if (!num || !den) return NULL;
+    }
+
+    if (bignum_is_zero(num))
+        return vm_rational_alloc(vm_active_arena(rs), 0, 1);
+
+    VmBignum *g = bignum_gcd(rs, num, den);
+    if (g && !bignum_is_zero(g) && !vm_bn_is_i64(g, 1)) {
+        num = bignum_div(rs, num, g);
+        den = bignum_div(rs, den, g);
+        if (!num || !den) return NULL;
+    }
+
+    /* Demote when both halves fit int64 — the canonical small form. */
+    int ov_n = 0, ov_d = 0;
+    int64_t ni = bignum_to_int64(num, &ov_n);
+    int64_t di = bignum_to_int64(den, &ov_d);
+    if (!ov_n && !ov_d)
+        return vm_rational_alloc(vm_active_arena(rs), ni, di);
+
+    VmRational *r = (VmRational *)vm_arena_alloc_object(
+        vm_active_arena(rs), VM_SUBTYPE_RATIONAL, sizeof(VmRational));
+    if (!r) return NULL;
+    r->num = 0;
+    r->denom = 1;
+    r->is_big = 1;
+    r->big_num = num;
+    r->big_den = den;
+    return r;
+}
 
 /** Create rational num/denom (native ID 330). */
 VmRational* vm_rational_make(VmArena *arena, int64_t num, int64_t denom) {
@@ -189,6 +269,8 @@ int64_t vm_rational_denominator(const VmRational *r) {
 /** @brief Native call 340: `(exact->inexact r)` — convert to a double. */
 double vm_rational_to_double(const VmRational *r) {
     if (!r) return 0.0;
+    if (r->is_big)
+        return bignum_to_double(r->big_num) / bignum_to_double(r->big_den);
     return (double)r->num / (double)r->denom;
 }
 
@@ -283,6 +365,183 @@ VmRational* vm_rational_div(VmArena *arena, const VmRational *a, const VmRationa
     __int128_t num = (__int128_t)(a->num / g1) * (b_num / g2);
     __int128_t denom = (__int128_t)(a->denom / g2) * (b_denom / g1);
     return vm_rational_pack128(arena, num, denom);
+}
+
+/* ── Exact, never-degrading entry points (SW-18) ──────────────────────────
+ * Each tries the int64/__int128 fast path first (via the functions above,
+ * which answer NULL when the reduced result leaves int64) and only then does
+ * the work in the bignum domain.  `op` is '+', '-', '*' or '/'. */
+
+/* Fast-path primitives defined further down this file. */
+VmRational* vm_rational_neg(VmArena *arena, const VmRational *a);
+VmRational* vm_rational_abs(VmArena *arena, const VmRational *a);
+VmRational* vm_rational_inv(VmArena *arena, const VmRational *a);
+int         vm_rational_compare(const VmRational *a, const VmRational *b);
+bool        vm_rational_equal(const VmRational *a, const VmRational *b);
+
+static VmRational* vm_rational_arith_exact(VmRegionStack *rs,
+                                           const VmRational *a,
+                                           const VmRational *b,
+                                           char op) {
+    if (!rs || !a || !b) return NULL;
+    if (op == '/' && ((b->is_big && bignum_is_zero(b->big_num)) ||
+                      (!b->is_big && b->num == 0)))
+        return NULL;                      /* exact division by exact zero */
+
+    if (!a->is_big && !b->is_big) {
+        VmArena *arena = vm_active_arena(rs);
+        VmRational *fast = (op == '+') ? vm_rational_add(arena, a, b)
+                         : (op == '-') ? vm_rational_sub(arena, a, b)
+                         : (op == '*') ? vm_rational_mul(arena, a, b)
+                                       : vm_rational_div(arena, a, b);
+        if (fast) return fast;
+        /* NULL here means the exact result left int64 — continue in bignum. */
+    }
+
+    VmBignum *an = vm_rat_num_bn(rs, a), *ad = vm_rat_den_bn(rs, a);
+    VmBignum *bn = vm_rat_num_bn(rs, b), *bd = vm_rat_den_bn(rs, b);
+    if (!an || !ad || !bn || !bd) return NULL;
+
+    VmBignum *num = NULL, *den = NULL;
+    switch (op) {
+    case '+': case '-': {
+        VmBignum *l = bignum_mul(rs, an, bd);
+        VmBignum *r = bignum_mul(rs, bn, ad);
+        if (!l || !r) return NULL;
+        num = (op == '+') ? bignum_add(rs, l, r) : bignum_sub(rs, l, r);
+        den = bignum_mul(rs, ad, bd);
+        break;
+    }
+    case '*':
+        num = bignum_mul(rs, an, bn);
+        den = bignum_mul(rs, ad, bd);
+        break;
+    case '/':
+        /* a/b = (a.num * b.den) / (a.den * b.num); sign is canonicalized by
+         * vm_rational_alloc_bn(). */
+        num = bignum_mul(rs, an, bd);
+        den = bignum_mul(rs, ad, bn);
+        break;
+    default: return NULL;
+    }
+    if (!num || !den) return NULL;
+    return vm_rational_alloc_bn(rs, num, den);
+}
+
+/** @brief Exact -a, bignum-capable. */
+static VmRational* vm_rational_neg_exact(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    if (!a->is_big) {
+        VmRational *fast = vm_rational_neg(vm_active_arena(rs), a);
+        if (fast) return fast;   /* NULL only for the INT64_MIN sign flip */
+    }
+    VmBignum *n = bignum_neg(rs, vm_rat_num_bn(rs, a));
+    VmBignum *d = vm_rat_den_bn(rs, a);
+    if (!n || !d) return NULL;
+    return vm_rational_alloc_bn(rs, n, d);
+}
+
+/** @brief Exact |a|, bignum-capable. */
+static VmRational* vm_rational_abs_exact(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    if (!a->is_big) {
+        VmRational *fast = vm_rational_abs(vm_active_arena(rs), a);
+        if (fast) return fast;
+    }
+    VmBignum *n = bignum_abs_val(rs, vm_rat_num_bn(rs, a));
+    VmBignum *d = vm_rat_den_bn(rs, a);
+    if (!n || !d) return NULL;
+    return vm_rational_alloc_bn(rs, n, d);
+}
+
+/** @brief Exact 1/a, bignum-capable. NULL when a is zero. */
+static VmRational* vm_rational_inv_exact(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    if (!a->is_big) {
+        if (a->num == 0) return NULL;
+        VmRational *fast = vm_rational_inv(vm_active_arena(rs), a);
+        if (fast) return fast;
+    }
+    if (a->is_big && bignum_is_zero(a->big_num)) return NULL;
+    return vm_rational_alloc_bn(rs, vm_rat_den_bn(rs, a), vm_rat_num_bn(rs, a));
+}
+
+/** @brief Exact three-way compare, bignum-capable (cross-multiplication;
+ *         both denominators are positive by the normalization invariant). */
+static int vm_rational_compare_exact(VmRegionStack *rs,
+                                     const VmRational *a, const VmRational *b) {
+    if (!a || !b) return 0;
+    if (!a->is_big && !b->is_big) return vm_rational_compare(a, b);
+    if (!rs) return 0;
+    VmBignum *l = bignum_mul(rs, vm_rat_num_bn(rs, a), vm_rat_den_bn(rs, b));
+    VmBignum *r = bignum_mul(rs, vm_rat_num_bn(rs, b), vm_rat_den_bn(rs, a));
+    if (!l || !r) return 0;
+    return bignum_compare(l, r);
+}
+
+/** @brief Exact equality, bignum-capable.  The representation is canonical
+ *         (big only when the reduced pair does not fit int64), so a small and
+ *         a big rational can never be equal. */
+static bool vm_rational_equal_exact(const VmRational *a, const VmRational *b) {
+    if (!a || !b) return (a == b);
+    if (a->is_big != b->is_big) return false;
+    if (!a->is_big) return vm_rational_equal(a, b);
+    return bignum_compare(a->big_num, b->big_num) == 0 &&
+           bignum_compare(a->big_den, b->big_den) == 0;
+}
+
+/** @brief Exact floor as a bignum (the result of flooring a big rational can
+ *         itself exceed int64, so this cannot return int64).  Uses the
+ *         truncating bignum division and corrects downward for negatives. */
+static VmBignum* vm_rational_floor_bn(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    VmBignum *n = vm_rat_num_bn(rs, a), *d = vm_rat_den_bn(rs, a);
+    if (!n || !d) return NULL;
+    VmBignum *q = bignum_div(rs, n, d);          /* truncates toward zero */
+    VmBignum *rem = bignum_mod(rs, n, d);
+    if (!q || !rem) return NULL;
+    if (bignum_sign(n) < 0 && !bignum_is_zero(rem))
+        q = bignum_sub(rs, q, bignum_from_int64(rs, 1));
+    return q;
+}
+
+/** @brief Exact truncate-toward-zero as a bignum. */
+static VmBignum* vm_rational_truncate_bn(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    return bignum_div(rs, vm_rat_num_bn(rs, a), vm_rat_den_bn(rs, a));
+}
+
+/** @brief Exact ceiling as a bignum. */
+static VmBignum* vm_rational_ceil_bn(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    VmBignum *n = vm_rat_num_bn(rs, a), *d = vm_rat_den_bn(rs, a);
+    if (!n || !d) return NULL;
+    VmBignum *q = bignum_div(rs, n, d);
+    VmBignum *rem = bignum_mod(rs, n, d);
+    if (!q || !rem) return NULL;
+    if (bignum_sign(n) > 0 && !bignum_is_zero(rem))
+        q = bignum_add(rs, q, bignum_from_int64(rs, 1));
+    return q;
+}
+
+/** @brief Exact round-half-to-even as a bignum (R7RS `round`). */
+static VmBignum* vm_rational_round_bn(VmRegionStack *rs, const VmRational *a) {
+    if (!rs || !a) return NULL;
+    VmBignum *fl = vm_rational_floor_bn(rs, a);
+    VmBignum *n = vm_rat_num_bn(rs, a), *d = vm_rat_den_bn(rs, a);
+    if (!fl || !n || !d) return NULL;
+    /* rem = n - fl*d, always in [0, d) */
+    VmBignum *rem = bignum_sub(rs, n, bignum_mul(rs, fl, d));
+    if (!rem) return NULL;
+    VmBignum *twice = bignum_mul(rs, rem, bignum_from_int64(rs, 2));
+    if (!twice) return NULL;
+    int cmp = bignum_compare(twice, d);
+    if (cmp < 0) return fl;
+    if (cmp > 0) return bignum_add(rs, fl, bignum_from_int64(rs, 1));
+    /* Exact midpoint: ties to even. */
+    VmBignum *half = bignum_mod(rs, fl, bignum_from_int64(rs, 2));
+    if (half && bignum_is_zero(half)) return fl;
+    return bignum_add(rs, fl, bignum_from_int64(rs, 1));
 }
 
 /** -a (native ID 335). */

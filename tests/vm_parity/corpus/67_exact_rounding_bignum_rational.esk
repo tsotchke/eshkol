@@ -1,0 +1,70 @@
+; SW-29 class-kill: floor/ceiling/truncate/round of an EXACT rational must be
+; exact, including when a half does not fit int64.
+;
+; The defect this pins had a different shape on each engine, and both were
+; silent:
+;   native  (floor (/ (expt 2 100) 3)) => 0
+;           because eshkol_rational_floor and its three siblings read the
+;           numerator/denominator fields directly, and on the bignum path those
+;           are the inert 0/1 shadow — so 0/1 = 0. The exact answer cannot be
+;           returned through their int64 signature at all, which is why the fix
+;           had to move them to a tagged out-param.
+;   VM      (floor (/ (expt 2 100) 3)) => 4.2255020007607644e+29
+;           because floor/ceiling/round converted their operand to a double
+;           unconditionally, and `truncate` had no implementation at all: it was
+;           bound to a native id no case handled, so it warned and produced ().
+;
+; 2^100 = 1267650600228229401496703205376, and 2^100/3 is
+; 422550200076076467165567735125 + 1/3 — comfortably past int64, so every value
+; below is a witness that the result is carried exactly rather than rounded.
+
+(define r    (/ (expt 2 100) 3))
+(define rneg (/ (- 0 (expt 2 100)) 3))
+
+; ── the four roundings on a positive and a negative big rational ──
+(display (list 'floor (floor r)    (floor rneg)))    (newline)
+(display (list 'ceil  (ceiling r)  (ceiling rneg)))  (newline)
+(display (list 'trunc (truncate r) (truncate rneg))) (newline)
+(display (list 'round (round r)    (round rneg)))    (newline)
+
+; ── the results must be EXACT, not inexact lookalikes ──
+(display (list 'exact (exact? (floor r)) (exact? (ceiling r))
+                      (exact? (truncate r)) (exact? (round r))))
+(newline)
+(display (list 'integer (integer? (floor r)) (integer? (round r)))) (newline)
+
+; ── round-trip: an exact floor multiplied back out keeps every digit ──
+(display (* 3 (floor r))) (newline)
+(display (- (ceiling r) (floor r))) (newline)   ; exactly 1 for a non-integral value
+
+; ── the defining inequalities, checked rather than tabulated ──
+(display (list 'bounds
+               (<= (floor r) r) (< r (+ (floor r) 1))
+               (>= (ceiling r) r) (> (+ 1 (ceiling r)) r)))
+(newline)
+
+; ── an EXACT-INTEGRAL big rational: all four agree and stay exact ──
+(define ri (/ (expt 2 100) 4))
+(display (list 'integral (floor ri) (ceiling ri) (truncate ri) (round ri))) (newline)
+
+; ── ties-to-even at a bignum midpoint (R7RS `round`) ──
+; (2N+1)/2 for a bignum N: the midpoint rounds to the EVEN neighbour.
+(display (list 'ties
+               (round (/ (+ (* 2 (expt 2 100)) 1) 2))
+               (round (/ (+ (* 2 (+ (expt 2 100) 1)) 1) 2))))
+(newline)
+
+; ── small rationals are untouched by the bignum path ──
+(display (list 'small (floor 7/3) (ceiling 7/3) (truncate 7/3) (round 7/3))) (newline)
+(display (list 'smallneg (floor -7/3) (ceiling -7/3) (truncate -7/3) (round -7/3))) (newline)
+(display (list 'halves (round 5/2) (round 7/2) (round -5/2) (round -7/2))) (newline)
+
+; ── exact integers pass through unchanged, and stay exact ──
+(display (list 'ints (floor 5) (ceiling 5) (truncate 5) (round 5)
+               (exact? (floor 5)) (floor (expt 2 100)) (exact? (floor (expt 2 100)))))
+(newline)
+
+; ── inexact operands stay inexact (R7RS: these are not exactness-changing) ──
+(display (list 'flo (floor 2.7) (ceiling 2.3) (truncate -2.7) (round 2.5)
+               (exact? (floor 2.7))))
+(newline)

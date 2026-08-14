@@ -1,0 +1,76 @@
+; SW-32 class-kill: min/max must agree with `<` on the SAME pair, across the
+; whole numeric tower.
+;
+; The defect this pins: min/max carried their own abbreviated copy of the
+; ordering dispatch. Natively it checked only "is either operand a bignum" and
+; otherwise compared extracted doubles, while `<` ran a three-tier test that
+; also routes exact RATIONALs to the exact rational kernel. A bignum-backed
+; rational is a heap value with the RATIONAL subtype, never a bignum, so it fell
+; through to doubles where two distinct exact values round to ONE flonum:
+;   (max (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))
+;     => the SMALLER operand, while (< a b) in the same program said #t
+; Two exact int64s past 2^53 had the identical problem for the identical
+; reason, and there BOTH engines were wrong in opposite directions:
+;   (max 9007199254740993 9007199254740992) => native ...993 / VM ...992
+;   (min 9007199254740993 9007199254740992) => native ...993 / VM ...992
+;
+; The oracle below is a PROPERTY, not a table of expected values: for each pair
+; it checks min/max against `<` computed on the same operands, so it cannot pass
+; by agreeing with a wrong expectation. It reports only "ok"/"BAD", which also
+; keeps the two engines comparable without pinning bignum text.
+
+(define (check-pair a b)
+  ; With `<` as the reference ordering:
+  ;   (max a b) must be b when a<b, else a
+  ;   (min a b) must be a when a<b, else b
+  ; and min/max must be mutually consistent: (min a b) <= (max a b).
+  (let ((mx (max a b))
+        (mn (min a b))
+        (lt (< a b)))
+    (let ((mx-ok (if lt (= mx b) (= mx a)))
+          (mn-ok (if lt (= mn a) (= mn b)))
+          (ord-ok (not (< (max a b) (min a b)))))
+      (if (and mx-ok mn-ok ord-ok) "ok" "BAD"))))
+
+(define (check2 a b)
+  ; Both operand orders: min/max are commutative in VALUE.
+  (list (check-pair a b) (check-pair b a)))
+
+; ── exact integers straddling the 2^53 flonum boundary ──
+(display (check2 9007199254740993 9007199254740992)) (newline)
+(display (check2 9007199254740992 9007199254740993)) (newline)
+(display (check2 4611686018427387903 4611686018427387904)) (newline)
+
+; ── exact rationals within int64 ──
+(display (check2 1/3 1/2)) (newline)
+(display (check2 -1/3 1/3)) (newline)
+(display (check2 1/2 0)) (newline)
+
+; ── exact integers beyond int64 (bignum) ──
+(display (check2 (expt 2 100) (+ (expt 2 100) 1))) (newline)
+(display (check2 (- 0 (expt 2 100)) (expt 2 100))) (newline)
+
+; ── bignum-backed rationals: the pair that shares one flonum ──
+(display (check2 (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))) (newline)
+(display (check2 (/ 1 (expt 2 100)) (/ 1 (+ (expt 2 100) 1)))) (newline)
+
+; ── mixed exactness classes ──
+(display (check2 1/3 (expt 2 100))) (newline)
+(display (check2 5 1/2)) (newline)
+(display (check2 5 5.5)) (newline)
+(display (check2 1/2 0.25)) (newline)
+
+; ── the selected VALUES, so a wrong pick is visible and not only "BAD" ──
+(display (list (max 9007199254740993 9007199254740992)
+               (min 9007199254740993 9007199254740992)))
+(newline)
+(display (list (max (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))
+               (min (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))))
+(newline)
+(display (list (max (expt 2 100) (+ (expt 2 100) 1))
+               (min (expt 2 100) (+ (expt 2 100) 1))))
+(newline)
+
+; ── R7RS 6.2.6 inexactness contagion still applies: min/max SELECT an operand,
+;    but an inexact argument makes the result inexact. ──
+(display (list (max 1 2.0) (min 1 2.0) (exact? (max 1 2.0)) (exact? (max 1 2)))) (newline)

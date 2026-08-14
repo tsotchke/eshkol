@@ -1,0 +1,2962 @@
+# Silent-wrong flaw ledger — the release gate's input.
+#
+# CONTRACT
+#   A SILENT-WRONG flaw is one where the compiler, the VM, or the runtime
+#   produces a wrong value, a wrong derivative, or a wrong memory outcome
+#   with NO diagnostic and a zero exit status. The maintainer's release
+#   philosophy is that these are tag-blocking: a loud failure is honest, a
+#   silent one is a lie told to a consumer.
+#
+#   `scripts/gate_no_silent_wrong.py` reads this file and emits the
+#   `no_open_silent_wrong` runtime_event consumed by the
+#   `eshkol-compiler-readiness` and `v1.3-evolve` oracles in
+#   .icc/completion-oracles.yaml. The gate is PASS only when every entry
+#   whose `bucket` is SILENT-WRONG has `status: closed` or a `waiver` block
+#   with an owner, a reason and an expiry date that has not passed.
+#
+#   The gate FAILS CLOSED. A missing, unparseable or schema-invalid ledger
+#   is a FAIL, never a pass — absence of the ledger is not evidence of an
+#   absence of silent-wrong defects.
+#
+# INVARIANTS (the same discipline as .icc/doc-claims-allowlist.yaml)
+#   1. Every entry cites a reproducer that a reader can run, and the exact
+#      observed-vs-correct values. "Believed fixed" is not a status.
+#   2. A waiver is scaffolding with an expiry, not a tolerance. It names an
+#      owner, a reason, and a date. An expired waiver is a FAIL.
+#   3. Entries only close by measurement at a named SHA, recorded in
+#      `closed_at`. Closing by assertion is forbidden.
+#   4. Growth is a finding: a NEW SILENT-WRONG entry appearing in a PR must
+#      be justified in that PR's body.
+#   5. The buckets other than SILENT-WRONG are carried here for one ledger,
+#      one truth — but only SILENT-WRONG gates the release.
+
+schema: eshkol.silent_wrong_ledger.v1
+generated_at: "2026-08-12"
+measured_at_sha: "9f2da2ab"
+# Partial re-measurement pass. NOT every entry was re-run at this SHA — only the
+# ones whose closed_at says 019ab413 (IF-01..IF-05, which had merged fixes and
+# unclosed entries, plus SW-06/SW-09/SW-09b which were terminal on committed-test
+# evidence but carried no lookup-able SHA). Every other entry's evidence still
+# dates from measured_at_sha above. Do not read this field as "the whole ledger
+# is current at 019ab413"; that is exactly the kind of blanket claim this file
+# exists to stop.
+remeasured_at_sha: "019ab413"
+measured_with: "build/eshkol-run (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0), build/eshkol-vm-standalone-test"
+reproducer_root: ".scratch/flaw-ledger/repro"
+
+buckets:
+  SILENT-WRONG: "Wrong value / wrong derivative / wrong memory outcome, no diagnostic, exit 0. TAG-BLOCKING."
+  LOUD-ERROR: "Fails with a visible diagnostic, crash or non-zero exit. Bad, but honest. Sub-tagged cheap-fix or structural."
+  LOUD-LIMITATION: >-
+    A capability the engine does not implement, which ANNOUNCES itself at the
+    point of use and again when it starts to bite. Not a wrong answer and not a
+    failure: the program is correct, and the gap is named on stderr and in the
+    docs rather than discovered. Distinct from LOUD-ERROR, which fails; a
+    LOUD-LIMITATION succeeds while doing less than the surface suggests, so the
+    announcement IS the honesty. Not tag-blocking. An entry may only enter this
+    bucket by maintainer ruling, and only once the announcement is gated by a
+    test that fails if it is removed.
+  PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
+  DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
+  IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+
+entries:
+
+  # ───────────────────────── SILENT-WRONG ─────────────────────────
+
+  - id: SW-01
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+    title: "AD differentiates the shadowed global, not the parameter"
+    repro: "(define (f x) (* x x)) (define (g f x) (derivative f x)) (display (g (lambda (y) (* 2 y)) 3.0))"
+    observed: "native 6"
+    correct: "2"
+    cross_engine: "VM answers 2 (correct); native is the wrong side"
+    observed_after: >-
+      both engines answer 2. The AD operators reach their differentiand through
+      resolveLambdaFunction, the same static procedure-operand resolution map and
+      reduce use, so the shared guard fixes AD and the higher-order builtins at
+      one site: isShadowedByLocalRuntimeBinding() (lib/backend/llvm_codegen.cpp)
+      declines static resolution when the name is bound to an llvm::Argument of
+      the current function or an AllocaInst it owns, and AD falls back to its
+      runtime-closure dispatch. The unshadowed static path is unchanged —
+      (derivative sqf 3.0) still resolves statically and still answers 6.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — isShadowedByLocalRuntimeBinding() in lib/backend/llvm_codegen.cpp, resolveLambdaFunction VAR branch"
+    evidence: >-
+      tests/codegen/higher_order_shadowing_test.esk checks 'derivative-param-shadow'
+      (2.0) and 'derivative-global-static' (6.0) on the JIT and AOT ctest lanes;
+      tests/codegen/higher_order_shadowing_vm_test.esk pins the same pair on the VM;
+      tests/differential/corpus/45_higher_order_shadowing.esk agrees on every native
+      axis. Revert-validated: with isShadowedByLocalRuntimeBinding() forced to
+      return false and the compiler rebuilt, the shadowing shapes regress and the
+      builtin-name crossing shape SIGSEGVs; restored, all pass.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_adversarial_fd_oracle]
+    notes: >-
+      Named in KNOWN_ISSUES as 'the highest-priority open AD defect'. Closed as one
+      of the three-entry shadowing family SW-01 / SW-02 / SW-24 — one root cause
+      (name resolution ignoring lexical shadowing), two engines, three subsystems.
+      Gated by the higher_order_shadowing_oracle smoke probe (JIT + AOT + VM).
+
+  - id: SW-02
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+    title: "map resolves the mapped procedure from the global table, ignoring a shadowing binding"
+    repro: "(define (scale x) (* x 100)) (define (apply-map scale lst) (map scale lst)) (display (apply-map (lambda (x) (+ x 10)) (list 1 2 3)))"
+    observed: "native (100 200 300)"
+    correct: "(11 12 13)"
+    cross_engine: "VM answers (11 12 13) (correct)"
+    observed_after: >-
+      native answers (11 12 13). #420's finding was right about the mechanism: the
+      substitution happens upstream of map_codegen.cpp, in resolveLambdaFunction,
+      which is why a map-only guard measured as a no-op — the resolver ran first
+      on the non-capturing repro. BOTH sites needed the guard, plus a third:
+      MapCodegen::map's compile-time closure detection reads the GLOBAL <name>_func
+      entry independently of the resolver (so a shadowed CAPTURING top-level lambda
+      was substituted even with the resolver guarded), and codegenRemove's predicate
+      lookup did the same function_table / unscoped-_func scan. reduce gained the
+      runtime-closure fallback map already had, since declining static resolution
+      without one would have traded the silent wrong answer for a crash.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — three native sites guarded by isShadowedByLocalRuntimeBinding(): resolveLambdaFunction, MapCodegen::map, codegenRemove"
+    evidence: >-
+      tests/codegen/higher_order_shadowing_test.esk, 26 checks across
+      map / for-each / filter / fold-left / fold-right / reduce / remove with
+      shadowing parameters, the capturing-global map shadow, let-bound shadows,
+      and the unshadowed static paths pinned so the guard cannot regress them
+      (ctest lanes higher_order_shadowing_{jit,aot}_smoke);
+      tests/differential/corpus/45_higher_order_shadowing.esk agrees on every
+      native axis. Revert-validated per SW-01.
+    caught_by: [pr-record-420, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      Identical-by-construction on every native axis, so no differential pairing
+      could ever have seen it — every axis was wrong the same way. That is the
+      escape-analysis finding, and why the closing gate is a self-checking
+      expected-value test on three engines rather than an axis comparison.
+      Interaction pinned with PR #427 (first-class builtin wrappers): a local
+      binding of a BUILTIN name must beat the wrapper, and an unshadowed builtin
+      name must still reach it — both halves in the same test files and corpus
+      entry, on both engines.
+
+  - id: SW-03
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+    title: "The Taylor tower cannot nest: derivative-n of derivative-n returns 0"
+    repro: "(define (f x) (* x x x x)) (display (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1))"
+    observed: "0"
+    correct: "48"
+    cross_engine: "VM errors (rc=1) — loud on that side"
+    observed_after: >-
+      48, on the JIT and the AOT lane. ROOT CAUSE (shared with SW-04): Eshkol has
+      TWO forward-mode carriers — the 8-jet (`derivative`, first order, three
+      independent perturbations) and the heap Taylor tower (`derivative-n` /
+      `taylor`, one perturbation to arbitrary order) — and the boundary between
+      them was lossy in BOTH directions. eshkol_taylor_seed_tagged() read only
+      the SCALAR value of its point (tagged_scalar_value: c[0] of an outer tower,
+      the primal of an outer jet), so an enclosing pass's perturbation was
+      dropped at the seed; and the tower's extraction returned a bare double,
+      which an enclosing pass then read as "no dependence". Neither direction
+      needed jets-of-jets: a tower ALREADY carries a parallel first-order
+      companion series (the P5 seed tangent, ESH_TAYLOR_TANGENT_FLAG) and every
+      recurrence in lib/core/runtime_taylor.c already propagates it. The fix puts
+      whichever of the two passes is first order onto that companion dimension —
+      RIDE when the inner pass is first order (it rides the outer tower's tangent
+      and its result is promoted back to a tower of the OUTER epoch), CARRY when
+      the outer pass is first order (the inner tower's tangent tracks
+      d(c[k])/d(outer perturbation)). The 8-jet arm is untouched for every
+      non-nested pass: eshkol_ad_nested_seed() returns ESH_AD_NEST_NONE for any
+      point that is not already a carrier.
+    fixed_by: >-
+      ESH-0402 — eshkol_ad_nested_seed / eshkol_ad_nested_extract in
+      lib/core/runtime_taylor.c, wired through
+      AutodiffCodegen::seedForwardAndPush / popAndExtractForward
+      (lib/backend/autodiff_codegen.cpp), which now wrap the unchanged
+      seedForwardAndPushCore / popAndExtractForwardCore. Second defect fixed in
+      the same change: taylorApiCore leaves adTowerMode_/adTowerOrder_ set for
+      the WHOLE emission of the differentiated body, so a `derivative` written
+      inside a `derivative-n` body inherited the outer pass's tower order —
+      AutodiffCodegen::derivative() now clears the tower mode across its
+      codegenDerivativeMonolith call.
+    evidence: >-
+      tests/ad/ad_carrier_nesting_test.esk (36 EXACT analytic checks, never a
+      finite difference) on the ad_carrier_nesting_runtime_smoke and
+      ad_carrier_nesting_aot_smoke ctest lanes; the new `carrier` section of
+      tests/ad_oracle/gen_ad_oracle.py emits 14 probe files (154 checks) that
+      the ad_oracle gate runs on BOTH the JIT and the AOT lane, each composed
+      value checked against an in-language finite difference AND against the
+      equivalent single-carrier spelling. Revert-validated: on a pre-fix build
+      of the same tree tests/ad/ad_carrier_nesting_test.esk reports 24 failures,
+      every one `got=0`, and ad_oracle_carrier_01.esk reports 11/11 FAIL with
+      ad=0; after the fix both are clean.
+    caught_by: [KNOWN_ISSUES, pr-record-417, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]
+    notes: >-
+      Escape analysis: the ad_oracle's `nest` section only ever exercised
+      jet-over-jet composition, so the entire cross-carrier quadrant had no
+      probe at all — the gate was green because the defect lived in the shapes
+      it did not generate. The new `carrier` section closes that quadrant as a
+      generator axis, not as a point regression test. RESIDUAL, documented in
+      docs/KNOWN_ISSUES.md: a composition in which BOTH passes are order >= 2
+      exceeds one value series plus one first-order companion; it now RAISES
+      (eshkol_ad_nested_unsupported) instead of answering 0.
+
+  - id: SW-04
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+    title: "derivative-n applied to a derivative CLOSURE returns 0"
+    repro: "(define (f x) (* x x x x)) (define df (derivative f)) (display (derivative-n df 2.0 1))"
+    observed: "0"
+    correct: "48"
+    observed_after: >-
+      48, on the JIT and the AOT lane. SAME ROOT CAUSE as SW-03 — this is the
+      tower-over-jet direction of the one carrier-boundary defect, reached
+      through a first-class closure rather than a lexically nested form. The
+      derivative closure's body seeds an 8-jet; before the fix, that seeder
+      collapsed the incoming tower to a scalar (safeUnpackDualFromTagged's
+      scalar arm) and returned a bare double the outer tower read as 0. It now
+      takes the RIDE route: the first-order jet pass rides the outer tower's
+      tangent dimension, and its result is promoted back to a tower of the outer
+      epoch. Note the closure was never the defect — `(derivative df 2.0)`
+      answered 48 correctly before and after; only the crossing into the tower
+      was broken.
+    fixed_by: "ESH-0402 — same change as SW-03 (see that entry for the sites)."
+    evidence: >-
+      tests/ad/ad_carrier_nesting_test.esk rows `tower-over-jet-1/2/3`,
+      `tower-over-closure-1/2`, `jet-over-closure` and `closure-value`, on both
+      ctest lanes; the ad_oracle `carrier` section's `overclosure` and
+      `toweroverjet` probes on both lanes. Revert-validated with SW-03.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ad_oracle]
+
+  - id: SW-05
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    closed_at: "5886b91e"
+    closed_by: "PR fix(ad): the nesting cluster (branch fix/ad-nesting-cluster)"
+    title: "Curried gradient-of-gradient now raises instead of answering a zero matrix (ESH-0096)"
+    repro: "(define (f v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 0))) (define g (gradient f)) (display (jacobian g (vector 2.0)))"
+    observed_before: "#((0)), exit 0 — where (hessian f (vector 2.0)) returns #((12)) on the same build"
+    observed_after: >-
+      a catchable error: "unsupported nested differentiation: a first-class
+      `gradient` closure differentiated again by an enclosing reverse-mode
+      pass". ROOT CAUSE, measured: this is NOT the SW-03/SW-04 carrier defect
+      and NOT the deferred dense-tape-spine rework. `jacobian` is reverse mode —
+      it packs one `ad_node_t*` per input component into the point tensor's
+      element array and publishes the active column as the reverse seed. The
+      vector arm of AutodiffCodegen::emitRuntimeClosureGradient() then reads
+      those components with a raw `CreateBitCast(elem_bits, double)`, so a heap
+      pointer became a subnormal ~1e-310: the inner gradient was evaluated at ~0
+      AND its result carried no edge back to the outer tape. For f(v) = v0*v0
+      the same bogus bits were classified as a pointer and dereferenced, so the
+      route also SIGBUSed. The element load is now residency-probed
+      (eshkol_ad_node_probe, which never dereferences a non-resident candidate)
+      and raises rather than differentiating garbage.
+    fixed_by: >-
+      ESH-0402 — eshkol_ad_curried_gradient_unsupported() in
+      lib/core/runtime_taylor.c, called from the AD-node probe guarding the
+      element bitcast in emitRuntimeClosureGradient()'s reverse-tensor arm
+      (lib/backend/autodiff_codegen.cpp).
+    evidence: >-
+      tests/ad/ad_curried_gradient_nested_loud_test.esk on the
+      ad_curried_gradient_nested_loud_runtime_smoke and _aot_smoke ctest lanes.
+      It pins BOTH halves: the supported spellings still answer ((g (vector 2.0))
+      => #(12), (gradient f (vector 2.0)) => #(12), (hessian f (vector 2.0)) =>
+      #((12))), and the composed one is caught by `guard`, so a regression to
+      the silent zero — or back to the memory-unsafe read — fails the lane.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, pr-record-416]
+    notes: >-
+      PR #416 measured ESH-0096 as CLOSED and proposed deleting the KNOWN_ISSUES
+      entry. Direct measurement at 9f2da2ab and again at 2ae3787f contradicts
+      that for the curried jacobian route. Do not accept #416's close of
+      ESH-0096; the KNOWN_ISSUES entry stays, restated as a loud limitation.
+      NEEDS-DECISION: the exact fix is forward-over-reverse — evaluate the inner
+      gradient with 8-jets whose ep slot carries eshkol_ad_seed_flag of each
+      incoming tape node, and let popAndExtractForward's existing
+      eshkol_ad_mixed_record hook write the composition back onto the outer tape
+      (the identical machinery the direct `hessian` already uses, and the
+      identical machinery `jacobian` already installs at its call site for the
+      forward-over-reverse case). That is a new emission path inside
+      emitRuntimeClosureGradient's vector arm, estimated 3-5 days with the AD
+      oracle as the acceptance gate. It is NOT blocked on the dense resident
+      tape spine: no second reverse tape is required, because the inner pass
+      becomes forward.
+
+  - id: SW-06
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build — this is the SHA
+      the gate can look up, distinct from the branch the fix landed on.
+      (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no) prints `caught` on BOTH
+      native -r and the VM, and tests/differential/corpus/42_diff_quoted_raises.esk
+      prints `caught` then `ok` across the native axes, exit 0.
+    title: "diff on a quoted s-expression now raises a catchable error on BOTH engines"
+    repro: "(display (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no))"
+    observed_before: "native 0, VM 0 (both silently fabricated a derivative of 0)"
+    observed_after: >-
+      both engines now print 'caught' — native raises via eshkol_raise() /
+      eshkol_make_exception_with_header() from codegenDiff()
+      (lib/backend/llvm_codegen.cpp), the VM raises via vm_raise_error_msg()
+      from native call 393 (lib/backend/vm_native.c, shared with
+      `derivative`). Neither engine attempts real symbolic differentiation of
+      quoted data — that feature remains unimplemented and is v1.3.5 scope;
+      this PR only converts the silent wrong answer into an honest, R7RS
+      guard-catchable exception. The unquoted form, e.g. (diff (* x x) x),
+      is unaffected and still returns the correct symbolic derivative.
+    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+    evidence: >-
+      tests/differential/corpus/42_diff_quoted_raises.esk (all 4 native axes
+      agree, exit 0, guard catches — see tests/differential/README.md for the
+      axis matrix); lib/backend/vm_tests.c source_test_expect
+      "diff-quoted-expr-raises" and "derivative-non-callable-raises" (VM
+      standalone self-test, 62/62 passing). Revert-validated: reverting the
+      guard reproduces the original "no" (unguarded) output on both engines.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, all-differential-gates]
+    notes: >-
+      Shared-defect blindness (pre-fix): both engines agreed on the wrong
+      answer, so no native-vs-VM differential axis could ever see it — the
+      new corpus entry closes that specific blind spot going forward. This
+      is the class the P8 reference-free property oracles were meant to
+      close more generally.
+
+  - id: SW-07
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fc3c1257"
+    title: "fg-marginal returns an empty result natively"
+    repro: "(define fg (make-factor-graph 2 2)) (display (fg-marginal fg 0))"
+    observed: "native (), VM #(0.5 0.5)"
+    correct: "#(0.5 0.5) — the uniform marginal"
+    measured: >-
+      At fc3c1257 (PR #424, branch fix/fg-marginal-rationalize) both engines
+      print #(0.5 0.5) for all three dims spellings #(2 2), '(2 2) and 2, and
+      for both variables of a two-variable graph. Four defects, not one: the
+      native result tensor's dimensions[] array was never written
+      (lib/core/logic_builtins.cpp:52, so the documented #(2 2) spelling printed
+      #() around a correct distribution); native fg_read_numeric() read no list
+      form and eshkol_make_factor_graph_tagged() had no bare-scalar arm
+      (lib/core/inference.cpp), so '(2 2) and 2 answered the tagged NULL; and
+      the VM matched HEAP_TENSOR only, so a #(2 2) VECTOR literal fell to the
+      scalar arm and built one zero-state variable, while a real scalar was read
+      as a one-element dims list that clamped num_vars to 1
+      (lib/backend/vm_native.c native call 520).
+    evidence: >-
+      tests/vm_parity/corpus/57_factor_graph_marginal.esk (both engines, with an
+      explicit uniform-prior and extent oracle);
+      tests/differential/corpus/44_factor_graph_marginal.esk (native axes);
+      .scratch/flaw-ledger/repro/sw_fg_marginal.esk; PR #413 Follow-ups item 2
+    caught_by: [pr-record-413, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    fixed_by: "PR #424 (fix/fg-marginal-rationalize)"
+    notes: >-
+      PR #413 has since MERGED and its unified factor-graph sequence reader
+      (vm_fg_seq_doubles) supersedes #424's original VM vector arm; #424 was
+      rebased onto it and now layers only the bare-scalar broadcast on top, so
+      `(make-factor-graph 2 2)` is a two-variable graph on both engines rather
+      than being clamped to one. #424 does NOT close
+      tests/logic/workspace_test.esk, which is a ws-step! defect and is still
+      divergent at fc3c1257. #413's merge already removed
+      tests/logic/inference_test.esk and continuous_learning.esk from
+      divergent_programs, taking it from 10 to 8; #424 removes nothing further.
+      SEPARATELY MEASURED at fc3c1257 and reported to the coordinator rather
+      than acted on here: tests/parser/special_forms_test.esk is still
+      baselined but now AGREES on both engines (stable over three runs, and it
+      references neither rationalize nor any factor-graph builtin), so one of
+      today's merges — most likely #428's nearest-enclosing-binding fix — left
+      a stale ratchet entry that its own lane should retire.
+
+  - id: SW-08
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fc3c1257"
+    title: "rationalize diverges between engines; the VM silently answers 0"
+    repro: "(display (rationalize (/ 1 3) 1/10000))"
+    observed: "native 1/3, VM 0"
+    correct: "1/3"
+    measured: >-
+      At fc3c1257 (PR #424) both engines answer 1/3, and agree on the whole
+      R7RS-small 6.2.6 page. Two defects, one per engine: the VM's native call
+      349 coerced both arguments with the plain as_number(), which reads a
+      VAL_RATIONAL's heap index through the int64 arm of the union and answers
+      0.0, so every exact-rational input produced the exact integer 0
+      (lib/backend/vm_native.c; native calls 342-347 already special-case
+      VAL_RATIONAL, 349 now uses as_number_vm()). Natively, an exact-integer x
+      was taken as its own answer whatever the tolerance and the integer-in-range
+      test tried floor(lo)+1 before ceil(lo), so (rationalize 3 1) answered 3
+      where 2 is simpler under |p1| <= |p2| with q1 = q2 = 1, and where the VM
+      already answered 2 (lib/core/rational.cpp).
+    evidence: >-
+      tests/vm_parity/corpus/58_rationalize_r7rs.esk (both engines, with the
+      spec example as an explicit oracle);
+      tests/differential/corpus/43_rationalize.esk (native axes);
+      tests/rational/rationalize_test.esk;
+      .scratch/flaw-ledger/repro/sw_rationalize.esk
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES, numeric_exactness_oracle]
+    fixed_by: "PR #424 (fix/fg-marginal-rationalize)"
+
+  - id: SW-09
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build:
+      (guard (e (#t 'caught)) (+ a b) 'no) over two i128 values prints `caught`
+      on the VM, where it used to print `no` (guard body completed, silent 0).
+    title: "Generic + over i128 now raises a catchable error on the VM (native was already loud)"
+    repro: "(define a (i128 5)) (define b (i128 7)) (display (guard (e (#t 'caught)) (+ a b) 'no))"
+    observed_before: "VM 0 (exit 0); native raises a type error (exit 1) — see LE-03"
+    observed_after: >-
+      VM now prints 'caught' (raised via vm_raise_error_msg() in both the
+      switch-based OP_ADD and the threaded lbl_ADD interpreter loops,
+      lib/backend/vm_run.c — the VM has two independent dispatch
+      implementations of every opcode and both needed the guard). No i128
+      opcodes were implemented (that is v1.3.5 scope, tracked
+      docs/KNOWN_ISSUES.md); this PR only stops the VM from silently
+      coercing an i128 operand to 0.0 via as_number_vm(). Native is
+      unchanged (LE-03 already raised "Type error in +: expected number,
+      vector, or tensor, got heap-object"). SW-09b (below), landed in the
+      same PR before merge, converts the rest of the family (`- * / modulo`,
+      unary `-`, `abs`, `= < > <= >=`) the same way — the family is no
+      longer split between "+ fixed" and "everything else open".
+    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22, SW-09b same PR)"
+    evidence: >-
+      lib/backend/vm_tests.c source_test_expect "i128-add-raises" (VM
+      standalone self-test, 73/73 passing). Revert-validated: reverting the
+      guard reproduces the original "no" (silent 0, uncaught) output on the
+      pre-fix VM binary.
+
+  - id: SW-09b
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: fixed
+    reclassified_from: SILENT-WRONG
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413 on a fresh build: all eleven
+      remaining i128 operations — - * / modulo, unary -, abs, and = < > <= >=
+      — each print `caught` under a guard on the VM. Eleven of eleven, none
+      silently answering a fabricated value.
+    title: >-
+      The rest of the generic arithmetic/comparison family over i128 (-, *,
+      /, modulo, unary -, abs, =, <, >, <=, >=) now raises on the VM, same
+      as SW-09's +
+    repro: >-
+      (define a (i128 5)) (define b (i128 7)) (display (guard (e (#t
+      'caught)) (* a b) 'no)) — and the same shape for -, /, modulo, (- a),
+      (abs a), =, <, >, <=, >=.
+    observed_before: >-
+      Every one of these opcodes silently answered a fabricated value with
+      exit 0 on the VM (e.g. `*` printed 'no', meaning the guard body ran to
+      completion and returned its non-exceptional value, exactly like SW-09
+      before its fix). Confirmed by direct measurement: not caught by the
+      original SW-09 fix, which converted only `+`.
+    observed_after: >-
+      All twelve opcodes now raise a catchable "i128 arithmetic/comparison
+      is not supported on the VM" error: `+ - * / modulo` (binary
+      arithmetic), unary `-` and `abs` (unary arithmetic), `= < > <= >=`
+      (comparison). Fixed in BOTH of vm_run.c's independent dispatch
+      implementations — the threaded/computed-goto loop (lbl_ADD, lbl_SUB,
+      lbl_MUL, lbl_DIV, lbl_MOD, lbl_NEG, lbl_ABS, lbl_EQ, lbl_LT, lbl_GT,
+      lbl_LE, lbl_GE) and the switch-based fallback compiled only on
+      non-GCC/non-Clang toolchains (OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
+      OP_NEG, OP_ABS, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE) — this platform can
+      only execute the threaded loop, so the switch-based twin was verified
+      by temporarily forcing its compilation (flipping the `#if
+      defined(__GNUC__) || defined(__clang__)` guard to `#if 0`, confirming
+      a clean build and all 12 opcodes raising, then reverting). No i128
+      opcodes were implemented — this is still a missing-opcode-branch gap,
+      not the v1.3.5 real fix; only the silent-wrong path changed. The
+      dedicated `i128-*`/`i128=?`/`i128<?`/etc. comparison and arithmetic
+      surface (docs/KNOWN_ISSUES.md) is unaffected and was already correct.
+    fixed_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+    evidence: >-
+      lib/backend/vm_tests.c source_test_expect entries i128-sub-raises,
+      i128-mul-raises, i128-div-raises, i128-modulo-raises, i128-neg-raises,
+      i128-abs-raises, i128-eq-raises, i128-lt-raises, i128-gt-raises,
+      i128-le-raises, i128-ge-raises (VM standalone self-test, 73/73
+      passing, up from 62/62 pre-family-fix). ctest 142/142, VM parity
+      144/144 (0 failed) after the family-wide change — no regression.
+      Revert-validated at MUL specifically (temporarily `#if 0`-disabling
+      just the lbl_MUL guard reproduced the original silent 'no' output;
+      restoring it reproduced 'caught'), plus the family-wide instance of
+      the same pattern already proved once for SW-09's `+`.
+    caught_by: [direct-measurement, coordinator-review]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, i128_native_type_oracle]
+    notes: >-
+      Filed because the original SW-09 fix explicitly scoped itself to `+`
+      (the literal ledger repro) and left the rest of the family open in
+      KNOWN_ISSUES rather than silently dropping them — this entry closes
+      that gap in the same PR, before merge, so no silent-wrong i128 path
+      ships.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, i128_native_type_oracle]
+    notes: "Native half was already LOUD-ERROR (see LE-03); this PR fixes the VM half."
+
+  - id: SW-10
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "45877dde"
+    closed_by: "PR (branch fix/resource-limits-and-ascription)"
+    title: "Seven documented resource-limit environment variables are accepted and never enforced"
+    repro: "ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=1 eshkol-run -r a-20M-iteration-loop.esk"
+    observed: >-
+      Runs to completion, prints 199999990000000, exit 0. ESHKOL_TIMEOUT_MS=500 prints
+      'ERROR: Execution timeout: 500ms limit exceeded' and then runs to completion and exits 0.
+    correct: "The documented limit is applied, or the variable is documented as inert"
+    variables: [ESHKOL_MAX_HEAP, ESHKOL_TIMEOUT_MS, ESHKOL_MAX_STACK, ESHKOL_MAX_TENSOR_ELEMS, ESHKOL_MAX_STRING_LEN, ESHKOL_ENFORCE_LIMITS, ESHKOL_LIMIT_WARNINGS]
+    evidence: >-
+      lib/core/resource_limits.cpp parses into g_limits and nothing consults it.
+      Exhaustive grep over lib/, inc/ and exe/ for eshkol_check_tensor_size,
+      eshkol_check_string_length, eshkol_is_timed_out and eshkol_track_allocation returns
+      15 hits: 11 declarations in inc/eshkol/core/resource_limits.h and 4 definitions in
+      lib/core/resource_limits.cpp. ZERO call sites anywhere else — the enforcement
+      functions are written, compiled, and never invoked. Documented as controls at docs/breakdown/RUNTIME_CONFIGURATION.md:27-33,
+      docs/reference/runtime/environment-variables.md:65-73, docs/API_REFERENCE.md:4396-4402.
+    caught_by: [pr-record-416, direct-measurement, doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      A consumer setting a heap ceiling to contain untrusted code gets no containment
+      and no warning. #416 adds honest 'Accepted, not enforced in v1.3.4' status columns
+      but #416 is UNMERGED, so the cut still documents them as controls.
+    fix: >-
+      Each ceiling is applied at the one site every path to it converges on, so no
+      call site can be added later that escapes it, and no fast path pays for it:
+      ESHKOL_MAX_HEAP at lib/core/runtime_arena_core.cpp create_arena_block() (the
+      arena's only OS-request site — once per block, bump-pointer path untouched);
+      ESHKOL_MAX_STRING_LEN at lib/core/runtime_object_alloc.cpp
+      arena_allocate_string_with_header(); ESHKOL_MAX_TENSOR_ELEMS at
+      lib/core/runtime_tensor_alloc.cpp arena_allocate_tensor_full() plus
+      lib/backend/tensor_creation_codegen.cpp emitTensorElementLimitCheck(), because
+      native codegen assembles tensors from three separate allocations and never calls
+      that helper; ESHKOL_TIMEOUT_MS as a cooperative poll emitted at the tail-call
+      back-edge in lib/backend/llvm_codegen.cpp codegenTailCallFromContext() and run at
+      every guarded function entry in lib/core/runtime_list_helpers.cpp
+      eshkol_check_recursion_depth(); ESHKOL_MAX_STACK by making that same guard read
+      eshkol_get_limits()->max_stack_depth instead of a hard-coded 100000 (there were
+      two stack-depth mechanisms with the same default and no wire between them);
+      ESHKOL_VM_MAX_INSN in both lib/backend/vm_run.c dispatch paths.
+      ESHKOL_ENFORCE_LIMITS and ESHKOL_LIMIT_WARNINGS select terminate-vs-advisory and
+      soft-limit warnings at the single decision point eshkol_limit_enforce().
+    measured_after: >-
+      ESHKOL_MAX_HEAP=1 on the 20M-iteration loop: 'eshkol: fatal: Heap hard limit
+      exceeded (limit 1 bytes, set by ESHKOL_MAX_HEAP): arena block', exit 120 (was
+      199999990000000, exit 0). ESHKOL_TIMEOUT_MS=500 on the same program: 'eshkol:
+      fatal: Execution timeout exceeded (limit 500ms, set by ESHKOL_TIMEOUT_MS)', exit
+      124 (was the same message followed by the answer and exit 0). MAX_STRING_LEN=100
+      exit 123, MAX_TENSOR_ELEMS=100 exit 122, MAX_STACK=100 exit 121,
+      VM_MAX_INSN=100000 exit 125. Under-limit controls all still exit 0 with identical
+      output, and ESHKOL_ENFORCE_LIMITS=false downgrades every case to a warning and
+      exit 0. All 13 cases green in tests/limits/resource_limits_enforcement_gate.sh,
+      registered as the ctest gate resource_limits_enforcement_gate.
+    residual: >-
+      ESHKOL_MAX_STACK binds the recursion the depth guard observes; codegen does not
+      yet emit that guard at the entry of every top-level `define`d function. That gap
+      is ESH-0101 (tests/stress/found/deep_recursion_270k_no_diagnostic.esk) and is
+      deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
+      non-tail recursion working to 250000 frames, which the documented 100000 default
+      would break. Recorded in docs/reference/runtime/environment-variables.md.
+      RULED (maintainer, 2026-08-13): ESH-0101 stack-guard COVERAGE stays open as a
+      ledgered v1.3.5 item. Wiring the variable where guards already exist — which is
+      what this entry does — is the correct and complete v1.3.4 scope. Not a blocker
+      for the v1.3.4 tag.
+      Second residual, and the important one: every ceiling is OPT-IN. A limit
+      binds a run only when that run sets its variable (or sets the matching
+      ESHKOL_LIMIT_ACTIVE_* bit before eshkol_set_limits()); the documented
+      defaults are the values a limit takes when turned on, not ceilings every
+      program is held to. This was learned the hard way inside this PR: the
+      first cut enforced the documented defaults unconditionally and killed
+      tests/features/blc_test.esk, which allocates past the 1 GiB heap default
+      and had run fine for years, with 'Heap hard limit exceeded' and exit 120.
+      The VM's computed-goto dispatch likewise never had an instruction guard,
+      so applying the 10M default there had the same character. The defect this
+      entry records is that ESHKOL_MAX_HEAP=1 did nothing; fixing that does not
+      require imposing a ceiling on every program that sets nothing.
+      Whether the defaults should ALSO bind an unconfigured run is a release
+      decision about defaults, not a bug fix.
+      RULED (maintainer, 2026-08-13): ceilings stay OPT-IN for v1.3.4. Shipping
+      behaviour is unchanged for every existing program — a run that sets nothing is
+      bounded by nothing, exactly as before. Whether the documented defaults should
+      also bind an unconfigured run is deferred as a v1.3.5 policy question, not a
+      v1.3.4 defect. Documented at docs/reference/runtime/environment-variables.md
+      ("Limits are opt-in") and pinned by a dedicated case in
+      tests/limits/resource_limits_enforcement_gate.sh.
+
+  - id: SW-11
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "45877dde"
+    closed_by: "PR (branch fix/resource-limits-and-ascription)"
+    title: "(the <type> expr) is a runtime no-op, so a false ascription is never caught"
+    repro: "(display (the string (+ 1 2)))"
+    observed: "3, exit 0"
+    correct: "a type error, or a doc that does not call it an assertion"
+    evidence: ".scratch/flaw-ledger/repro/sw_the.esk; docs/FEATURE_MATRIX.md:72,804"
+    caught_by: [direct-measurement, doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Documented as a 'trusted assertion to the checker; runtime no-op (byte-identical IR)'. Documented-by-design, but the word 'assertion' is the lie."
+    fix: >-
+      Closed on the 'a type error' arm of `correct`, not the 'document it differently'
+      arm, and at compile time rather than at run time. lib/types/type_checker.cpp
+      ESHKOL_THE_OP was already synthesizing the wrapped expression and then throwing
+      the resulting type away; it now compares that type against the ascribed one via
+      the new TypeChecker::ascriptionIsBelievable() and reports a provable
+      contradiction through reportTypeIssue(), the same enforcement point every other
+      type issue uses — a warning under gradual typing, fatal under --strict-types.
+      The predicate rejects only the impossible: widening, narrowing (the reason the
+      form exists), anything touching the dynamic Value root or an unresolved type, and
+      numeric-tower-to-numeric-tower are all accepted, the last because this type graph
+      keeps Integer/Rational/Real/Complex as siblings under Number rather than a chain,
+      so `(the real 1)` has no subtyping relation in either direction.
+      DELIBERATELY NOT a runtime check: COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6
+      guarantees the emitted IR is byte-identical to the wrapped expression with no
+      runtime tag check and no cost, and docs/FEATURE_MATRIX.md:804 justifies the VM
+      parity gap ON that guarantee. A compile-time diagnostic makes the word 'checked'
+      true without walking either claim back; both were re-worded to say so.
+    measured_after: >-
+      `(display (the string (+ 1 2)))` now prints '[WARN] Type warning: ascription
+      (the String ...) contradicts the inferred type Int64; no value can satisfy it
+      (line 1:11)' and, under gradual typing, still evaluates to 3 and exits 0 as the
+      documented gradual-typing model requires; under --strict-types it is fatal —
+      'Refusing to generate code for a program with type errors', exit 1, no artifact.
+      Class-kill matrix all reported: (the vector (+ 1 2)), (the procedure "x"),
+      (the string (vector 1 2)), (the integer "s"), (the boolean 5). Correct
+      ascriptions unaffected across the numeric tower and strings:
+      (the number (+ 1 2)), (the real 1), (the integer 5), (the string "hi") are
+      silent and evaluate identically. tests/typesystem/checked_cast_the_test.esk
+      compiles clean under --strict-types with 0 diagnostics, and the
+      registry-derived coverage cell in scripts/run_typesystem_tests.sh is unaffected
+      because its operand is dynamic.
+    residual: >-
+      The diagnostic is native-only, because the bytecode VM has no `the` surface and
+      does not run the HoTT checker. That is unchanged from before this fix and remains
+      native-only-justified in docs/VM_PARITY.md: the form emits no code on either
+      engine, so what the two engines COMPUTE is still identical.
+
+  - id: SW-12
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "1b2682f6"
+    title: "Six tensor ops carry two independent backward implementations with no differential test between them"
+    ops: [matmul, layernorm, transpose, sum, embedding, attention]
+    evidence: >-
+      lib/backend/tensor_backward.cpp defines eshkol_backward_{matmul,layernorm,transpose,sum,embedding,attention};
+      lib/bridge/tensor_backward.cpp defines tensor_{matmul,layernorm,transpose,sum,embedding,attention}_backward.
+      tests/bridge/qllm_bridge_gradcheck_test.cpp gradchecks the BRIDGE half against finite
+      differences for matmul/gelu/softmax/layernorm/rmsnorm/silu/cross-entropy and explicitly
+      EXCLUDES attention and embedding. No test compares the two implementations on the same input.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, duplicate-implementations-detector]
+    notes: >-
+      ICC's duplicate-implementations detector did not flag this pair: the two files are
+      not textually similar, so a lexical clone detector cannot see a semantic duplicate.
+      That is a concrete ICC detector gap, not a scoping choice. The correctness chain's
+      other half, `contradictions`, returned 30 findings at this SHA and every one is a
+      constant_disagreement or env_default_disagreement on a build/tuning symbol — it
+      compares symbol VALUES, never behaviour, docs or test-harness metadata.
+    measured: >-
+      Direct differential built on branch fix/vector-ref-tensor-and-backward-diff (commit f55e0336)
+      (tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp, new; plus one added check in
+      tests/backend/tensor_embedding_backward_gradcheck_test.cpp): identical inputs and an
+      identical upstream cotangent fed to BOTH implementations, diffed directly against each
+      other, with central finite differences of a THIRD, independently-written forward as the
+      tie-breaking oracle per the task ruling ("finite differences arbitrate").
+
+      5 of 6 ops AGREE, to machine precision or exactly:
+        matmul     max|native-bridge| = 0.0 (both operands), FD max diff 1.8e-10 / 9.6e-11
+        layernorm  max|native-bridge| = 6.9e-17 (dx) / 0.0 (dgamma), FD max diff 2.9e-10 / 1.9e-10
+        transpose  max|native-bridge| = 0.0, FD max diff 5.1e-11
+        sum        max|native-bridge| = 0.0, FD max diff 9.2e-12
+        embedding  max|native-bridge| = 0.0 (exact scatter-add on both sides; already had
+                   independent FD/closed-form coverage in ESH-0230's test, this adds the direct
+                   bridge-vs-native diff on the identical fixture)
+      transpose and sum have no AD_NODE_TENSOR_{TRANSPOSE,SUM} forward producer anywhere in the
+      tree (same situation embedding was in before PR #392 / ESH-0230), so their bridge side was
+      exercised by hand-building the node per tensor_{transpose,sum}_backward's documented
+      contract, the same technique tests/backend/tensor_embedding_backward_gradcheck_test.cpp
+      already used for embedding.
+
+      attention was, at that SHA, NOT a numeric disagreement: eshkol_backward_attention (native)
+      was exact and FD-validated (max diff 2.3e-11 / 6.5e-11 / 4.2e-11 across dQ/dK/dV) while
+      tensor_attention_backward (bridge) unconditionally called eshkol_fatal(), because
+      ad_tensor_attention's forward (lib/bridge/qllm_bridge.cpp) retained neither the `causal`
+      flag nor the softmax attention weights an exact adjoint needs. That was a forward-plumbing
+      gap, not a wrong formula — recorded as NEEDS-DECISION and referred to the maintainer.
+    resolution: >-
+      Maintainer ruling: FIX IT — no refusal path ships. Implemented on branch
+      fix/bridge-attention-backward (stacked on fix/vector-ref-tensor-and-backward-diff).
+
+      FORWARD (lib/bridge/qllm_bridge.cpp, ad_tensor_attention) now retains what the adjoint
+      needs, in the mechanism the node struct already provides for exactly this and that the
+      native AD_NODE_ATTENTION arm already uses (saved_tensors):
+        node->saved_tensors[0]  dense [batch, num_heads, seq, seq] softmax weight matrix,
+                                masked entries left at EXACTLY zero
+        node->num_saved         1
+        node->params as int64[6]  [num_heads, head_dim, causal, scale_bits, 0, 0]
+                                (scale bit-cast from double, the "scale_bits" convention already
+                                used by the AD_NODE_ATTENTION params and the Frechet rule;
+                                slots [0]/[1] deliberately coincide with the named
+                                attention_params fields so both spellings read the same slots)
+      Forward VALUES are unchanged — the retained row is the same softmax row the forward already
+      computed, hoisted out of the inner product loop.
+
+      BACKWARD (lib/bridge/tensor_backward.cpp, tensor_attention_backward) is now the exact
+      adjoint, per (batch, head) column slice of the [batch, seq, dim] operands:
+        dV[j] = sum_i A[i][j] dO[i]
+        dA[i][j] = <dO[i], V[j]>
+        dS[i][j] = A[i][j] (dA[i][j] - sum_k A[i][k] dA[i][k]) * scale     (softmax Jacobian
+                   diag(y) - y y^T applied row-wise, one row dot product per row: O(seq^2))
+        dQ[i] = sum_j dS[i][j] K[j]      dK[j] = sum_i dS[i][j] Q[i]
+      Causal masking is carried by the retained zeros — every term above has a factor A[i][j], so
+      masked positions contribute exactly zero with no mask test, and the summations still run
+      over the full [0, seq) range. That keeps the accumulation ORDER identical between the causal
+      and non-causal cases and identical to the native kernel's loop nest, which is what the
+      no-fast-math / deterministic-gradient rule requires. The rule is written independently of
+      eshkol_backward_attention rather than delegating to it, so the differential below compares
+      two implementations and not a thing to itself. The eshkol_fatal refusal is retained ONLY
+      for contract violations (no retained weights, missing operand, params that do not partition
+      dim, unusable scale, or a recorded `causal` flag that disagrees with the retained weights —
+      an exact-equality cross-check, since masked entries are exactly zero).
+
+      MEASURED, ctest -R tensor_backward_dual_impl_gradcheck (21 checks, 21 pass), both masking
+      modes at two shapes, native-vs-bridge max abs diff across dQ/dK/dV:
+        small [batch 1, heads 1, seq 3, head_dim 4] noncausal  1.4e-17 / 1.4e-17 / 5.6e-17
+        small                                       causal     2.8e-17 / 1.4e-17 / 0.0
+        moderate [batch 2, heads 3, seq 5, head_dim 4] noncausal 5.6e-17 / 5.6e-17 / 1.1e-16
+        moderate                                      causal    4.2e-17 / 3.8e-17 / 2.2e-16
+      i.e. at or below the 1e-16 machine-epsilon floor, far inside the 1e-9 bar the other five ops
+      are held to (the residual is BLAS-vs-scalar summation order: the native kernel is
+      cblas_dgemm-backed, the bridge rule is plain loops). FD is the third oracle: bridge-vs-FD and
+      native-vs-FD max diff 1.0e-10 .. 1.4e-09 on the moderate shapes, bar 1e-6 — and the two
+      grads' FD residuals are identical to every printed digit, which is the same statement as the
+      1e-17 agreement. The bridge FORWARD is also diffed against the reference forward (0.0).
+    ops_status:
+      matmul: agree
+      layernorm: agree
+      transpose: agree
+      sum: agree
+      embedding: agree
+      attention: agree
+    status_rationale: >-
+      Ledger ruling: SW-12 closes only if all six ops are verified agreeing or fixed. All six are
+      now verified agreeing on identical inputs, five to machine precision or exactly and
+      attention to <= 2.2e-16 across four shape/masking cells, with finite differences of an
+      independently-written third forward arbitrating in every case. The attention NEEDS-DECISION
+      was resolved by the maintainer as FIX IT and the fix is in this branch; no refusal path
+      remains for a well-formed node. Closing.
+    evidence_new: >-
+      lib/bridge/qllm_bridge.cpp (ad_tensor_attention retains the attention weights and the causal
+      flag); lib/bridge/tensor_backward.cpp (tensor_attention_backward, exact adjoint replacing the
+      unconditional refusal);
+      tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp (matmul/layernorm/transpose/sum
+      direct diff + FD; attention direct diff + FD at two shapes x causal/non-causal through the
+      REAL producer ad_tensor_attention and the real dispatch path, plus a fork death test that the
+      rule still refuses a node with no retained weights);
+      tests/backend/tensor_embedding_backward_gradcheck_test.cpp check 10 (direct bridge-vs-native
+      diff, added to the existing ESH-0230 coverage);
+      tests/bridge/qllm_bridge_gradcheck_test.cpp (attention and causal-attention pipelines added —
+      no op is excluded from that suite any more; embedding remains gradchecked in its own file
+      because it takes an index tensor, not that file's x/w pipeline shape);
+      docs/breakdown/AUTODIFF.md (the "attention backward is a v1.2 value-passthrough stub" section
+      replaced with the shipped exact rule on both paths).
+
+  - id: SW-13
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+    title: "WASM batch compile mis-evaluates the first macro when a program has two or more define-syntax forms"
+    observed: "(dbl 21) => (* 2 21) prints a garbage bignum, value varies per build"
+    correct: "42"
+    evidence: "tests/wasm_diff/EXCLUSIONS.tsv (XFAIL row, 16_define_syntax.esk); reaffirmed in PR #413 and #418"
+    caught_by: [parity-baselines, pr-record-413, pr-record-418]
+    missed_by: [icc-correctness-chain, icc-readiness]
+    root_cause: >-
+      NOT a wasm bug and NOT in the macro expander's ordering: a TYPE-PUNNING heap
+      over-read that is undefined behaviour on every platform and only became VISIBLE in
+      wasm32. vm_macro.c casts between `MacroNode*` and the hub's `Node*`, and the two
+      structs were separate declarations that merely CLAIMED to be layout-compatible
+      (lib/backend/vm_parser.c:27-40 pre-fix). They were not: the VM hub's Node carries
+      four trailing fields MacroNode did not — is_char/is_inexact/is_int/ival at offsets
+      156/160/164/168, sizeof 176 — while MacroNode was 160 bytes with `_cap` sitting
+      exactly on top of `is_char`. Every macro-expanded node is
+      calloc(sizeof(MacroNode))'d in macro_node_deep_copy (vm_macro.c:81) and read back
+      through Node* by the compiler, so `is_char` aliased the children-array CAPACITY and
+      `is_inexact`/`is_int`/`ival` were read 0..16 bytes PAST the allocation. The exact-
+      integer constant folder in compile_expr_impl (lib/backend/vm_compiler.c:3108) reads
+      `is_int` and `ival` to decide whether to fold exactly; on wasm32 those out-of-bounds
+      bytes are nonzero, so the first macro's (* 2 21) folded from heap garbage and printed
+      a garbage bignum. On 64-bit hosts the bytes past a 160-byte chunk happened to read
+      zero, which is why the defect was invisible natively while shipping wrong answers in
+      the browser build. A second define-syntax merely perturbs the malloc layout, which is
+      why "two or more" and "value varies per build".
+    measured: >-
+      Reproduced NATIVELY (no wasm toolchain needed) by building the VM standalone with
+      -fsanitize=address: "heap-buffer-overflow ... READ of size 4 at 4 bytes after
+      160-byte region", read at vm_compiler.c:3108, region allocated by
+      macro_node_deep_copy at vm_macro.c:81. Offsets re-verified independently:
+      sizeof(Node)=176, sizeof(MacroNode)=160, is_char=156 aliases _cap=156,
+      is_inexact=160, is_int=164, ival=168.
+    fix: >-
+      MacroNode is now literally the hub's Node (`typedef struct Node MacroNode;`) with
+      `_cap` added to Node and maintained by every append site, so the casts are
+      well-defined by construction rather than by coincidence of field ordering
+      (lib/backend/vm_parser.c, lib/backend/eshkol_compiler.c). macro_node_deep_copy copies
+      the WHOLE struct instead of three hand-picked fields, which also closed three
+      exactness bugs it had been silently causing: a literal travelling through a macro
+      lost its exactness tags, so (dbl 2.0) folded to the exact 2, an exact literal past
+      2^53 degraded to a double, and #\a decayed to its codepoint 97.
+    verified: >-
+      ASAN clean on 16_define_syntax.esk and the new corpus program; XFAIL row removed from
+      tests/wasm_diff/EXCLUSIONS.tsv (PR-06 drops to 0 XFAIL); new gated corpus program
+      tests/vm_parity/corpus/61_multi_macro_batch.esk (4 define-syntax, first macro used
+      after later registrations, mutual use, nested self-application, exactness and char
+      preservation, conditional-valued operands) matches native byte-for-byte on both
+      engines.
+
+  - id: SW-14
+    bucket: LOUD-LIMITATION
+    status: open
+    disposition: "v1.3.5 flagship: VM OALR Stage-1 evacuator port"
+    title: "The bytecode VM does not reclaim: with-region is a pass-through there (native reclaims; VM announces that it does not)"
+    observed: "A VM program using regions computes the right answer and never gets the memory back; the VM heap has no escape evacuator"
+    evidence: >-
+      docs/KNOWN_ISSUES.md, section "Region handles and `with-region` on the
+      VM"; reproducer tests/memory/vm_region_growth_watchdog_test.esk; guard
+      gated by tests/memory/vm_region_growth_watchdog_test.sh and the
+      icc-smoke probe vm_region_growth_watchdog
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    reclassified:
+      from: SILENT-WRONG
+      to: LOUD-LIMITATION
+      "on": "2026-08-13"
+      by: "maintainer ruling"
+      why: >-
+        The entry was filed SILENT because a long-running VM process degraded
+        with no diagnostic and exit 0. That premise no longer holds: the two
+        guards below announce the limitation at the point of use and again when
+        it starts to bite, and a gate fails if either is removed. What remains
+        is a capability the VM does not implement, stated plainly — a
+        limitation, not a wrong answer. The reclassification is a change of
+        CATEGORY, not a claim that anything was fixed: the VM still reclaims
+        nothing, and status stays `open` until the evacuator lands.
+        NOT a waiver — waivers expire and this has a build item instead.
+    guard: >-
+      (a) the first region form executed on the VM prints a one-time note to
+          stderr naming the boundary (vm_region_reclaim_notice(),
+          lib/backend/vm_core.c; called from compile_form_with_region() and
+          from native 2210 region-open). ESHKOL_VM_REGION_QUIET=1 silences it.
+      (b) the VM arena is sampled every 4096 allocations and crossing
+          ESHKOL_VM_HEAP_BUDGET_MB (default 1024) prints a diagnostic naming
+          the size, the budget and the cause (heap_check_budget()).
+          ESHKOL_VM_HEAP_BUDGET_FATAL=1 makes it exit nonzero so a lane can
+          gate on it; ESHKOL_VM_HEAP_BUDGET_MB=0 disables it.
+      Neither changes any answer — the gate asserts that too
+      (vm_region_growth_watchdog_test.sh::answers_unchanged).
+    docs_corrected: >-
+      Maintainer ruling 2026-08-13 also required the docs to stop promising
+      reclamation engine-neutrally. docs/reference/runtime/memory-model.md,
+      docs/KNOWN_ISSUES.md and docs/reference/runtime/environment-variables.md
+      now state plainly that the NATIVE engine implements region reclaim (OALR)
+      and the VM engine does not yet reclaim, with the watchdog and budget
+      environment variables documented as the current VM behaviour.
+    notes: >-
+      Filed as SILENT on the premise that the growth was undiagnosed; see
+      `reclassified` for why that premise no longer holds. The measurement
+      below is the reason the entry is not merely "with-region is weaker on the
+      VM": the VM has NO reclamation at all, so `with-region` is not degraded
+      there, it is inert.
+    measured:
+      at_sha: "2ae3787f"
+      with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
+      fixture: "20000 iterations x 200 conses per iteration, /usr/bin/time -l peak RSS"
+      with_region_wrapper: "1,503,297,536 bytes"
+      without_region_wrapper: "1,504,067,584 bytes"
+      finding: >-
+        The two are the SAME to within 0.06% — the wrapped run is fractionally
+        SMALLER, i.e. the difference is allocator noise, not reclamation.
+        `with-region` does not reclaim
+        less than native — it reclaims NOTHING, and so does everything else:
+        the bytecode VM has no heap reclamation of any kind. heap_alloc()
+        (lib/backend/vm_core.c) bump-allocates from an arena that is never
+        released and hands out a monotonically increasing object index that is
+        never recycled; vm_region_pop() exists (lib/backend/vm_arena.h) but no
+        bytecode ever calls it, because compile_form_with_region()
+        (lib/backend/vm_compiler.c) lowers the form to `begin`.
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_with_region() emits no region
+      bracket at all: the region specifier is recognised and skipped and the
+      body is lowered exactly like `begin`. That is deliberate and documented
+      in the function's own comment — a real push/pop there would free the
+      object graph the body just returned, because the VM heap has no escape
+      evacuator to promote a kept value out with. The missing evacuator, not
+      the missing bracket, is the defect.
+    scope_of_the_real_fix: >-
+      Sized before the ruling and unchanged by it — this is the v1.3.5 flagship
+      brief. A correct fix is a VM-heap escape evacuator, a campaign of the
+      same size as the native ESH-0214c/ESH-0214d work (multiple dedicated
+      PRs), not a patch. It requires, at minimum:
+      (1) ROOT ENUMERATION over the operand stack plus ~15 Value-carrying side
+          tables inside `struct VM` (outputs, handler_stack.promise_mark,
+          current_exception, wind_stack, parameter_bindings, promise_eval_head,
+          lru_caches, event_emitters, channels, timers, exit_handlers, ...) —
+          a missed root frees live memory;
+      (2) PER-SUBTYPE INTERIOR TRAVERSAL for all 27 HeapTypes plus their
+          arena-allocated payloads (VmVector.items, VmString.data,
+          VmBignum.limbs, VmSubstitution.terms, VmFact.args/datum_ptr,
+          VmFactorGraph's five pointer arrays, VmContinuation's six saved
+          arrays, VmParameter.save_stack, ...) — this is exactly the coverage
+          problem ESH-0214d had to close natively, and it still carries a
+          documented watchlist there;
+      (3) a MUTATION WRITE BARRIER at every VM channel that can store a Value
+          into a longer-lived container (~130 candidate sites across
+          vm_native.c/vm_run.c) or, in its place, a full mark from roots;
+      (4) INDEX-SPACE recycling or compaction, because the object table index
+          is a monotone counter — freeing only the arena still leaks 8 bytes
+          per object and still terminates at ESHKOL_VM_HEAP_MAX_SIZE.
+      The failure mode of a partial implementation is STRICTLY WORSE than the
+      defect: a missed root or an uncovered subtype turns an honest leak into
+      a dangling object index, which on the VM aliases a live object and
+      produces a silently wrong VALUE rather than a crash. That is why the
+      ruling scopes the v1.3.5 port with all 27 subtypes DEEP-WALKED up front
+      rather than leaf-copied and revisited.
+    ruling:
+      "on": "2026-08-13"
+      by: "maintainer"
+      decision: >-
+        The loud guard ships for v1.3.4. The full VM evacuator is the v1.3.5
+        FLAGSHIP item: an OALR Stage-1 port of the native engine's design —
+        Cheney-style copying evacuation with a forwarding map and a mutation
+        write barrier — with all 27 heap subtypes DEEP-WALKED rather than
+        leaf-copied. That last clause is the ESH-0214d lesson written into the
+        scope up front: natively, the subtypes left as shallow leaf copies were
+        exactly the ones that later had to be reopened, so the VM port does not
+        get to defer them.
+      consequences:
+        - "this entry moves SILENT-WRONG -> LOUD-LIMITATION and stops gating the tag"
+        - "status stays open; the evacuator is the close condition, not the guard"
+        - "docs must state the engine split plainly rather than promise reclaim neutrally"
+    close_condition: >-
+      This entry closes when a VM program measurably gets its memory back:
+      the fixture in tests/memory/vm_region_growth_watchdog_test.esk must hold
+      FLAT peak RSS across its iteration count instead of the ~1.5 GB measured
+      above, with the region-escape semantics of
+      docs/reference/runtime/memory-model.md preserved and every one of the 27
+      subtypes covered by a deep-walk test in the shape of
+      tests/memory/region_evac_subtype_coverage_test.sh. Closing by assertion
+      is forbidden (ledger invariant 3); the RSS number is the proof.
+  - id: SW-15
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "9f2da2ab"
+    title: "Out-of-range tensor-set! returns without writing, natively"
+    filed_claim: "the lost write is undetectable by the program; the VM raises"
+    measured: "both engines print 'caught' twice — native raises. The filed reproducer is STALE."
+    evidence: "tests/vm_parity/found/tensor_set_oob_silent_native.esk re-run at 9f2da2ab"
+
+  - id: SW-16
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "9f2da2ab"
+    title: "Multi-dimensional tensor-ref with an out-of-range component reads the wrong element, natively"
+    filed_claim: "reads (0 2) of a 2x2 when the flat offset happens to land in range; the VM raises"
+    measured: "both engines print 'caught' — native raises. The filed reproducer is STALE."
+    evidence: "tests/vm_parity/found/tensor_ref_component_oob_native.esk re-run at 9f2da2ab"
+
+  - id: SW-17
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "9f2da2ab"
+    title: "Native (tensor <rectangular nested collection>) flattens the outer level and zero-fills"
+    filed_claim: "native #(0 0) shape (2); the VM builds the correct rank-N tensor"
+    measured: "both engines print #((1 2) (3 4)) with shape (2 2) — correct. The filed reproducer is STALE."
+    evidence: "tests/vm_parity/found/tensor_nested_collection_native.esk re-run at 9f2da2ab"
+
+  - id: SW-18
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+    title: "Exact rational arithmetic degrades to double once a bignum is involved (ESH-0105)"
+    evidence: "docs/KNOWN_ISSUES.md:371; tests/vm_parity/found/bignum_exact_rational.esk"
+    caught_by: [KNOWN_ISSUES, parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    observed: "(/ (expt 2 100) 3) printed 4.2255020007607644e+29 on the VM, exit 0, no diagnostic"
+    correct: "1267650600228229401496703205376/3, which the native engine already printed"
+    root_cause: >-
+      VM-ONLY, and a REPRESENTATION gap rather than a dispatch gap: the native runtime's
+      rational became bignum-capable in PR #247 (eshkol_rational_t.is_big/big_num/big_den),
+      but the VM's VmRational stayed a bare int64/int64 pair (lib/backend/vm_numeric.h).
+      Three sites therefore rounded an EXACT result to a double, each with an in-code
+      comment excusing it as "outside this VM's numeric tower":
+        1. lib/backend/vm_native.c vm_bignum_arith case '/' — a bignum division that does
+           not divide evenly pushed FLOAT_VAL(bignum_to_double(a)/bignum_to_double(b)).
+        2. lib/backend/vm_native.c rational natives 331-334 — ANY VAL_BIGNUM operand was
+           routed to the double path before the exact path was reached.
+        3. lib/backend/vm_native.c rational natives 331-334 — when vm_rational_* returned
+           NULL for int64 overflow after reduction. This one needs NO bignum operand at
+           all: (+ 1/4611686018427387903 1/4611686018427387905) overflows on its own.
+      Two further consequences fell out of the same representation gap: comparison guarded
+      its exact path with vm_either_bignum() alone, so a pair of RATIONALs was compared as
+      doubles and two distinct exact values that round to the same flonum compared EQUAL;
+      and vm_parallel.c copied a rational struct by assignment, which would have handed the
+      other VM two dangling bignum pointers.
+    fix: >-
+      VmRational now mirrors the native eshkol_rational_t: is_big / big_num / big_den with
+      the int64 pair kept as the fast path and the representation CANONICAL (big only when
+      the reduced pair genuinely does not fit int64, so equality stays a field comparison).
+      lib/backend/vm_rational.c gains an exact layer — vm_rational_alloc_bn (sign
+      canonicalization, bignum GCD reduction, demotion when it fits) and
+      vm_rational_arith_exact / neg / abs / inv / compare / equal plus bignum-domain
+      floor/ceil/truncate/round — whose contract is that an exact operation on exact
+      operands NEVER returns NULL for "too big", so no caller has a reason to fall back to
+      a double. NULL now means only division by an exact zero or an allocation failure.
+      All three degradation sites now build the exact value; results funnel through
+      vm_push_rational_norm so a denominator reducing to 1 still collapses to an integer.
+      Comparison is guarded by the wider vm_either_exact_wide() at all 17 sites that call
+      vm_bignum_compare_vals, and vm_parallel.c deep-copies both bignum halves. Display,
+      as_number_vm, numerator/denominator and exact->inexact are all big-aware. Inexact
+      contagion is preserved: a FLOAT operand still routes to doubles.
+    verified: >-
+      Both filed reproducers now match native and were PROMOTED out of found/ into the
+      gated corpus (tests/vm_parity/corpus/63_bignum_exact_rational.esk,
+      64_bignum_rational_mixed.esk), plus a new class-kill program
+      tests/vm_parity/corpus/62_exact_bignum_rational.esk covering all three degradation
+      sites, bignum numerators AND denominators, exact? assertions, exact comparison of
+      values sharing a flonum, and the small-rational fast path. PARITY.tsv row for `/`
+      updated; the ESH-0105 line removed from docs/KNOWN_ISSUES.md.
+
+  - id: SW-19
+    bucket: SILENT-WRONG
+    status: open
+    title: "A closure created inside a named-let loop that set!s a global loses the mutation (ESH-0094)"
+    evidence: "docs/KNOWN_ISSUES.md:333"
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-20
+    bucket: SILENT-WRONG
+    status: open
+    title: "Second-order gradient through a NAMED inner function returns 0 (ESH-0078)"
+    observed: "0; the inline-lambda form works"
+    evidence: "tests/ad_oracle/README.md XKNOWN table, cells nest.gofg.*.s.named/lamvar"
+    caught_by: [ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      The oracle README self-documents a possible regression: 'the ledger marks this merged
+      via #95, but the acceptance shape still returns 0 on master — regressed or never fully fixed.'
+
+  - id: SW-21
+    bucket: SILENT-WRONG
+    status: open
+    title: "Vector-param gradient over an inner derivative returns zeros (ESH-0093)"
+    evidence: "tests/ad_oracle/README.md XKNOWN, cells nest.gofd.*.v2; tests/ad_oracle/generated/ad_oracle_nest_04.esk:98,100,106,108"
+    caught_by: [ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-22
+    bucket: SILENT-WRONG
+    status: guarded
+    closed_at: "019ab413"
+    remeasured: >-
+      Independently re-measured at 019ab413. tests/xla/xla_codegen_test.cpp
+      required its own -DESHKOL_XLA_ENABLED=ON build (build-xla), which is why
+      this entry lagged the other three; built and run here, the suite is 11/11
+      passed / 0 failed, exit 0, with both of the rows that matter green:
+      "XLA Broadcast Compatible Shapes... PASS" and "XLA Broadcast Incompatible
+      Shapes... PASS". The runtime entry point now rejects incompatible shapes
+      instead of broadcasting them into a wrong answer.
+    title: "eshkol_xla_broadcast now validates broadcast compatibility at its runtime entry point"
+    guarded_by: "branch fix/silent-to-loud-sw06-09-22 (PR converting SW-06/SW-09/SW-22)"
+    guard: >-
+      lib/backend/xla/xla_runtime.cpp eshkol_xla_broadcast() now rejects
+      (returns nullptr) whenever the source rank exceeds the target rank, or
+      any right-aligned source dimension is neither 1 nor equal to the
+      corresponding target dimension — the same NumPy broadcast rule
+      XLATypes::broadcastShape() (lib/backend/xla/xla_types.cpp) already
+      applies at compile time, added here as the runtime's own guard for
+      callers that reach this entry point directly. This closes the actual
+      memory-safety defect: before the guard, an incompatible source
+      dimension NARROWER than the target read past the end of the source
+      buffer during the stride-multiplication loop, not merely computing a
+      wrong numeric answer.
+    why_not_closed: >-
+      Kept as `guarded` rather than `closed` because (1) XLACodegen::
+      emitBroadcast() — the LLVM IR emission path — has zero callers
+      anywhere in the compiler today (grep confirms; the XLA broadcast
+      bridge is not yet wired into any user-reachable codegen path, and
+      ESHKOL_XLA_ENABLED defaults OFF), so there is no live user-facing
+      "loud error" to observe end-to-end yet; and (2) no caller of
+      eshkol_xla_broadcast() — including the dead emitBroadcast() path —
+      currently null-checks its return value, so a null result is a guard
+      against the worse outcome (OOB read / silent wrong answer), not yet a
+      polished user-facing diagnostic. The guard is real and tested; closing
+      the ledger entry is deferred until the bridge has a reachable caller
+      that turns the null into a proper Eshkol-level error.
+    evidence: >-
+      tests/xla/xla_codegen_test.cpp test_xla_broadcast_compatible (two
+      NumPy-rule broadcasts, exact value comparison) and
+      test_xla_broadcast_incompatible (three incompatible-shape cases, all
+      correctly rejected) — built and run with -DESHKOL_XLA_ENABLED=ON,
+      11/11 xla_codegen_test PASS. Revert-validated: with the guard
+      temporarily `#if 0`'d out, test_xla_broadcast_incompatible fails
+      exactly as expected (proving the guard is load-bearing), then passes
+      again once restored. docs/breakdown/XLA_BACKEND.md:705 updated to
+      describe the guard instead of its absence.
+    caught_by: [doc-source-crosscheck]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-23
+    bucket: SILENT-WRONG
+    status: open
+    title: "A confirmed native/VM divergence is excluded from every gate by README policy"
+    evidence: "tests/differential/found/003_global_set_from_function_lost.esk; tests/differential/README.md states found/ is evidence, not gate input"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-24
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c025e209"
+    closed_by: "PR #429 (branch fix/map-shadowing-resolution)"
+    title: "The VM ignores a user redefinition of + : opcode dispatch bypasses the user binding"
+    repro: "(define + (lambda (a b) (* a b))) (display (+ 3 4))"
+    observed: "VM 7"
+    correct: "12 — native answers 12"
+    observed_after: >-
+      the VM answers 12, and tests/parser/test_function_shadowing.esk prints
+      "PASS: Function shadowing works!" on both engines. vm_head_user_rebound()
+      (lib/backend/vm_compiler.c) walks the scope chain before any of
+      compile_expr's builtin fast paths: a head symbol bound by USER code — a
+      local of any chunk on the chain, or a root-chunk slot at or above the
+      user-locals watermark — compiles as a plain call through that binding.
+      Preamble and prelude slots sit BELOW the watermark and keep the fast
+      paths, so the stdlib cannot be hijacked and the prelude compiles exactly
+      as before; a watermark of 0 means user code has not started, so nothing
+      counts as a rebinding while the prelude itself is being compiled.
+    fixed_by: "PR #429 (branch fix/map-shadowing-resolution) — vm_head_user_rebound() in lib/backend/vm_compiler.c"
+    evidence: >-
+      tests/codegen/operator_rebinding_test.esk on the JIT, AOT and VM ctest lanes
+      (operator_rebinding_{jit,aot,vm}_smoke);
+      tests/differential/corpus/46_operator_rebinding.esk on the native axes;
+      tests/parser/test_function_shadowing.esk REMOVED from
+      ENGINE_PARITY_BASELINE.json divergent_programs — the parity ratchet
+      tightens rather than the gate being told to expect the divergence.
+      Revert-validated: reverting vm_compiler.c alone reproduces VM 7.
+    caught_by: [parity-baselines, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      THE SAME ROOT CLASS AS SW-01 AND SW-02. Name resolution does not respect shadowing,
+      and it surfaces on both engines in different subsystems: native ignores the shadowing
+      binding in AD (SW-01) and in map (SW-02); the VM ignores it in arithmetic opcode
+      dispatch (this entry). Treat the three as one defect family with one root cause, not
+      as three unrelated tickets. A user who redefines + gets a wrong number and no
+      diagnostic — the most basic Scheme capability there is. All three closed together
+      by PR #429. The VM's OTHER manifestation of the family — the upvalue search
+      walking the enclosing-scope chain outermost-first — was fixed separately by
+      PR #428 (tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk); the two
+      changes touch different functions in vm_compiler.c and are independent.
+
+  - id: SW-25
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-region-and-upvalue"
+    title: "VM set! on a captured parameter inside an immediately-invoked inner closure doesn't propagate back to the outer binding"
+    repro: "(define (f n) ((lambda () (set! n (+ n 1)))) n) (display (f 5))"
+    observed: "VM 5"
+    correct: "6 — native answers 6"
+    cross_engine: "native prints 6 (correct) under both default and ESHKOL_JIT_CACHE=0 JIT"
+    observed_after: >-
+      the VM answers 6. Verified together with the whole class at depths 1-3, with
+      stored as well as immediately-invoked closures, with two closures sharing one
+      capture, from inside a loop, through a closure that outlives the frame that
+      bound the parameter, on `lambda` parameters as well as `define` parameters, and
+      on let* / letrec / letrec* bindings — byte-identical to native on every line
+      (tests/vm_parity/corpus/62_mutable_capture_writeback.esk).
+    root_cause: >-
+      lib/backend/vm_compiler.c: compile_form_let() had always run needs_boxing()
+      (lib/backend/vm_parser.c:941) over its bindings, so a `let`-bound variable that
+      is both `set!`-mutated and captured by a nested lambda is stored in a shared
+      1-element vector and every closure reads and writes the same cell. PARAMETERS
+      never got that treatment: compile_form_define() (the fixed-parameter loop),
+      compile_form_lambda() and compile_form_lambda_2() called add_local() for each
+      parameter and went straight to the body. OP_CLOSURE therefore copied the
+      parameter's VALUE into the closure's upvalue array and the inner `set!` mutated
+      a private copy that was discarded when the closure returned. The open-slot relay
+      (native calls 151/252) is not an alternative: it aliases an absolute VM stack
+      slot and is deliberately restricted to the top-level chunk, because a function's
+      frame is destroyed on return. The same gap existed in compile_form_let_star(),
+      whose own doc comment said "No mutable-capture boxing (unlike plain `let`)", and
+      in compile_form_letrec() / compile_form_letrec_star().
+    fix: >-
+      vm_box_mutable_captured_params() (lib/backend/vm_compiler.c) heap-boxes every
+      parameter that needs_boxing() reports as mutated-and-captured, by emitting
+      GET_LOCAL / VEC_CREATE 1 / SET_LOCAL at function entry — after OP_PACK_REST,
+      which reads the raw argument window — and marking the Local `boxed`, so every
+      later read and write compiles through the existing boxed paths and a nested
+      closure captures the BOX. Called from all three parameter-binding forms.
+      let* boxes at its binding site with the scan widened to the later initializers
+      plus the body (sequential binding); letrec and letrec* create the box with the
+      placeholder, before any initializer runs, so the box pointer is already final
+      when an initializer's closure captures it, and store initializers through
+      VEC_SET. One mechanism, four binding forms, no new opcode and no ABI change.
+    evidence: >-
+      tests/vm_parity/corpus/62_mutable_capture_writeback.esk (VM-vs-native on the
+      native, vm-src and vm-eskb axes; scripts/run_vm_parity.sh) and
+      tests/differential/corpus/50_mutable_capture_writeback.esk (native axes).
+      tests/vm_parity/corpus/56_lexical_shadow_nearest_binding.esk carried a comment
+      declining to assert this defect; the comment now points at the fix instead.
+      Revert-validated: restoring lib/backend/vm_compiler.c alone reproduces VM 5.
+    renumbered: >-
+      The corpus files were 59_ (vm_parity) and 47_ (differential) when this
+      branch was written. Master's #433 then took both numbers for
+      vector_ref_tensor_indexed_access. Because these are ADDED files with
+      different names at the same index, git reports no conflict and the two
+      would simply have coexisted — the numbering would have stopped being a
+      total order silently. Renumbered on rebase to 62_ and 50_, the next free
+      indices on master once PR #438's 61_/49_ are accounted for.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      Same FAMILY as SW-01/SW-02/SW-24 (a binding is not honoured across a closure
+      boundary) but a distinct mechanism: not name resolution, which PR #428/#429
+      fixed, but the absence of a shared binding CELL. Two adjacent defects were
+      measured while class-killing this one and are NOT fixed here, because both are
+      native-side and out of this entry's scope:
+      (1) a mutated+captured REST parameter does not write back on the NATIVE axes —
+          `(define (r . xs) ((lambda () (set! xs (cons 99 xs)))) (car xs))` is 99 on
+          the VM after this fix and 1 natively;
+      (2) `(do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i)))))`
+          is killed by SIGKILL (exit 137) natively and answers 0 on the VM.
+      Neither is baked into a gate here; both are recorded so the next pass starts
+      from measurement rather than rediscovery. A third, pre-existing and LOUD, is
+      that an internal `(define (bump) (set! n ...))` capturing an enclosing
+      parameter is a fatal VM runtime error on unmodified master — loud, so not a
+      silent-wrong entry.
+
+  - id: SW-26
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "b6b2d32f"
+    closed_by: "branch fix/vector-ref-tensor-and-backward-diff, commit b6b2d32f"
+    title: "vector-ref into an fg-marginal result answers empty on the VM"
+    repro: "(define fg (make-factor-graph 2 2)) (define m (fg-marginal fg 0)) (display (vector-ref m 0))"
+    observed: "VM ()"
+    correct: "0.5 — native answers 0.5"
+    cross_engine: >-
+      native prints 0.5 under both default and ESHKOL_JIT_CACHE=0 JIT. Displaying the whole
+      marginal, `(display m)`, prints #(0.5 0.5) correctly on BOTH engines (the SW-07 fix from
+      PR #424 holds) — only indexing into the result with vector-ref diverged on the VM.
+    root_cause: >-
+      fg-marginal returns a HEAP_TENSOR (VAL_TENSOR) value, not a HEAP_VECTOR. Every VM
+      vector-ref call site — the threaded-dispatch fast path (lbl_VEC_REF), the switch-dispatch
+      fallback (OP_VEC_REF), and the indirect/higher-order native call (vm_native.c case 219) —
+      matched only `vec_val.type == VAL_VECTOR` and fell through to a fabricated NIL_VAL for
+      anything else, including VAL_TENSOR, with no diagnostic. `vector-set!` (case 220,
+      OP_VEC_SET, lbl_VEC_SET) and `vector-length` (case 221, OP_VEC_LEN, lbl_VEC_LEN) had the
+      identical gap — silently a no-op and 0 respectively. Native's collection codegen
+      (CollectionCodegen::vectorRef/vectorSet/vectorLength, lib/backend/collection_codegen.cpp)
+      already dispatches on the heap-object header subtype and has always had a tensor arm,
+      which is why native was correct and only the VM diverged.
+    fixed_by: >-
+      lib/backend/vm_native.c: added a VAL_TENSOR arm to native calls 219 (vector-ref), 220
+      (vector-set!) and 221 (vector-length), backed by three new static helpers
+      (vm_vecref_tensor_path, vm_vecset_tensor_path, vm_veclen_tensor_path) that mirror
+      CollectionCodegen's native semantics exactly: vector-ref on a rank<=1 tensor returns the
+      flat-indexed scalar element (bounds-checked against total element count); on a rank>1
+      tensor it returns a row VIEW of rank n_dims-1 via the existing vm_tensor_slice() (no
+      copy), bounds-checked against shape[0]; vector-set! always bounds-checks against the flat
+      total (native does not special-case N-D row addressing for the mutating op either);
+      vector-length answers the flat total element count. lib/backend/vm_run.c: added the same
+      VAL_TENSOR arm to both interpreter loops (lbl_VEC_REF/lbl_VEC_SET/lbl_VEC_LEN and
+      OP_VEC_REF/OP_VEC_SET/OP_VEC_LEN), calling the shared helpers so the two dispatch
+      implementations cannot re-diverge.
+    evidence: >-
+      tests/vm_parity/corpus/59_vector_ref_tensor_indexed_access.esk (both engines: vector-ref
+      and vector-length on the fg-marginal 1-D tensor, vector-set!+vector-ref round-trip on an
+      independent tensor, vector-ref row-view on a rank-2 tensor, and a catchable out-of-range
+      vector-ref); tests/differential/corpus/47_vector_ref_tensor_indexed_access.esk (native
+      JIT/AOT axes). Revert-validated: reverting the vm_native.c/vm_run.c hunks alone reproduces
+      the VM FAIL on all vector-ref/vector-length assertions in the corpus file with the fix
+      applied everywhere else; reapplying restores 0 FAIL.
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: >-
+      Found by #424's author during the correctness wave, filed here after independent
+      re-measurement. Distinct from SW-07/SW-08 (both closed): this is a residual found after
+      those closures, on the same builtin family — the SW-07 fix corrected fg-marginal's VALUE
+      but not every VM consumer of it. Maintainer ruling 2026-08-13 reversed the earlier
+      waive-to-v1.3.5 default for this entry: fixed before tag, no waiver.
+
+
+  - id: SW-27
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "256c31a8"
+    closed_by: "PR #427 (branch fix/first-class-builtins)"
+    title: "A REST-ARG procedure referenced as a VALUE loses its variadic shape; the rest parameter receives a bare argument instead of a list"
+    repro: "(define (h f a b) (f a b)) (display (h append (list 1) (list 2)))"
+    observed: "1 — the FIRST ARGUMENT, exit 0, no diagnostic"
+    correct: "(1 2), which the same call in call position returns"
+    affected_measured:
+      - "append -> silently returns the first argument"
+      - "make-list -> raises 'cdr: argument is not a pair'"
+      - "iota with a rest argument -> the rest argument is ignored, (iota 3 10) as a value gives (0 1 2)"
+      - "string-copy -> SIGSEGV under AOT; wrong answer under JIT"
+      - "partial, json-get -> raise 'car: argument is not a pair'"
+      - "every user (define (f a . rest) …) referenced as a value, at any fixed-parameter count"
+    discovered_by: >-
+      Found while closing LE-01, as the residue that the LE-01 fix deliberately did NOT
+      absorb: `append` and `string-copy` are not inline builtins but rest-arg Scheme
+      procedures (lib/core/list/transform.esk, lib/core/strings.esk), so they never reached
+      LE-01's wrapper path and stayed broken after it. Reported as a finding rather than
+      folded in, then ruled in scope as the same mechanism family.
+    root_cause: >-
+      A rest-arg procedure is called through a DIFFERENT ABI from a fixed-arity one: the
+      closure dispatcher (codegenClosureCall) conses the caller's surplus arguments into a
+      list and passes fixed_params values plus that list. It selects that path from the
+      closure metadata — bit 63 of packed_info, which the allocator turns into
+      CLOSURE_FLAG_VARIADIC, and, for the capture-less case where env is null, the
+      input_arity byte, which it reads back as fixed_params. Every function-as-value site
+      (emitFunctionAsCallableValue in lib/backend/llvm_codegen.cpp, the function_table
+      branch of codegenVariable, and the REPL hot-reload branch) packed a plain arity and
+      no variadic bit, so the dispatcher called a rest-arg procedure as if fixed-arity.
+      The ABI itself was never wrong; only the VALUE representation lied about the
+      procedure's shape. Call position was always correct, which is why no gate saw it.
+    fix: >-
+      The reference paths now resolve the rest-arg shape from the same two registries the
+      call path consults (variadic_function_info, g_repl_variadic_functions) via a shared
+      lookupVariadicProcedure helper, and pack the variadic bit plus the FIXED parameter
+      count. NO ABI CHANGE was required — the dispatcher already implemented the rest-arg
+      calling convention and already read these fields; the value side simply never set
+      them. Note the asymmetry the fix has to respect: for a fixed-arity closure the arity
+      field is the parameter count, but for a variadic one the dispatcher reads it as the
+      FIXED count, so a 1-fixed rest-arg procedure stores 1, not 2.
+    verified_at: >-
+      tests/integration/first_class_variadics_test.esk, gated on JIT (cache on and off) and
+      both AOT levels, plus first_class_variadics_vm_test.esk on the VM. The oracle is
+      DIFFERENTIAL by construction: each check compares the value obtained through a
+      higher-order function against the identical call in call position, in the same
+      program, so it cannot pass by agreeing with a wrong expectation. Covers stdlib
+      rest-arg procedures at 0, 1 and 2 fixed parameters (append, make-list, iota,
+      string-copy, partial, json-get), user rest-arg procedures at each fixed count with
+      both empty and non-empty rest, and the builtin variadics (list, +, string-append)
+      as a non-regression check. Revert-validated: with the fix disabled all four native
+      gates go red and the VM gate stays green.
+    vm_status: >-
+      NOT AFFECTED, verified rather than assumed. The VM's closures carry their rest-arg
+      shape natively and its CALL opcode consumes it; pinned by
+      tests/integration/first_class_variadics_vm_test.esk.
+    caught_by: [direct-measurement, le-01-residue-analysis]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The `missed_by` list is the interesting part. Every gate we own was green while
+      `(h append '(1) '(2))` returned 1: the differential corpus compares AXES against each
+      other and all four axes were wrong identically; vm-parity excuses native-only
+      programs; and no test passed a rest-arg procedure as a value at all. A defect that is
+      wrong the same way everywhere is invisible to differential testing by construction —
+      the escape analysis for this one is "add a value-position axis to the HOF sweep", not
+      "add a corpus program". Adjacent and still OPEN, found by the same sweep and NOT this
+      defect: (zset-union …) in core.dbsp SIGSEGVs in CALL POSITION too, so it is a
+      different bug and this entry's oracle can say nothing about it.
+
+  - id: SW-28
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+    title: "The VM peephole deletes an arithmetic operation by folding CONST 0 + ADD across a jump target"
+    repro: "(display (+ 1 (if #t 5 0)))"
+    observed: "5 on the VM, exit 0, no diagnostic"
+    correct: "6, which native prints"
+    discovered_by: >-
+      Found while fixing SW-13, not looked for. The SW-13 fix removed an ACCIDENTAL MASK:
+      pre-fix, macro_node_add_child wrote its capacity into `_cap`, which aliased `is_char`
+      on the VM hub's Node, so macro-expanded conditional nodes carried a nonzero is_char
+      and took a different compile path. With the node types unified those nodes behave
+      like parser-built ones and reached this pre-existing defect, which turned a
+      macro-expanded `(+ (dbl a) (my-if2 #t b 0))` from 25 into 5. Confirmed PRE-EXISTING
+      by re-running the reproducer on unmodified master: `(+ 1 (cond (#t 5) (else 0)))`
+      answers 5 there with no macro involved at all.
+    root_cause: >-
+      lib/backend/vm_peephole.c rewrites the instruction PAIR (i, i+1) assuming the only
+      way to reach i+1 is by falling through i. Nothing checked whether anything BRANCHES
+      to i+1. `(+ x (if p a 0))` compiles to
+      `CONST x; <test>; JIF Lelse; <a>; JUMP Lend; Lelse: CONST 0; Lend: ADD`, where
+      `CONST 0` is the ELSE ARM's value and `ADD` is the OUTER `+`. The "CONST 0 + ADD is
+      an identity" rule matched that pair across the Lend label and NOP'd both, deleting
+      the enclosing addition whenever the THEN arm was taken. `CONST 1 + MUL` and
+      `DUP + POP` have the same shape. Only the then-branch is affected, which is why
+      `(+ 1 (cond (#f 9) (else 7)))` was correct and looked like the optimizer worked.
+    fix: >-
+      peephole_optimize now builds a conservative basic-block entry map before rewriting
+      anything — every OP_JUMP / OP_JUMP_IF_FALSE / OP_LOOP / OP_PUSH_HANDLER operand,
+      every OP_CLOSURE body entry PC (low 32 bits of the referenced constant), and every
+      ChunkEntry.code_offset — and skips any pair whose SECOND instruction is an entry.
+      An unknown entry blocks an optimization rather than enabling a miscompile, and an
+      allocation failure skips optimizing entirely.
+    verified: >-
+      All four arms match native in tests/vm_parity/corpus/61_multi_macro_batch.esk
+      ((+ 1 (my-if2 #t 5 0)) = 6, (+ 1 (my-if2 #f 5 0)) = 1, (* 3 (my-if2 #t 5 1)) = 15,
+      (* 3 (my-if2 #f 5 1)) = 3); ctest 164/164, vm-parity 166/0, differential 288/288.
+    caught_by: [direct-measurement, sw-13-unmasking]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The escape analysis is uncomfortable: this needed only a literal 0 or 1 in the else
+      arm of a conditional used as an arithmetic operand, which is ordinary code, and every
+      gate was green. It survived because no corpus program put a two-armed conditional in
+      an operand position with a folding-identity literal in the far arm. Worth a
+      generative axis: emit conditionals in operand position with identity literals.
+
+  - id: SW-29
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+    title: "floor/ceiling/truncate/round of a bignum-backed rational returns 0 natively, and an inexact double on the VM"
+    repro: "(display (floor (/ (expt 2 100) 3)))"
+    observed: "native -r printed 0; the VM printed 4.2255020007607644e+29"
+    correct: "422550200076076467165567735125 — both engines were wrong, and they disagreed"
+    root_cause: >-
+      Two different mechanisms behind one symptom.
+      NATIVE: lib/core/rational.cpp eshkol_rational_floor/ceil/truncate/round read
+      rat->numerator and rat->denominator UNCONDITIONALLY. On the bignum path those
+      fields are the inert 0/1 shadow, so the functions computed 0/1 = 0. This is the same
+      int64-shadow class SW-18 closed on the VM; PR #247 made the rational substrate
+      bignum-capable but did not carry that through to the rounding functions.
+      VM: floor/ceiling/round (native ids 26/27/28) converted their operand with
+      as_number_vm() unconditionally, so an exact rational came back inexact, and
+      `truncate` had NO implementation at all — the builtin table bound it to native id
+      190, which no case handled, so every call warned "unhandled native call ID 190" and
+      produced the empty list.
+    fix: >-
+      The ABI change was implementable, so the loud-error fallback was NOT needed. Four
+      tagged entry points were added — eshkol_rational_{floor,ceil,truncate,round}_tagged
+      — mirroring the eshkol_rational_from_bignums_tagged precedent in the same header:
+      they take an out-param and can therefore answer with an INT64 or a bignum as the
+      value requires, which an int64 return could never do. They compute in the bignum
+      domain via the existing bignum API (eshkol_bignum_div/mod/sub/add/mul/compare),
+      correcting the truncating remainder by one for floor/ceil and implementing
+      ties-to-even for round. The cascade was contained exactly as hoped: the four
+      functions plus ONE codegen block (lib/backend/llvm_codegen.cpp, the shared
+      floor/ceil/trunc/round rational path), no other caller. The int64 variants are kept
+      for callers that have already established the operand is on the fast path.
+      On the VM, ids 26/27/28 now pass an exact integer through unchanged and route a
+      ratnum to the exact rational natives 342/343/345 (bignum-capable since #432), and
+      native id 190 (`truncate`) is implemented for the first time, routing to 344.
+    verified: >-
+      tests/vm_parity/corpus/67_exact_rounding_bignum_rational.esk — all four roundings on
+      positive and negative big rationals, exactness assertions, the defining inequalities
+      checked rather than tabulated, an exact-integral big rational, ties-to-even at a
+      bignum midpoint, small-rational and exact-integer and inexact pass-through. Byte
+      identical on native, VM and wasm32.
+    revert_validated: >-
+      Removing the is_big branch from the four tagged functions makes native print 0 for
+      floor and ceil again; removing the exact routing from VM ids 26/27/28 makes the VM
+      print doubles again. Both confirmed by rebuild and re-run.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+
+  - id: SW-30
+    bucket: SILENT-WRONG
+    status: fixed
+    title: "syntax-rules hygiene for TEMPLATE-INTRODUCED BINDINGS: the VM lost the binding and corrupted a same-named top-level variable; both engines captured"
+    repro: "(define-syntax hyg (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e))))) (define tmp 7) (display (hyg 1)) (display tmp) (display (hyg tmp))"
+    observed_before: "VM printed 1 then () then 0; native printed 101 then 7 then 200"
+    observed_after: >-
+      Both engines print 101, 7, 107 — the R7RS 4.3.2 answers. Verified on native -r,
+      vm-src, vm-eskb and the wasm32 build.
+    root_cause: >-
+      TWO independent defects, neither of which was the one hypothesised when this entry
+      was filed. The original note guessed "the VM's expander does gensym renaming that is
+      applied inconsistently between binder and reference". That is not what the code did:
+      vm_macro_gensym() had ZERO callers outside its own self-test, and neither expander
+      contained any renaming, mark, syntactic closure or definition-environment machinery
+      at all.
+
+      (1) THE VM COLUMN WAS NOT A HYGIENE DEFECT. `define-syntax` compiled to nothing
+      (lib/backend/vm_compiler.c), while every top-level and body driver POPs after a form
+      that bound nothing. That POP therefore discarded a LIVE stack value and shifted every
+      later local down one slot, so a template's `let` wrote slot k while the body read slot
+      k+1. Hence (hyg 1) => 1 and the user's `tmp` reading back as (). The identical hazard
+      was already documented and handled three cases earlier in the same function, for
+      (provide)/(export), whose in-code comment says the OP_NIL "is not decorative". Fixed
+      by emitting OP_NIL for define-syntax as well. This is a CLASS: any no-emit top-level
+      special form has the same exposure.
+
+      (2) NEITHER ENGINE RENAMED TEMPLATE-INTRODUCED BINDERS, so both captured. Native
+      substituteBindings() emitted every non-pattern-variable identifier verbatim
+      (lib/frontend/macro_expander.cpp), and the VM's vm_macro_instantiate() did the same
+      (lib/backend/vm_macro.c). Fixed by alpha-renaming, in both expanders, the identifiers
+      a template BINDS ITSELF — scope by scope, and before any caller code is substituted
+      in, which is what makes it safe: at that point every symbol in the tree came from the
+      macro definition, so no caller identifier can be touched. Covered forms: let, let*,
+      letrec, letrec*, named let, lambda (including a rest parameter). Pattern variables are
+      never renamed. Quoted and quasiquoted data are walked in datum mode so a gensym cannot
+      leak into program OUTPUT (without that, (let ((z 5)) (list 'z z)) printed (_h0.z 5)).
+
+      A THIRD defect fell out while pinning the classic swap!: native substituted a set!
+      VALUE but never its TARGET, because the target is a bare char* rather than an AST
+      node, so ((_ x y) (let ((tmp x)) (set! x y) (set! y tmp))) failed to compile with
+      "set!: undefined variable 'x'". R7RS 4.3.2 substitutes a pattern variable wherever it
+      occurs in a template, assignment targets included. Fixed.
+    measured: >-
+      An 18-cell hygiene matrix was run against both engines before and after. BEFORE:
+      the VM answered 0 of 18 correctly, native 3 of 18, and the two engines disagreed on
+      14 cells. AFTER: both engines agree on all 18 and 17 are R7RS-correct. The single
+      remaining wrong cell is referential transparency for a template's FREE identifiers,
+      which is a different defect with a different root cause and is filed as SW-35.
+    fixed_by: "branch fix/syntax-rules-hygiene (PR stacked on #432)"
+    evidence: >-
+      tests/vm_parity/corpus/68_syntax_rules_hygiene.esk — 15 sections covering the
+      template binder surviving at all, not corrupting a same-named user variable, the
+      capture case where the operand IS the colliding name, use-site shadowing, nested
+      macro invocation with both templates binding the same name, a recursive macro with
+      a colliding global, a template-introduced lambda parameter, let*/letrec/named-let
+      binders, nested template scopes, two invocations not sharing a binding, quoted and
+      quasiquoted symbols keeping their literal names, and set! on pattern variables.
+      Gated by vm-parity (native vs vm-src vs vm-eskb) AND by the wasm execute-and-diff
+      lane, so it is pinned in the browser build too.
+      tests/differential/corpus/51_syntax_rules_hygiene.esk pins the same semantics across
+      the native jit-cache / jit-nocache / aot-O0 / aot-O2 axes; the JIT axis matters
+      because the REPL re-feeds saved define-syntax ASTs into a fresh expander per eval,
+      restarting the fresh-name counter.
+      REVERT-VALIDATED: all four changes were individually reverted on a built tree and
+      68_syntax_rules_hygiene.esk detects each one. Without the OP_NIL the VM prints
+      1|2|100|200|101|...; without the VM renamer it prints 200 for 107, #f for 42 and
+      leaks a <closure@741>; without the native renamer native does the same; without the
+      set! target fix native fails to compile; without datum mode both print (_h28.z 5 9).
+    caught_by: [direct-measurement, sw-13-corpus-authoring]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      tests/vm_parity/corpus/16_define_syntax.esk carried the hint in a comment
+      ("recursive macros and macros that set! their operands diverge") and
+      61_multi_macro_batch.esk (59_ before master's corpus renumber) said outright that no template-binder hygiene shape could be
+      pinned as a parity row. Both statements are now false and 59's comment has been
+      corrected to point at 63.
+      RESIDUAL, deliberately not claimed as fixed: (a) referential transparency for free
+      template identifiers — SW-35; (b) a template-introduced `do` loop variable is still
+      captured, IDENTICALLY on both engines. `do` was left out on purpose: the native
+      expander stores a do-loop in the generic call_op layout, where the loop variables are
+      untyped nested lists rather than an addressable binding array, so a scope-correct
+      rename is not reachable there, and renaming on the VM alone would have made the two
+      engines disagree on a shape neither fully supports. (c) A template-introduced
+      `define` is not renamed either; R7RS requires it, but not renaming is the status quo
+      and renaming it would break the common idiom of a macro that defines something.
+
+  - id: SW-35
+    bucket: SILENT-WRONG
+    status: open
+    needs_decision: true
+    renumbered_from: SW-33
+    renumbered_because: >-
+      Filed as SW-33 on the pre-rebase stack. While this branch was in review,
+      master's #437 landed its own SW-33 (mutated + captured REST parameter) and
+      SW-34, and #432 was rebased onto that master. Both entries then existed
+      under the same id — a textual merge, not a conflict, so nothing flagged it.
+      Master's SW-33 is `closed` and keeps the id; this open entry moves to the
+      next truly-free id. Re-surveyed against master's canonical ledger after
+      #432 merged as 6acc9030 and #430/#434/#435/#438/#439/#441 landed: master's
+      highest id is still SW-34 and it has no SW-35, so SW-35 is the correct
+      free id and needed no second move.
+    title: "syntax-rules templates have no REFERENTIAL TRANSPARENCY: a free identifier in a template resolves at the USE site, not the macro-definition site (both engines, identically)"
+    repro: "(define (helper x) (* x 10)) (define-syntax usehelp (syntax-rules () ((_ a) (helper a)))) (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))"
+    observed: "native -5, VM -5, exit 0 on both, no diagnostic"
+    correct: >-
+      50. R7RS 4.3.2: an identifier that appears in a template as a free reference refers
+      to the binding it had in the MACRO-DEFINITION environment, so `helper` must be the
+      top-level helper regardless of what the use site binds.
+    measured: >-
+      Cell 7 of the 18-cell hygiene matrix run for SW-30. It is the ONLY cell of the 18
+      that is still wrong after SW-30's fix, and both engines are wrong in exactly the same
+      way, so it is a shared semantic gap and NOT an engine divergence.
+    root_cause: >-
+      Neither engine captures a macro-definition environment, so there is nothing to
+      resolve a free template identifier against. Native `eshkol_macro_def_t`
+      (inc/eshkol/eshkol.h) carries only name, literals and rules — no environment, no
+      scope id, no phase. The VM's `VmMacro` (lib/backend/vm_macro.c) is the same, and its
+      registry is a flat process-global array with no scoping at all (which is also why
+      let-syntax/letrec-syntax fake their scope by saving and restoring g_n_macros). A free
+      template identifier is therefore emitted as a plain name and resolved by ordinary
+      lexical lookup at the use site.
+    why_not_fixed_here: >-
+      NEEDS-DECISION. This is the half of hygiene that genuinely requires infrastructure
+      neither expander has. SW-30's capture half was fixable by alpha-renaming, because
+      renaming is a pure rewrite of the template before any caller code enters it.
+      Referential transparency is not: it requires every identifier to carry the
+      environment it was written in, which means syntax objects (or marks / scope sets)
+      threaded through the reader, both expanders, and both name-resolution paths — native
+      resolves at LLVM codegen, the VM at compile time against a flat local table. That is
+      a cross-cutting representation change, not a localised fix, and it is exactly the
+      "full alpha-renaming/marks infrastructure that does not exist in either expander"
+      case the maintainer policy says to stop and report rather than improvise.
+    interim_considered_and_rejected: >-
+      Raising a loud "unsupported hygiene case" error at a free template identifier was
+      considered and REJECTED as unshippable: every template contains free identifiers
+      (`+`, `if`, `list`, `cond`, every builtin and every user helper), so the error would
+      fire on essentially every macro in the language, including all 42 .esk files in this
+      repo that use define-syntax. The mis-binding only occurs when the USE site actually
+      shadows one of those names, which is rare and is not detectable at expansion time
+      without the very environment tracking that is missing. A precise detector — compare a
+      template's free identifiers against the bindings visible at the use site and raise
+      only on an actual collision — is implementable but needs the use-site environment
+      plumbed into the expander, which is roughly half the work of doing it properly.
+      Recommend deciding between the real fix and an explicit documented limitation rather
+      than shipping a guard that either screams constantly or needs the missing machinery.
+    real_fix_sketch: >-
+      Give each macro definition an environment handle at registration time, and wrap
+      template identifiers in a syntax object carrying that handle. Minimum viable shape:
+      (1) add an env/scope id to eshkol_macro_def_t and VmMacro, assigned when
+      define-syntax is registered; (2) when instantiating, tag each free template
+      identifier with that id instead of emitting a bare name; (3) at name resolution,
+      prefer the binding visible in the tagged environment over the use-site binding.
+      Steps 1-2 are contained in the two expanders; step 3 is the expensive one because it
+      touches native LLVM-codegen name lookup and the VM's local-slot resolution. Marks /
+      scope sets (Flatt) are the principled version and would subsume the alpha-renaming
+      added for SW-30, but are a substantially larger rewrite.
+    effort: >-
+      Rough sizing, NOT a commitment: the env-handle route is a moderate change to each
+      expander plus a real change to each resolver, and it needs its own differential and
+      parity corpus because it changes what a name means. The scope-set rewrite is a
+      significantly larger piece of work touching the reader as well, and would be the
+      right shape only if macro-defining-macros and let-syntax scoping are also in scope.
+      Both are larger than the SW-30 fix that preceded them.
+    caught_by: [direct-measurement, sw-30-hygiene-matrix]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Filed rather than fixed, and NOT folded into SW-30's close: SW-30 names
+      template-introduced BINDINGS and that surface is genuinely fixed and gated. This is
+      the other half of R7RS hygiene and has a different root cause, a different blast
+      radius and a different price. The two engines AGREE here, so no parity row is
+      blocked by it; it is a shared semantic gap against the standard.
+      A separate, unrelated observation from the same matrix run, filed here only so it is
+      not lost: a macro named `inner` cannot be defined on the native engine at all —
+      (define-syntax inner (syntax-rules () ((_ x) (+ 10 x)))) (inner 1) fails with
+      "no matching pattern for macro 'inner'" followed by a spurious "Circular macro
+      expansion detected". The same program with the macro renamed works. That is a
+      reserved-name collision in the native frontend, is LOUD (exit 1) rather than silent,
+      and is out of scope for this entry.
+
+  - id: SW-31
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+    title: "VM numeric type predicates and eqv? answer #f across whole numeric classes"
+    observed: "the VM answered #f — a type predicate denying a value's own type — with exit 0"
+    correct: "the native column, which is R7RS 6.2.1/6.1 and was already right"
+    root_cause: >-
+      THREE mechanisms, not one.
+      (1) MISSING TAG ARMS: each predicate spelled its own inline tag test and each spelled
+      a different, shorter list than the tower has. lbl_NUM_P tested only VAL_INT/VAL_FLOAT;
+      rational? (native 1698) tested only VAL_RATIONAL; complex? (native 317) tested only
+      VAL_COMPLEX; real? (1697) omitted BIGNUM.
+      (2) A DOUBLE CONVERSION THAT LIES: positive?/negative?/zero?/odd?/even? (natives
+      40-44) read their operand through as_number(), which returns 0.0 for ANY heap-boxed
+      value — so a bignum was neither positive nor negative, (zero? 1/3) could answer #t,
+      and (odd? <bignum>) was always #f.
+      (3) OPCODE ALIASING: the compiler lowered `integer?` AND `real?` to the very same
+      OP_NUM_P opcode as `number?`, so (integer? 5.5) answered #t. `integer?` also had no
+      builtin-table entry at all and could not be passed as a value.
+      Separately, `eqv?` shares native id 133 with `eq?`, and the shared helper
+      vm_identity_equal fell through to a heap-POINTER comparison for numeric boxes, so
+      (eqv? 1/3 1/3) and (eqv? (expt 2 100) (expt 2 100)) were #f — two separately
+      allocated boxes are never the same pointer.
+    fix: >-
+      One classification layer the whole family routes through — vm_tag_is_number,
+      vm_tag_is_real, vm_num_is_rational, vm_num_is_integer, vm_tag_is_exact_number and
+      vm_num_parity_is_odd — so a tag can only be forgotten in one place and adding a
+      numeric tag later updates every predicate at once. The sign predicates compare
+      through the exact comparator the ordering opcodes already use, falling back to a
+      double only for a genuinely inexact operand. `integer?` gained its own native (1717)
+      and a builtin entry; `real?` lowers to native 1697. vm_identity_equal compares
+      heap-boxed NUMBERS by value (legal for eq?, which R7RS leaves unspecified on
+      numbers, and required for eqv?).
+    verified: >-
+      tests/vm_parity/corpus/65_numeric_predicate_matrix.esk — a predicate x tag MATRIX
+      (12 numeric rows x 10 predicates) plus the same predicates reached as first-class
+      values (a different route in the VM, with its own missing arms), parity across the
+      int64 boundary, and eqv?/equal? on numbers. Byte identical on native, VM and wasm32.
+    revert_validated: >-
+      Restoring vm_tag_is_number to its old VAL_INT/VAL_FLOAT body makes the matrix diverge
+      from native again. Confirmed by rebuild and re-run.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The escape analysis is a predicate x value-class MATRIX probe, which is cheap to
+      generate and would have caught every cell at once. That matrix is now a corpus file.
+  - id: SW-32
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+    title: "min/max return the WRONG operand and disagree with the engine's own < on the same pair"
+    repro: "(define a (/ (expt 2 100) 3)) (define b (/ (+ (expt 2 100) 1) 3)) (display (list (max a b) (< a b)))"
+    observed: >-
+      native printed (…376/3 #t) — max answered the SMALLER operand while `<` on the same
+      pair in the same program correctly said they were ordered. Re-measuring the class
+      also found BOTH engines wrong, in OPPOSITE directions, for exact integers past 2^53:
+      (max 9007199254740993 9007199254740992) was …993 natively and …992 on the VM, and
+      (min …) was …993 natively and …992 on the VM.
+    correct: "max …377/3, min …376/3; max …993, min …992"
+    root_cause: >-
+      min/max carried their OWN abbreviated copy of the ordering dispatch. compare() — the
+      lowering behind < > = <= >= — runs bignum, then rational, then exact int64, then
+      doubles. min/max ran bignum and then went straight to doubles. A bignum-backed
+      rational is a HEAP_PTR with the RATIONAL subtype and never a bignum, so it missed
+      the exact path entirely; two exact int64s past 2^53 missed it for the same reason.
+      In the double fallback both operands of each pair round to ONE flonum, so the
+      comparison reports "equal" and each engine's tie-break picks a different side. The
+      VM had the identical structural defect in its own copy (natives 33/34), where the
+      exactness guard covered bignums and rationals but not two plain fixnums.
+    fix: >-
+      ONE ordering implementation instead of two divergent copies:
+      ArithmeticCodegen::emitExactFirstOrderingI1 (bignum -> rational -> exact int64 ->
+      double) is now used by min and max, so a future tier can only be added where both
+      callers see it. The VM's natives 33/34 take the exact comparator whenever BOTH
+      operands are exact.
+    verified: >-
+      tests/vm_parity/corpus/66_minmax_ordering_invariant.esk expresses the fix as a
+      PROPERTY rather than a table: for each pair it checks min/max against `<` computed on
+      the same operands, in both operand orders, so it cannot pass by agreeing with a wrong
+      expectation. Covers int64 across 2^53, small rationals, bignums, bignum-backed
+      rationals, mixed exactness, and R7RS 6.2.6 inexactness contagion. Also added to the
+      compilation-axis differential corpus as 50_numeric_tower_tail.esk.
+    revert_validated: >-
+      Forcing the rational and int64 tiers off in emitExactFirstOrderingI1 reproduces the
+      native symptom exactly (max …376/3, min …993); removing the both-exact guard from VM
+      natives 33/34 reproduces the VM symptom. Both confirmed by rebuild and re-run.
+    caught_by: [direct-measurement, sw-18-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+  - id: SW-33
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/native-rest-capture-and-do-loop"
+    title: "NATIVE: a mutated + captured REST parameter does not write back; the closure mutates a private copy"
+    repro: "(define (f . rest) ((lambda () (set! rest (cons 99 rest)))) (car rest)) (display (f 1 2 3))"
+    observed: "native 1 — exit 0, no diagnostic, on every native axis"
+    correct: "99"
+    cross_engine: >-
+      the VM is wrong the same way at this SHA (also 1) and is fixed on the
+      SW-25 branch fix/vm-region-and-upvalue, measured with that branch's build:
+      VM 99. So the two halves of one class are closed by two PRs; neither
+      engine is the oracle for the other here, which is why this entry's gates
+      are the four NATIVE axes and an absolute expected value, not a parity
+      comparison.
+    discovered_by: >-
+      recorded as adjacent finding (1) in SW-25's notes while class-killing the
+      VM half. Measured rather than rediscovered.
+    root_cause: >-
+      ASSIGNMENT CONVERSION (ESH-0074) boxes a set!-mutated parameter into an
+      alloca so that (a) codegenSet has a storage location and (b) every closure
+      capturing it shares ONE cell — codegenLambda's capture emission then
+      pointer-passes that alloca instead of copying its value. Both boxing loops
+      iterated only the FIXED parameters: lib/backend/llvm_codegen.cpp:12692
+      (codegenFunctionDefinition, `for i < op->define_op.num_params`) and
+      lib/backend/llvm_codegen.cpp:29678 (codegenLambda, same shape). The REST
+      parameter is the LLVM argument that FOLLOWS the fixed ones — the
+      symbol-table loops twenty lines above each site walk exactly that order —
+      so it never got a box, stayed a by-value Argument, and the closure copied
+      the list VALUE into its environment slot. The inner set! then mutated a
+      private copy discarded on return, while the outer read still read the raw
+      Argument. Confirmed in IR: `define @f(%eshkol_tagged_value %rest)` with
+      `store %rest, ptr %<env slot>` and `(car rest)` reading `%rest` directly,
+      versus the boxed `%n = alloca` a fixed parameter gets.
+      The outer guards also required `op->define_op.parameters` /
+      `op->lambda_op.parameters` to be non-null, so a rest-ONLY signature could
+      not have been reached even if the loop had run.
+    fix: >-
+      Both sites now box the rest parameter on the same terms as a fixed one —
+      `astSetsVar(body, rest_param)` decides, the box is the alloca that the
+      iterator already points at after the fixed loop, and the outer guard no
+      longer requires a non-empty fixed parameter list. No new mechanism, no ABI
+      change: the existing capture machinery pointer-passes the box because it
+      is an alloca like any other.
+    evidence: >-
+      tests/integration/rest_capture_and_do_closure_test.esk, 23/23 checks on
+      all four native axes (ctest lanes rest_capture_and_do_closure_{smoke,
+      nocache_smoke,aot_o0_smoke,aot_o2_smoke}); the rest-parameter half covers
+      depths 1-3, immediately-invoked AND stored closures, a closure that
+      outlives the frame that bound the rest parameter, two closures sharing one
+      cell, two instantiations NOT sharing one, `lambda` as well as `define`
+      rest parameters, a rest parameter after two fixed parameters, and the two
+      controls (mutated-but-uncaptured, captured-but-unmutated).
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk covers the
+      native axes.
+      Revert-validated against a build of the same tree without the codegen
+      change (worktree eshkol-wt-vmmem, whose diff touches no native codegen):
+      it answers 1 for the reproducer and cannot compile the class-kill test at
+      all, refusing with "set!: variable 'xs' is not mutable (not an alloca,
+      global, or capture pointer)".
+    caught_by: [direct-measurement, sw-25-adjacent-finding]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Same FAMILY as SW-25 — a binding is not honoured across a closure boundary
+      because there is no shared CELL — but the opposite engine and a different
+      omission: the VM's parameter loop never boxed ANY parameter, native's
+      boxed every parameter except the one the loop bound could not reach.
+      A control worth keeping: `(define (r . xs) (set! xs (cons 3 xs)) (car xs))`
+      — mutated but NOT captured — was a LOUD refusal before this change
+      ("variable 'xs' is not mutable"), not a wrong answer, and now answers 3.
+  - id: SW-34
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-do-loop-capture"
+    title: "A `do` loop variable captured and mutated by a body closure loses the mutation inside a procedure"
+    repro: "(define (f n) (do ((i 0 (+ i 1)) (a 0)) ((= i n) a) ((lambda () (set! a (+ a 1)))))) (display (f 5))"
+    observed: "VM 0"
+    correct: "5 — native answers 5"
+    cross_engine: >-
+      the nested-loop form
+      (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t) (do ((j 0 (+ j 1))) ((= j 2)) ((lambda () (set! t (+ t 1))))))
+      was VM 2, native 6. The same loop at TOP LEVEL was already correct on the
+      VM (3), which is the tell: only the root chunk has the open-slot relay.
+    observed_after: "VM 5 and VM 6, byte-identical to native across 19 shapes"
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_do() bound its loop variables
+      with a bare add_local(). compile_form_let() has always run needs_boxing()
+      (lib/backend/vm_parser.c) over its bindings, so a `let` variable that is
+      both set!-mutated and captured by a nested lambda lives in a shared
+      1-element vector; a `do` variable never got that treatment, so OP_CLOSURE
+      copied its VALUE into the closure's upvalue array and the inner set!
+      mutated a private copy discarded at the end of the iteration. The
+      top-level case was correct only because the root chunk aliases an
+      absolute VM stack slot through the open-slot relay (native calls
+      151/252), which is deliberately restricted to the root chunk because a
+      function's frame dies on return.
+    fix: >-
+      compile_form_do() boxes every loop variable needs_boxing() reports as
+      mutated-and-captured, scanning the test, the results, the body AND every
+      step expression, since a do variable is in scope for all four. A boxed
+      variable's step store goes through VEC_SET into the same cell. The step
+      values are held in anonymous locals first so that parallel update (R7RS
+      4.2.4 — every step sees the pre-step values) is preserved while still
+      giving VEC_SET its box and index UNDER the value.
+    residue_found_and_fixed: >-
+      Boxing a `do` variable exposed a PRE-EXISTING defect in
+      compile_form_set(): both of its boxed paths (local and upvalue) left TWO
+      values on the operand stack, because OP_VEC_SET pushes NIL and the shared
+      tail pushes the NIL that `set!` evaluates to, while every caller pops
+      one. Inside a frame about to RETURN the surplus was absorbed and
+      invisible, which is why it had never been seen; in a `do` body — inline
+      statements each followed by exactly one OP_POP — it accumulated once per
+      iteration until the operand stack overflowed (STACK OVERFLOW, fatal).
+      Fixed at the root by discarding VEC_SET's NIL in both paths.
+    evidence: >-
+      tests/vm_parity/corpus/61_do_loop_variable_binding.esk and
+      tests/differential/corpus/49_do_loop_variable_binding.esk.
+      Revert-validated: restoring lib/backend/vm_compiler.c reproduces VM 0 for
+      the filed reproducer and VM 2 for the nested form.
+    caught_by: [pr-437-class-kill]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The fourth binding form of the SW-25 family (parameters, let*, letrec,
+      letrec* were closed by PR #435; `do` is closed here), and the same root
+      cause: a binding that is mutated across a closure boundary needs a shared
+      CELL, and only `let` ever had one.
+      FOUR native-side `do` shapes were held out of the corpus while this fix
+      was written, because the NATIVE engine was wrong or failed on them at the
+      pre-#437 base — capture in a STEP (native 0, VM 8), capture in a RESULT
+      (native: LLVM module verification failed, VM 10), a step that must see a
+      body closure's mutation (native 30, VM 33), and a read-only capture
+      (native: no output, VM 6). PR #437 landed on master and fixed the native
+      side of all four; on the rebased tree the two engines AGREE on every one,
+      at exactly the values the VM already produced, and all four are now
+      asserted in both corpus files. The exclusion list is empty — which is the
+      point of having written the measured pairs down rather than only naming
+      the shapes.
+
+  - id: PR-12
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "c8449f8a"
+    closed_by: "PR #436 — landed on master independently while this branch was in review"
+    title: "The release readiness oracle was UNPARSEABLE on master and silently fell back to a 2-criterion generic oracle that always scores 100"
+    measured: >-
+      At origin/master 2ae3787f, .icc/completion-oracles.yaml does not parse:
+      "ParserError: while parsing a block mapping, line 217". `icc readiness --target
+      eshkol-compiler-readiness` reports the error in an "Oracle Config Errors" section and
+      then proceeds anyway with `Oracle source: generic` — grading TWO generic criteria
+      (runtime_evidence_present, no_unmarked_stubbed_prod_paths) and printing
+      `Status: ready  Score: 100`.
+      With the file repaired the SAME command on the SAME tree loads the real oracle
+      (`Oracle source: .icc/completion-oracles.yaml`, 43 criteria) and reports
+      `Status: blocked  Score: 28`.
+    observed: "readiness ready/100 from a 2-criterion fallback"
+    correct: "the 43-criterion eshkol-compiler-readiness oracle actually being graded"
+    root_cause: >-
+      A botched merge spliced two adjacent runtime_event criteria together: the
+      `ad_capture_global_shadow_oracle` entry lost its `action:` line and the
+      `higher_order_shadowing_oracle` entry lost its `- runtime_event:` and
+      `event_kinds:` header, so its `event_names:`/`event_values:` keys landed inside the
+      previous entry's mapping at the wrong indentation. Almost certainly introduced by
+      PR #429, the commit that ADDED higher_order_shadowing_oracle and is the tip of
+      master this branch forked from.
+    why_it_matters: >-
+      Every "readiness 100" recorded against this oracle since the corruption landed is
+      vacuous — it measured two generic criteria, not the release gate. The handoff recipe
+      treats `icc readiness ... --target eshkol-compiler-readiness` as the v1.3.4 tag gate,
+      so this is the gate that was supposed to hold the tag reporting green while grading
+      almost nothing. Exactly the genre of PR-10, and worse: PR-10's probes at least graded
+      something real.
+    fix: >-
+      The three missing lines are restored so the real oracle parses and is graded. This
+      branch carried an identical repair, independently diagnosed; #436 reached master
+      first, so the repair here is now a no-op and only this ledger entry remains. Both
+      arrived at byte-identical edits, which is itself corroboration of the diagnosis.
+      GATE repair only — no product code.
+
+  - id: SW-40
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "6e6afd22"
+    closed_by: "PR fix(vm): min/max lose the tangent (branch fix/vm-minmax-dual)"
+    renumbered_from: >-
+      SW-33 (as filed) -> SW-36 -> SW-40, two hops, both forced by collisions
+      across unmerged branches. FILED as SW-33 on branch
+      fix/numeric-tower-bignum-tail, which found it while working on SW-32. That
+      ID was already taken by the native rest-parameter defect on branch
+      fix/native-rest-capture-and-do-loop, so the two collided; master has since
+      absorbed that lane's entry, and SW-33/SW-34 on master are now canonical and
+      are NOT this defect. Renumbered here first to SW-36 (the free ID at the
+      time), which two further lanes -- fix/numeric-tower-bignum-tail and
+      fix/value-position-axis -- then also claimed while this PR was open, so it
+      moved again to SW-40. SW-25..SW-39 are all claimed across master and the
+      in-flight branches as of this rebase; SW-40 is the first truly free ID. The
+      filing lane's text is preserved; only the ID and the status/evidence fields
+      changed, and no other lane's entry is touched.
+    title: "A derivative taken through min/max is silently 0 on the VM"
+    repro: "(define (f x) (max (* x x) (* 2 x))) (display (derivative f 3.0))"
+    observed_before: "VM prints 0; native prints 6"
+    correct: "6 — d/dx of x^2 at 3, since x^2 > 2x there"
+    observed_after: >-
+      6, and the VM agrees with native on every cell of the selection matrix. Both
+      operators and both arms: with f = (max (* x x) (* 2 x)) and
+      g = (min (* x x) (* 2 x)) the VM now gives 6 and 2 at x=3 and 2 and 2 at x=1,
+      matching native exactly, and the primal values (9, 6) are unchanged.
+    root_cause: >-
+      CONFIRMED, and the filing lane's hypothesis was right line-for-line. min/max
+      are SELECTION operators — the result IS one of the operands — so the
+      derivative must carry the SELECTED operand's tangent. Native
+      ArithmeticCodegen::min (lib/backend/arithmetic_codegen.cpp:3016) and ::max
+      (:3121) each open with an explicit DUAL NUMBER PATH that promotes both sides
+      via convertToDual, compares primals with FCmpOLE / FCmpOGE and packs the
+      chosen dual. The VM's natives 33/34 (lib/backend/vm_native.c:7106, reached as
+      _min2/_max2 — lib/backend/eshkol_vm.c:294 — under the variadic prelude min/max)
+      had no dual arm at all: both operands fell through to as_number_vm(), which
+      returns a dual's primal and discards its tangent, so the result was pushed as
+      a bare flonum by number_val_contagious and every derivative through min/max
+      read 0. The PRIMAL was correct throughout, which is what kept it invisible.
+    fixed_by: >-
+      lib/backend/vm_native.c natives 33/34 — a VAL_DUAL arm that promotes both
+      operands, compares primals and pushes the CHOSEN dual, with tie-breaking
+      mirroring native's FCmpOLE/FCmpOGE (left operand wins a tie on both engines);
+      plus the second-order VAL_HYPER_DUAL twin, matching how lbl_ABS already
+      treats the two carriers. The bignum and double paths are byte-for-byte the
+      previous logic.
+    class_kill: >-
+      The class is "selection-style numeric operator loses the tangent". Audited
+      every member on BOTH engines by measurement, not by reading: min, max, abs,
+      floor, ceiling, round, truncate. floor/ceiling/round/truncate are correct on
+      both engines (their derivative is 0 almost everywhere, which the plain
+      numeric path already produces). abs was correct on the VM's computed-goto
+      loop, which has had a VAL_DUAL arm all along — but its SWITCH-DISPATCH TWIN
+      (lib/backend/vm_run.c case OP_ABS, the lane a build without computed-goto
+      takes) was missing BOTH the VAL_DUAL and VAL_HYPER_DUAL arms, so a derivative
+      through abs answered 0 there. That twin is repaired in the same change. This
+      is the same both-loops discipline SW-09b established. Native has no gap in
+      this family: all seven measured correct.
+    evidence: >-
+      tests/vm_parity/corpus/66_minmax_dual_selection.esk (22 rows, EXACT analytic
+      derivatives, never a finite difference) on native / vm-src / vm-eskb, and the
+      same program as tests/differential/corpus/50_minmax_dual_selection.esk across
+      the four native axes. Revert-validated on a pristine VM rebuilt from HEAD in
+      the same worktree: 14 of the 22 rows diverge pre-fix, every one of them
+      answering 0 where native answers non-zero; all 22 agree post-fix. The 8 rows
+      that agreed pre-fix are the 5 primal rows, the 2 abs rows the computed-goto
+      loop already handled, and — notably — the constant-selected row whose CORRECT
+      answer is 0. That row is the reason a value table alone is not a sufficient
+      oracle here, and why every other derivative row in the corpus is non-zero.
+    discovered_by: >-
+      Probing AD through min/max while fixing SW-32 on branch
+      fix/numeric-tower-bignum-tail, because that fix touches the very dispatch the
+      dual path sits in front of. Confirmed PRE-EXISTING and NOT caused by the
+      SW-32 work: the same program gives the same zeros on a VM built with all of
+      that branch's VM changes reverted, and re-confirmed here on a clean worktree
+      off origin/master that contains none of them. Fixed independently of that
+      branch — the fix touches neither the exactness paths nor the rational tower.
+    caught_by: [direct-measurement, sw-32-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, ad-oracle]
+    notes: >-
+      Escape analysis: the AD oracle generates its probes from an arithmetic shape
+      table that contains no SELECTION operator at all, so no min/max/abs
+      derivative was ever exercised on either engine — the gate was green because
+      the operator family was absent from the generator, not because it was
+      correct. The corpus entries added here are the point fix; the generator axis
+      ("every numeric builtin whose result is one of its operands, differentiated
+      on both engines") is the durable one and is recommended for the AD-oracle
+      shape table. Separate finding, NOT filed as silent-wrong because it is absent
+      surface rather than a wrong answer: the VM's hyper-dual natives (1900-1921,
+      the {f,f1,f2,f12} second-order carrier) have no name bindings in
+      lib/backend/eshkol_vm.c, so they are unreachable from Eshkol source on the VM.
+      The VAL_HYPER_DUAL arm added here is therefore correct-by-construction and
+      symmetric with lbl_ABS, but is NOT exercised by any test and must not be
+      counted as covered. Nested/second-order `derivative` on the VM raises a LOUD,
+      honest "not supported on the VM" error today, so no silent path reaches it.
+
+  # ───────────────────────── IN-FLIGHT ─────────────────────────
+
+  - id: IF-01
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: closed
+    closed_at: "019ab413"
+    title: "AD capture reconstruction ignores lexical scope; the default JIT object cache miscompiles core.ad.guw"
+    observed_before: "in-process JIT returned -0.6868 where 0.9553 is correct; AOT segfaulted"
+    measured: >-
+      Re-measured at 019ab413 on a fresh RelWithDebInfo LLVM-21 build.
+      tests/ad/ad_capture_global_shadow_test.esk passes 19/19 checks
+      (derivative/derivative-n/taylor/GUW, gradient, directional) in THREE
+      configurations that used to disagree: JIT with the object cache ON (the
+      default, which is where the miscompile lived), JIT with
+      ESHKOL_JIT_CACHE=0, and AOT — the AOT arm exits 0 rather than
+      segfaulting. tests/differential/corpus/42_ad_capture_global_shadow.esk
+      produces byte-identical output (3 / 1000 / #(7 7) / #(5 5)) on
+      jit-cached, jit-nocache and aot-O2.
+    fixed_by: "PR #420, merged as 6dcdd168"
+    evidence: "PR #420 body; tests/differential/corpus/42_ad_capture_global_shadow.esk; docs/guide/AUTOMATIC_DIFFERENTIATION.md carries ESHKOL_JIT_CACHE=0 eight times as a workaround"
+    caught_by: [pr-record-416, pr-record-420]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-02
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: closed
+    closed_at: "019ab413"
+    title: "take/drop argument order is reversed between the native stdlib and the VM prelude"
+    measured: >-
+      Re-measured at 019ab413. tests/vm_parity/corpus/54_take_drop_srfi1_order.esk
+      produces byte-identical output on native -r and the VM:
+      (a b c) / (d e) / () / () / (1 2 3) / (), i.e. SRFI-1 order (take lst n)
+      on both engines, including the over-long-count edge rows.
+    fixed_by: "PR #418, merged as 9b3fd14d"
+    evidence: "lib/core/list/transform.esk:8,14 vs lib/backend/vm_prelude_source.h:80-81; PR #416 Escalation 4"
+    caught_by: [pr-record-416, pr-record-418]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-03
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: closed
+    closed_at: "019ab413"
+    title: "Complex transcendentals reinterpret the complex heap pointer as a double"
+    measured: >-
+      Re-measured at 019ab413. tests/numeric/complex_transcendentals_test.esk
+      passes end to end, exit 0, including the two rows that name this exact
+      defect — "sin of an exact rational uses its value, not its pointer" and
+      "sqrt of an exact rational uses its value, not its pointer". Spot values
+      are mathematically correct on both engines: (sqrt -4) = 2i,
+      (exp i*pi) = -1+1.2246467991473532e-16i, (log -1) = pi*i,
+      (magnitude 3+4i) = 5.
+      NOTE the residue: native prints +2i where the VM prints 0+2i. That is
+      the display-format divergence already carried as PR-08, not a value
+      defect, and it is deliberately NOT folded into this closure.
+    fixed_by: "PR #419, merged as a83b309e"
+    evidence: "lib/backend/llvm_codegen.cpp:14191-14223 routes through codegenMathFunction; PR #416 Escalation 1 calls it a memory-safety defect"
+    caught_by: [pr-record-416, pr-record-419]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, sanitizer-fuzz-lane]
+
+  - id: IF-04
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: closed
+    closed_at: "019ab413"
+    title: "inexact->exact loses precision"
+    observed_before: "returned 450359962737049/4503599627370496 (0.09999999999999987) for the documented case"
+    measured: >-
+      Re-measured at 019ab413. Both engines answer
+      (inexact->exact 0.1) = 3602879701896397/36028797018963968, which is the
+      exact value of the IEEE-754 double 0.1 (the pre-fix answer was wrong by a
+      factor of 8 in both terms and did not round-trip). (inexact->exact 0.5)
+      = 1/2 and (exact->inexact (inexact->exact 0.1)) = 0.1, so the round trip
+      is now lossless. tests/numeric/inexact_exact_roundtrip_test.esk passes
+      end to end, exit 0, including "0.1's exact numerator/denominator match
+      the documented pair".
+    fixed_by: "PR #419, merged as a83b309e"
+    evidence: "docs/ESHKOL_LANGUAGE_GUIDE.md:454; PR #416 Escalation 2"
+    caught_by: [pr-record-416, pr-record-419]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-05
+    bucket: IN-FLIGHT
+    silent_wrong_class: true
+    status: closed
+    closed_at: "019ab413"
+    title: "free-energy returns -0.0 on the VM and in the browser build regardless of evidence"
+    measured: >-
+      Re-measured at 019ab413. tests/vm_parity/corpus/56_factor_graph_inference.esk
+      — the regression gate whose whole purpose is that free energy must MOVE
+      when the evidence moves — produces byte-identical output on native -r and
+      the VM: extents (4) and (6) plus 26 assertions, every one #t. The
+      evidence-insensitive -0.0 is gone on the engine that produced it.
+    fixed_by: "PR #413, merged as f1ded1ed"
+    evidence: "PR #413; PR #414 'Adjacent divergences found and NOT fixed here'; examples/consciousness.esk"
+    caught_by: [pr-record-413, pr-record-414]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-06
+    bucket: IN-FLIGHT
+    silent_wrong_class: false
+    status: open
+    title: "A non-store value passed to a memory-store accessor SIGSEGVs at address 0"
+    fix_lane: "PR #418 — OPEN"
+    evidence: "lib/core/memory_store.esk; PR #416 Escalation 5. No test in tests/ exercises memory-store-append! at all."
+    caught_by: [pr-record-416]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: IF-07
+    bucket: IN-FLIGHT
+    silent_wrong_class: false
+    status: open
+    title: "void* is not accepted as an extern type name; it warns and silently defaults to int64"
+    fix_lane: "PR #418 — OPEN"
+    evidence: "mapStringToType in lib/backend/llvm_codegen.cpp; PR #416 Escalation 6"
+    caught_by: [pr-record-416]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-41
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "complex? cannot be used as a first-class value natively, though the VM binds it"
+    repro: "(display (map complex? (list 1 2)))"
+    observed: >-
+      native -r fails to compile: "Undefined variable: complex?" followed by
+      "Failed to resolve procedure for map". The VM resolves it and answers (#t #t).
+    correct: "both engines should bind it; it is an R7RS 6.2.1 procedure"
+    measured: >-
+      In CALL position (complex? 5) works on both engines. Only the value position
+      diverges. Found while building the SW-31 predicate matrix, which had to drop
+      complex? from its first-class section for exactly this reason — the file says so in
+      a comment rather than quietly omitting it.
+    caught_by: [direct-measurement, sw-31-corpus-authoring]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Classified PARITY-RATCHET rather than SILENT-WRONG: native fails LOUDLY at compile
+      time, so nothing computes a wrong answer. It is a binding-table gap on the native
+      side, and it blocks one row of the predicate matrix from being gated.
+    root_cause: >-
+      complex? had no row in the codegen's first-class builtin table
+      (lookupInlineBuiltin, lib/backend/llvm_codegen.cpp). Reading a bare builtin name as
+      a value consults that table; a name absent from it falls through to
+      "Undefined variable". Call position never consults it, which is why the two
+      positions disagreed.
+    fix: >-
+      The R7RS numeric-tower predicate family is now listed as a FAMILY — number?,
+      complex?, real?, rational?, integer?, exact?, inexact?, exact-integer?, nan?,
+      infinite?, finite? — together with the type predicates, rather than name-by-name
+      as need arises. Name-by-name is how the gap appeared, so the fix removes the
+      mode of failure and not just the instance.
+    verified_at: >-
+      tests/integration/first_class_predicates_test.esk, gated on the JIT lane, the AOT
+      lane and the VM (first_class_predicates_{runtime,aot,vm}_smoke). The oracle is
+      differential: every predicate is compared against the identical application in call
+      position in the same program, through BOTH value-position routes (a user
+      higher-order procedure, and map). The predicate matrix no longer needs its
+      complex? exclusion.
+    id_collision_note: >-
+      The ID SW-34 was allocated concurrently by more than one lane. THIS closure refers
+      to the entry whose title is "complex? cannot be used as a first-class value
+      natively, though the VM binds it", filed on branch
+      fix/numeric-tower-bignum-tail with repro "(display (map complex? (list 1 2)))".
+      It does not speak to whatever else may carry the number SW-34 elsewhere;
+      reconciliation happens at merge.
+    renumbered_from: >-
+      Filed as SW-34 on branch fix/numeric-tower-bignum-tail (PR #439), which did not carry
+      the entry into master. Renumbered TWICE as master moved underneath this PR, each time
+      because the number had been taken by a defect that reached master first and which is
+      not renumbered here:
+        SW-34 -> SW-40   master's SW-34 is #438's "`do` loop variable captured and mutated
+                         by a body closure loses the mutation"
+        SW-40 -> SW-41   master's SW-40 is #443's "a derivative taken through min/max is
+                         silently 0 on the VM"
+      Cite this defect as SW-41. Note for anyone auditing the second hop: git reported NO
+      conflict on that rebase, because the two SW-40 entries landed in different regions of
+      the file. A clean auto-merge is not evidence of a correct ledger; the duplicate was
+      caught by parsing the YAML and counting IDs, which is the check worth keeping.
+
+  - id: SW-35
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "Natively, floor/ceiling/truncate/round used as FIRST-CLASS VALUES return a rational's heap pointer as a number"
+    repro: "(display (map floor (list 7/3 -7/3 (/ (expt 2 100) 3))))"
+    observed: >-
+      native prints something like (4966570936 4966571152 4966571728) — the values are
+      HEAP ADDRESSES, they change between runs of the same binary, and (exact? …) on each
+      is #f. The same call in CALL position, (floor 7/3), correctly prints 2.
+    correct: "(2 -3 422550200076076467165567735125), which the VM prints"
+    measured: >-
+      Whole-list probe across the tower: (map floor (list 7/3 -7/3 (/ (expt 2 100) 3) 2.7 5))
+      gives garbage for the three RATIONALS and correct answers for 2.7 and 5, on all four
+      of floor/ceiling/truncate/round. The VM is correct for every element. Varies per run,
+      which is the signature of an address being printed rather than a value.
+    root_cause_hypothesis: >-
+      The exactness/rational handling for these four lives in the CALL-POSITION lowering
+      (the rational_path block in lib/backend/llvm_codegen.cpp). The value-position route —
+      the builtin wrapper `map` receives — does not go through that lowering and appears to
+      extract the tagged operand as a plain number, which for a rational HEAP_PTR reads the
+      pointer. Same FAMILY as SW-27 (rest-arg procedures referenced as values taking a
+      different ABI from the same procedure in call position), though a different mechanism.
+      Not traced to a line; filed for scoping.
+    discovered_by: >-
+      Probing the first-class route while closing SW-29, because SW-31 had just shown that
+      the value-position route of a builtin can carry its own independent defect.
+    pre_existing: >-
+      Confirmed, NOT introduced by the SW-29 fix. Reproduced on a native binary built with
+      llvm_codegen.cpp, rational.cpp and rational.h reverted to 92bbacd4 (and stdlib.o
+      rebuilt so the comparison was honest): the same per-run-varying addresses appear.
+      The SW-29 fix touches only the call-position block, which is why call position is
+      correct on both the old and new binaries.
+    caught_by: [direct-measurement, sw-29-adjacent-probe]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      The escape analysis is the same one SW-27 already wrote down and which SW-31 just
+      confirmed a second time: builtins need a VALUE-POSITION axis in the higher-order
+      sweep, not only call-position coverage. Three independent defects have now been
+      found in that blind spot.
+    root_cause: >-
+      CONFIRMED, and the filed hypothesis was right. These four have TWO implementations.
+      The call-position lowering (codegenMathFunction, the is_rounding_func block in
+      lib/backend/llvm_codegen.cpp) dispatches on exactness: exact integers and bignums
+      are the identity, rationals go through eshkol_rational_<op>_tagged, only inexact
+      reals reach libm. The value-position route used createBuiltinUnaryMathFunction, a
+      SECOND hand-written wrapper that unpacks the tagged operand as a double — which for
+      a rational reads its HEAP POINTER. There were also TWO value-position routes, and
+      both were wrong: codegenVariable (a builtin reached through a user higher-order
+      procedure) and resolveLambdaFunction (a builtin reached through map/for-each/
+      filter/sort). Fixing only the first left (h floor 7/3) correct while
+      (map floor (list 7/3)) still printed an address.
+    fix: >-
+      Both routes now go through the generic inline-builtin wrapper, which GENERATES its
+      body by re-entering codegenCall — so the exactness-aware lowering IS the wrapper
+      body and cannot drift from it. This is the LE-01 mechanism applied to a second
+      instance of the LE-01 shape (a duplicated implementation diverging from the
+      authoritative one), rather than a second patch to the duplicate.
+    verified_at: >-
+      tests/integration/first_class_rounding_test.esk, gated on the JIT and AOT lanes.
+      Covers all four operators over rationals (positive and negative), a rational whose
+      floor EXCEEDS int64 — (/ (expt 2 100) 3), which an int64-returning entry point
+      cannot carry at all — exact integers, bignums, inexact reals including R7RS
+      round-half-to-even, and exactness of the results. Both value-position routes are
+      exercised. The ledger's stated correct answer
+      (2 -3 422550200076076467165567735125) is reproduced exactly.
+    id_provenance: >-
+      Filed as SW-35 on branch fix/numeric-tower-bignum-tail (PR #439) and NOT carried by
+      that PR's merge, so SW-35 was free on master and the number is retained unchanged.
+
+  - id: SW-36
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "make-string as a first-class value silently DROPPED a supplied fill character"
+    repro: "(define (h2 f a b) (f a b)) (display (h2 make-string 3 #\\x))"
+    observed: '"   " — three spaces, exit 0, no diagnostic'
+    correct: '"xxx", which (make-string 3 #\\x) returns in call position'
+    root_cause: >-
+      The first-class builtin table introduced by LE-01 (#427) listed make-string at
+      arity 1. A fixed-arity closure passes exactly `arity` arguments to the wrapper, so
+      the second argument never reached the lowering at all. The name-to-arity table is
+      maintained by hand, and a row that disagrees with the builtin it wraps produces a
+      wrong answer rather than an error.
+    fix: >-
+      Row corrected to arity 2. R7RS 6.7 makes make-string optional-argument —
+      (make-string k [char]) — and the closure ABI carries ONE arity, so the row wraps
+      the FULL form. That choice is not arbitrary: R7RS says that when char is omitted
+      "the contents are unspecified", so the 1-argument value reference differing from
+      the 1-argument call is CONFORMING, whereas dropping a fill character the caller
+      supplied is a wrong answer. Wrap the form whose result is specified.
+    discovered_by: >-
+      scripts/run_value_position_sweep.py, on its first run. This defect had been live
+      on master since #427 merged and no other gate saw it.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Worth recording as evidence about the sweep rather than about make-string: the
+      defect was introduced BY a fix for this same family, and found by the gate built
+      alongside it, on the first run, in under two minutes. A hand-maintained arity table
+      needs a mechanical check; this is that check.
+
+  - id: SW-37
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "fix/value-position-axis"
+    closed_by: "PR stacked on #439 (branch fix/value-position-axis)"
+    title: "pow as a first-class value SIGSEGVs"
+    repro: "(define (h2 f a b) (f a b)) (display (h2 pow 2 10))"
+    observed: "SIGSEGV; (pow 2 10) in call position returns 1024"
+    correct: "1024"
+    root_cause: >-
+      Residue of the LE-01 class. `pow` sits in the codegen function table as a raw libm
+      symbol with a double,double->double signature, and it appears in neither the
+      math-builtin set nor the first-class builtin table, so a reference to it reached
+      the raw-Function* fallback in codegenVariable. The closure dispatcher then called a
+      foreign-ABI symbol with the closure calling convention, which is undefined
+      behaviour.
+    fix: >-
+      Added to the first-class builtin table at arity 2, so the reference is lowered as a
+      closure-ABI wrapper whose body is generated from the call-position lowering.
+    discovered_by: "scripts/run_value_position_sweep.py, first run"
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+
+  - id: SW-38
+    bucket: SILENT-WRONG
+    status: open
+    title: "On the VM, cadr and caddr used as FIRST-CLASS VALUES return the empty list"
+    repro: "(define (h1 f a) (f a)) (display (h1 cadr (list 1 2 3)))"
+    observed: "VM prints () — exit 0, no diagnostic. Call position (cadr (list 1 2 3)) prints 2."
+    correct: "2 for cadr, 6 for caddr — what call position returns on the same engine"
+    measured: >-
+      All four value-position routes on the VM (passed to a higher-order procedure,
+      stored in a variable, returned from a procedure, reached through map) answer ().
+      All four NATIVE axes answer correctly. Reproduced by
+      scripts/run_value_position_sweep.py --axis vm.
+    discovered_by: >-
+      The value-position sweep's VM axis, on its first full run. This is the case the VM
+      axis exists for: the four native axes agree with each other, so no axis-versus-axis
+      differential can see a VM-only value-position defect.
+    scope_note: >-
+      NOT fixed here, deliberately. The lane that built the sweep works on the NATIVE
+      value-position lowering; this defect is in the VM's own value representation for
+      the c[ad]+r accessors, a different subsystem. Filed precisely rather than fixed
+      badly. Ratcheted in tests/value_position/BASELINE.json so the gate stays honest
+      about it instead of silently tolerating it.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      SILENT-WRONG on the VM: () is a legitimate Scheme value, so a caller sees a wrong
+      answer rather than an error, and () is truthy in Scheme, so a predicate written
+      over it takes the wrong branch.
+
+  - id: SW-39
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "On the VM, string-length / string-ref / vref used as FIRST-CLASS VALUES abort the VM"
+    repro: "(define (h1 f a) (f a)) (display (h1 string-length \"hello\"))"
+    observed: >-
+      The VM terminates with a fatal runtime error and produces no output for the probe;
+      call position (string-length "hello") answers 5 on the same engine.
+    correct: "5 — what call position returns"
+    measured: >-
+      Three value-position routes on the VM (passed, stored, returned) abort;
+      string-ref and vref behave the same way. All four NATIVE axes are correct.
+      Reproduced by scripts/run_value_position_sweep.py --axis vm.
+    discovered_by: "The value-position sweep's VM axis, first full run"
+    scope_note: >-
+      NOT fixed here, deliberately — same reasoning as SW-38. Ratcheted in
+      tests/value_position/BASELINE.json.
+    caught_by: [value-position-sweep]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Loud rather than silent, so it does not gate a release on its own — but it means
+      any VM program that passes one of these accessors to a higher-order procedure dies
+      rather than running.
+
+  # ───────────────────────── LOUD-ERROR ─────────────────────────
+
+  - id: LE-01
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "9387bbdf"
+    closed_by: "PR #427 (branch fix/first-class-builtins)"
+    title: "Builtins are call-position-only; passing one as a first-class value SIGSEGVs (exit 139)"
+    repro: "(define (ap f a b) (f a b)) (display (ap string<? \"a\" \"b\"))"
+    observed: "SIGSEGV at address 0x0, exit 139"
+    affected_measured: ["string<?", "string>?", "string=?", "char<?", "char=?", "string-append", "vector-ref", "car", "expt", "min", "max"]
+    unaffected_measured: ["+", "<", "eq?"]
+    evidence: ".scratch/flaw-ledger/repro/fc_tmp.esk; tests/differential/corpus/37_sort.esk"
+    axis_dependent_failure: >-
+      scripts/icc_traces/differential_smoke at 9f2da2ab records 37_sort.esk failing a
+      DIFFERENT way on every compilation axis: jit rc=1, jit-nocache rc=139 (SIGSEGV),
+      aot-o0 rc=125, aot-o2 rc=125. Six pairwise axis comparisons FAIL plus the
+      differential_corpus_clean roll-up ("1/41 corpus programs diverge across axes").
+      CORRECTED at a1c28375 — the sentence that stood here, "the cached-JIT-versus-nocache
+      split (1 vs 139) is the same object-cache signature as IF-01, so the two are probably
+      one root cause seen from two directions", was WRONG and is retained only so the
+      correction is legible. The split has nothing to do with the JIT object cache or with
+      IF-01/PR #420. With the run cache ON, `-r` compiles through an AOT subprocess that
+      already has an artifact-emission gate, so a diagnosed program exits 1. With the cache
+      OFF, `-r` reaches the in-process JIT, whose refusal path in
+      ReplJITContext::addModule destroyed the rejected module's LLVMContext before the
+      Module — a use-after-free in llvm::Module::~Module, not a miscompile. The axes
+      differed because the two REFUSAL paths differed, not because the two compilations
+      did. Merging PR #420 was not required to close this entry, and would not have
+      closed it. See `root_cause` below.
+    readiness_impact: >-
+      MEASURED at 9f2da2ab: icc readiness eshkol-compiler-readiness is BLOCKED at score 77,
+      and this defect is the whole of the failure_free FAIL apart from one stale event.
+      LE-01 is the single item standing between the cut and a green readiness run.
+    caught_by: [pr-record-420, direct-measurement, icc-readiness]
+    missed_by: [icc-correctness-chain, icc-smoke, KNOWN_ISSUES]
+    root_cause: >-
+      TWO defects, which is why every axis failed differently.
+      (1) Most builtins are lowered INLINE from the head name by codegenCall
+      (lib/backend/llvm_codegen.cpp), so the bare name denoted nothing. codegenVariable
+      carried a hand-maintained cascade of per-builtin wrapper factories; anything not on
+      that list fell through to "Undefined variable: <name>" or, when the name sat in the
+      codegen function table, to a raw Function* — a FOREIGN-ABI pointer the closure
+      dispatcher then called with the closure calling convention (`(h remainder 7 3)`
+      SIGSEGV, `(h append '(1) '(2))` -> 1).
+      (2) The JIT-execution gate in ReplJITContext::addModule (lib/repl/repl_jit.cpp)
+      threw to refuse a diagnosed module, and the unwind destroyed the rejected module's
+      LLVMContext before the Module. llvm::Module::~Module calls
+      Context.removeModule(this) through that reference, so the compiler SIGSEGV'd at
+      address 0x0 while correctly REJECTING the program — turning "exit 1 + diagnostic"
+      into exit 139 on exactly the axes that reach the in-process JIT. That is why a plain
+      "Undefined variable" presented as a memory-safety defect.
+    fix: >-
+      Builtin references now get a real first-class representation:
+      createInlineBuiltinWrapper synthesises builtin_fc_<name> with the closure ABI and
+      generates its BODY by re-entering codegenCall on a synthetic (name p0 … pN-1) AST
+      bound to the wrapper's own parameters, so the authoritative call-site lowering is
+      the wrapper body and a reference cannot disagree with a direct call. Consulted only
+      where the old code produced a garbage callable or an error, so name resolution
+      order — and therefore user shadowing — is unchanged. The refusal path in addModule
+      now destroys module then context explicitly.
+    verified_at: >-
+      37_sort.esk exits 0 with byte-identical output on all four native axes
+      (jit, jit-nocache, aot-O0, aot-O2). Gated by first_class_builtins_{runtime,nocache,
+      aot_o0,aot_o2,vm}_smoke and undefined_variable_refusal_is_clean_{nocache,cached}.
+      Revert-validated: with the fix disabled, 5 of those 7 go red and 37_sort returns to
+      1 / 139 / compile-fail / compile-fail.
+    vm_status: >-
+      NOT AFFECTED, verified rather than assumed. The VM reaches builtins through a native
+      dispatch table, so a builtin is a value there by construction; pinned by
+      tests/integration/first_class_builtins_vm_test.esk.
+    notes: >-
+      PR #420 describes this as 'Undefined variable'. At 9f2da2ab it is a SIGSEGV, which is
+      strictly worse, and it is a FAMILY of at least 11 builtins, not one. Note the honest
+      detector working: readiness is red BECAUSE this is real. 37_sort.esk was NOT
+      baselined, excluded or weakened — it is green because the compiler is fixed.
+      #420 is NOT the cause: its object-cache/AD-capture defect is unrelated to this one,
+      and the cached-vs-nocache split here is the addModule teardown-order bug above.
+      Two ADJACENT defects found while closing this and deliberately left open, since they
+      live in a different lowering path: a REST-ARG stdlib procedure referenced as a value
+      loses its variadic flag (`(h append '(1) '(2))` -> 1; `(h string-copy "abc")` SIGSEGV
+      under AOT), and the VM's builtin surface is narrower than native for `string>?`,
+      `string<=?`, `string>=?`, `string-length`, `string-ref`, `symbol=?`, `square`,
+      `boolean=?` in CALL POSITION too (parity-ratchet PR-02 class).
+
+  - id: LE-02
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "hessian over a lambda capturing its enclosing function's parameter fails LLVM verification"
+    repro: "(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0)) (display (hwrap 2.0))"
+    observed: "ERROR: LLVM module verification failed: Incorrect number of arguments passed to called function! exit 1"
+    evidence: "PR #420's tests/ad/ad_capture_global_shadow_test.esk lines 25-29 document it as NOT covered; hessian capture path in lib/backend/autodiff_codegen.cpp"
+    caught_by: [pr-record-420, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: "NOT in flight. #420 explicitly excludes it so its own gate is not red for the wrong reason."
+
+  - id: LE-03
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: open
+    title: "Generic + over i128 raises a type error natively"
+    observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
+    evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Paired with SW-09, the silent VM half."
+
+  - id: LE-04
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: open
+    title: "sort argument order is reversed between engines"
+    observed: "native accepts (sort lst <) and errors on (sort < lst) with 'cdr: argument is not a pair'; the VM is the exact mirror"
+    evidence: ".scratch/flaw-ledger/repro/sw_sort_order.esk, sw_sort_vmorder.esk; PR #418 body"
+    caught_by: [pr-record-418, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
+    notes: "Same class as IF-02 take/drop, but sort is NOT fixed by #418 and has no test."
+
+  - id: LE-05
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "(load \"path.esk\") is not resolvable on the VM lane"
+    observed: "vm-src: WARNING undefined variable 'load' then ERROR: calling non-function, fatal"
+    evidence: ".scratch/flaw-ledger/repro/sw_load_path.esk; docs/KNOWN_ISSUES.md:269"
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      KNOWN_ISSUES:269 says the VM 'silently ignores a path literal'. On the vm-src lane at
+      9f2da2ab it is LOUD. The doc overstates the severity; the entry needs correcting either way.
+
+  - id: LE-06
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "Vector-param AD op capturing a local function parameter fails LLVM verification (ESH-0097)"
+    observed: "PtrToInt source must be pointer, on both -r and AOT"
+    evidence: "tests/ad_oracle/README.md XKNOWN; docs/KNOWN_ISSUES.md:299"
+    caught_by: [KNOWN_ISSUES, ad-oracle-xknown]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: LE-07
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "VM frame overflow prints to stderr and then exits 0 with empty stdout"
+    evidence: "tests/vm_parity/found/frame_overflow_exit_zero.esk; tests/vm_parity/found/when_tail_call_no_tco.esk"
+    caught_by: [parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: "Loud on stderr but exit 0 — silent to any caller that checks the exit status. Borderline SILENT-WRONG."
+
+  - id: LE-08
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
+    evidence: "docs/KNOWN_ISSUES.md:195"
+    caught_by: [KNOWN_ISSUES]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: LE-09
+    bucket: LOUD-ERROR
+    subtag: codegen
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/native-rest-capture-and-do-loop"
+    title: "NATIVE: a `do` loop whose body creates a closure over a loop variable never terminates and is SIGKILLed (exit 137)"
+    repro: "(display (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc) ((lambda () (set! acc (+ acc i))))))"
+    observed: >-
+      killed by SIGKILL, exit 137, under the default `-r` and under
+      ESHKOL_JIT_CACHE=0. Under an explicit CPU limit the same run exits 152
+      (SIGXCPU) with no output, which is what identifies it as a runaway loop
+      rather than an allocator fault.
+    correct: "3 — the VM answers 3"
+    affected_measured:
+      - "mutating capture: ((lambda () (set! acc (+ acc i)))) -> runaway"
+      - "READ-ONLY capture: (set! s (+ s ((lambda () i)))) -> runaway; mutation is not required"
+      - "let-bound body closure -> LLVM verification failure, \"Instruction does not dominate all uses\" on the arena_allocate, i.e. the compile is rejected rather than run"
+      - "named let in the body capturing the loop variables -> same verification failure"
+    unaffected_measured:
+      - "a `do` body with no closure at all"
+      - "a body lambda whose PARAMETER shadows the loop variable, so nothing is captured"
+    root_cause: >-
+      lib/backend/llvm_codegen.cpp, codegenDo (var_allocas at ~24282, step store
+      at ~24371 before this change). A `do` variable is READ from three places
+      emitted at three different times — the header test first, the body second,
+      the step expressions third — but codegenDo wrote the step result to the
+      stack alloca it had cached in var_allocas, while every read went through
+      symbol_table. codegenLambda's capture emission ("CLOSURE ESCAPE FIX",
+      ~30036) REBINDS a captured stack alloca to fresh arena storage mid-body
+      and repoints symbol_table at it, seeding the new cell ONCE in the
+      pre-header. The variable therefore split in two: the step read the arena
+      cell and wrote the stack alloca that the header test had already been
+      compiled against. IR at the defect:
+        do_loop_step: %i.load68 = load ptr %8        ; arena cell, never advanced
+                      %99 = add %i.load68, 1
+                      store %99, ptr %i_do           ; stack alloca
+        do_loop_header: %i.load = load ptr %i_do     ; reads 1 forever
+      `(= i 3)` never became true, and each iteration allocated a fresh closure
+      in the arena, so the loop consumed memory without bound until the OS
+      killed it. The same rebinding, when it happened inside the loop body
+      rather than the pre-header, produced an arena_allocate that did not
+      dominate its uses — invalid IR, which is the AOT-side symptom.
+    fix: >-
+      The storage class is now decided BEFORE the loop is emitted, mirroring
+      codegenNamedLet, which has always arena-moved its captured cells up front.
+      doFormCapturesVar() asks whether any lambda or named let in the bindings,
+      test, results or body captures the variable; if so the loop variable's
+      cell is arena storage from the start, which is what the capture machinery
+      would have converged on anyway — and being an already-pointer-typed
+      CallInst it takes codegenLambda's "existing arena storage" branch, which
+      pointer-passes WITHOUT rebinding anything. Otherwise the variable keeps
+      its stack alloca and stays promotable, so closure-free `do` loops are
+      byte-identical to before. The predicate reuses astSetsVar's traversal
+      rather than a second copy of it: that walk is now astScanVar(ast, var,
+      VarScanMode), with SetTarget and ClosureCapture node tests over one
+      shared, already-proven-complete recursion.
+      An INVARIANT backs it up at the end of codegenDo: if any loop variable was
+      arena-moved anyway, the capture analysis missed a form, and codegen now
+      FAILS LOUDLY with a diagnostic instead of emitting a loop that cannot
+      terminate. That guard is what caught the two design corrections below
+      during class-kill.
+    evidence: >-
+      tests/integration/rest_capture_and_do_closure_test.esk, 23/23 checks on
+      all four native axes (ctest lanes rest_capture_and_do_closure_*): mutating
+      and read-only captures, an immediately-invoked closure and a let-bound
+      one, a named let in the body, a nested `do` closing over the OUTER
+      variable, a loop inside a procedure with a runtime trip count, closures
+      stored out of the loop and called after it finished, and the two controls.
+      tests/differential/corpus/48_rest_capture_and_do_closure.esk on the native
+      axes; tests/vm_parity/corpus/60_do_loop_closure_capture.esk pins the
+      reproducer VM-vs-native.
+      Revert-validated against a build of the same tree without the codegen
+      change (worktree eshkol-wt-vmmem): the reproducer runs until the CPU limit
+      fires, and the let-bound and named-let shapes fail LLVM verification.
+    caught_by: [direct-measurement, sw-25-adjacent-finding]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
+    notes: >-
+      Two design corrections were forced by the codegenDo invariant during
+      class-kill, and both are recorded because they are the non-obvious part.
+      (1) An internal `(define (bump) …)` in the body is NOT a ClosureCapture
+      site: codegenFunctionDefinition captures through module-level storage
+      (`<fn>_nested_N_capture_<var>`) re-seeded from the enclosing binding on
+      every execution, which does not split the loop — forcing arena storage for
+      it turned a correct 3 into a type error, measured. `(define bump (lambda …))`
+      is a different shape and IS caught, by the LAMBDA_OP case.
+      (2) The invariant is narrowed to the arena-move signature (a pointer-typed
+      CallInst) for the same reason, so the legitimate module-storage rebinding
+      is not flagged.
+
+  - id: LE-10
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: closed
+    closed_at: "2ae3787f"
+    closed_by: "branch fix/vm-do-loop-capture"
+    title: "A `do` loop poisons a LATER `do` in the same program (VM heap object limit / calling non-function / hang)"
+    repro: "(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) ((lambda () (set! a (+ a 1)))))) (display (do ((k 0 (+ k 1)) (b 0)) ((= k 4) b) (set! b (+ b 10))))"
+    observed: >-
+      as filed: "ERROR: VM heap object limit reached
+      (ESHKOL_VM_HEAP_MAX_SIZE=16777216 objects)", exit 1, after the first loop
+      printed its correct answer; a let-bound body closure additionally gave
+      "ERROR: calling non-function" whenever a top-level form preceded the
+      loop, and longer sequences hung. Each shape was correct ALONE, which is
+      what identified it as sequence-dependent.
+    measured: >-
+      RE-MEASURED at 2ae3787f and found WIDER, and partly SILENT, than filed.
+      The reproducer above answers 3 then 13 on the VM where native answers 3
+      then 40 — a wrong VALUE with exit 0 and no diagnostic, not a loud error.
+      It also needs NEITHER a closure NOR a capture: two ordinary sequential
+      `do` loops diverge the same way, and the minimal case is a `do` followed
+      by a `define`:
+        (do ((i 0 (+ i 1))) ((= i 2)) 1) (define q 42) (display q)
+      which is 2 on the VM and 42 natively. The loud shapes this entry was
+      filed for are the same corruption landing on a slot whose stranded junk
+      happens to be a loop counter or a callee.
+    root_cause: >-
+      lib/backend/vm_compiler.c::compile_form_do() never popped its loop
+      variables. compile_form_let() ends with OP_POPN; compile_form_do() ended
+      by decrementing the compiler's own c->n_locals — a COMPILE-TIME
+      bookkeeping change with no runtime effect — so every `do` form stranded
+      one operand-stack value per loop variable. Top-level bindings live in
+      stack slots handed out by counting (add_local), and the top-level driver
+      emits exactly one OP_POP per expression that grew no local, so the
+      stranded values shift every later slot. This is the SAME slot-shift
+      corruption already documented on compile_form_require() and
+      compile_form_with_region() in that file, reached a third way.
+    fix: >-
+      compile_form_do() emits OP_POPN for its loop variables at the loop exit,
+      keeping the result on top, exactly as compile_form_let() does; the result
+      expressions are compiled out of tail position when there are locals to
+      pop, because a TAIL_CALL would skip the OP_POPN. The same rewrite removed
+      a second latent hazard: the function used to emit a complete first
+      version of the loop and then "discard" it with `c->code_len = loop_top`,
+      leftover debugging scaffolding that compiled the body and steps TWICE.
+      Rewinding code_len un-emits code and none of the constant-pool, upvalue,
+      closure-PC or global repatch-array side effects the discarded pass had
+      already caused.
+    evidence: >-
+      tests/vm_parity/corpus/61_do_loop_variable_binding.esk (VM-vs-native on
+      the native, vm-src and vm-eskb axes) and
+      tests/differential/corpus/49_do_loop_variable_binding.esk.
+      Revert-validated: with lib/backend/vm_compiler.c restored, the corpus
+      file HANGS on the VM (killed at 25s) and the individual shapes answer 2,
+      00, 2 and 0 where the fixed VM and native both answer 42, 50, 6 and 4.
+    filed_shapes_measured: >-
+      The two shapes PR #437 filed this entry against, carried over from its
+      wording so the union loses no evidence, and re-run on the fixed VM:
+        (display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s) (set! s (+ s ((lambda () i))))))
+        (display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99)))
+      filed as "heap object limit reached" then a fatal error, exit 1, after
+      the first loop had printed its correct answer; correct is 6 then 3, which
+      native prints. Also filed: a let-bound (not immediately invoked) body
+      closure gave "ERROR: calling non-function" whenever any top-level form
+      preceded the loop, and longer sequences hung.
+    caught_by: [pr-437-class-kill, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    notes: >-
+      Filed as LOUD-ERROR by PR #437's class-kill, on the shapes it happened to
+      hit. Re-measurement found the same root cause also produces SILENT wrong
+      values, so the entry was closed on the wider evidence rather than on the
+      loud shapes alone. Had it been closed only against the filed reproducer,
+      the `do`-then-`define` case would still be shipping.
+
+
+  # ───────────────────────── PARITY-RATCHET ─────────────────────────
+
+  - id: PR-01
+    bucket: PARITY-RATCHET
+    status: open
+    title: "ENGINE_PARITY_BASELINE.json excuses 10 divergent programs"
+    count: 10
+    evidence: "tests/vm_parity/ENGINE_PARITY_BASELINE.json; PR #414 body names each"
+    highest_priority: "tests/parser/test_function_shadowing.esk — a user + is ignored by opcode dispatch (VM 7, native 12). Promoted to SW-24."
+    measured: >-
+      All 10 were re-run on both engines at 9f2da2ab. NINE diverge only in output FORMATTING
+      (the VM's newline-per-call behaviour splits lines differently); exactly ONE,
+      test_function_shadowing.esk, is a real VALUE divergence, and that program prints
+      "FAIL: Expected 12" on the VM while the gate stays green. The baseline conflates
+      cosmetic drift with a wrong answer and hides the wrong answer among nine harmless rows.
+    caught_by: [parity-baselines, pr-record-414]
+    missed_by: [icc-correctness-chain, icc-smoke]
+    notes: >-
+      The baseline stores program PATHS only — no operation, no per-engine outputs. Nothing in
+      the repo can reconstruct what diverges without a rebuild and a re-run. PR #413 would
+      ratchet 10 -> 8 but #413 is OPEN, so the cut carries 10.
+
+  - id: PR-02
+    bucket: PARITY-RATCHET
+    status: open
+    title: "SURFACE_BASELINE.tsv excuses 323 names native resolves and the VM does not"
+    count: 323
+    evidence: "tests/vm_parity/SURFACE_BASELINE.tsv"
+    caught_by: [parity-baselines]
+    notes: "All carry ledger status NO-ROW, i.e. absent from PARITY.tsv entirely, so the 956-row parity accounting understates the real delta by about a third."
+
+  - id: PR-03
+    bucket: PARITY-RATCHET
+    status: open
+    title: "arity_parity_baseline.json excuses 331 native-vs-VM divergence keys, 62 of them on correct-arity correct-type calls"
+    count: 331
+    correct_class_count: 62
+    evidence: "tests/escape_matrix/arity_parity_baseline.json"
+    caught_by: [parity-baselines]
+
+  - id: PR-04
+    bucket: PARITY-RATCHET
+    status: open
+    title: "five_way_baseline.json excuses doc/manifest/native/VM/provide disagreements including user-facing names"
+    evidence: "tests/escape_matrix/five_way_baseline.json; native_missing entries include force, region-open, hodge-star, geodesic-distance, tensor-reduce-sum"
+    caught_by: [parity-baselines]
+
+  - id: PR-05
+    bucket: PARITY-RATCHET
+    status: open
+    title: "PARITY.tsv carries 331 gap rows; 38 reproducers sit under tests/vm_parity/found/"
+    evidence: "tests/vm_parity/PARITY.tsv; tests/vm_parity/found/"
+    caught_by: [parity-baselines]
+
+  - id: PR-06
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "46a3069c"
+    closed_by: "branch fix/wasm-macro-batch-and-bignum-exactness (PR #432)"
+    title: "wasm EXCLUSIONS.tsv carries 1 XFAIL and 2 exclusions"
+    evidence: "tests/wasm_diff/EXCLUSIONS.tsv"
+    caught_by: [parity-baselines]
+    notes: >-
+      The XFAIL was SW-13, a silent wrong answer in the shipped browser build. SW-13 is
+      fixed at the root, so the XFAIL row is REMOVED and 16_define_syntax.esk is now fully
+      gated. The two remaining rows are genuine EXCLUSIONS (no filesystem, no file
+      descriptors in the wasm sandbox), not excused defects: this bucket now carries
+      0 XFAIL.
+
+  - id: PR-07
+    bucket: PARITY-RATCHET
+    status: open
+    title: "inexact->exact is an accepted permanent engine divergence: the VM reports a fatal error where native promotes to bignum"
+    evidence: "tests/vm_parity/PARITY.tsv inexact->exact row (added by PR #419, OPEN)"
+    caught_by: [pr-record-419]
+
+  - id: PR-08
+    bucket: PARITY-RATCHET
+    status: open
+    title: "Complex display format differs: native 2+i, VM 2+1i"
+    evidence: "tests/vm_parity/found/complex_display_format.esk (on #419's branch, OPEN)"
+    caught_by: [pr-record-419]
+
+  - id: PR-09
+    bucket: PARITY-RATCHET
+    status: open
+    title: "18 baselined ODR collisions and 57 dead guard tokens ship in the cut"
+    evidence: "icc odr-audit; icc guard-liveness; PR #414 verification table"
+    caught_by: [pr-record-414, icc-odr-audit]
+
+  - id: PR-10
+    bucket: PARITY-RATCHET
+    status: open
+    title: "The engine-parity gate reports PASS while 89.86 percent of the language surface has never been differentially compared"
+    measured: >-
+      scripts/icc_traces/engine_parity_coverage.jsonl at 9f2da2ab reads
+      "113/1114 constructs with differential evidence (10.14%), 10 divergent program(s), 0 new"
+      and its value is PASS. scripts/icc_traces/surface_parity.jsonl reads
+      "2506 probed / 318 divergences / 0 new" and its value is also PASS.
+    evidence: "scripts/icc_traces/engine_parity_coverage.jsonl; scripts/icc_traces/surface_parity.jsonl"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-readiness]
+    notes: >-
+      This is the structural reason the AD and numeric silent-wrong entries escaped. Both
+      probes grade NON-GROWTH ("0 new"), not correctness, so a defect that has been present
+      since before the baseline is permanently invisible and the gate is green anyway.
+      SW-01, SW-02, SW-06 and SW-08 all live in the 1001 constructs (89.86 percent) that
+      have no differential evidence at all. A coverage percentage that low should itself be
+      a criterion: the gate needs a rising floor on constructs-with-evidence, not only a
+      ceiling on new divergences.
+
+  - id: PR-11
+    bucket: PARITY-RATCHET
+    status: open
+    title: "The invariant named for silent wrong answers is an existence check, not a threshold check"
+    measured: >-
+      icc architecture-verify at 9f2da2ab: INV-engine-semantic-parity, kind "exercise",
+      severity critical, incident tag "vm-parity-silent-wrong-answer", grades PASS with the
+      detail "capability 'engine_semantic_parity' exercised within 30d (1 event(s))".
+      The single event it accepted carries the payload "113/1114 constructs with differential
+      evidence (10.14%), 10 divergent program(s), 0 new".
+    evidence: "icc architecture-verify --repo eshkol-v134-release --model .icc/architecture-model.yaml"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      The invariant whose incident name is literally vm-parity-silent-wrong-answer is
+      satisfied by ONE event existing inside a 30-day window, whatever that event says. It
+      would pass identically at 1 percent coverage. An "exercise" invariant proves a probe
+      RAN; it cannot prove the probe found anything, and severity critical on an existence
+      check reads as far stronger assurance than it delivers. Pair every exercise invariant
+      with a threshold on its own payload — this is the same shape as PR-10 and the two
+      should be fixed together.
+
+  # ───────────────────────── DOC-DEBT ─────────────────────────
+
+  - id: DD-01
+    bucket: DOC-DEBT
+    status: open
+    title: "77 doc claims are allowlisted against ICC's doc-typed-claims detector"
+    count: 77
+    evidence: ".icc/doc-claims-allowlist.yaml on branch docs/icc-doc-probe-v134 (PR #416, OPEN)"
+    breakdown: "69 DETECTOR-MISATTRIBUTION, 8 EXEMPT-HISTORICAL; zero describe a runtime defect"
+    caught_by: [pr-record-416]
+    notes: "The allowlist itself is not shipped — #416 is unmerged — so the cut has neither the allowlist nor the doc fixes."
+
+  - id: DD-02
+    bucket: DOC-DEBT
+    status: open
+    title: "91 wrong numeric claims that two prior ICC audit passes flagged were never fixed"
+    count: 91
+    evidence: "PR #416 headline finding; docs/DESIGN.md, docs/ESHKOL_V1_ARCHITECTURE.md, press/ESHKOL_PRESS_INFORMATION_SHEET.md, docs/breakdown/COMPILER_ARCHITECTURE.md"
+    caught_by: [pr-record-416, icc-doc-typed-claims]
+    notes: "Two of the affected files are press copy that ships with the release."
+
+  - id: DD-03
+    bucket: DOC-DEBT
+    status: open
+    title: "KNOWN_ISSUES.md parity counts are stale against the shipped PARITY.tsv"
+    evidence: "docs/KNOWN_ISSUES.md:379 says 951 rows / 578 supported / 329 gap; PARITY.tsv is 956 / 581 / 331"
+    caught_by: [direct-measurement]
+    missed_by: [icc-doc-typed-claims]
+
+  - id: DD-04
+    bucket: DOC-DEBT
+    status: open
+    title: "ESH-0095 is claimed resolved in KNOWN_ISSUES and still carried as an XKNOWN excuse in the AD oracle"
+    evidence: "docs/KNOWN_ISSUES.md:45 vs tests/ad_oracle/README.md XKNOWN table"
+    measured: "(hessian f (tensor 1.0 2.0)) returns #((2 0) (0 2)) correctly at 9f2da2ab — the XKNOWN excuse is stale and should be deleted"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-readiness]
+
+  - id: DD-05
+    bucket: DOC-DEBT
+    status: open
+    title: "PR #417 would re-introduce two now-false known-limitation claims into the docs and four into the public site"
+    evidence: "PR #417 adds 'Quoted pattern-variable queries never match' (fixed by merged #414) and 'Factor-graph free energy is wrong in the browser build only' (#413 shows it is VM-wide, not browser-only), plus four site/src/main.esk strings"
+    caught_by: [pr-record-414, pr-record-416, pr-record-417]
+    notes: "Merge-blocking for #417. Both #414 and #416 flag it in writing; nobody has edited #417's branch."
+
+  - id: DD-06
+    bucket: DOC-DEBT
+    status: open
+    title: "MEMORY_MANAGEMENT.md names a file that does not exist, links to a different one, and carries a line count 3.5x the real total"
+    evidence: "docs/breakdown/MEMORY_MANAGEMENT.md; introduced by merged PR #409, flagged by #416"
+    caught_by: [pr-record-416]
+
+  - id: DD-07
+    bucket: DOC-DEBT
+    status: open
+    title: "The merged doc-example harness has three defects that make it miss the files it was built to check"
+    evidence: "scripts/doc_audit/extract_examples.py EXPECT_RE matches only =>; check_output_blocks.py collect() skips only blank lines between fences; neither runner sets ESHKOL_JIT_CACHE=0. PR #411 is merged."
+    caught_by: [pr-record-416]
+
+  - id: DD-08
+    bucket: DOC-DEBT
+    status: open
+    title: "docs/TEST_COVERAGE.md per-suite counts are the v1.1-era inventory and have drifted"
+    evidence: "PR #417 adds the provenance note; #417 is OPEN"
+    caught_by: [pr-record-417]
+
+  - id: DD-09
+    bucket: DOC-DEBT
+    status: open
+    title: "Runtime limits are documented as controls in three places while being inert"
+    evidence: "See SW-10. The honest status columns exist only on #416's unmerged branch."
+    caught_by: [pr-record-416, direct-measurement]
+
+  - id: DD-10
+    bucket: DOC-DEBT
+    status: open
+    title: "Documented no-ops in shipped surface"
+    items:
+      - "eshkol-run -D NAME[=VALUE] accepted, no macro, no warning (docs/reference/runtime/eshkol-run.md:79)"
+      - "eshkol-run -fPIC accepted as a no-op (docs/reference/runtime/eshkol-run.md:39)"
+      - "provide is advisory; the compiler generates no linkage restriction (docs/breakdown/MODULE_SYSTEM.md:444)"
+      - "manifold gyro-transport ships a first-order approximation with no signal (docs/reference/stdlib/manifold.md:144)"
+    caught_by: [doc-source-crosscheck]
+
+  - id: DD-12
+    bucket: DOC-DEBT
+    status: open
+    title: "13 of the 38 filed vm_parity reproducers are stale and nothing re-verifies them"
+    measured: >-
+      Every file under tests/vm_parity/found/ was re-run on both engines at 9f2da2ab.
+      25 still diverge; 13 now AGREE and print the CORRECT value: exact_division_lost (1/3),
+      expt_bignum_to_float, float_display_1e10 (1e+10), force_returns_promise (3),
+      iota_returns_empty, map_two_lists_eskb_route, modulo_inexact_collapsed_vm,
+      splice_middle_order, tensor_nested_collection_native, tensor_ref_component_oob_native,
+      tensor_set_oob_silent_native, write_does_not_quote, and one further row.
+    evidence: ".scratch/flaw-ledger/found/results.txt"
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, parity-baselines]
+    notes: >-
+      found/ is documented as evidence rather than gate input, so no harness ever re-runs it.
+      A filed reproducer that silently becomes stale is the mirror image of a silent defect:
+      it makes the project look worse than it is and, more dangerously, trains readers to
+      discount the 25 that are still real. Re-running found/ belongs in the parity gate.
+
+  - id: DD-11
+    bucket: DOC-DEBT
+    status: open
+    title: "68 header symbols and 59 shipped .esk exports have no documentation anywhere"
+    evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
+    caught_by: [pr-record-416]

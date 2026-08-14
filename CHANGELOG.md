@@ -463,6 +463,94 @@ and a release gate that finally reads CTest results as oracle evidence.
 
 ### Fixed
 
+- **Every documented resource-limit environment variable was accepted and then
+  enforced by nothing.** `ESHKOL_MAX_HEAP`, `ESHKOL_TIMEOUT_MS`,
+  `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS`, `ESHKOL_MAX_STRING_LEN`,
+  `ESHKOL_ENFORCE_LIMITS` and `ESHKOL_LIMIT_WARNINGS` were parsed into the
+  active configuration by `eshkol_init_limits_from_env()`, and the functions
+  that check them — `eshkol_track_allocation`, `eshkol_check_string_length`,
+  `eshkol_check_tensor_size`, `eshkol_is_timed_out`, `eshkol_stack_push` — were
+  written, compiled and never called from anywhere outside their own unit
+  tests. `ESHKOL_MAX_HEAP=1` ran a 20-million-iteration allocating loop to
+  completion and exited 0; `ESHKOL_TIMEOUT_MS=500` printed `ERROR: Execution
+  timeout: 500ms limit exceeded` and then *also* ran to completion and exited
+  0, because the watchdog thread could only request an interrupt and nothing
+  polled for one. A consumer who set a heap ceiling to contain untrusted code
+  got no containment and no warning.
+
+  Each ceiling is now applied at the one place every path to it converges:
+  `ESHKOL_MAX_HEAP` in `create_arena_block()`, the arena's sole OS-request
+  site, so the check is amortized over a whole block and the bump-pointer fast
+  path is untouched; `ESHKOL_MAX_STRING_LEN` in
+  `arena_allocate_string_with_header()`, which also closes a silent truncation
+  of the `uint32_t` header size past 4 GiB; `ESHKOL_MAX_TENSOR_ELEMS` in
+  `arena_allocate_tensor_full()` and, because native codegen assembles tensors
+  from three separate allocations rather than calling it, at the point codegen
+  computes the element count; `ESHKOL_TIMEOUT_MS` as a cooperative poll emitted
+  on every tail-call loop back-edge of hosted native codegen (the profiles that
+  link no hosted watchdog — freestanding objects and `--wasm` modules — have
+  nothing that could request an interrupt, so the poll is not emitted there)
+  and run at every guarded function entry.
+  `ESHKOL_MAX_STACK` now drives the recursion-depth guard that codegen already
+  emitted, which had been comparing against a hard-coded 100000 with no
+  connection to the configurable limit the variable fed — two mechanisms with
+  the same default and no wire between them, now one.
+
+  Each ceiling is **opt-in**: it binds a run only when that run sets its
+  variable (or sets the matching `ESHKOL_LIMIT_ACTIVE_*` bit before
+  `eshkol_set_limits()`). The documented defaults are the values a limit takes
+  when you turn it on, not ceilings every program is silently held to —
+  `tests/features/blc_test.esk` allocates past the 1 GiB heap default, and the
+  VM's computed-goto dispatch never had an instruction guard at all, so
+  applying every default to every run would impose new ceilings rather than
+  enforce documented ones. Whether the defaults should also bind an
+  unconfigured run is a release decision about defaults, recorded in
+  `docs/reference/runtime/environment-variables.md`.
+
+  A violation is loud and terminal by default: pending output is flushed, one
+  `eshkol: fatal: …` line names the limit, the ceiling and the variable that
+  set it, and the process exits with a status specific to that limit — 120
+  heap, 121 stack, 122 tensor elements, 123 string length, 124 execution
+  timeout (matching GNU coreutils `timeout(1)` and this project's existing
+  `run-command` convention), 125 VM instructions. `ESHKOL_ENFORCE_LIMITS=false`
+  makes them advisory: the breach is recorded, warned about, and the program
+  runs on. Staying under a ceiling costs nothing measurable and changes no
+  computed value — no check reads or writes program data.
+
+- **The bytecode VM's documented runaway-instruction guard did not exist on the
+  path that actually runs.** `ESHKOL_VM_MAX_INSN` is documented with a default
+  of 10,000,000, but `vm_run()`'s computed-goto dispatch — the path every
+  GCC/Clang build takes — had no instruction counter at all, while the MSVC
+  `switch` fallback capped at a hard-coded 10,000,000 with no environment
+  override. One interpreter, two dispatch implementations, two different
+  answers to "has this program run away". Both now share one counter and one
+  configurable ceiling, checked once per 4096 instructions so the per-opcode
+  cost is a single decrement and branch. The variable is parsed alongside its
+  six siblings in `eshkol_init_limits_from_env()` and reaches the VM through
+  `eshkol_get_limits()`, because the VM's sources are freestanding-safe and may
+  not read the environment themselves.
+
+- **`(the <type> expr)` never rejected an ascription, so a false one was
+  invisible.** `(display (the string (+ 1 2)))` printed `3` and exited 0. The
+  checker synthesized the wrapped expression, discarded the type it derived,
+  and adopted the ascribed type unconditionally — so an ascription no value can
+  satisfy was indistinguishable from one every value satisfies, and "checked
+  ascription" checked nothing. The two types are now compared, and a *provable*
+  contradiction is reported through the same enforcement point as every other
+  type issue: a warning under gradual typing, fatal under `--strict-types`.
+
+  The form's contract is otherwise unchanged, and deliberately so. It remains a
+  trusted narrowing boundary — narrowing from a dynamic value is the reason it
+  exists and is never questioned — and widening, unresolved types, and
+  ascriptions that move around the numeric tower (whose members are siblings
+  under `number` rather than a chain, so `(the real 1)` has no subtyping
+  relation in either direction) are all still accepted. The diagnostic is
+  compile-time only: the emitted IR is still byte-identical to the wrapped
+  expression, there is still no runtime tag check and no cost, and a VM program
+  that omits the ascription still computes the identical result, so
+  `COMPLETE_LANGUAGE_SPECIFICATION.md` § 3.6.6's guarantee and the
+  `native-only-justified` VM-parity row both continue to hold.
+
 - **A relative `(load "sib.esk")` resolved to a different file depending on
   which execution engine ran the program.** `eshkol-run -r prog.esk` uses the
   persistent JIT run cache for a single input with no `-d`/dump flags and no

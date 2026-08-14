@@ -1047,7 +1047,9 @@ Eshkol uses **arena-based memory management** for deterministic, low-latency per
 **Benefits:**
 - **No GC pauses** - Critical for real-time applications
 - **Cache-friendly** - Sequential allocation
-- **Deterministic cleanup** - Memory freed when scope exits
+- **Deterministic cleanup** - Memory freed when scope exits (native engine;
+  the bytecode VM does not reclaim yet — see
+  [memory model](reference/runtime/memory-model.md#which-engine-reclaims))
 - **Fast allocation** - O(1) bump-pointer allocation
 
 ### Tagged Value System
@@ -1401,8 +1403,17 @@ mode accepts idiomatic dynamic-but-validated code without escape hatches:
   byte-identical to `expr` alone (no runtime tag check, no cost), so `(the <type>
   expr)` and `expr` compute exactly the same value.
 
+  Trusted is not unexamined. The checker still derives the type of `expr`, and
+  if it is **provably disjoint** from `<type>` — no value inhabits both — it
+  reports the ascription instead of adopting it: a warning under gradual
+  typing, fatal under `--strict-types`, and nothing extra in the emitted code
+  either way. Narrowing, widening, and moving between members of the numeric
+  tower are all accepted.
+
   ```scheme
   (the number (car mixed-list))   ; tell the checker this element is a number
+  (the real 1)                    ; fine — the numeric tower is flat
+  (the string (+ 1 2))            ; reported: no value is both Int64 and String
   ```
 
 - **Predicate-guarded narrowing.** Inside a branch guarded by one of eight type

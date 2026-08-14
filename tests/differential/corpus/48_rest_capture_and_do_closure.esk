@@ -1,0 +1,93 @@
+;; SW-33 / LE-09 — capture of a REST parameter and of a `do` loop variable.
+;;
+;; SW-33: assignment conversion (ESH-0074) boxes a set!-mutated parameter into
+;; an alloca so set! has a storage location and every closure capturing it
+;; shares ONE cell. Both boxing loops walked only the FIXED parameters, so a
+;; variadic procedure's REST parameter stayed a by-value LLVM Argument: the
+;; closure copied the list VALUE into its environment and the inner set!
+;; mutated a private copy discarded on return. Silently, exit 0.
+;;
+;; LE-09: codegenDo cached the stack alloca it allocated for each loop
+;; variable and wrote step results there, while every read went through the
+;; symbol table — which the closure-capture machinery rebinds to fresh arena
+;; storage mid-body. The step then read the arena cell and wrote the alloca
+;; the loop test had already been compiled against, so the test never became
+;; true: an infinite loop allocating one closure per iteration until the arena
+;; exhausted memory (SIGKILL, exit 137). Under -O0/-O2 the same rebinding also
+;; produced an arena_allocate that did not dominate its uses, i.e. IR that
+;; failed LLVM verification outright.
+;;
+;; Both are native-side, so this file exercises the four native axes.
+;; Numeric and list output only.
+
+;; ── mutated + captured rest parameter ─────────────────────────────────────
+(define (rest-only . xs) ((lambda () (set! xs (cons 99 xs)))) (car xs))
+(display (rest-only 1 2 3)) (newline)              ; 99
+
+(define (rest-after-fixed a b . xs) ((lambda () (set! xs (cons 99 xs)))) (list a b (car xs)))
+(display (rest-after-fixed 7 8 1 2)) (newline)     ; (7 8 99)
+
+(define (rest-depth-3 . xs)
+  ((lambda () ((lambda () ((lambda () (set! xs (cons 77 xs))))))))
+  (car xs))
+(display (rest-depth-3 1)) (newline)               ; 77
+
+(define (rest-stored . xs)
+  (define bump (lambda () (set! xs (cons 5 xs))))
+  (bump) (bump)
+  (length xs))
+(display (rest-stored 1 2)) (newline)              ; 4
+
+(define (rest-escape . xs) (lambda () (set! xs (cons 1 xs)) (length xs)))
+(define counter (rest-escape 9))
+(display (counter)) (newline)                      ; 2
+(display (counter)) (newline)                      ; 3
+(define other (rest-escape 9))
+(display (other)) (newline)                        ; 2 — separate cell
+
+(define rest-lambda (lambda xs ((lambda () (set! xs (cons 42 xs)))) (car xs)))
+(display (rest-lambda 1 2)) (newline)              ; 42
+
+(define (rest-not-captured . xs) (set! xs (cons 3 xs)) (car xs))
+(display (rest-not-captured 1)) (newline)          ; 3
+
+(define (rest-not-mutated . xs) ((lambda () (car xs))))
+(display (rest-not-mutated 4 5)) (newline)         ; 4
+
+;; ── closure over a `do` loop variable ─────────────────────────────────────
+(display (do ((i 0 (+ i 1)) (acc 0)) ((= i 3) acc)
+             ((lambda () (set! acc (+ acc i))))))
+(newline)                                          ; 3
+
+(display (do ((i 0 (+ i 1)) (s 0)) ((= i 4) s)
+             (set! s (+ s ((lambda () i))))))
+(newline)                                          ; 6 — read-only capture
+
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+             (let ((f (lambda () (set! a (+ a i))))) (f))))
+(newline)                                          ; 3 — let-bound closure
+
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a)
+             (let loop ((k 0))
+               (if (< k 2) (begin (set! a (+ a i)) (loop (+ k 1))) a))))
+(newline)                                          ; 6 — named let captures
+
+(display (do ((i 0 (+ i 1)) (t 0)) ((= i 3) t)
+             (do ((j 0 (+ j 1))) ((= j 2))
+                 ((lambda () (set! t (+ t 1)))))))
+(newline)                                          ; 6 — nested do
+
+(define (do-in-proc n)
+  (do ((i 0 (+ i 1)) (a 0)) ((= i n) a)
+      ((lambda () (set! a (+ a 1))))))
+(display (do-in-proc 5)) (newline)                 ; 5
+
+(define stored
+  (do ((i 0 (+ i 1)) (acc '())) ((= i 3) acc)
+      (set! acc (cons (lambda () i) acc))))
+(display (length stored)) (newline)                ; 3
+(display (map (lambda (f) (f)) stored)) (newline)  ; (3 3 3)
+
+;; controls: no closure, and a shadowing lambda parameter
+(display (do ((i 0 (+ i 1)) (a 0)) ((= i 3) a) (set! a (+ a i)))) (newline)  ; 3
+(display (do ((i 0 (+ i 1))) ((= i 3) i) ((lambda (i) i) 99))) (newline)     ; 3

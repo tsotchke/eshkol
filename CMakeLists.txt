@@ -2081,6 +2081,7 @@ endif()
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
+  lib/core/complex_math.cpp
   lib/core/rational.cpp
   lib/core/i128_runtime.cpp
   lib/core/runtime.cpp
@@ -3072,6 +3073,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # ESH-0070 class: higher-order builtins must respect shadowing bindings.
+    # Static procedure-operand resolution (resolveLambdaFunction, map's
+    # compile-time closure detection, remove's predicate lookup) used to
+    # consult function_table / unscoped <name>_func entries without checking
+    # whether the name is rebound in the current function, so
+    # `(define (apply-map fn lst) (map fn lst))` silently called a same-named
+    # top-level fn. Gated on JIT + AOT (the wrong substitution was
+    # compile-time, so both native lanes must agree) and, separately below,
+    # on the VM whose manifestation was outermost-first upvalue capture.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk")
+        add_test(
+            NAME higher_order_shadowing_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(higher_order_shadowing_jit_smoke PROPERTIES
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME higher_order_shadowing_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/higher_order_shadowing_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/higher_order_shadowing_aot'"
+        )
+        set_tests_properties(higher_order_shadowing_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    endif()
+    # SW-24 (same ESH-0070 class, isolated shape): a user rebinding of an
+    # arithmetic builtin must shadow the builtin dispatch. The VM lane for
+    # this file is registered next to the standalone VM target.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk")
+        add_test(
+            NAME operator_rebinding_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(operator_rebinding_jit_smoke PROPERTIES
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME operator_rebinding_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/operator_rebinding_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/operator_rebinding_aot'"
+        )
+        set_tests_properties(operator_rebinding_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     add_test(
         NAME autodiff_tensor_reductions_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -3103,6 +3160,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: GUW multivariate"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Task #114: AD capture reconstruction must resolve free variables with the
+    # same local-then-global scope rule codegenLambda used, so an enclosing
+    # function's parameter is never replaced by a same-named top-level global.
+    # Run under BOTH engines: the run-cache-ON `-r` route (which compiles AOT in
+    # a child process, where every top-level global is pre-registered before any
+    # body is emitted) and the in-process JIT route. The defect was AOT-fatal
+    # (SIGSEGV) and JIT-silent (wrong derivative), so one route alone is not a
+    # gate — cf. PR #407's rule that cached and uncached must be identical.
+    add_test(
+        NAME ad_capture_global_shadow_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_capture_global_shadow_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_capture_global_shadow_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: ad_capture_global_shadow"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_capture_global_shadow_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_capture_global_shadow_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_capture_global_shadow_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ad_capture_global_shadow"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME sparse_tensors_runtime_smoke
@@ -3168,6 +3256,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
             FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
+    # ESH-0402 (ledger SW-03 + SW-04): the two forward carriers — the 8-jet
+    # (`derivative`) and the heap Taylor tower (`derivative-n`/`taylor`) — did
+    # not compose. Every crossing between them answered a SILENT ZERO, in both
+    # directions and through a first-class derivative closure, while the
+    # jet-over-jet spelling of the same mathematics was correct. The matrix is
+    # asserted against EXACT analytic values (never a finite difference) so a
+    # regression to zero cannot hide in a tolerance. Both lanes.
+    add_test(
+        NAME ad_carrier_nesting_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_carrier_nesting_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_carrier_nesting_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_carrier_nesting_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_carrier_nesting_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_carrier_nesting_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_carrier_nesting_aot'"
+    )
+    set_tests_properties(ad_carrier_nesting_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
+    # again with an enclosing REVERSE pass is not supported — the runtime-closure
+    # gradient reads its point components as raw doubles, so the outer pass's
+    # tape-node components were bitcast into a subnormal. It answered `#((0))`
+    # where `(hessian f point)` answers `#((12))`, and crashed for other shapes.
+    # It now RAISES. This pins the raise so a regression to the silent zero (or
+    # to the memory-unsafe read) fails instead of shipping a wrong derivative.
+    add_test(
+        NAME ad_curried_gradient_nested_loud_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_curried_gradient_nested_loud_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_curried_gradient_nested_loud_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot'"
+    )
+    set_tests_properties(ad_curried_gradient_nested_loud_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
@@ -3535,6 +3681,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # `hessian` over a lambda that CAPTURES free variables. A capturing lambda
+    # is lowered with one extra pointer parameter per capture; the scalar
+    # Hessian arm called it with the seeded jet ALONE, so
+    # `(define (hwrap q) (hessian (lambda (t) (* q t t t)) 2.0))` failed LLVM
+    # module verification ("Incorrect number of arguments passed to called
+    # function") on every route. BOTH lanes: the failure was a verifier abort
+    # in the JIT and a compile failure in AOT, and `laplacian` delegates to
+    # `hessian`, so both operators regress together.
+    add_test(
+        NAME hessian_capture_arity_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hessian_capture_arity_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(hessian_capture_arity_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME hessian_capture_arity_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_arity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hessian_capture_arity_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_arity_aot'"
+    )
+    set_tests_properties(hessian_capture_arity_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -3820,6 +3995,31 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resourc
     add_test(NAME resource_limits_test COMMAND resource_limits_test)
 endif()
 
+# SW-10 end-to-end gate: the documented resource-limit environment variables
+# actually bound a running program. resource_limits_test above covers the
+# configuration layer in-process (parsing, tracking, the check predicates);
+# this one drives real eshkol-run / bytecode-VM processes and asserts the
+# documented exit status, the diagnostic, and — just as important — that a
+# ceiling the program never reaches leaves it byte-for-byte unaffected.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh")
+    if(TARGET eshkol-vm-standalone-test)
+        set(ESHKOL_LIMITS_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_LIMITS_GATE_VM "none")
+    endif()
+    add_test(NAME resource_limits_enforcement_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/resource_limits_enforcement_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LIMITS_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/resource-limits-gate")
+    set_tests_properties(resource_limits_enforcement_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: resource limits enforced"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)
@@ -3989,6 +4189,28 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/frec
     add_test(NAME frechet_mean_backward_gradcheck
              COMMAND frechet_mean_backward_gradcheck_test)
     set_tests_properties(frechet_mean_backward_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "0 failed")
+endif()
+
+# SW-12: direct differential check between the two independent tensor-backward
+# implementations (lib/backend/tensor_backward.cpp "native" raw-buffer kernels
+# vs lib/bridge/tensor_backward.cpp "bridge" node-based rules) for matmul,
+# layernorm, transpose, sum and attention on identical inputs, plus central
+# finite differences as the tie-breaking oracle. Embedding's bridge-vs-native
+# comparison lives in tensor_embedding_backward_gradcheck_test.cpp above.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")
+    add_executable(tensor_backward_dual_impl_gradcheck_test
+        tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp)
+    target_compile_features(tensor_backward_dual_impl_gradcheck_test PRIVATE cxx_std_17)
+    target_include_directories(tensor_backward_dual_impl_gradcheck_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(tensor_backward_dual_impl_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(tensor_backward_dual_impl_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(tensor_backward_dual_impl_gradcheck_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME tensor_backward_dual_impl_gradcheck
+             COMMAND tensor_backward_dual_impl_gradcheck_test)
+    set_tests_properties(tensor_backward_dual_impl_gradcheck PROPERTIES
         PASS_REGULAR_EXPRESSION "0 failed")
 endif()
 
@@ -4450,6 +4672,101 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # LE-01, VM side.  The VM reaches builtins through a native dispatch table,
+    # so a builtin is a value there by construction and this defect class does
+    # not exist on this engine.  Pin that, so the property is a tested fact
+    # rather than an assumption about an implementation that may change.
+    add_test(
+        NAME first_class_builtins_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_builtins_vm_test.esk"
+    )
+    set_tests_properties(first_class_builtins_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # SW-38/SW-39: VM builtin families must retain the same value semantics
+    # when passed to a higher-order procedure or stored in a binding.
+    add_test(
+        NAME vm_first_class_builtin_families_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/vm_first_class_builtin_families_test.esk"
+    )
+    set_tests_properties(vm_first_class_builtin_families_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: VM first-class builtin families"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
+    # SW-27, VM side. The VM's closures carry their rest-arg shape natively, so
+    # this defect class does not exist on this engine either. Pinned for the
+    # same reason as the builtins case above.
+    add_test(
+        NAME first_class_variadics_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_variadics_vm_test.esk"
+    )
+    set_tests_properties(first_class_variadics_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics on the VM — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    # ESH-0070 class on the VM engine: the upvalue search in vm_compiler.c
+    # walked the enclosing-scope chain OUTERMOST first, so a nested lambda
+    # inside a function whose parameter shadowed a same-named top-level
+    # define captured the top-level binding (top-level defines are
+    # root-chunk slots). Companion to higher_order_shadowing_{jit,aot}_smoke
+    # on the native lanes; the file is held to the VM's verified subset.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/higher_order_shadowing_vm_test.esk")
+        add_test(
+            NAME higher_order_shadowing_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/higher_order_shadowing_vm_test.esk"
+        )
+        set_tests_properties(higher_order_shadowing_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: higher-order shadowing \\(vm\\)"
+                FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|undefined variable|fatal runtime error")
+    
+    # SW-34: the ENTIRE predicate family first-class, on the VM. `complex?`
+    # was a loud compile-time failure natively while the VM bound it fine, so
+    # this file runs unchanged on both engines and the two gates below and
+    # here are the same assertions on two implementations.
+    add_test(
+        NAME first_class_predicates_vm_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/first_class_predicates_test.esk"
+    )
+    set_tests_properties(first_class_predicates_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+endif()
+    # SW-24 isolated shape on the VM engine — the engine the defect lived on
+    # ((+ 3 4) with a rebound + emitted OP_ADD and printed 7).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/operator_rebinding_test.esk")
+        add_test(
+            NAME operator_rebinding_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/codegen/operator_rebinding_test.esk"
+        )
+        set_tests_properties(operator_rebinding_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: operator rebinding shadows builtin dispatch"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 endif()
 
 # R7RS-small 5.6.1: a `define-library` in the compilation unit being compiled
@@ -4481,6 +4798,270 @@ if(ESHKOL_BUILD_TESTS AND
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: r7rs define-library same-unit import"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# LE-01: builtins as FIRST-CLASS VALUES.  Gated on every native execution axis,
+# because this defect presented DIFFERENTLY on each one: `(sort xs string<?)`
+# was "Undefined variable: string<?" + exit 1 under the run cache, SIGSEGV
+# (exit 139) with the cache off, and exit 125 on both AOT levels.  One axis
+# going green proves nothing about the others, so all four are gated here and
+# the same program is in the differential corpus (37_sort.esk) where the axes
+# are compared against each other.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/first_class_builtins_test.esk")
+    add_test(
+        NAME first_class_builtins_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_builtins_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # Cache off: the axis that answered SIGSEGV rather than a diagnostic.
+    add_test(
+        NAME first_class_builtins_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_builtins_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_builtins_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o0' tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o0'"
+    )
+    set_tests_properties(first_class_builtins_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_builtins_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o2' tests/integration/first_class_builtins_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtins_aot_o2'"
+    )
+    set_tests_properties(first_class_builtins_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtins — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # The refusal path itself.  A program the compiler has ALREADY diagnosed
+    # must exit 1 with the diagnostic on every axis — the in-process JIT used
+    # to destroy the rejected module's LLVMContext before the Module, so
+    # `llvm::Module::~Module` called `removeModule` through freed memory and
+    # the compiler crashed while correctly rejecting the program.  That is why
+    # a plain "Undefined variable" read as exit 139 and looked like a
+    # memory-safety defect.  The fixture is expected to FAIL to compile; the
+    # assertion is that it fails with status 1 rather than a signal.
+    add_test(
+        NAME undefined_variable_refusal_is_clean_nocache
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/undefined_variable_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(undefined_variable_refusal_is_clean_nocache
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    add_test(
+        NAME undefined_variable_refusal_is_clean_cached
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/undefined_variable_refusal_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' ; status=$? ; echo \"refusal-exit-status=$status\" ; test $status -eq 1"
+    )
+    set_tests_properties(undefined_variable_refusal_is_clean_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "refusal-exit-status=1"
+            FAIL_REGULAR_EXPRESSION "fatal signal|SIGSEGV")
+
+    # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
+    # both AOT levels because the failure mode differed by axis and by
+    # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised
+    # error (`(h make-list 3 7)` -> "cdr: argument is not a pair"), and a
+    # SIGSEGV under AOT (`(h string-copy "abc")`). A silent wrong answer is the
+    # reason this one is gated on every axis rather than trusted to crash
+    # somewhere.
+    add_test(
+        NAME first_class_variadics_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_variadics_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_variadics_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o0' tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o0'"
+    )
+    set_tests_properties(first_class_variadics_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_variadics_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o2' tests/integration/first_class_variadics_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_variadics_aot_o2'"
+    )
+    set_tests_properties(first_class_variadics_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class variadics — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # SW-33 / LE-09: capture of a REST parameter and of a `do` loop variable.
+    # Gated on all four native axes because the two defects failed differently
+    # and at different times: SW-33 was a SILENT wrong answer on every axis
+    # (`(f 1 2 3)` -> 1 instead of 99, exit 0), while LE-09 was an infinite loop
+    # that exhausted the arena (SIGKILL, exit 137) under the JIT and, for the
+    # let-bound-closure shape, IR that failed LLVM verification with
+    # "Instruction does not dominate all uses" under AOT. A TIMEOUT alone would
+    # not catch the silent half and the PASS regex alone would not catch the
+    # runaway, so both are set.
+    add_test(
+        NAME rest_capture_and_do_closure_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_nocache_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_nocache_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o0' tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o0'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME rest_capture_and_do_closure_aot_o2_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o2' tests/integration/rest_capture_and_do_closure_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rest_capture_and_do_closure_aot_o2'"
+    )
+    set_tests_properties(rest_capture_and_do_closure_aot_o2_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rest capture and do closure - 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|not mutable|LLVM module verification failed|fatal signal")
+    # SW-34: the ENTIRE R7RS predicate family as first-class values, on both
+    # native axes. `complex?` was a LOUD compile-time "Undefined variable" the
+    # moment the bare name was read as a value, while call position answered
+    # correctly. The file also exercises both value-position ROUTES — a user
+    # higher-order procedure (codegenVariable) and `map`
+    # (resolveLambdaFunction) — because those are separate codegen sites that
+    # have disagreed before.
+    add_test(
+        NAME first_class_predicates_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_predicates_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_predicates_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_predicates_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_predicates_aot' tests/integration/first_class_predicates_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_predicates_aot'"
+    )
+    set_tests_properties(first_class_predicates_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class predicates — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # SW-35: the exactness-aware rounding builtins reached as VALUES through
+    # BOTH routes. The whole-tower probe is the one that showed heap addresses
+    # where numbers belonged.
+    add_test(
+        NAME first_class_rounding_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/integration/first_class_rounding_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(first_class_rounding_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class rounding — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME first_class_rounding_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O2 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_rounding_aot' tests/integration/first_class_rounding_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_rounding_aot'"
+    )
+    set_tests_properties(first_class_rounding_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class rounding — 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+
+    # THE VALUE-POSITION AXIS itself, as a ctest lane.
+    #
+    # The four gates above pin four specific families. This one pins the
+    # PROPERTY over the whole builtin table the manifest can type: no builtin
+    # may answer differently as a value than it does in call position. It is
+    # the gate that makes the next SW-27/SW-31/SW-34/SW-35 fail here on the
+    # day it is introduced instead of being found by hand months later.
+    add_test(
+        NAME value_position_axis_sweep
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && BUILD_DIR='${CMAKE_CURRENT_BINARY_DIR}' python3 scripts/run_value_position_sweep.py --quiet"
+    )
+    set_tests_properties(value_position_axis_sweep
+        PROPERTIES
+            TIMEOUT 1800
+            PASS_REGULAR_EXPRESSION "value-position sweep: OK"
+            FAIL_REGULAR_EXPRESSION "value-position discrepancy")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/test_vm_c_api.cpp")
@@ -4756,7 +5337,10 @@ if(ESHKOL_BUILD_TESTS AND
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
     set_tests_properties(qllm_bridge_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 7 passed, 0 failed"
+        # 5 pipeline gradchecks + attention + causal attention + conversion
+        # + lifecycle. The count is pinned deliberately: "0 failed" would stay
+        # green if a check silently stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
     )
 endif()
 

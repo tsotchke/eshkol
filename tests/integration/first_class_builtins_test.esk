@@ -1,0 +1,177 @@
+;;; first_class_builtins_test.esk
+;;;
+;;; LE-01 class-kill test: a builtin used as a FIRST-CLASS VALUE must behave
+;;; exactly like the same builtin in call position.
+;;;
+;;; Before the fix, most of Eshkol's builtin surface was call-position-only:
+;;; `codegenCall` lowered the operation inline from the head NAME, so the bare
+;;; name denoted nothing. Referencing one produced either
+;;;   "Undefined variable: string<?"  — for a program with no undefined
+;;;                                     variable in it, e.g. (sort xs string<?)
+;;; or, when the name happened to sit in the codegen function table under a
+;;; foreign ABI, a raw function pointer the closure dispatcher then called with
+;;; the wrong calling convention: SIGSEGV at 0x0, or a silent wrong answer.
+;;;
+;;; Every name below is passed THROUGH a higher-order function, which is the
+;;; only way to force the value representation — writing (string<? a b) here
+;;; would test the call-site lowering that was never broken.
+;;;
+;;; This file is written in the core-Scheme subset so it runs on BOTH engines:
+;;; the native compiler (JIT and AOT) and the bytecode VM.
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; The higher-order call sites. `f` is a parameter, so its value must be a
+;; real callable — there is no name for the codegen to special-case.
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+
+;; ---------------------------------------------------------------------
+;; The names named in the LE-01 ledger entry.
+;; ---------------------------------------------------------------------
+(check "string<?"      (eq? (h2 string<? "apple" "banana") #t))
+(check "string<? false" (eq? (h2 string<? "banana" "apple") #f))
+(check "string>?"      (eq? (h2 string>? "banana" "apple") #t))
+(check "string=?"      (eq? (h2 string=? "abc" "abc") #t))
+(check "char<?"        (eq? (h2 char<? #\a #\b) #t))
+(check "char=?"        (eq? (h2 char=? #\a #\a) #t))
+(check "string-append" (string=? (h2 string-append "ab" "cd") "abcd"))
+(check "vector-ref"    (= (h2 vector-ref (vector 7 8 9) 1) 8))
+(check "car"           (= (h1 car (list 1 2 3)) 1))
+(check "expt"          (= (h2 expt 2 10) 1024))
+(check "min"           (= (h2 min 3 5) 3))
+(check "max"           (= (h2 max 3 5) 5))
+
+;; The three that already worked; they must keep working.
+(check "+"             (= (h2 + 3 5) 8))
+(check "<"             (eq? (h2 < 3 5) #t))
+(check "eq?"           (eq? (h2 eq? (quote a) (quote a)) #t))
+
+;; ---------------------------------------------------------------------
+;; Representative sweep of the rest of the builtin table.
+;; ---------------------------------------------------------------------
+
+;; Strings
+(check "string<=?"      (eq? (h2 string<=? "abc" "abc") #t))
+(check "string>=?"      (eq? (h2 string>=? "abc" "abc") #t))
+(check "string-length"  (= (h1 string-length "abcd") 4))
+(check "string-ref"     (eq? (h2 string-ref "abc" 1) #\b))
+(check "substring"      (string=? (h3 substring "abcdef" 1 3) "bc"))
+;; NOT tested here: `string-copy` and `append`. Neither is a call-position-only
+;; builtin — both are REST-ARG stdlib procedures (lib/core/strings.esk,
+;; lib/core/list/transform.esk), and both are ALSO broken as values today:
+;; `(h1 string-copy "abc")` SIGSEGVs under AOT and `(h2 append '(1) '(2))`
+;; answers `1`. A rest-arg procedure referenced as a value loses its variadic
+;; flag. That is a different defect in a different lowering path; it is
+;; reported, not silently absorbed into this test's scope.
+(check "number->string" (string=? (h1 number->string 42) "42"))
+(check "string->number" (= (h1 string->number "42") 42))
+(check "symbol->string" (string=? (h1 symbol->string (quote abc)) "abc"))
+(check "string->symbol" (eq? (h1 string->symbol "abc") (quote abc)))
+(check "string-upcase"  (string=? (h1 string-upcase "ab") "AB"))
+(check "string-downcase" (string=? (h1 string-downcase "AB") "ab"))
+
+;; Characters
+(check "char>?"          (eq? (h2 char>? #\b #\a) #t))
+(check "char<=?"         (eq? (h2 char<=? #\a #\a) #t))
+(check "char>=?"         (eq? (h2 char>=? #\a #\a) #t))
+(check "char->integer"   (= (h1 char->integer #\A) 65))
+(check "integer->char"   (eq? (h1 integer->char 65) #\A))
+(check "char-upcase"     (eq? (h1 char-upcase #\a) #\A))
+(check "char-downcase"   (eq? (h1 char-downcase #\A) #\a))
+(check "char-alphabetic?" (eq? (h1 char-alphabetic? #\a) #t))
+(check "char-numeric?"   (eq? (h1 char-numeric? #\5) #t))
+(check "char-whitespace?" (eq? (h1 char-whitespace? #\a) #f))
+
+;; Vectors
+(check "vector-length"  (= (h1 vector-length (vector 1 2)) 2))
+(check "vector->list"   (equal? (h1 vector->list (vector 1 2)) (list 1 2)))
+(check "list->vector"   (equal? (h1 list->vector (list 1 2)) (vector 1 2)))
+
+(define mutable-vector (vector 1 2))
+(h3 vector-set! mutable-vector 0 9)
+(check "vector-set!"    (= (vector-ref mutable-vector 0) 9))
+
+(define filled-vector (vector 1 2))
+(h2 vector-fill! filled-vector 7)
+(check "vector-fill!"   (= (vector-ref filled-vector 1) 7))
+
+;; Numerics
+(check "modulo"         (= (h2 modulo 7 3) 1))
+(check "quotient"       (= (h2 quotient 7 3) 2))
+(check "remainder"      (= (h2 remainder 7 3) 1))
+(check "gcd"            (= (h2 gcd 12 18) 6))
+(check "lcm"            (= (h2 lcm 4 6) 12))
+(check "square"         (= (h1 square 7) 49))
+(check "abs"            (= (h1 abs -3) 3))
+(check "sqrt"           (= (h1 sqrt 9.0) 3.0))
+
+;; Booleans, symbols, predicates
+(check "not"            (eq? (h1 not #f) #t))
+(check "boolean=?"      (eq? (h2 boolean=? #t #t) #t))
+(check "symbol=?"       (eq? (h2 symbol=? (quote a) (quote a)) #t))
+(check "number?"        (eq? (h1 number? 1) #t))
+(check "string?"        (eq? (h1 string? "a") #t))
+(check "symbol?"        (eq? (h1 symbol? (quote a)) #t))
+(check "vector?"        (eq? (h1 vector? (vector 1)) #t))
+(check "boolean?"       (eq? (h1 boolean? #t) #t))
+(check "char?"          (eq? (h1 char? #\a) #t))
+(check "procedure?"     (eq? (h1 procedure? car) #t))
+(check "even?"          (eq? (h1 even? 4) #t))
+(check "zero?"          (eq? (h1 zero? 0) #t))
+(check "null?"          (eq? (h1 null? (quote ())) #t))
+(check "pair?"          (eq? (h1 pair? (list 1)) #t))
+
+;; Lists
+(check "cdr"            (equal? (h1 cdr (list 1 2 3)) (list 2 3)))
+(check "cons"           (equal? (h2 cons 1 (list 2)) (list 1 2)))
+(check "length"         (= (h1 length (list 1 2 3)) 3))
+(check "reverse"        (equal? (h1 reverse (list 1 2)) (list 2 1)))
+(check "list-ref"       (= (h2 list-ref (list 1 2 3) 1) 2))
+(check "list-tail"      (equal? (h2 list-tail (list 1 2 3) 1) (list 2 3)))
+
+;; ---------------------------------------------------------------------
+;; The driving reproducer: (sort lst string<?) — the corpus program that
+;; held v1.3.4 readiness at 77.
+;; ---------------------------------------------------------------------
+(check "sort with string<?"
+       (equal? (sort (list "banana" "apple" "cherry") string<?)
+               (list "apple" "banana" "cherry")))
+(check "sort with <"
+       (equal? (sort (list 3 1 2) <) (list 1 2 3)))
+(check "sort with >"
+       (equal? (sort (list 1 3 2) >) (list 3 2 1)))
+
+;; A first-class builtin must also survive being STORED and RETURNED, not
+;; only passed: those are the other two halves of "first-class".
+(define stored-comparator string<?)
+(check "stored in a variable"
+       (eq? (h2 stored-comparator "a" "b") #t))
+
+(define (comparator-factory) string>?)
+(check "returned from a procedure"
+       (eq? (h2 (comparator-factory) "b" "a") #t))
+
+(check "stored in a list"
+       (eq? (h2 (car (list char<? char>?)) #\a #\b) #t))
+
+;; A user binding of the same name must still win over the builtin: the fix
+;; must not have turned builtin names into unshadowable keywords.
+(define (shadow-check)
+  (define (min a b) (+ a b))
+  (h2 min 3 5))
+(check "user shadowing still wins" (= (shadow-check) 8))
+
+(if (= failures 0)
+    (begin (display "PASS: first-class builtins — 0 failures") (newline))
+    (begin (display "FAIL: first-class builtins — ")
+           (display failures)
+           (display " failure(s)")
+           (newline)))

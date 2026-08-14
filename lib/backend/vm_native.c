@@ -5032,6 +5032,99 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     return t;
 }
 
+/**
+ * @brief Flat numeric read of a factor-graph sequence operand — the ONE
+ *        reader every factor-graph native uses for its `#(...)` arguments.
+ *
+ * The consciousness surface documents factor-graph arguments as reader
+ * literals: `(make-factor-graph 2 #(2 2))`, `(fg-add-factor! fg #(0 1) #(...))`,
+ * `(free-energy fg #(1 1))`.  In the NATIVE runtime a numeric `#(...)` literal
+ * already IS a tensor, so lib/core/inference.cpp reads it straight through
+ * extract_tensor().  In the VM it is a HEAP_VECTOR — `(tensor? #(2 2))` is #f
+ * there — and each factor-graph native had hand-rolled a tensor-or-list reader
+ * that matched NEITHER form for the documented surface: var-dims collapsed to
+ * one degenerate dimension, every factor was dropped on the floor, and
+ * observations were never seen.  free-energy therefore answered -0.0 for every
+ * graph and every evidence set on every VM target (the browser/WASM VM is
+ * merely where it was first noticed, since WASM *is* the VM).
+ *
+ * Reading through vm_tensor_collection_len/at makes list, vector and tensor
+ * operands one thing here, exactly as they already are for the `tensor`
+ * constructor — so the surface cannot drift per call site again.
+ *
+ * @param v      Sequence operand: tensor, vector, proper list, or bare scalar.
+ * @param out_n  Receives the element count (0 when there is nothing to read).
+ * @return Flat doubles, valid until the enclosing region pops (the tensor case
+ *         aliases the tensor's own storage), or NULL when the count is 0.
+ */
+#define VM_FG_SEQ_MAX_DEPTH 16   /* nesting guard; a factor-graph operand is
+                                  * shape at most, never a deep structure */
+
+/** @brief Leaf count of @p v flattened row-major (-1 if it is not numeric
+ *         data at all). Nesting is shape, exactly as it is for a tensor. */
+static int vm_fg_seq_count(VM* vm, Value v, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH) return -1;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return (t && t->data) ? (int)t->total : -1;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) {                                   /* scalar leaf */
+        if (v.type == VAL_INT || v.type == VAL_FLOAT ||
+            v.type == VAL_RATIONAL || v.type == VAL_BIGNUM) return 1;
+        return -1;
+    }
+    int total = 0;
+    for (int i = 0; i < len; i++) {
+        int sub = vm_fg_seq_count(vm, vm_tensor_collection_at(vm, v, i), depth + 1);
+        if (sub < 0) return -1;
+        total += sub;
+    }
+    return total;
+}
+
+/** @brief Row-major flatten of @p v into @p out (bounded by @p cap). */
+static void vm_fg_seq_fill(VM* vm, Value v, double* out, int cap, int* pos, int depth) {
+    if (depth > VM_FG_SEQ_MAX_DEPTH || *pos >= cap) return;
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || !t->data) return;
+        for (int i = 0; i < (int)t->total && *pos < cap; i++) out[(*pos)++] = t->data[i];
+        return;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len < 0) { out[(*pos)++] = as_number_vm(vm, v); return; }
+    for (int i = 0; i < len && *pos < cap; i++)
+        vm_fg_seq_fill(vm, vm_tensor_collection_at(vm, v, i), out, cap, pos, depth + 1);
+}
+
+static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
+    if (out_n) *out_n = 0;
+    if (v.type == VAL_NIL) return NULL;              /* '() — no elements */
+
+    /* Zero-copy: a tensor operand is already a flat double buffer. */
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || !t->data || t->total <= 0) return NULL;
+        if (out_n) *out_n = (int)t->total;
+        return t->data;
+    }
+
+    /* Nesting is shape, so `#(#(0 0))` flattens to the same two elements it
+     * is natively (where that literal already IS a rank-2 tensor) — see
+     * tests/ad/free_energy_ad_test.esk, whose observation operand is exactly
+     * that. */
+    int n = vm_fg_seq_count(vm, v, 0);
+    if (n <= 0) return NULL;
+    double* buf = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+    if (!buf) return NULL;
+    int pos = 0;
+    vm_fg_seq_fill(vm, v, buf, n, &pos, 0);
+    if (pos == 0) return NULL;
+    if (out_n) *out_n = pos;
+    return buf;
+}
+
 static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
 
 /**
@@ -5131,6 +5224,94 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
         vm_raise_error_msg(vm, msg);
     }
     return NULL;
+}
+
+/**
+ * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
+ *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
+ *         fix every vector-ref call site (native cases 219/OP_VEC_REF/
+ *         lbl_VEC_REF) matched only VAL_VECTOR and silently answered `()`
+ *         for anything else, even though `display` on the same tensor value
+ *         formats it correctly (the value itself is fine; only indexed
+ *         access was missing the arm).
+ *
+ * Mirrors CollectionCodegen::vectorRef's native-codegen tensor dispatch
+ * (collection_codegen.cpp) exactly: a tensor of rank <= 1 bounds-checks
+ * `idx` against the total element count and answers the scalar element; a
+ * tensor of rank > 1 bounds-checks `idx` against shape[0] (row count) and
+ * answers a view of rank n_dims-1 that shares the source's backing store
+ * (vm_tensor_slice — no copy), exactly like indexing the first axis of a
+ * nested vector would.
+ *
+ * On success PUSHES the result and returns 1. On an out-of-range index this
+ * RAISES a catchable "vector-ref: index out of bounds" error and returns 0
+ * without pushing. `vm_tensor_operand` returning NULL without having raised
+ * (the corrupted-heap-pointer sentinel case) is likewise a silent "return 0,
+ * push nothing" per its own documented contract above.
+ */
+static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-ref");
+    if (!t) return 0;
+    int64_t idx = (int64_t)as_number(idx_val);
+    if (t->n_dims <= 1) {
+        if (idx < 0 || idx >= t->total) {
+            vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+            return 0;
+        }
+        vm_push(vm, FLOAT_VAL(t->data[idx]));
+        return 1;
+    }
+    if (idx < 0 || idx >= t->shape[0]) {
+        vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+        return 0;
+    }
+    VmTensor* row = vm_tensor_slice(&vm->heap.regions, t, idx);
+    if (!row) {
+        vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+        return 0;
+    }
+    int32_t p = heap_alloc(&vm->heap);
+    if (p < 0) { vm->error = 1; return 0; }
+    vm->heap.objects[p]->type = HEAP_TENSOR;
+    vm->heap.objects[p]->opaque.ptr = row;
+    vm_push(vm, (Value){.type = VAL_TENSOR, .as.ptr = p});
+    return 1;
+}
+
+/**
+ * @brief SW-26 sibling: `(vector-set! t idx val)` where `t` is a HEAP_TENSOR.
+ *
+ * Mirrors CollectionCodegen::vectorSet's tensor path: unlike vector-ref,
+ * native does NOT special-case N-D row addressing here — `idx` is always
+ * bounds-checked against the FLAT total element count regardless of rank,
+ * and the value is stored as a double directly into the flat data buffer.
+ *
+ * Returns 1 on success (caller still pushes the void result, matching the
+ * VAL_VECTOR path's convention). On an out-of-range index this RAISES a
+ * catchable "vector-set!: index out of bounds" error and returns 0.
+ */
+static int vm_vecset_tensor_path(VM* vm, Value tensor_val, Value idx_val, Value val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-set!");
+    if (!t) return 0;
+    int64_t idx = (int64_t)as_number(idx_val);
+    if (idx < 0 || idx >= t->total) {
+        vm_raise_error_msg(vm, "vector-set!: index out of bounds");
+        return 0;
+    }
+    t->data[idx] = as_number(val);
+    return 1;
+}
+
+/**
+ * @brief SW-26 sibling: `(vector-length t)` where `t` is a HEAP_TENSOR.
+ * Mirrors CollectionCodegen::vectorLength's tensor path: the flat total
+ * element count, not shape[0]. Silently answers 0 for a malformed operand,
+ * matching vector-length's existing non-VAL_VECTOR fallback (this builtin
+ * has never raised on a type mismatch).
+ */
+static int64_t vm_veclen_tensor_path(VM* vm, Value tensor_val) {
+    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-length");
+    return t ? t->total : 0;
 }
 
 /* quantum-random / -int / -range (dispatch cases 1860-1862 below) used to be
@@ -5719,6 +5900,10 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
  * `eq?` on distinct mutable strings is unspecified; retaining deterministic
  * content equality for VAL_STRING preserves the VM's established behavior.
  */
+/* Exact numeric comparator, defined below with the bignum helpers; needed here
+ * so a heap-boxed number compares by value rather than by box identity (SW-31). */
+static int vm_bignum_compare_vals(VM* vm, Value a, Value b);
+
 static int vm_identity_equal(VM* vm, Value a, Value b) {
     if (a.type != b.type) return 0;
     switch ((int)a.type) {
@@ -5738,6 +5923,23 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
             VmString* bs = vm_value_as_string(vm, b);
             return as && bs && as->byte_len == bs->byte_len &&
                    memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        /* SW-31: a HEAP-BOXED NUMBER must compare by VALUE, not by box identity.
+         * `eqv?` shares this helper with `eq?` (both are native id 133), so the
+         * default heap-pointer branch below made (eqv? 1/3 1/3) and
+         * (eqv? (expt 2 100) (expt 2 100)) answer #f — two separately allocated
+         * boxes are never the same pointer. R7RS 6.1 requires eqv? to be value
+         * equality on numbers of the SAME exactness; the tags are equal here
+         * (checked above), so exactness already matches and the comparison is
+         * purely on value. Answering #t for `eq?` on equal bignums is a legal
+         * choice — R7RS leaves eq? on numbers unspecified. */
+        case VAL_RATIONAL:
+        case VAL_BIGNUM:
+            return vm_bignum_compare_vals(vm, a, b) == 0;
+        case VAL_COMPLEX: {
+            VmComplex* az = (VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            VmComplex* bz = (VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            return az && bz && az->real == bz->real && az->imag == bz->imag;
         }
         default: return a.as.ptr == b.as.ptr;
     }
@@ -5877,6 +6079,99 @@ static inline int vm_either_bignum(Value a, Value b) {
     return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * R7RS numeric-tower TAG CLASSIFICATION (SW-31)
+ *
+ * Every numeric type predicate on the VM used to spell its own tag test inline,
+ * and each spelled a DIFFERENT, shorter list than the tower actually has. The
+ * result was a predicate family that denied whole numeric classes: (number? 1/3)
+ * and (number? (expt 2 100)) were #f, (rational? 5) and (rational? 5.0) were #f,
+ * (complex? 5) was #f, and (integer? 5.5) was #t because `integer?` was compiled
+ * to the very same opcode as `number?`. Routing every predicate through these
+ * four functions means a tag can only be forgotten in one place, and adding a
+ * numeric tag later updates the whole family at once.
+ *
+ * Semantics follow R7RS 6.2.1's tower (number > complex > real > rational >
+ * integer) and are pinned against the native engine, which was already correct:
+ *   number?/complex?  every numeric tag
+ *   real?             every numeric tag except COMPLEX
+ *   rational?         every real that is FINITE (so 5.5 is rational, +inf.0 is not)
+ *   integer?          every real with no fractional part (so 5.0 is an integer,
+ *                     5.5 and 1/3 are not; a normalized rational never is)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** @brief `number?` / `complex?` — every tag in the numeric tower. */
+static inline int vm_tag_is_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_COMPLEX || v.type == VAL_I128;
+}
+
+/** @brief `real?` — the tower minus COMPLEX. */
+static inline int vm_tag_is_real(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_I128;
+}
+
+/** @brief `rational?` — a real with a finite value (NaN and the infinities are
+ *         real but not rational). */
+static inline int vm_num_is_rational(Value v) {
+    if (v.type == VAL_FLOAT) return isfinite(v.as.f);
+    return vm_tag_is_real(v);
+}
+
+/** @brief `integer?` — a real whose value has no fractional part. An exact
+ *         rational is always normalized, so a live VAL_RATIONAL never has
+ *         denominator 1 and is never an integer. */
+static int vm_num_is_integer(VM* vm, Value v) {
+    if (v.type == VAL_INT || v.type == VAL_BIGNUM || v.type == VAL_I128) return 1;
+    if (v.type == VAL_FLOAT) return isfinite(v.as.f) && v.as.f == floor(v.as.f);
+    if (v.type == VAL_RATIONAL && vm) {
+        VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!r) return 0;
+        return r->is_big ? vm_bn_is_i64(r->big_den, 1) : (r->denom == 1);
+    }
+    return 0;
+}
+
+/** @brief `odd?` — parity of an integer-valued operand, exact for bignums.
+ *         A bignum's parity is the low bit of its least significant limb; the
+ *         old code truncated as_number()'s 0.0 and answered "even" for every
+ *         bignum. */
+static int vm_num_parity_is_odd(VM* vm, Value v) {
+    if (v.type == VAL_INT || v.type == VAL_CHAR) return (v.as.i & 1) != 0;
+    if (v.type == VAL_BIGNUM && vm) {
+        VmBignum* b = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!b || b->n_limbs == 0) return 0;   /* zero is even */
+        return (b->limbs[0] & 1u) != 0;
+    }
+    double d = as_number_vm(vm, v);
+    return fmod(d, 2.0) != 0.0;
+}
+
+/** @brief True when @p v is an exact number (used by the sign predicates so a
+ *         heap-boxed exact value is compared exactly instead of through a
+ *         double that reads it as 0.0). */
+static inline int vm_tag_is_exact_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_RATIONAL ||
+           v.type == VAL_BIGNUM || v.type == VAL_I128;
+}
+
+/** @brief True when either operand is an EXACT value too wide for the plain
+ *         int64/double compare paths — a bignum or a rational.
+ *
+ *  SW-18: the comparison opcodes guarded their exact path with
+ *  vm_either_bignum() alone, so a pair of RATIONALs (or a rational against a
+ *  fixnum) fell through to as_number_vm() and was compared as doubles.  Two
+ *  distinct exact values that round to the same flonum then compared EQUAL:
+ *  `(< (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))` answered #f where native
+ *  answers #t.  Comparison must be exact whenever both operands are exact;
+ *  vm_bignum_compare_vals() routes a FLOAT operand back to doubles itself, so
+ *  inexact contagion is preserved. */
+static inline int vm_either_exact_wide(Value a, Value b) {
+    return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM ||
+           a.type == VAL_RATIONAL || b.type == VAL_RATIONAL;
+}
+
 /** @brief Coerce an integer-ish Value to a VmBignum*. VAL_BIGNUM returns its
  *         heap payload directly; VAL_INT/VAL_CHAR (and anything else, best
  *         effort) is materialised as a fresh bignum. NULL only on alloc
@@ -5898,6 +6193,54 @@ static void vm_push_bignum_norm(VM* vm, VmBignum* b) {
     int64_t iv = bignum_to_int64(b, &ov);
     if (!ov) vm_push(vm, INT_VAL(iv));
     else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, b);
+}
+
+/** @brief Push an exact rational result in its canonical tagged form: an
+ *         integer (fixnum or bignum) when the reduced denominator is 1,
+ *         otherwise a VAL_RATIONAL heap box.  Sets vm->error if @p r is NULL.
+ *
+ *  SW-18: every exact rational result funnels through here so that "denominator
+ *  reduced to 1" collapses to an integer on the bignum path exactly as it
+ *  already did on the int64 path — otherwise `(/ (expt 2 100) 4)` would answer
+ *  a rational-with-denominator-1 instead of the integer native prints. */
+static void vm_push_rational_norm(VM* vm, VmRational* r) {
+    if (!r) { vm->error = 1; return; }
+    if (r->is_big) {
+        if (vm_bn_is_i64(r->big_den, 1)) { vm_push_bignum_norm(vm, r->big_num); return; }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm->error = 1; return; }
+        vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+        vm->heap.objects[ptr]->opaque.ptr = r;
+        vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+        return;
+    }
+    if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); return; }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return; }
+    vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+    vm->heap.objects[ptr]->opaque.ptr = r;
+    vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+}
+
+/** @brief Materialize any exact operand as a VmRational for the exact rational
+ *         layer: a VAL_RATIONAL yields its payload, a fixnum/char yields n/1,
+ *         and a VAL_BIGNUM yields the bignum over 1.  @p scratch is written for
+ *         the non-rational cases and returned. */
+static const VmRational* vm_coerce_rational(VM* vm, Value v, VmRational* scratch) {
+    if (v.type == VAL_RATIONAL)
+        return (const VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    scratch->num = 0; scratch->denom = 1;
+    scratch->is_big = 0; scratch->big_num = NULL; scratch->big_den = NULL;
+    if (v.type == VAL_BIGNUM) {
+        scratch->is_big = 1;
+        scratch->big_num = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        scratch->big_den = bignum_from_int64(&vm->heap.regions, 1);
+        if (!scratch->big_den) return NULL;
+        return scratch;
+    }
+    scratch->num = (v.type == VAL_INT || v.type == VAL_CHAR)
+                 ? v.as.i : (int64_t)as_number(v);
+    return scratch;
 }
 
 /** @brief Compute (a op b) exactly in the bignum domain and push the
@@ -5938,20 +6281,23 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
                   fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_mod(rs, ab, bb); break;
     case '/': {
-        /* Exact bignum `/`.  A zero divisor is a fatal exact division by
-         * zero (native raises "bignum division by zero").  An even division
-         * yields the exact quotient.  A non-even exact division would need a
-         * bignum RATIONAL, which is outside this VM's numeric tower (its
-         * VmRational is int64/int64) — it falls back to the correctly-rounded
-         * double, the documented gap in tests/vm_parity/PARITY.tsv.  Before
-         * this case existed a bignum fell through to the plain double path,
-         * where as_number() reads a heap pointer's .as.i as 0.0 and every
-         * bignum division silently produced 0. */
+        /* Exact bignum `/`.  A zero divisor is a fatal exact division by zero
+         * (native raises "bignum division by zero").  An even division yields
+         * the exact quotient; a non-even one yields an EXACT RATIONAL.
+         *
+         * SW-18 / ESH-0105: this used to answer the correctly-rounded double
+         * for the non-even case, because VmRational was int64/int64 and could
+         * not hold a bignum numerator — `(/ (expt 2 100) 3)` printed
+         * 4.2255020007607644e+29 where native prints
+         * 1267650600228229401496703205376/3.  R7RS 6.2.2 requires an exact
+         * operation on exact operands to stay exact, and the rational
+         * substrate is bignum-capable now, so the exact result is built
+         * instead of rounded. */
         if (bignum_is_zero(bb)) {
             fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
         VmBignum* rem = bignum_mod(rs, ab, bb);
         if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
-        vm_push(vm, FLOAT_VAL(bignum_to_double(ab) / bignum_to_double(bb)));
+        vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, ab, bb));
         return;
     }
     case 'm': {
@@ -5975,15 +6321,24 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
 /** @brief Three-way compare of two integer-ish values through the bignum
  *         domain (-1/0/1). A float operand compares via double. */
 static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
-    /* A FLOAT or a RATIONAL operand cannot enter the integer bignum domain:
-     * vm_coerce_bignum() would materialise it from (int64_t)as_number(), which
-     * truncates a flonum and reads a rational's heap pointer as 0. Compare
-     * through doubles instead (as_number_vm covers every numeric tag). */
-    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT ||
-        a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) {
+    /* A FLOAT operand cannot enter the integer bignum domain: vm_coerce_bignum()
+     * would materialise it from (int64_t)as_number(), which truncates a flonum.
+     * Inexactness is contagious, so comparing through doubles is correct there. */
+    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
         double x = as_number_vm(vm, a);
         double y = as_number_vm(vm, b);
         return (x < y) ? -1 : (x > y) ? 1 : 0;
+    }
+    /* SW-18: a RATIONAL against a BIGNUM is EXACT vs EXACT.  Routing it through
+     * doubles made `(< (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))` answer
+     * "equal" — both operands round to the same flonum.  Compare in the exact
+     * rational domain instead, which subsumes the integer case. */
+    if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) {
+        VmRational a_scratch, b_scratch;
+        const VmRational* ar = vm_coerce_rational(vm, a, &a_scratch);
+        const VmRational* br = vm_coerce_rational(vm, b, &b_scratch);
+        if (!ar || !br) return 0;
+        return vm_rational_compare_exact(&vm->heap.regions, ar, br);
     }
     VmBignum* ab = vm_coerce_bignum(vm, a);
     VmBignum* bb = vm_coerce_bignum(vm, b);
@@ -6842,6 +7197,90 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
     return final;
 }
 
+/**
+ * @brief Task #113 — complex-operand dispatch for the scalar math builtins.
+ *
+ * The unary math opcodes all reduce their operand with `as_number()`, which
+ * answers 0 for a VAL_COMPLEX: `(sqrt (make-rectangular -1.0 0.0))` computed
+ * sqrt(0) and printed 0, `(exp z)` printed 1. Silently wrong on every complex
+ * input. This routes the complex case to the shared transcendental core
+ * (<eshkol/core/complex_math.h>) that the native back end also calls, so both
+ * engines return the same bits.
+ *
+ * @param vm Interpreter state.
+ * @param a Already-popped operand.
+ * @param fid Native call id of the math builtin.
+ * @return 1 when @p a was complex and a result (or a fatal error) has been
+ *         pushed/recorded; 0 when the caller must handle @p a itself.
+ */
+static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
+    VmComplex z;
+    VmComplex* result = NULL;
+    int32_t ptr;
+    if (a.type != VAL_COMPLEX) return 0;
+    z = *(VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+    switch (fid) {
+        case 20:  result = vm_complex_sin (&vm->heap.regions, &z); break;
+        case 21:  result = vm_complex_cos (&vm->heap.regions, &z); break;
+        case 22:  result = vm_complex_tan (&vm->heap.regions, &z); break;
+        case 23:  result = vm_complex_exp (&vm->heap.regions, &z); break;
+        case 24:  result = vm_complex_log (&vm->heap.regions, &z); break;
+        case 25:  result = vm_complex_sqrt(&vm->heap.regions, &z); break;
+        case 29:  result = vm_complex_asin(&vm->heap.regions, &z); break;
+        case 30:  result = vm_complex_acos(&vm->heap.regions, &z); break;
+        case 31:  result = vm_complex_atan(&vm->heap.regions, &z); break;
+        case 720: result = vm_complex_cosh(&vm->heap.regions, &z); break;
+        case 721: result = vm_complex_sinh(&vm->heap.regions, &z); break;
+        case 722: result = vm_complex_tanh(&vm->heap.regions, &z); break;
+        default: return 0;
+    }
+    if (!result) { vm->error = 1; return 1; }
+    ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return 1; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    return 1;
+}
+
+/**
+ * @brief Task #113 — R7RS real-to-complex promotion for `sqrt` and `log`.
+ *
+ * The square root (and natural log) of a NEGATIVE EXACT real is not a real
+ * number: docs/reference/language/numeric-tower.md documents
+ * `(display (sqrt -1))` printing `+i`, and the native back end has promoted
+ * since the numeric tower landed. The VM answered NaN, so the two engines
+ * disagreed on a documented example.
+ *
+ * Promotion is exactness-aware, exactly as on the native side: an INEXACT
+ * negative keeps IEEE semantics (NaN for sqrt, -inf for log), so the
+ * documented floating-point behaviour and the infinity/NaN suite are
+ * untouched.
+ *
+ * @param vm Interpreter state.
+ * @param a Already-popped operand.
+ * @param is_sqrt Non-zero for `sqrt`, zero for `log`.
+ * @return 1 when a promoted complex result has been pushed.
+ */
+static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
+    double x, re, im;
+    VmComplex* z;
+    int32_t ptr;
+    if (a.type != VAL_INT && a.type != VAL_BIGNUM && a.type != VAL_RATIONAL) return 0;
+    x = as_number_vm(vm, a);
+    if (!(x < 0.0)) return 0;
+    if (is_sqrt) { re = 0.0; im = sqrt(-x); }
+    else         { re = log(-x); im = 3.14159265358979323846; }
+    z = vm_complex_new(&vm->heap.regions, re, im);
+    if (!z) { vm->error = 1; return 1; }
+    ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return 1; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = z;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    return 1;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -6874,22 +7313,63 @@ static void vm_dispatch_native(VM* vm, int fid) {
             ? tape_fn((AdTape*)(vm)->active_tape, (in_node)) : -1; \
     } \
 } while (0)
-    case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
-    case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
-    case 22: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
-    case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
-    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
-    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
+    case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 20)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
+    case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 21)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
+    case 22: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
+    case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 23)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
+    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 24)) break; if (vm_math_promote_negative(vm, a, 0)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
+    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 25)) break; if (vm_math_promote_negative(vm, a, 1)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     /* floor/ceiling/round preserve exactness: (floor 2.5) is the INEXACT 2.0,
      * not the exact 2 — the integral result shape must not decide the tag. */
-    case 26: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
-    case 27: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
-    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
-    case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
-    case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    /* SW-29: floor/ceiling/truncate/round of an EXACT operand must stay exact.
+     * These went through as_number_vm() unconditionally, so a rational came
+     * back as an inexact double — and a bignum-backed one lost every digit past
+     * the 53rd. An exact integer is already its own floor/ceiling/truncation/
+     * rounding, and a ratnum routes to the exact rational natives (342-345),
+     * which compute in the bignum domain. Only a genuinely inexact operand
+     * takes the double path. */
+    case 26: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 342); break; }
+        vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
+    case 27: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 343); break; }
+        vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
+    case 28: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 345); break; }
+        vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
+    /* SW-29: `truncate` had NO implementation at all — the BUILTINS table bound
+     * it to native id 190, which no case handled, so every call warned
+     * "unhandled native call ID 190" and produced the empty list. */
+    case 190: { Value a = vm_pop(vm);
+        if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
+        if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
+        vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
+    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
+    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); break; }
+        /* Task #113: a complex base OR exponent promotes both and takes the
+         * principal a^b = exp(b log a). Without it as_number() answered 0 for
+         * the complex side and (expt z 2) silently became 0^2. */
+        if (a.type==VAL_COMPLEX || b.type==VAL_COMPLEX) {
+            VmComplex az32 = { as_number(a), 0.0 }, bz32 = { as_number(b), 0.0 };
+            VmComplex* rz32;
+            int32_t pz32;
+            if (a.type==VAL_COMPLEX) az32 = *(VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type==VAL_COMPLEX) bz32 = *(VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            rz32 = vm_complex_expt(&vm->heap.regions, &az32, &bz32);
+            if (!rz32) { vm->error = 1; break; }
+            pz32 = heap_alloc(&vm->heap);
+            if (pz32 < 0) { vm->error = 1; break; }
+            vm->heap.objects[pz32]->type = HEAP_COMPLEX;
+            vm->heap.objects[pz32]->opaque.ptr = rz32;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = pz32});
+            break;
+        }
         /* Exact integer base with a non-negative integer exponent → exact
          * result: an int64 while it fits, promoting to a bignum on overflow
          * (matching the native path). Previously always used pow() and
@@ -6908,12 +7388,64 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
         }
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
-    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da<db?da:db)); break; }
-    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da>db?da:db)); break; }
+    /* SW-40: min/max are SELECTION operators — the result IS one of the
+     * operands — so a forward-mode derivative through them must carry the
+     * SELECTED operand's tangent. Native ArithmeticCodegen::min/max open with
+     * exactly this arm (see their "DUAL NUMBER PATH" blocks: promote both
+     * sides, compare primals, pack the chosen dual). The VM had no such arm:
+     * both operands fell through to as_number_vm(), which returns a dual's
+     * primal and DISCARDS its tangent, so the result came back a bare flonum
+     * and every derivative through min/max read 0 while the primal stayed
+     * correct. A zero derivative is the worst shape of silent-wrong for an AD
+     * system: it is indistinguishable from a legitimate stationary point.
+     *
+     * Tie-breaking mirrors native exactly — FCmpOLE for min and FCmpOGE for
+     * max both select the LEFT operand when the primals are equal, which is
+     * also what the double path below does.
+     *
+     * The hyper-dual arm is the second-order twin (VAL_HYPER_DUAL is the VM's
+     * {f,f1,f2,f12} carrier); lbl_ABS already treats the two carriers this way
+     * and min/max now agree with it. */
+    case 33: case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        const int want_max = (fid == 34);
+        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) {
+            VmHyperDual ah = {as_number_vm(vm,a), 0.0, 0.0, 0.0};
+            VmHyperDual bh = {as_number_vm(vm,b), 0.0, 0.0, 0.0};
+            if (a.type == VAL_HYPER_DUAL) ah = *(VmHyperDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_HYPER_DUAL) bh = *(VmHyperDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            const VmHyperDual* pick = want_max ? ((ah.f >= bh.f) ? &ah : &bh)
+                                               : ((ah.f <= bh.f) ? &ah : &bh);
+            VmHyperDual* out = vm_hd_make(&vm->heap.regions, pick->f, pick->f1, pick->f2, pick->f12);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, out);
+            break;
+        }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) {
+            VmDual ad = {as_number_vm(vm,a), 0.0};
+            VmDual bd = {as_number_vm(vm,b), 0.0};
+            if (a.type == VAL_DUAL) ad = *(VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_DUAL) bd = *(VmDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            const VmDual* pick = want_max ? ((ad.primal >= bd.primal) ? &ad : &bd)
+                                          : ((ad.primal <= bd.primal) ? &ad : &bd);
+            VmDual* out = vm_dual_make(&vm->heap.regions, pick->primal, pick->tangent);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, out);
+            break;
+        }
+        /* Exact and double paths below are MASTER's, verbatim in behaviour:
+         * the both-exact ordering tier (#439, SW-32 — min/max agreeing with the
+         * engine's own `<`) in front of the exact-wide tier (#432, SW-18/SW-28),
+         * then the double fallback. The dual arms above sit in FRONT of all of
+         * them, so the changes compose: a dual operand never reaches an exact
+         * tier, and an exact operand never reaches a dual arm. */
+        if (vm_tag_is_exact_number(a) && vm_tag_is_exact_number(b)) {
+            int cmp = vm_bignum_compare_vals(vm,a,b);
+            vm_push(vm, (want_max ? (cmp >= 0) : (cmp <= 0)) ? a : b); break; }
+        if (vm_either_exact_wide(a,b)) {
+            int cmp = vm_bignum_compare_vals(vm,a,b);
+            vm_push(vm, (want_max ? (cmp >= 0) : (cmp <= 0)) ? a : b); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b);
+        vm_push(vm, number_val_contagious(a,b, want_max ? (da>db?da:db) : (da<db?da:db))); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
         else if (a.type==VAL_RATIONAL) { vm_push(vm,a); vm_dispatch_native(vm,336); }
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
@@ -6952,13 +7484,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Predicates (40-50)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 40: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > 0)); break; }
-    case 41: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < 0)); break; }
-    case 42: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL((int64_t)as_number(a) % 2 != 0)); break; }
-    case 43: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL((int64_t)as_number(a) % 2 == 0)); break; }
-    case 44: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == 0)); break; }
+    /* SW-31: the sign and parity predicates used as_number(), which reads a
+     * heap-boxed value's .as union as an int64 and answers 0.0 — so every
+     * rational, bignum and i128 was reported as neither positive nor negative,
+     * (zero? 1/3) answered #t, and (odd? <bignum>) was always #f. The exact
+     * tags are compared through the exact comparator the ordering opcodes use;
+     * only a genuinely inexact operand goes through a double.
+     * These are the FIRST-CLASS routes ((map positive? xs)); the inline
+     * compiled forms lower to opcodes that were already exact. */
+    case 40: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) > 0
+            : as_number_vm(vm, a) > 0)); break; }
+    case 41: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) < 0
+            : as_number_vm(vm, a) < 0)); break; }
+    case 42: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_parity_is_odd(vm, a))); break; }
+    case 43: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!vm_num_parity_is_odd(vm, a))); break; }
+    case 44: { Value a = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_tag_is_exact_number(a)
+            ? vm_bignum_compare_vals(vm, a, INT_VAL(0)) == 0
+            : as_number_vm(vm, a) == 0)); break; }
     case 45: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; }
-    case 46: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT)); break; }
+    case 46: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(a))); break; } /* number? (SW-31) */
     case 47: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; }
     case 48: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }
     case 49: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }
@@ -7084,6 +7633,36 @@ static void vm_dispatch_native(VM* vm, int fid) {
             rev = vm->heap.objects[rev.as.ptr]->cons.cdr;
         }
         vm_push(vm, result2);
+        break;
+    }
+
+    /* Compound list accessors (77-106; 100-101 are reserved).  The compiler lowers call-position
+     * c[ad]+r forms to the same CAR/CDR sequence.  Builtin values reach this
+     * dispatcher through the preamble closure, so keep the family in one
+     * path table rather than adding one implementation per spelling. */
+    case 77: case 78: case 79: case 80: case 81: case 82: case 83:
+    case 84: case 85: case 86: case 87: case 88: case 89: case 90:
+    case 91: case 92: case 93: case 94: case 95: case 96: case 97:
+    case 98: case 99: case 102: case 103: case 104: case 105: case 106: {
+        static const char* const accessor_paths[107] = {
+            [77] = "da",   [78] = "dd",   [79] = "aa",   [80] = "dda",  [81] = "ad",
+            [82] = "aaa",  [83] = "daa",  [84] = "ada",  [85] = "aad",  [86] = "dad",
+            [87] = "add",  [88] = "ddd",  [89] = "aaaa", [90] = "daaa", [91] = "adaa",
+            [92] = "ddaa", [93] = "aada", [94] = "dada", [95] = "adda", [96] = "ddda",
+            [97] = "aaad", [98] = "daad", [99] = "adad", [102] = "ddad", [103] = "aadd",
+            [104] = "dadd", [105] = "addd", [106] = "dddd"
+        };
+        Value result = vm_pop(vm);
+        const char* path = accessor_paths[fid];
+        for (const char* step = path; *step; step++) {
+            if (result.type != VAL_PAIR) {
+                result = NIL_VAL;
+                break;
+            }
+            HeapObject* pair = vm->heap.objects[result.as.ptr];
+            result = (*step == 'a') ? pair->cons.car : pair->cons.cdr;
+        }
+        vm_push(vm, result);
         break;
     }
 
@@ -7251,7 +7830,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             } else { vm_push(vm, FLOAT_VAL(fabs(as_number(z_val)))); }
         } else if (fid == 317) { /* complex? */
             Value v = vm_pop(vm);
-            vm_push(vm, BOOL_VAL(v.type == VAL_COMPLEX));
+            /* SW-31: R7RS 6.2.1 — EVERY number is complex, not only a boxed one. */
+            vm_push(vm, BOOL_VAL(vm_tag_is_number(v)));
         } else {
             int is_binary = (fid >= 307 && fid <= 310) || fid == 318 || fid == 319;
             if (is_binary) {
@@ -7457,102 +8037,88 @@ static void vm_dispatch_native(VM* vm, int fid) {
              *            (* 0 1/3) and answered the exact 0 — and (+ 0.5 1/3)
              *            answered 1/3.  Every mixed flonum/ratnum + - * / was
              *            wrong this way, in both operand orders.
-             *   BIGNUM — exact, but a bignum-over-int64 rational is outside
-             *            this VM's numeric tower (VmRational is int64/int64),
-             *            so it takes the same correctly-rounded inexact
-             *            fallback the int64-overflow case below already uses.
-             *            Reading it as a numerator answered 0, which also made
-             *            `(/ 1/3 <bignum>)` a spurious DIVIDE BY ZERO.
-             *            Filed: tests/vm_parity/found/bignum_exact_rational.esk. */
-            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
-                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+             *   BIGNUM — exact, and now carried EXACTLY: the rational
+             *            substrate is bignum-capable (SW-18/ESH-0105), so a
+             *            bignum operand stays on the exact path instead of
+             *            taking the correctly-rounded inexact fallback this
+             *            branch used to apply.  Reading it as a numerator
+             *            answered 0, which also made `(/ 1/3 <bignum>)` a
+             *            spurious DIVIDE BY ZERO.
+             *            Pinned: tests/vm_parity/found/bignum_exact_rational.esk. */
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT) {
                 double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
-                /* Exact-by-exact-zero stays fatal; with an inexact operand a
-                 * zero divisor is IEEE-754 (±inf.0 / +nan.0), as native. */
-                if (fid == 334 && y == 0.0 &&
-                    a_val.type != VAL_FLOAT && b_val.type != VAL_FLOAT) {
-                    fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
-                }
                 double r = (fid == 331) ? x + y : (fid == 332) ? x - y
                          : (fid == 333) ? x * y : x / y;
                 vm_push(vm, FLOAT_VAL(r)); break;
             }
-            VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
-            if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            /* Both operands are EXACT (fixnum, bignum or rational).  R7RS
+             * 6.2.2: the result must be exact too — never a double. */
+            VmRational a_scratch, b_scratch;
+            const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
+            const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
+            if (!a_r || !b_r) { vm->error = 1; break; }
             /* Exact division by an exact zero is fatal (native raises
-             * "rational division by zero").  It must be rejected BEFORE the
-             * overflow fallback below: vm_rational_div() also returns NULL for
-             * a zero divisor, and the fallback then evaluated the ADDITION
-             * formula, so `(/ 1/2 0)` silently produced 0.5. */
-            if (fid == 334 && b_r.num == 0) {
+             * "rational division by zero"), and must be rejected before the
+             * arithmetic so `(/ 1/2 0)` cannot silently produce 0.5. */
+            if (fid == 334 &&
+                (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
                 fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
             }
-            VmRational* result = NULL;
-            switch (fid) {
-                case 331: result = vm_rational_add(rat_arena, &a_r, &b_r); break;
-                case 332: result = vm_rational_sub(rat_arena, &a_r, &b_r); break;
-                case 333: result = vm_rational_mul(rat_arena, &a_r, &b_r); break;
-                case 334: result = vm_rational_div(rat_arena, &a_r, &b_r); break;
-            }
-            if (!result) {
-                /* int64 overflow after reduction — fall back to inexact, using
-                 * the fallback formula for the OPERATION ACTUALLY REQUESTED
-                 * (this used to add unconditionally, so an overflowing
-                 * subtraction/multiplication/division returned a sum). */
-                double x = (double)a_r.num / (double)a_r.denom;
-                double y = (double)b_r.num / (double)b_r.denom;
-                double fb = (fid == 331) ? x + y : (fid == 332) ? x - y
-                          : (fid == 333) ? x * y : x / y;
-                vm_push(vm, FLOAT_VAL(fb)); break;
-            }
-            if (result->denom == 1) { vm_push(vm, INT_VAL(result->num)); break; }
-            int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = result;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
+            char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
+                     : (fid == 333) ? '*' : '/';
+            VmRational* result =
+                vm_rational_arith_exact(&vm->heap.regions, a_r, b_r, rop);
+            /* NULL can no longer mean "too big" — the exact path has no size
+             * ceiling — so it is a genuine allocation failure. */
+            vm_push_rational_norm(vm, result);
+            break; }
         case 335: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_neg(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_neg_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, number_val_contagious1(v, -as_number_vm(vm, v))); break; }
         case 336: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_abs(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_abs_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, number_val_contagious1(v, fabs(as_number_vm(vm, v)))); break; }
         case 337: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_inv(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_inv_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, FLOAT_VAL(1.0 / as_number(v))); break; }
         case 338: case 339: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
             /* Same tag routing as 331-334: a FLOAT or BIGNUM operand cannot be
              * seeded into an int64 numerator, and truncating it there compared
              * the wrong value (`(rational<? 0.2 1/3)` compared 0 against 1/3). */
-            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
-                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT) {
                 double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
                 if (fid == 338) vm_push(vm, INT_VAL(x < y ? -1 : x > y ? 1 : 0));
                 else vm_push(vm, BOOL_VAL(x == y));
                 break;
             }
-            VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
-            if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            if (fid == 338) vm_push(vm, INT_VAL(vm_rational_compare(&a_r, &b_r)));
-            else vm_push(vm, BOOL_VAL(vm_rational_equal(&a_r, &b_r)));
+            /* SW-18: a BIGNUM operand used to be compared through doubles, so
+             * two exact values differing by less than one ULP of their
+             * magnitude compared EQUAL.  Exact operands compare exactly. */
+            VmRational a_scratch, b_scratch;
+            const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
+            const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
+            if (!a_r || !b_r) { vm->error = 1; break; }
+            if (fid == 338)
+                vm_push(vm, INT_VAL(vm_rational_compare_exact(&vm->heap.regions, a_r, b_r)));
+            else vm_push(vm, BOOL_VAL(vm_rational_equal_exact(a_r, b_r)));
             break; }
         case 340: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(vm_rational_to_double(r))); }
@@ -7564,27 +8130,62 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
         case 342: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_floor(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_floor_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_floor(r))); }
             else vm_push(vm, INT_VAL((int64_t)floor(as_number(v)))); break; }
         case 343: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_ceil(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_ceil_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_ceil(r))); }
             else vm_push(vm, INT_VAL((int64_t)ceil(as_number(v)))); break; }
         case 344: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_truncate(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_truncate_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_truncate(r))); }
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
         case 345: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_round(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_round_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_round(r))); }
             else vm_push(vm, INT_VAL((int64_t)vm_round_half_even(as_number(v)))); break; }
         case 346: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_numerator(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: a big rational's half is a bignum, not an int64. */
+                if (r->is_big) vm_push_bignum_norm(vm, r->big_num);
+                else vm_push(vm, INT_VAL(vm_rational_numerator(r))); }
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
         case 347: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_denominator(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: a big rational's half is a bignum, not an int64. */
+                if (r->is_big) vm_push_bignum_norm(vm, r->big_den);
+                else vm_push(vm, INT_VAL(vm_rational_denominator(r))); }
             else vm_push(vm, INT_VAL(1)); break; }
         case 348: { Value b_v = vm_pop(vm), a_v = vm_pop(vm);
             vm_push(vm, INT_VAL(vm_rational_gcd((int64_t)as_number(a_v), (int64_t)as_number(b_v)))); break; }
         case 349: { Value tol = vm_pop(vm), x = vm_pop(vm);
-            VmRational* r = vm_rationalize(rat_arena, as_number(x), as_number(tol));
+            /* as_number_vm, NOT as_number: `rationalize` is the one operation
+             * whose arguments are USUALLY exact rationals — the R7RS-small
+             * example is `(rationalize (exact .3) 1/10) => 1/3` — and the
+             * plain as_number() reads a VAL_RATIONAL's heap index through the
+             * int64 arm of the union and answers 0.0.  Both arguments then
+             * became 0, and `(rationalize 1/3 1/10000)` returned the exact
+             * integer 0 with exit 0 where the native engine returns 1/3
+             * (SW-08).  Rationals, bignums and duals all need the heap-aware
+             * coercion, exactly as native calls 342-347 above already do. */
+            VmRational* r = vm_rationalize(rat_arena, as_number_vm(vm, x), as_number_vm(vm, tol));
             if (!r) { vm_push(vm, NIL_VAL); break; }
             if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); break; }
             int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
@@ -7896,6 +8497,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        /* SW-06: `diff` compiles to this same native call (see
+         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
+         * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
+         * from_native() silently returns NIL_VAL for anything that isn't
+         * VAL_CLOSURE, which then falls into "non-dual result = constant
+         * function" below and pushes a fabricated 0 — indistinguishable
+         * from a correct zero derivative. Symbolic differentiation of
+         * already-quoted data is not implemented (v1.3.5 tracker); raise
+         * instead of guessing. */
+        if (f_val.type != VAL_CLOSURE) {
+            vm_raise_error_msg(vm,
+                "derivative: the first argument must be a callable function; "
+                "symbolic differentiation of a quoted expression (e.g. "
+                "(diff '(* x x) 'x)) is not yet implemented on the VM");
+            break;
+        }
         /* ESH-0369: the VM's forward-mode carrier is a FLAT VmDual {value,
          * tangent} — one perturbation, no nesting level. A point that is
          * ALREADY a dual therefore means an enclosing differentiation is live
@@ -8838,28 +9456,36 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
         int nv = (int)as_number(nvars_val);
         int var_dims[64]; int nd = 0;
-        /* var_dims may be a `#(2 2 2)` tensor (canonical Eshkol API,
-         * matching the native LLVM runtime), a `(2 2 2)` list, or a
-         * bare scalar.  The VM previously only read the list/scalar
-         * forms, so a tensor collapsed to nd=1 and num_vars was clamped
-         * down to 1 — every multi-variable factor graph silently became
-         * single-variable, leaving inference and free-energy degenerate. */
-        if (dims_val.as.ptr >= 0 && dims_val.type != VAL_PAIR &&
-            vm->heap.objects[dims_val.as.ptr] &&
-            vm->heap.objects[dims_val.as.ptr]->type == HEAP_TENSOR) {
-            VmTensor* dt = (VmTensor*)vm->heap.objects[dims_val.as.ptr]->opaque.ptr;
-            if (dt && dt->data) {
-                int dn = (int)dt->total;
-                for (int i = 0; i < dn && nd < 64; i++)
-                    var_dims[nd++] = (int)dt->data[i];
-            }
-        } else if (dims_val.type == VAL_PAIR) {
-            Value cur = dims_val;
-            while (cur.type == VAL_PAIR && nd < 64) {
-                var_dims[nd++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else { var_dims[0] = (int)as_number(dims_val); nd = 1; }
+        /* var-dims is read by the one factor-graph sequence reader, so the
+         * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
+         * natively), a `(2 2 2)` list and a bare scalar all mean the same
+         * thing.  The tensor-or-list reader this replaces matched neither the
+         * documented literal nor a vector: dims collapsed to a single
+         * degenerate dimension, so every multi-variable factor graph silently
+         * became single-variable and inference/free-energy went degenerate. */
+        int dseq_n = 0;
+        const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
+        for (int i = 0; i < dseq_n && nd < 64; i++) {
+            int d = (int)dseq[i];
+            var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
+                                                 * variable domain; binary is
+                                                 * the documented default */
+        }
+        /* A BARE SCALAR dims argument means "every variable has this many
+         * states", so `(make-factor-graph 2 2)` is a two-variable graph and
+         * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
+         * one-element sequence it hits the clamp below and cuts num_vars to 1,
+         * where the native engine broadcasts — SW-07's own reproducer.  Only a
+         * genuine scalar LEAF broadcasts: a short sequence is an operand
+         * mismatch, not a broadcast, and still clamps. */
+        if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
+            for (int i = 1; i < nv && i < 64; i++) var_dims[i] = var_dims[0];
+            nd = (nv < 64) ? nv : 64;
+        }
+        if (nd == 0) {                          /* dims omitted/unreadable */
+            int want = (nv > 0 && nv < 64) ? nv : 0;
+            for (int i = 0; i < want; i++) var_dims[nd++] = 2;
+        }
         if (nd < nv) nv = nd;
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
         if (!fg) { vm_push(vm, NIL_VAL); break; }
@@ -8876,45 +9502,46 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Extract var_indices from either a tensor `#(0 1)` or a
-                 * list `(0 1)`.  The canonical Eshkol API (and the native
-                 * LLVM runtime) passes var indices as a `#(...)` tensor;
-                 * the VM previously only read the list form, so factors
-                 * added with tensor indices were silently dropped
-                 * (n_vars stayed 0), leaving beliefs uniform and
-                 * free-energy at ~0. */
+                /* Var indices and CPT both go through the one factor-graph
+                 * sequence reader, so the documented `#(0 1)` / `#(0.9 0.1)`
+                 * literals (VECTORs in the VM), `(vector ...)` values, lists
+                 * and tensors are all read identically.  The tensor-or-list
+                 * reader this replaces silently dropped every factor added
+                 * with the documented literal form (n_vars stayed 0), which
+                 * left beliefs uniform and free-energy at -0.0. */
                 int var_idx[8], n_vars = 0;
-                if (vars.as.ptr >= 0 && vars.type != VAL_PAIR &&
-                    vm->heap.objects[vars.as.ptr] &&
-                    vm->heap.objects[vars.as.ptr]->type == HEAP_TENSOR) {
-                    VmTensor* vt = (VmTensor*)vm->heap.objects[vars.as.ptr]->opaque.ptr;
-                    if (vt && vt->data) {
-                        int vn = (int)vt->total;
-                        for (int i = 0; i < vn && n_vars < 8; i++)
-                            var_idx[n_vars++] = (int)vt->data[i];
-                    }
-                } else {
-                    Value cur = vars;
-                    while (cur.type == VAL_PAIR && n_vars < 8) {
-                        var_idx[n_vars++] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                    }
-                }
-                /* Extract CPT data from tensor or list */
-                double* cpt_data = NULL;
-                if (is_heap_type(vm, cpt, HEAP_TENSOR)) {
-                    VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
-                    if (t) cpt_data = t->data;
-                }
+                int vseq_n = 0;
+                const double* vseq = vm_fg_seq_doubles(vm, vars, &vseq_n);
+                for (int i = 0; i < vseq_n && n_vars < 8; i++)
+                    var_idx[n_vars++] = (int)vseq[i];
+
+                int cpt_n = 0;
+                const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
+
                 if (n_vars > 0 && cpt_data) {
                     /* Build dims array from factor graph's var_dims */
                     int dims[8];
+                    int need = 1;
                     for (int i = 0; i < n_vars; i++) {
                         int vi = var_idx[i];
                         dims[i] = (vi >= 0 && vi < fg->num_vars) ? fg->var_dims[vi] : 2;
+                        need *= dims[i];
                     }
-                    VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
-                    if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
+                    /* vm_make_factor() copies exactly `need` doubles out of
+                     * the CPT, so a table shorter than the factor's
+                     * configuration space would read past the operand.  The
+                     * native runtime requires the length to match EXACTLY and
+                     * reports the mismatch without aborting the program
+                     * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
+                     * mirror both halves of that contract. */
+                    if (cpt_n == need) {
+                        VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
+                        if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
+                    } else {
+                        fprintf(stderr,
+                            "ERROR: fg-add-factor!: tensor has %d elements but factor expects %d\n",
+                            cpt_n, need);
+                    }
                 }
             }
         }
@@ -8926,21 +9553,47 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                int converged = vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
-                vm_push(vm, BOOL_VAL(converged));
+                vm_fg_infer(&vm->heap.regions, fg, (int)as_number(iters), as_number(tol));
+                /* fg-infer! ANSWERS the converged beliefs: a rank-1 tensor of
+                 * every variable's per-state probability, var-major, in
+                 * probability space (exp of the log-space beliefs) — the same
+                 * contract as eshkol_fg_infer_tagged() natively.  The VM used
+                 * to answer a bare convergence flag instead, so
+                 * `(display (fg-infer! fg 20))` printed #t/#f here and the
+                 * belief vector natively.  A tensor stays truthy, so code that
+                 * only tested the old flag still takes the same branch. */
+                int total_beliefs = 0;
+                for (int v = 0; v < fg->num_vars; v++) total_beliefs += fg->var_dims[v];
+                if (total_beliefs > 0) {
+                    int64_t shape[1] = { total_beliefs };
+                    VmTensor* bt = vm_tensor_new(&vm->heap.regions, shape, 1);
+                    if (bt) {
+                        int idx = 0;
+                        for (int v = 0; v < fg->num_vars; v++)
+                            for (int s = 0; s < fg->var_dims[v]; s++)
+                                bt->data[idx++] = exp(fg->beliefs[v][s]);
+                        VM_PUSH_TENSOR(vm, bt);
+                        break;
+                    }
+                }
+                vm_push(vm, NIL_VAL);
                 break;
             }
         }
-        vm_push(vm, BOOL_VAL(0));
+        vm_push(vm, NIL_VAL);
         break;
     }
     case 524: { /* fg-update-cpt!(fg, factor_idx, new_cpt_tensor) */
         Value cpt = vm_pop(vm), idx = vm_pop(vm), fg_val = vm_pop(vm);
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
-            if (fg && is_heap_type(vm, cpt, HEAP_TENSOR)) {
-                VmTensor* t = (VmTensor*)vm->heap.objects[cpt.as.ptr]->opaque.ptr;
-                if (t) vm_fg_update_cpt(fg, (int)as_number(idx), t->data, (int)t->total);
+            if (fg) {
+                /* Same reader as fg-add-factor!: `#(...)`, `(vector ...)`, a
+                 * list or a tensor are all a CPT.  vm_fg_update_cpt() rejects
+                 * a length that does not match the factor's table. */
+                int cpt_n = 0;
+                const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
+                if (cpt_data) vm_fg_update_cpt(fg, (int)as_number(idx), cpt_data, cpt_n);
             }
         }
         vm_push(vm, NIL_VAL);
@@ -8951,37 +9604,58 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
             VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
             if (fg) {
-                /* Parse observations.  Canonical Eshkol form is a flat
-                 * `#(var state)` tensor (one observation) or an even-length
-                 * `#(v0 s0 v1 s1 ...)` tensor (several), matching the native
-                 * LLVM runtime; `#()` means no evidence.  A list of
-                 * (var . state) pairs is still accepted for back-compat. */
-                int obs_pairs[32][2], n_obs = 0;
-                if (obs.as.ptr >= 0 && obs.type != VAL_PAIR &&
-                    vm->heap.objects[obs.as.ptr] &&
-                    vm->heap.objects[obs.as.ptr]->type == HEAP_TENSOR) {
-                    VmTensor* ot = (VmTensor*)vm->heap.objects[obs.as.ptr]->opaque.ptr;
-                    if (ot && ot->data) {
-                        int total = (int)ot->total;
-                        for (int i = 0; i + 1 < total && n_obs < 32; i += 2) {
-                            obs_pairs[n_obs][0] = (int)ot->data[i];
-                            obs_pairs[n_obs][1] = (int)ot->data[i + 1];
-                            n_obs++;
+                /* Observations are a FLAT `#(v0 s0 v1 s1 ...)` sequence —
+                 * `#()` means no evidence — read by the one factor-graph
+                 * sequence reader, so the documented literal (a VECTOR in the
+                 * VM), a `(vector ...)`, a flat list and a tensor all work.
+                 * A list of (var . state) pairs stays supported for
+                 * back-compat and is flattened to the same layout.
+                 *
+                 * vm_free_energy() takes a flat DOUBLE array of 2*num_obs
+                 * elements (identical to eshkol_free_energy() natively).  The
+                 * previous call built an `int obs_pairs[32][2]` and passed it
+                 * as `const double*`: a strict-aliasing violation that also
+                 * mis-strided the buffer (8-byte int pairs read as 16-byte
+                 * double pairs), so clamping consumed reinterpreted integer
+                 * bit patterns — denormals that truncate to 0 — on every
+                 * platform.  Building real doubles removes both faults. */
+                const double* obs_data = NULL;
+                int n_vals = 0;
+
+                int is_pair_list = 0;
+                if (obs.type == VAL_PAIR && is_valid_heap_ptr(vm, obs.as.ptr))
+                    is_pair_list = (vm->heap.objects[obs.as.ptr]->cons.car.type == VAL_PAIR);
+
+                if (is_pair_list) {
+                    int n_pairs = vm_tensor_collection_len(vm, obs);
+                    if (n_pairs > 0) {
+                        double* flat = (double*)vm_alloc(&vm->heap.regions,
+                            (size_t)n_pairs * 2 * sizeof(double));
+                        if (flat) {
+                            Value cur = obs;
+                            while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+                                Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
+                                if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+                                    n_vals + 1 < n_pairs * 2) {
+                                    Value car = vm->heap.objects[pair.as.ptr]->cons.car;
+                                    Value cdr = vm->heap.objects[pair.as.ptr]->cons.cdr;
+                                    /* both `(var . state)` and `(var state)` */
+                                    if (cdr.type == VAL_PAIR && is_valid_heap_ptr(vm, cdr.as.ptr))
+                                        cdr = vm->heap.objects[cdr.as.ptr]->cons.car;
+                                    flat[n_vals++] = as_number_vm(vm, car);
+                                    flat[n_vals++] = as_number_vm(vm, cdr);
+                                }
+                                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                            }
+                            obs_data = flat;
                         }
                     }
                 } else {
-                    Value cur = obs;
-                    while (cur.type == VAL_PAIR && n_obs < 32) {
-                        Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
-                        if (pair.type == VAL_PAIR) {
-                            obs_pairs[n_obs][0] = (int)as_number(vm->heap.objects[pair.as.ptr]->cons.car);
-                            obs_pairs[n_obs][1] = (int)as_number(vm->heap.objects[vm->heap.objects[pair.as.ptr]->cons.cdr.as.ptr]->cons.car);
-                            n_obs++;
-                        }
-                        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                    }
+                    obs_data = vm_fg_seq_doubles(vm, obs, &n_vals);
                 }
-                double fe = vm_free_energy(fg, (const double*)obs_pairs, n_obs);
+
+                /* num_obs counts PAIRS, matching eshkol_free_energy_tagged(). */
+                double fe = vm_free_energy(fg, obs_data, n_vals / 2);
                 vm_push(vm, FLOAT_VAL(fe));
                 break;
             }
@@ -9209,8 +9883,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             int cp = vm_string_ref(s, k);
-            vm_push(vm, INT_VAL(cp >= 0 ? cp : 0));
-        } else vm_push(vm, INT_VAL(0));
+            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0});
+        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
         break;
     }
     case 552: { /* string-set!(str, idx, char) → new string */
@@ -13142,11 +13816,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
-    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
-    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
-    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
-    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
-    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */
@@ -13163,7 +13837,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 203: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_NIL)); break; }  /* null? */
     case 204: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; } /* pair? */
     case 205: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }      /* not */
-    case 206: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT)); break; } /* number? */
+    case 206: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(a))); break; } /* number? (SW-31) */
     case 207: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; } /* string? */
     case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
@@ -13190,7 +13864,67 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
-    case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
+    case 214: { /* inexact->exact */
+        Value a = vm_pop(vm);
+        /* Already exact tags pass through unchanged — truncating them to an
+         * int64 was how (inexact->exact 1/2) used to become 0. */
+        if (a.type == VAL_INT || a.type == VAL_RATIONAL || a.type == VAL_BIGNUM) {
+            vm_push(vm, a); break;
+        }
+        double d214 = as_number_vm(vm, a);
+        if (d214 == 0.0) { vm_push(vm, INT_VAL(0)); break; }
+        if (!isfinite(d214)) {
+            fprintf(stderr, "ERROR: inexact->exact: no exact representation for %s\n",
+                    isnan(d214) ? "+nan.0" : (d214 > 0 ? "+inf.0" : "-inf.0"));
+            vm->error = 1; break;
+        }
+        /* Exact expansion: a finite double IS odd_mantissa * 2^exp2. Shared,
+         * digit for digit, with lib/core/rational.cpp — see the comment there
+         * for what the old `(int64_t)as_number(...)` truncation cost. */
+        int e214 = 0;
+        double frac214 = frexp(d214 < 0 ? -d214 : d214, &e214);
+        uint64_t mant214 = (uint64_t)ldexp(frac214, 53);
+        int exp214 = e214 - 53;
+        while (mant214 && (mant214 & 1u) == 0u) { mant214 >>= 1; exp214 += 1; }
+        int64_t num214 = (d214 < 0) ? -(int64_t)mant214 : (int64_t)mant214;
+        if (exp214 >= 0) {
+            /* Whole value. The VM's exact integers are int64 (its rationals
+             * are int64 pairs), so a magnitude past int64 has no exact VM
+             * representation: say so rather than push a wrong number. */
+            if (exp214 < 62 && mant214 < ((uint64_t)1 << (62 - exp214))) {
+                /* Shift the UNSIGNED magnitude and re-apply the sign:
+                 * a left shift of a negative int64 is undefined. */
+                int64_t whole214 = (int64_t)(mant214 << exp214);
+                vm_push(vm, INT_VAL(d214 < 0 ? -whole214 : whole214)); break;
+            }
+            fprintf(stderr, "ERROR: inexact->exact: %g is outside this VM's exact "
+                            "integer range (int64)\n", d214);
+            vm->error = 1; break;
+        }
+        {
+            int shift214 = -exp214;
+            VmArena* i2e_arena;
+            VmRational* i2e_r;
+            int32_t i2e_ptr;
+            if (shift214 >= 63) {
+                /* Subnormals and other tiny values need a denominator past
+                 * 2^62; VmRational is an int64 pair, so it cannot hold them.
+                 * Recorded as a native/VM divergence in
+                 * tests/vm_parity/PARITY.tsv rather than silently rounded. */
+                fprintf(stderr, "ERROR: inexact->exact: %g needs a denominator "
+                                "beyond this VM's int64 rationals\n", d214);
+                vm->error = 1; break;
+            }
+            i2e_arena = vm_active_arena(&vm->heap.regions);
+            i2e_r = vm_rational_make(i2e_arena, num214, (int64_t)1 << shift214);
+            if (!i2e_r) { vm->error = 1; break; }
+            i2e_ptr = heap_alloc(&vm->heap);
+            if (i2e_ptr < 0) { vm->error = 1; break; }
+            vm->heap.objects[i2e_ptr]->type = HEAP_RATIONAL;
+            vm->heap.objects[i2e_ptr]->opaque.ptr = i2e_r;
+            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = i2e_ptr});
+        }
+        break; }
     case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
         Value a = vm_pop(vm);
         if (a.type != VAL_STRING) { vm_push(vm, BOOL_VAL(0)); break; }
@@ -13316,6 +14050,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             vm_push(vm, v->items[idx]);
+        } else if (vec_v.type == VAL_TENSOR) {
+            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
+            vm_vecref_tensor_path(vm, vec_v, idx_v);
         } else vm_push(vm, NIL_VAL); break; }
     case 220: { /* vector-set! */
         Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
@@ -13327,12 +14064,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             v->items[idx] = val;
-        } vm_push(vm, NIL_VAL); break; }
+        } else if (vec_v.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            if (!vm_vecset_tensor_path(vm, vec_v, idx_v, val)) break;
+        }
+        vm_push(vm, NIL_VAL); break; }
     case 221: { /* vector-length */
         Value v = vm_pop(vm);
         if (v.type == VAL_VECTOR) {
             VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vec ? vec->len : 0));
+        } else if (v.type == VAL_TENSOR) {
+            /* SW-26 sibling gap. */
+            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, v)));
         } else vm_push(vm, INT_VAL(0)); break; }
     case 222: { /* string->list */
         Value s_val = vm_pop(vm);
@@ -13680,8 +14424,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Type predicates (1697-1699)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 1697: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_FLOAT || a.type == VAL_RATIONAL)); break; }
-    case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_RATIONAL)); break; }
+    /* SW-31: real?/rational?/integer? route through the shared tower
+     * classification. real? used to omit BIGNUM, rational? answered only for a
+     * boxed ratnum (so (rational? 5) and (rational? 5.0) were #f), and
+     * integer? did not exist as a native at all — the compiler aliased it to
+     * the number? opcode, which is why (integer? 5.5) answered #t. */
+    case 1697: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_real(a))); break; }
+    case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_rational(a))); break; }
+    case 1717: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_integer(vm, a))); break; }
     case 1699: { Value a = vm_pop(vm);
         vm_push(vm, BOOL_VAL(a.type == VAL_TENSOR)); break; }
 
@@ -13695,7 +14445,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * on the VM against #t natively. */
     case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL ||
                                                            a.type == VAL_BIGNUM || a.type == VAL_I128)); break; } /* exact? */
-    case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT)); break; } /* inexact? */
+    case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT || a.type == VAL_COMPLEX)); break; } /* inexact? (SW-31: complex is inexact) */
     case 164: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isnan(a.as.f))); break; } /* nan? */
     case 165: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isinf(a.as.f))); break; } /* infinite? */
     case 166: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type != VAL_FLOAT || isfinite(a.as.f))); break; } /* finite? */
@@ -13735,9 +14485,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math extensions (720-746)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 720: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
-    case 721: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
-    case 722: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
+    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
+    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
+    case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break; vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
     case 726: { /* write-line */
         Value s = vm_pop(vm);
         if (s.type == VAL_STRING) { VmString* vs = (VmString*)vm->heap.objects[s.as.ptr]->opaque.ptr;
@@ -15498,6 +16248,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * misused handle observes identical output on both substrates.
      * See tests/vm_parity/PARITY.tsv. */
     case 2210: { /* _region-open(name-or-#f, size-or-#f) -> handle token */
+        vm_region_reclaim_notice();   /* SW-14: the close will reclaim nothing */
         Value size_val = vm_pop(vm), name_val = vm_pop(vm);
         const char* name = NULL;
         uint64_t size_hint = 0;

@@ -12,6 +12,7 @@ on:
       - 'docs/**'
       - 'notes/**'
       - 'press/**'
+      - '.swarm/**'
       - 'LICENSE'
   pull_request:
     branches: [master]
@@ -20,6 +21,7 @@ on:
       - 'docs/**'
       - 'notes/**'
       - 'press/**'
+      - '.swarm/**'
       - 'LICENSE'
   schedule:
     # Weekly touch of the Windows LLVM SDK caches so actions/cache's 7-day

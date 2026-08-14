@@ -1,0 +1,71 @@
+; SW-18 / ESH-0105 class-kill: EXACTNESS must survive the int64 -> bignum
+; boundary, in the numerator AND in the denominator.
+;
+; The defect this pins: the VM's VmRational was a bare int64/int64 pair, so the
+; moment an exact operation produced a half outside int64 the VM pushed the
+; correctly-rounded DOUBLE instead of the exact value — with exit 0 and no
+; diagnostic. `(/ (expt 2 100) 3)` printed 4.2255020007607644e+29 where the
+; native engine prints 1267650600228229401496703205376/3.  R7RS 6.2.2 requires
+; an exact operation on exact operands to stay exact.
+;
+; Three separate degradation sites are covered here:
+;   1. bignum `/` that does not divide evenly (vm_bignum_arith case '/')
+;   2. a rational op with a BIGNUM operand (rational natives 331-334)
+;   3. a rational op whose reduced result merely OVERFLOWS int64 — no bignum
+;      operand needed at all
+; plus the exactness-visible consequences: exact?, numerator/denominator,
+; and exact comparison (two distinct exact values that round to the SAME
+; flonum must not compare equal).
+
+; ── 1. bignum division that does not divide evenly ──
+(display (/ (expt 2 100) 3)) (newline)
+(display (exact? (/ (expt 2 100) 3))) (newline)
+(display (numerator (/ (expt 2 100) 3))) (newline)
+(display (denominator (/ (expt 2 100) 3))) (newline)
+; an EVEN bignum division still collapses to an exact integer
+(display (/ (expt 2 100) 4)) (newline)
+(display (exact? (/ (expt 2 100) 4))) (newline)
+
+; ── round trip: multiplying back by the divisor restores the integer ──
+(display (* 3 (/ (expt 2 100) 3))) (newline)
+(display (- (/ (expt 2 100) 3) (/ (expt 2 100) 3))) (newline)
+(display (+ (/ (expt 2 100) 3) (/ (expt 2 100) 3))) (newline)
+
+; ── 2. a rational op with a bignum operand, in both operand orders ──
+(display (+ 1/3 (expt 2 100))) (newline)
+(display (+ (expt 2 100) 1/3)) (newline)
+(display (- 1/3 (expt 2 100))) (newline)
+(display (* 1/3 (expt 2 100))) (newline)
+; a BIGNUM DENOMINATOR — the boundary crossed on the other half
+(display (/ 1/3 (expt 2 100))) (newline)
+(display (exact? (/ 1/3 (expt 2 100)))) (newline)
+(display (denominator (/ 1/3 (expt 2 100)))) (newline)
+(display (numerator (/ 1/3 (expt 2 100)))) (newline)
+
+; ── 3. int64 overflow with NO bignum operand ──
+; 1/(2^62-1) + 1/(2^62+1): the reduced denominator leaves int64 on its own.
+(display (+ (/ 1 4611686018427387903) (/ 1 4611686018427387905))) (newline)
+(display (exact? (+ (/ 1 4611686018427387903) (/ 1 4611686018427387905)))) (newline)
+(display (* (/ 1 4611686018427387903) (/ 1 4611686018427387905))) (newline)
+
+; ── exactness-visible consequences ──
+; Two distinct exact values that round to the SAME double. Comparing through
+; doubles answered "equal"; exact comparison must separate them.
+(display (< (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))) (newline)
+(display (= (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))) (newline)
+(display (= (/ (expt 2 100) 3) (/ (expt 2 100) 3))) (newline)
+(display (> (/ (+ (expt 2 100) 1) 3) (/ (expt 2 100) 3))) (newline)
+
+; Explicit inexact conversion is still allowed to round — that is the ONLY
+; place a double may appear.
+(display (exact->inexact (/ (expt 2 100) 3))) (newline)
+
+; Inexact contagion still wins: one inexact operand makes the result inexact.
+(display (* 1.0 (/ (expt 2 100) 3))) (newline)
+
+; ── small rationals are untouched by the bignum path ──
+(display (/ 1 3)) (newline)
+(display (+ 1/3 1/6)) (newline)
+(display (* 2/3 3/4)) (newline)
+(display (exact? 1/3)) (newline)
+(display (/ 6 3)) (newline)

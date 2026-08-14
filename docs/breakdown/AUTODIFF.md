@@ -547,24 +547,43 @@ Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, 
 | Convolution | conv2d | `eshkol_backward_conv2d` |
 | Normalization | batch norm, layer norm | `eshkol_backward_batchnorm`, `eshkol_backward_layernorm` |
 | Linear algebra | matmul | `eshkol_backward_matmul` |
-| Attention | single-head | `tensor_attention_backward` — **stub in v1.2** (see Known limitations below) |
+| Attention | single-head, multi-head (causal and non-causal) | `eshkol_backward_attention` (native path), `tensor_attention_backward` (qLLM-bridge path) — both exact |
 | Embedding | embedding lookup | `tensor_embedding_backward` — exact indexed scatter-add |
 
 **Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
 
-**Attention backward** in v1.2-scale is a value-passthrough stub
-(`tensor_attention_backward` at `lib/bridge/tensor_backward.cpp`).
-It accumulates `dy` into the V input's gradient slot only; gradients
-into Q and K are zero, and the softmax chain through
-`softmax(Q K^T / sqrt(d)) V` is skipped. The runtime prints a
-one-shot stderr warning the first time the function is invoked so the
-limitation cannot hit silently during training. The full backward —
-`d_V = attn^T @ grad_out`, `d_attn = grad_out @ V^T`,
-`d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i]))`,
-then `d_Q = d_scores @ K` and `d_K = d_scores^T @ Q`, decomposed per-head
-for multi-head with backprop through (W_Q, W_K, W_V, W_O) — ships in
-v1.3-evolve as part of the attention-codegen rewrite. Training attention
-layers under v1.2 will not converge correctly.
+**Attention backward** is exact on both implementations, and the two are
+checked directly against each other by `ctest -R tensor_backward_dual_impl_gradcheck`
+(SW-12). The adjoint of `O = softmax(Q K^T * scale) V` is
+
+- `d_V = attn^T @ grad_out`
+- `d_attn = grad_out @ V^T`
+- `d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i])) * scale`
+  (the softmax Jacobian `diag(y) - y y^T` applied row-wise, one row dot
+  product per row, so the rule is O(seq^2) not O(seq^3))
+- `d_Q = d_scores @ K`, `d_K = d_scores^T @ Q`
+
+`eshkol_backward_attention` (`lib/backend/tensor_backward.cpp`) is the
+raw-buffer kernel for the native `AD_NODE_ATTENTION` path, BLAS-accelerated
+when `ESHKOL_BLAS_ENABLED`. `tensor_attention_backward`
+(`lib/bridge/tensor_backward.cpp`) is the independently written node-based rule
+for the qLLM-bridge `AD_NODE_TENSOR_ATTENTION` path; it applies the same
+adjoint per `(batch, head)` column slice of the `[batch, seq, dim]` operands.
+
+**Causal masking** is carried by the attention weights the forward retains, not
+by a mask test in the backward. `ad_tensor_attention`
+(`lib/bridge/qllm_bridge.cpp`) writes the dense `[batch, num_heads, seq, seq]`
+weight matrix into `node->saved_tensors[0]` with masked entries left at exactly
+zero, and records `[num_heads, head_dim, causal, scale_bits]` in the node's
+`params`. Every term of the adjoint carries a factor `attn[i][j]`, so masked
+positions contribute exactly zero while the summations still run over the full
+range — which keeps the accumulation order identical between the causal and
+non-causal cases and identical to the native kernel's, as the bit-for-bit
+gradient-determinism rule requires. The backward cross-checks the recorded
+`causal` flag against the retained weights and refuses if they disagree.
+
+Multi-head backprop through the projection weights `(W_Q, W_K, W_V, W_O)` is a
+separate rule, `eshkol_backward_multihead_attention`, on the native path.
 
 **Embedding backward** is the exact indexed scatter-add
 (`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`, ESH-0230).

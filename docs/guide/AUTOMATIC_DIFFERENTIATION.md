@@ -28,8 +28,9 @@ What makes Eshkol's AD unusual:
 This guide is example-driven. **Every snippet below was run with
 `./build/eshkol-run -r <file>` and the output shown is the real output** — no
 invented numbers. Snippets that `(require core.ad.*)` a library module were run
-with a library search path (`-L build`) and with the JIT object cache disabled
-(`ESHKOL_JIT_CACHE=0`); this is noted where it applies. The design and proofs
+with a library search path (`-L build`); this is noted where it applies. Nothing
+here needs the JIT run cache turned off — the cached (`-r`, AOT) and uncached
+(in-process JIT) routes are gated byte-identical. The design and proofs
 behind all of this live in
 [`docs/design/AD_TAYLOR_TOWER.md`](../design/AD_TAYLOR_TOWER.md).
 
@@ -310,7 +311,7 @@ primitive, just orchestration over `taylor`.
 (display (gradient-n f xs 3)) (newline)
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 5.30118
@@ -353,7 +354,7 @@ and compose cleanly.
 (display (tensor-sum A)) (newline)             ; sum(A)
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 36.8475
@@ -394,7 +395,7 @@ optimization. Load `core.ad.taylor_models`.
 (display (interval-contains? (tm-eval tm 0.25) (exp 0.25))) (newline)
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 0.35127
@@ -447,7 +448,7 @@ m of them.
 (display (sparse-hessian-colors sp)) (newline)    ; AD passes used
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 2
@@ -522,7 +523,7 @@ segments during the backward sweep rather than storing them all.
 (display (checkpoint-block-size n)) (newline)   ; ~sqrt(100)
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 -3.31007e-08
@@ -605,7 +606,7 @@ purely on `taylor`.
 (display (taylor-inverse-series (lambda (x) (+ x (* x x))) 0.0 5)) (newline)
 ```
 
-Run with `ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r ex.esk -L build`. Output:
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
 
 ```
 0.367879
@@ -775,11 +776,10 @@ for the arity-recovery mechanism.
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
 
 **Running module examples:** because these modules are loaded via `require`,
-run them with the build directory on the library path and the JIT object cache
-disabled:
+run them with the build directory on the library path:
 
 ```
-ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r your-file.esk -L build
+./build/eshkol-run -r your-file.esk -L build
 ```
 
 The built-in-operator examples in §1–§2 need only `./build/eshkol-run -r

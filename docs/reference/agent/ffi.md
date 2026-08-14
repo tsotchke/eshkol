@@ -49,7 +49,7 @@ case-sensitively:
 | `i64` / `long` | i64 |
 | `f32` / `float` | float (f32) |
 | `f64` / `double` | double (f64) |
-| `ptr` / `char*` / `string` | pointer |
+| `ptr` / `void*` / `char*` / `string` | pointer |
 | `...` | variadic marker |
 | *(anything else)* | defaults to i64 (with a warning) |
 

@@ -1,0 +1,57 @@
+;; AD over a lambda whose free variables are the ENCLOSING FUNCTION'S
+;; PARAMETERS, while top-level globals of the same names exist with different
+;; values.  Escape-analysis axis for task #114: the corpus already had AD files
+;; (29/30) and a shadowing file (39), but nothing that CROSSED them — and the
+;; defect lived exactly at the crossing.  The backend rebuilds a differentiated
+;; lambda's capture list from its LLVM parameter names; a global-first raw-name
+;; lookup there substitutes the global for the shadowed parameter.  Pre-fix this
+;; file segfaults on the AOT axes and prints silently wrong numbers on the JIT
+;; axes, so every axis pair diverges.
+;;
+;; Deliberately self-contained: no (require ...), so it runs on every axis with
+;; no library search path.
+
+(define a 1000.0)
+(define base (vector 7.0 7.0))
+(define pt (vector 5.0 5.0))
+
+;; derivative: d/dt sin(a + t) at 0 = cos(a), with `a` the PARAMETER
+(define (dwrap a) (derivative (lambda (t) (sin (+ a t))) 0.0))
+(display (dwrap 0.3)) (newline)
+(display (dwrap 0.0)) (newline)
+
+;; derivative-n: higher orders through the same capture
+(define (dnwrap a k) (derivative-n (lambda (t) (sin (+ a t))) 0.0 k))
+(display (dnwrap 0.3 1)) (newline)
+(display (dnwrap 0.3 2)) (newline)
+(display (dnwrap 0.3 3)) (newline)
+
+;; taylor: the tower path, same capture
+(define (twrap a k) (taylor (lambda (t) (* (+ a t) (+ a t))) 0.0 k))
+(display (twrap 2.0 2)) (newline)
+
+;; gradient over a captured parameter VECTOR
+(define (gwrap base)
+  (gradient (lambda (w) (+ (* (vector-ref w 0) (vector-ref base 0))
+                           (* (vector-ref w 1) (vector-ref base 1))))
+            (vector 1.0 1.0)))
+(display (gwrap (vector 2.0 3.0))) (newline)
+
+;; gradient over a captured scalar parameter
+(define (gscal a) (gradient (lambda (t) (* a t t)) 2.0))
+(display (gscal 0.5)) (newline)
+
+;; directional derivative over a captured parameter vector
+(define (ddwrap pt dir)
+  (directional-derivative
+    (lambda (w) (+ (* (vector-ref w 0) (vector-ref pt 0))
+                   (* (vector-ref w 1) (vector-ref pt 1))))
+    (vector 1.0 1.0)
+    dir))
+(display (ddwrap (vector 2.0 3.0) (vector 1.0 0.0))) (newline)
+(display (ddwrap (vector 2.0 3.0) (vector 0.0 1.0))) (newline)
+
+;; the shadowed globals must survive untouched
+(display a) (newline)
+(display base) (newline)
+(display pt) (newline)

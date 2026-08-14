@@ -811,14 +811,37 @@ also work inside a `#(...)` vector literal under quasiquote:
 (the <type> expr)
 ```
 Asserts to the type checker that `expr` has type `<type>`. It is a **trusted
-assertion**: the checker narrows its view of `expr` to `<type>` and does not
-re-derive it. It is a pure **runtime no-op** — the emitted IR is byte-identical
-to `expr` alone (no runtime tag check, no cost), so `(the <type> expr)` evaluates
-to exactly the same value as `expr`.
+assertion**: the checker adopts `<type>` as the type of the whole form and does
+not re-derive it from `expr`. It is a pure **runtime no-op** — the emitted IR is
+byte-identical to `expr` alone (no runtime tag check, no cost), so
+`(the <type> expr)` evaluates to exactly the same value as `expr`.
+
+Trusted does not mean unexamined. The checker still synthesizes `expr`, and if
+the type it finds is **provably disjoint** from `<type>` — no value inhabits
+both — it reports the ascription rather than adopting it. That is a compile-time
+diagnostic only: a warning under gradual typing, fatal under `--strict-types`
+(§ [`--strict-types`](reference/runtime/eshkol-run.md)), and in neither case
+does it add anything to the emitted code.
+
+The check is deliberately narrow, so the form stays useful:
+
+- **Narrowing is always accepted** — the primary use. `(the integer (car xs))`
+  over a dynamically-typed container is exactly what the form is for.
+- **Widening is always accepted**: `(the number 1)`.
+- Anything whose type the checker does not know (the dynamic `any`/`value`
+  root, an unresolved name) is trusted, not questioned.
+- **Numeric-tower ascriptions are always accepted.** `integer`, `rational`,
+  `real` and `complex` are siblings under `number` in this type graph rather
+  than a chain, so no subtyping relation holds between them in either
+  direction; `(the real 1)` and `(the float64 (+ 1 2))` are ordinary.
+
+Only a genuine contradiction is reported:
 
 ```scheme
 (the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)
+(the real 1)                    ; fine — moving inside the numeric tower
+(the string (+ 1 2))            ; reported: no value is both Int64 and String
 ```
 
 `<type>` may be any parenthesised type form, or any **bare type name the type
@@ -1832,7 +1855,8 @@ JSON parsing and serialization:
 
 #### 6.1.1 Core Concepts
 - **Arena Allocation:** Bump-pointer allocation in large blocks
-- **Scope-based Cleanup:** Memory freed when scope exits
+- **Scope-based Cleanup:** Memory freed when scope exits (native engine; the
+  bytecode VM does not reclaim yet — see 6.2.1)
 - **No Garbage Collection:** Deterministic, predictable performance
 - **Cache-Friendly:** Linear allocation pattern
 
@@ -1864,15 +1888,25 @@ struct arena {
 
 **Semantics:**
 - Creates a dedicated arena for the body
-- Memory freed when region exits
+- Memory freed when region exits, and the body result is deep-copied out so it
+  survives (**native engine**)
 - Supports nesting (stack of regions)
+
+**Substrate note.** The reclamation half of those semantics is implemented by
+the **native engine** (`eshkol-run`, JIT and AOT) only. On the **bytecode VM**
+all three spellings evaluate the body identically and return the same value —
+the form is value- and effect-transparent — but **nothing is freed**, because
+the VM heap has no escape evacuator yet. A VM program is therefore correct but
+grows monotonically; it announces this at the first region form and again when
+the growth crosses a heap budget. The VM evacuator is the v1.3.5 flagship item.
+See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Example:**
 ```scheme
 (with-region 'temp
   (define data (iota 1000))
   (process data))
-; data's memory freed here
+; native: data's memory freed here; bytecode VM: same value, not yet freed
 ```
 
 #### 6.2.2 `owned` - Mark Ownership
@@ -3073,7 +3107,7 @@ exact    exact     exact    inexact   inexact
 1. Arithmetic on two exact values produces an exact result when mathematically defined.
 2. Arithmetic involving at least one inexact operand produces an inexact result.
 3. `exact->inexact` converts to the nearest IEEE 754 double. Precision loss is possible for bignums with magnitude > 2^53.
-4. `inexact->exact` converts a double to the nearest rational representation via continued fraction expansion.
+4. `inexact->exact` returns the operand's EXACT value, never a nearby one. A finite IEEE 754 double is exactly `mantissa * 2^exponent` with a 53-bit integer mantissa, and that is what the conversion returns: `(inexact->exact 0.1)` is `3602879701896397/36028797018963968`. A whole-valued double becomes an exact integer (promoting to a bignum past int64 range, so `(inexact->exact 1e300)` is an exact 301-digit integer); a fractional one becomes a rational with a power-of-two denominator (subnormals need a bignum denominator, up to 2^1074). The conversion is therefore lossless in both directions: `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit for every finite `x`. Infinities and NaN have no exact value and signal an error.
 
 #### 14.3.2 Mixed-Exactness Dispatch
 
@@ -3186,7 +3220,28 @@ result_imag = (b - a * r) / denom
 - `(real-part z)` -- Returns the real component as a double.
 - `(imag-part z)` -- Returns the imaginary component as a double.
 
-#### 15.3.3 Promotion from Real
+#### 15.3.3 Transcendental Functions
+
+The math builtins extend to the complex domain on the principal branch, with
+the branch cuts of C99 Annex G (signed zero selects the branch, so
+`(sqrt (make-rectangular -1.0 0.0))` is `0.0+1.0i` and
+`(sqrt (make-rectangular -1.0 -0.0))` is `0.0-1.0i`):
+
+`sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
+`acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, and `expt`
+with a complex base, a complex exponent, or both.
+
+The remaining math builtins are defined on the reals only — `floor`,
+`ceiling`, `truncate`, `round`, `cbrt` and `abs` (the complex counterpart of
+`abs` is `magnitude`). Applying one to a complex signals a catchable type
+error naming the procedure; it never coerces.
+
+**Implementation:** one shared core, `inc/eshkol/core/complex_math.h`. The
+native runtime exposes each function as `eshkol_complex_<name>` for the LLVM
+back end to call, and the bytecode VM compiles the same header in, so both
+engines return identical bits.
+
+#### 15.3.4 Promotion from Real
 
 When a real number is used in a context requiring a complex (e.g., arithmetic with a complex operand), it is promoted to complex with `imag = 0.0`. The `convertToComplex` codegen path handles INT64, DOUBLE, and HEAP_PTR (bignum) inputs, converting bignums via `eshkol_bignum_to_double` before constructing the complex.
 
@@ -4144,7 +4199,8 @@ Keep original name (exported via `provide`)
 
 **Version History:**
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
-  memory reclamation that matches explicit `with-region`, race-free
+  memory reclamation on the native engine that matches explicit `with-region`,
+  race-free
   `parallel-map`, exact gradients through every callable form and at exact
   (rational/bignum) points, R7RS-correct exactness contagion on both the native
   and bytecode-VM numeric paths, same-unit `define-library`/`import` resolution

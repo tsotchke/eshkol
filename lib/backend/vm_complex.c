@@ -11,6 +11,7 @@
  */
 
 #include "vm_numeric.h"
+#include <eshkol/core/complex_math.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -106,61 +107,90 @@ static VmComplex* vm_complex_div(VmRegionStack* rs, const VmComplex* a, const Vm
     }
 }
 
-/** @brief Native call 311: principal complex square root, via the
- *         magnitude-based half-angle formula (sign of imag chosen to match
- *         @p z's imaginary sign). */
+/*
+ * ── Transcendentals: the shared core ──────────────────────────────────────
+ *
+ * Task #113. These used to be hand-written here and hand-written again in the
+ * LLVM back end, which is how the two engines came to disagree: the native
+ * polar-form sqrt returned 6.1e-17+1i for `(sqrt (make-rectangular -1.0 0.0))`
+ * where this file's half-angle form returned the documented 0.0+1.0i. Both now
+ * evaluate the SAME expressions from <eshkol/core/complex_math.h>, so the
+ * engines agree bit-for-bit by construction rather than by review.
+ */
+
+/** @brief Convert a VM complex to the shared pair type. */
+static eshkol_cpx vm_cpx_in(const VmComplex* z) {
+    return eshkol_cpx_make(z->real, z->imag);
+}
+
+/** @brief Allocate a VM complex from a shared-core result. */
+static VmComplex* vm_cpx_out(VmRegionStack* rs, eshkol_cpx v) {
+    return vm_complex_new(rs, v.re, v.im);
+}
+
+/** @brief Native call 311: principal complex square root. */
 static VmComplex* vm_complex_sqrt(VmRegionStack* rs, const VmComplex* z) {
-    double r = vm_complex_magnitude(z);
-    double real = sqrt((r + z->real) / 2.0);
-    double imag = sqrt((r - z->real) / 2.0);
-    if (z->imag < 0) imag = -imag;
-    return vm_complex_new(rs, real, imag);
+    return vm_cpx_out(rs, eshkol_cpx_sqrt(vm_cpx_in(z)));
 }
 
-/** @brief Native call 312: complex exponential, e^(a+bi) = e^a * (cos(b) +
- *         i*sin(b)). */
+/** @brief Native call 312: complex exponential. */
 static VmComplex* vm_complex_exp(VmRegionStack* rs, const VmComplex* z) {
-    double ea = exp(z->real);
-    return vm_complex_new(rs, ea * cos(z->imag), ea * sin(z->imag));
+    return vm_cpx_out(rs, eshkol_cpx_exp(vm_cpx_in(z)));
 }
 
-/** @brief Native call 313: principal complex natural log, (log|z|,
- *         angle(z)). */
+/** @brief Native call 313: principal complex natural logarithm. */
 static VmComplex* vm_complex_log(VmRegionStack* rs, const VmComplex* z) {
-    return vm_complex_new(rs, log(vm_complex_magnitude(z)), vm_complex_angle(z));
+    return vm_cpx_out(rs, eshkol_cpx_log(vm_cpx_in(z)));
 }
 
-/** @brief Native call 314: complex sin, sin(a+bi) = sin(a)*cosh(b) +
- *         i*cos(a)*sinh(b). */
+/** @brief Native call 314: complex sine. */
 static VmComplex* vm_complex_sin(VmRegionStack* rs, const VmComplex* z) {
-    return vm_complex_new(rs,
-        sin(z->real) * cosh(z->imag),
-        cos(z->real) * sinh(z->imag));
+    return vm_cpx_out(rs, eshkol_cpx_sin(vm_cpx_in(z)));
 }
 
-/** @brief Native call 315: complex cos, cos(a+bi) = cos(a)*cosh(b) -
- *         i*sin(a)*sinh(b). */
+/** @brief Native call 315: complex cosine. */
 static VmComplex* vm_complex_cos(VmRegionStack* rs, const VmComplex* z) {
-    return vm_complex_new(rs,
-        cos(z->real) * cosh(z->imag),
-        -sin(z->real) * sinh(z->imag));
+    return vm_cpx_out(rs, eshkol_cpx_cos(vm_cpx_in(z)));
 }
 
-/** @brief Native call 316: complex tan, computed as sin(z)/cos(z). */
+/** @brief Native call 316: complex tangent. */
 static VmComplex* vm_complex_tan(VmRegionStack* rs, const VmComplex* z) {
-    VmComplex* s = vm_complex_sin(rs, z);
-    VmComplex* c = vm_complex_cos(rs, z);
-    if (!s || !c) return NULL;
-    return vm_complex_div(rs, s, c);
+    return vm_cpx_out(rs, eshkol_cpx_tan(vm_cpx_in(z)));
 }
 
-/** @brief Native call 318: complex exponentiation, a^b = exp(b * log(a)). */
+/** @brief Complex arcsine (principal branch). */
+static VmComplex* vm_complex_asin(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_asin(vm_cpx_in(z)));
+}
+
+/** @brief Complex arccosine (principal branch). */
+static VmComplex* vm_complex_acos(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_acos(vm_cpx_in(z)));
+}
+
+/** @brief Complex arctangent (principal branch). */
+static VmComplex* vm_complex_atan(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_atan(vm_cpx_in(z)));
+}
+
+/** @brief Complex hyperbolic sine. */
+static VmComplex* vm_complex_sinh(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_sinh(vm_cpx_in(z)));
+}
+
+/** @brief Complex hyperbolic cosine. */
+static VmComplex* vm_complex_cosh(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_cosh(vm_cpx_in(z)));
+}
+
+/** @brief Complex hyperbolic tangent. */
+static VmComplex* vm_complex_tanh(VmRegionStack* rs, const VmComplex* z) {
+    return vm_cpx_out(rs, eshkol_cpx_tanh(vm_cpx_in(z)));
+}
+
+/** @brief Native call 318: complex exponentiation, a^b = exp(b log a). */
 static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
-    VmComplex* log_a = vm_complex_log(rs, a);
-    if (!log_a) return NULL;
-    VmComplex* b_log_a = vm_complex_mul(rs, b, log_a);
-    if (!b_log_a) return NULL;
-    return vm_complex_exp(rs, b_log_a);
+    return vm_cpx_out(rs, eshkol_cpx_pow(vm_cpx_in(a), vm_cpx_in(b)));
 }
 
 /* ── Self-Test ── */

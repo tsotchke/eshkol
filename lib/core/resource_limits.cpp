@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cerrno>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -42,8 +43,11 @@ eshkol_resource_limits_t make_default_limits() {
     limits.max_stack_depth = ESHKOL_DEFAULT_MAX_STACK_DEPTH;
     limits.max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS;
     limits.max_string_length = ESHKOL_DEFAULT_MAX_STRING_LENGTH;
+    limits.max_vm_instructions = ESHKOL_DEFAULT_MAX_VM_INSTRUCTIONS;
     limits.enforce_hard_limits = true;
     limits.enable_warnings = true;
+    // No ceiling is active until something asks for one. See the header.
+    limits.active_limits = 0;
     return limits;
 }
 
@@ -228,6 +232,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     if (max_heap) {
         limits.max_heap_bytes = parse_size_or_default(max_heap, limits.max_heap_bytes);
         limits.heap_soft_limit_bytes = (limits.max_heap_bytes * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_HEAP;
         eshkol_debug("Max heap from env: %zu bytes", limits.max_heap_bytes);
     }
 
@@ -235,6 +240,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* timeout = std::getenv("ESHKOL_TIMEOUT_MS");
     if (timeout) {
         limits.max_execution_time_ms = parse_u64_or_default(timeout, limits.max_execution_time_ms);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_TIMEOUT;
         eshkol_debug("Timeout from env: %llu ms", (unsigned long long)limits.max_execution_time_ms);
     }
 
@@ -242,6 +248,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_stack = std::getenv("ESHKOL_MAX_STACK");
     if (max_stack) {
         limits.max_stack_depth = parse_size_or_default(max_stack, limits.max_stack_depth);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STACK;
         eshkol_debug("Max stack from env: %zu", limits.max_stack_depth);
     }
 
@@ -249,6 +256,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_tensor = std::getenv("ESHKOL_MAX_TENSOR_ELEMS");
     if (max_tensor) {
         limits.max_tensor_elements = parse_size_or_default(max_tensor, limits.max_tensor_elements);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_TENSOR;
         eshkol_debug("Max tensor elements from env: %zu", limits.max_tensor_elements);
     }
 
@@ -256,7 +264,20 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     const char* max_string = std::getenv("ESHKOL_MAX_STRING_LEN");
     if (max_string) {
         limits.max_string_length = parse_size_or_default(max_string, limits.max_string_length);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STRING;
         eshkol_debug("Max string length from env: %zu", limits.max_string_length);
+    }
+
+    // ESHKOL_VM_MAX_INSN. Parsed here with its six siblings so the bytecode VM
+    // — a freestanding-safe source family that may not call getenv() — receives
+    // it through eshkol_get_limits() like every other ceiling it obeys.
+    const char* max_vm_insn = std::getenv("ESHKOL_VM_MAX_INSN");
+    if (max_vm_insn) {
+        limits.max_vm_instructions =
+            parse_u64_or_default(max_vm_insn, limits.max_vm_instructions);
+        limits.active_limits |= ESHKOL_LIMIT_ACTIVE_VM_INSN;
+        eshkol_debug("Max VM instructions from env: %llu",
+                     (unsigned long long)limits.max_vm_instructions);
     }
 
     // ESHKOL_ENFORCE_LIMITS
@@ -298,6 +319,11 @@ void eshkol_set_limits(const eshkol_resource_limits_t* limits) {
                 g_limits.max_heap_bytes / (1024 * 1024),
                 (unsigned long long)g_limits.max_execution_time_ms,
                 g_limits.max_stack_depth);
+}
+
+/** Whether a given ceiling was asked for and should be enforced. */
+bool eshkol_limit_is_active(uint32_t which) {
+    return (g_limits.active_limits & which) != 0;
 }
 
 /** Return a pointer to the currently active resource limits. */
@@ -641,6 +667,132 @@ const char* eshkol_limit_error_message(eshkol_limit_error_t error) {
         default:
             return "Unknown limit error";
     }
+}
+
+// ----------------------------------------------------------------------------
+// Enforcement
+// ----------------------------------------------------------------------------
+
+/** Map a limit condition to its documented process exit status. */
+int eshkol_limit_exit_code(eshkol_limit_error_t error) {
+    switch (error) {
+        case ESHKOL_LIMIT_HEAP_HARD:      return ESHKOL_EXIT_LIMIT_HEAP;
+        case ESHKOL_LIMIT_STACK_OVERFLOW: return ESHKOL_EXIT_LIMIT_STACK;
+        case ESHKOL_LIMIT_TENSOR_SIZE:    return ESHKOL_EXIT_LIMIT_TENSOR;
+        case ESHKOL_LIMIT_STRING_LENGTH:  return ESHKOL_EXIT_LIMIT_STRING;
+        case ESHKOL_LIMIT_TIMEOUT:        return ESHKOL_EXIT_LIMIT_TIMEOUT;
+        case ESHKOL_LIMIT_OK:
+        case ESHKOL_LIMIT_HEAP_SOFT:
+        default:                          return ESHKOL_EXIT_LIMIT_HEAP;
+    }
+}
+
+/** The environment variable that configures each limit, for the diagnostic. */
+static const char* limit_env_var(eshkol_limit_error_t error) {
+    switch (error) {
+        case ESHKOL_LIMIT_HEAP_HARD:
+        case ESHKOL_LIMIT_HEAP_SOFT:      return "ESHKOL_MAX_HEAP";
+        case ESHKOL_LIMIT_STACK_OVERFLOW: return "ESHKOL_MAX_STACK";
+        case ESHKOL_LIMIT_TENSOR_SIZE:    return "ESHKOL_MAX_TENSOR_ELEMS";
+        case ESHKOL_LIMIT_STRING_LENGTH:  return "ESHKOL_MAX_STRING_LEN";
+        case ESHKOL_LIMIT_TIMEOUT:        return "ESHKOL_TIMEOUT_MS";
+        default:                          return "ESHKOL_ENFORCE_LIMITS";
+    }
+}
+
+/** The configured ceiling for each limit, rendered for the diagnostic. */
+static void format_limit_ceiling(eshkol_limit_error_t error,
+                                 char* out, size_t out_size) {
+    switch (error) {
+        case ESHKOL_LIMIT_HEAP_HARD:
+        case ESHKOL_LIMIT_HEAP_SOFT:
+            snprintf(out, out_size, "%zu bytes", g_limits.max_heap_bytes);
+            break;
+        case ESHKOL_LIMIT_STACK_OVERFLOW:
+            snprintf(out, out_size, "%zu frames", g_limits.max_stack_depth);
+            break;
+        case ESHKOL_LIMIT_TENSOR_SIZE:
+            snprintf(out, out_size, "%zu elements", g_limits.max_tensor_elements);
+            break;
+        case ESHKOL_LIMIT_STRING_LENGTH:
+            snprintf(out, out_size, "%zu bytes", g_limits.max_string_length);
+            break;
+        case ESHKOL_LIMIT_TIMEOUT:
+            snprintf(out, out_size, "%llums",
+                     (unsigned long long)g_limits.max_execution_time_ms);
+            break;
+        default:
+            snprintf(out, out_size, "n/a");
+            break;
+    }
+}
+
+/** @brief Terminate (or merely record) a hard-limit violation.
+ *
+ * See the header for the contract. The terminating branch deliberately uses
+ * `_Exit()` rather than `exit()`: every caller is either inside the allocator
+ * or on a hot execution path, and running atexit handlers plus static
+ * destructors from there re-enters the very machinery that just failed. The
+ * streams are flushed by hand first so the program's own output, and this
+ * diagnostic, are never lost to that shortcut. */
+void eshkol_limit_enforce(eshkol_limit_error_t error, const char* detail) {
+    g_last_error.store(error, std::memory_order_relaxed);
+
+    char ceiling[64];
+    format_limit_ceiling(error, ceiling, sizeof(ceiling));
+
+    if (!g_limits.enforce_hard_limits) {
+        // Advisory mode: ESHKOL_ENFORCE_LIMITS=false documents that errors are
+        // returned rather than fatal, so the caller fails just this operation.
+        if (g_limits.enable_warnings) {
+            eshkol_warn("%s (limit %s, set by %s)%s%s",
+                        eshkol_limit_error_message(error), ceiling,
+                        limit_env_var(error),
+                        detail ? ": " : "", detail ? detail : "");
+        }
+        return;
+    }
+
+    fflush(stdout);
+    fprintf(stderr,
+            "eshkol: fatal: %s (limit %s, set by %s)%s%s\n",
+            eshkol_limit_error_message(error), ceiling, limit_env_var(error),
+            detail ? ": " : "", detail ? detail : "");
+    fflush(stderr);
+
+    // Let any other thread see the shutdown before this one leaves.
+    eshkol_runtime_request_interrupt(error == ESHKOL_LIMIT_TIMEOUT
+                                         ? ESHKOL_SHUTDOWN_TIMEOUT
+                                         : ESHKOL_SHUTDOWN_MEMORY);
+
+    _Exit(eshkol_limit_exit_code(error));
+}
+
+/** @brief Apply the tensor-element ceiling to a count computed by generated code. */
+void eshkol_enforce_tensor_elements(int64_t num_elements) {
+    if (num_elements <= 0) return;
+    if (!eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_TENSOR)) return;
+    if (eshkol_check_tensor_size((size_t)num_elements)) return;
+
+    char detail[64];
+    snprintf(detail, sizeof(detail), "requested %lld elements",
+             (long long)num_elements);
+    eshkol_limit_enforce(ESHKOL_LIMIT_TENSOR_SIZE, detail);
+}
+
+/** @brief Notice an interrupt requested by the timeout watchdog (or a signal).
+ *
+ * Deliberately trivial in the common case — one relaxed read of the interrupt
+ * flag — because this sits on loop back-edges and in the VM dispatch loop. */
+void eshkol_limit_poll_interrupt(void) {
+    if (!g_eshkol_interrupt_flag) return;
+
+    // A timeout is the one interrupt this layer owns; anything else (a signal,
+    // an explicit shutdown request) belongs to the runtime's own handlers, so
+    // leave the flag set for them and return.
+    if (eshkol_runtime_get_shutdown_reason() != ESHKOL_SHUTDOWN_TIMEOUT) return;
+
+    eshkol_limit_enforce(ESHKOL_LIMIT_TIMEOUT, nullptr);
 }
 
 // ----------------------------------------------------------------------------

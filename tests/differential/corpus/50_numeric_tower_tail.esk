@@ -1,0 +1,49 @@
+;; SW-29 / SW-31 / SW-32: the exact tail of the numeric tower must agree on
+;; every compilation axis (JIT, AOT-O0, AOT-O2), not only between the engines.
+;;
+;; All three defects this pins were silent wrong ANSWERS that a constant folder
+;; or an optimizer could plausibly have papered over at one optimization level
+;; and not another, which is why they belong on the differential axes and not
+;; only in the engine-parity corpus:
+;;   SW-29  floor/ceiling/truncate/round of a bignum-backed rational answered 0
+;;          natively (the int64 shadow fields read as 0/1)
+;;   SW-31  number?/real?/rational?/integer?/positive?/eqv? denied whole
+;;          numeric classes on the VM
+;;   SW-32  min/max disagreed with `<` on the same pair, because they carried a
+;;          shorter copy of the ordering dispatch than `<` did
+
+(define r  (/ (expt 2 100) 3))
+(define r2 (/ (+ (expt 2 100) 1) 3))
+
+;; Exactness is preserved across the int64 boundary.
+(display (list (exact? r) (numerator r) (denominator r))) (newline)
+
+;; Rounding stays exact and obeys its defining inequalities.
+(display (list (floor r) (ceiling r) (truncate r) (round r))) (newline)
+(display (list (<= (floor r) r) (< r (+ (floor r) 1)) (exact? (floor r)))) (newline)
+(display (- (ceiling r) (floor r))) (newline)
+
+;; Ordering: min/max must agree with `<` on the same pair.
+(display (list (< r r2) (= (max r r2) r2) (= (min r r2) r))) (newline)
+(display (list (max r r2) (min r r2))) (newline)
+
+;; The same invariant for exact integers straddling 2^53, where a double
+;; comparison cannot tell the operands apart.
+(define a 9007199254740993)
+(define b 9007199254740992)
+(display (list (< b a) (= (max a b) a) (= (min a b) b))) (newline)
+(display (list (max a b) (min a b))) (newline)
+
+;; Type predicates across the tower.
+(display (list (number? r) (real? r) (rational? r) (integer? r) (exact? r))) (newline)
+(display (list (integer? 5.0) (integer? 5.5) (integer? (expt 2 100)))) (newline)
+(display (list (rational? 5) (rational? 5.0) (complex? 5))) (newline)
+(display (list (positive? r) (negative? (- 0 r)) (zero? (- r r)))) (newline)
+(display (list (odd? (+ (expt 2 100) 1)) (even? (expt 2 100)))) (newline)
+
+;; eqv? is value equality on numbers of the same exactness.
+(display (list (eqv? r (/ (expt 2 100) 3)) (eqv? r r2) (eqv? 5 5.0))) (newline)
+
+;; Round-trip through the exact path.
+(display (* 3 (floor r))) (newline)
+(display (+ (* (denominator r) (floor r)) (numerator (- r (floor r))))) (newline)

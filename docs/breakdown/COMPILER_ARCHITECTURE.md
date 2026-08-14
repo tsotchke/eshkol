@@ -388,7 +388,7 @@ The LLVM backend distributes code generation across 21 specialized modules total
 | **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 503 | TCO transformation, trampoline runtime |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 499 | Complex number arithmetic (Smith's formula division) |
 
-The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,300 lines re-exported through the dispatcher above.
+The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,400 lines re-exported through the dispatcher above.
 
 **Additional backend components (not in the 21-module count):**
 
@@ -833,7 +833,7 @@ Package manager with TOML manifests and git-based registry: `eshkol-pkg init/bui
 
 ### Global Arena
 
-**Implementation:** [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.h) (~6,200 lines)
+**Implementation:** [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,259 lines total)
 
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy

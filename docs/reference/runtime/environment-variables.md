@@ -60,17 +60,108 @@ built against a different runtime layout.
 
 Read by `lib/core/resource_limits.cpp`. Size vars accept `K`/`M`/`G` suffixes.
 
+| Variable | Effect | Default | Exit status when exceeded |
+|----------|--------|---------|---------------------------|
+| `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB | 120 |
+| `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 | 121 |
+| `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB | — |
+| `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB | 123 |
+| `ESHKOL_MAX_TENSOR_ELEMS` | Max tensor element count. | 1e9 | 122 |
+| `ESHKOL_TIMEOUT_MS` | Max execution time (ms); `0` = unlimited. | 30000 | 124 |
+| `ESHKOL_VM_MAX_INSN` | Bytecode-VM runaway-instruction guard; `0` = unlimited. | 10000000 | 125 |
+| `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (terminate on exceed). | true | — |
+| `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true | — |
+
+### Limits are opt-in
+
+A ceiling binds a run **only when that run asks for it** — by setting the
+variable (or setting the corresponding `ESHKOL_LIMIT_ACTIVE_*` bit before
+`eshkol_set_limits()`). The defaults in the table are the values a limit takes
+*when you turn it on*; they are not ceilings every program is silently held to.
+
+This is a deliberate distinction, not an omission, and it is the ruled v1.3.4
+behaviour: ceilings are opt-in, so shipping behaviour is unchanged for every
+existing program. Whether the documented defaults should also bind an
+unconfigured run is deferred as a v1.3.5 policy question. The defaults are real
+numbers that real programs pass: `tests/features/blc_test.esk` in this
+repository allocates past 1 GiB, and the bytecode VM's computed-goto dispatch
+never had an instruction guard at all. Applying every documented default to
+every run would not be enforcing what the docs say — it would impose a new
+ceiling on every existing program. Whether the defaults should also bind an
+unconfigured run is a release decision, not a bug fix.
+
+So: `eshkol-run prog.esk` is unbounded, exactly as before.
+`ESHKOL_MAX_HEAP=512M eshkol-run prog.esk` is bounded at 512 MiB and will be
+terminated if it exceeds that.
+
+### What "enforced" means
+
+With `ESHKOL_ENFORCE_LIMITS=true` (the default), exceeding an active limit ends
+the run immediately. The runtime flushes whatever the program has already
+written, prints one line to stderr naming the limit, the configured ceiling and
+the variable that set it —
+
+```
+eshkol: fatal: Heap hard limit exceeded (limit 1048576 bytes, set by ESHKOL_MAX_HEAP): arena block
+```
+
+— and exits with the status in the table above. The statuses are distinct per
+limit so a supervising process can tell which ceiling was hit without parsing
+the message; `124` for the execution timeout matches GNU coreutils `timeout(1)`
+and the convention already used by `run-command` / `run-argv`. They are defined
+as `ESHKOL_EXIT_LIMIT_*` in `inc/eshkol/core/resource_limits.h`.
+
+With `ESHKOL_ENFORCE_LIMITS=false` the ceilings become advisory: a breach is
+recorded (readable from C via `eshkol_get_last_limit_error()`), reported as a
+warning when `ESHKOL_LIMIT_WARNINGS` is on, and the program continues to
+completion.
+
+Enforcement is placed so that staying under a limit costs nothing measurable:
+the heap ceiling is checked once per arena *block* (a megabyte at a time), not
+per allocation, leaving the bump-pointer path untouched; the tensor and string
+ceilings are checked once per object created; the VM's instruction guard and
+the execution-timeout poll run once per 4096 instructions and once per tail-call
+loop back-edge respectively. No check reads or writes a program value, so
+enabling limits cannot change a computed result.
+
+The timeout poll is emitted for hosted native codegen only. The watchdog that
+raises the interrupt lives in the hosted runtime, which a standalone
+freestanding object and a `--wasm` module do not link at all — so in those
+profiles there is nothing that could request an interrupt, and the back-edge
+poll is not emitted rather than left calling a symbol the profile does not
+have. The environment variables above describe hosted `eshkol-run` execution.
+
+### Two limits that are narrower than the table suggests
+
+`ESHKOL_MAX_STACK` bounds the recursion the runtime's depth guard observes.
+Codegen does not yet emit that guard at the entry of every top-level `define`d
+function (tracked as ESH-0101, `tests/stress/found/deep_recursion_270k_no_diagnostic.esk`),
+so deep non-tail recursion in such a function can still exhaust the native stack
+before the ceiling is consulted.
+
+The execution timer follows the same opt-in rule: the watchdog is armed only
+when `ESHKOL_TIMEOUT_MS` is present in the environment (`eshkol_runtime_init()`),
+so a run that does not set it is not on a clock. Arming a 30-second wall-clock
+kill on every invocation would also bound AOT compilation and interactive REPL
+sessions.
+
+The `ESHKOL_MAX_STACK` gap above (ESH-0101) is likewise a ledgered v1.3.5 item:
+wiring the variable where the guard already runs is the v1.3.4 scope, extending
+guard coverage to every top-level `define` is not.
+
+### Bytecode-VM heap growth watchdog
+
+The bytecode VM has no heap reclamation: `(with-region ...)` is the designated
+mechanism and is a pass-through there, so a resident VM workload grows
+monotonically (SW-14; see [Memory model](memory-model.md) and
+`docs/KNOWN_ISSUES.md`). These knobs control the guards that make that growth
+loud instead of silent. Neither guard changes any answer.
+
 | Variable | Effect | Default |
 |----------|--------|---------|
-| `ESHKOL_MAX_HEAP` | Max heap bytes (soft limit at 80%). | 1 GiB |
-| `ESHKOL_MAX_STACK` | Max interpreter stack depth. | 100000 |
-| `ESHKOL_STACK_SIZE` | OS `RLIMIT_STACK` target (min 1 MiB). | 512 MB |
-| `ESHKOL_MAX_STRING_LEN` | Max string length. | 100 MiB |
-| `ESHKOL_MAX_TENSOR_ELEMS` | Max tensor element count. | 1e9 |
-| `ESHKOL_TIMEOUT_MS` | Max execution time (ms). | 30000 |
-| `ESHKOL_VM_MAX_INSN` | VM runaway-instruction guard. | 10000000 |
-| `ESHKOL_ENFORCE_LIMITS` | Enforce hard limits (abort on exceed). | true |
-| `ESHKOL_LIMIT_WARNINGS` | Emit soft-limit warnings. | true |
+| `ESHKOL_VM_HEAP_BUDGET_MB` | VM arena size past which a diagnostic names the growth and its cause. `0` disables the watchdog. | 1024 |
+| `ESHKOL_VM_HEAP_BUDGET_FATAL` | Make crossing the budget exit nonzero instead of advisory, so a lane can gate on it. | off |
+| `ESHKOL_VM_REGION_QUIET` | Suppress the one-time note that region forms reclaim nothing on the VM. | off |
 
 ## Parallelism & threading
 

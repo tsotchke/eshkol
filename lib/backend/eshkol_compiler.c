@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#include "eshkol/core/resource_limits.h"
 
 /* ESKB binary format writer (single-file include pattern) */
 #include "eskb_writer.c"
@@ -91,22 +92,24 @@ typedef struct Node {
     char symbol[128];
     struct Node** children;
     int n_children;
+    int _cap;         /* allocated capacity of `children`, maintained by every
+                       * append site (parser + macro expander) so the shared
+                       * invariant _cap >= n_children always holds. */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
- * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct.
- * Provide typedefs so vm_macro.c functions can use MacroNode/MacroNodeType
- * while actually operating on the compiler's Node type (layout-compatible). */
+ * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct, and
+ * make MacroNode *literally* this hub's Node.
+ *
+ * SW-13: MacroNode used to be a separate struct declared here and in
+ * vm_parser.c that merely claimed to be layout-compatible with the hub's Node.
+ * In the VM hub it was not (see the long note in vm_parser.c), which produced a
+ * heap over-read that shipped wrong answers in the wasm32 build.  One node type
+ * makes the casts in vm_macro.c well-defined by construction on both hubs
+ * rather than by coincidence of field ordering. */
 #define VM_MACRO_NODE_DEFINED
 typedef NodeType MacroNodeType;
-typedef struct MacroNode {
-    MacroNodeType    type;
-    double           numval;
-    char             symbol[128];
-    struct MacroNode** children;
-    int              n_children;
-    int              _cap;
-} MacroNode;
+typedef struct Node MacroNode;
 #include "vm_macro.c"
 
 static const char* src_ptr = NULL;
@@ -137,6 +140,9 @@ static void add_child(Node* p, Node* c) {
     if (!nc) { fprintf(stderr, "ERROR: allocation failed in add_child\n"); return; }
     p->children = nc;
     p->children[p->n_children++] = c;
+    /* Keep `_cap >= n_children` true for parser-built nodes: the macro expander
+     * appends to these same nodes and grows by doubling off `_cap`. */
+    p->_cap = p->n_children;
 }
 
 static void free_node(Node* n);
@@ -3753,12 +3759,24 @@ static void execute_chunk(FuncChunk* chunk) {
     int64_t insn_count = 0;
     int max_depth = 0;
     int trace_on = g_trace_on; /* set by --trace flag */
+
+    /* SW-10: one resolution of the instruction ceiling for the whole run.
+     * This used to call getenv() and atoll() on EVERY instruction, inside the
+     * hottest loop in this interpreter. It also disagreed with the ceiling the
+     * main VM now applies: a value of 0 meant "stop immediately" rather than
+     * the documented "unlimited". Both come from the shared resource-limit
+     * configuration now, so this companion interpreter and vm_run() answer
+     * "has this program run away" the same way. */
+    const uint64_t max_insn = g_eshkol_vm_max_insn;
+
     while (!halted && !error && pc < chunk->code_len) {
         if (frame_count > max_depth) max_depth = frame_count;
-        { int64_t max_insn = 10000000LL;
-          const char* env_max = getenv("ESHKOL_VM_MAX_INSN");
-          if (env_max) max_insn = atoll(env_max);
-          if (++insn_count > max_insn) { printf("RUNAWAY (%lld insns, depth=%d, heap=%d)\n", (long long)max_insn, max_depth, heap_next); error=1; break; }
+        if (max_insn > 0 && (uint64_t)(++insn_count) > max_insn &&
+            g_eshkol_vm_insn_limit_active) {
+            printf("RUNAWAY (%llu insns, depth=%d, heap=%d)\n",
+                   (unsigned long long)max_insn, max_depth, heap_next);
+            error = 1;
+            break;
         }
         if (trace_on && insn_count < 500) {
             printf("  [%04d] op=%2d sp=%d fp=%d", pc-1, chunk->code[pc-1].op, sp, fp);
@@ -6236,6 +6254,18 @@ static void compile_and_run(const char* source) {
  *        reads it, and calls compile_and_run().
  */
 int main(int argc, char** argv) {
+    /* SW-10: resolve the documented resource-limit environment variables —
+     * ESHKOL_VM_MAX_INSN among them — into the active configuration that
+     * execute_chunk() reads, before any bytecode runs. */
+    {
+        eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+        eshkol_vm_install_limits(
+            limits.max_vm_instructions,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
+            limits.enforce_hard_limits,
+            eshkol_limit_poll_interrupt);
+    }
+
     printf("=== Eshkol Compiler (targeting 38-opcode VM) ===\n\n");
 
     /* Check for --emit-eskb and --trace flags */

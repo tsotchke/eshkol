@@ -624,7 +624,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "956 parity rows, published: 581 VM-supported, 44 native-only by design, 331 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 140/140 across native LLVM, VM source, and emitted ESKB.")
+        "956 parity rows, published: 581 VM-supported, 44 native-only by design, 331 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 184/184 across native LLVM, VM source, and emitted ESKB.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -641,7 +641,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest 140/140, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest at 181 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
 
     section))
 
@@ -929,7 +929,7 @@
         "(define kb (make-kb))\n(kb-assert! kb (make-fact '(likes alice math)))\n(kb-assert! kb (make-fact '(likes bob music)))\n(kb-assert! kb (make-fact '(likes alice physics)))\n(display (kb-query kb '(likes alice ?x)))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.85rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Query with logic variables</span>\n<span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes alice math)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes bob music)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(likes alice physics)</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#00ff88'>'(likes alice ?x)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ({?x -&gt; math} {?x -&gt; physics})</span></pre>")
 
-      (body-text ch8 "Factor graphs model probabilistic relationships. Belief propagation computes posterior distributions and free energy quantifies surprise. Known limitation (v1.3.4): factor-graph free energy is currently incorrect in the browser build (returns -0.0 regardless of evidence); native is correct -- fix scheduled for v1.3.5.")
+      (body-text ch8 "Factor graphs model probabilistic relationships. Belief propagation computes posterior distributions and free energy quantifies surprise.")
 
       (create-runnable-code-block ch8
         "(define fg (make-factor-graph 2 #(2 2)))\n;; Prior P(cause): rare event\n(fg-add-factor! fg #(0) #(0.9 0.1))\n;; P(symptom | cause): strong if rare event happened\n(fg-add-factor! fg #(0 1) #(0.95 0.05 0.2 0.8))\n(fg-infer! fg 20)\n(display \"surprise with no evidence: \")\n(display (free-energy fg #()))\n(newline)\n(display \"surprise after symptom:    \")\n(display (free-energy fg #(1 1)))"
@@ -1055,7 +1055,7 @@
       ;; 9. Bayesian Diagnosis (KB + factor graph)
       (render-example-card grid
         "Bayesian Diagnosis"
-        "Combine a symbolic KB with a factor graph; observe symptoms and watch free energy rise as the posterior shifts. Known limitation (v1.3.4): factor-graph free energy is incorrect in the browser build; fix scheduled for v1.3.5."
+        "Combine a symbolic KB with a factor graph; observe symptoms and watch free energy rise as the posterior shifts."
         "(define kb (make-kb))\n(kb-assert! kb (make-fact 'symptom-of 'fever 'flu))\n(kb-assert! kb (make-fact 'symptom-of 'fever 'covid))\n(display (kb-query kb (make-fact 'symptom-of 'fever ?d)))\n(newline)\n\n(define fg (make-factor-graph 3 #(2 2 2)))\n(fg-add-factor! fg #(0) #(0.6 0.4))\n(fg-add-factor! fg #(0 1) #(0.3 0.7 0.1 0.9))\n(fg-infer! fg 20)\n(display \"surprise after fever: \")\n(display (free-energy fg #(1 1)))"
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Symbolic KB</span>\n<span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'symptom-of</span> <span style='color:#00ff88'>'fever</span> <span style='color:#00ff88'>'flu</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'symptom-of</span> <span style='color:#00ff88'>'fever</span> <span style='color:#00ff88'>'covid</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'symptom-of</span> <span style='color:#00ff88'>'fever</span> ?d<span style='color:#c084fc'>)))</span>\n\n<span style='color:#606078'>;; Probabilistic layer</span>\n<span style='color:#c084fc'>(define</span> fg <span style='color:#c084fc'>(make-factor-graph</span> <span style='color:#00ff88'>3</span> <span style='color:#00ff88'>#(2 2 2)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(fg-add-factor!</span> fg <span style='color:#00ff88'>#(0)</span> <span style='color:#00ff88'>#(0.6 0.4)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(fg-add-factor!</span> fg <span style='color:#00ff88'>#(0 1)</span> <span style='color:#00ff88'>#(0.3 0.7 0.1 0.9)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(fg-infer!</span> fg <span style='color:#00ff88'>20</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(free-energy</span> fg <span style='color:#00ff88'>#(1 1)</span><span style='color:#c084fc'>))</span></pre>")
 
@@ -1447,7 +1447,7 @@
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "718KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "721KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))

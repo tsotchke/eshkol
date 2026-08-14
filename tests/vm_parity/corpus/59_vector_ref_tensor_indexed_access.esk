@@ -1,0 +1,74 @@
+;; VM-parity differential over `vector-ref` / `vector-set!` / `vector-length`
+;; applied to a TENSOR-typed value (SW-26).
+;;
+;; `fg-marginal` returns a tensor (SW-07/SW-08, PR #424). Displaying the whole
+;; value already worked on both engines before this fix — the tensor DATA was
+;; fine — but indexing into it with `vector-ref` diverged: native answered the
+;; element (native's collection codegen dispatches on the heap-object header
+;; subtype and has a tensor arm), while the VM's OP_VEC_REF / lbl_VEC_REF fast
+;; paths and the vector-ref native call (case 219) matched only VAL_VECTOR and
+;; fell through to `()` for anything else, silently. Exit 0, no diagnostic.
+;;
+;; vector-set! and vector-length had the identical gap (cases 220/221 and the
+;; OP_VEC_SET/OP_VEC_LEN and lbl_VEC_SET/lbl_VEC_LEN fast paths) — this file
+;; exercises the whole indexed-access family, not only the reported symptom.
+;;
+;; A graph with no factors and no inference run carries the uniform prior
+;; log(1/dim), so a d-state variable's marginal is 1/d in every slot — see
+;; tests/vm_parity/corpus/57_factor_graph_marginal.esk for the same oracle.
+
+(define (show label v) (display label) (display " = ") (display v) (newline))
+
+(define fg (make-factor-graph 2 #(2 2)))
+(define m (fg-marginal fg 0))
+
+;; ---- vector-ref on a 1-D tensor: the reported symptom -------------------
+(show "vector-ref elem0" (vector-ref m 0))
+(show "vector-ref elem1" (vector-ref m 1))
+(display "vector-ref-uniform-2 ")
+(display (if (and (= (vector-ref m 0) 0.5) (= (vector-ref m 1) 0.5))
+             "PASS" "FAIL"))
+(newline)
+
+;; ---- vector-length on the same tensor: flat total element count ---------
+(show "vector-length" (vector-length m))
+(display "vector-length-2 ")
+(display (if (= (vector-length m) 2) "PASS" "FAIL"))
+(newline)
+
+;; ---- vector-set! on an independent tensor, then read back with vector-ref
+(define t (make-tensor '(3) 0.0))
+(vector-set! t 0 10.0)
+(vector-set! t 1 20.0)
+(vector-set! t 2 30.0)
+(show "vector-set!+ref elem0" (vector-ref t 0))
+(show "vector-set!+ref elem1" (vector-ref t 1))
+(show "vector-set!+ref elem2" (vector-ref t 2))
+(display "vector-set-roundtrip ")
+(display (if (and (= (vector-ref t 0) 10.0)
+                  (= (vector-ref t 1) 20.0)
+                  (= (vector-ref t 2) 30.0))
+             "PASS" "FAIL"))
+(newline)
+
+;; ---- vector-ref on a rank>1 tensor returns a row view, not the flat elem -
+(define t2 (make-tensor '(2 3) 0.0))
+(vector-set! t2 0 1.0) (vector-set! t2 1 2.0) (vector-set! t2 2 3.0)
+(vector-set! t2 3 4.0) (vector-set! t2 4 5.0) (vector-set! t2 5 6.0)
+(define row0 (vector-ref t2 0))
+(show "row0" row0)
+(display "row0-shape ")
+(display (if (equal? (tensor-shape row0) '(3)) "PASS" "FAIL"))
+(newline)
+(display "row0-values ")
+(display (if (and (= (tensor-ref row0 0) 1.0)
+                  (= (tensor-ref row0 1) 2.0)
+                  (= (tensor-ref row0 2) 3.0))
+             "PASS" "FAIL"))
+(newline)
+
+;; ---- out-of-range vector-ref on a tensor is a catchable error, on both --
+(display "oob-catchable ")
+(display (guard (e (#t "caught"))
+           (vector-ref m 99)))
+(newline)

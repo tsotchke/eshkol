@@ -77,8 +77,16 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))\n"
     "(define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))\n"
     "(define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))\n"
-    "(define (take n lst) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (- n 1) (cdr lst))))))\n"
-    "(define (drop n lst) (if (= n 0) lst (if (null? lst) (list) (drop (- n 1) (cdr lst)))))\n"
+    /* SRFI-1 order: (take lst n) / (drop lst n) — this used to be reversed
+     * ((take n lst)), diverging from the SRFI-1 definition every other
+     * engine (core/list/transform.esk, the native/AOT compiler's stdlib
+     * path) uses. A call written against the documented order silently
+     * took the wrong branch on the VM (e.g. `(take '(1 2 3) 2)` treated
+     * the list as the count and 2 as the list). Converged on SRFI-1 order
+     * so the VM's always-available embedded prelude agrees with the
+     * on-disk stdlib module — see tests/vm_parity/corpus/54_take_drop_srfi1_order.esk. */
+    "(define (take lst n) (if (= n 0) (list) (if (null? lst) (list) (cons (car lst) (take (cdr lst) (- n 1))))))\n"
+    "(define (drop lst n) (if (= n 0) lst (if (null? lst) (list) (drop (cdr lst) (- n 1)))))\n"
     /* SRFI-1 iota: (iota count [start [step]]). Mirrors
      * lib/core/list/generate.esk exactly so the VM's always-available
      * embedded prelude and the on-disk stdlib module agree; the VM used to
@@ -99,7 +107,7 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (sort compare lst)\n"
     "  (if (or (null? lst) (null? (cdr lst))) lst\n"
     "    (let ((half (quotient (length lst) 2)))\n"
-    "      (merge compare (sort compare (take half lst)) (sort compare (drop half lst))))))\n"
+    "      (merge compare (sort compare (take lst half)) (sort compare (drop lst half))))))\n"
     /* ── Variadic numeric operators ───────────────────────────────────── */
     "(define + (lambda args (fold-left add2 0 args)))\n"
     "(define * (lambda args (fold-left mul2 1 args)))\n"

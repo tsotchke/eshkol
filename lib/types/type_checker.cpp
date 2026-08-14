@@ -1193,8 +1193,34 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
             // evaluates the inner expression verbatim. This is a gradual-typing
             // trust boundary (no runtime check), consistent with `--strict-types`
             // as a whole-program refinement rather than a soundness proof.
+            const TypeId ascribed = resolveType(expr->operation.the_op.type_expr);
             if (expr->operation.the_op.expr) {
                 auto inner = synthesize(expr->operation.the_op.expr);
+                if (inner.success) {
+                    // SW-11: "trusted" governs which type flows ONWARD; it was
+                    // silently also suppressing the one question the checker
+                    // can already answer. The inner type was synthesized and
+                    // then dropped on the floor, so `(the string (+ 1 2))` —
+                    // an ascription no value can ever satisfy — type-checked
+                    // clean and evaluated to 3. Compare the two types now and
+                    // report a provable contradiction through the unified
+                    // enforcement point, so it is a warning under gradual
+                    // typing and fatal under --strict-types, exactly like
+                    // every other type issue. The emitted IR is untouched:
+                    // this is a compile-time diagnostic, so the spec's
+                    // byte-identical/no-runtime-cost guarantee for `the`
+                    // (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6) still holds,
+                    // and a VM program that omits the ascription still
+                    // computes the identical result.
+                    if (!ascriptionIsBelievable(inner.inferred_type, ascribed)) {
+                        reportTypeIssue(
+                            "ascription (the " + env_.getTypeName(ascribed) +
+                                " ...) contradicts the inferred type " +
+                                env_.getTypeName(inner.inferred_type) +
+                                "; no value can satisfy it",
+                            expr);
+                    }
+                }
                 if (!inner.success) {
                     // The result was previously DISCARDED, so the comment above
                     // was not true: a failing inner synthesis (an unbound
@@ -1210,7 +1236,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
                                     expr->operation.the_op.expr);
                 }
             }
-            return TypeCheckResult::ok(resolveType(expr->operation.the_op.type_expr));
+            return TypeCheckResult::ok(ascribed);
         }
 
         case ESHKOL_DEFINE_TYPE_OP: {
@@ -3459,6 +3485,49 @@ void TypeChecker::addTypeMismatch(TypeId expected, TypeId actual, int line, int 
     ss << "Type mismatch: expected " << env_.getTypeName(expected)
        << ", got " << env_.getTypeName(actual);
     addError(ss.str(), line, col);
+}
+
+/**
+ * @brief Decide whether `(the <ascribed> expr)` over an expression synthesized
+ *        as @p actual is believable, i.e. not a provable contradiction.
+ *
+ * See the header for the full rule. Summary: accept widening, accept
+ * narrowing (the reason the form exists), accept anything touching the
+ * dynamic root or an unresolved type, accept numeric-to-numeric because this
+ * type graph keeps the numeric tower flat, and reject only two concrete types
+ * that sit in disjoint branches of the graph.
+ *
+ * @return false only when no value could ever inhabit both types.
+ */
+bool TypeChecker::ascriptionIsBelievable(TypeId actual, TypeId ascribed) const {
+    // An unresolved ascription or a failed synthesis carries no information.
+    if (actual == BuiltinTypes::Invalid || ascribed == BuiltinTypes::Invalid) {
+        return true;
+    }
+
+    // `Value` is the dynamic root: it says "unknown", never "wrong".
+    if (actual == BuiltinTypes::Value || ascribed == BuiltinTypes::Value) {
+        return true;
+    }
+
+    // Widening: the value already has the ascribed type.
+    if (env_.isSubtype(actual, ascribed)) return true;
+
+    // Narrowing: the programmer knows more than the checker inferred. This is
+    // the primary use of `the` and must stay unchallenged.
+    if (env_.isSubtype(ascribed, actual)) return true;
+
+    // The numeric tower is deliberately flat here — Integer, Rational, Real
+    // and Complex are siblings under Number, not a chain — so neither
+    // direction of subtyping holds between any two of them. Ascribing across
+    // the tower (`(the real 1)`, `(the float64 (+ 1 2))`) is ordinary and must
+    // not be reported; only leaving the tower entirely is a contradiction.
+    if (env_.isSubtype(actual, BuiltinTypes::Number) &&
+        env_.isSubtype(ascribed, BuiltinTypes::Number)) {
+        return true;
+    }
+
+    return false;
 }
 
 /**

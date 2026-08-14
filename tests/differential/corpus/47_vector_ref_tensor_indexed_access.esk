@@ -1,0 +1,48 @@
+;; SW-26: `vector-ref` / `vector-set!` / `vector-length` applied to a
+;; TENSOR-typed value (e.g. what `fg-marginal` returns), across native's
+;; JIT/AOT axes. See tests/vm_parity/corpus/59_vector_ref_tensor_indexed_access.esk
+;; for the matching native-vs-VM differential (that is where the bug actually
+;; lived: the VM's vector-ref/-set!/-length fast paths and native-call cases
+;; only recognized VAL_VECTOR, not VAL_TENSOR).
+
+(define (show label v) (display label) (display " = ") (display v) (newline))
+
+(define fg (make-factor-graph 2 #(2 2)))
+(define m (fg-marginal fg 0))
+
+(show "vector-ref elem0" (vector-ref m 0))
+(show "vector-ref elem1" (vector-ref m 1))
+(display "vector-ref-uniform-2 ")
+(display (if (and (= (vector-ref m 0) 0.5) (= (vector-ref m 1) 0.5))
+             "PASS" "FAIL"))
+(newline)
+
+(show "vector-length" (vector-length m))
+(display "vector-length-2 ")
+(display (if (= (vector-length m) 2) "PASS" "FAIL"))
+(newline)
+
+(define t (make-tensor '(3) 0.0))
+(vector-set! t 0 10.0)
+(vector-set! t 1 20.0)
+(vector-set! t 2 30.0)
+(display "vector-set-roundtrip ")
+(display (if (and (= (vector-ref t 0) 10.0)
+                  (= (vector-ref t 1) 20.0)
+                  (= (vector-ref t 2) 30.0))
+             "PASS" "FAIL"))
+(newline)
+
+(define t2 (make-tensor '(2 3) 0.0))
+(vector-set! t2 0 1.0) (vector-set! t2 1 2.0) (vector-set! t2 2 3.0)
+(vector-set! t2 3 4.0) (vector-set! t2 4 5.0) (vector-set! t2 5 6.0)
+(define row0 (vector-ref t2 0))
+(display "row0-shape ")
+(display (if (equal? (tensor-shape row0) '(3)) "PASS" "FAIL"))
+(newline)
+(display "row0-values ")
+(display (if (and (= (tensor-ref row0 0) 1.0)
+                  (= (tensor-ref row0 1) 2.0)
+                  (= (tensor-ref row0 2) 3.0))
+             "PASS" "FAIL"))
+(newline)

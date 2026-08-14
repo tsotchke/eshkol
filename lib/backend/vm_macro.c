@@ -75,13 +75,26 @@ static void macro_node_add_child(MacroNode* parent, MacroNode* child) {
 }
 
 /** @brief Recursively deep-copy a MacroNode tree (used when instantiating
- *         a template so each expansion gets independent nodes). */
+ *         a template so each expansion gets independent nodes).
+ *
+ *  SW-13: this used to copy only `type`, `numval` and `symbol`, dropping every
+ *  other scalar the hub's node carries.  On the VM hub those are the literal's
+ *  EXACTNESS TAGS (`is_int`/`ival`, `is_inexact`, `is_char`), so a literal that
+ *  travelled through a macro — either from the template or substituted in from
+ *  the call site — came out of the expander untagged: `(dbl 2.0)` lost
+ *  `is_inexact` and folded to the exact 2, a large exact literal lost
+ *  `is_int`/`ival` and degraded to a double, and `#\a` lost `is_char` and
+ *  became an integer.  Whole-struct assignment copies every scalar field the
+ *  hub defines, and stays correct if fields are added later; only the
+ *  children array is re-derived, because it must be independently owned. */
 static MacroNode* macro_node_deep_copy(const MacroNode* src) {
     if (!src) return NULL;
-    MacroNode* dst = macro_node_new(src->type);
-    if (!dst) return NULL;
-    dst->numval = src->numval;
-    memcpy(dst->symbol, src->symbol, sizeof(dst->symbol));
+    MacroNode* dst = (MacroNode*)calloc(1, sizeof(MacroNode));
+    if (!dst) { fprintf(stderr, "ERROR: macro_node_deep_copy: alloc failed\n"); return NULL; }
+    *dst = *src;                 /* every scalar field, hub-agnostic */
+    dst->children   = NULL;      /* deep-copied below; never aliased */
+    dst->n_children = 0;
+    dst->_cap       = 0;
     for (int i = 0; i < src->n_children; i++) {
         macro_node_add_child(dst, macro_node_deep_copy(src->children[i]));
     }
@@ -506,6 +519,265 @@ static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
  * in the bound list.
  ******************************************************************************/
 
+/*******************************************************************************
+ * Hygiene: alpha-renaming of template-introduced binders (R7RS 4.3.2)
+ *
+ * A `syntax-rules` template may introduce its own bindings, as in
+ *
+ *     (define-syntax hyg (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e)))))
+ *
+ * R7RS requires `tmp` here to be a FRESH identifier: it may not capture a
+ * `tmp` the caller passes in through the pattern variable `e`, and the
+ * caller's `tmp` may not capture the template's.  Without renaming,
+ * (hyg tmp) expands to (let ((tmp 100)) (+ tmp tmp)) and evaluates to 200
+ * instead of the required 107 — the classic capture failure, filed as SW-30.
+ *
+ * This pass runs on the template ALONE, before vm_macro_instantiate()
+ * substitutes any user code into it.  That ordering is what makes it safe:
+ * at this point every symbol in the tree came from the macro definition, so
+ * renaming cannot touch a caller's identifier.  Symbols that ARE pattern
+ * variables are left alone precisely because they will be replaced by user
+ * code, which must keep its own names.
+ *
+ * Scope is tracked properly rather than renaming the whole template: a name
+ * is renamed only within the extent of the binding form that introduced it,
+ * so a template that also references the same name FREELY (meaning the
+ * macro-definition environment) keeps that reference intact.
+ *
+ * NOT covered (see the SW-30 ledger entry): referential transparency for
+ * free identifiers in templates.  A template's free identifier is still
+ * resolved at the USE site, not the definition site, because neither engine
+ * captures a macro-definition environment.  This pass closes the capture
+ * half of hygiene only.
+ ******************************************************************************/
+
+#define MAX_RENAMES 64
+
+typedef struct {
+    char from[64];
+    char to[64];
+} MacroRename;
+
+typedef struct {
+    MacroRename r[MAX_RENAMES];
+    int         n;
+    /* 1 while walking QUOTED DATA, where symbols are data rather than
+     * identifiers and must keep their literal names.  Carried in the rename
+     * environment so it scopes exactly like one: (quasiquote ...) sets it,
+     * (unquote ...) / (unquote-splicing ...) clear it again. */
+    int         datum;
+} MacroRenames;
+
+/** @brief Innermost-wins lookup of a renamed template identifier.  Returns
+ *         NULL inside quoted data, where symbols are not identifiers. */
+static const char* macro_renames_lookup(const MacroRenames* rn, const char* name) {
+    if (!rn || rn->datum) return NULL;
+    for (int i = rn->n - 1; i >= 0; i--) {
+        if (strcmp(rn->r[i].from, name) == 0) return rn->r[i].to;
+    }
+    return NULL;
+}
+
+/** @brief Bind @p from to a fresh name for the current scope.  The counter
+ *         is global and monotonic, so two invocations of the same macro get
+ *         distinct names — which is required: their bindings are distinct. */
+static void macro_renames_push(MacroRenames* rn, const char* from) {
+    if (!rn || rn->n >= MAX_RENAMES) return;   /* over budget: leave unrenamed */
+    snprintf(rn->r[rn->n].from, sizeof(rn->r[rn->n].from), "%s", from);
+    snprintf(rn->r[rn->n].to, sizeof(rn->r[rn->n].to), "_h%d.%.40s",
+             g_gensym_counter++, from);
+    rn->n++;
+}
+
+/** @brief True if @p n is a template symbol eligible for renaming: a plain
+ *         symbol that is NOT a pattern variable (those carry user code),
+ *         not the ellipsis marker and not the `_` wildcard. */
+static int macro_is_template_binder(const MacroNode* n, const MacroBindings* bindings) {
+    return n && n->type == N_SYMBOL &&
+           !is_ellipsis(n) &&
+           strcmp(n->symbol, "_") != 0 &&
+           strcmp(n->symbol, ".") != 0 &&
+           macro_bindings_lookup(bindings, n->symbol) == NULL;
+}
+
+static MacroNode* vm_macro_alpha_rename(const MacroNode* t,
+                                        const MacroBindings* bindings,
+                                        const MacroRenames* rn);
+
+/** @brief Add every template-introduced name in a lambda formals list (a
+ *         symbol rest-arg, or a possibly dotted list) to @p out. */
+static void macro_renames_add_formals(MacroRenames* out, const MacroNode* formals,
+                                      const MacroBindings* bindings) {
+    if (!formals) return;
+    if (formals->type == N_SYMBOL) {
+        if (macro_is_template_binder(formals, bindings))
+            macro_renames_push(out, formals->symbol);
+        return;
+    }
+    if (formals->type != N_LIST) return;
+    for (int i = 0; i < formals->n_children; i++) {
+        if (macro_is_template_binder(formals->children[i], bindings))
+            macro_renames_push(out, formals->children[i]->symbol);
+    }
+}
+
+/** @brief Rename the children of @p t from index @p start, appending to @p out. */
+static void macro_rename_rest(MacroNode* out, const MacroNode* t, int start,
+                              const MacroBindings* bindings, const MacroRenames* rn) {
+    for (int i = start; i < t->n_children; i++)
+        macro_node_add_child(out, vm_macro_alpha_rename(t->children[i], bindings, rn));
+}
+
+/**
+ * @brief Rewrite a template so that every identifier it BINDS itself is a
+ *        fresh name, consistently at the binder and at every reference
+ *        within that binder's scope.
+ * @return A newly-allocated template tree (caller frees).
+ */
+static MacroNode* vm_macro_alpha_rename(const MacroNode* t,
+                                        const MacroBindings* bindings,
+                                        const MacroRenames* rn) {
+    if (!t) return NULL;
+
+    if (t->type == N_SYMBOL) {
+        MacroNode* c = macro_node_deep_copy(t);
+        const char* to = macro_renames_lookup(rn, t->symbol);
+        /* Copy first, then overwrite only the name, so every other field
+         * (exactness/char tags — see the SW-13 deep-copy fix) survives. */
+        if (c && to) snprintf(c->symbol, sizeof(c->symbol), "%s", to);
+        return c;
+    }
+
+    if (t->type != N_LIST) return macro_node_deep_copy(t);
+
+    const MacroNode* head = t->n_children > 0 ? t->children[0] : NULL;
+    const char* h = (head && head->type == N_SYMBOL) ? head->symbol : NULL;
+
+    /* Quoted data: symbols are DATA, not identifiers, and keep their literal
+     * names — otherwise a template's own gensym leaks into the program's
+     * OUTPUT, e.g. (let ((tmp 5)) (list 'tmp tmp)) printing (_h0.tmp 5).
+     * Pattern variables inside quoted data are still substituted, because
+     * vm_macro_instantiate() walks this subtree afterwards. */
+    if (h && (strcmp(h, "quote") == 0 || strcmp(h, "quasiquote") == 0)) {
+        MacroRenames d = *rn;
+        d.datum = 1;
+        MacroNode* out = macro_make_list();
+        if (!out) return NULL;
+        macro_node_add_child(out, macro_node_deep_copy(head));
+        macro_rename_rest(out, t, 1, bindings, &d);
+        return out;
+    }
+    /* (unquote e) / (unquote-splicing e) escape back to identifier position. */
+    if (h && (strcmp(h, "unquote") == 0 || strcmp(h, "unquote-splicing") == 0)) {
+        MacroRenames d = *rn;
+        d.datum = 0;
+        MacroNode* out = macro_make_list();
+        if (!out) return NULL;
+        macro_node_add_child(out, macro_node_deep_copy(head));
+        macro_rename_rest(out, t, 1, bindings, &d);
+        return out;
+    }
+
+    /* Inside quoted data nothing binds — a list is just a list. */
+    if (rn && rn->datum) {
+        MacroNode* out = macro_make_list();
+        if (!out) return NULL;
+        macro_rename_rest(out, t, 0, bindings, rn);
+        return out;
+    }
+
+    /* (lambda <formals> body ...) */
+    if (h && strcmp(h, "lambda") == 0 && t->n_children >= 2) {
+        MacroRenames inner = *rn;
+        macro_renames_add_formals(&inner, t->children[1], bindings);
+        MacroNode* out = macro_make_list();
+        if (!out) return NULL;
+        macro_node_add_child(out, macro_node_deep_copy(head));
+        macro_node_add_child(out, vm_macro_alpha_rename(t->children[1], bindings, &inner));
+        macro_rename_rest(out, t, 2, bindings, &inner);
+        return out;
+    }
+
+    /* (let ((v e) ...) body ...), (let name ((v e) ...) body ...),
+     * (let* ...), (letrec ...), (letrec* ...) */
+    if (h && (strcmp(h, "let") == 0 || strcmp(h, "let*") == 0 ||
+              strcmp(h, "letrec") == 0 || strcmp(h, "letrec*") == 0)) {
+        int named = (strcmp(h, "let") == 0) && t->n_children >= 3 &&
+                    t->children[1]->type == N_SYMBOL;
+        int bidx  = named ? 2 : 1;
+        int seq   = (strcmp(h, "let*") == 0);
+        int rec   = (strcmp(h, "letrec") == 0 || strcmp(h, "letrec*") == 0);
+
+        if (t->n_children > bidx && t->children[bidx]->type == N_LIST) {
+            const MacroNode* blist = t->children[bidx];
+            MacroRenames inner = *rn;
+
+            /* letrec/letrec*: every binder is visible in every init. */
+            if (rec) {
+                for (int i = 0; i < blist->n_children; i++) {
+                    const MacroNode* b = blist->children[i];
+                    if (b->type == N_LIST && b->n_children >= 1 &&
+                        macro_is_template_binder(b->children[0], bindings))
+                        macro_renames_push(&inner, b->children[0]->symbol);
+                }
+            }
+            /* A named let's loop variable is bound in the body. */
+            if (named && macro_is_template_binder(t->children[1], bindings))
+                macro_renames_push(&inner, t->children[1]->symbol);
+
+            MacroNode* out = macro_make_list();
+            if (!out) return NULL;
+            macro_node_add_child(out, macro_node_deep_copy(head));
+            if (named)
+                macro_node_add_child(out, vm_macro_alpha_rename(t->children[1], bindings, &inner));
+
+            MacroNode* nb = macro_make_list();
+            for (int i = 0; nb && i < blist->n_children; i++) {
+                const MacroNode* b = blist->children[i];
+                if (b->type != N_LIST || b->n_children < 1) {
+                    macro_node_add_child(nb, vm_macro_alpha_rename(b, bindings, &inner));
+                    continue;
+                }
+                /* An init is evaluated OUTSIDE its own binder for let, in the
+                 * bindings so far for let*, and in the full group for letrec. */
+                const MacroRenames* init_env = (rec || seq) ? &inner : rn;
+                MacroNode* nbind = macro_make_list();
+                if (!nbind) break;
+                MacroNode* inits[8];
+                int ni = 0;
+                for (int j = 1; j < b->n_children && ni < 8; j++)
+                    inits[ni++] = vm_macro_alpha_rename(b->children[j], bindings, init_env);
+
+                if (!rec && macro_is_template_binder(b->children[0], bindings))
+                    macro_renames_push(&inner, b->children[0]->symbol);
+
+                macro_node_add_child(nbind,
+                    vm_macro_alpha_rename(b->children[0], bindings, &inner));
+                for (int j = 0; j < ni; j++) macro_node_add_child(nbind, inits[j]);
+                macro_node_add_child(nb, nbind);
+            }
+            macro_node_add_child(out, nb);
+            macro_rename_rest(out, t, bidx + 1, bindings, &inner);
+            return out;
+        }
+    }
+
+    /* `do` is deliberately NOT renamed here.  The native expander stores a
+     * do-loop in the generic call_op layout, where the loop variables are
+     * untyped nested lists rather than an addressable binding array, so a
+     * scope-correct rename is not reachable there.  Renaming on this engine
+     * alone would make the two engines disagree on a shape neither fully
+     * supports — the opposite of what SW-30 asks for.  A template-introduced
+     * `do` variable therefore still captures, identically on both engines,
+     * and is recorded as the residual in the SW-30 ledger entry. */
+
+    /* Any other list: structure-preserving map. */
+    MacroNode* out = macro_make_list();
+    if (!out) return NULL;
+    macro_rename_rest(out, t, 0, bindings, rn);
+    return out;
+}
+
 /**
  * @brief Walk a syntax-rules template AST, replacing pattern-variable
  *        symbols with their matched @p bindings. An ellipsis in the
@@ -637,8 +909,21 @@ static MacroNode* vm_macro_expand_once(const MacroNode* node) {
 
         if (vm_macro_match(macro->rules[r].pattern, node,
                            &bindings, macro->literals, macro->n_literals)) {
-            MacroNode* expanded = vm_macro_instantiate(macro->rules[r].template_node,
-                                                       &bindings);
+            /* Hygiene (R7RS 4.3.2): give every identifier the template BINDS
+             * itself a fresh name before any user code is substituted in, so
+             * a template binder can neither capture nor be captured by an
+             * operand.  Done on the template alone — at this point no user
+             * code is present, so nothing of the caller's can be renamed. */
+            MacroRenames renames;
+            renames.n = 0;
+            renames.datum = 0;
+            MacroNode* hygienic = vm_macro_alpha_rename(macro->rules[r].template_node,
+                                                        &bindings, &renames);
+            MacroNode* expanded = vm_macro_instantiate(
+                hygienic ? hygienic : macro->rules[r].template_node, &bindings);
+            /* instantiate() deep-copies everything it keeps, so the renamed
+             * template is ours to free. */
+            if (hygienic) macro_node_free(hygienic);
             macro_bindings_cleanup(&bindings);
             return expanded;
         }

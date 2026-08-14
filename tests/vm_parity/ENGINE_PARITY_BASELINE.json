@@ -2,12 +2,9 @@
   "_comment": "Ratchet for scripts/run_engine_parity_coverage.py. divergent_programs may never grow; differential_floor may never fall.",
   "divergent_programs": [
     "tests/control_flow/cond_test.esk",
-    "tests/logic/continuous_learning.esk",
-    "tests/logic/inference_test.esk",
     "tests/logic/workspace_test.esk",
     "tests/parser/sexpr_test.esk",
     "tests/parser/special_forms_test.esk",
-    "tests/parser/test_function_shadowing.esk",
     "tests/v1_2_edge_cases/define_record_type_test.esk",
     "tests/v1_2_edge_cases/dual_scalar_compare_test.esk",
     "tests/v1_2_edge_cases/symbol_interning_test.esk"
@@ -105,9 +102,12 @@
     "tests/vm_parity/corpus/53_define_library_same_unit.esk",
     "tests/vm_parity/corpus/54_logic_var_kb_query.esk",
     "tests/vm_parity/corpus/55_truthiness.esk",
+    "tests/vm_parity/corpus/56_factor_graph_inference.esk",
+    "tests/vm_parity/corpus/57_factor_graph_marginal.esk",
+    "tests/vm_parity/corpus/58_rationalize_r7rs.esk",
     "tests/vm_parity/corpus/read_write_roundtrip.esk",
     "tests/vm_parity/corpus/region_handle_contract.esk",
     "tests/vm_parity/corpus/with_region_lowering.esk"
   ],
-  "differential_floor": 0.1014
+  "differential_floor": 0.1095
 }

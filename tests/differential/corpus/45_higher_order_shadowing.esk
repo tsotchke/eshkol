@@ -1,0 +1,87 @@
+;; Higher-order builtins vs shadowing bindings (ESH-0070 class).
+;; A parameter that shadows a same-named top-level procedure must be the
+;; procedure map/for-each/filter/fold/reduce call. All axes must agree AND
+;; be right: the global multiplies by 100, every shadow adds 10.
+(define fn (lambda (x) (* x 100)))
+(define cap-k 100)
+(define gn (lambda (x) (* x cap-k)))
+
+(define (apply-map fn lst) (map fn lst))
+(display (apply-map (lambda (x) (+ x 10)) (list 1 2 3))) (newline)
+
+(define (apply-map-cap gn lst) (map gn lst))
+(display (apply-map-cap (lambda (x) (+ x 10)) (list 1 2 3))) (newline)
+
+(define (apply-map-inner fn lst) (map (lambda (x) (fn x)) lst))
+(display (apply-map-inner (lambda (x) (+ x 10)) (list 1 2 3))) (newline)
+
+(define fe-acc '())
+(define (apply-for-each fn lst)
+  (for-each (lambda (x) (set! fe-acc (cons (fn x) fe-acc))) lst))
+(apply-for-each (lambda (x) (+ x 10)) (list 1 2 3))
+(display (reverse fe-acc)) (newline)
+
+(define (apply-filter fn lst) (filter fn lst))
+(display (apply-filter (lambda (x) (> x 1)) (list 1 2 3))) (newline)
+
+(define (apply-fold fn lst) (fold-left fn 0 lst))
+(display (apply-fold (lambda (acc x) (+ acc x 10)) (list 1 2 3))) (newline)
+
+(define (apply-reduce fn lst) (reduce fn 0 lst))
+(display (apply-reduce (lambda (acc x) (+ acc x 10)) (list 1 2 3))) (newline)
+
+(define (let-shadow-map lst)
+  (let ((fn (lambda (x) (+ x 10))))
+    (map fn lst)))
+(display (let-shadow-map (list 1 2 3))) (newline)
+
+(define (apply-remove fn lst) (remove fn lst))
+(display (apply-remove (lambda (x) (> x 1)) (list 1 2 3))) (newline)
+(display (apply-remove 2 (list 1 2 3))) (newline)
+
+;; derivative with a shadowing parameter (SW-01): same static resolution site
+(define (sqf x) (* x x))
+(define (apply-deriv sqf x) (derivative sqf x))
+(display (apply-deriv (lambda (y) (* 2 y)) 3.0)) (newline)
+(display (derivative sqf 3.0)) (newline)
+
+;; non-shadowed statics must stay static-and-right
+(display (map fn (list 1 2 3))) (newline)
+(display (map gn (list 1 2 3))) (newline)
+(display (reduce + 0 (list 1 2 3))) (newline)
+
+;; SW-24 class, let-scoped shape: an operator rebinding must shadow the
+;; builtin dispatch inside its scope. (The top-level + rebind lives in
+;; corpus/46_operator_rebinding.esk — rebinding + after this file's many
+;; earlier + uses trips the separate, pre-existing rebind-after-use
+;; hoisting divergence between the engines.)
+(define (let-rebound-star)
+  (let ((* (lambda (a b) (- a b))))
+    (* 10 4)))
+(display (let-rebound-star)) (newline)
+
+;; Crossing the first-class-builtin wrappers (LE-01): a local binding of a
+;; BUILTIN name must win over the wrapper, and an unshadowed builtin name
+;; must still reach it. Both halves on every axis.
+(define (let-shadow-car lst)
+  (let ((car (lambda (x) 42)))
+    (map car lst)))
+(display (let-shadow-car (list 1 2 3))) (newline)
+
+(define (apply-map-car car lst) (map car lst))
+(display (apply-map-car (lambda (x) (+ x 10)) (list 1 2 3))) (newline)
+
+(define (apply-filter-pair? pair? lst) (filter pair? lst))
+(display (apply-filter-pair? (lambda (x) (> x 1)) (list 1 2 3))) (newline)
+
+(define (call2 f a b) (f a b))
+(define (pass-shadowed-builtin remainder) (call2 remainder 7 3))
+(display (pass-shadowed-builtin (lambda (a b) (+ a b)))) (newline)
+
+(define (let-shadow-value)
+  (let ((remainder (lambda (a b) (* a b))))
+    (call2 remainder 7 3)))
+(display (let-shadow-value)) (newline)
+
+(display (call2 remainder 7 3)) (newline)
+(display (map car (list (list 1 2) (list 3 4)))) (newline)

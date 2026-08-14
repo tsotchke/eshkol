@@ -12,7 +12,9 @@
   leaked one iteration's transient garbage forever. It is now lowered with a
   per-loop nursery region (ESH-0214e), so such a loop is flat at 34 MB —
   identical to its explicit `with-region` twin. `with-region` is no longer
-  required to get flat RSS in a resident loop. See
+  required to get flat RSS in a resident loop. Native engine only — the
+  bytecode VM reclaims neither way (see "Region handles and `with-region` on
+  the VM" below). See
   [memory-model](reference/runtime/memory-model.md#automatic-per-iteration-reclamation-in-resident-loops-esh-0214e).
 - **`parallel-map` corrupted collection-valued results past the parallel
   threshold.** A closure whose body used per-iteration scope reclamation (an
@@ -218,6 +220,40 @@ as native — it simply does not get the memory back, because the region arena,
 the allocation-slot hijack and the escape promotion are native-arena constructs
 and the VM heap has no escape evacuator.
 
+**This is not a property of `with-region` alone: the bytecode VM has no heap
+reclamation of any kind.** Measured on
+`tests/memory/vm_region_growth_watchdog_test.esk`, peak RSS is identical with
+and without the `with-region` wrapper — 1.503 GB either way at 20k iterations
+of 200 conses. `with-region` is the designated reclamation mechanism and it is
+inert on this substrate, so a resident VM workload grows monotonically until
+the host gives out.
+
+**That growth is no longer silent.** Two guards now name it (SW-14 in
+`.icc/silent-wrong-ledger.yaml`), gated by
+`tests/memory/vm_region_growth_watchdog_test.sh`:
+
+- The first region form executed on the VM prints a one-time note to stderr
+  saying that regions reclaim nothing here. `ESHKOL_VM_REGION_QUIET=1`
+  silences it.
+- The VM arena is sampled as it grows; crossing `ESHKOL_VM_HEAP_BUDGET_MB`
+  (default 1024) prints a diagnostic naming the size, the budget and the
+  cause. `ESHKOL_VM_HEAP_BUDGET_FATAL=1` makes it exit nonzero so a lane can
+  gate on it; `ESHKOL_VM_HEAP_BUDGET_MB=0` disables the watchdog.
+
+Neither guard changes any answer. **Real VM reclamation is the v1.3.5 flagship
+item** (maintainer ruling 2026-08-13): an OALR Stage-1 port of the native
+engine's design — Cheney-style copying evacuation with a forwarding map and a
+mutation write barrier — with root enumeration over the operand stack and the
+VM's side tables, index-space recycling, and all 27 heap subtypes **deep-walked
+rather than leaf-copied**. That last clause is the ESH-0214d lesson written into
+the scope up front: natively, the subtypes left as shallow leaf copies were
+exactly the ones that had to be reopened later.
+
+Until then, **use `eshkol-run` (the native engine) for workloads that depend on
+reclamation.** Tracked as SW-14 in `.icc/silent-wrong-ledger.yaml`, bucket
+LOUD-LIMITATION — the limitation is announced rather than discovered, and the
+entry stays open until the RSS measurement above goes flat.
+
 ### Reverse-mode gradient on the VM
 `gradient` now runs on the bytecode VM at full parity with native codegen
 (#337): forward/reverse-mode, arity-resolved (scalar / N-argument / arity-1
@@ -253,19 +289,42 @@ block ordinary use.
   differentiation tier (#393) uses a whitelist — a body may mention only its own
   parameter — rather than accepting arbitrary bodies. Silent-wrong class; the
   highest-priority open AD defect.
-- **The Taylor tower cannot nest.** `derivative-n` applied to the result of
-  `derivative-n` silently returns `0` where the jet path gives the correct
-  value. Every *well-defined* single-level route is exact; see the
-  derivative-closure entry under **Automatic differentiation** below, which is
-  the same root cause seen from the closure side. Closing it needs a
-  "differentiate a tower" runtime step inside the emitted derivative wrapper.
+- **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
+  forward-mode derivatives in two representations — the 8-jet (`derivative`,
+  first order, three independent perturbations) and the heap Taylor tower
+  (`derivative-n` / `taylor`, one perturbation to arbitrary order). Until this
+  release *every* composition that crossed between them returned a silent `0`,
+  in both directions and through a first-class derivative closure, while the
+  jet-over-jet spelling of the same mathematics was correct. All of
+  `(derivative (lambda (y) (derivative-n f y k)) x)`,
+  `(derivative-n (lambda (y) (derivative f y)) x k)`,
+  `(derivative-n (lambda (y) (derivative-n f y j)) x k)`,
+  `(derivative-n (derivative f) x k)` and the `taylor` forms of the same now
+  answer exactly. **Remaining limit, and it is loud:** a composition in which
+  *both* passes are order ≥ 2 exceeds what one value series plus one first-order
+  companion series can represent, and raises `unsupported nested
+  differentiation` rather than answering. Rewrite one of the two passes as a
+  first-order `derivative`, or ask for the combined order with a single
+  `(derivative-n f x k)`.
 - **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
   `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
-  is complete and bit-identical on both engines. Generic `+` / `*` over `i128`
-  values is not wired on **either** side: native is fatal and the VM answers a
-  wrong value. Use the `i128-*` operators; `i128` deliberately lives off the
-  numeric tower and never auto-promotes, so this is a missing opcode branch
-  rather than a tower-contagion question.
+  is complete and bit-identical on both engines. Generic arithmetic and
+  comparison over `i128` values is not wired on **either** side — no i128
+  opcodes exist in the bytecode interpreter (that is unchanged, still
+  v1.3.5 scope for the real fix). What changed: every generic arithmetic
+  and comparison opcode on the VM (`+ - * / modulo`, unary `-`, `abs`, and
+  `= < > <= >=`, in both of `vm_run.c`'s interpreter loops — the threaded/
+  computed-goto dispatch and the switch-based fallback) now raises a
+  catchable "i128 arithmetic/comparison is not supported on the VM" error
+  instead of silently coercing an i128 operand to `0.0` and computing a
+  wrong answer (fixed as part of the skipped-flaws ledger's SW-09 entry;
+  originally only `+` was converted, the rest of the family followed in
+  the same PR before merge). Native already raised a type error for the
+  whole family before this change (LE-03) and is unaffected. Use the
+  `i128-*` operators (`i128-add`, `i128-mul`, `i128=?`, …) for i128
+  arithmetic and comparison on either engine; `i128` deliberately lives
+  off the numeric tower and never auto-promotes, so this is a missing
+  opcode branch rather than a tower-contagion question.
 - **The VM lane ignores a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
   The VM lane still resolves only the CWD `lib/<dotted>` form and silently
@@ -281,26 +340,26 @@ block ordinary use.
   release gate is 10/10. Under investigation.
 
 **Automatic differentiation**
-- Vector gradient-of-gradient silently returns zeros — use nested scalar
-  `derivative` for exact higher-order results (ESH-0096). The same shape reached
-  through a **curried** gradient closure behaves the same way: with
-  `(define g (gradient f))`, `(jacobian g point)` returns a zero matrix, and
-  `(gradient g)` correctly refuses (the gradient of an ℝⁿ→ℝⁿ function is
-  undefined) with a diagnostic naming `jacobian`. Use `(hessian f point)` — it is
-  exact. The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
-  byte-identical to `(gradient f point)`. Curried *scalar* higher-order
-  derivatives are exact to 3rd order (ESH-0369).
-- **`derivative-n` / `taylor` applied to a derivative *closure* returns 0.** With
-  `(define df (derivative f))`, `(derivative-n df x k)` yields `0` — the tower
-  path seeds a heap Taylor tower, but the closure `(derivative f)` returns is
-  jet-transparent, not tower-transparent, so it reads the tower-tagged argument
-  as a jet and the result carries no tower for extraction to read. Every
-  *well-defined* route to the same number is exact: `(derivative-n f x k)` on the
-  base function, `(derivative df)` / `(derivative (derivative f))` (the curried
-  spelling, ESH-0369), and `(derivative (lambda (x) (df x)) x0)`. Closing this
-  needs a "differentiate a tower" runtime step (`c_k(f') = (k+1)·c_{k+1}(f)`)
-  inside the emitted derivative wrapper — a build item, not a limit of the
-  mathematics.
+- **Differentiating a first-class `gradient` closure again with an enclosing
+  *reverse* pass raises (ESH-0096).** With `(define g (gradient f))`,
+  `(jacobian g point)` used to return a zero matrix, silently, where
+  `(hessian f point)` returns the correct Hessian on the same build — and for
+  some shapes it read a tape pointer as a double and crashed. It now raises
+  `unsupported nested differentiation`. The cause is specific and shallow: the
+  runtime-closure gradient reads its point's components as raw doubles, so the
+  `ad_node_t*` components an enclosing reverse pass hands it became a subnormal.
+  Closing it exactly means evaluating the inner gradient forward-over-reverse —
+  the route `(hessian f point)` already takes. **Use `(hessian f point)`; it is
+  exact.** The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
+  byte-identical to `(gradient f point)`, and `(gradient g)` still refuses with a
+  diagnostic naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined).
+  Curried *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
+- **`derivative-n` / `taylor` applied to a derivative *closure* is exact (fixed,
+  ESH-0402).** With `(define df (derivative f))`, `(derivative-n df x k)` used to
+  yield `0`; it now answers exactly, as do `(derivative df x)` and
+  `(derivative (lambda (x) (df x)) x0)`. This was the closure-side view of the
+  one carrier-boundary defect described under the correctness-wave section
+  above, not a separate limitation.
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
 - **Resident training loops accumulate RSS unless each step is scoped.** The
@@ -309,6 +368,8 @@ block ordinary use.
   from automatic reclamation by design. Wrap each optimization step in an
   explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
   now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
+  Native engine only; on the bytecode VM a per-step `with-region` reclaims
+  nothing (see "Region handles and `with-region` on the VM" above).
   A lighter-weight tape mark/release API is planned so a bare training loop can
   reclaim without a per-step region.
 
@@ -373,20 +434,10 @@ block ordinary use.
   catchable "Type error in sleep-ms: expected number" on any non-number. Fixed
   in `lib/core/system_builtins.c` and `lib/backend/vm_native.c`; regression
   test `tests/system/sleep_ms_test.esk`.
-- Exact rational arithmetic degrades to double once a bignum is involved
-  (ESH-0105).
 - Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
   are not fully wired (ESH-0104, ESH-0107).
 - JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
   unaffected (ESH-0103).
-
-**Knowledge base and consciousness engine**
-- **Factor-graph free energy is wrong in the browser build only.**
-  `(free-energy fg evidence)` returns `-0.0` regardless of the supplied
-  evidence when run under the browser's WASM VM; native `eshkol-run`
-  computes the correct value. Root cause is under investigation and looks
-  like a wasm32-specific divergence together with a related
-  observation-clamping defect. Fix scheduled for v1.3.5.
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
@@ -397,7 +448,7 @@ block ordinary use.
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The differential gate is
-  140/140 on the release cut.
+  184/184 on the current tree.
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
   `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
   (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`

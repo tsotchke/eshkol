@@ -1073,6 +1073,98 @@ llvm::Value* ArithmeticCodegen::emitRationalCompareCall(llvm::Value* left, llvm:
 }
 
 /**
+ * @brief The exact-first numeric ordering test shared by comparisons and min/max.
+ *
+ * SW-32: see the header for the full defect story. The short version is that
+ * min/max carried their OWN abbreviated copy of this dispatch (bignum, then
+ * doubles) while compare() carried the full one (bignum, rational, int64,
+ * doubles). The missing rational tier made `max` return the smaller of two
+ * bignum-backed rationals, disagreeing with `<` on the same pair in the same
+ * program; the missing int64 tier did the same for two exact integers past
+ * 2^53, where both round to one flonum. Having ONE implementation is the
+ * point: a future tier can only be added in a place both callers see.
+ *
+ * Callers must have already peeled off dual/AD operands — those are not
+ * ordered exactly and each caller propagates them differently.
+ */
+llvm::Value* ArithmeticCodegen::emitExactFirstOrderingI1(llvm::Value* left,
+                                                         llvm::Value* right,
+                                                         int op_code) {
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* bn_bb    = llvm::BasicBlock::Create(ctx_.context(), "ord_bn", func);
+    llvm::BasicBlock* chk_rat  = llvm::BasicBlock::Create(ctx_.context(), "ord_chk_rat", func);
+    llvm::BasicBlock* rat_bb   = llvm::BasicBlock::Create(ctx_.context(), "ord_rat", func);
+    llvm::BasicBlock* chk_int  = llvm::BasicBlock::Create(ctx_.context(), "ord_chk_int", func);
+    llvm::BasicBlock* int_bb   = llvm::BasicBlock::Create(ctx_.context(), "ord_int", func);
+    llvm::BasicBlock* dbl_bb   = llvm::BasicBlock::Create(ctx_.context(), "ord_dbl", func);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "ord_merge", func);
+
+    /* Tier 1 — either operand is a bignum. */
+    llvm::Value* any_bignum = emitIsBignumCheck(left, right);
+    ctx_.builder().CreateCondBr(any_bignum, bn_bb, chk_rat);
+
+    ctx_.builder().SetInsertPoint(bn_bb);
+    llvm::Value* bn_i1 = tagged_.unpackBool(emitBignumCompareCall(left, right, op_code));
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* bn_exit = ctx_.builder().GetInsertBlock();
+
+    /* Tier 2 — either operand is an exact rational (this is the tier min/max
+     * was missing; a bignum-backed rational is RATIONAL, never BIGNUM). */
+    ctx_.builder().SetInsertPoint(chk_rat);
+    llvm::Value* any_rational = emitIsRationalCheck(left, right);
+    ctx_.builder().CreateCondBr(any_rational, rat_bb, chk_int);
+
+    ctx_.builder().SetInsertPoint(rat_bb);
+    llvm::Value* rat_i1 = tagged_.unpackBool(emitRationalCompareCall(left, right, op_code));
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* rat_exit = ctx_.builder().GetInsertBlock();
+
+    /* Tier 3 — both operands are exact int64: compare as integers so values
+     * past 2^53 stay distinguishable. */
+    ctx_.builder().SetInsertPoint(chk_int);
+    llvm::Value* lbase = tagged_.getBaseType(tagged_.getType(left));
+    llvm::Value* rbase = tagged_.getBaseType(tagged_.getType(right));
+    llvm::Value* l_is_int = ctx_.builder().CreateICmpEQ(lbase,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* r_is_int = ctx_.builder().CreateICmpEQ(rbase,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(l_is_int, r_is_int), int_bb, dbl_bb);
+
+    ctx_.builder().SetInsertPoint(int_bb);
+    llvm::Value* li = tagged_.unpackInt64(left);
+    llvm::Value* ri = tagged_.unpackInt64(right);
+    llvm::Value* int_i1 =
+        (op_code == 0) ? ctx_.builder().CreateICmpSLT(li, ri) :
+        (op_code == 1) ? ctx_.builder().CreateICmpSGT(li, ri) :
+        (op_code == 2) ? ctx_.builder().CreateICmpEQ(li, ri)  :
+        (op_code == 3) ? ctx_.builder().CreateICmpSLE(li, ri) :
+                         ctx_.builder().CreateICmpSGE(li, ri);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    /* Tier 4 — inexact fallback. */
+    ctx_.builder().SetInsertPoint(dbl_bb);
+    llvm::Value* ld = extractAsDouble(left);
+    llvm::Value* rd = extractAsDouble(right);
+    llvm::Value* dbl_i1 =
+        (op_code == 0) ? ctx_.builder().CreateFCmpOLT(ld, rd) :
+        (op_code == 1) ? ctx_.builder().CreateFCmpOGT(ld, rd) :
+        (op_code == 2) ? ctx_.builder().CreateFCmpOEQ(ld, rd) :
+        (op_code == 3) ? ctx_.builder().CreateFCmpOLE(ld, rd) :
+                         ctx_.builder().CreateFCmpOGE(ld, rd);
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* dbl_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 4, "ord_i1");
+    phi->addIncoming(bn_i1,  bn_exit);
+    phi->addIncoming(rat_i1, rat_exit);
+    phi->addIncoming(int_i1, int_exit);
+    phi->addIncoming(dbl_i1, dbl_exit);
+    return phi;
+}
+
+/**
  * @brief Emits a call to the rational binary-op runtime dispatcher and loads its result.
  *
  * @param left Left tagged operand.
@@ -2201,6 +2293,24 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+
+        // Task #113: R7RS defines `abs` on the reals; the complex counterpart
+        // is `magnitude`. Without this guard a complex operand fell through to
+        // the int64 arm below and printed its heap address
+        // (`(abs (make-rectangular 3.0 4.0))` => 4698660432). Raise instead —
+        // emitRaise closes the block with `unreachable`, so the arms below
+        // keep their existing PHI structure untouched.
+        {
+            llvm::BasicBlock* abs_cpx_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_complex", func);
+            llvm::BasicBlock* abs_real_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_real", func);
+            llvm::Value* is_complex = ctx_.builder().CreateICmpEQ(base_type,
+                llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+            ctx_.builder().CreateCondBr(is_complex, abs_cpx_bb, abs_real_bb);
+            ctx_.builder().SetInsertPoint(abs_cpx_bb);
+            ctx_.emitRaise("abs: argument is a complex number and abs is defined "
+                           "on the reals only (use magnitude for |z|)");
+            ctx_.builder().SetInsertPoint(abs_real_bb);
+        }
         llvm::BasicBlock* heap_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_heap", func);
         llvm::BasicBlock* check_dbl = llvm::BasicBlock::Create(ctx_.context(), "abs_check_dbl", func);
         llvm::BasicBlock* double_bb = llvm::BasicBlock::Create(ctx_.context(), "abs_double", func);
@@ -2499,16 +2609,37 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     non_numeric_bb = ctx_.builder().GetInsertBlock();
 
-    // Int path: SIToFP
+    // Int path: SIToFP.
+    //
+    // Task #113 — this is the last arm of the dispatch, so before the guard
+    // below it was reached by EVERY tag the arms above did not claim, not just
+    // ESHKOL_VALUE_INT64. A complex (tag 7), a port, a bool — all had their
+    // 64-bit payload sign-converted to a double, which for the pointer-carrying
+    // tags means an address is read as a number and leaked to the program
+    // (`(abs (make-rectangular 3.0 4.0))` returned 4698660432). Only a genuine
+    // INT64 is converted now; anything else falls to the same 0.0 the
+    // non-numeric heap arm already yields, so no payload is ever reinterpreted.
     ctx_.builder().SetInsertPoint(int_bb);
+    llvm::Value* is_int64 = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::BasicBlock* real_int_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_real_int", func);
+    llvm::BasicBlock* non_numeric_tag_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_non_numeric_tag", func);
+    ctx_.builder().CreateCondBr(is_int64, real_int_bb, non_numeric_tag_bb);
+
+    ctx_.builder().SetInsertPoint(real_int_bb);
     llvm::Value* int_val = tagged_.unpackInt64(tagged_val);
     llvm::Value* int_as_dbl = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType());
     ctx_.builder().CreateBr(merge_bb);
-    int_bb = ctx_.builder().GetInsertBlock();
+    real_int_bb = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(non_numeric_tag_bb);
+    llvm::Value* tag_zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    ctx_.builder().CreateBr(merge_bb);
+    non_numeric_tag_bb = ctx_.builder().GetInsertBlock();
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 8, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 9, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dual_val, dual_bb);
     phi->addIncoming(dbl_val, dbl_bb);
@@ -2516,7 +2647,8 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     phi->addIncoming(bn_dbl, actual_bignum_bb);
     phi->addIncoming(twr_c0_val, ead_taylor_bb);
     phi->addIncoming(zero_fallback, non_numeric_bb);
-    phi->addIncoming(int_as_dbl, int_bb);
+    phi->addIncoming(int_as_dbl, real_int_bb);
+    phi->addIncoming(tag_zero_fallback, non_numeric_tag_bb);
     return phi;
 }
 
@@ -2837,6 +2969,32 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::BasicBlock* pow_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(pow_after_taylor);
 
+        // Task #113 — complex `expt`, on the same footing as complex +/-/*//.
+        //
+        // The complex case used to live in llvm_codegen.cpp's `expt` branch,
+        // where it tested only the BASE and then read the exponent with
+        // extractDoubleFromTagged: `(expt i i)` reinterpreted the exponent's
+        // heap pointer and returned 1 instead of e^(-pi/2). Promoting both
+        // operands and calling the shared runtime handles every mixture —
+        // complex base, complex exponent, or both — with one branch.
+        llvm::BasicBlock* pow_complex = llvm::BasicBlock::Create(ctx_.context(), "pow_complex", func);
+        llvm::BasicBlock* pow_after_complex = llvm::BasicBlock::Create(ctx_.context(), "pow_after_complex", func);
+        llvm::Value* pow_base_is_cpx = ctx_.builder().CreateICmpEQ(base_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+        llvm::Value* pow_exp_is_cpx = ctx_.builder().CreateICmpEQ(exp_base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateOr(pow_base_is_cpx, pow_exp_is_cpx),
+            pow_complex, pow_after_complex);
+        ctx_.builder().SetInsertPoint(pow_complex);
+        llvm::Value* pow_base_z = convertToComplex(base, pow_base_is_cpx, base_base);
+        llvm::Value* pow_exp_z = convertToComplex(exponent, pow_exp_is_cpx, exp_base);
+        llvm::Value* pow_cpx = complex_.packComplexToTagged(
+            complex_.complexPow(pow_base_z, pow_exp_z));
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* pow_cpx_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(pow_after_complex);
+
         // Check for dual numbers
         llvm::Value* base_is_dual = ctx_.builder().CreateICmpEQ(base_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
@@ -2918,8 +3076,9 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
         // Merge paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "pow_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5, "pow_result");
         phi->addIncoming(pow_twr, pow_twr_exit);
+        phi->addIncoming(pow_cpx, pow_cpx_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(exact_result, exact_exit);
         phi->addIncoming(regular_tagged, regular_exit);
@@ -2963,7 +3122,6 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "min_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "min_bn", func);
-        llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "min_dbl", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "min_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "min_right", func);
         llvm::BasicBlock* min_merge = llvm::BasicBlock::Create(ctx_.context(), "min_merge", func);
@@ -3003,24 +3161,17 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(min_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
 
-        // Check if either operand is bignum for exact comparison
+        // SW-32: ONE exact-first ordering test, shared with the comparison
+        // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
+        // int64 -> double).  This block used to be a private two-tier copy
+        // that checked only for bignums, so a bignum-backed RATIONAL (a
+        // HEAP_PTR with the RATIONAL subtype, never a bignum) and two exact
+        // int64s past 2^53 both fell through to a double comparison in which
+        // distinct values are indistinguishable -- and min disagreed with `<`
+        // on the very same pair.
         ctx_.builder().SetInsertPoint(bn_path);
-        llvm::Value* any_bignum = emitIsBignumCheck(left, right);
-        llvm::BasicBlock* bn_cmp_bb = llvm::BasicBlock::Create(ctx_.context(), "min_bn_cmp", func);
-        ctx_.builder().CreateCondBr(any_bignum, bn_cmp_bb, dbl_path);
-
-        // Bignum path: use exact comparison (op 0 = lt: left < right)
-        ctx_.builder().SetInsertPoint(bn_cmp_bb);
-        llvm::Value* bn_cmp = emitBignumCompareCall(left, right, 0); // lt
-        llvm::Value* bn_is_lt = tagged_.unpackBool(bn_cmp);
-        ctx_.builder().CreateCondBr(bn_is_lt, pick_left, pick_right);
-
-        // Double path: extract as double for comparison
-        ctx_.builder().SetInsertPoint(dbl_path);
-        llvm::Value* left_dbl = extractAsDouble(left);
-        llvm::Value* right_dbl = extractAsDouble(right);
-        llvm::Value* is_le = ctx_.builder().CreateFCmpOLE(left_dbl, right_dbl, "min_le");
-        ctx_.builder().CreateCondBr(is_le, pick_left, pick_right);
+        llvm::Value* ord = emitExactFirstOrderingI1(left, right, 3); // le -> pick left
+        ctx_.builder().CreateCondBr(ord, pick_left, pick_right);
 
         ctx_.builder().SetInsertPoint(pick_left);
         ctx_.builder().CreateBr(min_merge);
@@ -3068,7 +3219,6 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);
         llvm::BasicBlock* dual_path = llvm::BasicBlock::Create(ctx_.context(), "max_dual", func);
         llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "max_bn", func);
-        llvm::BasicBlock* dbl_path = llvm::BasicBlock::Create(ctx_.context(), "max_dbl", func);
         llvm::BasicBlock* pick_left = llvm::BasicBlock::Create(ctx_.context(), "max_left", func);
         llvm::BasicBlock* pick_right = llvm::BasicBlock::Create(ctx_.context(), "max_right", func);
         llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", func);
@@ -3101,24 +3251,17 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().CreateBr(max_merge);
         llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
 
-        // Check if either operand is bignum for exact comparison
+        // SW-32: ONE exact-first ordering test, shared with the comparison
+        // operators (emitExactFirstOrderingI1: bignum -> rational -> exact
+        // int64 -> double).  This block used to be a private two-tier copy
+        // that checked only for bignums, so a bignum-backed RATIONAL (a
+        // HEAP_PTR with the RATIONAL subtype, never a bignum) and two exact
+        // int64s past 2^53 both fell through to a double comparison in which
+        // distinct values are indistinguishable -- and max disagreed with `<`
+        // on the very same pair.
         ctx_.builder().SetInsertPoint(bn_path);
-        llvm::Value* any_bignum = emitIsBignumCheck(left, right);
-        llvm::BasicBlock* bn_cmp_bb = llvm::BasicBlock::Create(ctx_.context(), "max_bn_cmp", func);
-        ctx_.builder().CreateCondBr(any_bignum, bn_cmp_bb, dbl_path);
-
-        // Bignum path: use exact comparison (op 1 = gt: left > right)
-        ctx_.builder().SetInsertPoint(bn_cmp_bb);
-        llvm::Value* bn_cmp = emitBignumCompareCall(left, right, 1); // gt
-        llvm::Value* bn_is_gt = tagged_.unpackBool(bn_cmp);
-        ctx_.builder().CreateCondBr(bn_is_gt, pick_left, pick_right);
-
-        // Double path: extract as double for comparison
-        ctx_.builder().SetInsertPoint(dbl_path);
-        llvm::Value* left_dbl = extractAsDouble(left);
-        llvm::Value* right_dbl = extractAsDouble(right);
-        llvm::Value* is_ge = ctx_.builder().CreateFCmpOGE(left_dbl, right_dbl, "max_ge");
-        ctx_.builder().CreateCondBr(is_ge, pick_left, pick_right);
+        llvm::Value* ord = emitExactFirstOrderingI1(left, right, 4); // ge -> pick left
+        ctx_.builder().CreateCondBr(ord, pick_left, pick_right);
 
         ctx_.builder().SetInsertPoint(pick_left);
         ctx_.builder().CreateBr(max_merge);

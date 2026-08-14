@@ -816,14 +816,42 @@ Type Aliases</h4>
 <pre class="scheme"><code>(the &lt;type&gt; expr)</code></pre>
 <p>Asserts to the type checker that <code>expr</code> has type
 <code>&lt;type&gt;</code>. It is a <strong>trusted assertion</strong>:
-the checker narrows its view of <code>expr</code> to
-<code>&lt;type&gt;</code> and does not re-derive it. It is a pure
+the checker adopts <code>&lt;type&gt;</code> as the type of the whole
+form and does not re-derive it from <code>expr</code>. It is a pure
 <strong>runtime no-op</strong> — the emitted IR is byte-identical to
 <code>expr</code> alone (no runtime tag check, no cost), so
 <code>(the &lt;type&gt; expr)</code> evaluates to exactly the same value
 as <code>expr</code>.</p>
+<p>Trusted does not mean unexamined. The checker still synthesizes
+<code>expr</code>, and if the type it finds is <strong>provably
+disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits
+both — it reports the ascription rather than adopting it. That is a
+compile-time diagnostic only: a warning under gradual typing, fatal
+under <code>--strict-types</code> (§ <a
+href="reference/runtime/eshkol-run.md"><code>--strict-types</code></a>),
+and in neither case does it add anything to the emitted code.</p>
+<p>The check is deliberately narrow, so the form stays useful:</p>
+<ul>
+<li><strong>Narrowing is always accepted</strong> — the primary use.
+<code>(the integer (car xs))</code> over a dynamically-typed container
+is exactly what the form is for.</li>
+<li><strong>Widening is always accepted</strong>:
+<code>(the number 1)</code>.</li>
+<li>Anything whose type the checker does not know (the dynamic
+<code>any</code>/<code>value</code> root, an unresolved name) is
+trusted, not questioned.</li>
+<li><strong>Numeric-tower ascriptions are always accepted.</strong>
+<code>integer</code>, <code>rational</code>, <code>real</code> and
+<code>complex</code> are siblings under <code>number</code> in this type
+graph rather than a chain, so no subtyping relation holds between them
+in either direction; <code>(the real 1)</code> and
+<code>(the float64 (+ 1 2))</code> are ordinary.</li>
+</ul>
+<p>Only a genuine contradiction is reported:</p>
 <pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
-(the (list real) xs)</code></pre>
+(the (list real) xs)
+(the real 1)                    ; fine — moving inside the numeric tower
+(the string (+ 1 2))            ; reported: no value is both Int64 and String</code></pre>
 <p><code>&lt;type&gt;</code> may be any parenthesised type form, or any
 <strong>bare type name the type system knows</strong> — spelled
 case-insensitively. That is a guarantee, not a list to maintain by hand:
@@ -1813,8 +1841,8 @@ method</li>
 <ul>
 <li><strong>Arena Allocation:</strong> Bump-pointer allocation in large
 blocks</li>
-<li><strong>Scope-based Cleanup:</strong> Memory freed when scope
-exits</li>
+<li><strong>Scope-based Cleanup:</strong> Memory freed when scope exits
+(native engine; the bytecode VM does not reclaim yet — see 6.2.1)</li>
 <li><strong>No Garbage Collection:</strong> Deterministic, predictable
 performance</li>
 <li><strong>Cache-Friendly:</strong> Linear allocation pattern</li>
@@ -1843,13 +1871,26 @@ Lexical Regions)</h3>
 (with-region &#39;name body...)
 (with-region (&#39;name size-hint) body...)</code></pre>
 <p><strong>Semantics:</strong> - Creates a dedicated arena for the body
-- Memory freed when region exits - Supports nesting (stack of
-regions)</p>
+- Memory freed when region exits, and the body result is deep-copied out
+so it survives (<strong>native engine</strong>) - Supports nesting
+(stack of regions)</p>
+<p><strong>Substrate note.</strong> The reclamation half of those
+semantics is implemented by the <strong>native engine</strong>
+(<code>eshkol-run</code>, JIT and AOT) only. On the <strong>bytecode
+VM</strong> all three spellings evaluate the body identically and return
+the same value — the form is value- and effect-transparent — but
+<strong>nothing is freed</strong>, because the VM heap has no escape
+evacuator yet. A VM program is therefore correct but grows
+monotonically; it announces this at the first region form and again when
+the growth crosses a heap budget. The VM evacuator is the v1.3.5
+flagship item. See <a
+href="reference/runtime/memory-model.md#which-engine-reclaims">memory
+model</a>.</p>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(with-region &#39;temp
   (define data (iota 1000))
   (process data))
-; data&#39;s memory freed here</code></pre>
+; native: data&#39;s memory freed here; bytecode VM: same value, not yet freed</code></pre>
 <h4 id="owned---mark-ownership">6.2.2 <code>owned</code> - Mark
 Ownership</h4>
 <p><strong>Syntax:</strong> <code>(owned expr)</code></p>
@@ -2820,8 +2861,20 @@ values produces an exact result when mathematically defined. 2.
 Arithmetic involving at least one inexact operand produces an inexact
 result. 3. <code>exact-&gt;inexact</code> converts to the nearest IEEE
 754 double. Precision loss is possible for bignums with magnitude &gt;
-2^53. 4. <code>inexact-&gt;exact</code> converts a double to the nearest
-rational representation via continued fraction expansion.</p>
+2^53. 4. <code>inexact-&gt;exact</code> returns the operand’s EXACT
+value, never a nearby one. A finite IEEE 754 double is exactly
+<code>mantissa * 2^exponent</code> with a 53-bit integer mantissa, and
+that is what the conversion returns:
+<code>(inexact-&gt;exact 0.1)</code> is
+<code>3602879701896397/36028797018963968</code>. A whole-valued double
+becomes an exact integer (promoting to a bignum past int64 range, so
+<code>(inexact-&gt;exact 1e300)</code> is an exact 301-digit integer); a
+fractional one becomes a rational with a power-of-two denominator
+(subnormals need a bignum denominator, up to 2^1074). The conversion is
+therefore lossless in both directions:
+<code>(exact-&gt;inexact (inexact-&gt;exact x))</code> reproduces
+<code>x</code> bit-for-bit for every finite <code>x</code>. Infinities
+and NaN have no exact value and signal an error.</p>
 <h4 id="mixed-exactness-dispatch">14.3.2 Mixed-Exactness Dispatch</h4>
 <p>When a binary arithmetic operation receives one exact and one inexact
 operand: 1. The exact operand is converted to inexact (double) via
@@ -2929,7 +2982,32 @@ double.</li>
 <li><code>(imag-part z)</code> – Returns the imaginary component as a
 double.</li>
 </ul>
-<h4 id="promotion-from-real">15.3.3 Promotion from Real</h4>
+<h4 id="transcendental-functions">15.3.3 Transcendental Functions</h4>
+<p>The math builtins extend to the complex domain on the principal
+branch, with the branch cuts of C99 Annex G (signed zero selects the
+branch, so <code>(sqrt (make-rectangular -1.0 0.0))</code> is
+<code>0.0+1.0i</code> and
+<code>(sqrt (make-rectangular -1.0 -0.0))</code> is
+<code>0.0-1.0i</code>):</p>
+<p><code>sqrt</code>, <code>exp</code>, <code>log</code>,
+<code>exp2</code>, <code>log2</code>, <code>log10</code>,
+<code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>,
+<code>acos</code>, <code>atan</code>, <code>sinh</code>,
+<code>cosh</code>, <code>tanh</code>, <code>asinh</code>,
+<code>acosh</code>, <code>atanh</code>, and <code>expt</code> with a
+complex base, a complex exponent, or both.</p>
+<p>The remaining math builtins are defined on the reals only —
+<code>floor</code>, <code>ceiling</code>, <code>truncate</code>,
+<code>round</code>, <code>cbrt</code> and <code>abs</code> (the complex
+counterpart of <code>abs</code> is <code>magnitude</code>). Applying one
+to a complex signals a catchable type error naming the procedure; it
+never coerces.</p>
+<p><strong>Implementation:</strong> one shared core,
+<code>inc/eshkol/core/complex_math.h</code>. The native runtime exposes
+each function as <code>eshkol_complex_&lt;name&gt;</code> for the LLVM
+back end to call, and the bytecode VM compiles the same header in, so
+both engines return identical bits.</p>
+<h4 id="promotion-from-real">15.3.4 Promotion from Real</h4>
 <p>When a real number is used in a context requiring a complex (e.g.,
 arithmetic with a complex operand), it is promoted to complex with
 <code>imag = 0.0</code>. The <code>convertToComplex</code> codegen path
@@ -3935,10 +4013,11 @@ Automatic handler cleanup</p>
 <p><strong>Current Version:</strong> v1.3.4</p>
 <p><strong>Version History:</strong> - v1.3.4-evolve -
 Consumer-hardening correctness wave: automatic per-iteration memory
-reclamation that matches explicit <code>with-region</code>, race-free
-<code>parallel-map</code>, exact gradients through every callable form
-and at exact (rational/bignum) points, R7RS-correct exactness contagion
-on both the native and bytecode-VM numeric paths, same-unit
+reclamation on the native engine that matches explicit
+<code>with-region</code>, race-free <code>parallel-map</code>, exact
+gradients through every callable form and at exact (rational/bignum)
+points, R7RS-correct exactness contagion on both the native and
+bytecode-VM numeric paths, same-unit
 <code>define-library</code>/<code>import</code> resolution on all three
 back ends, an emitted error diagnostic that prevents artifact emission,
 a portable event-loop primitive, a fixed-point/i128 exact-accumulation

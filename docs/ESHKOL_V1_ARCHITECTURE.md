@@ -107,13 +107,14 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/arena_memory.cpp`](../lib/core/arena_memory.h) (6,186 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,259 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (925 lines)
 
 ### Core Principles
 
 Eshkol uses **Ownership-Aware Lexical Regions** (OALR) instead of garbage collection:
 
-- **Lexical scoping**: Memory freed when leaving scope
+- **Lexical scoping**: Memory freed when leaving scope (native engine; the
+  bytecode VM evaluates the same forms and does not reclaim yet)
 - **Ownership tracking**: Compile-time analysis prevents leaks
 - **Arena allocation**: Bump-pointer allocation (extremely fast)
 - **Deterministic cleanup**: No GC pauses

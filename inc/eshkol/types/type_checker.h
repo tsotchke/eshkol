@@ -458,6 +458,37 @@ public:
      */
     TypeId resolveType(const hott_type_expr_t* type_expr);
 
+    /**
+     * @brief Whether ascribing @p ascribed to an expression synthesized as
+     *        @p actual is believable, i.e. not a provable contradiction.
+     *
+     * `(the <type> expr)` is a *trusted* assertion: the checker adopts
+     * `<type>` without re-deriving it, and codegen emits `expr` verbatim
+     * (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6 — the IR stays
+     * byte-identical, there is no runtime tag check). Trust is not the same
+     * as silence, though: when the inner expression's type IS statically
+     * known and shares no branch of the type graph with the ascribed type,
+     * the ascription cannot be satisfied by any value and is a mistake worth
+     * reporting rather than propagating.
+     *
+     * Deliberately permissive — it only rejects the provably impossible:
+     * - widening (`actual <: ascribed`) is fine;
+     * - narrowing (`ascribed <: actual`) is fine and is the whole point of
+     *   the form (recovering a precise type from a dynamic container);
+     * - anything involving the dynamic root `Value`, or an unresolved type,
+     *   is trusted;
+     * - numeric-tower to numeric-tower is always allowed, because this type
+     *   graph keeps `Integer`/`Rational`/`Real`/`Complex` flat as siblings
+     *   under `Number`, so cross-tower ascriptions like `(the real 1)` have
+     *   no subtyping relation in either direction yet are entirely
+     *   legitimate.
+     *
+     * @param actual   Type synthesized for the inner expression.
+     * @param ascribed Type named by the ascription.
+     * @return false only when the two types are both concrete and disjoint.
+     */
+    bool ascriptionIsBelievable(TypeId actual, TypeId ascribed) const;
+
     // === Dimension Checking (Phase 5.3) ===
 
     /**

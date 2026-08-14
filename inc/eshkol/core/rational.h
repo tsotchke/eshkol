@@ -218,6 +218,57 @@ int64_t eshkol_rational_truncate(void* r);
  */
 int64_t eshkol_rational_round(void* r);
 
+/* Rounding for the FULL rational substrate (SW-29 / ESH-0105).
+ *
+ * The int64-returning variants above read `numerator`/`denominator` directly.
+ * On the bignum path those fields are the inert 0/1 shadow, so every one of
+ * them answered 0 for a bignum-backed rational: `(floor (/ (expt 2 100) 3))`
+ * printed 0 instead of 422550200076076467165567735125, with exit 0 and no
+ * diagnostic. The exact result can itself exceed int64, so it cannot be
+ * signalled through an `int64_t` return at all — these write a TAGGED value
+ * instead, exactly as eshkol_rational_from_bignums_tagged() already does, and
+ * so can answer with an INT64 or a bignum as the value requires.
+ *
+ * The int64 variants are kept for callers that have already established the
+ * operand is on the int64 fast path. */
+void eshkol_rational_floor_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_ceil_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_truncate_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+void eshkol_rational_round_tagged(void* arena, void* r, eshkol_tagged_value_t* result);
+
+/**
+ * @brief Exact IEEE-754 double to rational (R7RS `inexact->exact`).
+ *
+ * A finite double is exactly `mantissa * 2^exponent`, and this returns that
+ * value — never a nearby approximation. `(inexact->exact 0.1)` is
+ * 3602879701896397/36028797018963968, as documented in
+ * ESHKOL_LANGUAGE_GUIDE.md; `(exact->inexact (inexact->exact x))` reproduces
+ * `x` bit-for-bit for every finite `x`, subnormals included. Whole values come
+ * back with denominator 1 and a bignum numerator when they exceed int64.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param d Value to convert; must be finite (a non-finite input reports an
+ *          error and yields 0/1, since infinities and NaN have no exact value).
+ * @return Newly allocated rational pointer.
+ */
+void* eshkol_double_to_rational(void* arena, double d);
+
+/**
+ * @brief Exact `inexact->exact` producing a tagged value.
+ *
+ * The entry point both back ends call. Exactness conversion changes the value's
+ * SHAPE — a whole double becomes an exact integer (int64, or a bignum beyond
+ * int64 range), a fractional one becomes a rational — so the choice is made
+ * here once rather than duplicated in each engine's dispatch, where an
+ * `fptosi` on a value past 2^63 was undefined behaviour.
+ *
+ * @param arena Arena to allocate any heap result from.
+ * @param d Value to convert.
+ * @param out Receives the exact result.
+ */
+void eshkol_double_to_exact_tagged(void* arena, double d,
+                                   eshkol_tagged_value_t* out);
+
 #ifdef __cplusplus
 }
 #endif

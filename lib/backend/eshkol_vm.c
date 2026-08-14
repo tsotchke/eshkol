@@ -80,6 +80,7 @@
 #endif
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/core/resource_limits.h"
 #include "eshkol/backend/vm.h"
 #ifndef ESHKOL_VM_WASM
 #include "eshkol/core/runtime.h"
@@ -132,8 +133,10 @@ typedef void regex_t;
 
 /* Runtime type libraries */
 #include "vm_complex.c"
-#include "vm_rational.c"
+/* vm_bignum.c FIRST: the rational tower is bignum-capable (SW-18/ESH-0105), so
+ * vm_rational.c calls the bignum primitives directly. */
 #include "vm_bignum.c"
+#include "vm_rational.c"
 #include "vm_dual.c"
 #include "vm_hyperdual.c"
 #include "vm_autodiff.c"
@@ -300,9 +303,20 @@ static const BuiltinDef BUILTINS[] = {
     {"_number->string-2", 51, 2},
     /* I/O — ID 60-61 */
     {"newline", 60, 0},
-    /* Apply — ID 70; List — IDs 71-80 */
+    /* Apply — ID 70; list/accessor operations — IDs 71-106
+     * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
+    /* Compound list accessors — IDs 77-106.  The VM native dispatcher
+     * interprets this family from the accessor path, so every
+     * c[ad]+r spelling has the same first-class representation. */
     {"cadr", 77, 1}, {"cddr", 78, 1}, {"caar", 79, 1}, {"caddr", 80, 1},
+    {"cdar", 81, 1},
+    {"caaar", 82, 1}, {"caadr", 83, 1}, {"cadar", 84, 1}, {"cdaar", 85, 1},
+    {"cdadr", 86, 1}, {"cddar", 87, 1}, {"cdddr", 88, 1},
+    {"caaaar", 89, 1}, {"caaadr", 90, 1}, {"caadar", 91, 1}, {"caaddr", 92, 1},
+    {"cadaar", 93, 1}, {"cadadr", 94, 1}, {"caddar", 95, 1}, {"cadddr", 96, 1},
+    {"cdaaar", 97, 1}, {"cdaadr", 98, 1}, {"cdadar", 99, 1}, {"cdaddr", 102, 1},
+    {"cddaar", 103, 1}, {"cddadr", 104, 1}, {"cdddar", 105, 1}, {"cddddr", 106, 1},
     /* AD dual-number compatibility names route to the production 370+ VM
      * implementation.  The historical 110-121 IDs had no dispatcher cases
      * and therefore failed silently as "unhandled native call". */
@@ -340,12 +354,13 @@ static const BuiltinDef BUILTINS[] = {
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},
-    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vector-set!", 220, 3},
+    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
     {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
+    {"string-length", 550, 1}, {"string-ref", 551, 2},
     {"substring", 553, 3},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
@@ -662,6 +677,9 @@ static const BuiltinDef BUILTINS[] = {
      * Type predicates — IDs 1697-1710
      * ═══════════════════════════════════════════════════════════════ */
     {"real?", 1697, 1}, {"rational?", 1698, 1}, {"tensor?", 1699, 1},
+    /* SW-31: integer? had NO builtin entry — it existed only as a compiler
+     * intercept, so it could not be passed as a value at all. */
+    {"integer?", 1717, 1},
     {"type-of", 740, 1},
     /* Error objects — IDs 711-714.
      * These three were misbound by one slot: native 711 is error-MESSAGE and
@@ -2093,6 +2111,19 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
+    /* SW-10: resolve the documented resource-limit environment variables before
+     * anything runs. The VM sources themselves are freestanding-safe and never
+     * touch the environment; this hosted entry point is where ESHKOL_VM_MAX_INSN
+     * (and its siblings) become the active configuration that vm_run() reads. */
+    {
+        eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+        eshkol_vm_install_limits(
+            limits.max_vm_instructions,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
+            limits.enforce_hard_limits,
+            eshkol_limit_poll_interrupt);
+    }
+
     if (argc > 1) {
         /* Parse flags */
         int trace = 0;

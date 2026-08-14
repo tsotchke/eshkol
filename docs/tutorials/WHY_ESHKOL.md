@@ -123,6 +123,11 @@ Eshkol uses arena allocation with ownership-aware lexical regions (OALR).
 Memory is freed deterministically at scope exit — no GC pauses, no
 unpredictable latency spikes, no "GC took 200ms" in your ML training loop.
 
+This is the **native engine** (`eshkol-run`), which is what you compile and ship
+with. The bytecode VM runs the same programs to the same answers but does not
+reclaim yet, so use `eshkol-run` for anything long-running — see
+[memory model](../reference/runtime/memory-model.md#which-engine-reclaims).
+
 ---
 
 ## 7. One language, every platform

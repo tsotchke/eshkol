@@ -1,0 +1,19 @@
+;;; undefined_variable_refusal_test.esk
+;;;
+;;; This program is INTENDED to fail to compile. It exists to pin the shape of
+;;; the refusal, not the diagnosis.
+;;;
+;;; A name that really is undefined must produce a diagnostic and exit 1 on
+;;; every execution axis. The in-process JIT (`ESHKOL_JIT_CACHE=0 -r`) used to
+;;; exit 139 instead: the JIT-execution gate in ReplJITContext::addModule threw
+;;; to refuse the module, and the unwind destroyed the rejected module's
+;;; LLVMContext before the Module itself, so `llvm::Module::~Module` reached
+;;; `LLVMContext::removeModule` through freed memory. The compiler crashed
+;;; while correctly rejecting the program.
+;;;
+;;; That is how LE-01 read as a memory-safety defect: `(sort xs string<?)`
+;;; raised "Undefined variable: string<?" — itself a bug, fixed separately —
+;;; and the axis with the cache off then reported SIGSEGV rather than the
+;;; diagnostic that had already been printed.
+(define (call-it f a) (f a))
+(display (call-it no-such-variable-anywhere 1))

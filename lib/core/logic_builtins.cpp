@@ -55,6 +55,13 @@ void eshkol_fg_marginal_tagged(arena_t* arena,
         result->data.raw_val = 0;
         return;
     }
+    /* arena_allocate_tensor_full sets num_dimensions/total_elements but leaves
+     * the dimensions[] array UNWRITTEN — every other caller fills it in.  This
+     * one did not, so a correctly computed marginal was handed back with an
+     * unset extent and printed as `#()`: the documented
+     * `(fg-marginal (make-factor-graph 2 #(2 2)) 0)` answered `#()` natively
+     * where the VM answered `#(0.5 0.5)` (SW-07). */
+    if (t->dimensions) t->dimensions[0] = n_states;
 
     /* Beliefs are log-probabilities → convert to probabilities via exp.
      * Normalize so they sum to 1. */

@@ -29,12 +29,39 @@ The configuration system is defined in `inc/eshkol/core/config.h` (unified confi
 | `ESHKOL_MAX_STACK` | 100000 | Maximum recursion depth (number of stack frames). |
 | `ESHKOL_MAX_TENSOR_ELEMS` | 1,000,000,000 | Maximum number of elements in a single tensor. |
 | `ESHKOL_MAX_STRING_LEN` | 100 MB | Maximum string length in bytes. |
-| `ESHKOL_ENFORCE_LIMITS` | `true` | When `true`, hard limit violations terminate the process. When `false`, errors are returned. |
+| `ESHKOL_VM_MAX_INSN` | 10,000,000 | Bytecode-VM runaway-instruction guard. Set to `0` for unlimited. |
+| `ESHKOL_ENFORCE_LIMITS` | `true` | When `true`, hard limit violations terminate the process. When `false`, the breach is recorded and warned about and execution continues. |
 | `ESHKOL_LIMIT_WARNINGS` | `true` | When `true`, log warnings when soft limits are approached. |
 
 Malformed runtime-limit values are ignored and leave the documented default in
 place. Size variables accept optional `K`, `M`, or `G` suffixes, with an optional
 trailing `B`.
+
+Each ceiling is **opt-in**: it binds a run only when that run sets the
+variable. The defaults above are the values a limit takes when you turn it on,
+not ceilings every program is silently held to — see
+[environment-variables.md](../reference/runtime/environment-variables.md#limits-are-opt-in).
+
+Exceeding an active hard limit under the default `ESHKOL_ENFORCE_LIMITS=true` flushes
+pending output, prints one `eshkol: fatal: …` line to stderr naming the limit,
+the ceiling and the variable that set it, and exits with a status specific to
+that limit:
+
+| Limit | Exit status |
+|-------|-------------|
+| `ESHKOL_MAX_HEAP` | 120 |
+| `ESHKOL_MAX_STACK` | 121 |
+| `ESHKOL_MAX_TENSOR_ELEMS` | 122 |
+| `ESHKOL_MAX_STRING_LEN` | 123 |
+| `ESHKOL_TIMEOUT_MS` | 124 |
+| `ESHKOL_VM_MAX_INSN` | 125 |
+
+`124` matches GNU coreutils `timeout(1)`, the convention this project already
+uses for `run-command` / `run-argv` subprocess timeouts. The full set is defined
+as `ESHKOL_EXIT_LIMIT_*` in `inc/eshkol/core/resource_limits.h`. A program that
+stays under its ceilings is unaffected: the checks sit on the arena's
+block-acquisition path, on object creation, and on periodic VM/loop
+checkpoints, and none of them reads or writes a program value.
 
 ### Stack Size
 
