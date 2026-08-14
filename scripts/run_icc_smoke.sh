@@ -766,6 +766,26 @@ probe p8_escape_matrix_green \
     'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_p8_escape.sh --quick --build-dir "$BUILD_DIR_PATH" >/dev/null 2>&1'
 
 # ───────────────────────────────────────────────────────────────────
+# THE VALUE-POSITION AXIS (SW-27 / SW-31 / SW-34 / SW-35, LE-01).
+#
+# Eshkol lowers most builtins INLINE at the call site, and referencing the
+# same builtin as a VALUE takes a different route through the codegen — in
+# fact two different routes, codegenVariable and resolveLambdaFunction. Four
+# separate defects have been found living in that route while call position
+# was correct, each by hand, each invisible to every other gate here: the
+# differential corpus compares EXECUTION AXES and a value-position defect is
+# usually wrong identically on all of them, so they agree and stay green.
+#
+# This probe closes that blind spot mechanically. For every builtin the
+# manifest can type, it evaluates the SAME call in call position and through
+# three value-position routes in ONE program and compares them, so the oracle
+# needs no expected values and cannot pass by agreeing with a wrong one.
+# ───────────────────────────────────────────────────────────────────
+probe value_position_axis \
+    'every builtin answers the same when referenced as a VALUE (passed to a higher-order procedure, stored, returned, reached through map) as it does in call position — the axis that SW-27, SW-31, SW-34 and SW-35 each escaped through one at a time' \
+    'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" python3 scripts/run_value_position_sweep.py --quiet >/dev/null 2>&1'
+
+# ───────────────────────────────────────────────────────────────────
 # ESH-0011 — portable event loop (v1.4 async foundation).
 #
 # Runs the acceptance battery on BOTH native substrates so the probe covers the

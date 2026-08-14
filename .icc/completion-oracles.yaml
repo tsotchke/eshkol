@@ -251,6 +251,38 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
 
       # ─────────────────────────────────────────────────────────────
+      # THE VALUE-POSITION AXIS (scripts/run_value_position_sweep.py).
+      #
+      # Builtins are lowered inline at the call site; referencing one as a
+      # VALUE goes through different codegen. Four defects have been found
+      # living there while call position was correct — LE-01 (no value
+      # representation at all), SW-27 (rest-arg procedures lost their
+      # variadic flag, silently), SW-31, SW-35 (rounding returned a
+      # rational's heap address). None was caught by any criterion above,
+      # and structurally none could be: the differential corpus compares
+      # execution AXES against each other, and these defects are wrong
+      # identically on every axis.
+      #
+      # The sweep's oracle is differential BY CONSTRUCTION — call position
+      # versus value position for the same call in the same program — so it
+      # asserts no expected values and cannot certify a wrong answer.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["value_position_sweep"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'the VALUE-POSITION axis is clean: every builtin the manifest can type answers the same referenced as a value — passed to a higher-order procedure, stored, returned, reached through a builtin combinator — as it does in call position, on every execution axis'
+        action: python3 scripts/run_value_position_sweep.py
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["value_position_axis"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'the value-position axis probe is wired into the smoke harness, so the blind spot that produced SW-27/SW-31/SW-34/SW-35 one at a time is gated rather than rediscovered'
+        action: ./scripts/run_icc_smoke.sh
+
+      # ─────────────────────────────────────────────────────────────
       # P8 "escape-closure" pillar (scripts/run_p8_escape.sh). Each axis
       # is built so that a 2026-07 externally-reported bug CLASS would have
       # been caught by our own framework first; retro-catch evidence

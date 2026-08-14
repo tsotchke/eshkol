@@ -11231,6 +11231,38 @@ private:
             }
         }
 
+        // SW-35: the ROUNDING builtins are handled by the generic
+        // inline-builtin wrapper further down, NOT by the hand-written
+        // createBuiltinUnaryMathFunction below, and they are excluded here so
+        // they reach it.
+        //
+        // createBuiltinUnaryMathFunction is a SECOND, hand-written
+        // implementation of each math builtin: it unpacks the tagged operand
+        // as a double and calls the C library function. For sin/cos/exp that
+        // is the whole semantics. For floor/ceiling/truncate/round it is not
+        // — their call-position lowering (codegenMathFunction, the
+        // is_rounding_func block) dispatches on EXACTNESS first: exact
+        // integers and bignums are the identity, rationals go to
+        // eshkol_rational_<op>_tagged, and only inexact reals reach libm.
+        // The hand-written wrapper knew none of that, so it read a rational's
+        // HEAP POINTER as a double and returned the address as a number:
+        //
+        //   (map floor (list 7/3 -7/3 2.7 5))
+        //     => (6176988088 6176988304 2 5)   addresses, varying per run
+        //   (floor 7/3) => 2                   call position, correct
+        //
+        // That is the LE-01 failure mode exactly — a duplicated
+        // implementation drifting from the authoritative one — so the fix is
+        // the LE-01 mechanism rather than a second patch to the duplicate:
+        // the generic wrapper generates its body by re-entering codegenCall,
+        // which IS the exactness-aware lowering. The remaining math builtins
+        // stay on the old factory because it carries AD/dual dispatch they
+        // depend on; the sweep in scripts/run_value_position_sweep.py is what
+        // keeps that claim honest.
+        static const std::set<std::string> rounding_builtins = {
+            "floor", "ceil", "ceiling", "round", "trunc", "truncate"
+        };
+
         // BUILTIN FIRST-CLASS FIX: Check math builtins FIRST before function_table lookup
         // This prevents returning raw C functions (double->double) which cause ABI mismatch
         // when called through closure dispatch (tagged_value->tagged_value)
@@ -11243,11 +11275,18 @@ private:
             "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
             // Power/Root
             "sqrt", "cbrt",
-            // Absolute/Rounding
-            "abs", "fabs", "floor", "ceil", "round", "trunc",
-            // Scheme-style names
-            "ceiling", "truncate"
+            // Absolute
+            "abs", "fabs"
         };
+
+        if (rounding_builtins.count(var_name)) {
+            if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
+                return first_class;
+            }
+            // Fall through to the old factory only if the generic path
+            // declined, so a missing table row degrades to the previous
+            // behaviour rather than to "Undefined variable".
+        }
 
         if (math_builtins.count(var_name)) {
             // Use createBuiltinUnaryMathFunction which creates a wrapper with proper ABI
@@ -38429,6 +38468,35 @@ private:
 
             // BUILTIN FIRST-CLASS FIX: Check for builtin math functions FIRST before raw function_table lookup
             // These need wrapper functions that take/return tagged_value_type
+            // SW-35: THE SECOND VALUE-POSITION ROUTE.
+            //
+            // There are two of them, and they were disagreeing. A builtin
+            // reached through a USER higher-order procedure — `(define (h f a)
+            // (f a))` — resolves through codegenVariable; a builtin reached
+            // through `map`/`for-each`/`filter`/`sort` resolves through THIS
+            // function. Fixing the rounding builtins in codegenVariable alone
+            // made `(h floor 7/3)` correct while `(map floor (list 7/3))` still
+            // printed a heap address, because this site kept handing back the
+            // same hand-written createBuiltinUnaryMathFunction wrapper that
+            // reads a rational's pointer as a double.
+            //
+            // Both routes now consult the generic inline-builtin wrapper
+            // first, so the exactness-aware call-position lowering is the
+            // single source of truth for both. The value-position sweep
+            // exercises BOTH routes for exactly this reason — a fix applied to
+            // one of two parallel sites is the shape of defect that keeps
+            // coming back.
+            static const std::set<std::string> rounding_builtins = {
+                "floor", "ceil", "ceiling", "round", "trunc", "truncate"
+            };
+            if (rounding_builtins.count(func_name)) {
+                if (Function* generic = createInlineBuiltinWrapper(func_name, 1)) {
+                    return generic;
+                }
+                // Fall through to the old factory if the generic path
+                // declined, rather than failing to resolve at all.
+            }
+
             static const std::set<std::string> math_builtins = {
                 "sin", "cos", "tan", "exp", "log", "sqrt", "abs", "fabs",
                 "asin", "acos", "atan", "sinh", "cosh", "tanh",
@@ -40220,7 +40288,27 @@ private:
             {"string->number", {1}}, {"number->string", {1}},
             {"string->symbol", {1}}, {"symbol->string", {1}},
             {"string-upcase", {1}}, {"string-downcase", {1}},
-            {"string-set!", {3}}, {"string-fill!", {2}}, {"make-string", {1}},
+            {"string-set!", {3}}, {"string-fill!", {2}},
+            // ARITY MUST MATCH THE FORM BEING WRAPPED. `make-string` was
+            // listed here at arity 1 when LE-01 first populated this table,
+            // which made `(h make-string 3 #\x)` return "   " — the fill
+            // character silently dropped, because a fixed-arity closure passes
+            // exactly `arity` arguments and the second never reached the
+            // lowering. Found by the value-position sweep, which is the point
+            // of the sweep: a table of arities maintained by hand needs a
+            // mechanical check that each row matches what the builtin does.
+            // R7RS `(make-string k [char])` is optional-argument and the
+            // closure ABI carries ONE arity, so the row has to pick a form.
+            // It wraps the FULL one, and that choice is not arbitrary: R7RS
+            // 6.7 says that when `char` is omitted "the contents are
+            // unspecified", so the 1-argument value reference producing
+            // different filler than the 1-argument call does is CONFORMING,
+            // while dropping a fill character the caller actually supplied is
+            // a wrong answer. Wrap the form whose result is specified. The
+            // 1-argument difference is recorded, with that reasoning, in
+            // tests/value_position/BASELINE.json rather than left to be
+            // rediscovered.
+            {"make-string", {2}},
             // Characters
             {"char=?",  {2}}, {"char<?",  {2}}, {"char>?",  {2}},
             {"char<=?", {2}}, {"char>=?", {2}},
@@ -40235,20 +40323,42 @@ private:
             {"vector-fill!", {2}}, {"make-vector", {1}},
             {"vector->list", {1}}, {"list->vector", {1}},
             // Numerics
-            {"expt", {2}}, {"min", {2}}, {"max", {2}},
+            {"expt", {2}}, {"pow", {2}}, {"min", {2}}, {"max", {2}},
             {"modulo", {2}}, {"quotient", {2}}, {"remainder", {2}},
             {"gcd", {2}}, {"lcm", {2}},
             {"exact->inexact", {1}}, {"inexact->exact", {1}},
             {"exact", {1}}, {"inexact", {1}},
             {"numerator", {1}}, {"denominator", {1}},
             {"square", {1}},
+            // Rounding (SW-35). These are routed here instead of to
+            // createBuiltinUnaryMathFunction because their call-position
+            // lowering is EXACTNESS-AWARE — exact integers and bignums are the
+            // identity, rationals go through eshkol_rational_<op>_tagged — and
+            // the hand-written wrapper read a rational's heap pointer as a
+            // double instead. Generating the body from codegenCall is what
+            // makes the value route inherit that lowering rather than
+            // re-implement a subset of it.
+            {"floor", {1}}, {"ceiling", {1}}, {"ceil", {1}},
+            {"truncate", {1}}, {"trunc", {1}}, {"round", {1}},
             // Booleans / symbols / general predicates
             {"not", {1}}, {"boolean=?", {2}}, {"symbol=?", {2}},
-            {"number?", {1}}, {"integer?", {1}}, {"real?", {1}},
-            {"rational?", {1}}, {"exact?", {1}}, {"inexact?", {1}},
-            {"exact-integer?", {1}}, {"string?", {1}}, {"symbol?", {1}},
+            // The R7RS numeric-tower predicate family, complete (SW-34).
+            // `complex?` was the one missing row, and its absence was a LOUD
+            // compile-time "Undefined variable: complex?" the moment the name
+            // was read as a value, while the same name in call position
+            // worked — which is why the predicate matrix carried a documented
+            // exclusion for it. The family is listed as a family, not
+            // name-by-name as need arises, because that is how the gap
+            // appeared in the first place.
+            {"number?", {1}}, {"complex?", {1}}, {"real?", {1}},
+            {"rational?", {1}}, {"integer?", {1}},
+            {"exact?", {1}}, {"inexact?", {1}}, {"exact-integer?", {1}},
+            {"nan?", {1}}, {"infinite?", {1}}, {"finite?", {1}},
+            // Type predicates
+            {"string?", {1}}, {"symbol?", {1}},
             {"vector?", {1}}, {"boolean?", {1}}, {"char?", {1}},
-            {"procedure?", {1}}, {"list?", {1}},
+            {"procedure?", {1}}, {"list?", {1}}, {"null?", {1}},
+            {"pair?", {1}},
             // Lists
             // NOTE: `append` and `string-copy` are deliberately absent. Neither
             // is lowered inline: both are REST-ARG stdlib procedures —
