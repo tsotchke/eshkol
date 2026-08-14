@@ -1,1 +1,16 @@
+;;; Forces ESH-0214e nursery lowering in the relocated, cache-disabled package
+;;; JIT smoke.  Keep the established output string: verify_release_package.py
+;;; checks it on every packaged platform.
+(define package-smoke-state (make-vector 1 0))
+
+(define (package-smoke-loop n)
+  (if (= n 0)
+      n
+      (begin
+        ;; A persistent structural mutation makes the automatic iter-scope
+        ;; analysis select the nursery path, which emits both runtime helpers.
+        (vector-set! package-smoke-state 0 (list n))
+        (package-smoke-loop (- n 1)))))
+
+(package-smoke-loop 1)
 (display "hello from windows smoke")

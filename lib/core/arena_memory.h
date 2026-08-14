@@ -640,6 +640,14 @@ arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons
 eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
 void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val);
 
+// Promote loop-carried values out of an automatic iteration nursery, then
+// recycle that nursery at the tail-call back edge.  The JIT registers this
+// explicitly because static host binaries do not expose it through dlsym on
+// every supported platform.
+void eshkol_iter_nursery_recycle(eshkol_region_t* region,
+                                 eshkol_tagged_value_t* vals,
+                                 uint64_t n);
+
 // Region write barrier (ESH-0214c): promote a value's in-region subgraph when it
 // is stored (by set-car!/set-cdr!/vector-set!/hash-table-set!/global set!) into a
 // destination that outlives the value's region. Fast path (no active region) is a
