@@ -27,7 +27,7 @@ The architecture combines:
 - **S-expression parser** for R7RS-compatible Scheme syntax
 - **Hygienic macro expander** via `syntax-rules` pattern matching
 - **HoTT-inspired type checker** for gradual typing (warnings, not errors)
-- **Modular LLVM backend** with 34 specialized codegen modules (~106,500 lines)
+- **Modular LLVM backend** with 34 specialized codegen modules (~108,400 lines)
 - **JIT compiler** for interactive REPL via LLVM OrcJIT (LLJIT)
 - **Pre-compiled standard library** (40 modules, compiled to `stdlib.o`)
 - **GPU dispatch** with SIMD/cBLAS/Metal cost model selection
@@ -44,7 +44,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,483 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,658 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
@@ -56,14 +56,14 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 3. HoTT TYPE     |  lib/types/type_checker.cpp (3,841 lines)
+| 3. HoTT TYPE     |  lib/types/type_checker.cpp (3,910 lines)
 |    CHECKING      |  Constraint generation + unification (non-blocking)
 +------------------+
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,047 lines)
-|    GENERATION    |  AST -> LLVM IR via 34 codegen modules (~106,500 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,969 lines)
+|    GENERATION    |  AST -> LLVM IR via 35 codegen modules (~108,400 lines)
 +------------------+
        |
        v
@@ -84,7 +84,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,483 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,658 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -155,7 +155,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (3,841 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (3,910 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,047 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,969 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -366,11 +366,11 @@ The LLVM backend distributes code generation across 21 specialized modules total
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 42,047 | Orchestrator, AST dispatch, builtins, consciousness engine |
-| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 13,815 | Forward/reverse/symbolic AD modes |
-| **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 3,869 | +, -, *, /, bignum, rational, complex dispatch |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 42,969 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse/symbolic AD modes |
+| **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | +, -, *, /, bignum, rational, complex dispatch |
 | **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
-| **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 3,164 | Vector, list, cons, bytevector operations |
+| **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, cons, bytevector operations |
 | **Parallel LLVM** | [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) | 2,626 | Work-stealing parallelism LLVM IR generation |
 | **System** | [`system_codegen.cpp`](../../lib/backend/system_codegen.cpp) | 2,039 | System, environment, time, process, eval support |
 | **Tensor (dispatch)** | [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) | 1,867 | Entry/dispatch shell; per-domain ops live in `tensor_*_codegen.cpp` siblings |
@@ -380,15 +380,15 @@ The LLVM backend distributes code generation across 21 specialized modules total
 | **BLAS Backend** | [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model calibration |
 | **Call/Apply** | [`call_apply_codegen.cpp`](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application, variadic |
 | **Control Flow** | [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/when/unless/call-cc/guard |
-| **Map** | [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp) | 1,107 | map/for-each/fold with closure dispatch |
+| **Map** | [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp) | 1,142 | map/for-each/fold with closure dispatch |
 | **Parallel** | [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) | 1,008 | parallel-map/fold/filter/for-each runtime |
 | **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 807 | Pack/unpack tagged values, type extraction |
 | **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation, trampoline runtime |
 | **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, quote, lambda S-expressions, eval |
 | **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 671 | make-hash, hash-ref, hash-set!, hash-for-each |
-| **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 659 | Complex number arithmetic (Smith's formula division) |
+| **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 640 | Complex number arithmetic (Smith's formula division) |
 
-The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,300 lines re-exported through the dispatcher above.
+The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,400 lines re-exported through the dispatcher above.
 
 **Additional backend components (not in the 21-module count):**
 
@@ -457,7 +457,7 @@ Worker functions use `LinkOnceODRLinkage` to prevent duplicate symbol errors whe
 
 ### Consciousness Engine Codegen
 
-**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,203 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
+**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,258 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
 
 **Codegen:** Dispatched directly from [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (not a separate module)
 
@@ -475,7 +475,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (3,869 lines)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,012 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -591,7 +591,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,335 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,354 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
@@ -833,7 +833,7 @@ Package manager with TOML manifests and git-based registry: `eshkol-pkg init/bui
 
 ### Global Arena
 
-**Implementation:** [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,491 lines total)
+**Implementation:** [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,259 lines total)
 
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy
@@ -889,7 +889,7 @@ A dynamic array of AD nodes allocated during the forward pass, topologically sor
 
 Three C runtime libraries:
 - **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp), 1,505 lines): Robinson's unification, substitution environments, knowledge base query
-- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,203 lines): Factor graph construction, belief propagation, free energy computation
+- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,258 lines): Factor graph construction, belief propagation, free energy computation
 - **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp), 354 lines): Module registration, softmax competitive attention, step execution
 
 LLVM codegen dispatches to these runtime functions via tagged value calling conventions, with heap subtypes 12-17 identifying consciousness engine objects.

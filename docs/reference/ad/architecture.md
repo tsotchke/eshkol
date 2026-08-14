@@ -137,9 +137,10 @@ where each used to return zeros:
 ```
 
 This holds for the *direct* nested form shown above. The **curried** route —
-`(define g (gradient f))` then `(jacobian g point)` — still silently returns a
-zero matrix; see KNOWN_ISSUES.md. Use `(hessian f point)` for exact curried-free
-second order.
+`(define g (gradient f))` then `(jacobian g point)` — raises
+`unsupported nested differentiation` rather than answering (a loud refusal,
+not a silent zero; SW-05); see KNOWN_ISSUES.md. Use `(hessian f point)` for
+exact second order.
 
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 

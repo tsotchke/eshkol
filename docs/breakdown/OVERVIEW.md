@@ -53,7 +53,7 @@ The `vref` operator is AD-aware: when extracting from tensors during gradient co
 
 The compiler executes a 5-phase pipeline:
 
-**Phase 1: Macro Expansion** (1,483 lines in [macro_expander.cpp](../../lib/frontend/macro_expander.cpp))
+**Phase 1: Macro Expansion** (1,658 lines in [macro_expander.cpp](../../lib/frontend/macro_expander.cpp))
 
 Hygienic macro expansion via `syntax-rules` pattern matching. The system supports ellipsis (`...`) for repetition, nested patterns, and scope-safe renaming. Several R7RS derived forms — `case-lambda`, `parameterize`, `cond-expand`, `define-record-type` — are transformed during this phase or the subsequent parse phase.
 
@@ -77,7 +77,7 @@ Builds an AST from S-expressions. The parser is a recursive descent processor th
 
 Each AST node includes a `uint32_t inferred_hott_type` field packed as `[TypeId:16][universe:8][flags:8]`, set by the type checker.
 
-**Phase 3: HoTT Type Checking** (3,841 lines in [type_checker.cpp](../../lib/types/type_checker.cpp))
+**Phase 3: HoTT Type Checking** (3,910 lines in [type_checker.cpp](../../lib/types/type_checker.cpp))
 
 Hindley-Milner-style inference with universe hierarchy extensions. The algorithm:
 
@@ -88,17 +88,17 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (42,047 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 322,800 lines)
+**Phase 4: LLVM IR Generation** (42,969 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,047 | Main codegen, dispatch, builtins |
-| [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 13,815 | Forward/reverse mode AD |
-| [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 3,869 | Numeric ops, bignum, rational, complex |
+| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,969 | Main codegen, dispatch, builtins |
+| [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse mode AD |
+| [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | Numeric ops, bignum, rational, complex |
 | [string_io_codegen.cpp](../../lib/backend/string_io_codegen.cpp) | 3,860 | String, I/O, JSON, CSV operations |
-| [collection_codegen.cpp](../../lib/backend/collection_codegen.cpp) | 3,164 | Vector, list, hash table operations |
+| [collection_codegen.cpp](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, hash table operations |
 | [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) | 2,626 | Work-stealing parallelism codegen |
 | [system_codegen.cpp](../../lib/backend/system_codegen.cpp) | 2,039 | System, environment, time, process |
 | [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 1,867 | Tensor-op dispatch shell; per-domain ops live in twelve `tensor_*_codegen.cpp` siblings (~22,100 lines combined) |
@@ -108,13 +108,13 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 | [blas_backend.cpp](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model |
 | [call_apply_codegen.cpp](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application |
 | [control_flow_codegen.cpp](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/call-cc |
-| [map_codegen.cpp](../../lib/backend/map_codegen.cpp) | 1,107 | map/for-each/fold with closures |
+| [map_codegen.cpp](../../lib/backend/map_codegen.cpp) | 1,142 | map/for-each/fold with closures |
 | [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) | 1,008 | parallel-map/fold/filter/for-each |
 | [tagged_value_codegen.cpp](../../lib/backend/tagged_value_codegen.cpp) | 807 | Tagged value pack/unpack |
 | [tail_call_codegen.cpp](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation |
 | [homoiconic_codegen.cpp](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, eval |
 | [hash_codegen.cpp](../../lib/backend/hash_codegen.cpp) | 671 | Hash operations |
-| [complex_codegen.cpp](../../lib/backend/complex_codegen.cpp) | 659 | Complex number ops (Smith's formula) |
+| [complex_codegen.cpp](../../lib/backend/complex_codegen.cpp) | 640 | Complex number ops (Smith's formula) |
 
 Additional backend components:
 - **XLA/StableHLO**: 3,960 lines across 6 files — tensor compilation via MLIR
@@ -139,7 +139,7 @@ Eshkol applies LLVM's standard optimization pipeline:
 
 ### Runtime Architecture
 
-**Global Arena** ([runtime_arena_core.cpp](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings, 4,491 lines total):
+**Global Arena** ([runtime_arena_core.cpp](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings, 4,259 lines total):
 - Single allocator for all heap objects
 - 8KB minimum block size, doubling growth strategy
 - No individual `free()`; memory reclaimed via arena reset
@@ -169,7 +169,7 @@ Closures capture variables by storing **pointers** (not values) to the captured 
   (inc)) ; Returns 2 (mutates same counter)
 ```
 
-**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,505 lines, [inference.cpp](../../lib/core/inference.cpp) 1,203 lines, [workspace.cpp](../../lib/core/workspace.cpp) 354 lines):
+**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,505 lines, [inference.cpp](../../lib/core/inference.cpp) 1,258 lines, [workspace.cpp](../../lib/core/workspace.cpp) 354 lines):
 
 Three C runtime libraries implementing unification with substitutions, factor graph belief propagation, and global workspace softmax competition. LLVM codegen dispatches to these via tagged value calling conventions.
 
@@ -513,23 +513,23 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 | GPU/Metal backend | ~11,779 | 5 |
 | Frontend (parser, macro, types) | ~16,400 | 3 |
 | Runtime (arena, logic, inference, workspace) | ~7,200 | 12 |
-| REPL JIT | ~4,335 | 1 |
+| REPL JIT | ~4,354 | 1 |
 | Tools (LSP, package manager, VS Code) | ~2,200 | 4+ |
 | Headers | ~26,200 | 75 |
 | Weight matrix transformer | ~7,400 | 1 |
-| **Total C/C++ compiler infrastructure** | **~322,800** | **322** |
+| **Total C/C++ compiler infrastructure** | **~329,100** | **322** |
 | Standard library (.esk) | ~17,400 | 96 modules |
-| Test code (.esk) | ~107,400 | 1,658 files |
+| Test code (.esk) | ~113,400 | 1,729 files |
 
 ### Test Coverage
 
 - **38 test directories** organized by feature: autodiff, bignum, closures, collections, complex, control_flow, error_handling, features, gpu, integration, io, json, lists, logic, macros, memory, migration, ml, modules, neural, numeric, parallel, parser, rational, repl, signal, stdlib, string, system, tco, types, typesystem, web, xla, benchmark, codegen
 - **528 self-reported tests** across 37 automated test suites via shell scripts (plus the 87-test v1.2 edge-case gate)
-- **~107,400 lines** of test code
+- **~113,400 lines** of test code
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,335 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,354 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 1,019 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry

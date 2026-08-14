@@ -18,7 +18,7 @@ Eshkol is a compiled programming language for scientific computing and machine l
 
 **Design Focus**: Gradient-based optimization, numerical computing, and production machine learning deployment where Python's overhead and garbage collector pauses are unacceptable.
 
-**Implementation**: ~322,800 lines of production C/C++ compiler infrastructure targeting LLVM IR.
+**Implementation**: ~329,100 lines of production C/C++ compiler infrastructure targeting LLVM IR.
 
 ## Quick Start
 
@@ -114,7 +114,7 @@ build/eshkol-run hello.esk
 
 ### Master Architecture Document
 
-- **[Eshkol v1.1-Architecture](../ESHKOL_V1_ARCHITECTURE.md)** - Comprehensive technical architecture (consolidates 322,800-line deep dive)
+- **[Eshkol v1.1-Architecture](../ESHKOL_V1_ARCHITECTURE.md)** - Comprehensive technical architecture (consolidates 329,100-line deep dive)
 
 ## Technical Specifications
 
@@ -129,11 +129,11 @@ build/eshkol-run hello.esk
 
 ### Implementation Statistics
 
-- **Frontend**: S-expression parser (11,116 lines), macro expander (1,483 lines)
-- **Type Checker**: HoTT-inspired gradual typing (3,841 lines)
-- **LLVM Backend**: Main codegen (42,047 lines) + 33 further specialised codegen modules (~64,500 lines, including the post-v1.2 tensor split)
-- **Runtime**: Arena memory (4,491 lines across `lib/core/runtime_arena_*.cpp`, `runtime_regions.cpp` and the `runtime_*_alloc.cpp` modules), closure system, AD tape infrastructure
-- **JIT**: REPL with LLVM OrcJIT (4,335 lines)
+- **Frontend**: S-expression parser (11,116 lines), macro expander (1,658 lines)
+- **Type Checker**: HoTT-inspired gradual typing (3,910 lines)
+- **LLVM Backend**: Main codegen (42,969 lines) + 34 further specialised codegen modules (~65,400 lines, including the post-v1.2 tensor split)
+- **Runtime**: Arena memory (4,259 lines across `lib/core/runtime_arena_*.cpp`, `runtime_regions.cpp` and the `runtime_*_alloc.cpp` modules), closure system, AD tape infrastructure
+- **JIT**: REPL with LLVM OrcJIT (4,354 lines)
 
 ## How to Navigate
 

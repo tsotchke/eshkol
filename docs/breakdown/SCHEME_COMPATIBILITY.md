@@ -32,8 +32,8 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 **Implementation references:**
 - Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,116 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (42,047 lines)
-- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (3,841 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (42,969 lines)
+- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (3,910 lines)
 
 ---
 
@@ -691,7 +691,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 1,483 lines).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 1,658 lines).
 
 ```scheme
 ;; Pattern-based macros

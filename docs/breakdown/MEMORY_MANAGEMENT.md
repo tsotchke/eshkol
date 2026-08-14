@@ -70,7 +70,7 @@ The OALR system provides **five ownership modes** for different memory managemen
 
 ## Arena Allocation
 
-**Implementation:** [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,491 lines total)
+**Implementation:** [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (4,259 lines total)
 
 Eshkol uses a **hybrid arena model**: a global arena (`__global_arena`) for the main thread, plus **per-thread arenas** (1 MB each, lazily allocated via `thread_local` storage) for parallel worker threads. The global arena grows automatically as needed; per-thread arenas provide contention-free allocation during parallel operations.
 
@@ -293,7 +293,7 @@ Linear types ensure resources are **consumed exactly once** at compile-time. Att
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,491 | Arena allocation, object headers, display |
+| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,259 | Arena allocation, object headers, display |
 | **Arena Header** | [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) | 925 | Arena API, memory tracking |
 | **Object Headers** | [`inc/eshkol/eshkol.h:274-547`](../../inc/eshkol/eshkol.h) | 274 | Header structure, access macros |
 | **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 734 | OALR operator codegen |

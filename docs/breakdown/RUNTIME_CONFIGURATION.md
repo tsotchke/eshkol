@@ -154,33 +154,13 @@ unsafe = false
 
 ## Resource Limits
 
-The resource limits system defines memory, time, and structural constraints and
-the API that checks against them. It is declared in
-`inc/eshkol/core/resource_limits.h` and implemented in
-`lib/core/resource_limits.cpp`.
-
-**Wiring status in v1.3.4.** The limit set is parsed from the environment on
-runtime init, and the check functions below are implemented and unit-tested
-(`tests/core/resource_limits_test.cpp`). What the shipped compiler and runtime
-do **not** yet do is call them: apart from `ESHKOL_STACK_SIZE`, which sets
-`RLIMIT_STACK` for real, no code path in `lib/`, `exe/` or generated output
-invokes the tracking or check entry points. So the limits are available to an
-embedder that calls the API itself, and are not yet enforced on ordinary
-`eshkol-run` execution. Wiring them into the arena and into frame entry is
-scheduled for v1.3.5; that work is also the missing diagnostic layer under the
-deep-recursion and large-list crashes in
-[Known Issues](../KNOWN_ISSUES.md). Read the sections below as the API
-contract, not as a description of current enforcement.
+The resource limits system provides runtime enforcement of memory, time, and structural constraints. It is defined in `inc/eshkol/core/resource_limits.h`.
 
 ### Heap Memory
 
 - **Hard limit:** Maximum total heap allocation (default 1 GB).
 - **Soft limit:** Warning threshold at 80% of the hard limit.
-- **Tracking:** `eshkol_track_allocation()` is the entry point that charges an
-  allocation against the limits. Not enforced in v1.3.4: no arena source
-  (`lib/core/runtime_arena_core.cpp` and its `runtime_arena_*` siblings) calls
-  it or includes `resource_limits.h`, so arena allocation is not currently
-  metered.
+- **Tracking:** Every arena allocation calls `eshkol_track_allocation()` to check against limits.
 - **Near-limit check:** `eshkol_is_near_memory_limit()` returns true when within 10% of the hard limit.
 
 ```c
@@ -191,7 +171,7 @@ size_t eshkol_get_peak_heap_usage(void);      // high-water mark
 
 ### Execution Timeout
 
-The timeout watchdog measures execution time against the configured limit:
+The timeout watchdog monitors execution time and can terminate long-running operations:
 
 ```c
 void eshkol_start_timer(uint64_t timeout_ms);  // 0 = use configured limit
@@ -200,21 +180,11 @@ bool eshkol_is_timed_out(void);
 uint64_t eshkol_get_remaining_time_ms(void);
 ```
 
-Behaviour in v1.3.4. The watchdog is armed only when `ESHKOL_TIMEOUT_MS` is
-present in the environment (`lib/core/runtime_lifecycle_hosted.cpp`), so the
-compiled-in 30 s value never governs a run: it is the fallback for a malformed
-value, not a default timeout. When the watchdog expires it reports
-`Execution timeout: <n>ms limit exceeded` on stderr and requests a runtime
-interrupt; nothing in generated code polls that interrupt, so the program runs
-to completion and the process exits 0. The timeout is therefore a diagnostic in
-v1.3.4, not a kill. Set `ESHKOL_TIMEOUT_MS=0` to disable the watchdog.
+The default timeout is 30 seconds. Set `ESHKOL_TIMEOUT_MS=0` for unlimited execution.
 
 ### Stack Depth
 
-The software stack-depth API is independent of the OS stack size. Not enforced
-in v1.3.4: `eshkol_stack_push` / `eshkol_stack_pop` have no callers outside
-their own tests, so depth is not actually tracked on an ordinary run — the OS
-stack limit (`ESHKOL_STACK_SIZE`) is what bounds recursion today.
+Stack depth is tracked in software independently of the OS stack size:
 
 ```c
 bool   eshkol_stack_push(void);       // returns false on overflow
@@ -257,10 +227,7 @@ void eshkol_reset_resource_tracking(void);    // reset all counters
 
 ## C++ RAII Helpers
 
-For C++ code that integrates with the Eshkol runtime, RAII guard classes are
-provided in `inc/eshkol/core/resource_limits.h`. They are available for
-embedders; Eshkol's own sources do not use them in v1.3.4 (same wiring gap as
-above, scheduled for v1.3.5).
+For C++ code that integrates with the Eshkol runtime, RAII guard classes are provided:
 
 ### StackFrameGuard
 

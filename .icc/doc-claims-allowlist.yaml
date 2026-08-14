@@ -56,36 +56,36 @@ detector_fix_references:
     claim, even when the same document''s explicit LOC column states the correct total two words later.'
   affected_count: 1
 entries:
-- claim_id: 0ca11f2af611e2b2
+- claim_id: 113a2c2fe899ec0a
   path: CHANGELOG.md
-  line: 642
+  line: 730
   claim_type: file_path
   subject: entry.esk
   value: 6
   disposition: DETECTOR-MISATTRIBUTION
   reason: illustrative/hypothetical example filename used to explain a diagnostic-location bug ("a 3-line
     entry file... entry.esk:6:13") -- not a real file citation; no such file exists anywhere in the tree
-- claim_id: b561486fcd95dc4f
+- claim_id: a40eeb1f4131fca1
   path: CHANGELOG.md
-  line: 2406
+  line: 2494
   claim_type: numeric
   subject: lib/backend/weight_matrices.c
   value: 3998
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size at the historical "Restored weight_matrices.c"
     commit, not a claim about current size
-- claim_id: 15a7488641eeff50
+- claim_id: 0b957d56adc324fb
   path: CHANGELOG.md
-  line: 2464
+  line: 2552
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 1280
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size immediately after a specific historical extraction
     commit ("now ~1,280 lines, down from 19,940")
-- claim_id: a1446c0a21d62259
+- claim_id: bae9969294758239
   path: CHANGELOG.md
-  line: 3263
+  line: 3351
   claim_type: numeric
   subject: lib/backend/eshkol_vm.c
   value: 8457
@@ -110,32 +110,32 @@ entries:
   disposition: EXEMPT-HISTORICAL
   reason: a completed [x] checklist row recording the before/after size of a specific historical refactor
     commit ("19,940 -> 1,280 lines, 94% reduction"), identical historical fact to the CHANGELOG:2464 entry
-- claim_id: 6deb77ac1ec4db80
+- claim_id: 19c390f38b1e1bd1
   path: docs/API_REFERENCE.md
-  line: 7092
+  line: 7122
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
-  value: 22300
+  value: 22400
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum sentence ("1,867-line dispatcher plus ~22,300 lines across thirteen per-domain tensor_*_codegen.cpp
     modules") -- detector bound the aggregate 22,300 to the dispatcher file alone; true family total today
     is 22,320, so the prose figure is still accurate
-- claim_id: a36ad15bdd2552e3
+- claim_id: 833412e8afc88a38
   path: docs/DESIGN.md
   line: 79
   claim_type: numeric
   subject: lib/backend/tensorcore_codegen.cpp
-  value: 22300
+  value: 22400
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum sentence over thirteen per-domain modules ("totalling roughly 22,300 lines") -- detector
     bound the aggregate to the last-named module (tensorcore_codegen.cpp, 225 actual lines) instead of
     the family; true family total today is 22,320
-- claim_id: 2163a2971e181387
+- claim_id: 13cf576bd7e04f5e
   path: docs/DESIGN.md
   line: 252
   claim_type: numeric
   subject: lib/backend/eshkol_vm.c
-  value: 46200
+  value: 49200
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum sentence ("eshkol_vm.c, 2,189 lines; roughly 46,200 lines across the full eshkol_vm.c
     + vm_*.c module family") -- detector bound the family total to eshkol_vm.c alone; true family total
@@ -157,12 +157,12 @@ entries:
   value: 8457
   disposition: EXEMPT-HISTORICAL
   reason: same V1.1_SCOPE.md historical-snapshot reasoning as line 24
-- claim_id: 51a9c41b254f7a11
+- claim_id: 58dfe5d30488a0ac
   path: docs/breakdown/COMPILER_ARCHITECTURE.md
   line: 391
   claim_type: numeric
   subject: lib/backend/tensorcore_codegen.cpp
-  value: 22300
+  value: 22400
   disposition: DETECTOR-MISATTRIBUTION
   reason: same thirteen-module family-sum misattribution as DESIGN.md:79; true family total today is 22,320
 - claim_id: c958a66a92346a68
@@ -175,12 +175,12 @@ entries:
   reason: family-sum sentence over twelve sibling modules ("~22,100 lines across twelve sibling tensor_*_codegen.cpp
     files") excluding tensorcore_codegen.cpp -- detector bound the aggregate to the dispatcher; true twelve-sibling
     total today is 22,095, matching "~22,100"
-- claim_id: 3c56dee67055f51e
+- claim_id: bf1a2babab939980
   path: docs/breakdown/OVERVIEW.md
   line: 91
   claim_type: numeric
   subject: lib/backend/llvm_codegen.cpp
-  value: 322800
+  value: 329100
   disposition: DETECTOR-MISATTRIBUTION
   reason: repo-wide aggregate ("the compiler tree as a whole totals about 322,800 lines") -- detector
     bound the repo total to llvm_codegen.cpp, the nearest named file, instead of the whole-tree scope;
