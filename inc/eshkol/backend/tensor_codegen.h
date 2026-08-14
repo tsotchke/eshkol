@@ -785,6 +785,20 @@ public:
     // === Tensor Utility (Public for use by other codegen modules) ===
 
     /**
+     * Emit the ESHKOL_MAX_TENSOR_ELEMS ceiling check for a tensor whose element
+     * count is the runtime value @p total_elements.
+     *
+     * Generated code assembles a tensor from separate header/dimension/element
+     * arena allocations instead of calling arena_allocate_tensor_full(), so the
+     * documented tensor ceiling has to be applied where codegen computes the
+     * element count. One runtime call per tensor creation; it reads no tensor
+     * data and writes none, so it cannot alter a computed result.
+     *
+     * @param total_elements Element count as an i64-compatible SSA value.
+     */
+    void emitTensorElementLimitCheck(llvm::Value* total_elements);
+
+    /**
      * Create a tensor with given dimensions.
      * @param dims Vector of dimension values
      * @param fill_value Optional fill value (as i64 bit pattern)

@@ -482,7 +482,9 @@ exp log log10 log2 sqrt pow
 ## Static Type Checking (strict mode)
 
 ```scheme
-;; Checked ascription — trusted assertion to the checker, runtime no-op
+;; Checked ascription — trusted assertion to the checker, runtime no-op.
+;; A provably impossible ascription is reported at compile time:
+;;   (the string (+ 1 2))  ;; warning (fatal under --strict-types)
 (the number (car xs))     ;; tell the checker this is a number
 (the string s)
 

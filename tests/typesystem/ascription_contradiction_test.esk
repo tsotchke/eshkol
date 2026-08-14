@@ -1,0 +1,38 @@
+;; Type System Test (SW-11): a PROVABLY FALSE `(the <type> expr)` is diagnosed.
+;;
+;; `(display (the string (+ 1 2)))` used to print 3 and exit 0. The checker
+;; synthesized the inner expression, threw the result away, and adopted the
+;; ascribed type unconditionally — so an ascription that no value can satisfy
+;; was indistinguishable from one that every value satisfies, and "checked
+;; ascription" checked nothing.
+;;
+;; What is asserted here is the CONTRADICTION half only. `the` remains a
+;; trusted narrowing boundary and a pure runtime no-op — the emitted IR is
+;; still byte-identical to the wrapped expression, there is still no runtime
+;; tag check, and a VM program that omits the ascription still computes the
+;; identical result (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6). The checker
+;; only refuses the cases where it can prove the two types are disjoint;
+;; narrowing from a dynamic value, widening, and moving around the numeric
+;; tower are all still accepted, and checked_cast_the_test.esk pins that.
+;;
+;; Under gradual typing (the default) this is a `[WARN] Type warning:` and the
+;; program still runs; under --strict-types it is fatal, which is what this
+;; fixture asserts.
+;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: contradicts
+;; EXPECT-STDERR: no value can satisfy it
+
+(define (identity-fn x) x)
+
+;; Legitimate — must NOT be reported. Narrowing a dynamic value is the entire
+;; point of the form, and the numeric tower is deliberately flat, so moving
+;; between its members has no subtyping relation in either direction.
+(display (the string (identity-fn "ok")))  (newline)
+(display (the real 1))                     (newline)
+(display (the number (+ 1 2)))             (newline)
+(display (the integer 5))                  (newline)
+
+;; Provably false — `+` over two integers cannot produce a string.
+(display (the string (+ 1 2)))
+(newline)

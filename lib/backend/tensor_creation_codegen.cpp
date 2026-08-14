@@ -38,6 +38,31 @@ namespace eshkol {
 
 // ===== TENSOR CREATION HELPER =====
 
+/**
+ * @brief Emit the ESHKOL_MAX_TENSOR_ELEMS check for a runtime element count.
+ *
+ * Shared by both tensor-construction helpers below. The emitted call is a
+ * single runtime call per tensor creation — not per element — and does not
+ * touch the tensor's data, so it cannot change any computed value.
+ */
+void TensorCodegen::emitTensorElementLimitCheck(llvm::Value* total_elements) {
+    if (!total_elements) return;
+    auto& builder = ctx_.builder();
+    llvm::Module& module = ctx_.module();
+    llvm::Function* fn = module.getFunction("eshkol_enforce_tensor_elements");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx_.context()), {ctx_.int64Type()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_enforce_tensor_elements", &module);
+    }
+    llvm::Value* count = total_elements;
+    if (count->getType() != ctx_.int64Type()) {
+        count = builder.CreateIntCast(count, ctx_.int64Type(), true);
+    }
+    builder.CreateCall(fn, {count});
+}
+
 llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>& dims,
                                                    llvm::Value* fill_value,
                                                    bool use_memset_zero) {
@@ -55,6 +80,13 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
     for (size_t i = 1; i < dims.size(); i++) {
         total_elements = builder.CreateMul(total_elements, dims[i]);
     }
+
+    // SW-10: ESHKOL_MAX_TENSOR_ELEMS. Generated code builds a tensor out of
+    // three separate arena allocations rather than going through
+    // arena_allocate_tensor_full(), so the ceiling has to be applied here,
+    // where the element count first exists, or a compiled `make-tensor` would
+    // escape a limit that a runtime-constructed tensor respects.
+    emitTensorElementLimitCheck(total_elements);
 
     // Allocate tensor structure with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -150,6 +182,9 @@ llvm::Value* TensorCodegen::createTensorFromDimsArray(llvm::Value* dims_ptr,
         llvm::PointerType::get(context, 0), ctx_.globalArena());
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
+
+    // SW-10: same ceiling as createTensorWithDims, for the runtime-shape path.
+    emitTensorElementLimitCheck(total);
 
     // Allocate tensor structure with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();

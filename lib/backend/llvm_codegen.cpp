@@ -1904,6 +1904,23 @@ private:
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
+    // SW-10: the cooperative execution-timeout poll on the tail-call back-edge
+    // only exists where something can request an interrupt. The requester is
+    // the hosted watchdog thread in lib/core/resource_limits.cpp, which is not
+    // in the freestanding source set and is not linked into a standalone wasm
+    // module at all — so in those profiles the poll can never observe an
+    // interrupt, and emitting it only creates a dependency on a symbol the
+    // profile does not have. On wasm32 that dependency is an `env` import the
+    // JS glue would have to stub, and the stub would then be called across the
+    // JS boundary on every iteration of every loop in the program.
+    //
+    // Same direction as the VM's limit installer (see
+    // eshkol_vm_install_limits): a build with no hosted runtime to push the
+    // configuration in keeps the compiled-in default and links nothing extra.
+    bool timeoutInterruptPollEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
+
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
@@ -28116,6 +28133,35 @@ private:
             Function* stackrestore_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::stackrestore,
                                                                {builder->getPtrTy()});
             builder->CreateCall(stackrestore_fn, {tco_ctx.loop_stack_save});
+        }
+
+        // SW-10: cooperative execution-timeout poll on the tail-call back-edge.
+        //
+        // This is the ONE place every self-tail-call back-edge is emitted, for
+        // both `define`-TCO and named-let, and a TCO loop is precisely the
+        // shape that runs forever without entering a new frame — so the
+        // function-entry guard never sees it and `ESHKOL_TIMEOUT_MS` had
+        // nothing to act on. The watchdog thread can only *request* an
+        // interrupt; this is the code that notices.
+        //
+        // Cost is a load of the interrupt flag and a not-taken branch per
+        // iteration: eshkol_limit_poll_interrupt() returns immediately when no
+        // interrupt is pending, and no timer is even armed unless the user
+        // asked for one. It reads and writes no program value, so it cannot
+        // perturb arithmetic — gradients stay bit-identical.
+        //
+        // Only where a hosted watchdog can raise the interrupt in the first
+        // place: see timeoutInterruptPollEnabled().
+        if (timeoutInterruptPollEnabled()) {
+            Function* poll_fn = module->getFunction("eshkol_limit_poll_interrupt");
+            if (!poll_fn) {
+                FunctionType* poll_type =
+                    FunctionType::get(Type::getVoidTy(*context), {}, false);
+                poll_fn = Function::Create(poll_type, Function::ExternalLinkage,
+                                           "eshkol_limit_poll_interrupt",
+                                           module.get());
+            }
+            builder->CreateCall(poll_fn, {});
         }
 
         // Create unreachable sentinel BEFORE the branch (can't add instructions

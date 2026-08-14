@@ -80,6 +80,7 @@
 #endif
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/core/resource_limits.h"
 #include "eshkol/backend/vm.h"
 #ifndef ESHKOL_VM_WASM
 #include "eshkol/core/runtime.h"
@@ -2093,6 +2094,19 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
+    /* SW-10: resolve the documented resource-limit environment variables before
+     * anything runs. The VM sources themselves are freestanding-safe and never
+     * touch the environment; this hosted entry point is where ESHKOL_VM_MAX_INSN
+     * (and its siblings) become the active configuration that vm_run() reads. */
+    {
+        eshkol_resource_limits_t limits = eshkol_init_limits_from_env();
+        eshkol_vm_install_limits(
+            limits.max_vm_instructions,
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_VM_INSN),
+            limits.enforce_hard_limits,
+            eshkol_limit_poll_interrupt);
+    }
+
     if (argc > 1) {
         /* Parse flags */
         int trace = 0;

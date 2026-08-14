@@ -14,6 +14,7 @@
 #include <eshkol/core/i128_runtime.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
@@ -1092,6 +1093,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_unwind_dynamic_wind);
     ADD_SYMBOL(eshkol_check_recursion_depth);
     ADD_SYMBOL(eshkol_decrement_recursion_depth);
+    // SW-10: emitted on every tail-call loop back-edge, so the JIT must be able
+    // to resolve it or `-r` fails to link any program containing a TCO loop.
+    ADD_SYMBOL(eshkol_limit_poll_interrupt);
+    ADD_SYMBOL(eshkol_enforce_tensor_elements);
     ADD_DATA_SYMBOL(g_current_exception);
     ADD_DATA_SYMBOL(g_exception_handler_stack);
 

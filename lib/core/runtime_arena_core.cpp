@@ -8,6 +8,7 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <assert.h>
 #include <stdlib.h>
@@ -51,9 +52,31 @@ static size_t align_block_offset(const arena_block_t* block, size_t used, size_t
 
 // Create a new arena block
 static arena_block_t* create_arena_block(size_t size) {
+    // SW-10: the process heap ceiling (ESHKOL_MAX_HEAP) is enforced here
+    // because this is the ONE place the arena asks the OS for memory — every
+    // other allocation is a bump of a pointer inside a block that already
+    // exists. Checking here therefore costs one comparison per block (a
+    // megabyte at a time by default), never one per object, and leaves the
+    // bump-pointer fast path in arena_allocate_aligned() byte-for-byte as it
+    // was. It cannot perturb any computation: it either admits the block or
+    // ends the process.
+    // The heap ceiling only binds a run that asked for one (ESHKOL_MAX_HEAP).
+    // eshkol_track_allocation() still accounts every block either way, so
+    // eshkol_get_heap_usage()/peak stay accurate for diagnostics.
+    if (!eshkol_track_allocation(size) &&
+        eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_HEAP)) {
+        // Terminates under ESHKOL_ENFORCE_LIMITS=true. If it returns, limits
+        // are advisory: record the breach and hand the block over anyway. The
+        // arena's callers treat a null block as a fatal allocation failure, so
+        // refusing here would make "limits are not enforced" the more violent
+        // of the two settings.
+        eshkol_limit_enforce(ESHKOL_LIMIT_HEAP_HARD, "arena block");
+    }
+
     arena_block_t* block = (arena_block_t*)malloc(sizeof(arena_block_t));
     if (!block) {
         eshkol_error("Failed to allocate arena block structure");
+        eshkol_track_deallocation(size);
         return nullptr;
     }
 
@@ -61,6 +84,7 @@ static arena_block_t* create_arena_block(size_t size) {
     if (!block->memory) {
         eshkol_error("Failed to allocate arena block memory of size %zu", size);
         free(block);
+        eshkol_track_deallocation(size);
         return nullptr;
     }
 
@@ -74,6 +98,11 @@ static arena_block_t* create_arena_block(size_t size) {
 // Free an arena block
 static void free_arena_block(arena_block_t* block) {
     if (block) {
+        // Mirror of the create_arena_block() accounting, so a program that
+        // allocates and releases in a loop is measured by what it HOLDS rather
+        // than by everything it has ever touched. Without this pairing the
+        // heap ceiling would degrade into a cap on cumulative allocation.
+        eshkol_track_deallocation(block->size);
         free(block->memory);
         free(block);
     }

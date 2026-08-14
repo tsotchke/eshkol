@@ -56,6 +56,10 @@ extern "C" {
 // Default: 100MB string
 #define ESHKOL_DEFAULT_MAX_STRING_LENGTH   (100ULL * 1024 * 1024)
 
+// Default: 10 million bytecode instructions before the VM calls a program
+// runaway. 0 means unlimited.
+#define ESHKOL_DEFAULT_MAX_VM_INSTRUCTIONS (10ULL * 1000 * 1000)
+
 // ============================================================================
 // Resource Limit Configuration
 // ============================================================================
@@ -85,10 +89,52 @@ typedef struct eshkol_resource_limits {
     size_t max_tensor_elements;      // Maximum elements in a tensor
     size_t max_string_length;        // Maximum string length
 
+    // Execution limits
+    // Bytecode-VM runaway-instruction guard (0 = unlimited). Lives here rather
+    // than being read from the environment by the VM itself: lib/backend/vm_*.c
+    // are freestanding-safe sources that may not call getenv(), so every
+    // environment variable they obey has to arrive through this struct.
+    uint64_t max_vm_instructions;
+
     // Behavior flags
     bool enforce_hard_limits;        // Kill on hard limit (vs return error)
     bool enable_warnings;            // Log soft limit warnings
+
+    // Which ceilings are ACTIVE, as a bitmask of ESHKOL_LIMIT_ACTIVE_*.
+    //
+    // The values above are the documented defaults *for a limit you turn on* —
+    // they are not ceilings every program is silently held to. A limit becomes
+    // active when you ask for it: its environment variable is present, or you
+    // set the bit yourself before eshkol_set_limits(). An inactive ceiling is
+    // never checked and cannot terminate anything.
+    //
+    // This matters because the defaults are not idle documentation: 1 GiB of
+    // heap is a real number that real programs pass. Turning them all on at
+    // once would not be "enforcing what the docs say", it would be imposing a
+    // ceiling on every existing program that never had one — this repository's
+    // own tests/features/blc_test.esk allocates past 1 GiB, and the bytecode
+    // VM's computed-goto dispatch never had an instruction guard at all.
+    // Whether the defaults should also bind an unconfigured run is a release
+    // decision, recorded in docs/reference/runtime/environment-variables.md.
+    uint32_t active_limits;
 } eshkol_resource_limits_t;
+
+// Bits for eshkol_resource_limits_t::active_limits.
+#define ESHKOL_LIMIT_ACTIVE_HEAP    (1u << 0)  // ESHKOL_MAX_HEAP
+#define ESHKOL_LIMIT_ACTIVE_STACK   (1u << 1)  // ESHKOL_MAX_STACK
+#define ESHKOL_LIMIT_ACTIVE_TENSOR  (1u << 2)  // ESHKOL_MAX_TENSOR_ELEMS
+#define ESHKOL_LIMIT_ACTIVE_STRING  (1u << 3)  // ESHKOL_MAX_STRING_LEN
+#define ESHKOL_LIMIT_ACTIVE_TIMEOUT (1u << 4)  // ESHKOL_TIMEOUT_MS
+#define ESHKOL_LIMIT_ACTIVE_VM_INSN (1u << 5)  // ESHKOL_VM_MAX_INSN
+#define ESHKOL_LIMIT_ACTIVE_ALL     0x3Fu
+
+/**
+ * @brief Whether a given ceiling is active for this process.
+ *
+ * @param which One of the `ESHKOL_LIMIT_ACTIVE_*` bits.
+ * @return true if that limit was asked for and should be enforced.
+ */
+bool eshkol_limit_is_active(uint32_t which);
 
 // ============================================================================
 // Environment Variables
@@ -101,6 +147,7 @@ typedef struct eshkol_resource_limits {
 // ESHKOL_MAX_STACK         - Max stack depth
 // ESHKOL_MAX_TENSOR_ELEMS  - Max tensor elements
 // ESHKOL_MAX_STRING_LEN    - Max string length
+// ESHKOL_VM_MAX_INSN       - Bytecode-VM instruction ceiling (0 = unlimited)
 // ESHKOL_ENFORCE_LIMITS    - "true" or "false"
 // ESHKOL_LIMIT_WARNINGS    - "true" or "false"
 
@@ -369,6 +416,93 @@ eshkol_limit_error_t eshkol_get_last_limit_error(void);
  *         value returns "Unknown limit error".
  */
 const char* eshkol_limit_error_message(eshkol_limit_error_t error);
+
+// ============================================================================
+// Enforcement
+// ============================================================================
+
+/**
+ * @brief Process exit statuses used when a hard resource limit terminates a run.
+ *
+ * `ESHKOL_ENFORCE_LIMITS=true` (the default) is documented to mean that a
+ * hard-limit violation *terminates the process*; these are the statuses it
+ * terminates with, one per limit, so a supervising process can tell which
+ * ceiling was hit without parsing the diagnostic. `ESHKOL_EXIT_LIMIT_TIMEOUT`
+ * is 124 to match GNU coreutils `timeout(1)` — the convention this repository
+ * already uses for the subprocess timeouts in `run-command` / `run-argv`. The
+ * rest occupy the adjacent band below it, and the set deliberately avoids
+ * 126/127, which POSIX shells reserve.
+ */
+#define ESHKOL_EXIT_LIMIT_HEAP    120  // ESHKOL_MAX_HEAP exceeded
+#define ESHKOL_EXIT_LIMIT_STACK   121  // ESHKOL_MAX_STACK exceeded
+#define ESHKOL_EXIT_LIMIT_TENSOR  122  // ESHKOL_MAX_TENSOR_ELEMS exceeded
+#define ESHKOL_EXIT_LIMIT_STRING  123  // ESHKOL_MAX_STRING_LEN exceeded
+#define ESHKOL_EXIT_LIMIT_TIMEOUT 124  // ESHKOL_TIMEOUT_MS exceeded
+#define ESHKOL_EXIT_LIMIT_VM_INSN 125  // ESHKOL_VM_MAX_INSN exceeded
+
+/**
+ * @brief The documented process exit status for a given limit condition.
+ *
+ * @param error Limit condition to map.
+ * @return One of the `ESHKOL_EXIT_LIMIT_*` statuses; `ESHKOL_EXIT_LIMIT_HEAP`
+ *         for the soft-heap warning (which never terminates on its own) and
+ *         for any unrecognized value.
+ */
+int eshkol_limit_exit_code(eshkol_limit_error_t error);
+
+/**
+ * @brief Act on a detected hard-limit violation according to
+ *        `enforce_hard_limits`.
+ *
+ * The single decision point behind every enforced limit, so that "what a
+ * violation does" is defined once rather than re-derived at each call site.
+ *
+ * - When `enforce_hard_limits` is set (the default, `ESHKOL_ENFORCE_LIMITS=true`):
+ *   writes a one-line `eshkol: fatal: ...` diagnostic naming the limit, the
+ *   configured ceiling and the environment variable that sets it, to stderr;
+ *   flushes stdout and stderr so nothing the program already printed is lost;
+ *   requests a runtime interrupt so other threads observe the shutdown; and
+ *   terminates the process with the matching `ESHKOL_EXIT_LIMIT_*` status.
+ *   **Does not return.**
+ * - When it is clear (`ESHKOL_ENFORCE_LIMITS=false`): the limit is advisory.
+ *   Emits a warning if `enable_warnings` is set, leaves the condition readable
+ *   via eshkol_get_last_limit_error(), and returns so the caller can fail just
+ *   that operation — the documented "errors are returned" behaviour.
+ *
+ * @param error  Which limit was breached.
+ * @param detail Optional extra context appended to the diagnostic (may be NULL).
+ */
+void eshkol_limit_enforce(eshkol_limit_error_t error, const char* detail);
+
+/**
+ * @brief Cooperative poll for a pending resource-limit interrupt.
+ *
+ * The execution-timeout watchdog runs on its own thread and can only *request*
+ * an interrupt; something running the user's program has to notice. This is
+ * that noticer: cheap enough to sit on a loop back-edge (it reads one global
+ * and returns when no interrupt is pending) and, when an interrupt IS pending,
+ * routes it through eshkol_limit_enforce() so a timeout terminates with the
+ * documented status instead of being printed and ignored.
+ *
+ * Called from generated code at tail-call loop back-edges, from the recursion
+ * guard at function entry, and from the bytecode VM's dispatch loop.
+ */
+void eshkol_limit_poll_interrupt(void);
+
+/**
+ * @brief Apply `ESHKOL_MAX_TENSOR_ELEMS` to a tensor about to be built.
+ *
+ * Native codegen does not construct tensors through
+ * arena_allocate_tensor_full(); it emits the header, dimension and element
+ * allocations inline and only knows the element count as an SSA value. This is
+ * the entry point generated code calls with that count, so a compiled tensor
+ * is bound by the same ceiling as a runtime-constructed one. Combines
+ * eshkol_check_tensor_size() with eshkol_limit_enforce(); does not return when
+ * the limit is exceeded and enforcement is on.
+ *
+ * @param num_elements Total element count of the tensor being created.
+ */
+void eshkol_enforce_tensor_elements(int64_t num_elements);
 
 // ============================================================================
 // Diagnostics

@@ -503,7 +503,9 @@ entries:
 
   - id: SW-10
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "45877dde"
+    closed_by: "PR (branch fix/resource-limits-and-ascription)"
     title: "Seven documented resource-limit environment variables are accepted and never enforced"
     repro: "ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=1 eshkol-run -r a-20M-iteration-loop.esk"
     observed: >-
@@ -525,10 +527,74 @@ entries:
       A consumer setting a heap ceiling to contain untrusted code gets no containment
       and no warning. #416 adds honest 'Accepted, not enforced in v1.3.4' status columns
       but #416 is UNMERGED, so the cut still documents them as controls.
+    fix: >-
+      Each ceiling is applied at the one site every path to it converges on, so no
+      call site can be added later that escapes it, and no fast path pays for it:
+      ESHKOL_MAX_HEAP at lib/core/runtime_arena_core.cpp create_arena_block() (the
+      arena's only OS-request site — once per block, bump-pointer path untouched);
+      ESHKOL_MAX_STRING_LEN at lib/core/runtime_object_alloc.cpp
+      arena_allocate_string_with_header(); ESHKOL_MAX_TENSOR_ELEMS at
+      lib/core/runtime_tensor_alloc.cpp arena_allocate_tensor_full() plus
+      lib/backend/tensor_creation_codegen.cpp emitTensorElementLimitCheck(), because
+      native codegen assembles tensors from three separate allocations and never calls
+      that helper; ESHKOL_TIMEOUT_MS as a cooperative poll emitted at the tail-call
+      back-edge in lib/backend/llvm_codegen.cpp codegenTailCallFromContext() and run at
+      every guarded function entry in lib/core/runtime_list_helpers.cpp
+      eshkol_check_recursion_depth(); ESHKOL_MAX_STACK by making that same guard read
+      eshkol_get_limits()->max_stack_depth instead of a hard-coded 100000 (there were
+      two stack-depth mechanisms with the same default and no wire between them);
+      ESHKOL_VM_MAX_INSN in both lib/backend/vm_run.c dispatch paths.
+      ESHKOL_ENFORCE_LIMITS and ESHKOL_LIMIT_WARNINGS select terminate-vs-advisory and
+      soft-limit warnings at the single decision point eshkol_limit_enforce().
+    measured_after: >-
+      ESHKOL_MAX_HEAP=1 on the 20M-iteration loop: 'eshkol: fatal: Heap hard limit
+      exceeded (limit 1 bytes, set by ESHKOL_MAX_HEAP): arena block', exit 120 (was
+      199999990000000, exit 0). ESHKOL_TIMEOUT_MS=500 on the same program: 'eshkol:
+      fatal: Execution timeout exceeded (limit 500ms, set by ESHKOL_TIMEOUT_MS)', exit
+      124 (was the same message followed by the answer and exit 0). MAX_STRING_LEN=100
+      exit 123, MAX_TENSOR_ELEMS=100 exit 122, MAX_STACK=100 exit 121,
+      VM_MAX_INSN=100000 exit 125. Under-limit controls all still exit 0 with identical
+      output, and ESHKOL_ENFORCE_LIMITS=false downgrades every case to a warning and
+      exit 0. All 13 cases green in tests/limits/resource_limits_enforcement_gate.sh,
+      registered as the ctest gate resource_limits_enforcement_gate.
+    residual: >-
+      ESHKOL_MAX_STACK binds the recursion the depth guard observes; codegen does not
+      yet emit that guard at the entry of every top-level `define`d function. That gap
+      is ESH-0101 (tests/stress/found/deep_recursion_270k_no_diagnostic.esk) and is
+      deliberately not closed here — tests/stress/rec_deep_nontco_250k.esk pins plain
+      non-tail recursion working to 250000 frames, which the documented 100000 default
+      would break. Recorded in docs/reference/runtime/environment-variables.md.
+      RULED (maintainer, 2026-08-13): ESH-0101 stack-guard COVERAGE stays open as a
+      ledgered v1.3.5 item. Wiring the variable where guards already exist — which is
+      what this entry does — is the correct and complete v1.3.4 scope. Not a blocker
+      for the v1.3.4 tag.
+      Second residual, and the important one: every ceiling is OPT-IN. A limit
+      binds a run only when that run sets its variable (or sets the matching
+      ESHKOL_LIMIT_ACTIVE_* bit before eshkol_set_limits()); the documented
+      defaults are the values a limit takes when turned on, not ceilings every
+      program is held to. This was learned the hard way inside this PR: the
+      first cut enforced the documented defaults unconditionally and killed
+      tests/features/blc_test.esk, which allocates past the 1 GiB heap default
+      and had run fine for years, with 'Heap hard limit exceeded' and exit 120.
+      The VM's computed-goto dispatch likewise never had an instruction guard,
+      so applying the 10M default there had the same character. The defect this
+      entry records is that ESHKOL_MAX_HEAP=1 did nothing; fixing that does not
+      require imposing a ceiling on every program that sets nothing.
+      Whether the defaults should ALSO bind an unconfigured run is a release
+      decision about defaults, not a bug fix.
+      RULED (maintainer, 2026-08-13): ceilings stay OPT-IN for v1.3.4. Shipping
+      behaviour is unchanged for every existing program — a run that sets nothing is
+      bounded by nothing, exactly as before. Whether the documented defaults should
+      also bind an unconfigured run is deferred as a v1.3.5 policy question, not a
+      v1.3.4 defect. Documented at docs/reference/runtime/environment-variables.md
+      ("Limits are opt-in") and pinned by a dedicated case in
+      tests/limits/resource_limits_enforcement_gate.sh.
 
   - id: SW-11
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "45877dde"
+    closed_by: "PR (branch fix/resource-limits-and-ascription)"
     title: "(the <type> expr) is a runtime no-op, so a false ascription is never caught"
     repro: "(display (the string (+ 1 2)))"
     observed: "3, exit 0"
@@ -537,6 +603,43 @@ entries:
     caught_by: [direct-measurement, doc-source-crosscheck]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
     notes: "Documented as a 'trusted assertion to the checker; runtime no-op (byte-identical IR)'. Documented-by-design, but the word 'assertion' is the lie."
+    fix: >-
+      Closed on the 'a type error' arm of `correct`, not the 'document it differently'
+      arm, and at compile time rather than at run time. lib/types/type_checker.cpp
+      ESHKOL_THE_OP was already synthesizing the wrapped expression and then throwing
+      the resulting type away; it now compares that type against the ascribed one via
+      the new TypeChecker::ascriptionIsBelievable() and reports a provable
+      contradiction through reportTypeIssue(), the same enforcement point every other
+      type issue uses — a warning under gradual typing, fatal under --strict-types.
+      The predicate rejects only the impossible: widening, narrowing (the reason the
+      form exists), anything touching the dynamic Value root or an unresolved type, and
+      numeric-tower-to-numeric-tower are all accepted, the last because this type graph
+      keeps Integer/Rational/Real/Complex as siblings under Number rather than a chain,
+      so `(the real 1)` has no subtyping relation in either direction.
+      DELIBERATELY NOT a runtime check: COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6
+      guarantees the emitted IR is byte-identical to the wrapped expression with no
+      runtime tag check and no cost, and docs/FEATURE_MATRIX.md:804 justifies the VM
+      parity gap ON that guarantee. A compile-time diagnostic makes the word 'checked'
+      true without walking either claim back; both were re-worded to say so.
+    measured_after: >-
+      `(display (the string (+ 1 2)))` now prints '[WARN] Type warning: ascription
+      (the String ...) contradicts the inferred type Int64; no value can satisfy it
+      (line 1:11)' and, under gradual typing, still evaluates to 3 and exits 0 as the
+      documented gradual-typing model requires; under --strict-types it is fatal —
+      'Refusing to generate code for a program with type errors', exit 1, no artifact.
+      Class-kill matrix all reported: (the vector (+ 1 2)), (the procedure "x"),
+      (the string (vector 1 2)), (the integer "s"), (the boolean 5). Correct
+      ascriptions unaffected across the numeric tower and strings:
+      (the number (+ 1 2)), (the real 1), (the integer 5), (the string "hi") are
+      silent and evaluate identically. tests/typesystem/checked_cast_the_test.esk
+      compiles clean under --strict-types with 0 diagnostics, and the
+      registry-derived coverage cell in scripts/run_typesystem_tests.sh is unaffected
+      because its operand is dynamic.
+    residual: >-
+      The diagnostic is native-only, because the bytecode VM has no `the` surface and
+      does not run the HoTT checker. That is unchanged from before this fix and remains
+      native-only-justified in docs/VM_PARITY.md: the form emits no code on either
+      engine, so what the two engines COMPUTE is still identical.
 
   - id: SW-12
     bucket: SILENT-WRONG

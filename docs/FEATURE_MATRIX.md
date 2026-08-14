@@ -69,7 +69,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Function arrows (→) | Yes | `(→ A B)` types | Type inference |
 | Dependent types | Yes | Path types, universes | Proof erasure |
 | Gradual typing | Yes | Optional annotations | Warning-only errors |
-| Checked ascription `(the <type> expr)` | Yes | v1.3.4: trusted assertion to the checker; runtime no-op (byte-identical IR) | Type checker |
+| Checked ascription `(the <type> expr)` | Yes | v1.3.4: trusted assertion to the checker; a provably disjoint ascription is reported (warning under gradual typing, fatal under `--strict-types`); still a runtime no-op (byte-identical IR) | Type checker |
 | Predicate-guarded narrowing | Yes | v1.3.4: 8 predicates, honored across `if`/`and`, cancelled at `set!` | Type checker |
 | Linear `Qubit` type | Yes | v1.3.4: use-exactly-once enforcement on `define`d linear params | HoTT linear types |
 | Sum-type annotations on named-let params | Yes | v1.3.4: honored across iterations | Type checker |
@@ -801,7 +801,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Shortest-round-trip number printing | Yes | v1.3.4: `display`/`write`/`number->string` share one portable-C routine with native, byte-identical output (R7RS 6.2.6) |
 | Reverse-mode `gradient` (`op:GRADIENT`) | Yes | v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across `vm-src`/`vm-eskb`; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only |
 | Forward-mode `derivative` (`op:DERIVATIVE`) | Yes / first order | v1.3.4 (ESH-0369): direct `(derivative f x)` and curried `((derivative f) x)` both lower to the same native call with the same `(f, x)`, so they agree exactly with native. First order only — the VM's carrier is a flat dual `{value, tangent}` with a single perturbation, so nested/higher-order differentiation now **raises a catchable error** instead of returning the `0.0` it used to fabricate. Higher-order AD needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower; native-only until a VM jet carrier is built |
-| Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result |
+| Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result. The contradiction diagnostic added in v1.3.4 is likewise compile-time, so runtime parity is unchanged |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |
 | 3-way verification | Yes | Reference = simulated = matrix-based (126/126 inline, 123/123 traced) |
