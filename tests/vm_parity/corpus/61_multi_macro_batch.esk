@@ -22,11 +22,11 @@
 ;     where the VM peephole used to splice `CONST 0 + ADD` across the `else`
 ;     label and delete the enclosing `+` outright
 ;
-; NOT covered here, deliberately: syntax-rules HYGIENE for a binding introduced
-; by the template.  Both engines are wrong and they disagree with each other
-; (native captures, the VM loses the binding and corrupts a same-named
-; top-level variable), so it cannot be pinned as a parity row yet — filed
-; separately rather than folded into this file.
+; NOT covered here: syntax-rules HYGIENE for a binding introduced by the
+; template.  That surface now has its own parity file,
+; 68_syntax_rules_hygiene.esk (SW-30).  When this file was written neither
+; engine was hygienic and the two disagreed, so no such shape could be pinned;
+; both expanders now alpha-rename template-introduced binders and agree.
 
 (define-syntax dbl
   (syntax-rules () ((_ e) (* 2 e))))

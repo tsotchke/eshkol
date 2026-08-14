@@ -129,6 +129,49 @@ private:
     };
     using Bindings = std::map<std::string, Binding>;
 
+    // ── Hygiene: alpha-renaming of template-introduced binders (R7RS 4.3.2)
+    //
+    // A template may bind identifiers of its own, as in
+    //     ((_ e) (let ((tmp 100)) (+ tmp e)))
+    // R7RS requires that `tmp` be FRESH: it may not capture a `tmp` the caller
+    // passes in through `e`, and the caller's `tmp` may not capture it.  Without
+    // renaming, (hyg tmp) expands to (let ((tmp 100)) (+ tmp tmp)) and yields
+    // 200 where R7RS requires 107 — filed as SW-30.
+    //
+    // `active_renames_` maps a template-introduced binder to its fresh name and
+    // is scoped by save/restore around each binding form, so a name is renamed
+    // only inside the extent that introduced it.  A template identifier that is
+    // FREE (referring to the macro-definition environment) is left alone.
+    //
+    // Pattern variables are never renamed: they are replaced by caller code,
+    // which must keep its own names.  The rename is decided at the binder,
+    // before its value is substituted, precisely so caller code is never
+    // touched.
+    //
+    // NOT covered: referential transparency for a template's free identifiers.
+    // eshkol_macro_def_t carries no definition environment, so a free template
+    // identifier is still resolved at the USE site.  This closes the capture
+    // half of hygiene only — see the SW-30 ledger entry.
+    std::map<std::string, std::string> active_renames_;
+    uint64_t rename_counter_ = 0;
+
+    // True while substituting inside QUOTED DATA, where symbols are data
+    // rather than identifiers and must keep their literal names. Without this
+    // a template's own gensym leaks into the program's OUTPUT: the template
+    // (let ((tmp 5)) (list 'tmp tmp)) would print (_h0.tmp 5). Set by quote
+    // and quasiquote, cleared again by unquote / unquote-splicing.
+    bool in_datum_ = false;
+
+    // Allocate a fresh name for `name` and bind it in `active_renames_`.
+    // The counter is monotonic across the whole expansion, so two invocations
+    // of the same macro get distinct names — required, since their bindings
+    // are distinct.
+    std::string freshName(const std::string& name);
+
+    // True if `name` is a template identifier eligible for renaming: not a
+    // pattern variable (those carry caller code) and not the `_` wildcard.
+    static bool isRenameableBinder(const std::string& name, const Bindings& bindings);
+
     /**
      * Register a macro definition.
      */
