@@ -665,6 +665,9 @@ static const BuiltinDef BUILTINS[] = {
      * Type predicates — IDs 1697-1710
      * ═══════════════════════════════════════════════════════════════ */
     {"real?", 1697, 1}, {"rational?", 1698, 1}, {"tensor?", 1699, 1},
+    /* SW-31: integer? had NO builtin entry — it existed only as a compiler
+     * intercept, so it could not be passed as a value at all. */
+    {"integer?", 1717, 1},
     {"type-of", 740, 1},
     /* Error objects — IDs 711-714.
      * These three were misbound by one slot: native 711 is error-MESSAGE and

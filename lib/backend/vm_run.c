@@ -972,7 +972,10 @@ void vm_run(VM* vm) {
     }
 
     lbl_PAIR_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); DISPATCH(); }
-    lbl_NUM_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_INT || v.type == VAL_FLOAT)); DISPATCH(); }
+    /* SW-31: number? is the WHOLE tower, not just fixnum/flonum. This single
+     * opcode also used to serve `integer?` and `real?`, which is how
+     * (integer? 5.5) answered #t; those now lower to their own natives. */
+    lbl_NUM_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(v))); DISPATCH(); }
     lbl_STR_P:   { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_STRING)); DISPATCH(); }
     lbl_BOOL_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_BOOL)); DISPATCH(); }
     lbl_PROC_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); DISPATCH(); }
@@ -1772,7 +1775,7 @@ vm_exit:
         }
 
         case OP_PAIR_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); break; }
-        case OP_NUM_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_INT || v.type == VAL_FLOAT)); break; }
+        case OP_NUM_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(v))); break; } /* SW-31 */
         case OP_STR_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_STRING)); break; }
         case OP_BOOL_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_BOOL)); break; }
         case OP_PROC_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_CLOSURE)); break; }

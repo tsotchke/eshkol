@@ -21335,20 +21335,32 @@ private:
             // Rational path: call eshkol_rational_floor/ceil/truncate/round
             builder->SetInsertPoint(rational_path);
             {
-                // Map func_name to runtime function name
+                // SW-29: call the TAGGED rounding entry point, not the
+                // int64-returning one. The int64 variants read a rational's
+                // numerator/denominator fields directly, which on the bignum
+                // path are the inert 0/1 shadow — so `(floor (/ (expt 2 100) 3))`
+                // returned 0 with exit 0 and no diagnostic. The exact result can
+                // exceed int64, so it cannot be carried by an int64 return at
+                // all; the tagged form answers with an INT64 or a bignum as the
+                // value requires.
                 std::string rt_name = "eshkol_rational_" +
-                    (func_name == "trunc" ? std::string("truncate") : func_name);
+                    (func_name == "trunc" ? std::string("truncate") : func_name) +
+                    "_tagged";
+                auto* rndPtrTy = PointerType::getUnqual(*context);
                 Function* rat_func = module->getFunction(rt_name);
                 if (!rat_func) {
-                    FunctionType* rat_ft = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+                    FunctionType* rat_ft = FunctionType::get(Type::getVoidTy(*context),
+                        {rndPtrTy, rndPtrTy, rndPtrTy}, false);
                     rat_func = Function::Create(rat_ft, Function::ExternalLinkage, rt_name, module.get());
                 }
                 // Extract rational pointer from tagged value
                 Value* rat_ptr_int = unpackInt64FromTaggedValue(arg_tagged);
-                Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, builder->getPtrTy());
-                Value* rat_result_int = builder->CreateCall(rat_func, {rat_ptr});
-                // Pack as exact integer
-                tagged_regular_result = packInt64ToTaggedValue(rat_result_int, true);
+                Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, rndPtrTy);
+                Value* rnd_res_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "rat_round_res");
+                Value* rnd_arena = builder->CreateLoad(rndPtrTy, global_arena);
+                builder->CreateCall(rat_func, {rnd_arena, rat_ptr, rnd_res_alloca});
+                tagged_regular_result = builder->CreateLoad(tagged_value_type, rnd_res_alloca,
+                                                            "rat_round_tagged");
             }
             builder->CreateBr(regular_merge);
             BasicBlock* rational_exit = builder->GetInsertBlock();

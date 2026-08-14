@@ -1429,36 +1429,50 @@ entries:
 
   - id: SW-29
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
     title: "floor/ceiling/truncate/round of a bignum-backed rational returns 0 natively, and an inexact double on the VM"
     repro: "(display (floor (/ (expt 2 100) 3)))"
-    observed: "native -r prints 0; the VM prints 4.2255020007607644e+29"
-    correct: "422550200076076467165567735125 — both engines are wrong, and they disagree"
-    discovered_by: >-
-      Found while closing SW-18, by probing the exactness surface around the fix rather
-      than only the filed reproducer.
+    observed: "native -r printed 0; the VM printed 4.2255020007607644e+29"
+    correct: "422550200076076467165567735125 — both engines were wrong, and they disagreed"
     root_cause: >-
-      Native: lib/core/rational.cpp:1054 eshkol_rational_floor (and ceil/truncate/round
-      beside it) read rat->numerator / rat->denominator UNCONDITIONALLY. On the bignum path
-      those int64 shadow fields are 0 and 1, so the function answers 0/1 = 0. This is the
-      SAME class of defect SW-18 closed on the VM — an int64 shadow read on the big path —
-      and PR #247 did not carry it into the rounding functions. VM: the `floor` builtin
-      never reaches rational native 342 for this shape and takes a generic double path.
-    blocked_on: >-
-      An ABI change. These four runtime entry points return int64_t
-      (inc/eshkol/core/rational.h:198-219) and are called from a single LLVM codegen block
-      (lib/backend/llvm_codegen.cpp:21298) that packs the result straight into an exact
-      integer tagged value. The exact floor of a big rational can itself exceed int64, so
-      it CANNOT be signalled through the current signature; there is no in-ABI fix that is
-      not itself a silent wrong. The precedent for the change already exists in the same
-      header: eshkol_rational_from_bignums_tagged returns a tagged value via an out-param.
-    decision_needed: >-
-      Either (a) convert the four functions to tagged out-params mirroring
-      eshkol_rational_from_bignums_tagged and update the one codegen block, which makes
-      them exact and closes this entry, or (b) raise a loud "exactness cannot be preserved"
-      error when the result leaves int64. NOT acceptable: leaving native answering 0.
-      Deliberately NOT folded into the SW-13/SW-18 branch — it is an ABI change on a
-      surface neither filed defect names, and it is native-side where SW-18 is VM-side.
+      Two different mechanisms behind one symptom.
+      NATIVE: lib/core/rational.cpp eshkol_rational_floor/ceil/truncate/round read
+      rat->numerator and rat->denominator UNCONDITIONALLY. On the bignum path those
+      fields are the inert 0/1 shadow, so the functions computed 0/1 = 0. This is the same
+      int64-shadow class SW-18 closed on the VM; PR #247 made the rational substrate
+      bignum-capable but did not carry that through to the rounding functions.
+      VM: floor/ceiling/round (native ids 26/27/28) converted their operand with
+      as_number_vm() unconditionally, so an exact rational came back inexact, and
+      `truncate` had NO implementation at all — the builtin table bound it to native id
+      190, which no case handled, so every call warned "unhandled native call ID 190" and
+      produced the empty list.
+    fix: >-
+      The ABI change was implementable, so the loud-error fallback was NOT needed. Four
+      tagged entry points were added — eshkol_rational_{floor,ceil,truncate,round}_tagged
+      — mirroring the eshkol_rational_from_bignums_tagged precedent in the same header:
+      they take an out-param and can therefore answer with an INT64 or a bignum as the
+      value requires, which an int64 return could never do. They compute in the bignum
+      domain via the existing bignum API (eshkol_bignum_div/mod/sub/add/mul/compare),
+      correcting the truncating remainder by one for floor/ceil and implementing
+      ties-to-even for round. The cascade was contained exactly as hoped: the four
+      functions plus ONE codegen block (lib/backend/llvm_codegen.cpp, the shared
+      floor/ceil/trunc/round rational path), no other caller. The int64 variants are kept
+      for callers that have already established the operand is on the fast path.
+      On the VM, ids 26/27/28 now pass an exact integer through unchanged and route a
+      ratnum to the exact rational natives 342/343/345 (bignum-capable since #432), and
+      native id 190 (`truncate`) is implemented for the first time, routing to 344.
+    verified: >-
+      tests/vm_parity/corpus/67_exact_rounding_bignum_rational.esk — all four roundings on
+      positive and negative big rationals, exactness assertions, the defining inequalities
+      checked rather than tabulated, an exact-integral big rational, ties-to-even at a
+      bignum midpoint, small-rational and exact-integer and inexact pass-through. Byte
+      identical on native, VM and wasm32.
+    revert_validated: >-
+      Removing the is_big branch from the four tagged functions makes native print 0 for
+      floor and ceil again; removing the exact routing from VM ids 26/27/28 makes the VM
+      print doubles again. Both confirmed by rebuild and re-run.
     caught_by: [direct-measurement, sw-18-adjacent-probe]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
 
@@ -1492,64 +1506,93 @@ entries:
 
   - id: SW-31
     bucket: SILENT-WRONG
-    status: open
-    title: "VM numeric type predicates and eqv? answer #f across whole numeric classes: number?/real? on rationals and bignums, rational? on integers and flonums, integer? on bignums, positive? on rationals and bignums, eqv? on rationals and bignums"
-    measured: >-
-      Full row-by-row probe, native -r vs VM standalone, columns
-      (number? integer? rational? real? exact? zero? positive? negative?):
-        5           native (#t #t #t #t #t #f #t #f)   VM (#t #t #f #t #t #f #t #f)
-        5.0         native (#t #t #t #t #f #f #t #f)   VM (#t #t #f #t #f #f #t #f)
-        1/3         native (#t #f #t #t #t #f #t #f)   VM (#f #f #t #f #t #f #f #f)
-        (expt 2 100) native (#t #t #t #t #t #f #t #f)  VM (#f #f #f #f #t #f #f #f)
-      and (eqv? 1/3 1/3) native #t / VM #f, (eqv? (expt 2 100) (expt 2 100)) native #t / VM #f.
-    observed: "the VM answers #f, exit 0, no diagnostic — a type predicate that denies a value's own type"
-    correct: "the native column, which is R7RS 6.2.2/6.1"
-    discovered_by: >-
-      Found while probing the exactness surface around the SW-18 fix, NOT by that fix.
-      Confirmed PRE-EXISTING and independent: (rational? 5) and (rational? 5.0) are #f on
-      the VM and involve no rational, no bignum and nothing this branch touched. The SW-18
-      fix only made the gap easier to hit, because expressions like (/ (expt 2 100) 3) now
-      correctly yield a VAL_RATIONAL where they used to yield a double, and the double was
-      accepted by these predicates.
-    root_cause_hypothesis: >-
-      Missing tag arms rather than a computation defect: each predicate tests an explicit
-      list of Value tags and VAL_RATIONAL / VAL_BIGNUM are absent from several of them,
-      while `rational?` is missing VAL_INT and VAL_FLOAT. eqv? likewise has no
-      VAL_RATIONAL / VAL_BIGNUM comparison arm and falls through to a tag-and-payload
-      compare that cannot match two distinct heap boxes. Not verified line-by-line —
-      filed for scoping, not fixed here.
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+    title: "VM numeric type predicates and eqv? answer #f across whole numeric classes"
+    observed: "the VM answered #f — a type predicate denying a value's own type — with exit 0"
+    correct: "the native column, which is R7RS 6.2.1/6.1 and was already right"
+    root_cause: >-
+      THREE mechanisms, not one.
+      (1) MISSING TAG ARMS: each predicate spelled its own inline tag test and each spelled
+      a different, shorter list than the tower has. lbl_NUM_P tested only VAL_INT/VAL_FLOAT;
+      rational? (native 1698) tested only VAL_RATIONAL; complex? (native 317) tested only
+      VAL_COMPLEX; real? (1697) omitted BIGNUM.
+      (2) A DOUBLE CONVERSION THAT LIES: positive?/negative?/zero?/odd?/even? (natives
+      40-44) read their operand through as_number(), which returns 0.0 for ANY heap-boxed
+      value — so a bignum was neither positive nor negative, (zero? 1/3) could answer #t,
+      and (odd? <bignum>) was always #f.
+      (3) OPCODE ALIASING: the compiler lowered `integer?` AND `real?` to the very same
+      OP_NUM_P opcode as `number?`, so (integer? 5.5) answered #t. `integer?` also had no
+      builtin-table entry at all and could not be passed as a value.
+      Separately, `eqv?` shares native id 133 with `eq?`, and the shared helper
+      vm_identity_equal fell through to a heap-POINTER comparison for numeric boxes, so
+      (eqv? 1/3 1/3) and (eqv? (expt 2 100) (expt 2 100)) were #f — two separately
+      allocated boxes are never the same pointer.
+    fix: >-
+      One classification layer the whole family routes through — vm_tag_is_number,
+      vm_tag_is_real, vm_num_is_rational, vm_num_is_integer, vm_tag_is_exact_number and
+      vm_num_parity_is_odd — so a tag can only be forgotten in one place and adding a
+      numeric tag later updates every predicate at once. The sign predicates compare
+      through the exact comparator the ordering opcodes already use, falling back to a
+      double only for a genuinely inexact operand. `integer?` gained its own native (1717)
+      and a builtin entry; `real?` lowers to native 1697. vm_identity_equal compares
+      heap-boxed NUMBERS by value (legal for eq?, which R7RS leaves unspecified on
+      numbers, and required for eqv?).
+    verified: >-
+      tests/vm_parity/corpus/65_numeric_predicate_matrix.esk — a predicate x tag MATRIX
+      (12 numeric rows x 10 predicates) plus the same predicates reached as first-class
+      values (a different route in the VM, with its own missing arms), parity across the
+      int64 boundary, and eqv?/equal? on numbers. Byte identical on native, VM and wasm32.
+    revert_validated: >-
+      Restoring vm_tag_is_number to its old VAL_INT/VAL_FLOAT body makes the matrix diverge
+      from native again. Confirmed by rebuild and re-run.
     caught_by: [direct-measurement, sw-18-adjacent-probe]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
     notes: >-
-      This is a wide surface — every numeric-tower predicate crossed with every non-fixnum
-      numeric class — and it is invisible to the parity corpus because no corpus program
-      asks a predicate about a rational or a bignum. The escape analysis is a predicate x
-      value-class MATRIX probe, which is cheap to generate and would have caught all of it.
+      The escape analysis is a predicate x value-class MATRIX probe, which is cheap to
+      generate and would have caught every cell at once. That matrix is now a corpus file.
   - id: SW-32
     bucket: SILENT-WRONG
-    status: open
-    title: "Native max/min return the WRONG operand for bignum-backed rationals, disagreeing with native's own < on the same pair"
-    repro: "(define a (/ (expt 2 100) 3)) (define b (/ (+ (expt 2 100) 1) 3)) (display (list (max a b) (min a b) (< a b)))"
+    status: closed
+    closed_at: "92bbacd4"
+    closed_by: "branch fix/numeric-tower-bignum-tail, stacked on PR #432"
+    title: "min/max return the WRONG operand and disagree with the engine's own < on the same pair"
+    repro: "(define a (/ (expt 2 100) 3)) (define b (/ (+ (expt 2 100) 1) 3)) (display (list (max a b) (< a b)))"
     observed: >-
-      native -r prints (1267650600228229401496703205376/3 1267650600228229401496703205376/3 #t)
-      — max and min BOTH answer a, while native's own < on the same pair correctly says a < b
-    correct: "(…377/3 …376/3 #t)"
-    measured: >-
-      Scoped by value class: small rationals are correct ((max 1/3 1/2) = 1/2) and plain
-      bignums are correct ((max (expt 2 100) (+ (expt 2 100) 1)) = …377). ONLY the
-      bignum-backed rational pair is wrong. The VM is CORRECT on all three after the SW-18
-      fix, so this is now a native-only defect and a live engine divergence.
-    root_cause_hypothesis: >-
-      Same int64-shadow class as SW-29: the comparison used by max/min reads a rational's
-      int64 numerator/denominator fields, which are 0 and 1 on the bignum path, so both
-      operands compare equal and the first is returned. Not the same code path as the `<`
-      opcode, which is why < is right and max is wrong in the same program.
-    discovered_by: "Adjacent probe while verifying the SW-18 fix did not regress ordering."
-    relationship_to_sw_29: >-
-      Almost certainly one root cause with SW-29 (native rounding functions reading the
-      int64 shadow). Filed separately because the symptom, the entry points and the ABI
-      constraint differ: SW-29 is blocked on an int64 return type, whereas max/min return
-      an OPERAND and can be fixed without any ABI change once the comparison is exact.
+      native printed (…376/3 #t) — max answered the SMALLER operand while `<` on the same
+      pair in the same program correctly said they were ordered. Re-measuring the class
+      also found BOTH engines wrong, in OPPOSITE directions, for exact integers past 2^53:
+      (max 9007199254740993 9007199254740992) was …993 natively and …992 on the VM, and
+      (min …) was …993 natively and …992 on the VM.
+    correct: "max …377/3, min …376/3; max …993, min …992"
+    root_cause: >-
+      min/max carried their OWN abbreviated copy of the ordering dispatch. compare() — the
+      lowering behind < > = <= >= — runs bignum, then rational, then exact int64, then
+      doubles. min/max ran bignum and then went straight to doubles. A bignum-backed
+      rational is a HEAP_PTR with the RATIONAL subtype and never a bignum, so it missed
+      the exact path entirely; two exact int64s past 2^53 missed it for the same reason.
+      In the double fallback both operands of each pair round to ONE flonum, so the
+      comparison reports "equal" and each engine's tie-break picks a different side. The
+      VM had the identical structural defect in its own copy (natives 33/34), where the
+      exactness guard covered bignums and rationals but not two plain fixnums.
+    fix: >-
+      ONE ordering implementation instead of two divergent copies:
+      ArithmeticCodegen::emitExactFirstOrderingI1 (bignum -> rational -> exact int64 ->
+      double) is now used by min and max, so a future tier can only be added where both
+      callers see it. The VM's natives 33/34 take the exact comparator whenever BOTH
+      operands are exact.
+    verified: >-
+      tests/vm_parity/corpus/66_minmax_ordering_invariant.esk expresses the fix as a
+      PROPERTY rather than a table: for each pair it checks min/max against `<` computed on
+      the same operands, in both operand orders, so it cannot pass by agreeing with a wrong
+      expectation. Covers int64 across 2^53, small rationals, bignums, bignum-backed
+      rationals, mixed exactness, and R7RS 6.2.6 inexactness contagion. Also added to the
+      compilation-axis differential corpus as 50_numeric_tower_tail.esk.
+    revert_validated: >-
+      Forcing the rational and int64 tiers off in emitExactFirstOrderingI1 reproduces the
+      native symptom exactly (max …376/3, min …993); removing the both-exact guard from VM
+      natives 33/34 reproduces the VM symptom. Both confirmed by rebuild and re-run.
     caught_by: [direct-measurement, sw-18-adjacent-probe]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus, KNOWN_ISSUES]
   - id: SW-33
@@ -1731,21 +1774,6 @@ entries:
       first, so the repair here is now a no-op and only this ledger entry remains. Both
       arrived at byte-identical edits, which is itself corroboration of the diagnosis.
       GATE repair only — no product code.
-    discovered_by: >-
-      Running the mandatory ICC readiness leg of the handoff recipe for this PR and reading
-      the "Oracle Config Errors" section instead of the headline score.
-    followup_needed: >-
-      The 28/43 score is an EVIDENCE gap, not 15 failing behaviours: the failing criteria
-      report `Evidence: 0` because their trace emitters (scripts/run_ctest_gate.sh,
-      scripts/run_icc_smoke.sh) had not been run into scripts/icc_traces in this worktree.
-      Both were then run and the score re-measured. The durable lesson is that `icc
-      readiness` should FAIL CLOSED on an oracle config error rather than silently
-      substituting a generic oracle — filed upstream against ICC, not against Eshkol.
-    caught_by: [direct-measurement, icc-readiness-config-error-section]
-    missed_by: [icc-readiness, icc-correctness-chain, icc-smoke, ctest, CI]
-
-  # ───────────────────────── IN-FLIGHT ─────────────────────────
-
   - id: IF-01
     bucket: IN-FLIGHT
     silent_wrong_class: true

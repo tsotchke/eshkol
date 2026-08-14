@@ -1,0 +1,93 @@
+; SW-31 class-kill: the numeric type predicates crossed with the whole numeric
+; tag set, on both engines.
+;
+; The defect this pins: every VM predicate spelled its own inline tag test and
+; each spelled a DIFFERENT, shorter list than the tower actually has, so whole
+; numeric classes were denied their own type:
+;   (number? 1/3)      => #f    (number? (expt 2 100))  => #f
+;   (real? 1/3)        => #f    (rational? 5)           => #f
+;   (rational? 5.0)    => #f    (complex? 5)            => #f
+;   (positive? 1/3)    => #f    (positive? (expt 2 100)) => #f
+;   (odd? (+ (expt 2 100) 1)) => #f
+;   (eqv? 1/3 1/3)     => #f    (eqv? (expt 2 100) (expt 2 100)) => #f
+; and `integer?` was compiled to the SAME opcode as `number?`, so
+;   (integer? 5.5)     => #t
+;
+; Two separate mechanisms were behind it: missing tag arms (a heap-boxed number
+; is not VAL_INT/VAL_FLOAT), and predicates reading their operand through a
+; double conversion that answers 0.0 for any heap-boxed value — which is why
+; the sign predicates said a bignum was neither positive nor negative and why
+; (zero? 1/3) could answer #t.
+;
+; The matrix is the point: one row per numeric tag, one column per predicate.
+; A single missing arm shows up as one flipped cell.
+
+(define (row tag v)
+  (display (list tag
+                 (number? v) (complex? v) (real? v) (rational? v) (integer? v)
+                 (exact? v) (inexact? v)
+                 (zero? v) (positive? v) (negative? v)))
+  (newline))
+
+; exact integer (fixnum), both signs and zero
+(row 'int5   5)
+(row 'int-5  -5)
+(row 'int0   0)
+; inexact real: integral, fractional, zero
+(row 'flo5.0 5.0)
+(row 'flo5.5 5.5)
+(row 'flo0.0 0.0)
+; exact rational within int64
+(row 'rat1/3  1/3)
+(row 'rat-1/3 -1/3)
+; exact integer beyond int64 (bignum)
+(row 'big    (expt 2 100))
+(row 'bigneg (- 0 (expt 2 100)))
+; exact rational with a bignum half — the class SW-18 made representable
+(row 'bigrat (/ (expt 2 100) 3))
+(row 'bigden (/ 1 (expt 2 100)))
+
+; The SAME predicates reached as FIRST-CLASS VALUES rather than call position.
+; These take a different route in the VM (a builtin closure over a native call
+; instead of an inline opcode), and that route had its own missing arms.
+; `integer?` in particular had no builtin entry at all, so it could not be
+; passed as a value.
+(define xs (list 5 -5 0 5.0 5.5 1/3 (expt 2 100) (/ (expt 2 100) 3)))
+(display (map number?   xs)) (newline)
+(display (map integer?  xs)) (newline)
+(display (map rational? xs)) (newline)
+(display (map real?     xs)) (newline)
+(display (map exact?    xs)) (newline)
+(display (map zero?     xs)) (newline)
+(display (map positive? xs)) (newline)
+(display (map negative? xs)) (newline)
+
+; Parity across the int64 boundary: an odd bignum must be odd.
+(display (list 'parity
+               (even? (expt 2 100))        (odd? (expt 2 100))
+               (even? (+ (expt 2 100) 1))  (odd? (+ (expt 2 100) 1))
+               (even? 4) (odd? 4) (even? -3) (odd? -3)))
+(newline)
+
+; eqv? is VALUE equality on numbers of the same exactness (R7RS 6.1). Two
+; separately allocated boxes holding the same exact value are eqv?; an exact
+; and an inexact 5 are not.
+(display (list 'eqv
+               (eqv? 1/3 1/3)
+               (eqv? (expt 2 100) (expt 2 100))
+               (eqv? (/ (expt 2 100) 3) (/ (expt 2 100) 3))
+               (eqv? (+ (expt 2 100) 1) (+ (expt 2 100) 1))
+               (eqv? 1/3 1/2)
+               (eqv? (expt 2 100) (+ (expt 2 100) 1))
+               (eqv? 5 5)
+               (eqv? 5 5.0)
+               (eqv? 5.0 5.0)))
+(newline)
+
+; equal? must agree with eqv? on numbers.
+(display (list 'equal
+               (equal? 1/3 1/3)
+               (equal? (expt 2 100) (expt 2 100))
+               (equal? (/ (expt 2 100) 3) (/ (expt 2 100) 3))
+               (equal? 1/3 1/2)))
+(newline)

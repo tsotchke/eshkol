@@ -1073,6 +1073,102 @@ extern "C" int64_t eshkol_rational_truncate(void* r) {
     return rat->numerator / rat->denominator;
 }
 
+/* ── Tagged rounding: exact across the WHOLE rational substrate (SW-29) ──
+ *
+ * The four int64-returning functions below/above read numerator/denominator
+ * directly, which are the inert 0/1 shadow on the bignum path — so each of them
+ * answered 0 for a bignum-backed rational. These variants do the work in the
+ * bignum domain and write a tagged INT64-or-bignum, so a result wider than
+ * int64 is representable instead of silently collapsing.
+ *
+ * eshkol_bignum_mod() is the TRUNCATING remainder (sign follows the dividend),
+ * so floor/ceil correct the truncated quotient by one when the remainder is
+ * non-zero and the sign demands it. */
+
+/** @brief Truncated quotient of a big rational as a bignum. */
+static eshkol_bignum_t* rat_trunc_bn(arena_t* arena, const eshkol_rational_t* r) {
+    return eshkol_bignum_div(arena, rat_num_bn(arena, r), rat_den_bn(arena, r));
+}
+
+/** @brief Floor of a big rational as a bignum (toward -infinity). */
+static eshkol_bignum_t* rat_floor_bn(arena_t* arena, const eshkol_rational_t* r) {
+    eshkol_bignum_t* n = rat_num_bn(arena, r);
+    eshkol_bignum_t* d = rat_den_bn(arena, r);
+    eshkol_bignum_t* q = eshkol_bignum_div(arena, n, d);
+    eshkol_bignum_t* rem = eshkol_bignum_mod(arena, n, d);
+    if (eshkol_bignum_is_negative(n) && !eshkol_bignum_is_zero(rem))
+        q = eshkol_bignum_sub(arena, q, eshkol_bignum_from_int64(arena, 1));
+    return q;
+}
+
+/** @brief Ceiling of a big rational as a bignum (toward +infinity). */
+static eshkol_bignum_t* rat_ceil_bn(arena_t* arena, const eshkol_rational_t* r) {
+    eshkol_bignum_t* n = rat_num_bn(arena, r);
+    eshkol_bignum_t* d = rat_den_bn(arena, r);
+    eshkol_bignum_t* q = eshkol_bignum_div(arena, n, d);
+    eshkol_bignum_t* rem = eshkol_bignum_mod(arena, n, d);
+    if (!eshkol_bignum_is_negative(n) && !eshkol_bignum_is_zero(rem))
+        q = eshkol_bignum_add(arena, q, eshkol_bignum_from_int64(arena, 1));
+    return q;
+}
+
+/** @brief Round-half-to-even of a big rational as a bignum (R7RS `round`). */
+static eshkol_bignum_t* rat_round_bn(arena_t* arena, const eshkol_rational_t* r) {
+    eshkol_bignum_t* d  = rat_den_bn(arena, r);
+    eshkol_bignum_t* fl = rat_floor_bn(arena, r);
+    /* rem = n - fl*d, always in [0, d) because fl is the FLOOR. */
+    eshkol_bignum_t* rem = eshkol_bignum_sub(arena, rat_num_bn(arena, r),
+                                             eshkol_bignum_mul(arena, fl, d));
+    eshkol_bignum_t* twice = eshkol_bignum_mul(arena, rem,
+                                               eshkol_bignum_from_int64(arena, 2));
+    int cmp = eshkol_bignum_compare(twice, d);
+    if (cmp < 0) return fl;
+    if (cmp > 0) return eshkol_bignum_add(arena, fl, eshkol_bignum_from_int64(arena, 1));
+    /* Exact midpoint: ties to even. */
+    eshkol_bignum_t* half = eshkol_bignum_mod(arena, fl, eshkol_bignum_from_int64(arena, 2));
+    if (eshkol_bignum_is_zero(half)) return fl;
+    return eshkol_bignum_add(arena, fl, eshkol_bignum_from_int64(arena, 1));
+}
+
+/** @brief Pack an exact int64 into a tagged value. */
+static inline void tag_exact_i64(int64_t v, eshkol_tagged_value_t* out) {
+    memset(out, 0, sizeof(*out));
+    out->type = ESHKOL_VALUE_INT64;
+    out->data.int_val = v;
+}
+
+extern "C" void eshkol_rational_floor_tagged(void* arena_v, void* r,
+                                             eshkol_tagged_value_t* result) {
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (!rat || !result) { if (result) tag_exact_i64(0, result); return; }
+    if (!rat->is_big) { tag_exact_i64(eshkol_rational_floor(r), result); return; }
+    *result = bignum_to_tagged_int(rat_floor_bn((arena_t*)arena_v, rat));
+}
+
+extern "C" void eshkol_rational_ceil_tagged(void* arena_v, void* r,
+                                            eshkol_tagged_value_t* result) {
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (!rat || !result) { if (result) tag_exact_i64(0, result); return; }
+    if (!rat->is_big) { tag_exact_i64(eshkol_rational_ceil(r), result); return; }
+    *result = bignum_to_tagged_int(rat_ceil_bn((arena_t*)arena_v, rat));
+}
+
+extern "C" void eshkol_rational_truncate_tagged(void* arena_v, void* r,
+                                                eshkol_tagged_value_t* result) {
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (!rat || !result) { if (result) tag_exact_i64(0, result); return; }
+    if (!rat->is_big) { tag_exact_i64(eshkol_rational_truncate(r), result); return; }
+    *result = bignum_to_tagged_int(rat_trunc_bn((arena_t*)arena_v, rat));
+}
+
+extern "C" void eshkol_rational_round_tagged(void* arena_v, void* r,
+                                             eshkol_tagged_value_t* result) {
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (!rat || !result) { if (result) tag_exact_i64(0, result); return; }
+    if (!rat->is_big) { tag_exact_i64(eshkol_rational_round(r), result); return; }
+    *result = bignum_to_tagged_int(rat_round_bn((arena_t*)arena_v, rat));
+}
+
 /* round(n/d) — round to nearest, ties to even (banker's rounding) */
 extern "C" int64_t eshkol_rational_round(void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
