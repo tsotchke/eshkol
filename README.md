@@ -695,7 +695,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   architecture-matched compiler-rt, and CUDA consumer paths are verified by
   the release workflow rather than inferred from builder-local success.
 - **Execution-backed evidence**, all measured on the release commit: the
-  aggregate suite 45/45 suites and 770 individual tests, CTest 180/181, the
+  aggregate suite 45/45 suites and 770 individual tests, CTest 183/183, the
   SICP full-book gate 88/88 probes across all five chapters under both `-r` and
   AOT, and the reference-Scheme differential oracle 34/34 AGREE against
   chibi-scheme 0.12.0. The language-surface gate enforces a monotonic floor of
@@ -993,7 +993,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; CTest 180/181; executable language coverage 1,091/1,091 (100.0%, floor PASS); VM parity differential 184/184
+- **Testing**: 45/45 suites and 770 individual tests; CTest 183/183; executable language coverage 1,091/1,091 (100.0%, floor PASS); VM parity differential 184/184
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

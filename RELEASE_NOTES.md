@@ -36,7 +36,7 @@ results as evidence.
 **Release Date**: July 31, 2026
 
 **Release gates** (all measured on the release cut): aggregate suite 45/45
-suites and 770 individual tests; CTest 180/181, which as of this release is
+suites and 770 individual tests; CTest 183/183, which as of this release is
 itself completion-oracle evidence rather than advice; executable language
 coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential

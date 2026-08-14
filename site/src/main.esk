@@ -641,7 +641,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 181 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest at 183 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
 
     section))
 

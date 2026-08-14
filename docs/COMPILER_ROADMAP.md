@@ -28,7 +28,7 @@ research-grade Noesis.
 **Base release**: v1.3.3-evolve (2026-07-16).
 **Status**: v1.3.4-evolve cut — a resident-correctness release followed by a
 consumer-hardening correctness wave. Release gates measured on the cut:
-aggregate suite 45/45 suites and 770 tests, CTest 180/181, executable language
+aggregate suite 45/45 suites and 770 tests, CTest 183/183, executable language
 coverage 1,091/1,091 (100.0%), SICP 88/88, reference differential 34/34 AGREE
 vs chibi-scheme 0.12.0, VM parity 184/184, ICC readiness 100 (`ready`).
 

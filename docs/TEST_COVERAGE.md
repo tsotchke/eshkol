@@ -5,7 +5,7 @@
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
 
 **Release gates, measured on the v1.3.4-evolve cut**: aggregate suite **45/45
-suites and 770 individual tests**; CTest **180/181** (the single red is the value-position sweep's newly-found `cadddr` call-vs-value divergence, an open item for the next fix wave), which as of this release
+suites and 770 individual tests**; CTest **183/183**; the value-position and compound-accessor regression is green, and this result as of the release
 is completion-oracle evidence rather than advice; executable language coverage
 **1,091/1,091 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
@@ -65,7 +65,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 180/181 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | 183/183 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash

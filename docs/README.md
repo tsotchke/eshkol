@@ -178,7 +178,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 ## Testing and Quality Gates
 
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 180/181
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 183/183
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

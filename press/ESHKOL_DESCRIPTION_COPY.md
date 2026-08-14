@@ -243,7 +243,7 @@ Each item below cites the file or measurement that grounds the claim.
   probes / 436 component checks across 21 generated files under JIT and AOT; a
   zero AD gradient where finite differences are nonzero is a hard failure).
   Release gates green on the v1.3.4-evolve cut: the aggregate suite 45/45
-  suites and 770 individual tests; CTest 180/181, which as of this release is
+  suites and 770 individual tests; CTest 183/183, which as of this release is
   itself completion-oracle evidence rather than advice; executable language
   coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
   across all five chapters under both `-r` and AOT; reference-Scheme
