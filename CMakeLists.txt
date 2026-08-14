@@ -5236,7 +5236,10 @@ if(ESHKOL_BUILD_TESTS AND
         eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
     set_tests_properties(qllm_bridge_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 7 passed, 0 failed"
+        # 5 pipeline gradchecks + attention + causal attention + conversion
+        # + lifecycle. The count is pinned deliberately: "0 failed" would stay
+        # green if a check silently stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
     )
 endif()
 

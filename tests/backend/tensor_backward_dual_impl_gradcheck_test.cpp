@@ -28,22 +28,22 @@
  *   embedding:  already covered end-to-end (including a bridge-vs-native
  *     comparison) by tensor_embedding_backward_gradcheck_test.cpp; not
  *     duplicated here.
- *   attention:  the NATIVE rule (eshkol_backward_attention) is exact and is
- *     FD-validated here. The BRIDGE rule (tensor_attention_backward) is an
- *     unconditional refusal by design (see the comment at its definition) —
- *     its forward (ad_tensor_attention, lib/bridge/qllm_bridge.cpp) does not
- *     even retain the `causal` flag or the softmax weights the backward would
- *     need, so there is no "wrong value" to arbitrate: it is a genuine
- *     forward-plumbing gap, not a numeric disagreement. This file asserts the
- *     CURRENT contract (native exact + FD-checked, bridge loudly refuses)
- *     instead of silently excluding the op, and files the fix as
- *     NEEDS-DECISION (see the block comment at attention_check() below and
- *     the ledger entry).
+ *   attention:  both sides are now exact and are diffed against each other
+ *     here, causal and non-causal, at two shapes, with FD as the third
+ *     oracle. The bridge side used to be an unconditional eshkol_fatal
+ *     refusal because its forward retained neither the softmax weights nor
+ *     the causal flag; the forward now retains both (see
+ *     ad_tensor_attention in lib/bridge/qllm_bridge.cpp) and the exact
+ *     adjoint is implemented against that contract. The refusal is retained
+ *     for the contract VIOLATION only — a node presented without the
+ *     retained weights — and that is asserted below too, so the fix cannot
+ *     regress into a silent zero.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -407,66 +407,130 @@ void sum_check() {
 }
 
 /*******************************************************************************
- * ATTENTION — single-head scaled dot-product attention.
+ * ATTENTION — multi-head scaled dot-product attention, causal and non-causal.
  *
- * NATIVE (eshkol_backward_attention) is exact; FD-validated below.
+ * Both implementations are exact, and this is the op the two were furthest
+ * apart on: until the SW-12 fix the bridge rule was an unconditional
+ * eshkol_fatal because ad_tensor_attention retained neither the softmax
+ * weights nor the causal flag. The forward now retains the dense
+ * [batch, num_heads, seq, seq] weight matrix (masked entries exactly zero) in
+ * node->saved_tensors[0] and records [num_heads, head_dim, causal, scale_bits]
+ * in params, and tensor_attention_backward computes the exact adjoint from
+ * them.
  *
- * BRIDGE (tensor_attention_backward) unconditionally calls eshkol_fatal() —
- * see the comment at its definition in lib/bridge/tensor_backward.cpp. This
- * is not a numeric disagreement to arbitrate: ad_tensor_attention's forward
- * (lib/bridge/qllm_bridge.cpp) never retains the `causal` flag or the
- * softmax attention weights on the node, so an exact adjoint cannot be
- * computed from what the node carries even in principle — the gap is
- * upstream, in the forward's contract, not a bug in a formula. Implementing
- * it exactly needs a forward-side change (thread `causal` through
- * AD_NODE_TENSOR_ATTENTION's params, and either retain the attention-weight
- * matrix or recompute it in the backward), which is a real feature addition
- * beyond a differential-test fix.
+ * THREE oracles, per shape and per masking mode:
+ *   bridge   ad_tensor_attention -> eshkol_tensor_backward_dispatch, i.e. the
+ *            real producer and the real dispatch path, not a hand-built node.
+ *   native   eshkol_backward_attention, applied per (batch, head) column slice
+ *            of the [batch, seq, dim] operands, fed the attention weights from
+ *            the reference forward below. Feeding it causal weights (zeros
+ *            above the diagonal) is exactly how the causal adjoint falls out of
+ *            an unmasked kernel: every term carries a factor attn[i][j].
+ *   FD       central differences of the reference forward, which is written
+ *            independently of both.
  *
- * NEEDS-DECISION (recorded for the ledger): should the bridge attention
- * backward be implemented now (real work: extend the node contract +
- * mirror the native 5-step chain rule already proven exact below), or is the
- * existing hard refusal (loud, not silent) an acceptable placeholder because
- * `scaled-dot-attention` already provides an exact, differentiable,
- * scalar-decomposed attention path elsewhere in the tree? This file asserts
- * the CURRENT contract (native exact, bridge refuses) so a future change to
- * either side is caught, and the ledger records the finding without
- * guessing which of "implement it" or "leave it refusing" the maintainer
- * prefers.
+ * The bridge-vs-native bar is the same 1e-9 the other five ops are held to.
+ * The two do not share code — the native kernel is BLAS-backed where the
+ * bridge rule is plain loops — so they are not expected to be bit-identical,
+ * only to agree far inside that bar.
  ******************************************************************************/
 
+/** @brief Reference forward for multi-head attention over [batch, seq, dim],
+ *  written independently of both implementations. Fills @p attn with the dense
+ *  [batch, heads, seq, seq] weight matrix (masked entries left at zero) and
+ *  @p out with the [batch, seq, dim] output. */
 void attention_forward_ref(const double* Q, const double* K, const double* V,
                            double* attn, double* out,
-                           int64_t seq_q, int64_t seq_k, int64_t d_k, int64_t d_v,
-                           double scale) {
-    for (int64_t i = 0; i < seq_q; i++) {
-        double mx = -1e300;
-        std::vector<double> row(seq_k);
-        for (int64_t j = 0; j < seq_k; j++) {
-            double dot = 0.0;
-            for (int64_t d = 0; d < d_k; d++) dot += Q[i * d_k + d] * K[j * d_k + d];
-            row[j] = dot * scale;
-            if (row[j] > mx) mx = row[j];
-        }
-        double sum = 0.0;
-        for (int64_t j = 0; j < seq_k; j++) { row[j] = std::exp(row[j] - mx); sum += row[j]; }
-        for (int64_t j = 0; j < seq_k; j++) attn[i * seq_k + j] = row[j] / sum;
-        for (int64_t d = 0; d < d_v; d++) {
-            double acc = 0.0;
-            for (int64_t j = 0; j < seq_k; j++) acc += attn[i * seq_k + j] * V[j * d_v + d];
-            out[i * d_v + d] = acc;
+                           int64_t batch, int64_t heads, int64_t seq, int64_t head_dim,
+                           bool causal) {
+    const int64_t dim = heads * head_dim;
+    const double scale = 1.0 / std::sqrt((double)head_dim);
+    std::vector<double> row((size_t)seq);
+
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t hh = 0; hh < heads; hh++) {
+            const int64_t off = hh * head_dim;
+            double* Ah = &attn[(size_t)(((b * heads) + hh) * seq * seq)];
+            for (int64_t i = 0; i < seq; i++) {
+                const int64_t limit = causal ? (i + 1) : seq;
+                double mx = -1e300;
+                for (int64_t j = 0; j < limit; j++) {
+                    double dot = 0.0;
+                    for (int64_t d = 0; d < head_dim; d++)
+                        dot += Q[(b * seq + i) * dim + off + d] * K[(b * seq + j) * dim + off + d];
+                    row[(size_t)j] = dot * scale;
+                    if (row[(size_t)j] > mx) mx = row[(size_t)j];
+                }
+                double sum = 0.0;
+                for (int64_t j = 0; j < limit; j++) {
+                    row[(size_t)j] = std::exp(row[(size_t)j] - mx);
+                    sum += row[(size_t)j];
+                }
+                for (int64_t j = 0; j < limit; j++) Ah[i * seq + j] = row[(size_t)j] / sum;
+                for (int64_t j = limit; j < seq; j++) Ah[i * seq + j] = 0.0;
+                for (int64_t d = 0; d < head_dim; d++) {
+                    double acc = 0.0;
+                    for (int64_t j = 0; j < seq; j++)
+                        acc += Ah[i * seq + j] * V[(b * seq + j) * dim + off + d];
+                    out[(b * seq + i) * dim + off + d] = acc;
+                }
+            }
         }
     }
 }
 
+/** @brief Scalar probe L = <cotan, attention(Q,K,V)> for the FD oracle. */
 double attention_probe(const double* Q, const double* K, const double* V,
                        const double* cotan,
-                       int64_t seq_q, int64_t seq_k, int64_t d_k, int64_t d_v, double scale) {
-    std::vector<double> attn((size_t)(seq_q * seq_k)), out((size_t)(seq_q * d_v));
-    attention_forward_ref(Q, K, V, attn.data(), out.data(), seq_q, seq_k, d_k, d_v, scale);
+                       int64_t batch, int64_t heads, int64_t seq, int64_t head_dim,
+                       bool causal) {
+    const int64_t dim = heads * head_dim;
+    std::vector<double> attn((size_t)(batch * heads * seq * seq));
+    std::vector<double> out((size_t)(batch * seq * dim));
+    attention_forward_ref(Q, K, V, attn.data(), out.data(), batch, heads, seq, head_dim, causal);
     double L = 0.0;
-    for (int64_t i = 0; i < seq_q * d_v; i++) L += cotan[i] * out[i];
+    for (int64_t i = 0; i < batch * seq * dim; i++) L += cotan[i] * out[i];
     return L;
+}
+
+/** @brief Run the NATIVE kernel (eshkol_backward_attention) over the same
+ *  [batch, seq, dim] layout the bridge uses, one (batch, head) slice at a
+ *  time: gather the slice into the contiguous [seq, head_dim] buffers the
+ *  kernel expects, run it, scatter the per-head gradients back. */
+void attention_native_batched(const double* Q, const double* K, const double* V,
+                              const double* attn, const double* cotan,
+                              double* dQ, double* dK, double* dV,
+                              int64_t batch, int64_t heads, int64_t seq, int64_t head_dim) {
+    const int64_t dim = heads * head_dim;
+    const double scale = 1.0 / std::sqrt((double)head_dim);
+    const size_t slice = (size_t)(seq * head_dim);
+    std::vector<double> qs(slice), ks(slice), vs(slice), gs(slice);
+    std::vector<double> dq(slice), dk(slice), dv(slice);
+
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t hh = 0; hh < heads; hh++) {
+            const int64_t off = hh * head_dim;
+            for (int64_t i = 0; i < seq; i++)
+                for (int64_t d = 0; d < head_dim; d++) {
+                    size_t src = (size_t)((b * seq + i) * dim + off + d);
+                    size_t dst = (size_t)(i * head_dim + d);
+                    qs[dst] = Q[src]; ks[dst] = K[src]; vs[dst] = V[src]; gs[dst] = cotan[src];
+                }
+            std::fill(dq.begin(), dq.end(), 0.0);
+            std::fill(dk.begin(), dk.end(), 0.0);
+            std::fill(dv.begin(), dv.end(), 0.0);
+            eshkol_backward_attention(gs.data(), qs.data(), ks.data(), vs.data(),
+                                      &attn[(size_t)(((b * heads) + hh) * seq * seq)],
+                                      dq.data(), dk.data(), dv.data(),
+                                      seq, seq, head_dim, head_dim, scale);
+            for (int64_t i = 0; i < seq; i++)
+                for (int64_t d = 0; d < head_dim; d++) {
+                    size_t dst = (size_t)((b * seq + i) * dim + off + d);
+                    size_t src = (size_t)(i * head_dim + d);
+                    dQ[dst] += dq[src]; dK[dst] += dk[src]; dV[dst] += dv[src];
+                }
+        }
+    }
 }
 
 #if defined(ESHKOL_HAVE_FORK_DEATH_TESTS)
@@ -490,84 +554,147 @@ bool refuses(void (*body)()) {
     return WIFEXITED(status) && WEXITSTATUS(status) != 0;
 }
 
-constexpr int64_t kAttnSeqQ = 2, kAttnSeqK = 3, kAttnDK = 4, kAttnDV = 3;
-double g_attn_Q[kAttnSeqQ * kAttnDK];
-double g_attn_K[kAttnSeqK * kAttnDK];
-double g_attn_V[kAttnSeqK * kAttnDV];
-double g_attn_cotan[kAttnSeqQ * kAttnDV];
+constexpr int64_t kBadSeq = 3, kBadHeadDim = 4;
+double g_attn_Q[kBadSeq * kBadHeadDim];
+double g_attn_K[kBadSeq * kBadHeadDim];
+double g_attn_V[kBadSeq * kBadHeadDim];
+double g_attn_cotan[kBadSeq * kBadHeadDim];
 
-void body_bridge_attention_backward() {
-    int64_t shQ[2] = {kAttnSeqQ, kAttnDK}, shK[2] = {kAttnSeqK, kAttnDK}, shV[2] = {kAttnSeqK, kAttnDV};
-    ad_node_t qn{}; qn.type = AD_NODE_VARIABLE; qn.tensor_value = g_attn_Q; qn.shape = shQ; qn.ndim = 2;
-    ad_node_t kn{}; kn.type = AD_NODE_VARIABLE; kn.tensor_value = g_attn_K; kn.shape = shK; kn.ndim = 2;
-    ad_node_t vn{}; vn.type = AD_NODE_VARIABLE; vn.tensor_value = g_attn_V; vn.shape = shV; vn.ndim = 2;
+/** @brief A node built the way a producer that did NOT retain the attention
+ *  weights would build it. The exact adjoint is unobtainable from that, so the
+ *  rule must still refuse rather than reconstruct one — this is the half of
+ *  the old unconditional refusal that stays. */
+void body_bridge_attention_unretained() {
+    int64_t sh[3] = {1, kBadSeq, kBadHeadDim};
+    ad_node_t qn{}; qn.type = AD_NODE_VARIABLE; qn.tensor_value = g_attn_Q; qn.shape = sh; qn.ndim = 3;
+    ad_node_t kn{}; kn.type = AD_NODE_VARIABLE; kn.tensor_value = g_attn_K; kn.shape = sh; kn.ndim = 3;
+    ad_node_t vn{}; vn.type = AD_NODE_VARIABLE; vn.tensor_value = g_attn_V; vn.shape = sh; vn.ndim = 3;
     ad_node_t node{};
     node.type = AD_NODE_TENSOR_ATTENTION;
     node.input1 = &qn; node.input2 = &kn; node.input3 = &vn;
-    int64_t shO[2] = {kAttnSeqQ, kAttnDV};
-    node.shape = shO; node.ndim = 2;
+    node.shape = sh; node.ndim = 3;
     node.tensor_gradient = g_attn_cotan;
     node.params.attention_params.num_heads = 1;
-    node.params.attention_params.head_dim = kAttnDK;
+    node.params.attention_params.head_dim = kBadHeadDim;
+    node.saved_tensors = nullptr;   /* the whole point */
+    node.num_saved = 0;
     eshkol_tensor_backward_dispatch(&node);
 }
 #endif  /* ESHKOL_HAVE_FORK_DEATH_TESTS */
 
-void attention_check() {
-    constexpr int64_t seq_q = 2, seq_k = 3, d_k = 4, d_v = 3;
-    double Q[seq_q * d_k], K[seq_k * d_k], V[seq_k * d_v], cotan[seq_q * d_v];
-    for (auto& v : Q) v = urand();
-    for (auto& v : K) v = urand();
-    for (auto& v : V) v = urand();
-    for (auto& v : cotan) v = urand();
-    double scale = 1.0 / std::sqrt((double)d_k);
+/** @brief One shape x masking-mode cell: bridge vs native vs FD. */
+void attention_case(int64_t batch, int64_t heads, int64_t seq, int64_t head_dim,
+                    bool causal, const char* label) {
+    const int64_t dim = heads * head_dim;
+    const size_t n = (size_t)(batch * seq * dim);
 
-    /* -- native: exact, needs the forward's saved attention weights -- */
-    std::vector<double> attn((size_t)(seq_q * seq_k)), out((size_t)(seq_q * d_v));
-    attention_forward_ref(Q, K, V, attn.data(), out.data(), seq_q, seq_k, d_k, d_v, scale);
+    std::vector<double> Q(n), K(n), V(n), cotan(n);
+    for (auto& x : Q) x = urand();
+    for (auto& x : K) x = urand();
+    for (auto& x : V) x = urand();
+    for (auto& x : cotan) x = urand();
 
-    double dQ_native[seq_q * d_k] = {0}, dK_native[seq_k * d_k] = {0}, dV_native[seq_k * d_v] = {0};
-    eshkol_backward_attention(cotan, Q, K, V, attn.data(), dQ_native, dK_native, dV_native,
-                              seq_q, seq_k, d_k, d_v, scale);
+    /* -- reference forward: attention weights for the native kernel -- */
+    std::vector<double> attn((size_t)(batch * heads * seq * seq)), out(n);
+    attention_forward_ref(Q.data(), K.data(), V.data(), attn.data(), out.data(),
+                          batch, heads, seq, head_dim, causal);
 
+    /* -- native -- */
+    std::vector<double> dQ_native(n, 0.0), dK_native(n, 0.0), dV_native(n, 0.0);
+    attention_native_batched(Q.data(), K.data(), V.data(), attn.data(), cotan.data(),
+                             dQ_native.data(), dK_native.data(), dV_native.data(),
+                             batch, heads, seq, head_dim);
+
+    /* -- bridge: real forward producer, real backward dispatch -- */
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+    int64_t sh[3] = {batch, seq, dim};
+    ad_node_t* qn = var_node(Q.data(), sh, 3);
+    ad_node_t* kn = var_node(K.data(), sh, 3);
+    ad_node_t* vn = var_node(V.data(), sh, 3);
+    ad_node_t* node = ad_tensor_attention(tape, qn, kn, vn, (int)heads, causal);
+
+    char name[128], detail[192];
+    if (!node) {
+        std::snprintf(name, sizeof name, "attention[%s]: native vs bridge", label);
+        report(name, false, "bridge forward refused");
+        return;
+    }
+
+    /* The forward must also agree with the reference forward — a bridge
+     * adjoint that matches an incorrect forward would prove nothing. */
+    double fwd_diff = max_abs_diff(out.data(), (const double*)node->tensor_value, n);
+
+    double* cotan_buf = zeros(n);
+    std::memcpy(cotan_buf, cotan.data(), n * sizeof(double));
+    node->tensor_gradient = cotan_buf;
+    eshkol_tensor_backward_dispatch(node);
+
+    const double* dQ_bridge = (const double*)qn->tensor_gradient;
+    const double* dK_bridge = (const double*)kn->tensor_gradient;
+    const double* dV_bridge = (const double*)vn->tensor_gradient;
+
+    double d_dQ = dQ_bridge ? max_abs_diff(dQ_native.data(), dQ_bridge, n) : -1.0;
+    double d_dK = dK_bridge ? max_abs_diff(dK_native.data(), dK_bridge, n) : -1.0;
+    double d_dV = dV_bridge ? max_abs_diff(dV_native.data(), dV_bridge, n) : -1.0;
+
+    std::snprintf(name, sizeof name, "attention[%s]: native vs bridge", label);
+    std::snprintf(detail, sizeof detail,
+                  "max|dQ diff|=%.3e max|dK diff|=%.3e max|dV diff|=%.3e fwd=%.3e",
+                  d_dQ, d_dK, d_dV, fwd_diff);
+    report(name, dQ_bridge && dK_bridge && dV_bridge &&
+                 d_dQ < 1e-9 && d_dK < 1e-9 && d_dV < 1e-9 && fwd_diff < 1e-12, detail);
+
+    /* -- finite differences, the third oracle -- */
     const double h = 1e-6;
-    std::vector<double> fdQ((size_t)(seq_q * d_k)), fdK((size_t)(seq_k * d_k)), fdV((size_t)(seq_k * d_v));
-    for (int64_t i = 0; i < seq_q * d_k; i++) {
-        double save = Q[i];
-        Q[i] = save + h; double Lp = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        Q[i] = save - h; double Lm = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        Q[i] = save;
-        fdQ[i] = (Lp - Lm) / (2.0 * h);
+    std::vector<double> fdQ(n), fdK(n), fdV(n);
+    double* tensors[3] = { Q.data(), K.data(), V.data() };
+    std::vector<double>* fds[3] = { &fdQ, &fdK, &fdV };
+    for (int t = 0; t < 3; t++) {
+        for (size_t i = 0; i < n; i++) {
+            double save = tensors[t][i];
+            tensors[t][i] = save + h;
+            double Lp = attention_probe(Q.data(), K.data(), V.data(), cotan.data(),
+                                        batch, heads, seq, head_dim, causal);
+            tensors[t][i] = save - h;
+            double Lm = attention_probe(Q.data(), K.data(), V.data(), cotan.data(),
+                                        batch, heads, seq, head_dim, causal);
+            tensors[t][i] = save;
+            (*fds[t])[i] = (Lp - Lm) / (2.0 * h);
+        }
     }
-    for (int64_t i = 0; i < seq_k * d_k; i++) {
-        double save = K[i];
-        K[i] = save + h; double Lp = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        K[i] = save - h; double Lm = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        K[i] = save;
-        fdK[i] = (Lp - Lm) / (2.0 * h);
-    }
-    for (int64_t i = 0; i < seq_k * d_v; i++) {
-        double save = V[i];
-        V[i] = save + h; double Lp = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        V[i] = save - h; double Lm = attention_probe(Q, K, V, cotan, seq_q, seq_k, d_k, d_v, scale);
-        V[i] = save;
-        fdV[i] = (Lp - Lm) / (2.0 * h);
-    }
-    double fd_dQ = max_abs_diff(dQ_native, fdQ.data(), seq_q * d_k);
-    double fd_dK = max_abs_diff(dK_native, fdK.data(), seq_k * d_k);
-    double fd_dV = max_abs_diff(dV_native, fdV.data(), seq_k * d_v);
-    char detail[160];
+    double fd_dQ = dQ_bridge ? max_abs_diff(dQ_bridge, fdQ.data(), n) : 1.0;
+    double fd_dK = dK_bridge ? max_abs_diff(dK_bridge, fdK.data(), n) : 1.0;
+    double fd_dV = dV_bridge ? max_abs_diff(dV_bridge, fdV.data(), n) : 1.0;
+    std::snprintf(name, sizeof name, "attention[%s]: bridge vs finite differences", label);
     std::snprintf(detail, sizeof detail, "max|dQ-fd|=%.3e max|dK-fd|=%.3e max|dV-fd|=%.3e",
-                 fd_dQ, fd_dK, fd_dV);
-    report("attention: native vs finite differences", fd_dQ < 1e-6 && fd_dK < 1e-6 && fd_dV < 1e-6, detail);
+                  fd_dQ, fd_dK, fd_dV);
+    report(name, fd_dQ < 1e-6 && fd_dK < 1e-6 && fd_dV < 1e-6, detail);
+
+    double nfd_dQ = max_abs_diff(dQ_native.data(), fdQ.data(), n);
+    double nfd_dK = max_abs_diff(dK_native.data(), fdK.data(), n);
+    double nfd_dV = max_abs_diff(dV_native.data(), fdV.data(), n);
+    std::snprintf(name, sizeof name, "attention[%s]: native vs finite differences", label);
+    std::snprintf(detail, sizeof detail, "max|dQ-fd|=%.3e max|dK-fd|=%.3e max|dV-fd|=%.3e",
+                  nfd_dQ, nfd_dK, nfd_dV);
+    report(name, nfd_dQ < 1e-6 && nfd_dK < 1e-6 && nfd_dV < 1e-6, detail);
+}
+
+void attention_check() {
+    /* small: one batch, one head — the plain 2-D case both kernels reduce to.
+     * moderate: several batches and heads, seq > head_dim, so a head-slicing
+     * or stride error cannot cancel out. Both run masked and unmasked. */
+    attention_case(1, 1, 3, 4, false, "small,noncausal");
+    attention_case(1, 1, 3, 4, true,  "small,causal");
+    attention_case(2, 3, 5, 4, false, "moderate,noncausal");
+    attention_case(2, 3, 5, 4, true,  "moderate,causal");
 
 #if defined(ESHKOL_HAVE_FORK_DEATH_TESTS)
-    std::memcpy(g_attn_Q, Q, sizeof(g_attn_Q));
-    std::memcpy(g_attn_K, K, sizeof(g_attn_K));
-    std::memcpy(g_attn_V, V, sizeof(g_attn_V));
-    std::memcpy(g_attn_cotan, cotan, sizeof(g_attn_cotan));
-    report("attention: bridge backward refuses (NEEDS-DECISION, see block comment)",
-          refuses(&body_bridge_attention_backward));
+    for (auto& x : g_attn_Q) x = urand();
+    for (auto& x : g_attn_K) x = urand();
+    for (auto& x : g_attn_V) x = urand();
+    for (auto& x : g_attn_cotan) x = urand();
+    report("attention: bridge refuses a node with no retained weights",
+          refuses(&body_bridge_attention_unretained));
 #else
     std::printf("  (bridge attention refusal check skipped: no fork on this platform)\n");
 #endif

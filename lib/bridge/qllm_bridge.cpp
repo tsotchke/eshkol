@@ -513,6 +513,22 @@ extern "C" ad_node_t* ad_tensor_attention(ad_tape_t* tape,
     size_t batch = (size_t)q->shape[0];
     size_t seq   = (size_t)q->shape[1];
     size_t dim   = (size_t)q->shape[2];
+    /* K and V are indexed with Q's strides below, so a shape mismatch is an
+     * out-of-bounds read, not a broadcast. Refuse it here. */
+    for (size_t d = 0; d < 3; ++d) {
+        if (k->shape[d] != q->shape[d] || v->shape[d] != q->shape[d]) {
+            eshkol_error("qllm bridge: ad_tensor_attention needs Q, K and V to share "
+                         "one [batch, seq, dim] shape (dimension %zu: Q=%lld K=%lld V=%lld)",
+                         d, (long long)q->shape[d], (long long)k->shape[d],
+                         (long long)v->shape[d]);
+            return nullptr;
+        }
+    }
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_error("qllm bridge: ad_tensor_attention got a degenerate shape "
+                     "[%zu, %zu, %zu]", batch, seq, dim);
+        return nullptr;
+    }
     if (dim % (size_t)num_heads != 0) {
         eshkol_error("qllm bridge: ad_tensor_attention dim %zu not divisible by %d heads",
                      dim, num_heads);
@@ -526,8 +542,33 @@ extern "C" ad_node_t* ad_tensor_attention(ad_tape_t* tape,
     double* O = alloc_doubles(batch * seq * dim);
     if (!O) return nullptr;
 
-    double* scores = (double*)alloc_doubles(seq);
-    if (!scores) return nullptr;
+    /* RETAINED FOR THE ADJOINT (SW-12).
+     *
+     * tensor_attention_backward needs the softmax attention weights A and it
+     * needs to know which entries the causal mask removed. Both are recorded
+     * here, at forward time, in the mechanism the node struct already provides
+     * for exactly this ("Saved tensors for backward pass") and that the
+     * non-bridge AD_NODE_ATTENTION arm already uses for its own attention
+     * weights (lib/backend/tensor_backward.cpp, saved_tensors[3]).
+     *
+     * The buffer is the DENSE [batch, num_heads, seq, seq] weight matrix, with
+     * masked-out entries left at EXACTLY zero. Storing the mask as zeros in A
+     * rather than as a separate bitmap is what makes the causal case fall out
+     * of the same code path as the non-causal one: every term of the adjoint
+     * below carries a factor of A[i][j], so a zero weight contributes exactly
+     * zero to dQ/dK/dV without a single mask test. The `causal` flag is still
+     * recorded in params so the backward can validate the retained weights
+     * against the shape the forward actually ran (and so a future rule can
+     * recompute rather than retain without guessing).
+     *
+     * Recomputing A in the backward instead was the alternative; it was
+     * rejected because it would have to re-derive the softmax max-shift and
+     * the mask, i.e. duplicate the forward, and any drift between the two
+     * copies is precisely the silently-wrong-gradient class SW-12 exists to
+     * close. */
+    double* A = alloc_doubles(batch * (size_t)num_heads * seq * seq);
+    if (!A) return nullptr;
+
     double scale = 1.0 / std::sqrt((double)head_dim);
 
     for (size_t b = 0; b < batch; ++b) {
@@ -535,26 +576,30 @@ extern "C" ad_node_t* ad_tensor_attention(ad_tape_t* tape,
             size_t off = (size_t)h * head_dim;
             for (size_t i = 0; i < seq; ++i) {
                 size_t qi = (b * seq + i) * dim + off;
+                /* Row of A for this (b, h, i). Already zero-filled, so the
+                 * masked tail stays exactly zero. */
+                double* arow = &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
                 size_t limit = causal ? (i + 1) : seq;
                 double mx = -HUGE_VAL;
                 for (size_t j = 0; j < limit; ++j) {
                     size_t kj = (b * seq + j) * dim + off;
                     double dot = 0.0;
                     for (size_t d = 0; d < head_dim; ++d) dot += Q[qi + d] * K[kj + d];
-                    scores[j] = dot * scale;
-                    if (scores[j] > mx) mx = scores[j];
+                    arow[j] = dot * scale;
+                    if (arow[j] > mx) mx = arow[j];
                 }
                 double sum = 0.0;
                 for (size_t j = 0; j < limit; ++j) {
-                    scores[j] = std::exp(scores[j] - mx);
-                    sum += scores[j];
+                    arow[j] = std::exp(arow[j] - mx);
+                    sum += arow[j];
                 }
                 if (sum <= 0.0) sum = 1.0;
+                for (size_t j = 0; j < limit; ++j) arow[j] /= sum;
                 for (size_t d = 0; d < head_dim; ++d) {
                     double acc = 0.0;
                     for (size_t j = 0; j < limit; ++j) {
                         size_t vj = (b * seq + j) * dim + off;
-                        acc += (scores[j] / sum) * V[vj + d];
+                        acc += arow[j] * V[vj + d];
                     }
                     O[(b * seq + i) * dim + off + d] = acc;
                 }
@@ -566,8 +611,32 @@ extern "C" ad_node_t* ad_tensor_attention(ad_tape_t* tape,
                                 q->shape, q->ndim, q, k, v);
     if (node) {
         node->input4 = nullptr;
-        node->params.attention_params.num_heads = num_heads;
-        node->params.attention_params.head_dim = (int64_t)head_dim;
+        /* params as int64[6] — the layout tensor_attention_backward reads:
+         *   [0] num_heads   [1] head_dim   [2] causal (0/1)
+         *   [3] scale bit-cast from double (the "scale_bits" convention used
+         *       by the AD_NODE_ATTENTION params and the Frechet rule)
+         *   [4] [5] reserved, zero
+         * [0]/[1] deliberately coincide with the named attention_params
+         * fields so both spellings read the same slots. */
+        int64_t* p = (int64_t*)&node->params;
+        p[0] = (int64_t)num_heads;
+        p[1] = (int64_t)head_dim;
+        p[2] = causal ? 1 : 0;
+        std::memcpy(&p[3], &scale, sizeof scale);
+        p[4] = 0;
+        p[5] = 0;
+
+        double** saved = (double**)arena_allocate_zeroed(get_global_arena(),
+                                                         sizeof(double*));
+        if (!saved) {
+            eshkol_error("qllm bridge: ad_tensor_attention could not retain the "
+                         "attention weights; refusing to record a node whose "
+                         "backward would have nothing exact to work from");
+            return nullptr;
+        }
+        saved[0] = A;
+        node->saved_tensors = (void**)saved;
+        node->num_saved = 1;
     }
     return node;
 }

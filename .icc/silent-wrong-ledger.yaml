@@ -652,7 +652,8 @@ entries:
 
   - id: SW-12
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "1b2682f6"
     title: "Six tensor ops carry two independent backward implementations with no differential test between them"
     ops: [matmul, layernorm, transpose, sum, embedding, attention]
     evidence: >-
@@ -692,40 +693,89 @@ entries:
       contract, the same technique tests/backend/tensor_embedding_backward_gradcheck_test.cpp
       already used for embedding.
 
-      attention is NOT a numeric disagreement: eshkol_backward_attention (native) is exact and
-      FD-validated here (max diff 2.3e-11 / 6.5e-11 / 4.2e-11 across dQ/dK/dV). tensor_attention_backward
-      (bridge) unconditionally calls eshkol_fatal() by design — asserted via a fork-based death
-      test, PASS (it does refuse). ad_tensor_attention's forward (lib/bridge/qllm_bridge.cpp)
-      does not retain the `causal` flag or the softmax attention weights on the node, so an
-      exact bridge adjoint cannot be computed from what the node carries even in principle: this
-      is a forward-plumbing gap, not a wrong formula to arbitrate between two answers.
+      attention was, at that SHA, NOT a numeric disagreement: eshkol_backward_attention (native)
+      was exact and FD-validated (max diff 2.3e-11 / 6.5e-11 / 4.2e-11 across dQ/dK/dV) while
+      tensor_attention_backward (bridge) unconditionally called eshkol_fatal(), because
+      ad_tensor_attention's forward (lib/bridge/qllm_bridge.cpp) retained neither the `causal`
+      flag nor the softmax attention weights an exact adjoint needs. That was a forward-plumbing
+      gap, not a wrong formula — recorded as NEEDS-DECISION and referred to the maintainer.
+    resolution: >-
+      Maintainer ruling: FIX IT — no refusal path ships. Implemented on branch
+      fix/bridge-attention-backward (stacked on fix/vector-ref-tensor-and-backward-diff).
+
+      FORWARD (lib/bridge/qllm_bridge.cpp, ad_tensor_attention) now retains what the adjoint
+      needs, in the mechanism the node struct already provides for exactly this and that the
+      native AD_NODE_ATTENTION arm already uses (saved_tensors):
+        node->saved_tensors[0]  dense [batch, num_heads, seq, seq] softmax weight matrix,
+                                masked entries left at EXACTLY zero
+        node->num_saved         1
+        node->params as int64[6]  [num_heads, head_dim, causal, scale_bits, 0, 0]
+                                (scale bit-cast from double, the "scale_bits" convention already
+                                used by the AD_NODE_ATTENTION params and the Frechet rule;
+                                slots [0]/[1] deliberately coincide with the named
+                                attention_params fields so both spellings read the same slots)
+      Forward VALUES are unchanged — the retained row is the same softmax row the forward already
+      computed, hoisted out of the inner product loop.
+
+      BACKWARD (lib/bridge/tensor_backward.cpp, tensor_attention_backward) is now the exact
+      adjoint, per (batch, head) column slice of the [batch, seq, dim] operands:
+        dV[j] = sum_i A[i][j] dO[i]
+        dA[i][j] = <dO[i], V[j]>
+        dS[i][j] = A[i][j] (dA[i][j] - sum_k A[i][k] dA[i][k]) * scale     (softmax Jacobian
+                   diag(y) - y y^T applied row-wise, one row dot product per row: O(seq^2))
+        dQ[i] = sum_j dS[i][j] K[j]      dK[j] = sum_i dS[i][j] Q[i]
+      Causal masking is carried by the retained zeros — every term above has a factor A[i][j], so
+      masked positions contribute exactly zero with no mask test, and the summations still run
+      over the full [0, seq) range. That keeps the accumulation ORDER identical between the causal
+      and non-causal cases and identical to the native kernel's loop nest, which is what the
+      no-fast-math / deterministic-gradient rule requires. The rule is written independently of
+      eshkol_backward_attention rather than delegating to it, so the differential below compares
+      two implementations and not a thing to itself. The eshkol_fatal refusal is retained ONLY
+      for contract violations (no retained weights, missing operand, params that do not partition
+      dim, unusable scale, or a recorded `causal` flag that disagrees with the retained weights —
+      an exact-equality cross-check, since masked entries are exactly zero).
+
+      MEASURED, ctest -R tensor_backward_dual_impl_gradcheck (21 checks, 21 pass), both masking
+      modes at two shapes, native-vs-bridge max abs diff across dQ/dK/dV:
+        small [batch 1, heads 1, seq 3, head_dim 4] noncausal  1.4e-17 / 1.4e-17 / 5.6e-17
+        small                                       causal     2.8e-17 / 1.4e-17 / 0.0
+        moderate [batch 2, heads 3, seq 5, head_dim 4] noncausal 5.6e-17 / 5.6e-17 / 1.1e-16
+        moderate                                      causal    4.2e-17 / 3.8e-17 / 2.2e-16
+      i.e. at or below the 1e-16 machine-epsilon floor, far inside the 1e-9 bar the other five ops
+      are held to (the residual is BLAS-vs-scalar summation order: the native kernel is
+      cblas_dgemm-backed, the bridge rule is plain loops). FD is the third oracle: bridge-vs-FD and
+      native-vs-FD max diff 1.0e-10 .. 1.4e-09 on the moderate shapes, bar 1e-6 — and the two
+      grads' FD residuals are identical to every printed digit, which is the same statement as the
+      1e-17 agreement. The bridge FORWARD is also diffed against the reference forward (0.0).
     ops_status:
       matmul: agree
       layernorm: agree
       transpose: agree
       sum: agree
       embedding: agree
-      attention: "NEEDS-DECISION — native exact+FD-validated; bridge unconditionally refuses
-        (loud, not silent) because its forward does not retain enough state (causal flag,
-        attention weights) for an exact adjoint. Implementing the bridge side needs a
-        forward-contract change (thread `causal` through AD_NODE_TENSOR_ATTENTION's params,
-        retain or recompute the attention-weight matrix) — a real feature addition, not a
-        differential-test fix. `scaled-dot-attention` already provides an exact,
-        scalar-decomposed, differentiable attention path elsewhere in the tree, which is why the
-        bridge node has had no producer's backward filled in. Maintainer must decide: implement
-        the bridge backward now, or accept the loud refusal as the standing contract."
+      attention: agree
     status_rationale: >-
-      Ledger ruling: SW-12 closes only if all six ops are verified agreeing or fixed. 5/6
-      verified agreeing to machine precision; attention has no comparable bridge VALUE to
-      arbitrate (one side refuses loudly), so it is neither "agreeing" nor "fixed" by this PR.
-      Left OPEN with the measurement above rather than guessing whether the maintainer wants the
-      bridge attention backward implemented or the refusal accepted as the standing contract.
+      Ledger ruling: SW-12 closes only if all six ops are verified agreeing or fixed. All six are
+      now verified agreeing on identical inputs, five to machine precision or exactly and
+      attention to <= 2.2e-16 across four shape/masking cells, with finite differences of an
+      independently-written third forward arbitrating in every case. The attention NEEDS-DECISION
+      was resolved by the maintainer as FIX IT and the fix is in this branch; no refusal path
+      remains for a well-formed node. Closing.
     evidence_new: >-
+      lib/bridge/qllm_bridge.cpp (ad_tensor_attention retains the attention weights and the causal
+      flag); lib/bridge/tensor_backward.cpp (tensor_attention_backward, exact adjoint replacing the
+      unconditional refusal);
       tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp (matmul/layernorm/transpose/sum
-      direct diff + FD; attention native FD + bridge refusal assertion);
+      direct diff + FD; attention direct diff + FD at two shapes x causal/non-causal through the
+      REAL producer ad_tensor_attention and the real dispatch path, plus a fork death test that the
+      rule still refuses a node with no retained weights);
       tests/backend/tensor_embedding_backward_gradcheck_test.cpp check 10 (direct bridge-vs-native
-      diff, added to the existing ESH-0230 coverage); tests/bridge/qllm_bridge_gradcheck_test.cpp
-      header comment updated to point at both instead of describing them as excluded.
+      diff, added to the existing ESH-0230 coverage);
+      tests/bridge/qllm_bridge_gradcheck_test.cpp (attention and causal-attention pipelines added —
+      no op is excluded from that suite any more; embedding remains gradchecked in its own file
+      because it takes an index tensor, not that file's x/w pipeline shape);
+      docs/breakdown/AUTODIFF.md (the "attention backward is a v1.2 value-passthrough stub" section
+      replaced with the shipped exact rule on both paths).
 
   - id: SW-13
     bucket: SILENT-WRONG
