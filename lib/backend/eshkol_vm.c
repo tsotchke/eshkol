@@ -303,9 +303,20 @@ static const BuiltinDef BUILTINS[] = {
     {"_number->string-2", 51, 2},
     /* I/O — ID 60-61 */
     {"newline", 60, 0},
-    /* Apply — ID 70; List — IDs 71-80 */
+    /* Apply — ID 70; list/accessor operations — IDs 71-106
+     * (100-101 remain reserved for packed literal construction). */
     {"apply", 70, 2}, {"length", 71, 1},
+    /* Compound list accessors — IDs 77-106.  The VM native dispatcher
+     * interprets this family from the accessor path, so every
+     * c[ad]+r spelling has the same first-class representation. */
     {"cadr", 77, 1}, {"cddr", 78, 1}, {"caar", 79, 1}, {"caddr", 80, 1},
+    {"cdar", 81, 1},
+    {"caaar", 82, 1}, {"caadr", 83, 1}, {"cadar", 84, 1}, {"cdaar", 85, 1},
+    {"cdadr", 86, 1}, {"cddar", 87, 1}, {"cdddr", 88, 1},
+    {"caaaar", 89, 1}, {"caaadr", 90, 1}, {"caadar", 91, 1}, {"caaddr", 92, 1},
+    {"cadaar", 93, 1}, {"cadadr", 94, 1}, {"caddar", 95, 1}, {"cadddr", 96, 1},
+    {"cdaaar", 97, 1}, {"cdaadr", 98, 1}, {"cdadar", 99, 1}, {"cdaddr", 102, 1},
+    {"cddaar", 103, 1}, {"cddadr", 104, 1}, {"cdddar", 105, 1}, {"cddddr", 106, 1},
     /* AD dual-number compatibility names route to the production 370+ VM
      * implementation.  The historical 110-121 IDs had no dispatcher cases
      * and therefore failed silently as "unhandled native call". */
@@ -343,12 +354,13 @@ static const BuiltinDef BUILTINS[] = {
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},
-    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vector-set!", 220, 3},
+    {"make-vector", 218, 2}, {"vector-ref", 219, 2}, {"vref", 219, 2}, {"vector-set!", 220, 3},
     {"vector-length", 221, 1},
     {"string->list", 222, 1}, {"list->string", 223, 1},
     {"gcd", 224, 2}, {"lcm", 225, 2}, {"make-string", 226, 2},
     /* String operations — compiler opcodes cover inline use;
      * these entries make them first-class closures for higher-order use */
+    {"string-length", 550, 1}, {"string-ref", 551, 2},
     {"substring", 553, 3},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},

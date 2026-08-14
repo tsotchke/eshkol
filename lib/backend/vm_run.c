@@ -1763,12 +1763,12 @@ vm_exit:
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
                 int i = (int)as_number(idx);
-                if (!s || i < 0 || i >= s->byte_len) {
+                if (!s || i < 0 || i >= s->char_len) {
                     vm_raise_error_msg(vm, "string-ref: index out of bounds");
                     break;
                 }
                 /* R7RS string-ref returns a character, not its integer code. */
-                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
+                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = vm_string_ref(s, i)});
             } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
             break;
         }
@@ -1777,7 +1777,7 @@ vm_exit:
             Value str_val = vm_pop(vm);
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-                vm_push(vm, INT_VAL(s ? s->byte_len : 0));
+                vm_push(vm, INT_VAL(s ? vm_string_length(s) : 0));
             } else vm_push(vm, INT_VAL(0));
             break;
         }
