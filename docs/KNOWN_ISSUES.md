@@ -136,6 +136,38 @@ right one. The change that made the rest findable is listed first.
   unmatched pattern into `du`, which under `set -euo pipefail` killed the
   calling suite silently — the cause of a false red on the language-coverage
   floor.
+- **Name resolution ignored lexical shadowing, on both engines, in three
+  subsystems — the highest-priority open AD defect.** A parameter that
+  shadowed a global function name — or a user redefinition of a builtin like
+  `+` — was still resolved to the global/builtin at the call site instead of
+  the shadowing binding: native AD differentiated the shadowed global
+  (`(derivative f x)` through a parameter named `f` answered `6` where `2` was
+  correct), native `map`/`for-each`/`filter`/`fold-left`/`fold-right`/`reduce`/
+  `remove` read the mapped procedure from the global function table instead of
+  the shadowing argument, and the VM's opcode dispatch bypassed a user's own
+  `(define + ...)` entirely (`(+ 3 4)` answered `7`, the built-in sum, instead
+  of `12`). One root cause across all three: name resolution never checked for
+  a local binding first. `isShadowedByLocalRuntimeBinding()`
+  (`lib/backend/llvm_codegen.cpp`) now declines static resolution whenever the
+  name is bound to a local argument or alloca, for AD and every higher-order
+  builtin; `vm_head_user_rebound()` (`lib/backend/vm_compiler.c`) does the VM
+  equivalent for opcode dispatch. (#429)
+- **WASM batch compilation mis-evaluated the first macro when a program had
+  two or more `define-syntax` forms.** Not a wasm-specific bug and not in
+  macro expansion order: a type-punning heap over-read (`MacroNode*` cast to
+  the parser hub's `Node*` across two structs that only claimed to be
+  layout-compatible) read 0–16 bytes past a macro node's allocation, and those
+  bytes were reliably zero on 64-bit hosts but not in wasm32 — undefined
+  behavior invisible natively and wrong in the browser build. `MacroNode` is
+  now literally the hub's `Node` type. (#432)
+- **Two independent backward implementations of six tensor ops (`matmul`,
+  `layernorm`, `transpose`, `sum`, `embedding`, `attention`) had no
+  differential test between them,** and `attention`'s bridge-side backward
+  unconditionally refused rather than computing an answer. All six now agree
+  with each other and with independent finite differences — five to machine
+  precision or exactly, `attention` to ≤2.2e-16 — gated by a direct
+  differential test comparing both implementations on identical inputs.
+  (#434)
 
 ## Resolved in v1.1 (Previously Listed as Planned)
 
@@ -262,14 +294,6 @@ byte-identical across the VM's source and bytecode axes. The one remaining
 native-only case is higher-order nesting (gradient-of-derivative / Taylor
 tower); use native codegen (`eshkol-run`) for nested higher-order AD.
 
-### WASM batch compilation: multiple `define-syntax` forms
-Under the WASM batch compilation path, a program with two or more
-`define-syntax` forms mis-evaluates the first macro's arithmetic. The VM-native
-path and the browser REPL's incremental compilation path both evaluate the same
-program correctly. Found by the WASM execute-and-diff lane and tracked as an
-XFAIL gate in `tests/wasm_diff/EXCLUSIONS.tsv`; use the VM-native or incremental
-REPL path in the meantime.
-
 ---
 
 ## Tracked Open Issues
@@ -282,13 +306,6 @@ block ordinary use.
 
 **Found during the v1.3.4-evolve correctness wave (new, honest knowns)**
 
-- **AD ignores function shadowing — silent wrong answer.** A parameter that
-  shadows a global function name is differentiated as the *global*, not as the
-  shadowing binding: a case whose correct derivative is `4` answers `6`. This
-  affects inexact points as well as exact ones. It is why the new exact-input
-  differentiation tier (#393) uses a whitelist — a body may mention only its own
-  parameter — rather than accepting arbitrary bodies. Silent-wrong class; the
-  highest-priority open AD defect.
 - **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
   forward-mode derivatives in two representations — the 8-jet (`derivative`,
   first order, three independent perturbations) and the heap Taylor tower
@@ -330,14 +347,55 @@ block ordinary use.
   The VM lane still resolves only the CWD `lib/<dotted>` form and silently
   ignores a path literal. Tracked for v1.3.5; use the dotted module form on the
   VM in the meantime.
-- **The attention backward pass is open.** The embedding and Fréchet-mean
-  backward passes landed this release with gradient checks; attention's backward
-  pass is not yet closed out.
-- **qLLM oracle exporters can crash under the in-process JIT on macOS.** In
-  traced or coverage-instrumented contexts under load, the qLLM oracle's
-  exporters can crash on the in-process JIT lane. This is an **advisory** lane:
-  the AOT lane is unaffected, the exported values are unaffected, and the
-  release gate is 10/10. Under investigation.
+- **`syntax-rules` templates have no referential transparency: a free
+  identifier resolves at the USE site, not the macro-definition site.**
+  Minimal reproducer:
+  ```scheme
+  (define (helper x) (* x 10))
+  (define-syntax usehelp (syntax-rules () ((_ a) (helper a))))
+  (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))
+  ```
+  Both engines print `-5`. R7RS 4.3.2 requires `50`: a free identifier in a
+  template refers to the binding it had in the macro's *definition*
+  environment, so `helper` must be the top-level one regardless of what the
+  use site binds. The mis-binding only fires when the use site actually
+  shadows a name the template also uses (`+`, `if`, `list`, every builtin and
+  every user helper are all free identifiers in *some* template, so a loud
+  "unsupported hygiene case" diagnostic at every free reference was built,
+  measured, and rejected — it would fire on nearly every macro in the
+  language, including 42 of this repo's own `.esk` files). Closing this
+  needs syntax objects (or marks / scope sets): every identifier carrying the
+  environment it was written in, threaded through the reader, both expanders,
+  and both name-resolution paths — native resolves at LLVM codegen, the VM at
+  compile time against a flat local table, and neither currently has anywhere
+  to put that information. Workaround: do not shadow, at a macro's use site,
+  any free identifier the macro's template refers to. Ruled a documented
+  v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
+  tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
+  DOCUMENTED-LIMITATION.
+- **Very deep non-tail recursion through a top-level `define`d function
+  lacks the early depth guard that a `lambda` gets, so it runs much deeper
+  before failing, and then fails as a signal rather than a clean diagnostic.**
+  The recursion-depth check (`eshkol_check_recursion_depth`) is emitted only
+  in the lambda-expression codegen path, not in top-level function-definition
+  codegen (`codegenFunctionDefinition`), so a self-recursive top-level
+  `define` never hits the guard's clean "maximum recursion depth exceeded"
+  message the way an equivalent `lambda` would. This is narrower than once
+  measured: the runtime's SIGILL/SIGBUS handler (ESH-0119) now catches the
+  eventual stack overflow on an alternate signal stack and prints a clear
+  "fatal signal … most likely a stack overflow" diagnostic rather than dying
+  with no output at all, and the practical depth at which that happens has
+  moved well past the ~270k frames originally filed — 1,000,000 frames of
+  plain non-tail recursion complete cleanly on the current build, and 3,000,000
+  fails loudly rather than silently. The guard-coverage gap itself is real
+  and unchanged (confirmed by reading the codegen, not by one program's
+  behavior): a `lambda`-bound self-recursive function still gets the early,
+  precise diagnostic that a top-level `define`d one does not. Wiring the
+  guard into every top-level function entry, not just lambdas, is ruled v1.3.5
+  scope (maintainer ruling 2026-08-13, filed as ESH-0101, recorded as a
+  residual of the resource-limits closure in `.icc/silent-wrong-ledger.yaml`
+  under SW-10); not a blocker for v1.3.4, since the failure mode is now loud
+  either way.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
@@ -378,8 +436,10 @@ block ordinary use.
   do. `sort` is an iterative vector merge sort (ESH-0098 resolved): 1,000,000
   reversed elements sort in 176 MB peak RSS, 5,000,000 in 848 MB, on the JIT and
   AOT alike. `length` and `filter` complete on 1,000,000-element lists
-  (ESH-0108 resolved). Deep non-tail user recursion reaches at least 270k frames
-  without a diagnostic-free death. Mutual tail calls ARE now proper R7RS
+  (ESH-0108 resolved). Deep non-tail user recursion via `lambda` gets an early,
+  precise depth-guard diagnostic; the same recursion via a top-level `define`
+  does not, and instead runs much deeper before failing loudly on a signal
+  (ESH-0101, see above). Mutual tail calls ARE now proper R7RS
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
   resolved (2026-07-04). The remaining exception is a higher-order tail call that
   forwards a stack-allocated closure argument, which falls back to a bounded call.
@@ -396,8 +456,6 @@ block ordinary use.
   to 1e7).
 
 **Language edges**
-- A closure created inside a named-let loop that `set!`s a global loses the
-  mutation (ESH-0094).
 - **A lambda that closes over a TCO'd self-recursive function's OWN
   loop-carried parameter and is passed to `derivative`/`gradient` (and, once
   merged, `taylor`) reads a stale/corrupted value or segfaults** once the
@@ -441,14 +499,14 @@ block ordinary use.
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. Verified
-  behavioral divergences remain explicit `gap` rows with reproducible
-  programs under `tests/vm_parity/found/`; the rest are acknowledged holes. `op:GRADIENT` and
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 951 rows —
+  578 `vm-supported`, 44 `native-only-justified`, 329 `gap`, of which 17 are
+  verified behavioral divergences with reproducible programs under
+  `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The differential gate is
-  184/184 on the current tree.
+  140/140 on the release cut.
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
   `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
   (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`

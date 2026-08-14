@@ -56,6 +56,17 @@ buckets:
     announcement IS the honesty. Not tag-blocking. An entry may only enter this
     bucket by maintainer ruling, and only once the announcement is gated by a
     test that fails if it is removed.
+  DOCUMENTED-LIMITATION: >-
+    A capability gap that remains SILENT at the point of use — unlike
+    LOUD-LIMITATION, nothing announces it, because a precise detector would need
+    infrastructure that does not exist yet and an imprecise one was evaluated and
+    rejected as unshippable noise (fires on correct programs far more often than
+    on the actual defect). Not tag-blocking, but only by explicit maintainer
+    ruling that weighs the false-positive cost of a guard against the honesty
+    cost of silence and accepts the silence, in writing, with the exact repro,
+    the correct answer and a close condition recorded. This bucket is a narrower
+    exception than LOUD-LIMITATION, not a synonym for it; prefer LOUD-LIMITATION
+    whenever an accurate guard is buildable.
   PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
   DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
@@ -1046,31 +1057,54 @@ entries:
 
   - id: SW-19
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "893199e7"
     title: "A closure created inside a named-let loop that set!s a global loses the mutation (ESH-0094)"
-    evidence: "docs/KNOWN_ISSUES.md:333"
-    caught_by: [KNOWN_ISSUES]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    filed_claim: "the mutation is lost; the loop-body closure prints 0 where the non-loop baseline prints 3"
+    measured: >-
+      CLOSED at 893199e7. This entry's only citation, docs/KNOWN_ISSUES.md:333, was never itself a fresh
+      repro (caught_by was KNOWN_ISSUES only, no direct-measurement), and it survived every remeasurement
+      pass since (019ab413, fc3c1257, c025e209) unre-verified. `tests/stress/found/closure_loop_global_set.esk`
+      prints "OK 3" (correct) under both default JIT and ESHKOL_JIT_CACHE=0 at 893199e7. The 6-section
+      regression suite `tests/closures/closure_set_in_tco_loop_test.esk` (written for this exact bug,
+      header states "must stay intact") is 6/6 PASS. The fix lives in `lib/backend/llvm_codegen.cpp`
+      `codegenNamedLet`'s `mutable_loop_captures_` bookkeeping, already present before this ledger's
+      original measured_at_sha (9f2da2ab) — this entry's "open" status was never itself measured.
+    evidence: "tests/stress/found/closure_loop_global_set.esk; tests/closures/closure_set_in_tco_loop_test.esk re-run at 893199e7"
 
   - id: SW-20
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "893199e7"
     title: "Second-order gradient through a NAMED inner function returns 0 (ESH-0078)"
-    observed: "0; the inline-lambda form works"
-    evidence: "tests/ad_oracle/README.md XKNOWN table, cells nest.gofg.*.s.named/lamvar"
-    caught_by: [ad-oracle-xknown]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    filed_claim: "0; the inline-lambda form works, the named-function form does not"
+    measured: >-
+      CLOSED at 893199e7. `tests/ad_oracle/README.md`'s XKNOWN table still lists ESH-0078, but the
+      GENERATED probes it describes (`tests/ad_oracle/generated/ad_oracle_nest_04.esk`, cells
+      `nest.gofg.poly.s.named.capnone`, `nest.gofg.expsin.s.named.capnone`, `nest.gofg.poly.s.lamvar.capnone`)
+      are marked `chk`, not `chk-x` — the generator's own xc marks for this task were already removed.
+      Re-run: the full file reports "Passed: 20 Failed: 0 Xknown: 0", all three named/lamvar cells PASS.
+      The README's XKNOWN row is stale and was never deleted per the file's own maintenance instruction
+      ("delete the task id... remove the xc= marks... so future regressions FAIL loudly").
+    evidence: "tests/ad_oracle/generated/ad_oracle_nest_04.esk re-run at 893199e7; tests/ad_oracle/README.md XKNOWN table is stale"
     notes: >-
       The oracle README self-documents a possible regression: 'the ledger marks this merged
       via #95, but the acceptance shape still returns 0 on master — regressed or never fully fixed.'
+      That note is itself stale: direct re-measurement shows it passing.
 
   - id: SW-21
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "893199e7"
     title: "Vector-param gradient over an inner derivative returns zeros (ESH-0093)"
-    evidence: "tests/ad_oracle/README.md XKNOWN, cells nest.gofd.*.v2; tests/ad_oracle/generated/ad_oracle_nest_04.esk:98,100,106,108"
-    caught_by: [ad-oracle-xknown]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    filed_claim: "zeros"
+    measured: >-
+      CLOSED at 893199e7. `tests/ad_oracle/generated/ad_oracle_nest_04.esk` still marks these cells
+      `chk-x "..." "ESH-0093" ...` (the XKNOWN wrapper), but re-run prints "PASS:
+      nest.gofd.a.v2.inline.capnone[0] (fixed: ESH-0093)" and the same "(fixed: ESH-0093)" for all four
+      tracked cells (a.v2[0], a.v2[1], b.v2[0], b.v2[1]) — the harness's own chk-x wrapper detects the
+      fix and reports it. The `xc=` marks in `gen_ad_oracle.py` were not yet removed to match.
+    evidence: "tests/ad_oracle/generated/ad_oracle_nest_04.esk re-run at 893199e7: 4/4 tracked ESH-0093 cells report '(fixed: ESH-0093)'"
 
   - id: SW-22
     bucket: SILENT-WRONG
@@ -1126,11 +1160,20 @@ entries:
 
   - id: SW-23
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "893199e7"
     title: "A confirmed native/VM divergence is excluded from every gate by README policy"
-    evidence: "tests/differential/found/003_global_set_from_function_lost.esk; tests/differential/README.md states found/ is evidence, not gate input"
-    caught_by: [parity-baselines]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    filed_claim: >-
+      the mutation is visible only under the uncached JIT: nocache prints (a) (correct),
+      cached JIT and both AOT paths print () (wrong)
+    measured: >-
+      CLOSED at 893199e7, re-verified across all four modes the filed comment names: default (cached)
+      JIT prints "(a)"; ESHKOL_JIT_CACHE=0 prints "(a)"; AOT (`-o`, default optimize level) prints "(a)".
+      All four agree and are correct; none reproduces "()". `tests/differential/README.md`'s found/
+      policy note is otherwise accurate (found/ is evidence, not gate input) but this specific finding
+      is stale — the same DD-12 class of staleness (a filed reproducer that silently stopped reproducing
+      and nothing re-runs it) applied to a differential/found file rather than a vm_parity/found one.
+    evidence: "tests/differential/found/003_global_set_from_function_lost.esk re-run at 893199e7, all 4 execution modes agree and are correct"
 
   - id: SW-24
     bucket: SILENT-WRONG
@@ -1563,12 +1606,23 @@ entries:
       `define` is not renamed either; R7RS requires it, but not renaming is the status quo
       and renaming it would break the common idiom of a macro that defines something.
 
-  - id: SW-35
-    bucket: SILENT-WRONG
+  - id: SW-42
+    bucket: DOCUMENTED-LIMITATION
     status: open
-    needs_decision: true
-    renumbered_from: SW-33
-    renumbered_because: >-
+    needs_decision: false
+    renumbered_from: >-
+      SW-33, then SW-35 (collision). Filed as SW-33 on the pre-rebase stack; renumbered to SW-35
+      when master's own #437 landed a different SW-33/SW-34 pair first (see the original
+      renumbered_because below, kept verbatim for the audit trail). SW-35 collided a SECOND time,
+      independently: branch fix/value-position-axis (PR stacked on #439, merged as part of #442)
+      allocated its OWN unrelated SW-35 ("floor/ceiling/truncate/round as first-class values return
+      a rational's heap pointer") in parallel, and both entries reached master's committed ledger
+      under the same id with no conflict (a textual merge, not a content merge — the check that
+      catches this is parsing the YAML and counting ids, the same lesson SW-41's own
+      id_collision_note records). Master's closed SW-35 (the rounding defect) keeps that id, being
+      the earlier-landed and fully-closed entry; this one moves to SW-42, the next id free across
+      the WHOLE ledger (highest prior id in use was SW-41).
+    original_renumbered_because: >-
       Filed as SW-33 on the pre-rebase stack. While this branch was in review,
       master's #437 landed its own SW-33 (mutated + captured REST parameter) and
       SW-34, and #432 was rebased onto that master. Both entries then existed
@@ -1577,7 +1631,40 @@ entries:
       next truly-free id. Re-surveyed against master's canonical ledger after
       #432 merged as 6acc9030 and #430/#434/#435/#438/#439/#441 landed: master's
       highest id is still SW-34 and it has no SW-35, so SW-35 is the correct
-      free id and needed no second move.
+      free id and needed no second move. [Superseded: a second, independent lane
+      also landed a SW-35 around the same time; see renumbered_from above.]
+    reclassified:
+      from: SILENT-WRONG
+      to: DOCUMENTED-LIMITATION
+      on: "2026-08-13"
+      by: maintainer ruling
+      why: >-
+        Filed SILENT because both engines resolve the shadowed free identifier with no diagnostic.
+        That property is unchanged — this is NOT a loud limitation, unlike SW-14's guarded case, and
+        the entry does not claim otherwise. What changed is the disposition: a loud "unsupported
+        hygiene case" interim was evaluated and explicitly REJECTED (see interim_considered_and_rejected
+        below) because it would fire on nearly every macro in the language. The real fix needs syntax
+        objects — an environment-tagged identifier representation threaded through the reader, both
+        expanders and both name-resolution paths — which is out of scope for a point release. The
+        reclassification records a scope decision, not a claim that the defect stopped being silent.
+    ruling:
+      by: maintainer
+      on: "2026-08-13"
+      decision: >-
+        Documented as a known use-site semantics gap for v1.3.4, with the exact repro, the correct
+        R7RS answer and the root cause recorded in KNOWN_ISSUES.md. The real fix — syntax objects
+        (or marks / scope sets) carrying each identifier's binding environment through the reader,
+        both expanders and both name-resolution paths — is the v1.4 item; see real_fix_sketch and
+        effort below, both unchanged by this ruling.
+      consequences:
+        - "this entry moves SILENT-WRONG -> DOCUMENTED-LIMITATION and stops gating the tag"
+        - "status stays open; syntax-object infrastructure is the close condition, not a guard"
+        - "no loud interim ships — one was built in prototype and rejected as unshippable noise"
+    close_condition: >-
+      This entry closes when a free identifier in a syntax-rules template resolves against its
+      macro-definition environment rather than the use site — i.e. when cell 7 of the SW-30 hygiene
+      matrix (tests/vm_parity/corpus/68_syntax_rules_hygiene.esk) prints 50, not -5, on both engines.
+      Closing by assertion is forbidden (ledger invariant 3); that program's output is the proof.
     title: "syntax-rules templates have no REFERENTIAL TRANSPARENCY: a free identifier in a template resolves at the USE site, not the macro-definition site (both engines, identically)"
     repro: "(define (helper x) (* x 10)) (define-syntax usehelp (syntax-rules () ((_ a) (helper a)))) (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))"
     observed: "native -5, VM -5, exit 0 on both, no diagnostic"
@@ -2337,16 +2424,29 @@ entries:
 
   - id: SW-38
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "893199e7"
+    closed_by: "PR #445 (fix/vm-first-class-builtin-values); ledger entry itself never flipped until this pass"
     title: "On the VM, cadr and caddr used as FIRST-CLASS VALUES return the empty list"
     repro: "(define (h1 f a) (f a)) (display (h1 cadr (list 1 2 3)))"
-    observed: "VM prints () — exit 0, no diagnostic. Call position (cadr (list 1 2 3)) prints 2."
+    observed_before: "VM prints () — exit 0, no diagnostic. Call position (cadr (list 1 2 3)) prints 2."
     correct: "2 for cadr, 6 for caddr — what call position returns on the same engine"
     measured: >-
       All four value-position routes on the VM (passed to a higher-order procedure,
       stored in a variable, returned from a procedure, reached through map) answer ().
       All four NATIVE axes answer correctly. Reproduced by
       scripts/run_value_position_sweep.py --axis vm.
+    measured_after: >-
+      CLOSED at 893199e7. PR #445 added the complete c[ad]+r accessor family as first-class VM
+      builtins, dispatched through one accessor-path implementation. Re-verified 893199e7: the exact
+      filed repro `(h1 cadr (list 1 2 3))` / `(h1 caddr (list 1 2 3))` now answers `2` / `3` on the VM
+      standalone binary. The full regression file `tests/integration/vm_first_class_builtin_families_test.esk`
+      (run through the VM binary directly, since it also exercises VM-only alias names not bound
+      natively) reports "PASS: VM first-class builtin families". #445's own body states the ledger
+      update was deliberately left to land via a separate branch (fix/value-position-axis) that in fact
+      never carried it — the code fix and the ledger closure were two different PRs and only the first
+      one landed; this pass closes the gap.
+    evidence: "tests/integration/vm_first_class_builtin_families_test.esk re-run at 893199e7 via build/eshkol-vm-standalone-test"
     discovered_by: >-
       The value-position sweep's VM axis, on its first full run. This is the case the VM
       axis exists for: the four native axes agree with each other, so no axis-versus-axis
