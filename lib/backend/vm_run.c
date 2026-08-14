@@ -816,13 +816,19 @@ void vm_run(VM* vm) {
     }
     lbl_CAR: {
         Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) { fprintf(stderr, "CAR on non-pair\n"); vm->error = 1; goto vm_exit; }
+        if (pair.type != VAL_PAIR) {
+            vm_raise_error_msg(vm, "car: argument is not a pair");
+            DISPATCH();
+        }
         vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
         DISPATCH();
     }
     lbl_CDR: {
         Value pair = vm_pop(vm);
-        if (pair.type != VAL_PAIR) { fprintf(stderr, "CDR on non-pair\n"); vm->error = 1; goto vm_exit; }
+        if (pair.type != VAL_PAIR) {
+            vm_raise_error_msg(vm, "cdr: argument is not a pair");
+            DISPATCH();
+        }
         vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
         DISPATCH();
     }
@@ -1629,13 +1635,19 @@ vm_exit:
         }
         case OP_CAR: {
             Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) { fprintf(stderr, "CAR on non-pair\n"); vm->error = 1; break; }
+            if (pair.type != VAL_PAIR) {
+                vm_raise_error_msg(vm, "car: argument is not a pair");
+                break;
+            }
             vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
             break;
         }
         case OP_CDR: {
             Value pair = vm_pop(vm);
-            if (pair.type != VAL_PAIR) { fprintf(stderr, "CDR on non-pair\n"); vm->error = 1; break; }
+            if (pair.type != VAL_PAIR) {
+                vm_raise_error_msg(vm, "cdr: argument is not a pair");
+                break;
+            }
             vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
             break;
         }
