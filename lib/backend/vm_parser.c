@@ -22,22 +22,37 @@ typedef struct Node {
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
+    int _cap;         /* allocated capacity of `children`, maintained by every
+                       * append site so the macro expander's doubling growth and
+                       * the parser's exact growth share one invariant
+                       * (_cap >= n_children).  See the MacroNode note below. */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
- * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct.
- * Provide typedefs so vm_macro.c functions can use MacroNode/MacroNodeType
- * while actually operating on the compiler's Node type (layout-compatible). */
+ * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct, and
+ * make MacroNode *literally* this hub's Node.
+ *
+ * SW-13 (heap over-read, shipped in the browser build): MacroNode used to be a
+ * SEPARATE struct declared here and merely *claimed* to be layout-compatible.
+ * It was not.  This hub's Node carries four extra trailing fields
+ * (is_char/is_inexact/is_int/ival, offsets 156..175, sizeof 176) that the
+ * 160-byte MacroNode did not have, and `_cap` sat exactly on top of `is_char`.
+ * Every macro-expanded node is calloc(sizeof(MacroNode))'d by the expander and
+ * then read back through `Node*` by the compiler, so
+ *   - `is_char`    aliased the children-array CAPACITY, and
+ *   - `is_inexact` / `is_int` / `ival` were read 0..16 bytes PAST the end of
+ *     the allocation.
+ * The constant folder in compile_expr_impl() reads `is_int` and `ival` to decide
+ * whether to fold exactly; on wasm32 those out-of-bounds bytes are nonzero, so
+ * a two-or-more-define-syntax program folded the FIRST macro's arithmetic from
+ * garbage and printed a garbage bignum for `(dbl 21)`.  On 64-bit hosts the
+ * bytes past the chunk happened to read zero, which is why the defect was
+ * invisible natively while shipping wrong answers in wasm32.
+ * A single node type removes the punning at the root; ASAN over the VM
+ * standalone now runs the multi-macro corpus clean. */
 #define VM_MACRO_NODE_DEFINED
 typedef NodeType MacroNodeType;
-typedef struct MacroNode {
-    MacroNodeType    type;
-    double           numval;
-    char             symbol[128];
-    struct MacroNode** children;
-    int              n_children;
-    int              _cap;
-} MacroNode;
+typedef struct Node MacroNode;
 #include "vm_macro.c"
 
 /* Compiler context — encapsulates all mutable state for reentrancy and REPL */
@@ -94,6 +109,11 @@ static void add_child(Node* p, Node* c) {
     if (!nc) { fprintf(stderr, "ERROR: allocation failed in add_child\n"); return; }
     p->children = nc;
     p->children[p->n_children++] = c;
+    /* Keep the shared `_cap >= n_children` invariant true for parser-built
+     * nodes as well: the macro expander appends to these same nodes through
+     * macro_node_add_child(), which grows by doubling off `_cap`.  This site
+     * grows exactly, so capacity equals the count. */
+    p->_cap = p->n_children;
 }
 
 static void free_node(Node* n);

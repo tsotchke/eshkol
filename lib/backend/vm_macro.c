@@ -75,13 +75,26 @@ static void macro_node_add_child(MacroNode* parent, MacroNode* child) {
 }
 
 /** @brief Recursively deep-copy a MacroNode tree (used when instantiating
- *         a template so each expansion gets independent nodes). */
+ *         a template so each expansion gets independent nodes).
+ *
+ *  SW-13: this used to copy only `type`, `numval` and `symbol`, dropping every
+ *  other scalar the hub's node carries.  On the VM hub those are the literal's
+ *  EXACTNESS TAGS (`is_int`/`ival`, `is_inexact`, `is_char`), so a literal that
+ *  travelled through a macro — either from the template or substituted in from
+ *  the call site — came out of the expander untagged: `(dbl 2.0)` lost
+ *  `is_inexact` and folded to the exact 2, a large exact literal lost
+ *  `is_int`/`ival` and degraded to a double, and `#\a` lost `is_char` and
+ *  became an integer.  Whole-struct assignment copies every scalar field the
+ *  hub defines, and stays correct if fields are added later; only the
+ *  children array is re-derived, because it must be independently owned. */
 static MacroNode* macro_node_deep_copy(const MacroNode* src) {
     if (!src) return NULL;
-    MacroNode* dst = macro_node_new(src->type);
-    if (!dst) return NULL;
-    dst->numval = src->numval;
-    memcpy(dst->symbol, src->symbol, sizeof(dst->symbol));
+    MacroNode* dst = (MacroNode*)calloc(1, sizeof(MacroNode));
+    if (!dst) { fprintf(stderr, "ERROR: macro_node_deep_copy: alloc failed\n"); return NULL; }
+    *dst = *src;                 /* every scalar field, hub-agnostic */
+    dst->children   = NULL;      /* deep-copied below; never aliased */
+    dst->n_children = 0;
+    dst->_cap       = 0;
     for (int i = 0; i < src->n_children; i++) {
         macro_node_add_child(dst, macro_node_deep_copy(src->children[i]));
     }

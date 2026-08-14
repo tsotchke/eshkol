@@ -1,0 +1,19 @@
+; SW-18 / ESH-0105 regression, promoted from tests/vm_parity/found/ once fixed.
+;
+; FILED (now FIXED): a bignum combined with a ratnum had no exact
+; representation on the VM, so it took the correctly-rounded inexact fallback:
+;   native -r : 110680464442257309697/3   36893488147419103232/3   1/110680464442257309696
+;   vm        : 36893488147419103000      12297829382473034000     9.03501810404587e-21
+;
+; This was a REPRESENTATION gap, not a dispatch defect — the dispatch defect
+; that used to hide it (the bignum being read as the integer 0, so
+; (+ <bignum> 1/3) answered 1/3 and (/ 1/3 <bignum>) was a spurious
+; DIVIDE BY ZERO) was fixed earlier and is gated by
+; corpus/52_numeric_tag_dispatch.esk.  The representation gap is now closed:
+; VmRational carries bignum halves, so the exact value is built rather than
+; rounded.
+(define big (* 4611686018427387904 8))
+(define rat (/ 1 3))
+(display (+ big rat)) (newline)
+(display (* big rat)) (newline)
+(display (/ rat big)) (newline)

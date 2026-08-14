@@ -92,22 +92,24 @@ typedef struct Node {
     char symbol[128];
     struct Node** children;
     int n_children;
+    int _cap;         /* allocated capacity of `children`, maintained by every
+                       * append site (parser + macro expander) so the shared
+                       * invariant _cap >= n_children always holds. */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
- * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct.
- * Provide typedefs so vm_macro.c functions can use MacroNode/MacroNodeType
- * while actually operating on the compiler's Node type (layout-compatible). */
+ * Define VM_MACRO_NODE_DEFINED to skip MacroNode's duplicate enum/struct, and
+ * make MacroNode *literally* this hub's Node.
+ *
+ * SW-13: MacroNode used to be a separate struct declared here and in
+ * vm_parser.c that merely claimed to be layout-compatible with the hub's Node.
+ * In the VM hub it was not (see the long note in vm_parser.c), which produced a
+ * heap over-read that shipped wrong answers in the wasm32 build.  One node type
+ * makes the casts in vm_macro.c well-defined by construction on both hubs
+ * rather than by coincidence of field ordering. */
 #define VM_MACRO_NODE_DEFINED
 typedef NodeType MacroNodeType;
-typedef struct MacroNode {
-    MacroNodeType    type;
-    double           numval;
-    char             symbol[128];
-    struct MacroNode** children;
-    int              n_children;
-    int              _cap;
-} MacroNode;
+typedef struct Node MacroNode;
 #include "vm_macro.c"
 
 static const char* src_ptr = NULL;
@@ -138,6 +140,9 @@ static void add_child(Node* p, Node* c) {
     if (!nc) { fprintf(stderr, "ERROR: allocation failed in add_child\n"); return; }
     p->children = nc;
     p->children[p->n_children++] = c;
+    /* Keep `_cap >= n_children` true for parser-built nodes: the macro expander
+     * appends to these same nodes and grows by doubling off `_cap`. */
+    p->_cap = p->n_children;
 }
 
 static void free_node(Node* n);

@@ -6058,6 +6058,22 @@ static inline int vm_either_bignum(Value a, Value b) {
     return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM;
 }
 
+/** @brief True when either operand is an EXACT value too wide for the plain
+ *         int64/double compare paths — a bignum or a rational.
+ *
+ *  SW-18: the comparison opcodes guarded their exact path with
+ *  vm_either_bignum() alone, so a pair of RATIONALs (or a rational against a
+ *  fixnum) fell through to as_number_vm() and was compared as doubles.  Two
+ *  distinct exact values that round to the same flonum then compared EQUAL:
+ *  `(< (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))` answered #f where native
+ *  answers #t.  Comparison must be exact whenever both operands are exact;
+ *  vm_bignum_compare_vals() routes a FLOAT operand back to doubles itself, so
+ *  inexact contagion is preserved. */
+static inline int vm_either_exact_wide(Value a, Value b) {
+    return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM ||
+           a.type == VAL_RATIONAL || b.type == VAL_RATIONAL;
+}
+
 /** @brief Coerce an integer-ish Value to a VmBignum*. VAL_BIGNUM returns its
  *         heap payload directly; VAL_INT/VAL_CHAR (and anything else, best
  *         effort) is materialised as a fresh bignum. NULL only on alloc
@@ -6079,6 +6095,54 @@ static void vm_push_bignum_norm(VM* vm, VmBignum* b) {
     int64_t iv = bignum_to_int64(b, &ov);
     if (!ov) vm_push(vm, INT_VAL(iv));
     else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, b);
+}
+
+/** @brief Push an exact rational result in its canonical tagged form: an
+ *         integer (fixnum or bignum) when the reduced denominator is 1,
+ *         otherwise a VAL_RATIONAL heap box.  Sets vm->error if @p r is NULL.
+ *
+ *  SW-18: every exact rational result funnels through here so that "denominator
+ *  reduced to 1" collapses to an integer on the bignum path exactly as it
+ *  already did on the int64 path — otherwise `(/ (expt 2 100) 4)` would answer
+ *  a rational-with-denominator-1 instead of the integer native prints. */
+static void vm_push_rational_norm(VM* vm, VmRational* r) {
+    if (!r) { vm->error = 1; return; }
+    if (r->is_big) {
+        if (vm_bn_is_i64(r->big_den, 1)) { vm_push_bignum_norm(vm, r->big_num); return; }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm->error = 1; return; }
+        vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+        vm->heap.objects[ptr]->opaque.ptr = r;
+        vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+        return;
+    }
+    if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); return; }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return; }
+    vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+    vm->heap.objects[ptr]->opaque.ptr = r;
+    vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+}
+
+/** @brief Materialize any exact operand as a VmRational for the exact rational
+ *         layer: a VAL_RATIONAL yields its payload, a fixnum/char yields n/1,
+ *         and a VAL_BIGNUM yields the bignum over 1.  @p scratch is written for
+ *         the non-rational cases and returned. */
+static const VmRational* vm_coerce_rational(VM* vm, Value v, VmRational* scratch) {
+    if (v.type == VAL_RATIONAL)
+        return (const VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    scratch->num = 0; scratch->denom = 1;
+    scratch->is_big = 0; scratch->big_num = NULL; scratch->big_den = NULL;
+    if (v.type == VAL_BIGNUM) {
+        scratch->is_big = 1;
+        scratch->big_num = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        scratch->big_den = bignum_from_int64(&vm->heap.regions, 1);
+        if (!scratch->big_den) return NULL;
+        return scratch;
+    }
+    scratch->num = (v.type == VAL_INT || v.type == VAL_CHAR)
+                 ? v.as.i : (int64_t)as_number(v);
+    return scratch;
 }
 
 /** @brief Compute (a op b) exactly in the bignum domain and push the
@@ -6119,20 +6183,23 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
                   fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_mod(rs, ab, bb); break;
     case '/': {
-        /* Exact bignum `/`.  A zero divisor is a fatal exact division by
-         * zero (native raises "bignum division by zero").  An even division
-         * yields the exact quotient.  A non-even exact division would need a
-         * bignum RATIONAL, which is outside this VM's numeric tower (its
-         * VmRational is int64/int64) — it falls back to the correctly-rounded
-         * double, the documented gap in tests/vm_parity/PARITY.tsv.  Before
-         * this case existed a bignum fell through to the plain double path,
-         * where as_number() reads a heap pointer's .as.i as 0.0 and every
-         * bignum division silently produced 0. */
+        /* Exact bignum `/`.  A zero divisor is a fatal exact division by zero
+         * (native raises "bignum division by zero").  An even division yields
+         * the exact quotient; a non-even one yields an EXACT RATIONAL.
+         *
+         * SW-18 / ESH-0105: this used to answer the correctly-rounded double
+         * for the non-even case, because VmRational was int64/int64 and could
+         * not hold a bignum numerator — `(/ (expt 2 100) 3)` printed
+         * 4.2255020007607644e+29 where native prints
+         * 1267650600228229401496703205376/3.  R7RS 6.2.2 requires an exact
+         * operation on exact operands to stay exact, and the rational
+         * substrate is bignum-capable now, so the exact result is built
+         * instead of rounded. */
         if (bignum_is_zero(bb)) {
             fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
         VmBignum* rem = bignum_mod(rs, ab, bb);
         if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
-        vm_push(vm, FLOAT_VAL(bignum_to_double(ab) / bignum_to_double(bb)));
+        vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, ab, bb));
         return;
     }
     case 'm': {
@@ -6156,15 +6223,24 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
 /** @brief Three-way compare of two integer-ish values through the bignum
  *         domain (-1/0/1). A float operand compares via double. */
 static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
-    /* A FLOAT or a RATIONAL operand cannot enter the integer bignum domain:
-     * vm_coerce_bignum() would materialise it from (int64_t)as_number(), which
-     * truncates a flonum and reads a rational's heap pointer as 0. Compare
-     * through doubles instead (as_number_vm covers every numeric tag). */
-    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT ||
-        a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) {
+    /* A FLOAT operand cannot enter the integer bignum domain: vm_coerce_bignum()
+     * would materialise it from (int64_t)as_number(), which truncates a flonum.
+     * Inexactness is contagious, so comparing through doubles is correct there. */
+    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
         double x = as_number_vm(vm, a);
         double y = as_number_vm(vm, b);
         return (x < y) ? -1 : (x > y) ? 1 : 0;
+    }
+    /* SW-18: a RATIONAL against a BIGNUM is EXACT vs EXACT.  Routing it through
+     * doubles made `(< (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3))` answer
+     * "equal" — both operands round to the same flonum.  Compare in the exact
+     * rational domain instead, which subsumes the integer case. */
+    if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) {
+        VmRational a_scratch, b_scratch;
+        const VmRational* ar = vm_coerce_rational(vm, a, &a_scratch);
+        const VmRational* br = vm_coerce_rational(vm, b, &b_scratch);
+        if (!ar || !br) return 0;
+        return vm_rational_compare_exact(&vm->heap.regions, ar, br);
     }
     VmBignum* ab = vm_coerce_bignum(vm, a);
     VmBignum* bb = vm_coerce_bignum(vm, b);
@@ -7192,10 +7268,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
     case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
+        if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da<db?da:db)); break; }
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
+        if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
         else if (a.type==VAL_RATIONAL) { vm_push(vm,a); vm_dispatch_native(vm,336); }
@@ -7740,102 +7816,88 @@ static void vm_dispatch_native(VM* vm, int fid) {
              *            (* 0 1/3) and answered the exact 0 — and (+ 0.5 1/3)
              *            answered 1/3.  Every mixed flonum/ratnum + - * / was
              *            wrong this way, in both operand orders.
-             *   BIGNUM — exact, but a bignum-over-int64 rational is outside
-             *            this VM's numeric tower (VmRational is int64/int64),
-             *            so it takes the same correctly-rounded inexact
-             *            fallback the int64-overflow case below already uses.
-             *            Reading it as a numerator answered 0, which also made
-             *            `(/ 1/3 <bignum>)` a spurious DIVIDE BY ZERO.
-             *            Filed: tests/vm_parity/found/bignum_exact_rational.esk. */
-            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
-                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+             *   BIGNUM — exact, and now carried EXACTLY: the rational
+             *            substrate is bignum-capable (SW-18/ESH-0105), so a
+             *            bignum operand stays on the exact path instead of
+             *            taking the correctly-rounded inexact fallback this
+             *            branch used to apply.  Reading it as a numerator
+             *            answered 0, which also made `(/ 1/3 <bignum>)` a
+             *            spurious DIVIDE BY ZERO.
+             *            Pinned: tests/vm_parity/found/bignum_exact_rational.esk. */
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT) {
                 double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
-                /* Exact-by-exact-zero stays fatal; with an inexact operand a
-                 * zero divisor is IEEE-754 (±inf.0 / +nan.0), as native. */
-                if (fid == 334 && y == 0.0 &&
-                    a_val.type != VAL_FLOAT && b_val.type != VAL_FLOAT) {
-                    fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
-                }
                 double r = (fid == 331) ? x + y : (fid == 332) ? x - y
                          : (fid == 333) ? x * y : x / y;
                 vm_push(vm, FLOAT_VAL(r)); break;
             }
-            VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
-            if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            /* Both operands are EXACT (fixnum, bignum or rational).  R7RS
+             * 6.2.2: the result must be exact too — never a double. */
+            VmRational a_scratch, b_scratch;
+            const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
+            const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
+            if (!a_r || !b_r) { vm->error = 1; break; }
             /* Exact division by an exact zero is fatal (native raises
-             * "rational division by zero").  It must be rejected BEFORE the
-             * overflow fallback below: vm_rational_div() also returns NULL for
-             * a zero divisor, and the fallback then evaluated the ADDITION
-             * formula, so `(/ 1/2 0)` silently produced 0.5. */
-            if (fid == 334 && b_r.num == 0) {
+             * "rational division by zero"), and must be rejected before the
+             * arithmetic so `(/ 1/2 0)` cannot silently produce 0.5. */
+            if (fid == 334 &&
+                (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
                 fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
             }
-            VmRational* result = NULL;
-            switch (fid) {
-                case 331: result = vm_rational_add(rat_arena, &a_r, &b_r); break;
-                case 332: result = vm_rational_sub(rat_arena, &a_r, &b_r); break;
-                case 333: result = vm_rational_mul(rat_arena, &a_r, &b_r); break;
-                case 334: result = vm_rational_div(rat_arena, &a_r, &b_r); break;
-            }
-            if (!result) {
-                /* int64 overflow after reduction — fall back to inexact, using
-                 * the fallback formula for the OPERATION ACTUALLY REQUESTED
-                 * (this used to add unconditionally, so an overflowing
-                 * subtraction/multiplication/division returned a sum). */
-                double x = (double)a_r.num / (double)a_r.denom;
-                double y = (double)b_r.num / (double)b_r.denom;
-                double fb = (fid == 331) ? x + y : (fid == 332) ? x - y
-                          : (fid == 333) ? x * y : x / y;
-                vm_push(vm, FLOAT_VAL(fb)); break;
-            }
-            if (result->denom == 1) { vm_push(vm, INT_VAL(result->num)); break; }
-            int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = result;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
+            char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
+                     : (fid == 333) ? '*' : '/';
+            VmRational* result =
+                vm_rational_arith_exact(&vm->heap.regions, a_r, b_r, rop);
+            /* NULL can no longer mean "too big" — the exact path has no size
+             * ceiling — so it is a genuine allocation failure. */
+            vm_push_rational_norm(vm, result);
+            break; }
         case 335: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_neg(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_neg_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, number_val_contagious1(v, -as_number_vm(vm, v))); break; }
         case 336: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_abs(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_abs_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, number_val_contagious1(v, fabs(as_number_vm(vm, v)))); break; }
         case 337: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) {
                 VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-                VmRational* res = vm_rational_inv(rat_arena, r);
+                /* SW-18: exact and bignum-capable; the result is pushed in
+                 * canonical form (integer when the denominator reduces to 1). */
+                VmRational* res = vm_rational_inv_exact(&vm->heap.regions, r);
                 if (!res) { vm_push(vm, NIL_VAL); break; }
-                int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-                vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = res;
-                vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr});
+                vm_push_rational_norm(vm, res);
             } else vm_push(vm, FLOAT_VAL(1.0 / as_number(v))); break; }
         case 338: case 339: { Value b_val = vm_pop(vm), a_val = vm_pop(vm);
             /* Same tag routing as 331-334: a FLOAT or BIGNUM operand cannot be
              * seeded into an int64 numerator, and truncating it there compared
              * the wrong value (`(rational<? 0.2 1/3)` compared 0 against 1/3). */
-            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT ||
-                a_val.type == VAL_BIGNUM || b_val.type == VAL_BIGNUM) {
+            if (a_val.type == VAL_FLOAT || b_val.type == VAL_FLOAT) {
                 double x = as_number_vm(vm, a_val), y = as_number_vm(vm, b_val);
                 if (fid == 338) vm_push(vm, INT_VAL(x < y ? -1 : x > y ? 1 : 0));
                 else vm_push(vm, BOOL_VAL(x == y));
                 break;
             }
-            VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
-            if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            if (fid == 338) vm_push(vm, INT_VAL(vm_rational_compare(&a_r, &b_r)));
-            else vm_push(vm, BOOL_VAL(vm_rational_equal(&a_r, &b_r)));
+            /* SW-18: a BIGNUM operand used to be compared through doubles, so
+             * two exact values differing by less than one ULP of their
+             * magnitude compared EQUAL.  Exact operands compare exactly. */
+            VmRational a_scratch, b_scratch;
+            const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
+            const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
+            if (!a_r || !b_r) { vm->error = 1; break; }
+            if (fid == 338)
+                vm_push(vm, INT_VAL(vm_rational_compare_exact(&vm->heap.regions, a_r, b_r)));
+            else vm_push(vm, BOOL_VAL(vm_rational_equal_exact(a_r, b_r)));
             break; }
         case 340: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, FLOAT_VAL(vm_rational_to_double(r))); }
@@ -7847,22 +7909,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
         case 342: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_floor(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_floor_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_floor(r))); }
             else vm_push(vm, INT_VAL((int64_t)floor(as_number(v)))); break; }
         case 343: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_ceil(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_ceil_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_ceil(r))); }
             else vm_push(vm, INT_VAL((int64_t)ceil(as_number(v)))); break; }
         case 344: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_truncate(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_truncate_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_truncate(r))); }
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
         case 345: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_round(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: rounding a big rational can itself exceed int64, so the
+                 * exact result is produced in the bignum domain and demoted only
+                 * when it fits. */
+                if (r->is_big) vm_push_bignum_norm(vm, vm_rational_round_bn(&vm->heap.regions, r));
+                else vm_push(vm, INT_VAL(vm_rational_round(r))); }
             else vm_push(vm, INT_VAL((int64_t)vm_round_half_even(as_number(v)))); break; }
         case 346: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_numerator(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: a big rational's half is a bignum, not an int64. */
+                if (r->is_big) vm_push_bignum_norm(vm, r->big_num);
+                else vm_push(vm, INT_VAL(vm_rational_numerator(r))); }
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
         case 347: { Value v = vm_pop(vm);
-            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_denominator(r))); }
+            if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                /* SW-18: a big rational's half is a bignum, not an int64. */
+                if (r->is_big) vm_push_bignum_norm(vm, r->big_den);
+                else vm_push(vm, INT_VAL(vm_rational_denominator(r))); }
             else vm_push(vm, INT_VAL(1)); break; }
         case 348: { Value b_v = vm_pop(vm), a_v = vm_pop(vm);
             vm_push(vm, INT_VAL(vm_rational_gcd((int64_t)as_number(a_v), (int64_t)as_number(b_v)))); break; }
@@ -13507,11 +13595,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
-    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
-    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
-    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
-    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
-    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >= as_number_vm(vm,b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) == as_number_vm(vm,b))); break; } /* = */
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */
