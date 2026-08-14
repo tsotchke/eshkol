@@ -47,13 +47,28 @@ fi
 
 otool -L "$BIN" | grep -q '/Accelerate\.framework/' || fail "eshkol-run is not linked against Accelerate"
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ozaki-certification.XXXXXX")"
-cleanup_tmp() {
-    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
-        rm -rf "$TMP_DIR"
-    fi
-}
-trap cleanup_tmp EXIT
+if [ -n "${ESHKOL_OZAKI_WORK_DIR:-}" ]; then
+    case "$ESHKOL_OZAKI_WORK_DIR" in
+        /*) ;;
+        *) fail "ESHKOL_OZAKI_WORK_DIR must be an absolute path" ;;
+    esac
+    [ ! -e "$ESHKOL_OZAKI_WORK_DIR" ] && [ ! -L "$ESHKOL_OZAKI_WORK_DIR" ] || \
+        fail "ESHKOL_OZAKI_WORK_DIR already exists: $ESHKOL_OZAKI_WORK_DIR"
+    OZAKI_WORK_PARENT="$(dirname "$ESHKOL_OZAKI_WORK_DIR")"
+    [ -d "$OZAKI_WORK_PARENT" ] || \
+        fail "ESHKOL_OZAKI_WORK_DIR parent does not exist: $OZAKI_WORK_PARENT"
+    mkdir "$ESHKOL_OZAKI_WORK_DIR" || \
+        fail "could not create ESHKOL_OZAKI_WORK_DIR: $ESHKOL_OZAKI_WORK_DIR"
+    TMP_DIR="$ESHKOL_OZAKI_WORK_DIR"
+else
+    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ozaki-certification.XXXXXX")"
+    cleanup_tmp() {
+        if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
+            rm -rf "$TMP_DIR"
+        fi
+    }
+    trap cleanup_tmp EXIT
+fi
 JIT_CACHE_BLAS_DIR="$TMP_DIR/jit-cache-blas"
 JIT_CACHE_EXACT_DIR="$TMP_DIR/jit-cache-exact"
 mkdir -p "$JIT_CACHE_BLAS_DIR" "$JIT_CACHE_EXACT_DIR"

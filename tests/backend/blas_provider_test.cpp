@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -81,6 +82,17 @@ int main() {
     daxpy(3, 0.5, sx, 2, sy, 2);
     const double expected_sy[] = {5, 7, 9};
     ok = expect_vector("daxpy stride", sy, expected_sy, 3, 2) && ok;
+    constexpr size_t calibration_dimension = 192;
+    const double calibration_expected = static_cast<double>(calibration_dimension);
+    std::vector<double> large_a(calibration_dimension * calibration_dimension, 1.0);
+    std::vector<double> large_b(calibration_dimension * calibration_dimension, 1.0);
+    std::vector<double> large_c(calibration_dimension * calibration_dimension, 0.0);
+    matmul(large_a.data(), large_b.data(), large_c.data(), calibration_dimension,
+           calibration_dimension, calibration_dimension);
+    const double calibration_actual[] = {large_c.front(), large_c.back()};
+    const double calibration_expected_values[] = {calibration_expected, calibration_expected};
+    ok = expect_vector("matmul calibration-sized result", calibration_actual,
+                       calibration_expected_values, 2) && ok;
 
     if (!ok) return 1;
     std::printf("BLAS provider (%s): PASS\n", getBackendName());
