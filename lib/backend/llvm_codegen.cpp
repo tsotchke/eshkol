@@ -39095,36 +39095,27 @@ private:
         // Multiple arguments: build improper list where last element is the terminal
         // (list* 1 2 3 4) => (1 . (2 . (3 . 4)))  (4 is terminal, not null)
         
-        // Start with the last element as terminal
-        Value* result = codegenAST(&op->call_op.variables[op->call_op.num_vars - 1]);
-        if (!result) return ConstantInt::get(int64_type, 0);
+        // Start with the last element as terminal.  Keep the full tagged value
+        // here: a proper-list terminal is already a HEAP_PTR tagged_value, and
+        // reducing it through detectValueType() would reclassify its payload as
+        // an INT64 before storing the cdr.
+        Value* result_tagged = ensureTaggedValue(
+            codegenAST(&op->call_op.variables[op->call_op.num_vars - 1]));
         
         // Build cons chain from second-to-last element backwards to first
-        bool consed = false;
         for (int64_t i = op->call_op.num_vars - 2; i >= 0; i--) {
             Value* element = codegenAST(&op->call_op.variables[i]);
             if (element) {
-                // Create cons cell: (element . result) with type preservation
-                TypedValue element_typed = detectValueType(element);
-                TypedValue result_typed = detectValueType(result);
-                result = codegenTaggedArenaConsCell(element_typed, result_typed);
-                consed = true;
+                // Create the cons cell from complete tagged values so both the
+                // element and the terminal retain their runtime type tags.
+                Value* element_tagged = ensureTaggedValue(element);
+                Value* cons_cell = codegenTaggedArenaConsCellFromTaggedValue(
+                    element_tagged, result_tagged);
+                result_tagged = packPtrToTaggedValue(cons_cell, ESHKOL_VALUE_HEAP_PTR);
             }
         }
 
-        // codegenTaggedArenaConsCell returns a raw i64 (PtrToInt of the cons
-        // cell pointer). Callers like `(define x (list* ...))` route the return
-        // value through ensureTaggedValue which tags any raw i64 as INT64, not
-        // HEAP_PTR. That leaves @x holding an INT64 tag over the pointer bits
-        // and `(car x)` correctly rejects it as "not a pair". Lift the result
-        // to a properly tagged HEAP_PTR struct so downstream conversions keep
-        // the cons identity. (Matches cons/allocConsCell which packs HEAP_PTR.)
-        if (consed) {
-            Value* result_ptr = builder->CreateIntToPtr(result, ptr_type);
-            return tagged_->packHeapPtr(result_ptr);
-        }
-
-        return result;
+        return result_tagged;
     }
 
     // Production implementation: Acons (association constructor)

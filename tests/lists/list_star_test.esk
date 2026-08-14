@@ -4,6 +4,14 @@
 
 (require stdlib)
 
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
+
 (display "Testing list* function:")
 (newline)
 
@@ -29,6 +37,8 @@
 (define tail-after-third (cdr (cdr (cdr improper-list))))
 (display "Terminal (should be 99): ") (display tail-after-third)
 (newline)
+(check "list* scalar terminal stays scalar" 99 tail-after-third)
+(check "list* scalar terminal is not a pair" #f (pair? tail-after-third))
 
 ;; Test list* with proper list terminal
 (define mixed-list (list* 10 20 (list 30 40)))
@@ -38,8 +48,14 @@
 (newline)
 (display "Second: ") (display (cadr mixed-list))
 (newline)
+(define proper-list-terminal (cdr (cdr mixed-list)))
+(check "list* proper-list terminal remains a pair" #t (pair? proper-list-terminal))
 (display "Third: ") (display (caddr mixed-list))
 (newline)
+(check "list* direct caddr reaches proper-list terminal" 30 (caddr mixed-list))
+(check "list* explicit car/cdr reaches proper-list terminal"
+       30
+       (car (cdr (cdr mixed-list))))
 
 (display "List* test completed!")
 (newline)
