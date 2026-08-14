@@ -376,6 +376,18 @@ int main(int argc, char** argv) {
                          "cache-disabled package JIT reported a module-loading failure",
                          "package verifier fails closed on JIT module diagnostics");
 
+    // ESH-0214e's mutating-loop nursery lowering emits these two runtime calls.
+    // They must be in the manual map: process-wide lookup does not expose static
+    // runtime members from Windows hosts, and the package cache-disabled smoke
+    // intentionally makes that omission fatal.
+    ok = ok &&
+         expect_contains(repl_jit,
+                         "ADD_SYMBOL(region_escape_tagged_value_into);",
+                         "JIT registers the nursery result-escape helper") &&
+         expect_contains(repl_jit,
+                         "ADD_SYMBOL(eshkol_iter_nursery_recycle);",
+                         "JIT registers the nursery back-edge recycle helper");
+
     ok = ok &&
          expect_contains(repl_jit,
                          "static void configure_jit_target_machine_builder(",

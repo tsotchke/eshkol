@@ -1018,6 +1018,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_pop_scope);
     ADD_SYMBOL(arena_commit_scope);
     ADD_SYMBOL(eshkol_arena_iter_scope_end);
+    // ESH-0214e nursery lowering emits both helpers.  Static Windows hosts do
+    // not make them discoverable through the process symbol generator, so keep
+    // this explicit resolver closure in lockstep with the code generator.
+    ADD_SYMBOL(region_escape_tagged_value_into);
+    ADD_SYMBOL(eshkol_iter_nursery_recycle);
     ADD_SYMBOL(arena_reset);
     ADD_SYMBOL(arena_get_used_memory);
     ADD_SYMBOL(arena_get_total_memory);
