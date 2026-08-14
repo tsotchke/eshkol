@@ -7388,22 +7388,64 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
         }
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
-    /* SW-32: min/max must ORDER EXACTLY whenever both operands are exact.
-     * The vm_either_exact_wide() guard alone covers bignums and rationals but
-     * NOT two plain fixnums, which fell through to the double path where
-     * everything past 2^53 collapses: (max 9007199254740993 9007199254740992)
-     * answered the SMALLER value because both operands round to one flonum.
-     * Native had the mirror-image bug in its own copy of this dispatch. */
-    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+    /* SW-40: min/max are SELECTION operators — the result IS one of the
+     * operands — so a forward-mode derivative through them must carry the
+     * SELECTED operand's tangent. Native ArithmeticCodegen::min/max open with
+     * exactly this arm (see their "DUAL NUMBER PATH" blocks: promote both
+     * sides, compare primals, pack the chosen dual). The VM had no such arm:
+     * both operands fell through to as_number_vm(), which returns a dual's
+     * primal and DISCARDS its tangent, so the result came back a bare flonum
+     * and every derivative through min/max read 0 while the primal stayed
+     * correct. A zero derivative is the worst shape of silent-wrong for an AD
+     * system: it is indistinguishable from a legitimate stationary point.
+     *
+     * Tie-breaking mirrors native exactly — FCmpOLE for min and FCmpOGE for
+     * max both select the LEFT operand when the primals are equal, which is
+     * also what the double path below does.
+     *
+     * The hyper-dual arm is the second-order twin (VAL_HYPER_DUAL is the VM's
+     * {f,f1,f2,f12} carrier); lbl_ABS already treats the two carriers this way
+     * and min/max now agree with it. */
+    case 33: case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        const int want_max = (fid == 34);
+        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) {
+            VmHyperDual ah = {as_number_vm(vm,a), 0.0, 0.0, 0.0};
+            VmHyperDual bh = {as_number_vm(vm,b), 0.0, 0.0, 0.0};
+            if (a.type == VAL_HYPER_DUAL) ah = *(VmHyperDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_HYPER_DUAL) bh = *(VmHyperDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            const VmHyperDual* pick = want_max ? ((ah.f >= bh.f) ? &ah : &bh)
+                                               : ((ah.f <= bh.f) ? &ah : &bh);
+            VmHyperDual* out = vm_hd_make(&vm->heap.regions, pick->f, pick->f1, pick->f2, pick->f12);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, out);
+            break;
+        }
+        if (a.type == VAL_DUAL || b.type == VAL_DUAL) {
+            VmDual ad = {as_number_vm(vm,a), 0.0};
+            VmDual bd = {as_number_vm(vm,b), 0.0};
+            if (a.type == VAL_DUAL) ad = *(VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_DUAL) bd = *(VmDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            const VmDual* pick = want_max ? ((ad.primal >= bd.primal) ? &ad : &bd)
+                                          : ((ad.primal <= bd.primal) ? &ad : &bd);
+            VmDual* out = vm_dual_make(&vm->heap.regions, pick->primal, pick->tangent);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, out);
+            break;
+        }
+        /* Exact and double paths below are MASTER's, verbatim in behaviour:
+         * the both-exact ordering tier (#439, SW-32 — min/max agreeing with the
+         * engine's own `<`) in front of the exact-wide tier (#432, SW-18/SW-28),
+         * then the double fallback. The dual arms above sit in FRONT of all of
+         * them, so the changes compose: a dual operand never reaches an exact
+         * tier, and an exact operand never reaches a dual arm. */
         if (vm_tag_is_exact_number(a) && vm_tag_is_exact_number(b)) {
-            vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
-        if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da<db?da:db)); break; }
-    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (vm_tag_is_exact_number(a) && vm_tag_is_exact_number(b)) {
-            vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
-        if (vm_either_exact_wide(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
-        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val_contagious(a,b,da>db?da:db)); break; }
+            int cmp = vm_bignum_compare_vals(vm,a,b);
+            vm_push(vm, (want_max ? (cmp >= 0) : (cmp <= 0)) ? a : b); break; }
+        if (vm_either_exact_wide(a,b)) {
+            int cmp = vm_bignum_compare_vals(vm,a,b);
+            vm_push(vm, (want_max ? (cmp >= 0) : (cmp <= 0)) ? a : b); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b);
+        vm_push(vm, number_val_contagious(a,b, want_max ? (da>db?da:db) : (da<db?da:db))); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
         else if (a.type==VAL_RATIONAL) { vm_push(vm,a); vm_dispatch_native(vm,336); }
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
