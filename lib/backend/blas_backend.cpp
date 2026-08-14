@@ -10,6 +10,11 @@
 #include "eshkol/logger.h"
 #include <cstdlib>
 
+#ifdef ESHKOL_BLAS_ENABLED
+#include "blas_peak_calibration.h"
+#include <chrono>
+#endif
+
 // Forward declarations for arena allocation (avoid full include to prevent type conflicts with XLA stubs)
 extern "C" {
     typedef struct arena arena_t;
@@ -66,12 +71,19 @@ struct CostModelParams {
     double simd_peak_gflops = 25;        // Peak throughput
     double simd_efficiency_scale = 1000; // Saturates quickly
 
-    // Calibration state
-    bool calibrated = false;
-    int sample_count = 0;
 };
 
 static CostModelParams g_cost_model;
+
+#ifdef ESHKOL_BLAS_ENABLED
+static eshkol::blas::detail::PeakCalibration g_blas_peak(
+    g_cost_model.blas_peak_gflops);
+
+// Ignore timer noise and undersaturated skinny GEMMs; calibration samples must
+// come from sufficiently large, well-shaped production BLAS work.
+constexpr size_t kCalibrationMinimumDimension = 128;
+constexpr double kCalibrationMinimumFlops = 10000000.0;
+#endif
 
 // GPU matmul threshold: override via ESHKOL_GPU_MATMUL_THRESHOLD env var
 // Default 1B elements — GPU only for super-massive matrices
@@ -111,7 +123,11 @@ inline DispatchCost estimate_matmul_cost(uint64_t M, uint64_t K, uint64_t N) {
 
     // BLAS: good for medium-large matrices, has fixed overhead
     double blas_efficiency = std::min(1.0, elements / p.blas_efficiency_scale);
-    double blas_compute = flops / (p.blas_peak_gflops * blas_efficiency * 1e9) * 1e9;
+    double blas_peak = p.blas_peak_gflops;
+#ifdef ESHKOL_BLAS_ENABLED
+    blas_peak = g_blas_peak.effective();
+#endif
+    double blas_compute = flops / (blas_peak * blas_efficiency * 1e9) * 1e9;
     double blas_ns = p.blas_overhead_ns + blas_compute;
 
     // GPU: high overhead but massive parallelism for large matrices
@@ -169,6 +185,9 @@ struct CostModelInitializer {
     CostModelInitializer() {
         if (const char* env = std::getenv("ESHKOL_BLAS_PEAK_GFLOPS")) {
             g_cost_model.blas_peak_gflops = std::atof(env);
+#ifdef ESHKOL_BLAS_ENABLED
+            g_blas_peak.override(g_cost_model.blas_peak_gflops);
+#endif
         }
         if (const char* env = std::getenv("ESHKOL_GPU_PEAK_GFLOPS")) {
             g_cost_model.gpu_peak_gflops = std::atof(env);
@@ -256,6 +275,15 @@ void matmul(const double* A, const double* B, double* C,
     // Simple C = A * B (no transpose, alpha=1, beta=0)
     // A is M x K, B is K x N, C is M x N
     // All row-major
+    const double flops = 2.0 * static_cast<double>(M) *
+                         static_cast<double>(K) * static_cast<double>(N);
+    const bool calibrate = g_blas_peak.enabled() &&
+                           M >= kCalibrationMinimumDimension &&
+                           K >= kCalibrationMinimumDimension &&
+                           N >= kCalibrationMinimumDimension &&
+                           flops >= kCalibrationMinimumFlops;
+    const auto start = calibrate ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
                 1.0,  // alpha
@@ -263,6 +291,13 @@ void matmul(const double* A, const double* B, double* C,
                 B, static_cast<int>(N),   // ldb = N for row-major B[K][N]
                 0.0,  // beta
                 C, static_cast<int>(N));  // ldc = N for row-major C[M][N]
+    if (calibrate) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        if (seconds > 0.0) {
+            g_blas_peak.record(flops / seconds / 1e9);
+        }
+    }
 }
 
 // Matmul backward: given C = A @ B, accumulate gradients dA and dB
