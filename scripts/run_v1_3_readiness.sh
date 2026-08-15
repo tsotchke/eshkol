@@ -7,15 +7,27 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 ICC_BIN="${ICC_BIN:-/Users/tyr/Desktop/infinite_context_coder/bin/icc}"
 ICC_REPO="${ICC_REPO:-eshkol_lang}"
-TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
+if eshkol_durable_enabled; then
+  READINESS_WORK="$(eshkol_durable_prepare_dir v1-3-readiness)"
+  TRACE_DIR="${TRACE_DIR:-$READINESS_WORK/traces}"
+  mkdir "$TRACE_DIR"
+else
+  TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
+fi
 ARCH_MODEL="${ARCH_MODEL:-.icc/architecture-model.yaml}"
 ARCH_TRACE_GLOB="${ARCH_TRACE_GLOB:-.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl}"
-READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
+if eshkol_durable_enabled; then
+  READINESS_JSON="$(eshkol_durable_file "$READINESS_WORK" readiness.json)"
+else
+  READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
+fi
 : "${READINESS_JSON:?READINESS_JSON must be set}"
-trap 'rm -f -- "${READINESS_JSON:?}"' EXIT
+if ! eshkol_durable_enabled; then trap 'rm -f -- "${READINESS_JSON:?}"' EXIT; fi
 
 BUILD_DIR="${BUILD_DIR:-build}" TRACE_DIR="$TRACE_DIR" \
   scripts/run_mono_equiv_ad_taylor_gate.sh

@@ -5,7 +5,14 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    LANGUAGE_COVERAGE_WORK="$(eshkol_durable_prepare_dir language-coverage)"
+    TRACE_DIR=${ICC_TRACE_DIR:-"$LANGUAGE_COVERAGE_WORK/traces"}
+    mkdir -p "$TRACE_DIR"
+else
+    TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
+fi
 TRACE_FILE=${LANGUAGE_COVERAGE_TRACE:-"$TRACE_DIR/language_surface_coverage.jsonl"}
 RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS:-}
 EXTRA_RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_EXTRA_RUNTIME_TRACE_DIRS:-}
@@ -81,10 +88,17 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
     eshkol_test_toolchain_snapshot "$BUILD_DIR_PATH" core
     eshkol_test_toolchain_snapshot "$QUANTUM_BUILD_DIR_PATH" quantum
 
-    GENERATED_TRACE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-language-coverage.XXXXXX")
+    if eshkol_durable_enabled; then
+        GENERATED_TRACE_ROOT="$LANGUAGE_COVERAGE_WORK/generated-traces"
+        mkdir "$GENERATED_TRACE_ROOT"
+    else
+        GENERATED_TRACE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-language-coverage.XXXXXX")
+    fi
     cleanup() {
         local rc=$?
-        if [ "${KEEP_LANGUAGE_COVERAGE_TRACES:-0}" = 1 ] || [ "$rc" -ne 0 ]; then
+        if eshkol_durable_enabled; then
+            echo "Kept durable language-coverage traces: $GENERATED_TRACE_ROOT"
+        elif [ "${KEEP_LANGUAGE_COVERAGE_TRACES:-0}" = 1 ] || [ "$rc" -ne 0 ]; then
             echo "Kept fresh language-coverage traces: $GENERATED_TRACE_ROOT"
         else
             rm -rf "$GENERATED_TRACE_ROOT"

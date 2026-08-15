@@ -54,7 +54,13 @@ export LANG=C
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
-TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)"
+    TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
+else
+    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+fi
 TRACE_FILE="$TRACE_DIR/vm_parity.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?TRACE_FILE must be set}"
@@ -145,9 +151,14 @@ if [ ! -x "$ESHKOL_RUN" ] || [ ! -x "$VM_BIN" ]; then
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-parity.XXXXXX")"
+if eshkol_durable_enabled; then
+    WORK="$VM_PARITY_WORK/work"
+    mkdir "$WORK"
+else
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-parity.XXXXXX")"
+fi
 : "${WORK:?WORK must be set}"
-trap 'rm -rf "$WORK"' EXIT
+if ! eshkol_durable_enabled; then trap 'rm -rf "$WORK"' EXIT; fi
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 

@@ -63,6 +63,7 @@ generative_differential_oracle probe in scripts/run_icc_smoke.sh.
 Usage:
   scripts/run_generative_differential.py [--seed N] [--count K] [--depth D]
       [--baseline FILE] [--smoke] [--no-vm] [--timeout SECS] [--jobs N]
+      [--workdir DIR]
 """
 
 import argparse
@@ -90,6 +91,19 @@ CHIBI_PROLOGUE = ("(import (scheme base) (scheme write) (scheme char) "
 # crash/timeout is captured as a normal result. Populate only if a specific
 # generated program is observed to defeat the timeout.
 KNOWN_CRASHERS = {}
+
+
+def require_empty_workdir(path):
+    """Validate a caller-owned durable directory before writing evidence."""
+    if not os.path.isabs(path):
+        raise ValueError("--workdir must be an absolute path")
+    if os.path.islink(path):
+        raise ValueError("--workdir must not be a symlink: %s" % path)
+    if not os.path.isdir(path):
+        raise ValueError("--workdir must be a caller-created directory: %s" % path)
+    if os.listdir(path):
+        raise ValueError("--workdir must be empty: %s" % path)
+    return path
 
 
 # VM banner / loader / compiler-noise lines to drop before comparison. Mirrors
@@ -180,7 +194,10 @@ class Harness:
         self.vm_bin = vm
         self.chibi = shutil.which("chibi-scheme")
         self.timeout = args.timeout
-        self.work = tempfile.mkdtemp(prefix="eshkol-gendiff.")
+        self.durable_workdir = args.workdir is not None
+        self.work = (require_empty_workdir(args.workdir)
+                     if self.durable_workdir
+                     else tempfile.mkdtemp(prefix="eshkol-gendiff."))
         self.esk = os.path.join(self.work, "prog.esk")
         self.scm = os.path.join(self.work, "prog.scm")
         self.bin = os.path.join(self.work, "prog.bin")
@@ -190,11 +207,13 @@ class Harness:
         # Which oracles participate.
         self.use_vm = (not args.no_vm) and os.path.exists(self.vm_bin)
         self.use_chibi = (not args.no_chibi) and self.chibi is not None
-        self.art = os.path.join(REPO_ROOT, "artifacts", "generative-diff")
+        self.art = (self.work if self.durable_workdir
+                    else os.path.join(REPO_ROOT, "artifacts", "generative-diff"))
         self.diverg_dir = os.path.join(self.art, "divergences")
 
     def cleanup(self):
-        shutil.rmtree(self.work, ignore_errors=True)
+        if not self.durable_workdir:
+            shutil.rmtree(self.work, ignore_errors=True)
 
     # ---- individual oracle runners ---------------------------------------
     def run_chibi(self, body):
@@ -221,22 +240,24 @@ class Harness:
         r = OracleResult("aot-%s" % opt)
         with open(self.esk, "w") as fh:
             fh.write(body)
-        if os.path.exists(self.bin):
+        bin_path = (os.path.join(self.work, "prog.%s.bin" % opt)
+                    if self.durable_workdir else self.bin)
+        if not self.durable_workdir and os.path.exists(bin_path):
             os.remove(self.bin)
         crc, cout, cerr, cto = _run(
-            [self.eshkol, "-%s" % opt, self.esk, "-o", self.bin], self.timeout)
+            [self.eshkol, "-%s" % opt, self.esk, "-o", bin_path], self.timeout)
         if cto:
             r.timed_out = True
             r.err = cerr
             return r
-        if crc != 0 or not os.path.exists(self.bin):
+        if crc != 0 or not os.path.exists(bin_path):
             r.compile_failed = True
             r.rc = crc
             r.err = cerr + cout
             return r
-        r.rc, r.out, r.err, r.timed_out = _run([self.bin], self.timeout)
-        if os.path.exists(self.bin):
-            os.remove(self.bin)
+        r.rc, r.out, r.err, r.timed_out = _run([bin_path], self.timeout)
+        if not self.durable_workdir and os.path.exists(bin_path):
+            os.remove(bin_path)
         return r
 
     def run_vm(self, body):
@@ -246,7 +267,7 @@ class Harness:
             return r
         with open(self.esk, "w") as fh:
             fh.write(body)
-        if os.path.exists(self.eskb):
+        if not self.durable_workdir and os.path.exists(self.eskb):
             os.remove(self.eskb)
         crc, cout, cerr, cto = _run(
             [self.eshkol, "--profile", "hosted-vm", "--emit-eskb", self.eskb, self.esk],
@@ -426,8 +447,16 @@ def main():
     ap.add_argument("--smoke", action="store_true",
                     help="fast reduced run (seed=1234 count=12) for CI probes")
     ap.add_argument("--trace-dir", default=os.path.join(REPO_ROOT, "scripts", "icc_traces"))
+    ap.add_argument("--workdir",
+                    help="empty caller-created absolute directory retaining run artifacts")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.workdir is not None:
+        try:
+            args.workdir = require_empty_workdir(args.workdir)
+        except ValueError as exc:
+            ap.error(str(exc))
 
     if args.smoke:
         args.count = min(args.count, 12)
@@ -444,7 +473,8 @@ def main():
     open(trace_file, "w").close()
 
     h = Harness(args)
-    shutil.rmtree(h.diverg_dir, ignore_errors=True)
+    if not h.durable_workdir:
+        shutil.rmtree(h.diverg_dir, ignore_errors=True)
     os.makedirs(h.diverg_dir, exist_ok=True)
 
     oracles = ["jit", "aot-O0", "aot-O2"]

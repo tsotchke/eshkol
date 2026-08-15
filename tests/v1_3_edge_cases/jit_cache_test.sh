@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+
 ESHKOL_RUN="${1:-${ESHKOL_RUN:-}}"
 if [ -z "$ESHKOL_RUN" ]; then
     if [ -x "./build/eshkol-run" ]; then
@@ -18,8 +21,12 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 1
 fi
 
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+if eshkol_durable_enabled; then
+    tmpdir="$(eshkol_durable_prepare_dir jit-cache-test)"
+else
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+fi
 
 src="$tmpdir/cache.esk"
 cache="$tmpdir/cache"
@@ -54,7 +61,7 @@ fi
 # The key previously hashed only the entry file, so editing a transitively
 # loaded file left the key unchanged and `-r` re-ran a STALE cached binary.
 # entry.esk loads mid.esk which loads deep.esk; we edit the *deepest* file.
-depdir="$(mktemp -d)"
+if eshkol_durable_enabled; then depdir="$tmpdir/dependency"; mkdir "$depdir"; else depdir="$(mktemp -d)"; fi
 mkdir -p "$depdir/cache"
 printf '(define (deep-msg) "DEP_LOADED_ONE")\n' > "$depdir/deep.esk"
 printf '(load "deep.esk")\n(define (mid-msg) (deep-msg))\n' > "$depdir/mid.esk"
@@ -77,12 +84,12 @@ ESHKOL_JIT_CACHE_DIR="$depdir/cache" ESHKOL_JIT_CACHE_TRACE=1 \
     "$ESHKOL_RUN" -r "$depdir/entry.esk" > "$depdir/dout3" 2> "$depdir/derr3"
 grep -q '\[jit-cache\] miss ' "$depdir/derr3" || { echo "FAIL: editing a loaded dependency did not invalidate the cache (ESH-0183 regression)" >&2; exit 1; }
 grep -q '^DEP_LOADED_TWO$' "$depdir/dout3" || { echo "FAIL: STALE output after dependency edit — cache shipped old code (ESH-0183 regression)" >&2; exit 1; }
-rm -rf "$depdir"
+if ! eshkol_durable_enabled; then rm -rf "$depdir"; fi
 
 # ── ESH-0183: the AOT (`-o`/--emit-object) path must reflect a fresh edit ─────
 # A single fresh compile is uncached, but guard against any future object cache
 # that could resurrect the "stale object on source edit" report.
-aotdir="$(mktemp -d)"
+if eshkol_durable_enabled; then aotdir="$tmpdir/aot"; mkdir "$aotdir"; else aotdir="$(mktemp -d)"; fi
 printf '(define (aot-fn) (display "AOT_MARK_ORIG") (newline))\n(aot-fn)\n' > "$aotdir/a.esk"
 "$ESHKOL_RUN" --emit-object -o "$aotdir/a.o" "$aotdir/a.esk" > "$aotdir/aot1.log" 2>&1 || { echo "FAIL: AOT compile 1 failed" >&2; cat "$aotdir/aot1.log" >&2; exit 1; }
 strings "$aotdir/a.o" | grep -q 'AOT_MARK_ORIG' || { echo "FAIL: AOT object 1 missing its own string" >&2; exit 1; }
@@ -90,6 +97,6 @@ strings "$aotdir/a.o" | grep -q 'AOT_MARK_ORIG' || { echo "FAIL: AOT object 1 mi
 printf '(define (aot-fn) (display "AOT_MARK_ORIG") (newline) (display "AOT_MARK_NEW_XYZ") (newline))\n(aot-fn)\n' > "$aotdir/a.esk"
 "$ESHKOL_RUN" --emit-object -o "$aotdir/a.o" "$aotdir/a.esk" > "$aotdir/aot2.log" 2>&1 || { echo "FAIL: AOT compile 2 failed" >&2; cat "$aotdir/aot2.log" >&2; exit 1; }
 strings "$aotdir/a.o" | grep -q 'AOT_MARK_NEW_XYZ' || { echo "FAIL: AOT object did not reflect the fresh edit (stale object regression)" >&2; exit 1; }
-rm -rf "$aotdir"
+if ! eshkol_durable_enabled; then rm -rf "$aotdir"; fi
 
 echo "PASS: jit_cache_test"

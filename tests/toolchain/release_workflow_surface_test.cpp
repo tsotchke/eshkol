@@ -86,8 +86,57 @@ int main(int argc, char** argv) {
     }
     const fs::path package_verifier_path =
         source_root / "scripts" / "verify_release_package.py";
+    const fs::path durable_work_root_path =
+        source_root / "scripts" / "lib" / "durable_work_root.sh";
+    const fs::path test_isolation_path =
+        source_root / "scripts" / "lib" / "test_isolation.sh";
+    const fs::path region_handle_rss_gate_path =
+        source_root / "tests" / "memory" / "region_handle_training_rss_test.sh";
+    const std::vector<fs::path> durable_transitive_gate_paths = {
+        source_root / "tests" / "toolchain" / "transitive_ffi_link_test.sh",
+        source_root / "tests" / "toolchain" / "ffi_boundary_fail_open_test.sh",
+        source_root / "tests" / "parallel" / "parallel_map_scope_reclaim_test.sh",
+        source_root / "tests" / "memory" / "vm_region_growth_watchdog_test.sh",
+        source_root / "tests" / "memory" / "iter_scope_partial_reclaim_test.sh",
+        source_root / "scripts" / "run_wasm_differential.sh",
+        source_root / "scripts" / "p8" / "p8_fault_injection.sh",
+        source_root / "scripts" / "p8" / "p8_mem_profiles.sh",
+    };
+    const std::vector<fs::path> durable_python_gate_paths = {
+        source_root / "scripts" / "run_generative_differential.py",
+        source_root / "scripts" / "run_surface_parity.py",
+        source_root / "scripts" / "run_engine_parity_coverage.py",
+        source_root / "scripts" / "run_value_position_sweep.py",
+    };
+    const std::vector<fs::path> canonical_gate_paths = {
+        source_root / "scripts" / "run_icc_smoke.sh",
+        source_root / "scripts" / "run_vm_parity.sh",
+        source_root / "scripts" / "run_v1_3_readiness.sh",
+        source_root / "scripts" / "run_language_coverage.sh",
+    };
     if (!fs::exists(package_verifier_path)) {
         return fail("verify_release_package.py not found under source root");
+    }
+    if (!fs::exists(durable_work_root_path) || !fs::exists(test_isolation_path) ||
+        !fs::exists(region_handle_rss_gate_path)) {
+        return fail("durable release-gate work-root helper not found under source root");
+    }
+    for (const fs::path& gate_path : canonical_gate_paths) {
+        if (!fs::exists(gate_path)) {
+            return fail("canonical release gate not found: " + gate_path.string());
+        }
+    }
+    for (const fs::path& gate_path : durable_transitive_gate_paths) {
+        if (!fs::exists(gate_path)) {
+            return fail("durable transitive release gate not found: " +
+                        gate_path.string());
+        }
+    }
+    for (const fs::path& gate_path : durable_python_gate_paths) {
+        if (!fs::exists(gate_path)) {
+            return fail("durable Python release gate not found: " +
+                        gate_path.string());
+        }
     }
     const fs::path repl_jit_path =
         source_root / "lib" / "repl" / "repl_jit.cpp";
@@ -123,6 +172,11 @@ int main(int argc, char** argv) {
     const std::string gpu_backend_verifier =
         read_file(gpu_backend_verifier_path);
     const std::string package_verifier = read_file(package_verifier_path);
+    const std::string durable_work_root = read_file(durable_work_root_path);
+    const std::string test_isolation = read_file(test_isolation_path);
+    const std::string region_handle_rss_gate = read_file(region_handle_rss_gate_path);
+    const std::string icc_smoke =
+        read_file(source_root / "scripts" / "run_icc_smoke.sh");
     const std::string repl_jit = read_file(repl_jit_path);
     const std::string jit_target_config = read_file(jit_target_config_path);
     const std::string jit_coff_memory_manager =
@@ -135,6 +189,86 @@ int main(int argc, char** argv) {
     const std::string windows_export_verifier =
         read_file(windows_export_verifier_path);
     bool ok = true;
+
+    ok = ok &&
+         expect_contains(durable_work_root, "ESHKOL_DURABLE_WORK_ROOT",
+                         "durable helper exposes the release work-root opt-in") &&
+         expect_contains(durable_work_root, "must be an absolute path",
+                         "durable helper rejects relative work roots") &&
+         expect_contains(durable_work_root, "durable evidence target already exists",
+                         "durable helper rejects stale gate evidence") &&
+         expect_contains(durable_work_root, "eshkol_durable_prepare_dir",
+                         "durable helper claims deterministic gate directories");
+    for (const fs::path& gate_path : canonical_gate_paths) {
+        const std::string gate = read_file(gate_path);
+        ok = ok &&
+             expect_contains(gate, "scripts/lib/durable_work_root.sh",
+                             gate_path.filename().string() +
+                                 " sources the durable work-root contract") &&
+             expect_contains(gate, "eshkol_durable_prepare_dir",
+                             gate_path.filename().string() +
+                                 " claims durable evidence when opted in");
+    }
+    const std::string language_coverage =
+        read_file(source_root / "scripts" / "run_language_coverage.sh");
+    ok = ok &&
+         expect_contains(language_coverage, "generated-traces",
+                         "language coverage keeps generated core and quantum traces below its durable gate") &&
+         expect_contains(language_coverage, "Kept durable language-coverage traces",
+                         "language coverage retains durable generated traces");
+    ok = ok &&
+         expect_contains(test_isolation, "test-isolation-${label}-${ESHKOL_TEST_REPO_TAG}",
+                         "test isolation claims a distinct durable child per suite label") &&
+         expect_contains(test_isolation, "retaining durable scratch directory",
+                         "test isolation retains durable release evidence") &&
+         expect_contains(test_isolation, "source \"$repo_root/scripts/lib/durable_work_root.sh\"",
+                         "test isolation uses the shared durable-root contract");
+    ok = ok &&
+         expect_contains(region_handle_rss_gate, "scripts/lib/durable_work_root.sh",
+                         "region-handle RSS gate sources the durable-root contract") &&
+         expect_contains(region_handle_rss_gate,
+                         "eshkol_durable_prepare_dir region-handle-training-rss",
+                         "region-handle RSS gate claims a dedicated durable child") &&
+         expect_contains(region_handle_rss_gate, "TIME_PROBE=\"$WORK/time-probe.log\"",
+                         "region-handle RSS probe log stays beneath durable evidence") &&
+         expect_contains(region_handle_rss_gate,
+                         "if ! eshkol_durable_enabled; then trap 'rm -rf \"$WORK\"' EXIT; fi",
+                         "region-handle RSS gate retains durable evidence");
+    for (const fs::path& gate_path : durable_transitive_gate_paths) {
+        const std::string gate = read_file(gate_path);
+        ok = ok &&
+             expect_contains(gate, "scripts/lib/durable_work_root.sh",
+                             gate_path.filename().string() +
+                                 " sources the durable-root contract") &&
+             expect_contains(gate, "eshkol_durable_prepare_dir",
+                             gate_path.filename().string() +
+                                 " claims a dedicated durable child");
+    }
+    for (const fs::path& gate_path : durable_python_gate_paths) {
+        const std::string gate = read_file(gate_path);
+        ok = ok &&
+             expect_contains(gate, "--workdir",
+                             gate_path.filename().string() +
+                                 " accepts caller-owned durable workdirs");
+    }
+    ok = ok &&
+         expect_contains(icc_smoke, "eshkol_durable_prepare_dir generative-differential",
+                         "ICC smoke claims generative-differential evidence") &&
+         expect_contains(icc_smoke, "eshkol_durable_prepare_dir surface-parity",
+                         "ICC smoke claims surface-parity evidence") &&
+         expect_contains(icc_smoke, "eshkol_durable_prepare_dir engine-parity",
+                         "ICC smoke claims engine-parity evidence") &&
+         expect_contains(icc_smoke, "eshkol_durable_prepare_dir value-position",
+                         "ICC smoke claims value-position evidence") &&
+         expect_contains(icc_smoke, "--workdir \"$workdir\"",
+                         "ICC smoke passes caller-owned workdirs to Python gates");
+    const std::string p8_escape =
+        read_file(source_root / "scripts" / "run_p8_escape.sh");
+    ok = ok &&
+         expect_contains(p8_escape, "if ! eshkol_durable_enabled; then rm -rf \"$WORK\"; fi",
+                         "P8 parent retains durable test-isolation work") &&
+         expect_contains(p8_escape, "eshkol_test_isolation_cleanup",
+                         "P8 parent preserves shared isolation cleanup semantics");
 
     ok = ok &&
          expect_contains(workflow, "name: Release",

@@ -163,6 +163,12 @@ eshkol_test_isolation_cleanup() {
     local dir="${ESHKOL_TEST_TMPDIR:-}"
     [ -n "$dir" ] || return 0
 
+    # Durable release evidence is caller-owned and intentionally retained.
+    if [ -n "${ESHKOL_DURABLE_WORK_ROOT:-}" ]; then
+        echo "test_isolation: retaining durable scratch directory: $dir" >&2
+        return 0
+    fi
+
     # Debugging escape hatch: keep this run's logs and binaries for inspection.
     # Off by default so the disk budget holds in CI.
     if [ -n "${ESHKOL_TEST_KEEP_TMPDIR:-}" ]; then
@@ -200,19 +206,31 @@ eshkol_test_isolation_init() {
 
     repo_root="$(eshkol_test_repo_root)" \
         || eshkol_test_isolation_fail "cannot resolve repo root"
-    root="$(eshkol_test_tmp_root)"
-    [ -d "$root" ] || mkdir -p -- "$root" 2>/dev/null || true
-    [ -d "$root" ] || eshkol_test_isolation_fail "temp root is not a directory: $root"
 
     ESHKOL_TEST_REPO_ROOT="$repo_root"
     ESHKOL_TEST_REPO_TAG="$(eshkol_test_digest "$repo_root")"
 
-    eshkol_test_isolation_prune_stale
+    if [ -n "${ESHKOL_DURABLE_WORK_ROOT:-}" ]; then
+        # The durable root is shared by top-level release gates.  Prefixing this
+        # child separates a suite's scratch from its parent gate (for example,
+        # language-coverage vs test-isolation-language-coverage-<repo-tag>).
+        # The helper rejects a repeated child, so stale evidence cannot be reused.
+        # shellcheck source=durable_work_root.sh
+        source "$repo_root/scripts/lib/durable_work_root.sh"
+        ESHKOL_TEST_TMPDIR="$(eshkol_durable_prepare_dir \
+            "test-isolation-${label}-${ESHKOL_TEST_REPO_TAG}")" \
+            || eshkol_test_isolation_fail "failed to claim durable scratch directory"
+    else
+        root="$(eshkol_test_tmp_root)"
+        [ -d "$root" ] || mkdir -p -- "$root" 2>/dev/null || true
+        [ -d "$root" ] || eshkol_test_isolation_fail "temp root is not a directory: $root"
+        eshkol_test_isolation_prune_stale
 
-    # mktemp -d gives the per-invocation uniqueness; the repo tag makes the name
-    # say which checkout it belongs to, so a stray directory is attributable.
-    ESHKOL_TEST_TMPDIR="$(mktemp -d "$root/eshkol-test.$label.$ESHKOL_TEST_REPO_TAG.XXXXXX")" \
-        || eshkol_test_isolation_fail "failed to create scratch directory under $root"
+        # mktemp -d gives the per-invocation uniqueness; the repo tag makes the name
+        # say which checkout it belongs to, so a stray directory is attributable.
+        ESHKOL_TEST_TMPDIR="$(mktemp -d "$root/eshkol-test.$label.$ESHKOL_TEST_REPO_TAG.XXXXXX")" \
+            || eshkol_test_isolation_fail "failed to create scratch directory under $root"
+    fi
 
     # Basename stays a.out on purpose — see the header note.
     ESHKOL_TEST_BIN="$ESHKOL_TEST_TMPDIR/a.out"

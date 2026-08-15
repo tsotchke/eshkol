@@ -58,7 +58,7 @@ Gate
 
 Usage:
   scripts/run_engine_parity_coverage.py [--update-baseline] [--corpus GLOB]
-                                        [--limit N] [--json OUT]
+                                        [--limit N] [--json OUT] [--workdir DIR]
 Exit: 0 green, 1 red, 2 misuse/environment.
 """
 
@@ -103,6 +103,19 @@ NOISE = re.compile(
 def die(msg):
     sys.stderr.write("run_engine_parity_coverage: %s\n" % msg)
     sys.exit(2)
+
+
+def require_empty_workdir(path):
+    """Validate a caller-owned durable directory before writing traces."""
+    if not os.path.isabs(path):
+        raise ValueError("--workdir must be an absolute path")
+    if os.path.islink(path):
+        raise ValueError("--workdir must not be a symlink: %s" % path)
+    if not os.path.isdir(path):
+        raise ValueError("--workdir must be a caller-created directory: %s" % path)
+    if os.listdir(path):
+        raise ValueError("--workdir must be empty: %s" % path)
+    return path
 
 
 def normalise(text):
@@ -168,7 +181,15 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--json", default=None)
+    ap.add_argument("--workdir",
+                    help="empty caller-created absolute directory retaining coverage traces")
     args = ap.parse_args()
+
+    if args.workdir is not None:
+        try:
+            args.workdir = require_empty_workdir(args.workdir)
+        except ValueError as exc:
+            die(str(exc))
 
     for path, what in ((ESHKOL_RUN, "eshkol-run"), (VM_BIN, "the VM binary")):
         if not os.path.exists(path):
@@ -224,7 +245,7 @@ def main():
     both_ran_now = []
     native_only, both_ran = 0, 0
 
-    for prog in programs:
+    for program_number, prog in enumerate(programs, 1):
         rel = os.path.relpath(prog, REPO)
         # Phase 1 — PRODUCTION conditions, no instrumentation: this decides
         # agreement.
@@ -241,14 +262,28 @@ def main():
                                      args.timeout)
         # Phase 2 — instrumented, for construct attribution only. Its output
         # is deliberately discarded.
-        with tempfile.TemporaryDirectory() as nd, \
-                tempfile.TemporaryDirectory() as vd:
+        if args.workdir:
+            nd = os.path.join(args.workdir,
+                              "program-%04d-native-trace" % program_number)
+            vd = os.path.join(args.workdir,
+                              "program-%04d-vm-trace" % program_number)
+            os.mkdir(nd)
+            os.mkdir(vd)
             run_engine([ESHKOL_RUN, "-r"], prog, nd,
                        {"ESHKOL_JIT_CACHE": "0"}, args.timeout)
             run_engine([VM_BIN], prog, vd,
                        {"ESHKOL_VM_NO_DISASM": "1"}, args.timeout)
             n_constructs = read_constructs(nd)
             v_constructs = read_constructs(vd)
+        else:
+            with tempfile.TemporaryDirectory() as nd, \
+                    tempfile.TemporaryDirectory() as vd:
+                run_engine([ESHKOL_RUN, "-r"], prog, nd,
+                           {"ESHKOL_JIT_CACHE": "0"}, args.timeout)
+                run_engine([VM_BIN], prog, vd,
+                           {"ESHKOL_VM_NO_DISASM": "1"}, args.timeout)
+                n_constructs = read_constructs(nd)
+                v_constructs = read_constructs(vd)
 
         if nrc != 0:
             # Native is the reference; a program native cannot run says
