@@ -49,7 +49,7 @@ done
 
 BUILD_DIR="$REPO_ROOT/build-reader-fuzz"
 if eshkol_durable_enabled; then
-    ARTIFACT_DIR="$(eshkol_durable_prepare_dir reader-fuzz)"
+    ARTIFACT_DIR="$(eshkol_durable_prepare_dir reader-fuzz)" || exit $?
 else
     ARTIFACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-reader-fuzz-artifacts.XXXXXX")
 fi

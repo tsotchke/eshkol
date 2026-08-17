@@ -56,7 +56,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 if eshkol_durable_enabled; then
-    VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)"
+    VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"

@@ -40,7 +40,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 if eshkol_durable_enabled; then
-    ADV_WORK="$(eshkol_durable_prepare_dir ad-adversarial)"
+    ADV_WORK="$(eshkol_durable_prepare_dir ad-adversarial)" || exit $?
 fi
 GEN_DIR="$REPO_ROOT/tests/ad_adversarial/generated"
 if eshkol_durable_enabled; then
@@ -205,7 +205,7 @@ for path in "$GEN_DIR"/ad_adv_*.esk; do
 
     if [ "$DO_AOT" -eq 1 ]; then
         if eshkol_durable_enabled; then
-            bin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${base}.bin")"
+            bin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${base}.bin")" || exit $?
         else
             bin="${TMPDIR:-/tmp}/ad_adv_${base}.bin"; rm -f "$bin"
         fi
@@ -244,7 +244,7 @@ if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" = "ON" ]; then
 
     if [ "$DO_AOT" -eq 1 ]; then
         if eshkol_durable_enabled; then
-            qbin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${quantum_base}.bin")"
+            qbin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${quantum_base}.bin")" || exit $?
         else
             qbin="${TMPDIR:-/tmp}/ad_adv_${quantum_base}.bin"; rm -f "$qbin"
         fi

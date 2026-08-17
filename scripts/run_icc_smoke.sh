@@ -24,7 +24,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 if eshkol_durable_enabled; then
-    ESHKOL_ICC_WORK="$(eshkol_durable_prepare_dir icc-smoke)"
+    ESHKOL_ICC_WORK="$(eshkol_durable_prepare_dir icc-smoke)" || exit $?
 fi
 if eshkol_durable_enabled; then
     TRACE_DIR="${TRACE_DIR:-$ESHKOL_ICC_WORK/traces}"

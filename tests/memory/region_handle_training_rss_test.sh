@@ -72,7 +72,7 @@ done
 
 # Detect the peak-RSS-reporting `time` flavor (macOS BSD `-l`, Linux GNU `-v`).
 if eshkol_durable_enabled; then
-    WORK="$(eshkol_durable_prepare_dir region-handle-training-rss)"
+    WORK="$(eshkol_durable_prepare_dir region-handle-training-rss)" || exit $?
     TIME_PROBE="$WORK/time-probe.log"
 else
     TIME_PROBE="/tmp/.rhtr_probe.$$"

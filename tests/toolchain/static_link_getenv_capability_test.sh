@@ -60,7 +60,7 @@ STATIC_LIB="$BUILD_DIR/${STATIC_PREFIX}eshkol-static${STATIC_SUFFIX}"
 [ -f "$STATIC_LIB" ] || fail "static library is missing: $STATIC_LIB"
 
 if eshkol_durable_enabled; then
-    WORK_TMP="$(eshkol_durable_prepare_dir static-link-getenv)"
+    WORK_TMP="$(eshkol_durable_prepare_dir static-link-getenv)" || exit $?
 else
     WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-static-link.XXXXXX")"
 fi

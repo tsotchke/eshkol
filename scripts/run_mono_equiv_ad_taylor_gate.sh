@@ -23,7 +23,7 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 if eshkol_durable_enabled; then
-  tmp_dir="$(eshkol_durable_prepare_dir mono-equiv-ad-taylor)"
+  tmp_dir="$(eshkol_durable_prepare_dir mono-equiv-ad-taylor)" || exit $?
 else
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-mono-equiv.XXXXXX")"
 fi

@@ -71,7 +71,7 @@ done
 
 # Detect which peak-RSS-reporting `time` flavor is available.
 if eshkol_durable_enabled; then
-    WORK="$(eshkol_durable_prepare_dir region-evac-subtype)"
+    WORK="$(eshkol_durable_prepare_dir region-evac-subtype)" || exit $?
     TIME_PROBE="$WORK/time-probe.log"
 else
     TIME_PROBE="/tmp/.regevac_probe.$$"

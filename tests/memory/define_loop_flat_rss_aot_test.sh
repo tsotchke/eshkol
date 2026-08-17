@@ -66,7 +66,7 @@ done
 
 # Detect which peak-RSS-reporting `time` flavor is available.
 if eshkol_durable_enabled; then
-    WORK="$(eshkol_durable_prepare_dir define-loop-flat-rss-aot)"
+    WORK="$(eshkol_durable_prepare_dir define-loop-flat-rss-aot)" || exit $?
     TIME_PROBE="$WORK/time-probe.log"
 else
     TIME_PROBE="/tmp/.deflrat_probe.$$"

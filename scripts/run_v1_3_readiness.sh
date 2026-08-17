@@ -13,7 +13,7 @@ REPO_ROOT="$(pwd)"
 ICC_BIN="${ICC_BIN:-/Users/tyr/Desktop/infinite_context_coder/bin/icc}"
 ICC_REPO="${ICC_REPO:-eshkol_lang}"
 if eshkol_durable_enabled; then
-  READINESS_WORK="$(eshkol_durable_prepare_dir v1-3-readiness)"
+  READINESS_WORK="$(eshkol_durable_prepare_dir v1-3-readiness)" || exit $?
   TRACE_DIR="${TRACE_DIR:-$READINESS_WORK/traces}"
   mkdir "$TRACE_DIR"
 else
@@ -22,7 +22,7 @@ fi
 ARCH_MODEL="${ARCH_MODEL:-.icc/architecture-model.yaml}"
 ARCH_TRACE_GLOB="${ARCH_TRACE_GLOB:-.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl}"
 if eshkol_durable_enabled; then
-  READINESS_JSON="$(eshkol_durable_file "$READINESS_WORK" readiness.json)"
+  READINESS_JSON="$(eshkol_durable_file "$READINESS_WORK" readiness.json)" || exit $?
 else
   READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
 fi

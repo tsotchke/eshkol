@@ -22,7 +22,7 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 if eshkol_durable_enabled; then
-    tmpdir="$(eshkol_durable_prepare_dir jit-cache-test)"
+    tmpdir="$(eshkol_durable_prepare_dir jit-cache-test)" || exit $?
 else
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT

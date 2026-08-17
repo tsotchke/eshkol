@@ -7,7 +7,7 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 if eshkol_durable_enabled; then
-    LANGUAGE_COVERAGE_WORK="$(eshkol_durable_prepare_dir language-coverage)"
+    LANGUAGE_COVERAGE_WORK="$(eshkol_durable_prepare_dir language-coverage)" || exit $?
     TRACE_DIR=${ICC_TRACE_DIR:-"$LANGUAGE_COVERAGE_WORK/traces"}
     mkdir -p "$TRACE_DIR"
 else
