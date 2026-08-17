@@ -29,6 +29,7 @@ fi
 
 SOURCE_ROOT="$(cd "$SOURCE_ROOT" && pwd)"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
+. "$SOURCE_ROOT/scripts/lib/durable_work_root.sh"
 CONFIG_HEADER="$BUILD_DIR/generated/eshkol/build_config.h"
 
 if [ ! -f "$CONFIG_HEADER" ]; then
@@ -58,9 +59,15 @@ STATIC_LIB="$BUILD_DIR/${STATIC_PREFIX}eshkol-static${STATIC_SUFFIX}"
 [ -f "$STDLIB_OBJ" ] || fail "stdlib object is missing: $STDLIB_OBJ"
 [ -f "$STATIC_LIB" ] || fail "static library is missing: $STATIC_LIB"
 
-WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-static-link.XXXXXX")"
+if eshkol_durable_enabled; then
+    WORK_TMP="$(eshkol_durable_prepare_dir static-link-getenv)" || exit $?
+else
+    WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-static-link.XXXXXX")"
+fi
 cleanup() {
-    [ -n "${WORK_TMP:-}" ] && [ -d "$WORK_TMP" ] && rm -rf -- "$WORK_TMP"
+    if ! eshkol_durable_enabled; then
+        [ -n "${WORK_TMP:-}" ] && [ -d "$WORK_TMP" ] && rm -rf -- "$WORK_TMP"
+    fi
 }
 trap cleanup EXIT
 

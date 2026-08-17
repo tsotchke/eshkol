@@ -35,6 +35,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in
@@ -54,9 +55,14 @@ fi
 
 # Same convention as the other memory gates (define_loop_flat_rss_aot_test.sh):
 # an ephemeral working directory, removed by the trap on every exit path. Total
-# footprint is a few KB of captured stdout/stderr.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-region-watchdog.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT INT TERM
+# footprint is a few KB of captured stdout/stderr. Durable release runs retain
+# those captures under their deterministic gate child instead.
+if eshkol_durable_enabled; then
+    WORK="$(eshkol_durable_prepare_dir vm-region-growth-watchdog)" || exit $?
+else
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-region-watchdog.XXXXXX")"
+    trap 'rm -rf "$WORK"' EXIT INT TERM
+fi
 
 PASS=0
 FAIL=0

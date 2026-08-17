@@ -33,6 +33,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -64,27 +65,35 @@ while [ $# -gt 0 ]; do
 done
 
 # Detect which peak-RSS-reporting `time` flavor is available.
+if eshkol_durable_enabled; then
+    WORK="$(eshkol_durable_prepare_dir define-loop-flat-rss-aot)" || exit $?
+    TIME_PROBE="$WORK/time-probe.log"
+else
+    TIME_PROBE="/tmp/.deflrat_probe.$$"
+fi
 # macOS (BSD time): `/usr/bin/time -l` reports "NNNN  maximum resident set size" in BYTES.
 # Linux (GNU time):  `/usr/bin/time -v` reports "Maximum resident set size (kbytes): NNNN" in KB.
 TIME_MODE=""
-if /usr/bin/time -l true >/dev/null 2>/tmp/.deflrat_probe.$$; then
-    if grep -q "maximum resident set size" /tmp/.deflrat_probe.$$ 2>/dev/null; then
+if /usr/bin/time -l true >/dev/null 2>"$TIME_PROBE"; then
+    if grep -q "maximum resident set size" "$TIME_PROBE" 2>/dev/null; then
         TIME_MODE="bsd"
     fi
 fi
-if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >/tmp/.deflrat_probe.$$ 2>&1; then
-    if grep -qi "Maximum resident set size" /tmp/.deflrat_probe.$$ 2>/dev/null; then
+if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$TIME_PROBE" 2>&1; then
+    if grep -qi "Maximum resident set size" "$TIME_PROBE" 2>/dev/null; then
         TIME_MODE="gnu"
     fi
 fi
-rm -f /tmp/.deflrat_probe.$$
+if ! eshkol_durable_enabled; then rm -f "$TIME_PROBE"; fi
 if [ -z "$TIME_MODE" ]; then
     echo "define_loop_flat_rss_aot_test.sh: neither \`/usr/bin/time -l\` (macOS) nor \`/usr/bin/time -v\` (Linux) reports peak RSS on this host — cannot gate." >&2
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-flat-rss-aot.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+if ! eshkol_durable_enabled; then
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-flat-rss-aot.XXXXXX")"
+    trap 'rm -rf "$WORK"' EXIT
+fi
 
 # run_aot <src> <bin> <compile_env...=> -> sets FR_COMPILE_RC FR_RUN_RC FR_RSS_MB FR_OUT
 run_aot() {

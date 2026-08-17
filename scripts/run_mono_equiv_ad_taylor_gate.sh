@@ -6,6 +6,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in
@@ -13,8 +15,6 @@ case "$BUILD_DIR" in
   *) ESHKOL_RUN="$PWD/$BUILD_DIR/eshkol-run" ;;
 esac
 TEST_SOURCE="tests/ad/taylor_tower_mono_test.esk"
-TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
-TRACE_FILE="$TRACE_DIR/mono_equiv.jsonl"
 EXPECTED_SUMMARY="mono==runtime bit-exact tests: 441 passed, 0 failed"
 
 if [ ! -x "$ESHKOL_RUN" ]; then
@@ -22,9 +22,19 @@ if [ ! -x "$ESHKOL_RUN" ]; then
   exit 2
 fi
 
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-mono-equiv.XXXXXX")"
+if eshkol_durable_enabled; then
+  tmp_dir="$(eshkol_durable_prepare_dir mono-equiv-ad-taylor)" || exit $?
+else
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-mono-equiv.XXXXXX")"
+fi
+if eshkol_durable_enabled; then
+  TRACE_DIR="${TRACE_DIR:-$tmp_dir/traces}"
+else
+  TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
+fi
+TRACE_FILE="$TRACE_DIR/mono_equiv.jsonl"
 cleanup() {
-  rm -rf -- "$tmp_dir"
+  if ! eshkol_durable_enabled; then rm -rf -- "$tmp_dir"; fi
 }
 trap cleanup EXIT
 

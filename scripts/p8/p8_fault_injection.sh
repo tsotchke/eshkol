@@ -34,6 +34,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 QUICK=0
 while [ $# -gt 0 ]; do
@@ -54,10 +55,14 @@ TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/escape_matrix.jsonl"
 mkdir -p "$TRACE_DIR"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/p8-fault.XXXXXX")"
-# Disk cap + guaranteed cleanup (fuzz/harness disk-budget policy).
-cleanup() { chmod -R u+rwx "$WORK" 2>/dev/null; rm -rf "$WORK"; }
-trap cleanup EXIT
+if eshkol_durable_enabled; then
+  WORK="$(eshkol_durable_prepare_dir p8-fault-injection)" || exit $?
+else
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/p8-fault.XXXXXX")"
+  # Disk cap + guaranteed cleanup (fuzz/harness disk-budget policy).
+  cleanup() { chmod -R u+rwx "$WORK" 2>/dev/null; rm -rf "$WORK"; }
+  trap cleanup EXIT
+fi
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
 emit() { # id status snippet

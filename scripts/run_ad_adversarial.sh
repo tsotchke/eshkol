@@ -38,8 +38,16 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    ADV_WORK="$(eshkol_durable_prepare_dir ad-adversarial)" || exit $?
+fi
 GEN_DIR="$REPO_ROOT/tests/ad_adversarial/generated"
-TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+if eshkol_durable_enabled; then
+    TRACE_DIR="${TRACE_DIR:-$ADV_WORK/traces}"
+else
+    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+fi
 TRACE_FILE="$TRACE_DIR/ad_adversarial.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?}"; : > "$TRACE_FILE"
@@ -48,9 +56,14 @@ mkdir -p "$TRACE_DIR"
 # previous file must never mask a regression, and a fresh cache avoids the
 # intermittent cross-file JIT crash noted below.
 if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then
-    ADV_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ad-adversarial-cache.XXXXXX")
+    if eshkol_durable_enabled; then
+        ADV_JIT_CACHE_DIR="$ADV_WORK/jit-cache"
+        mkdir "$ADV_JIT_CACHE_DIR"
+    else
+        ADV_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ad-adversarial-cache.XXXXXX")
+    fi
     export ESHKOL_JIT_CACHE_DIR="$ADV_JIT_CACHE_DIR"
-    trap 'rm -rf "$ADV_JIT_CACHE_DIR"' EXIT
+    if ! eshkol_durable_enabled; then trap 'rm -rf "$ADV_JIT_CACHE_DIR"' EXIT; fi
 else
     mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 fi
@@ -191,7 +204,11 @@ for path in "$GEN_DIR"/ad_adv_*.esk; do
     fi
 
     if [ "$DO_AOT" -eq 1 ]; then
-        bin="${TMPDIR:-/tmp}/ad_adv_${base}.bin"; rm -f "$bin"
+        if eshkol_durable_enabled; then
+            bin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${base}.bin")" || exit $?
+        else
+            bin="${TMPDIR:-/tmp}/ad_adv_${base}.bin"; rm -f "$bin"
+        fi
         cout=$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$path" "$LIBFLAG" -o "$bin" 2>&1); crc=$?
         if [ "$crc" -ne 0 ] || [ ! -x "$bin" ] || printf '%s' "$cout" | grep -qE \
             "Failed to generate LLVM IR|LLVM module verification failed"; then
@@ -203,7 +220,7 @@ for path in "$GEN_DIR"/ad_adv_*.esk; do
                 printf '%s\n' "$aout" | grep -E '^FAIL:' | head -6 | sed 's/^/         /'
             fi
         fi
-        rm -f "$bin"
+        if ! eshkol_durable_enabled; then rm -f "$bin"; fi
         count_verdict "$av" "tests/ad_adversarial/generated/$f" "aot"
     fi
 done
@@ -226,7 +243,11 @@ if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" = "ON" ]; then
     fi
 
     if [ "$DO_AOT" -eq 1 ]; then
-        qbin="${TMPDIR:-/tmp}/ad_adv_${quantum_base}.bin"; rm -f "$qbin"
+        if eshkol_durable_enabled; then
+            qbin="$(eshkol_durable_file "$ADV_WORK" "ad_adv_${quantum_base}.bin")" || exit $?
+        else
+            qbin="${TMPDIR:-/tmp}/ad_adv_${quantum_base}.bin"; rm -f "$qbin"
+        fi
         qcout=$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$quantum_path" "$LIBFLAG" -o "$qbin" 2>&1); qcrc=$?
         if [ "$qcrc" -ne 0 ] || [ ! -x "$qbin" ] || printf '%s' "$qcout" | grep -qE \
             "Failed to generate LLVM IR|LLVM module verification failed"; then
@@ -238,7 +259,7 @@ if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" = "ON" ]; then
                 printf '%s\n' "$qaout" | grep -E '^FAIL:' | head -6 | sed 's/^/         /'
             fi
         fi
-        rm -f "$qbin"
+        if ! eshkol_durable_enabled; then rm -f "$qbin"; fi
         count_verdict "$qav" "$quantum_label" "aot"
     fi
 else

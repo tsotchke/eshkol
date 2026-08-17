@@ -24,6 +24,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 RUNS=25
 PER_RUN_TIMEOUT=60
@@ -48,8 +49,12 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 SRC="$REPO_ROOT/tests/parallel/parallel_map_scope_reclaim_test.esk"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+if eshkol_durable_enabled; then
+    WORK="$(eshkol_durable_prepare_dir parallel-map-scope-reclaim)" || exit $?
+else
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "$WORK"' EXIT
+fi
 BIN="$WORK/scope_reclaim"
 
 # Optional per-run timeout wrapper (coreutils timeout / gtimeout if present).

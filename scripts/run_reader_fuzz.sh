@@ -35,6 +35,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 MODE="--smoke"
 for arg in "$@"; do
@@ -47,11 +48,17 @@ for arg in "$@"; do
 done
 
 BUILD_DIR="$REPO_ROOT/build-reader-fuzz"
-ARTIFACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-reader-fuzz-artifacts.XXXXXX")
+if eshkol_durable_enabled; then
+    ARTIFACT_DIR="$(eshkol_durable_prepare_dir reader-fuzz)" || exit $?
+else
+    ARTIFACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-reader-fuzz-artifacts.XXXXXX")
+fi
 
 cleanup() {
     local status=$?
-    if [ "$status" -eq 0 ]; then
+    if eshkol_durable_enabled; then
+        echo "run_reader_fuzz.sh: durable evidence retained at $ARTIFACT_DIR" >&2
+    elif [ "$status" -eq 0 ]; then
         rm -rf "$ARTIFACT_DIR"
     else
         echo "run_reader_fuzz.sh: findings kept at $ARTIFACT_DIR" \

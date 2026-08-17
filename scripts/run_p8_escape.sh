@@ -34,6 +34,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 MODE="quick"; AXES="1,2,3,4,5,6,7,8"
 while [ $# -gt 0 ]; do
@@ -82,7 +83,10 @@ echo "run_p8_escape: pinned toolchain -> $PINNED_BUILD_DIR" >&2
 
 WORK="$ESHKOL_TEST_TMPDIR/work"; mkdir -p "$WORK"
 # Disk cap: a runaway generator must not fill the disk (fuzz disk-budget policy).
-cleanup() { rm -rf "$WORK"; eshkol_test_isolation_cleanup; }
+cleanup() {
+  if ! eshkol_durable_enabled; then rm -rf "$WORK"; fi
+  eshkol_test_isolation_cleanup
+}
 trap cleanup EXIT
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 DISK_CAP_KB=$(( 512 * 1024 ))   # 512 MB corpus ceiling

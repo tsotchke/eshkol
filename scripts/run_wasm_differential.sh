@@ -69,7 +69,13 @@ export LANG=C
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
-TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    WASM_DIFF_WORK="$(eshkol_durable_prepare_dir wasm-differential)" || exit $?
+    TRACE_DIR="${TRACE_DIR:-$WASM_DIFF_WORK/traces}"
+else
+    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+fi
 TRACE_FILE="$TRACE_DIR/wasm_parity.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?TRACE_FILE must be set}"
@@ -254,12 +260,17 @@ if [ "$need_build" -eq 1 ]; then
     echo "   built: $WASM_MODULE ($(wc -c < "${WASM_MODULE%.js}.wasm" | tr -d ' ') bytes)"
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-wasm-diff.XXXXXX")"
-: "${WORK:?WORK must be set}"
-if [ "$KEEP" -eq 1 ]; then
-    echo "   work dir (kept): $WORK"
+if eshkol_durable_enabled; then
+    WORK="$WASM_DIFF_WORK"
+    echo "   durable work dir (retained): $WORK"
 else
-    trap 'rm -rf "$WORK"' EXIT
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-wasm-diff.XXXXXX")"
+    : "${WORK:?WORK must be set}"
+    if [ "$KEEP" -eq 1 ]; then
+        echo "   work dir (kept): $WORK"
+    else
+        trap 'rm -rf "$WORK"' EXIT
+    fi
 fi
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"

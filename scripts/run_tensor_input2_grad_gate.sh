@@ -20,9 +20,15 @@ export LANG=C
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 TEST_FILE="$REPO_ROOT/tests/ad/tensor_input2_grad_test.esk"
 
-: "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-tensor-input2-jit-cache}"
+if eshkol_durable_enabled; then
+    TENSOR_INPUT2_WORK="$(eshkol_durable_prepare_dir tensor-input2-grad)" || exit $?
+    : "${ESHKOL_JIT_CACHE_DIR:=$TENSOR_INPUT2_WORK/jit-cache}"
+else
+    : "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-tensor-input2-jit-cache}"
+fi
 export ESHKOL_JIT_CACHE_DIR
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
@@ -82,7 +88,11 @@ fi
 
 # ---- AOT ----
 if [ "$DO_AOT" -eq 1 ]; then
-    bin="$(mktemp "${TMPDIR:-/tmp}/tensor_input2_gate_bin.XXXXXX")"
+    if eshkol_durable_enabled; then
+        bin="$(eshkol_durable_file "$TENSOR_INPUT2_WORK" tensor_input2_gate_bin)" || exit $?
+    else
+        bin="$(mktemp "${TMPDIR:-/tmp}/tensor_input2_gate_bin.XXXXXX")"
+    fi
     cout="$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$TEST_FILE" -o "$bin" -L"$REPO_ROOT/$BUILD_DIR" 2>&1)"; crc=$?
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
         echo "  AOT  COMPILE-FAIL rc=$crc"
@@ -98,7 +108,7 @@ if [ "$DO_AOT" -eq 1 ]; then
             overall=FAIL
         fi
     fi
-    rm -f "$bin"
+    if ! eshkol_durable_enabled; then rm -f "$bin"; fi
 fi
 
 echo "ESH-0212 tensor-AD second-operand gate: $overall"

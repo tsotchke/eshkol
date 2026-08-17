@@ -33,6 +33,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -66,21 +67,29 @@ while [ $# -gt 0 ]; do
 done
 
 # Detect the peak-RSS-reporting `time` flavor (macOS BSD `-l`, Linux GNU `-v`).
+if eshkol_durable_enabled; then
+    WORK="$(eshkol_durable_prepare_dir iter-scope-partial-reclaim)" || exit $?
+    TIME_PROBE="$WORK/time-probe.log"
+else
+    TIME_PROBE="/tmp/.ispr_probe.$$"
+fi
 TIME_MODE=""
-if /usr/bin/time -l true >/dev/null 2>/tmp/.ispr_probe.$$; then
-    grep -q "maximum resident set size" /tmp/.ispr_probe.$$ 2>/dev/null && TIME_MODE="bsd"
+if /usr/bin/time -l true >/dev/null 2>"$TIME_PROBE"; then
+    grep -q "maximum resident set size" "$TIME_PROBE" 2>/dev/null && TIME_MODE="bsd"
 fi
-if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >/tmp/.ispr_probe.$$ 2>&1; then
-    grep -qi "Maximum resident set size" /tmp/.ispr_probe.$$ 2>/dev/null && TIME_MODE="gnu"
+if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$TIME_PROBE" 2>&1; then
+    grep -qi "Maximum resident set size" "$TIME_PROBE" 2>/dev/null && TIME_MODE="gnu"
 fi
-rm -f /tmp/.ispr_probe.$$
+if ! eshkol_durable_enabled; then rm -f "$TIME_PROBE"; fi
 if [ -z "$TIME_MODE" ]; then
     echo "iter_scope_partial_reclaim_test.sh: no peak-RSS-reporting /usr/bin/time on this host — cannot gate." >&2
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ispr.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+if ! eshkol_durable_enabled; then
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ispr.XXXXXX")"
+    trap 'rm -rf "$WORK"' EXIT
+fi
 
 # run_aot <src> <bin> <run-env...> -> FR_COMPILE_RC FR_RUN_RC FR_RSS_MB FR_OUT
 run_aot() {

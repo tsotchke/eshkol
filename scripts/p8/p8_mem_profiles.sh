@@ -30,6 +30,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 QUICK=0; TABLE=""
 while [ $# -gt 0 ]; do
@@ -46,8 +47,12 @@ ESHKOL_RUN="$BUILD_DIR/eshkol-run"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"; mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/escape_matrix.jsonl"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/p8-mem.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+if eshkol_durable_enabled; then
+  WORK="$(eshkol_durable_prepare_dir p8-mem-profiles)" || exit $?
+else
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/p8-mem.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+fi
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
 # small / large iteration counts (large = 10x small -> flat RSS if reclaimed).

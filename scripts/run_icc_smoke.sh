@@ -22,7 +22,15 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
-TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    ESHKOL_ICC_WORK="$(eshkol_durable_prepare_dir icc-smoke)" || exit $?
+fi
+if eshkol_durable_enabled; then
+    TRACE_DIR="${TRACE_DIR:-$ESHKOL_ICC_WORK/traces}"
+else
+    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+fi
 TRACE_FILE="$TRACE_DIR/eshkol_smoke.jsonl"
 mkdir -p "$TRACE_DIR"
 
@@ -57,12 +65,49 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then
-    ESHKOL_ICC_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-icc-jit-cache.XXXXXX")
+    if eshkol_durable_enabled; then
+        ESHKOL_ICC_JIT_CACHE_DIR="$ESHKOL_ICC_WORK/jit-cache"
+        mkdir "$ESHKOL_ICC_JIT_CACHE_DIR"
+    else
+        ESHKOL_ICC_JIT_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-icc-jit-cache.XXXXXX")
+    fi
     export ESHKOL_JIT_CACHE_DIR="$ESHKOL_ICC_JIT_CACHE_DIR"
-    trap 'rm -rf "$ESHKOL_ICC_JIT_CACHE_DIR"' EXIT
+    if ! eshkol_durable_enabled; then trap 'rm -rf "$ESHKOL_ICC_JIT_CACHE_DIR"' EXIT; fi
 else
     mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 fi
+
+# The existing probes use mktemp in their compact shell snippets.  In durable
+# mode this shell function shadows the external command and claims fresh,
+# deterministic files below the gate directory; it never invokes mktemp or
+# writes ephemeral paths.  The default branch delegates unchanged to mktemp.
+ESHKOL_ICC_TEMP_SEQUENCE=0
+mktemp() {
+    if ! eshkol_durable_enabled; then command mktemp "$@"; return; fi
+    local is_dir=0 candidate index=1
+    [ "${1:-}" = "-d" ] && is_dir=1
+    while [ -e "$ESHKOL_ICC_WORK/probe-${index}" ] || [ -L "$ESHKOL_ICC_WORK/probe-${index}" ]; do
+        index=$((index + 1))
+    done
+    candidate="$ESHKOL_ICC_WORK/probe-${index}"
+    if [ "$is_dir" -eq 1 ]; then mkdir "$candidate"; else : > "$candidate"; fi
+    printf '%s\n' "$candidate"
+}
+
+# Probe snippets clean their ad-hoc outputs on success.  In durable mode those
+# outputs are release evidence, so retain only paths claimed beneath this gate.
+rm() {
+    if ! eshkol_durable_enabled; then command rm "$@"; return; fi
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -*) ;;
+            "$ESHKOL_ICC_WORK"/*) ;;
+            *) command rm "$@"; return ;;
+        esac
+    done
+    return 0
+}
 
 # Emit one trace line as a JSON-L event with explicit `kind`. ICC's
 # runtime_evidence parser was extended (2026-05-07) to recognize records
@@ -547,8 +592,14 @@ probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth
 # and tests/generative-diff/README.md.
 # ───────────────────────────────────────────────────────────────────
 probe generative_differential_oracle 'generated R7RS programs agree across chibi/JIT/AOT-O0/AOT-O2/VM + metamorphic (no NEW divergence vs baseline)' \
-    'cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
-        --baseline tests/generative-diff/baseline.txt --quiet'
+    'if eshkol_durable_enabled; then
+         workdir=$(eshkol_durable_prepare_dir generative-differential) || exit $?;
+         cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
+             --baseline tests/generative-diff/baseline.txt --quiet --workdir "$workdir";
+     else
+         cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
+             --baseline tests/generative-diff/baseline.txt --quiet;
+     fi'
 
 # TOTAL-LANGUAGE coverage is a monotonic, manifest-derived contract.  The
 # dedicated harness also writes runtime_event evidence consumed directly by
@@ -561,7 +612,12 @@ probe language_surface_coverage_floor 'exposure-engine language coverage meets t
 # (which only scrapes source text) reports OK anyway — that is how assq,
 # assv, memv, partition and string-contains stayed invisible.
 probe surface_parity_execution_backed 'every name native resolves is resolved by the VM or recorded in PARITY.tsv (probed on both engines, ratcheted)' \
-    'cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_surface_parity.py'
+    'if eshkol_durable_enabled; then
+         workdir=$(eshkol_durable_prepare_dir surface-parity) || exit $?;
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_surface_parity.py --workdir "$workdir";
+     else
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_surface_parity.py;
+     fi'
 # The one that catches SILENT WRONG ANSWERS. Name-resolution parity, ledger
 # classification and one-engine coverage all pass while the two engines return
 # different VALUES; this runs the corpus on both engines and compares output,
@@ -569,7 +625,12 @@ probe surface_parity_execution_backed 'every name native resolves is resolved by
 # Validated by reintroducing the '() truthiness bug: exit 1 with the bug, 0
 # without.
 probe engine_semantic_parity 'no corpus program computes a different answer on the two engines, and differential construct coverage holds its floor' \
-    'cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py'
+    'if eshkol_durable_enabled; then
+         workdir=$(eshkol_durable_prepare_dir engine-parity) || exit $?;
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir";
+     else
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py;
+     fi'
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
 probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \
@@ -783,7 +844,12 @@ probe p8_escape_matrix_green \
 # ───────────────────────────────────────────────────────────────────
 probe value_position_axis \
     'every builtin answers the same when referenced as a VALUE (passed to a higher-order procedure, stored, returned, reached through map) as it does in call position — the axis that SW-27, SW-31, SW-34 and SW-35 each escaped through one at a time' \
-    'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" python3 scripts/run_value_position_sweep.py --quiet >/dev/null 2>&1'
+    'if eshkol_durable_enabled; then
+         workdir=$(eshkol_durable_prepare_dir value-position) || exit $?;
+         cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" python3 scripts/run_value_position_sweep.py --quiet --workdir "$workdir" >/dev/null 2>&1;
+     else
+         cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" python3 scripts/run_value_position_sweep.py --quiet >/dev/null 2>&1;
+     fi'
 
 # ───────────────────────────────────────────────────────────────────
 # ESH-0011 — portable event loop (v1.4 async foundation).

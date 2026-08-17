@@ -74,7 +74,7 @@ produce the same result.  Until that exists, "green here" means "no name is
 missing", not "the engines agree".  Do not read it as more than that.
 
 Usage:
-  scripts/run_surface_parity.py [--update-baseline] [--limit N]
+  scripts/run_surface_parity.py [--update-baseline] [--limit N] [--workdir DIR]
 Exit: 0 = gate green, 1 = gate red, 2 = misuse/environment problem.
 """
 
@@ -122,6 +122,32 @@ NAME_RE = re.compile(r"^[A-Za-z*+\-/<>=!?_][^\s()'\"`;]*$")
 def die(msg):
     sys.stderr.write("run_surface_parity: %s\n" % msg)
     sys.exit(2)
+
+
+def require_empty_workdir(path):
+    """Validate a caller-owned durable directory before writing probes."""
+    if not os.path.isabs(path):
+        raise ValueError("--workdir must be an absolute path")
+    if os.path.islink(path):
+        raise ValueError("--workdir must not be a symlink: %s" % path)
+    if not os.path.isdir(path):
+        raise ValueError("--workdir must be a caller-created directory: %s" % path)
+    if os.listdir(path):
+        raise ValueError("--workdir must be empty: %s" % path)
+    return path
+
+
+def write_probe_source(workdir, prefix, number, src):
+    """Write a retained deterministic probe file, or the legacy temp file."""
+    if workdir is None:
+        fd, path = tempfile.mkstemp(suffix=".esk")
+        with os.fdopen(fd, "w") as f:
+            f.write(src)
+        return path
+    path = os.path.join(workdir, "%s-%04d.esk" % (prefix, number))
+    with open(path, "x", encoding="utf-8") as f:
+        f.write(src)
+    return path
 
 
 def load_manifest():
@@ -182,18 +208,16 @@ def stdlib_names():
             and not (n.startswith("*") and n.endswith("*"))}
 
 
-def probe_vm(names, vm_surface):
+def probe_vm(names, vm_surface, workdir=None):
     """Batch-probe VM name resolution; credit vm_surface membership."""
     resolved = {}
     env = dict(os.environ, ESHKOL_VM_NO_DISASM="1")
     batch = 60
-    for i in range(0, len(names), batch):
+    for batch_number, i in enumerate(range(0, len(names), batch), 1):
         chunk = names[i:i + batch]
         src = "".join("(define __p%d %s)\n" % (j, n)
                       for j, n in enumerate(chunk))
-        fd, path = tempfile.mkstemp(suffix=".esk")
-        with os.fdopen(fd, "w") as f:
-            f.write(src)
+        path = write_probe_source(workdir, "vm-batch", batch_number, src)
         try:
             out = subprocess.run([VM_BIN, path], capture_output=True,
                                  text=True, timeout=300, env=env)
@@ -201,19 +225,18 @@ def probe_vm(names, vm_surface):
         except (OSError, subprocess.SubprocessError):
             txt = ""
         finally:
-            os.unlink(path)
+            if workdir is None:
+                os.unlink(path)
         for n in chunk:
             warned = ("undefined variable '%s'" % n) in txt
             resolved[n] = (not warned) or (n in vm_surface)
     return resolved
 
 
-def _native_batch_ok(names, env):
+def _native_batch_ok(names, env, workdir=None, probe_number=0):
     """True if native compiles a program referencing every name in `names`."""
     src = "".join("(define __p%d %s)\n" % (i, n) for i, n in enumerate(names))
-    fd, path = tempfile.mkstemp(suffix=".esk")
-    with os.fdopen(fd, "w") as f:
-        f.write(src)
+    path = write_probe_source(workdir, "native-batch", probe_number, src)
     try:
         r = subprocess.run([ESHKOL_RUN, "-r", path], capture_output=True,
                            text=True, timeout=600, env=env)
@@ -221,7 +244,8 @@ def _native_batch_ok(names, env):
     except (OSError, subprocess.SubprocessError):
         return False
     finally:
-        os.unlink(path)
+        if workdir is None:
+            os.unlink(path)
 
 
 def _native_cache_key():
@@ -271,7 +295,7 @@ def _save_native_cache(key, resolved):
         pass
 
 
-def probe_native(names):
+def probe_native(names, workdir=None):
     """Probe native resolution, batched with bisection.
 
     An unresolved name aborts the whole program (and native's error path can
@@ -290,10 +314,14 @@ def probe_native(names):
     resolved = {n: cached[n] for n in names if n in cached}
     todo = [n for n in names if n not in resolved]
 
+    probe_number = 0
+
     def walk(chunk):
+        nonlocal probe_number
         if not chunk:
             return
-        if _native_batch_ok(chunk, env):
+        probe_number += 1
+        if _native_batch_ok(chunk, env, workdir, probe_number):
             for n in chunk:
                 resolved[n] = True
             return
@@ -326,7 +354,15 @@ def main():
                     help="rewrite the ratchet baseline from this run")
     ap.add_argument("--limit", type=int, default=0,
                     help="probe only the first N names (smoke use)")
+    ap.add_argument("--workdir",
+                    help="empty caller-created absolute directory retaining probe files")
     args = ap.parse_args()
+
+    if args.workdir is not None:
+        try:
+            args.workdir = require_empty_workdir(args.workdir)
+        except ValueError as exc:
+            die(str(exc))
 
     for path, what in ((ESHKOL_RUN, "eshkol-run"), (VM_BIN, "the VM binary")):
         if not os.path.exists(path):
@@ -352,8 +388,8 @@ def main():
     print("run_surface_parity: probing %d names on both engines "
           "(codegen surface + Scheme stdlib + ledger rows)" % len(surface))
 
-    vm_ok = probe_vm(surface, vm_surface)
-    nat_ok = probe_native(surface)
+    vm_ok = probe_vm(surface, vm_surface, args.workdir)
+    nat_ok = probe_native(surface, args.workdir)
 
     findings, opcode_only, untracked = [], [], []
     for n in surface:

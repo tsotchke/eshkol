@@ -33,6 +33,9 @@
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+
 ESHKOL_RUN="${1:-${ESHKOL_RUN:-}}"
 if [ -z "$ESHKOL_RUN" ]; then
     if [ -x "./build/eshkol-run" ]; then
@@ -54,8 +57,12 @@ case "$ESHKOL_RUN" in
     *)  ESHKOL_RUN="$(cd "$(dirname "$ESHKOL_RUN")" && pwd)/$(basename "$ESHKOL_RUN")" ;;
 esac
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+if eshkol_durable_enabled; then
+    tmp="$(eshkol_durable_prepare_dir ffi-boundary-fail-open)" || exit $?
+else
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+fi
 # Isolate the persistent -r run-cache: a cache entry built before the fix would
 # otherwise serve the poisoned binary and hide the regression.
 export ESHKOL_JIT_CACHE_DIR="$tmp/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"

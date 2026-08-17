@@ -16,6 +16,9 @@
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+
 ESHKOL_RUN="${1:-${ESHKOL_RUN:-}}"
 if [ -z "$ESHKOL_RUN" ]; then
     if [ -x "./build/eshkol-run" ]; then
@@ -43,8 +46,12 @@ if [ -z "$agent_archive" ]; then
     exit 0
 fi
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+if eshkol_durable_enabled; then
+    tmp="$(eshkol_durable_prepare_dir transitive-ffi-link)" || exit $?
+else
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+fi
 
 fail() { echo "FAIL: transitive_ffi_link_test — $1" >&2; exit 1; }
 
