@@ -26,6 +26,24 @@ static int vm_is_exact_number(Value v) {
            v.type == VAL_RATIONAL || v.type == VAL_I128;
 }
 
+/** Return non-zero for every scalar tag accepted by the arithmetic opcodes. */
+static int vm_is_arithmetic_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT ||
+           v.type == VAL_BIGNUM || v.type == VAL_RATIONAL ||
+           v.type == VAL_COMPLEX || v.type == VAL_DUAL ||
+           v.type == VAL_HYPER_DUAL || v.type == VAL_I128;
+}
+
+/** Raise a catchable type error before an opcode reaches as_number_vm(). */
+static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
+                                         const char* op) {
+    char message[96];
+    if (vm_is_arithmetic_number(a) && vm_is_arithmetic_number(b)) return 1;
+    snprintf(message, sizeof(message), "%s: expected numeric operands", op);
+    vm_raise_error_msg(vm, message);
+    return 0;
+}
+
 /* ===== SW-10: VM runaway-instruction guard and timeout checkpoint =====
  *
  * `ESHKOL_VM_MAX_INSN` is documented as the VM's runaway-instruction guard,
@@ -333,6 +351,7 @@ void vm_run(VM* vm) {
 
     lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        if (!vm_require_arithmetic_numbers(vm, a, b, "+")) DISPATCH();
         /* SW-09: neither operand check below recognizes VAL_I128, so a
          * generic `+` over i128 values used to fall all the way through to
          * the double path, where as_number_vm() reads a heap-boxed i128 as
@@ -358,6 +377,7 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) + as_number_vm(vm, b))); } DISPATCH(); }
     lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        if (!vm_require_arithmetic_numbers(vm, a, b, "-")) DISPATCH();
         /* SW-09b: same family as lbl_ADD's guard — every arithmetic/
          * comparison opcode that falls through to as_number_vm() misreads
          * a heap-boxed VAL_I128 as 0.0. */
@@ -379,6 +399,7 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) - as_number_vm(vm, b))); } DISPATCH(); }
     lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        if (!vm_require_arithmetic_numbers(vm, a, b, "*")) DISPATCH();
         /* SW-09b: see lbl_ADD/lbl_SUB. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_raise_error_msg(vm,
@@ -398,6 +419,7 @@ void vm_run(VM* vm) {
             vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) * as_number_vm(vm, b))); } DISPATCH(); }
     lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
+        if (!vm_require_arithmetic_numbers(vm, a, b, "/")) DISPATCH();
         /* SW-09b: see lbl_ADD/lbl_SUB/lbl_MUL. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_raise_error_msg(vm,
@@ -1183,6 +1205,7 @@ vm_exit:
 
         /* Arithmetic */
         case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (!vm_require_arithmetic_numbers(vm, a, b, "+")) break;
             /* SW-09: see the identical guard in lbl_ADD above — this switch-
              * based loop is the non-computed-goto twin of the same opcode
              * and must reject i128 operands the same way, not silently
@@ -1202,6 +1225,7 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) + as_number_vm(vm,b))); break; }
         case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (!vm_require_arithmetic_numbers(vm, a, b, "-")) break;
             /* SW-09b: switch-based twin of lbl_SUB. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
                 vm_raise_error_msg(vm,
@@ -1218,6 +1242,7 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) - as_number_vm(vm,b))); break; }
         case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (!vm_require_arithmetic_numbers(vm, a, b, "*")) break;
             /* SW-09b: switch-based twin of lbl_MUL. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
                 vm_raise_error_msg(vm,
@@ -1234,6 +1259,7 @@ vm_exit:
             else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) * as_number_vm(vm,b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (!vm_require_arithmetic_numbers(vm, a, b, "/")) break;
             /* SW-09b: switch-based twin of lbl_DIV. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
                 vm_raise_error_msg(vm,
