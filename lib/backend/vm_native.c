@@ -12795,7 +12795,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
         }
-        vm_push(vm, NIL_VAL);
+        /* Non-hash-table operand: raise instead of silently returning '(),
+         * matching the native codegen guard (HashCodegen::requireHashTable)
+         * so a `guard` around (hash-keys <non-table>) behaves identically on
+         * both substrates. */
+        vm_raise_error_msg(vm, "hash-keys: expected a hash table");
         break;
     }
     case 666: { /* hash-values */
@@ -12818,7 +12822,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
         }
-        vm_push(vm, NIL_VAL);
+        /* Non-hash-table operand: raise (see 665 above for why). */
+        vm_raise_error_msg(vm, "hash-values: expected a hash table");
         break;
     }
     case 667: { /* hash-count */
@@ -14420,8 +14425,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * R6RS convention as the int64 path for negative values. */
             VmBignum* b = (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vm_bignum_popcount(b)));
-        } else {
+        } else if (a.type == VAL_INT) {
             vm_push(vm, INT_VAL(vm_popcount_i64((int64_t)as_number(a))));
+        } else {
+            /* Non-integer operand: raise instead of silently popcounting
+             * as_number()'s 0.0 fallback (or, for a heap-boxed non-integer,
+             * reinterpreting an unrelated bit pattern). Matches the native
+             * codegen guard added alongside this (llvm_codegen.cpp
+             * codegenPopcount's pc_error_bb), so `(popcount "x")` raises
+             * catchably on both substrates. */
+            vm_raise_error_msg(vm, "popcount: expected an integer");
         }
         break; }
 

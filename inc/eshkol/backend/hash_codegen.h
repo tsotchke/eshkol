@@ -24,6 +24,7 @@
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/backend/arithmetic_codegen.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>
 #include <unordered_map>
@@ -51,7 +52,8 @@ public:
      * Construct a HashCodegen for the given context, tagged value codegen, and memory codegen.
      */
     HashCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
-                std::unordered_map<std::string, llvm::Function*>& func_table);
+                std::unordered_map<std::string, llvm::Function*>& func_table,
+                ArithmeticCodegen& arith);
 
     /**
      * Set callback functions for AST code generation.
@@ -126,6 +128,13 @@ private:
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
     std::unordered_map<std::string, llvm::Function*>& function_table_;
+    ArithmeticCodegen& arith_;
+
+    // Emits a conditional branch that raises a catchable type error (via
+    // arith_.emitTypeError) when `arg` is not a hash table (legacy HASH_PTR
+    // or consolidated HEAP_PTR+HEAP_SUBTYPE_HASH), mirroring isHashTable's
+    // check. Falls through to a fresh insert block on the success path.
+    void requireHashTable(llvm::Value* arg, const char* func_name);
 
     // Callbacks for AST evaluation
     CodegenASTCallback codegen_ast_cb_;
