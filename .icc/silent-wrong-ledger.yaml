@@ -2878,11 +2878,17 @@ entries:
       qualify as SILENT-WRONG, which is why both engines are fixed together here rather
       than treating the VM half as out of scope.
 
-  - id: SW-42
+  - id: SW-43
     bucket: SILENT-WRONG
     status: closed
     closed_at: "fix/native-hash-popcount-guards"
     closed_by: "branch fix/native-hash-popcount-guards"
+    renumbered_from: >-
+      SW-42 (collision with the open documented-limitation entry; see its renumbered_from
+      for the recurring pattern). Filed as SW-42 on branch fix/native-hash-popcount-guards
+      (PR #452), which already had an open DOCUMENTED-LIMITATION entry at that id (the
+      referential-transparency / syntax-rules hygiene entry). Renumbered to SW-43, the next
+      free id, once the collision was caught.
     title: "(popcount x) on a non-integer silently reinterprets the operand's tagged bits instead of erroring"
     repro: "(popcount \"notanumber\")"
     observed: "native: 14, exit 0, no diagnostic. VM: 0, exit 0, no diagnostic."
