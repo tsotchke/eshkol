@@ -109,7 +109,12 @@ def compute_disagreements(root):
             dis.add("doc_orphan::" + nm)
     # backend asymmetry over manifest builtins.
     for nm, bk in backends.items():
-        has_native = bool(bk & {"native", "native_llvm"})
+        # A VM opcode may intentionally mirror a native stdlib/prelude
+        # definition rather than a native compiler builtin.  Treat that module
+        # definition as native availability; otherwise promoting compound list
+        # accessors to first-class VM builtins manufactures native_missing
+        # findings even though eshkol-run executes the same public names.
+        has_native = bool(bk & {"native", "native_llvm"}) or nm in defined
         has_vm = "vm" in bk
         # agent_ffi-only builtins are intentionally native-only host bridges.
         if bk == {"agent_ffi"}:
