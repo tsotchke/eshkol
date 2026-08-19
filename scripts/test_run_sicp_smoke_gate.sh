@@ -19,9 +19,14 @@ fail() {
 
 [ -f "$SMOKE" ] || fail "missing smoke script: $SMOKE"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-sicp-smoke-gate.XXXXXX")" || exit 1
+TEST_ISOLATION="$ROOT/scripts/lib/test_isolation.sh"
+[ -r "$TEST_ISOLATION" ] || fail "missing test isolation helper: $TEST_ISOLATION"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$TEST_ISOLATION"
+eshkol_test_isolation_init "sicp-smoke-gate"
+WORK="$ESHKOL_TEST_TMPDIR"
 cleanup() {
-    [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf -- "$WORK"
+    eshkol_test_isolation_cleanup
 }
 trap cleanup EXIT
 
@@ -41,6 +46,8 @@ setup_fake_repo() {
     # gate would have passed a harness with no detection at all.
     cp "$ROOT/scripts/lib/test_isolation.sh" "$FAKE/scripts/lib/test_isolation.sh" \
         || fail "copy test_isolation.sh"
+    cp "$ROOT/scripts/lib/durable_work_root.sh" "$FAKE/scripts/lib/durable_work_root.sh" \
+        || fail "copy durable_work_root.sh"
 
     cat > "$FAKE/tests/sicp/ch1_newton.esk" <<'ESK'
 (display "fake sicp probe") (newline)
@@ -103,13 +110,23 @@ SH_TAIL
 
 run_smoke() {
     local label="$1"
+    local smoke_durable_root=""
     shift
     LAST_OUT="$WORK/${label}.out"
     : "${LAST_OUT:?LAST_OUT must be set}"
+    if [ -n "${ESHKOL_DURABLE_WORK_ROOT:-}" ]; then
+        # Each synthetic smoke invocation needs its own durable root.  The fake
+        # repository is exercised repeatedly with the same isolation label, and
+        # reusing the outer root would correctly trip the stale-evidence guard on
+        # the second invocation.  Keep every nested run below this fixture's
+        # already-claimed durable directory while preserving fail-closed claims.
+        smoke_durable_root="$WORK/durable-$label"
+    fi
     # The smoke script's timeout shim uses perl; force a portable locale so
     # macOS hosts without C.UTF-8 do not fail before the fake runner executes.
     if [ -n "${RUN_BUILD_DIR:-}" ]; then
         BUILD_DIR="$RUN_BUILD_DIR" \
+            ESHKOL_DURABLE_WORK_ROOT="$smoke_durable_root" \
             ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache-$label" \
             LC_ALL=C LC_CTYPE=C LANG=C \
             "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"${LAST_OUT:?}" 2>&1
@@ -118,6 +135,7 @@ run_smoke() {
         # aggregate harness.  This branch is specifically the default-build
         # behavior test, so it must exercise the fake repo's `build/` runner.
         BUILD_DIR=build \
+            ESHKOL_DURABLE_WORK_ROOT="$smoke_durable_root" \
             ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache-$label" \
             LC_ALL=C LC_CTYPE=C LANG=C \
             "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"${LAST_OUT:?}" 2>&1

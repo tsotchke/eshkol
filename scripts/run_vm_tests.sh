@@ -5,6 +5,8 @@ set -e
 
 BUILD_DIR="${BUILD_DIR:-build}"
 VM="${BUILD_DIR}/eshkol-vm-standalone-test"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FIRST_CLASS_TEST="$ROOT_DIR/tests/integration/vm_first_class_builtin_families_test.esk"
 
 if [ ! -x "$VM" ]; then
     echo "eshkol-vm-standalone-test not found at $VM - build first." >&2
@@ -29,6 +31,7 @@ source "$ESHKOL_TEST_LIB"
 eshkol_test_isolation_init "vm"
 
 OUT_TMP="$ESHKOL_TEST_TMPDIR/vm_standalone_tests.log"
+FIRST_CLASS_OUT="$ESHKOL_TEST_TMPDIR/vm_first_class_builtin_families.log"
 cleanup_output() {
     eshkol_test_isolation_cleanup
 }
@@ -73,9 +76,30 @@ if [ "$rc" -eq 0 ]; then
         exit 1
     fi
 
+    # Keep the first-class builtin-family integration program in the complete
+    # traced corpus.  CTest also owns this test, but the executable-language
+    # coverage gate consumes run_all_tests.sh traces; omitting it there silently
+    # dropped execution evidence for the deep car/cdr accessor family.
+    set +e
+    ESHKOL_VM_NO_DISASM=1 "$VM" "$FIRST_CLASS_TEST" >"$FIRST_CLASS_OUT" 2>&1
+    first_class_rc=$?
+    set -e
+    if [ "$first_class_rc" -ne 0 ] || \
+       eshkol_test_output_has_failure "$FIRST_CLASS_OUT" || \
+       ! eshkol_test_output_has_marker "$FIRST_CLASS_OUT" \
+           'PASS: VM first-class builtin families'; then
+        tail -80 "$FIRST_CLASS_OUT"
+        echo ""
+        echo "VM first-class builtin-family integration did not produce its pass marker."
+        echo "Passed: 1"
+        echo "Failed: 1"
+        exit 1
+    fi
+
     grep "Source tests: " "$OUT_TMP" | tail -1
+    grep "PASS: VM first-class builtin families" "$FIRST_CLASS_OUT" | tail -1
     echo ""
-    echo "Passed: 1"
+    echo "Passed: 2"
     echo "Failed: 0"
     exit 0
 fi
