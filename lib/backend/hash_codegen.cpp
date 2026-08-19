@@ -30,8 +30,9 @@ namespace eshkol {
  *        declared hash-table runtime functions for lookup elsewhere in codegen.
  */
 HashCodegen::HashCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
-                         std::unordered_map<std::string, llvm::Function*>& func_table)
-    : ctx_(ctx), tagged_(tagged), mem_(mem), function_table_(func_table),
+                         std::unordered_map<std::string, llvm::Function*>& func_table,
+                         ArithmeticCodegen& arith)
+    : ctx_(ctx), tagged_(tagged), mem_(mem), function_table_(func_table), arith_(arith),
       codegen_ast_cb_(nullptr), codegen_typed_ast_cb_(nullptr), callback_context_(nullptr),
       hash_table_create_func_(nullptr), hash_table_set_func_(nullptr),
       hash_table_get_func_(nullptr), hash_table_has_key_func_(nullptr),
@@ -336,6 +337,57 @@ llvm::Value* HashCodegen::isHashTable(const eshkol_operations_t* op) {
     return tagged_.packBool(phi);
 }
 
+// Raises a catchable type error (via arith_.emitTypeError) unless `arg` is a
+// hash table: legacy HASH_PTR (36), or consolidated HEAP_PTR (8) whose
+// object header carries HEAP_SUBTYPE_HASH. Mirrors isHashTable()'s check.
+// On success, control falls through into a fresh "<func>_type_ok" block that
+// becomes the caller's active insert point; on failure, emitTypeError raises
+// and terminates with `unreachable`.
+void HashCodegen::requireHashTable(llvm::Value* arg, const char* func_name) {
+    auto& builder = ctx_.builder();
+    auto& context = ctx_.context();
+
+    llvm::Value* type_tag = tagged_.getType(arg);
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
+    llvm::Value* ptr_val = tagged_.unpackInt64(arg);
+
+    llvm::Value* is_hash_legacy = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HASH_PTR));
+    llvm::Value* is_heap_ptr = builder.CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::Value* is_non_null = builder.CreateICmpNE(ptr_val,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* check_heap = builder.CreateAnd(is_heap_ptr, is_non_null);
+
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* check_heap_block = llvm::BasicBlock::Create(context, "req_hash_check_heap", current_func);
+    llvm::BasicBlock* check_subtype = llvm::BasicBlock::Create(context, "req_hash_check_subtype", current_func);
+    llvm::BasicBlock* error_block = llvm::BasicBlock::Create(context, "req_hash_error", current_func);
+    llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(context,
+        std::string(func_name) + "_type_ok", current_func);
+
+    builder.CreateCondBr(is_hash_legacy, ok_block, check_heap_block);
+
+    builder.SetInsertPoint(check_heap_block);
+    builder.CreateCondBr(check_heap, check_subtype, error_block);
+
+    builder.SetInsertPoint(check_subtype);
+    llvm::Value* obj_ptr = builder.CreateIntToPtr(ptr_val, ctx_.ptrType());
+    llvm::Value* header_ptr = builder.CreateGEP(ctx_.int8Type(), obj_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8), "req_hash_header_ptr");
+    llvm::Value* subtype = builder.CreateLoad(ctx_.int8Type(), header_ptr, "req_hash_subtype");
+    llvm::Value* is_hash_subtype = builder.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_HASH));
+    builder.CreateCondBr(is_hash_subtype, ok_block, error_block);
+
+    builder.SetInsertPoint(error_block);
+    std::string msg = std::string(func_name) + ": expected a hash table";
+    arith_.emitTypeError(msg.c_str());
+    // emitTypeError terminates with `unreachable`; error_block needs no br.
+
+    builder.SetInsertPoint(ok_block);
+}
+
 // hash-set!: Set a key-value pair in the hash table
 // (hash-set! table key value) => table
 llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
@@ -521,6 +573,12 @@ llvm::Value* HashCodegen::hashKeys(const eshkol_operations_t* op) {
     // Get table argument
     llvm::Value* table_arg = codegenAST(&op->call_op.variables[0]);
     if (!table_arg) return nullptr;
+    table_arg = ensureTaggedValue(table_arg, "hash_keys_arg");
+
+    // Reject non-hash-table operands before touching their bits (ESH:
+    // unpackPtr on an arbitrary tagged value, e.g. a boxed int, previously
+    // handed garbage to hash_table_keys and crashed the process).
+    requireHashTable(table_arg, "hash-keys");
 
     // Extract table pointer
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);
@@ -576,6 +634,11 @@ llvm::Value* HashCodegen::hashValues(const eshkol_operations_t* op) {
     // Get table argument
     llvm::Value* table_arg = codegenAST(&op->call_op.variables[0]);
     if (!table_arg) return nullptr;
+    table_arg = ensureTaggedValue(table_arg, "hash_values_arg");
+
+    // Reject non-hash-table operands before touching their bits (see
+    // hashKeys() above for the crash this guards against).
+    requireHashTable(table_arg, "hash-values");
 
     // Extract table pointer
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);

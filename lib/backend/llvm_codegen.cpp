@@ -4555,7 +4555,7 @@ private:
         eshkol_debug("Created SystemCodegen");
 
         // Initialize HashCodegen - hash table operations
-        hash_ = std::make_unique<eshkol::HashCodegen>(*ctx_, *tagged_, *mem, function_table);
+        hash_ = std::make_unique<eshkol::HashCodegen>(*ctx_, *tagged_, *mem, function_table, *arith_);
         hash_->setCodegenCallbacks(
             ControlFlowCallbacks::codegenASTWrapper,
             ControlFlowCallbacks::codegenTypedASTWrapper,
@@ -24810,6 +24810,25 @@ private:
         // Bignum operand -> runtime dispatch (op=5); `right` is unused.
         Value* is_bn = isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM);
         Function* func = builder->GetInsertBlock()->getParent();
+
+        // Reject non-integer operands before reinterpreting their bits as a
+        // machine int (previously e.g. a string's heap pointer was popcounted
+        // directly, silently returning garbage instead of erroring).
+        Value* pc_type_tag = getTaggedValueType(n);
+        Value* pc_base_type = getBaseType(pc_type_tag);
+        Value* is_int64_pc = builder->CreateICmpEQ(pc_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_valid_pc = builder->CreateOr(is_bn, is_int64_pc);
+
+        BasicBlock* pc_error_bb = BasicBlock::Create(*context, "popcount_type_error", func);
+        BasicBlock* pc_valid_bb = BasicBlock::Create(*context, "popcount_valid", func);
+        builder->CreateCondBr(is_valid_pc, pc_valid_bb, pc_error_bb);
+
+        builder->SetInsertPoint(pc_error_bb);
+        arith_->emitTypeError("popcount: expected an integer");
+        // emitTypeError terminates with `unreachable`; no br needed.
+
+        builder->SetInsertPoint(pc_valid_bb);
         BasicBlock* bn_bb = BasicBlock::Create(*context, "popcount_bignum", func);
         BasicBlock* int_bb = BasicBlock::Create(*context, "popcount_int", func);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "popcount_merge", func);

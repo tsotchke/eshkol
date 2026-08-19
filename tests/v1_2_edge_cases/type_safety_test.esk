@@ -62,6 +62,32 @@
        (tensor? (make-tensor (list 2 2) 0.0)))
 (check "tensor? 1.0 = #f" (not (tensor? 1.0)))
 
+;; ---- Hash accessors and popcount on non-matching operands ----
+;; (hash-keys 42) / (hash-values 42) used to unpackPtr a non-pointer tagged
+;; value and hand the garbage to the runtime hash_table_keys/values helper,
+;; SIGSEGVing the native process outright (no exception to catch). popcount
+;; on a non-integer (e.g. a string) reinterpreted the pointer's bits as a
+;; machine int and returned a bogus popcount instead of erroring.
+(check "(hash-keys 42) raises, no crash"
+       (guard (exn (#t #t)) (hash-keys 42) #f))
+(check "(hash-values 42) raises, no crash"
+       (guard (exn (#t #t)) (hash-values 42) #f))
+(check "(hash-table-keys 42) raises, no crash"
+       (guard (exn (#t #t)) (hash-table-keys 42) #f))
+(check "(hash-table-values 42) raises, no crash"
+       (guard (exn (#t #t)) (hash-table-values 42) #f))
+(check "(popcount \"notanumber\") raises, no crash"
+       (guard (exn (#t #t)) (popcount "notanumber") #f))
+
+;; Real hash tables still work.
+(define __ht_ts (make-hash-table))
+(hash-table-set! __ht_ts 'a 1)
+(check "(hash-keys real-table) still works"
+       (equal? (hash-keys __ht_ts) (list 'a)))
+(check "(hash-values real-table) still works"
+       (equal? (hash-values __ht_ts) (list 1)))
+(check "(popcount 255) still works" (= (popcount 255) 8))
+
 ;; ---- Context survives errors ----
 (check "after type error, normal code still works"
        (begin

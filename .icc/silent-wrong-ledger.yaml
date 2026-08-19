@@ -2816,6 +2816,113 @@ entries:
       the `do`-then-`define` case would still be shipping.
 
 
+  - id: LE-11
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "fix/native-hash-popcount-guards"
+    closed_by: "branch fix/native-hash-popcount-guards"
+    title: "(hash-keys x) / (hash-values x) SIGSEGV native when x is not a hash table"
+    repro: "(hash-keys 42)"
+    observed: >-
+      Native eshkol-run (both AOT and `-r` JIT) SIGSEGVs, exit 139, no diagnostic reaches
+      the process — `guard` cannot catch a crash. Reproduced for all four documented
+      spellings: hash-keys, hash-values, hash-table-keys, hash-table-values (the last two
+      are aliases of the first two, sharing the same codegen and the same VM opcode).
+    correct: >-
+      a catchable type-error exception, matching the existing contract for other
+      type-confused accessors in this file (car/cdr on non-pairs, arithmetic on non-numbers).
+    cross_engine: >-
+      the hosted VM did NOT crash, but silently returned '() instead of erroring — a
+      different but also-wrong outcome (dispatch table lookup falls through to a
+      hard-coded NIL_VAL fallback when the operand fails `is_heap_type(..., HEAP_HASH)`),
+      so this was two divergent flaws on the two engines, not one shared root cause.
+    root_cause: >-
+      HashCodegen::hashKeys / HashCodegen::hashValues (lib/backend/hash_codegen.cpp) called
+      TaggedValueCodegen::unpackPtr directly on the tagged operand with no type/subtype
+      check, then passed the resulting garbage pointer straight to the runtime's
+      hash_table_keys/hash_table_values helper, which dereferences it as a VmHashTable*
+      (well, the AOT/JIT arena_hash_table struct). The sibling predicate
+      HashCodegen::isHashTable already carried the correct check (legacy HASH_PTR tag OR
+      consolidated HEAP_PTR tag with a HEAP_SUBTYPE_HASH object-header byte); hashKeys/
+      hashValues just never called anything equivalent before dereferencing. On the VM,
+      case 665/666 in lib/backend/vm_native.c correctly gated the fast path on
+      is_heap_type(vm, ht_val, HEAP_HASH) but silently fell through to NIL_VAL on failure
+      instead of raising.
+    fix: >-
+      Native: HashCodegen::requireHashTable() (lib/backend/hash_codegen.cpp), mirroring
+      isHashTable's tag/subtype check, calls into the arithmetic codegen's existing
+      ArithmeticCodegen::emitTypeError() idiom (the same one call_apply_codegen.cpp uses
+      for `(apply min '())`) to raise a catchable exception with an `unreachable`
+      terminator when the operand is not a hash table; wired into both hashKeys and
+      hashValues before they touch the pointer. VM: cases 665/666 in vm_native.c now call
+      vm_raise_error_msg() (the same catchable-error idiom used throughout this file for
+      out-of-range accessors) instead of falling through to NIL_VAL.
+    evidence: >-
+      tests/v1_2_edge_cases/type_safety_test.esk — 5 new `guard`-wrapped checks for
+      (hash-keys 42), (hash-values 42), (hash-table-keys 42), (hash-table-values 42), plus
+      confirmation that real hash tables still round-trip through hash-keys/hash-values.
+      Manually verified at the branch head, both AOT-compiled and `-r` JIT, and on the VM
+      (eshkol-run --profile hosted-vm --emit-eskb + eshkol-vm-standalone-test): all four
+      probes now print ERR under `guard` and exit 0 on both engines, where native previously
+      SIGSEGVed (rc=139) and the VM previously exited 0 with a wrong '() answer.
+      tests/escape_matrix/arity_parity_baseline.json's hash-keys::wtype /
+      hash-table-keys::wtype / hash-values::wtype / hash-table-values::wtype
+      native-vs-VM divergences are resolved (both engines now agree: ERR).
+    caught_by: [direct-measurement, arity-probes]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, p8-arity-sweep]
+    notes: >-
+      Classified LOUD-ERROR (native side) rather than SILENT-WRONG because the pre-fix
+      native failure mode was a crash (loud, if uncatchable) not a wrong answer with exit 0;
+      the VM side of the SAME defect (silent '() instead of erroring) would independently
+      qualify as SILENT-WRONG, which is why both engines are fixed together here rather
+      than treating the VM half as out of scope.
+
+  - id: SW-42
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/native-hash-popcount-guards"
+    closed_by: "branch fix/native-hash-popcount-guards"
+    title: "(popcount x) on a non-integer silently reinterprets the operand's tagged bits instead of erroring"
+    repro: "(popcount \"notanumber\")"
+    observed: "native: 14, exit 0, no diagnostic. VM: 0, exit 0, no diagnostic."
+    correct: "a catchable type-error exception; popcount is documented (docs/tutorials/20_BITWISE_AND_SYSTEM.md, docs/API_REFERENCE.md) only for exact integers (fixnum and bignum)."
+    root_cause: >-
+      Native: EshkolLLVMCodeGen::codegenPopcount (lib/backend/llvm_codegen.cpp) branched
+      only on `isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM)`; anything not a bignum fell
+      unconditionally into the int64 fast path, which unpacks the tagged value's raw i64
+      payload and runs llvm.ctpop on it — for a string, that payload is the heap pointer,
+      so popcount silently counted the pointer's set bits (14, an address-dependent number
+      that happened to reproduce at this measurement). VM: case 2202 in
+      lib/backend/vm_native.c dispatched non-bignum operands through as_number(), which
+      returns 0.0 for any Value whose type is not VAL_INT/VAL_FLOAT/VAL_CHAR — so a string
+      silently popcounted as if it were the exact integer 0.
+    fix: >-
+      Native: codegenPopcount now also computes `is_int64_pc` (base type == ESHKOL_VALUE_INT64)
+      and routes to arith_->emitTypeError("popcount: expected an integer") — the same
+      ArithmeticCodegen::emitTypeError() idiom used throughout this file and in
+      call_apply_codegen.cpp — whenever the operand is neither that nor a bignum, before
+      either path touches the operand's bits. VM: case 2202 now requires `a.type == VAL_INT`
+      for the int64 fast path (bignum keeps its existing dedicated branch) and calls
+      vm_raise_error_msg(vm, "popcount: expected an integer") otherwise.
+    evidence: >-
+      tests/v1_2_edge_cases/type_safety_test.esk — `guard`-wrapped check for
+      (popcount "notanumber"), plus a regression check that (popcount 255) still answers 8.
+      Manually verified at the branch head: AOT, `-r` JIT, and the VM
+      (eshkol-vm-standalone-test on an emit-eskb of the same probe) all now print ERR under
+      `guard` and exit 0, where they previously printed a wrong numeric answer with exit 0.
+      tests/escape_matrix/arity_parity_baseline.json's popcount::wtype native-vs-VM
+      divergence is resolved (both engines now agree: ERR); popcount::warity is a
+      pre-existing, unrelated divergence (native hard-refuses at compile time on wrong
+      arity, the VM does not) confirmed present on an unmodified master control build
+      and left untouched by this fix.
+    caught_by: [direct-measurement, arity-probes]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, p8-arity-sweep]
+    notes: >-
+      Textbook SILENT-WRONG: zero exit status, no diagnostic, a plausible-looking integer
+      answer on the native side that differs by input (pointer-address-dependent), and a
+      different but equally wrong answer (0) on the VM.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01
