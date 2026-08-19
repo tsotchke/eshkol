@@ -70,6 +70,7 @@
     "ESHKOL_DIRECTIONAL_DERIV_OP": {"class": "composable", "pillar": "P6a", "note": "directional-derivative nesting"},
     "ESHKOL_TYPE_ANNOTATION_OP": {"class": "composable", "pillar": null, "gap_task": "ESH-0141", "note": "nested type expressions (arrow/forall) — no pillar sweeps type-expression nesting depth"},
     "ESHKOL_FORALL_OP": {"class": "composable", "pillar": null, "gap_task": "ESH-0141", "note": "nested polymorphic type quantifiers — un-swept"},
+    "ESHKOL_THE_OP": {"class": "composable", "pillar": null, "gap_task": "ESH-0141", "note": "(the type expr) ascription — expr and type_expr both nest (the expr can itself be another (the ...) form; the type_expr can be an arrow/forall) — same un-swept type-expression nesting depth as ESHKOL_TYPE_ANNOTATION_OP"},
     "ESHKOL_GUARD_OP": {"class": "composable", "pillar": "P6c", "note": "nested guard/raise"},
     "ESHKOL_RAISE_OP": {"class": "composable", "pillar": "P6c", "note": "nested guard/raise"},
     "ESHKOL_LET_VALUES_OP": {"class": "composable", "pillar": "P6c", "note": "nested multiple-values binding"},
