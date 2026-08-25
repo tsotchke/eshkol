@@ -486,6 +486,24 @@ probe ad_adversarial_fd_oracle \
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_ad_adversarial.sh --quick 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "ad_adversarial gate: PASS"'
 
+# The exactness guarantee, and the proof its gate can go red.
+#
+# `(= (ad-finite-difference-evals) 0)` shipped as the executable form of "no
+# finite-difference fallback anywhere in the gradient path" while the counter it
+# reads had NO writer on the native back end — a green result that proved
+# nothing, and would have stayed green under a finite-difference regression.
+# This probe runs the wired counter's positive case (an exact vector gradient is
+# one primal / one reverse / zero finite differences) TOGETHER with the negative
+# control (a real central-difference backward drives the counter to exactly the
+# number of perturbations it evaluated, and the assertion form goes #f), on both
+# engines, plus the matmul tape-node ratchet. Readiness must never again be able
+# to certify exactness on the strength of a counter that cannot move.
+probe ad_exactness_gate \
+    'the no-finite-differences guarantee is enforced by a counter that can actually read nonzero: exact gradients report 0 FD evals, a real finite-difference backward reports exactly its perturbations and turns the shipped assertion #f (both engines), and matmul AD tape node counts stay within their ratchet with gradients exact' \
+    'cd "$REPO_ROOT";
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_ad_exactness_gate.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "AD exactness gate: PASS"'
+
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
     'cd "$REPO_ROOT";

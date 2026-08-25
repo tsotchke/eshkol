@@ -263,6 +263,31 @@ oracles:
         label: 'Generative adversarial AD oracle: a seeded, growing family of random differentiable programs (scalar + field + tensor/ML-op compositions; gradient/laplacian/hessian; scalar/vector/tensor-literal points; literal/first-class/wrapper loss forms) matches central finite differences — continuous silent-wrong-gradient tripwire, no zero-gradient-where-FD-is-nonzero'
         action: ./scripts/run_icc_smoke.sh
 
+      # SW-47. The headline exactness claim ("no finite-difference fallback
+      # anywhere in the gradient path") had an executable form —
+      # `(= (ad-finite-difference-evals) 0)` — whose counter had NO writer on
+      # the native back end. The assertion was true by construction: green, and
+      # incapable of going red under the very regression it names. Readiness
+      # consumed that green as evidence of exactness.
+      #
+      # This criterion is deliberately paired: the probe passes only when the
+      # POSITIVE case (an exact vector gradient reports zero finite-difference
+      # evaluations, one primal call, one reverse pass) and the NEGATIVE control
+      # (a real central-difference backward reports EXACTLY the perturbations it
+      # evaluated, and the shipped assertion form evaluates #f in that state)
+      # both hold, on BOTH engines — the native and bytecode back ends keep
+      # separate FD counters, which is how one stayed dead while the other was
+      # live. The negative half is what makes this a gate rather than a
+      # decoration; it has been demonstrated to fail when the counter is
+      # unwired.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_exactness_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SW-47: the no-finite-differences guarantee is enforced by a LIVE counter — exact gradients report 0 FD evaluations, a real finite-difference backward reports exactly its perturbation count and turns `(= (ad-finite-difference-evals) 0)` #f on BOTH engines, and matmul AD tape node counts stay within their shrink-only ratchet with gradients exact. The assertion is a measurement, not a tautology.'
+        action: ./scripts/run_icc_smoke.sh
+
       - runtime_event:
           event_kinds: [runtime_event]
           event_names: ["language_surface_coverage"]

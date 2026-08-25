@@ -69,6 +69,16 @@ buckets:
     whenever an accurate guard is buildable.
   PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
   DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
+  VACUOUS-ASSURANCE: >-
+    A gate, assertion, counter or ratchet that is STRUCTURALLY INCAPABLE of
+    failing, so a green result proves nothing about the property it names. Not
+    tag-blocking on its own — the underlying property may well hold — but
+    distinct from DOC-DEBT in the way that matters: DOC-DEBT is a claim nobody
+    checked, whereas this is a claim that WAS checked, greenly, by a check that
+    could not have gone red. The second is worse, because the green result is
+    consumed as evidence and stops anyone looking. An entry closes only when the
+    check has been demonstrated to FAIL under the condition it exists to detect
+    — a recorded red run, not an argument that it would go red.
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
 
 entries:
@@ -3628,3 +3638,264 @@ entries:
     title: "68 header symbols and 59 shipped .esk exports have no documentation anywhere"
     evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
     caught_by: [pr-record-416]
+
+  # ───────────────────── VACUOUS-ASSURANCE ─────────────────────
+
+  - id: SW-47
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "fix/ad-guarantees-real"
+    closed_by: "branch fix/ad-guarantees-real"
+    family: ad/instrumentation
+    note: >-
+      SW-46 is deliberately NOT used here: it is reserved for the in-flight
+      correctness lane that was open when this entry was filed. SW-45 was
+      already taken by #463 (merged as 8f1ce3e4). Next free id at filing time
+      was verified with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml
+      | sort -V | tail -3`, which returned SW-43/SW-44/SW-45.
+    title: "The no-finite-differences guarantee was enforced by a counter nothing could increment, so `finite_difference_evals == 0` was true by construction"
+    repro: >-
+      On the pre-fix tree: `grep -rn eshkol_ad_count_fd lib/ inc/ exe/ tests/
+      scripts/` returns exactly two lines — the definition at
+      lib/core/runtime_autodiff.cpp:51 and the declaration at
+      lib/core/arena_memory.h:396. Zero call sites. Then run
+      tests/ad/one_pass_gradient_test.esk, whose line 89 asserts
+      `(= (ad-finite-difference-evals) 0)`, and it passes.
+    observed: >-
+      The assertion passed, and could not have done otherwise.
+      __eshkol_ad_counters.finite_difference_evals has exactly one writer,
+      eshkol_ad_count_fd(), and that function had no callers anywhere in the
+      native compiler, its runtime, or emitted IR — so on the native back end
+      the field was pinned at 0 for the lifetime of every process. The
+      executable form of the public claim "exact gradients … no
+      finite-difference fallback anywhere in the gradient path" was therefore a
+      tautology: it would have stayed green if a finite-difference fallback had
+      been added to the gradient path the next day. Demonstrated directly on
+      this branch: with the counter deliberately unwired again, the pre-existing
+      positive gate (scripts/run_one_pass_gradient_gate.sh) still reports
+      "JIT PASS (26 checks) … PASS", while the new negative control fails —
+      evidence at
+      .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+      Compounding it, the ONE real finite-difference site reachable from a
+      compiled Eshkol program — `record-fd-op!` in lib/core/ad/tape.esk, central
+      differences at eps=1e-6, named by ADR-0002 as a site that must increment
+      the counter — reported nothing on either engine, so a program that
+      genuinely did finite differences still read `(ad-finite-difference-evals)`
+      as 0. The counter under-reported real FD work AND could not over-report.
+    correct: >-
+      The counter must be a live instrument: capable of reading nonzero, reading
+      nonzero exactly when finite differences actually run, and returning 0 when
+      they do not. `(= (ad-finite-difference-evals) 0)` must be a measurement of
+      the run, not a property of the build.
+    root_cause: >-
+      The read end shipped without the write end. ADR-0002's migration plan
+      ("add a finite_difference_evals counter incremented at every FD site")
+      was implemented as far as the reader builtins
+      ((ad-finite-difference-evals), (ad-counters)) and the reset, and stopped
+      before any site called eshkol_ad_count_fd(). The three native FD sites the
+      ADR named (autodiff_codegen.cpp gradientHigherOrder / vector-tensor
+      Hessian) were subsequently converted to exact forward-over-forward AD —
+      genuinely good work — which removed the callers-to-be and left the counter
+      looking finished. The fourth named site, tape.esk's `record-fd-op!`, was
+      never wired at all. Nothing failed, because nothing could.
+    fix: >-
+      Added `(ad-note-finite-difference!)` (native fid 2088, arity 0) as the
+      write end of the counter, implemented on BOTH engines — native via
+      eshkol_builtin_ad_note_finite_difference -> eshkol_ad_count_fd()
+      (lib/core/system_builtins.c, lib/backend/system_codegen.cpp,
+      lib/backend/llvm_codegen.cpp), bytecode VM via case 2088 incrementing
+      vm->ad_finite_difference_evals (lib/backend/vm_native.c,
+      lib/backend/eshkol_vm.c). `record-fd-op!` (lib/core/ad/tape.esk) now
+      reports one evaluation per perturbation, so its count equals the extra
+      primal evaluations the backward actually paid for. eshkol_ad_count_fd()
+      thereby acquires its first caller. A stale comment in
+      lib/core/runtime_list_helpers.cpp that described the (now exact)
+      multi-parameter hessian/laplacian/directional-derivative paths as
+      "finite-difference" was corrected in the same pass, so no reader is left
+      believing an FD fallback still exists there.
+    evidence: >-
+      tests/ad/fd_counter_negative_test.esk — 12 checks, the negative control:
+      the counter moves 0 -> 1 -> 3 on explicit reports; a real central-
+      difference backward through `record-fd-op!` over 2 inputs reads back
+      exactly 4 (2 inputs x 2 perturbations) while the gradients it produces are
+      right (d/dx = 3x^2 = 12, d/dy = 2); the shipped assertion form
+      `(= (ad-finite-difference-evals) 0)` evaluates #f in that state; and an
+      exact tape gradient over the same function leaves the counter at 0, so the
+      instrument is not merely always-nonzero. Green on native JIT (12/12),
+      native AOT (12/12) and the bytecode VM. Run by
+      scripts/run_ad_exactness_gate.sh, which pairs it with the positive gate.
+    close_condition_met: >-
+      The check has been demonstrated to go RED under the condition it exists to
+      detect. Removing the two `(ad-note-finite-difference!)` calls from
+      `record-fd-op!` and rebuilding stdlib turns
+      scripts/run_ad_exactness_gate.sh from PASS to FAIL on both engines
+      ("fd-counter JIT FAIL", "fd-counter VM FAIL", "AD exactness gate: FAIL"),
+      while the pre-existing positive-only gate stays green — which is precisely
+      the vacuity this entry records. Log:
+      .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+    caught_by: [architecture-audit-2026-08-25, icc-find-dead-code]
+    missed_by: [icc-readiness, icc-smoke, ad-adversarial, vm-parity, ctest]
+    notes: >-
+      The bytecode VM's separate counter (vm->ad_finite_difference_evals) WAS
+      wired before this change, at the two VM finite-difference operators
+      (vm_native.c `divergence` on a tensor-returning field, and `curl`, both
+      central differences at h=1e-7). That asymmetry is why the defect survived:
+      the same Scheme name reads two different backing stores, one live and one
+      dead, and no gate compared them. The gate added here runs the negative
+      control on BOTH engines for exactly that reason. The VM's two FD operators
+      are a separate, still-open divergence from the documented "reverse mode"
+      status of divergence/curl and are NOT closed by this entry.
+
+  # ───────────────────── DOC-DEBT (AD architecture) ─────────────────────
+
+  - id: SW-48
+    bucket: DOC-DEBT
+    status: open
+    family: ad/architecture
+    title: "ADR-0002's dense tensor AD node has never executed: the guard admitting it is unsatisfiable, and the node it would build is routed to the scalar backward and crashes"
+    bucket_justification: >-
+      Not SILENT-WRONG: measured on this branch, every matmul gradient is exact
+      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal call,
+      one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE: there
+      was no green check here proving nothing, because ADR-0000's Stage-7 gate
+      (`scalar_ad_nodes_from_matmul == 0`) was never implemented at all — nothing
+      counted the nodes. What diverges is the ARCHITECTURE from the ADRs that
+      schedule it, which is what DOC-DEBT declares ("documentation claim versus
+      measured reality"), read the direction the maintainer requires: the
+      documents are the blueprint and the code has to rise to them.
+    repro: >-
+      Read lib/backend/llvm_codegen.cpp in the matmul lowering. On the pre-fix
+      tree the AD-record block is guarded by
+      `if (autodiff_ && ad_mode && !after_matmul_compute)`, while
+      `after_matmul_compute` is assigned non-null a few lines above under
+      exactly `if (autodiff_) { if (ad_mode) {`. The conjunction is
+      unsatisfiable, so `recordADNodeTensor` — the only producer of a dense
+      AD_NODE_MATMUL — has zero live callers in the compiler. To see what
+      happens if it is reached, change the guard to `if (autodiff_ && ad_mode)`,
+      rebuild, and run
+      `(gradient (lambda (x) (tensor-sum (matmul x c))) (tensor 2 2 ...))`.
+    observed: >-
+      Unreachable in the shipped compiler. When the guard is flipped so it IS
+      reached, the program SIGSEGVs at address 0x8 on the first matmul gradient,
+      identically under `-r` and AOT (backtrace: fault in generated code,
+      `ldp d0, d1, [x19, #0x8]` with x19 = 0 — loading `value` out of a null AD
+      input node). It does not produce a different gradient or a slower correct
+      one; it does not run. Meanwhile every matmul under autodiff records a tape
+      node per scalar multiply-accumulate: measured 33 nodes for 2x2, 100 for
+      3x3, 225 for 4x4, i.e. growth with M*N*K, which is exactly what ADR-0002
+      exists to remove.
+    correct: >-
+      One dense AD node per tensor operation (ADR-0002 §3.1), so tape size
+      scales with the number of tensor ops rather than with scalar element
+      count, and the dense backward kernels in lib/backend/tensor_backward.cpp
+      carry the work.
+    root_cause: >-
+      Three unfinished things, of which the guard is only the most visible.
+      (1) The guard: `!after_matmul_compute` reads as a fallback for "the
+      scalarizing path did not install" but is never true, so the deadness was
+      accidental rather than declared and every reviewer read it as a switch
+      awaiting a flip. (2) recordADNodeTensor stores NULL into AD-node field 7
+      (`tensor_gradient`), commented "allocated during backward" — but the
+      reverse pass SELECTS the tensor backward by testing that same field
+      non-null (autodiff_codegen.cpp, "TENSOR GRADIENT FAST PATH"). Constructor
+      and consumer each wait for the other, so a node this function builds falls
+      through to the SCALAR dispatch for op 24 and dereferences its null
+      input1/input2. That is the crash. Nothing on the compiled path ever sets
+      tensor_gradient; the only writers are the qLLM bridge C entry points
+      (lib/bridge/qllm_bridge.cpp) and the backward rules themselves, so
+      eshkol_tensor_backward_dispatch is likewise unreachable from compiled
+      Eshkol. (3) Even with those fixed, the dense node produced is dropped —
+      the block computes it, sets its params, and then returns a plain HEAP_PTR
+      tensor — and under AD the scalarizing path leaves AD-node POINTERS in the
+      result tensor's elements, which is what tensor-sum and friends consume, so
+      a dense matmul writing plain doubles there would sever the chain at the
+      next tensor op.
+    interim: >-
+      The deadness is now DECLARED rather than accidental: the block is gated on
+      a named `constexpr bool kDenseTensorADNodesEnabled = false` with the three
+      blockers and the crash evidence recorded beside it, and stays compiled and
+      type-checked so it cannot bit-rot. The divergence is now MEASURED:
+      tests/ad/matmul_tape_node_count_test.esk records today's scalar node
+      counts as a shrink-only ratchet (33 / 100 / 225 for 2x2 / 3x3 / 4x4)
+      alongside exactness of the gradients, so the day the dense path lands the
+      drop is provable and a regression that inflates the tape is caught. Run by
+      scripts/run_ad_exactness_gate.sh.
+    close_condition: >-
+      recordADNodeTensor allocates tensor_gradient so its nodes reach the tensor
+      backward; the dense node is returned as an AD-node-tagged tensor value and
+      consumed by the downstream tensor ops; matmul under AD records ONE node;
+      the ratchet ceilings in tests/ad/matmul_tape_node_count_test.esk drop to
+      O(1) per matmul with the gradients unchanged. That is ADR-0002 Position A
+      ("dense resident tape"), scheduled for v1.6 and unstarted.
+    caught_by: [architecture-audit-2026-08-25]
+    missed_by: [icc-readiness, icc-smoke, ad-adversarial, ctest, vm-parity]
+    notes: >-
+      Checked for the same dead-guard SHAPE elsewhere: `!after_*_compute`
+      appears exactly once in the tree. conv2d, batch-norm, layer-norm,
+      attention, elementwise tensor arithmetic and the reductions do not carry a
+      dead dense block — they have no dense block at all, scalarizing through
+      recordADNodeBinary/recordADNodeUnary in live loops. So the count of this
+      bug shape is ONE; the count of tensor ops still scalarizing is all of them.
+
+  - id: SW-49
+    bucket: LOUD-ERROR
+    status: open
+    family: vm/prelude-cache
+    title: "The committed VM prelude bytecode cache is 28 builtins stale, so the WASM REPL cannot see string-length, string-ref, integer? or any c[ad]{3,4}r"
+    repro: >-
+      Build the generator and compare its output's local-name table with the
+      committed one. From the repo root with an existing build/ tree (the
+      recipe in lib/backend/vm_prelude_source.h; the recipe recorded there
+      BEFORE this branch no longer links, which is part of why the drift went
+      unnoticed):
+        cc -O2 -DGENERATE_PRELUDE_CACHE -Iinc -Ilib \
+           lib/backend/vm_prelude_cache.c -o <outside-repo>/gen_prelude \
+           build/libeshkol-runtime.a -lm -lc++ -framework CoreFoundation \
+           -framework CoreGraphics -framework ImageIO -framework Foundation \
+           -framework IOKit -framework Metal -framework Accelerate
+        <outside-repo>/gen_prelude | grep '^static const int prelude_'
+      Then diff the `prelude_local_names[]` arrays.
+    observed: >-
+      Measured at master 4bf871a0. Regenerating from the source tables yields
+      prelude_n_locals = 768; the committed lib/backend/vm_prelude_cache.h says
+      740. Every one of the 28 names the source registers and the cache lacks is
+      a real builtin: cdar, caaar, caadr, cadar, cdaar, cdadr, cddar, cdddr and
+      the sixteen four-letter c[ad]{4}r forms, plus vref, string-length,
+      string-ref and integer?. Zero names go the other way, so this is pure lag,
+      not divergence. emit_builtin_preamble() turns every BUILTINS[] entry into
+      one prelude local, so any addition to that table invalidates the cache;
+      the cache has simply not been regenerated for 28 additions.
+    correct: >-
+      The committed cache must equal the generator's output for the committed
+      sources, so the precompiled prelude exposes exactly the builtins the
+      engine registers.
+    impact: >-
+      Bounded, and NOT tag-blocking: `vm_prelude_cache.h` is only compiled in
+      when ESHKOL_VM_NO_DISASM is defined as a MACRO, which happens in exactly
+      one place — lib/backend/vm_wasm_repl.c. No native lane, no
+      eshkol-vm-standalone-test run and no ctest target loads it (the many
+      ESHKOL_VM_NO_DISASM=1 uses across scripts/ are the ENVIRONMENT variable,
+      which only suppresses disassembly). So the blast radius is the browser
+      REPL, where these names should be expected to fail to resolve. Filed
+      LOUD-ERROR rather than SILENT-WRONG on that basis: an unbound name fails
+      visibly. The runtime symptom has NOT been observed here — this branch has
+      no emscripten toolchain — so the entry claims only what was measured: the
+      name-set difference, which is exact and engine-independent.
+    close_condition: >-
+      Regenerate lib/backend/vm_prelude_cache.h from the committed sources and
+      verify the WASM REPL lane green (scripts/run_wasm_differential.sh /
+      the wasm-execute-diff job), in a change of its own — it rewrites the whole
+      prelude bytecode array and must not ride along with unrelated work. Then
+      add a build-free guard that regenerates and diffs, the same shape as
+      surface-manifest's "manifest matches the source-extracted surface" step,
+      so the cache cannot silently lag again.
+    caught_by: [branch fix/ad-guarantees-real]
+    missed_by: [ci, ctest, vm-parity, wasm-execute-diff, icc-readiness]
+    notes: >-
+      Found while checking whether adding one builtin
+      ((ad-note-finite-difference!), SW-47) required regenerating the cache. It
+      does — and the regeneration surfaced the pre-existing 28-entry lag. This
+      branch deliberately does NOT regenerate: it would bury a one-line AD
+      instrumentation change under a full prelude-bytecode rewrite that no lane
+      here can verify, so the new builtin is simply the 29th name the cache does
+      not carry, consistent with the 28 before it.

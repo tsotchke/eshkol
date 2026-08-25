@@ -238,6 +238,14 @@ public:
     llvm::Value* adTapeAllocations(const eshkol_operations_t* op);
     /** @brief (ad-finite-difference-evals) — finite-difference evaluations since reset. */
     llvm::Value* adFiniteDifferenceEvals(const eshkol_operations_t* op);
+    /** @brief (ad-note-finite-difference!) — report ONE finite-difference
+     *  perturbation evaluation on an AD path, incrementing the counter read by
+     *  (ad-finite-difference-evals). This is the hook every finite-difference
+     *  site — compiler, runtime or stdlib Scheme — must call, per ADR-0002
+     *  ("increment `finite_difference_evals` every time they evaluate a
+     *  perturbation"). Without it the `finite_difference_evals == 0` exactness
+     *  assertion is vacuous: a counter nothing can raise proves nothing. */
+    llvm::Value* adNoteFiniteDifference(const eshkol_operations_t* op);
     /** @brief (ad-counters) — assoc list of all AD instrumentation counters. */
     llvm::Value* adCounters(const eshkol_operations_t* op);
     /** @brief (temp-directory) — the system temporary-files directory path. */

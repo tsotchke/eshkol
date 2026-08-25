@@ -1,0 +1,122 @@
+;; matmul_tape_node_count_test.esk — the instrument ADR-0002's dense-node work needs.
+;;
+;; WHY THIS TEST EXISTS
+;;
+;; ADR-0002 ("one dense AD node per tensor op, never M*N*K scalar nodes") and
+;; ADR-0000 Stages 7-8 (gate: `scalar_ad_nodes_from_matmul == 0`) are written
+;; against a quantity nothing in the tree measured. The dense path that would
+;; move it — the `recordADNodeTensor` block in lib/backend/llvm_codegen.cpp —
+;; is unreachable and, when reached, crashes; see the comment block there and
+;; .icc/silent-wrong-ledger.yaml SW-48.
+;;
+;; A divergence nobody measures is a divergence nobody can close. So this file
+;; measures it. Every matmul under autodiff currently records a tape node per
+;; scalar multiply-accumulate, so the tape grows with M*N*K rather than with the
+;; number of tensor operations. That is the cost the dense design exists to
+;; remove, and these are the numbers it has to beat.
+;;
+;; WHAT THIS TEST ASSERTS
+;;
+;;   1. The gradients are RIGHT. Node counts are only interesting while the
+;;      answers stay correct; a cheaper tape that computes the wrong gradient is
+;;      not progress. Each case checks against the closed form.
+;;   2. The node count is at or below a committed ceiling. This is a RATCHET,
+;;      not a pin: it fails if the tape gets bigger (a regression), and it keeps
+;;      passing as the count falls. When the dense path lands the counts drop by
+;;      orders of magnitude and the ceilings should be tightened in the same
+;;      change — that tightening is how the Stage-7 gate finally becomes
+;;      meetable AND measurable.
+;;   3. The count is nonzero. A zero would mean the gradient stopped going
+;;      through the tape at all, which has been a silent-wrong failure mode
+;;      before (a severed AD chain returns zeros, not an error).
+;;
+;; The ceilings below were measured on this branch, native back end, JIT and
+;; AOT agreeing, with the scalarizing matmul path (the only live one).
+
+(require stdlib)
+
+(display "TEST: matmul AD tape node count") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+(define (close? a b tol) (<= (abs (- a b)) (+ tol (* tol (abs b)))))
+
+;; tape-nodes out of the (ad-counters) association list.
+(define (tape-nodes)
+  (let loop ((cs (ad-counters)))
+    (if (pair? cs)
+        (if (string=? (car (car cs)) "tape-nodes")
+            (cdr (car cs))
+            (loop (cdr cs)))
+        -1)))
+
+;; Every element of grad must match `expected` (a list), elementwise.
+(define (grad-equals? g expected tol)
+  (let loop ((i 0) (e expected))
+    (if (pair? e)
+        (if (close? (vector-ref g i) (car e) tol)
+            (loop (+ i 1) (cdr e))
+            #f)
+        #t)))
+
+;; Run one matmul gradient, report its node count, and ratchet it.
+;;   label    printed name
+;;   ceiling  committed upper bound on tape nodes for this case
+;;   x, c     operands; loss is (tensor-sum (matmul x c)), so d/dx is the
+;;            row-sum of C broadcast down the rows of X
+(define (measure label ceiling x c expected)
+  (ad-reset-counters!)
+  (let* ((g (gradient (lambda (x) (tensor-sum (matmul x c))) x))
+         (n (tape-nodes)))
+    (display "    ") (display label)
+    (display ": tape_nodes=") (display n)
+    (display " ceiling=") (display ceiling)
+    (newline)
+    (check (string-append label ": gradient is exact")
+           (grad-equals? g expected 1.0e-9))
+    (check (string-append label ": gradient still routes through the tape")
+           (> n 0))
+    (check (string-append label ": tape node count within committed ceiling")
+           (<= n ceiling))
+    ;; The counters that make the count meaningful: one primal, one reverse
+    ;; sweep, and no finite differences anywhere in it.
+    (check (string-append label ": one primal call") (= (ad-primal-calls) 1))
+    (check (string-append label ": one reverse pass") (= (ad-reverse-passes) 1))
+    (check (string-append label ": no finite-difference evaluations")
+           (= (ad-finite-difference-evals) 0))))
+
+;; 2x2: C row sums are 1+2=3 and 3+4=7.
+(measure "matmul 2x2" 33
+         (tensor 2 2 10.0 20.0 30.0 40.0)
+         (tensor 2 2 1.0 2.0 3.0 4.0)
+         (list 3.0 7.0 3.0 7.0))
+
+;; 3x3: C row sums are 1.75, 4.75, 7.75.
+(measure "matmul 3x3" 100
+         (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
+         (tensor 3 3 1.0 0.5 0.25 2.0 1.5 1.25 3.0 2.5 2.25)
+         (list 1.75 4.75 7.75 1.75 4.75 7.75 1.75 4.75 7.75))
+
+;; 4x4: C row sums are 1.875, 5.875, 9.875, 13.875.
+(measure "matmul 4x4" 225
+         (tensor 4 4 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0
+                     9.0 10.0 11.0 12.0 13.0 14.0 15.0 16.0)
+         (tensor 4 4 1.0 0.5 0.25 0.125 2.0 1.5 1.25 1.125
+                     3.0 2.5 2.25 2.125 4.0 3.5 3.25 3.125)
+         (list 1.875 5.875 9.875 13.875 1.875 5.875 9.875 13.875
+               1.875 5.875 9.875 13.875 1.875 5.875 9.875 13.875))
+
+;; ---- Summary ---------------------------------------------------------------
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "matmul_tape_node_count_test: ALL PASS") (newline))
+    (begin (display "matmul_tape_node_count_test: FAIL") (newline)))

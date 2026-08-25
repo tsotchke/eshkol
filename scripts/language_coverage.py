@@ -105,6 +105,8 @@ CI_SURFACE_EXTENSION_TESTS = (
     "tests/sdnc/sdnc_api_test.esk",
     "tests/v1_3_edge_cases/tensor_dtype_test.esk",
     "tests/ad/one_pass_gradient_test.esk",
+    "tests/ad/fd_counter_negative_test.esk",
+    "tests/ad/matmul_tape_node_count_test.esk",
     "tests/ad/sparse_tensors_test.esk",
     "tests/ad/taylor_tower_test.esk",
     "tests/macros/negative/syntax_error_negative.esk",

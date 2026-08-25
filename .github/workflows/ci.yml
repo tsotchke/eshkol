@@ -886,6 +886,34 @@ jobs:
           test -x "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
           "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
 
+      # The exactness guarantee, gated so that it can fail.
+      #
+      # `(= (ad-finite-difference-evals) 0)` is the executable form of "exact
+      # gradients … no finite-difference fallback anywhere in the gradient
+      # path". It shipped green while the counter it reads had no writer at all
+      # on the native back end — true by construction, and unable to go red
+      # under the exact regression it names. Worse, the Phase A gate that
+      # asserts it (scripts/run_one_pass_gradient_gate.sh) had no callers in
+      # any workflow, runner or oracle, so nothing ran it either.
+      #
+      # This step runs both halves: the positive case, and the NEGATIVE control
+      # that drives the counter above zero through a real central-difference
+      # backward and checks the assertion goes #f. Both engines, because the
+      # native and bytecode back ends keep separate FD counters — the asymmetry
+      # that let one stay dead while the other worked. One Linux and one macOS
+      # lane is enough to cover both platforms without paying for it six times.
+      - name: AD exactness gate (finite-difference counter is live; matmul tape ratchet)
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        timeout-minutes: 25
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          ESHKOL_JIT_CACHE_DIR: ${{ runner.temp }}/eshkol-ad-exactness-jit-cache
+        run: |
+          set -euxo pipefail
+          mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+          ./scripts/run_ad_exactness_gate.sh
+
       - name: Upload Test Logs
         if: failure() || cancelled()
         uses: actions/upload-artifact@v7
