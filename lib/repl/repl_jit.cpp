@@ -1096,6 +1096,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_pop_exception_handler);
     ADD_SYMBOL(eshkol_exception_type_matches);
     ADD_SYMBOL(eshkol_unwind_dynamic_wind);
+    ADD_SYMBOL(eshkol_reroot_dynamic_wind);
+    ADD_SYMBOL(eshkol_continuation_capture_stack);
+    ADD_SYMBOL(eshkol_continuation_resume);
+    ADD_SYMBOL(eshkol_set_stack_base_hook);
     ADD_SYMBOL(eshkol_check_recursion_depth);
     ADD_SYMBOL(eshkol_decrement_recursion_depth);
     // SW-10: emitted on every tail-call loop back-edge, so the JIT must be able

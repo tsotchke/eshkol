@@ -1,0 +1,46 @@
+;; A continuation captured INSIDE `with-region` and resumed repeatedly after
+;; that region has exited — the aliasing hazard the region evacuator cares
+;; about. Eshkol has no GC and reclaims by region at scope exit, so the
+;; question is what owns the frames and the region-allocated values a captured
+;; continuation still needs.
+;;
+;; OWNERSHIP RULE (both engines): capturing a continuation inside a region
+;; PINS that region. It is promoted whole rather than reclaimed, so the
+;; failure direction is a leak, never a dangling reference. The VM says so on
+;; stderr ("could not be reclaimed and was promoted whole"); native keeps the
+;; region alive for the same reason. `captured` below is allocated inside the
+;; region and must still read correctly after heavy post-exit allocation
+;; churn, which would otherwise reuse a reclaimed arena.
+;;
+;; Every top-level define is deliberately placed ABOVE the call/cc: the VM
+;; binds top-level names to operand-stack slots, so a binding established
+;; after a capture would sit above the continuation's saved stack top and the
+;; VM refuses that resume loudly (see the diagnostic in
+;; vm_restore_continuation_stack). Native has no such restriction.
+;;
+;; EXPECTED (all three engines): captured=(11 22 33 44 55) three times, then
+;; final captured=(11 22 33 44 55) / ALL PASS
+(define k #f)
+(define n 0)
+(define captured '())
+(define junk '())
+
+(define (churn i acc)
+  (if (= i 0) acc (churn (- i 1) (list i (* i 7) (* i 13) acc))))
+
+(with-region
+  (set! captured (list 11 22 33 44 55))
+  (call/cc (lambda (c) (set! k c) 'first)))
+
+;; Churn hard now that the region has exited: if its arena had been reclaimed
+;; and reused, `captured` would be aliased by this garbage.
+(set! junk (churn 20000 '()))
+
+(display "captured=") (display captured) (newline)
+(set! n (+ n 1))
+(if (< n 3) (k 'again))
+
+(display "final captured=") (display captured) (newline)
+(if (equal? captured (list 11 22 33 44 55))
+    (begin (display "ALL PASS") (newline))
+    (begin (display "FAIL: region memory was reused under a live continuation") (newline)))

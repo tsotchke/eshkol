@@ -231,6 +231,53 @@ static int vm_restore_continuation_stack(VM* vm, const VmContinuation* cont) {
     return 1;
 }
 
+/** @brief Identity of two wind-stack thunk values (same type, same payload). */
+static int vm_wind_value_same(Value a, Value b) {
+    if (a.type != b.type) return 0;
+    return a.as.i == b.as.i;
+}
+
+/**
+ * @brief Move the wind stack to the continuation's saved extent, running the
+ *        thunks the transfer crosses (R7RS 6.10 rerooting).
+ *
+ * Unwinding alone is only correct for an escape, where the target extent is an
+ * ancestor of the current one. Re-entering a continuation captured inside a
+ * `dynamic-wind` whose extent has since been left has to run that extent's
+ * `before` thunk again on the way back in, or the body resumes with its setup
+ * undone. Wind entries are pushed in dynamic order, so a shared prefix of the
+ * two stacks is a shared dynamic extent and nothing there needs to run.
+ */
+static void vm_reroot_winds(VM* vm, const VmContinuation* cont) {
+    int limit = vm->n_winds < cont->n_winds ? vm->n_winds : cont->n_winds;
+    int common = 0;
+    while (common < limit
+           && vm_wind_value_same(vm->wind_stack[common].before,
+                                 cont->saved_wind_befores[common])
+           && vm_wind_value_same(vm->wind_stack[common].after,
+                                 cont->saved_wind_afters[common])) {
+        common++;
+    }
+
+    /* Leave: innermost `after` first. */
+    while (vm->n_winds > common) {
+        vm->n_winds--;
+        vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after);
+    }
+    /* Enter: outermost `before` first. Publish each entry before running its
+     * thunk so a continuation captured inside a `before` sees a coherent
+     * stack. Parameter objects are re-established by the parameter-binding
+     * replay in vm_restore_continuation_dynamic_state(), not here. */
+    for (int i = common; i < cont->n_winds; i++) {
+        vm->wind_stack[i].before = cont->saved_wind_befores[i];
+        vm->wind_stack[i].after  = cont->saved_wind_afters[i];
+        vm->n_winds = i + 1;
+        if (cont->saved_wind_befores[i].type == VAL_CLOSURE)
+            vm_run_wind_after(vm, cont->saved_wind_befores[i]);
+    }
+    vm->n_winds = cont->n_winds;
+}
+
 static void vm_restore_continuation_dynamic_state(VM* vm,
                                                   const VmContinuation* cont) {
     /* Parameter values live outside the VM execution stack.  Rebuild their
@@ -797,11 +844,7 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                while (vm->n_winds > cont->n_winds) {
-                    vm->n_winds--;
-                    Value after = vm->wind_stack[vm->n_winds].after;
-                    vm_run_wind_after(vm, after);
-                }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
@@ -867,7 +910,7 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
@@ -1204,11 +1247,7 @@ void vm_run(VM* vm) {
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
             if (cont) {
                 /* Unwind dynamic-wind after-thunks */
-                while (vm->n_winds > cont->n_winds) {
-                    vm->n_winds--;
-                    Value after = vm->wind_stack[vm->n_winds].after;
-                    vm_run_wind_after(vm, after);
-                }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 /* Restore saved state (with bounds validation) */
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
@@ -1245,13 +1284,14 @@ void vm_run(VM* vm) {
     }
 
     lbl_WIND_PUSH: {
+        /* The compiler has already called `before`; it leaves the before
+         * closure below the after closure so the entry can record BOTH.
+         * `before` is what a continuation re-entering this extent must run
+         * again (see vm_reroot_winds). */
         Value after = vm_pop(vm);
+        Value before = vm_pop(vm);
         if (vm->n_winds >= 32) { fprintf(stderr, "WIND STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        /* The compiler has already called before and leaves only the after
-         * thunk on the operand stack.  Keep before as metadata for future
-         * continuation re-entry support; consuming a second stack value here
-         * previously corrupted the surrounding dynamic extent. */
-        vm->wind_stack[vm->n_winds].before = NIL_VAL;
+        vm->wind_stack[vm->n_winds].before = before;
         vm->wind_stack[vm->n_winds].after = after;
         vm->n_winds++;
         DISPATCH();
@@ -1631,7 +1671,7 @@ vm_exit:
                 Value val = vm->stack[vm->sp - 1];
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
@@ -1697,11 +1737,7 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)
                     vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) {
-                        vm->n_winds--;
-                        vm_run_wind_after(
-                            vm, vm->wind_stack[vm->n_winds].after);
-                    }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE ||
                         cont->frame_count > MAX_FRAMES) {
@@ -2003,7 +2039,7 @@ vm_exit:
             if (cont_val.type == VAL_CONTINUATION) {
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
@@ -2052,7 +2088,8 @@ vm_exit:
         }
         case OP_WIND_PUSH: {
             Value after = vm_pop(vm);
-            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = NIL_VAL; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
+            Value before = vm_pop(vm);
+            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = before; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
             break;
         }
         case OP_WIND_POP: {

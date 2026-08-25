@@ -1,0 +1,51 @@
+;; A correctly structured call/cc generator: the consumer re-captures its own
+;; return continuation on EVERY next!, so each yield hands control back to the
+;; consumer that asked for the value — not to whichever consumer happened to
+;; start the producer. (generator_coroutine.esk in this directory captures
+;; return-k once, inside the producer, and is kept as-is because that shape is
+;; also worth pinning; see its header for the transcript that follows from it.)
+;;
+;; This is the classic producer/consumer shape that needs a continuation to be
+;; re-invocable after the frame that captured it has returned.
+;;
+;; EXPECTED (all three engines):
+;;   gen1: 1 / gen2: 2 / gen3: 3 / gen4: done / ALL PASS
+(define resume-k #f)
+(define return-k #f)
+
+(define (yield v)
+  (call/cc (lambda (k)
+    (set! resume-k k)
+    (return-k v))))
+
+(define (producer)
+  (yield 1)
+  (yield 2)
+  (yield 3)
+  ;; Completion must be delivered through the CURRENT return-k too. Returning
+  ;; normally would hand 'done back to whichever consumer first entered
+  ;; producer, not the one waiting on this next!.
+  (return-k 'done))
+
+(define (next!)
+  (call/cc (lambda (ret)
+    (set! return-k ret)
+    (if resume-k
+        (let ((k resume-k))
+          (set! resume-k #f)
+          (k 'go))
+        (producer)))))
+
+(define ok #t)
+
+(define (expect label got want)
+  (display label) (display ": ") (display got) (newline)
+  (if (not (equal? got want)) (set! ok #f)))
+
+(expect "gen1" (next!) 1)
+(expect "gen2" (next!) 2)
+(expect "gen3" (next!) 3)
+(expect "gen4" (next!) 'done)
+
+(if ok (begin (display "ALL PASS") (newline))
+       (begin (display "FAIL") (newline)))

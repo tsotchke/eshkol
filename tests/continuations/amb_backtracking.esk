@@ -1,0 +1,49 @@
+;; McCarthy's `amb` implemented with call/cc: nondeterministic choice with
+;; backtracking. Each (choose lst) captures a retry continuation per remaining
+;; alternative; failing re-enters one of them, resuming a frame whose dynamic
+;; extent exited long ago, and the SAME choice point is re-entered once per
+;; alternative. This is the multi-shot shape — a one-shot/escape-only call/cc
+;; cannot express it.
+;;
+;; Searches for a Pythagorean triple a<b, a^2+b^2=c^2, over 1..8.
+;; EXPECTED (all three engines): found: (3 4 5) / ALL PASS
+(define fail-stack '())
+
+(define (backtrack)
+  (if (null? fail-stack)
+      (begin (display "exhausted") (newline) (exit 1))
+      (let ((k (car fail-stack)))
+        (set! fail-stack (cdr fail-stack))
+        (k 'retry))))
+
+(define (choose lst)
+  (call/cc (lambda (return)
+    (let loop ((l lst))
+      (if (null? l)
+          (backtrack)
+          (begin
+            ;; Re-entering `retry` resumes here and falls through to the next
+            ;; alternative, with `return` still naming this choose's caller.
+            (call/cc (lambda (retry)
+              (set! fail-stack (cons retry fail-stack))
+              (return (car l))))
+            (loop (cdr l))))))))
+
+(define nums '(1 2 3 4 5 6 7 8))
+(define answer #f)
+
+(define (search)
+  (let ((a (choose nums)))
+    (let ((b (choose nums)))
+      (let ((c (choose nums)))
+        (if (< a b)
+            (if (= (* c c) (+ (* a a) (* b b)))
+                (set! answer (list a b c))
+                (backtrack))
+            (backtrack))))))
+
+(search)
+(display "found: ") (display answer) (newline)
+(if (equal? answer (list 3 4 5))
+    (begin (display "ALL PASS") (newline))
+    (begin (display "FAIL") (newline)))

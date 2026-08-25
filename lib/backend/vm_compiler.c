@@ -1624,12 +1624,16 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
 static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
-    /* Call before() */
+    /* Evaluate `before` once and keep the closure: the wind entry has to
+     * record it so a continuation re-entering this extent can run it again
+     * (R7RS rerooting). Recording only `after` made re-entry resume the body
+     * with its setup undone. */
     compile_expr(c, node->children[1], 0);
-    chunk_emit(c, OP_CALL, 0);
-    chunk_emit(c, OP_POP, 0);
+    chunk_emit(c, OP_DUP, 0);
+    chunk_emit(c, OP_CALL, 0);        /* call before() ... */
+    chunk_emit(c, OP_POP, 0);         /* ... and discard its result */
 
-    /* Push after thunk onto wind stack */
+    /* Push [before, after] onto the wind stack */
     compile_expr(c, node->children[3], 0);
     chunk_emit(c, OP_WIND_PUSH, 0);
 

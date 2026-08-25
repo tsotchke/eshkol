@@ -8298,12 +8298,17 @@ private:
                     offsetof(eshkol_continuation_state_t, wind_mark)));
             Value* wind_mark = builder->CreateLoad(PointerType::getUnqual(*context), wind_mark_ptr);
 
-            Function* unwind_func = module->getFunction("eshkol_unwind_dynamic_wind");
+            // Reroot rather than merely unwind: a continuation captured
+            // inside a `dynamic-wind` whose extent has since been left must
+            // re-run that extent's `before` thunk on the way back in, not just
+            // the `after` thunks of extents being left. Unwinding alone is
+            // only correct for escapes, where the target is an ancestor.
+            Function* unwind_func = module->getFunction("eshkol_reroot_dynamic_wind");
             if (!unwind_func) {
                 FunctionType* unwind_type = FunctionType::get(builder->getVoidTy(),
                     {builder->getPtrTy()}, false);
                 unwind_func = Function::Create(unwind_type, Function::ExternalLinkage,
-                    "eshkol_unwind_dynamic_wind", module.get());
+                    "eshkol_reroot_dynamic_wind", module.get());
             }
             builder->CreateCall(unwind_func, {wind_mark});
 
@@ -8347,17 +8352,21 @@ private:
             }
             builder->CreateCall(region_unwind_func, {state_ptr});
 
-            // Load jmp_buf_ptr and longjmp
-            Value* jmp_buf_ptr = builder->CreateLoad(PointerType::getUnqual(*context), state_ptr);
-
-            Function* longjmp_func = module->getFunction("longjmp");
-            if (!longjmp_func) {
-                FunctionType* longjmp_type = FunctionType::get(builder->getVoidTy(),
-                    {builder->getPtrTy(), builder->getInt32Ty()}, false);
-                longjmp_func = Function::Create(longjmp_type, Function::ExternalLinkage, "longjmp", module.get());
-                longjmp_func->addFnAttr(Attribute::NoReturn);
+            // Hand off to the runtime, which restores the continuation's saved
+            // stack image to its original addresses and then longjmps. Doing
+            // the longjmp here instead would resume on whatever now occupies
+            // the capturing frame's memory — the SW-51 crash. Continuations
+            // captured without a usable image fall back to a plain longjmp
+            // inside the helper, preserving escape-only behaviour exactly.
+            Function* resume_func = module->getFunction("eshkol_continuation_resume");
+            if (!resume_func) {
+                FunctionType* resume_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy()}, false);
+                resume_func = Function::Create(resume_type, Function::ExternalLinkage,
+                    "eshkol_continuation_resume", module.get());
+                resume_func->addFnAttr(Attribute::NoReturn);
             }
-            builder->CreateCall(longjmp_func, {jmp_buf_ptr, ConstantInt::get(builder->getInt32Ty(), 1)});
+            builder->CreateCall(resume_func, {state_ptr});
             builder->CreateUnreachable();
 
             // Normal closure dispatch continues here
@@ -22942,6 +22951,21 @@ private:
 
         // Normal path: call proc with the continuation
         builder->SetInsertPoint(normal_bb);
+
+        // Snapshot the live stack so this continuation stays invocable after
+        // the frame capturing it has returned (SW-51). This must run here, on
+        // the normal path, rather than in setup_bb: the image has to contain
+        // the jmp_buf *after* setjmp wrote it, or resuming would jump through
+        // a stale buffer. Failure inside the helper is non-fatal and leaves
+        // the continuation escape-only, exactly as before.
+        Function* capture_stack_func = module->getFunction("eshkol_continuation_capture_stack");
+        if (!capture_stack_func) {
+            FunctionType* capture_stack_type = FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            capture_stack_func = Function::Create(capture_stack_type, Function::ExternalLinkage,
+                "eshkol_continuation_capture_stack", module.get());
+        }
+        builder->CreateCall(capture_stack_func, {arena_ptr, state_ptr});
 
         // Evaluate the procedure argument
         Value* proc_val = codegenAST(op->call_cc_op.proc);

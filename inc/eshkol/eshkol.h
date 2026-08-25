@@ -1496,6 +1496,22 @@ typedef struct eshkol_continuation_state {
     // every region opened since, after deep-promoting the delivered value out of
     // them (see eshkol_region_unwind_for_continuation).
     uint64_t region_mark;
+    // Durable copy of the C stack frames this continuation needs, so it stays
+    // re-invocable after the frame that captured it has returned and its
+    // memory been reused. `jmp_buf_ptr` alone only survives while that frame
+    // is still live, which is why re-entry into a returned frame previously
+    // SIGILL'd/SIGSEGV'd (ledger SW-51).
+    //
+    // stack_lo/stack_hi bound the captured region [lo, hi) in the ORIGINAL
+    // address range; the bytes are restored to exactly those addresses on
+    // resume, so every interior pointer (frame pointers, addresses of locals
+    // held in closures, the jmp_buf itself) stays valid without relocation.
+    // saved_stack is arena-owned and never mutated, which is what makes the
+    // continuation multi-shot: each resume re-copies the same pristine image.
+    void* stack_lo;
+    void* stack_hi;
+    void* saved_stack;
+    uint64_t saved_len;
 } eshkol_continuation_state_t;
 
 /**
@@ -1531,6 +1547,58 @@ eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena, void* j
  * @return Opaque pointer to the resulting closure object.
  */
 void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
+/**
+ * @brief Snapshot the live C stack into the continuation, making it re-entrant.
+ *
+ * Must be called on the call/cc normal path *after* setjmp has written the
+ * jmp_buf, so the captured image holds a jmp_buf worth jumping through. Copies
+ * [current frame, thread stack base) into @p arena. On any failure the
+ * continuation keeps the historical escape-only behaviour rather than a
+ * half-captured image.
+ *
+ * @param arena Arena to allocate the stack image from.
+ * @param state_ptr Continuation state from eshkol_make_continuation_state().
+ */
+void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
+/**
+ * @brief Resume a captured continuation, delivering state->value. Never returns.
+ *
+ * Restores the continuation's saved stack image to its original addresses and
+ * longjmps to the capture point. Because the image is never mutated, the same
+ * continuation may be resumed any number of times.
+ *
+ * @param state_ptr Continuation state to resume.
+ */
+void eshkol_continuation_resume(void* state_ptr);
+/**
+ * @brief Move the dynamic-wind stack to @p target_mark, running the `after`
+ *        thunks of extents being left and the `before` thunks of extents being
+ *        entered (R7RS 6.10 rerooting).
+ *
+ * Used on the continuation-invoke path. Unlike eshkol_unwind_dynamic_wind(),
+ * which only handles escapes to an ancestor extent, this is correct for
+ * re-entry into an extent that was already left — the multi-shot case.
+ *
+ * @param target_mark Wind-stack mark saved at capture time.
+ */
+void eshkol_reroot_dynamic_wind(void* target_mark);
+/**
+ * @brief Probe returning the highest address of the calling thread's stack.
+ *
+ * Returns 0 when the geometry is unknown, in which case continuations stay
+ * escape-only rather than capturing a stack image.
+ */
+typedef uintptr_t (*eshkol_stack_base_fn)(void);
+/**
+ * @brief Install the thread-stack-base probe used by continuation capture.
+ *
+ * Stack geometry is platform-specific, so the freestanding runtime core does
+ * not query it directly; the hosted runtime installs a probe at startup. With
+ * no probe installed, `call/cc` keeps its escape-only behaviour.
+ *
+ * @param fn Probe to install, or NULL to disable stack capture.
+ */
+void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn);
 /**
  * @brief Push a new dynamic-wind frame with the given before/after thunks.
  * @param arena Arena to allocate the stack entry from.
