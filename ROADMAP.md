@@ -764,16 +764,25 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       Enforcement is a worst-case-path analysis of the binder's own body
       (`TypeChecker::analyzeLinearUses`), covering `define`/`lambda` parameters
       and `let` bindings, `if` branch-exclusivity, sequences and short-circuit
-      forms, and `let` alias chains. **Remaining BUILD ITEMS**, each announced
-      per binding on stderr rather than silently assumed, and specified in
-      `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` 3.6.8: extend the decidable
-      fragment past `cond`/`case`/`when`/`do`/`guard`/`match`; replace
-      name-keyed with **place-keyed** tracking (ADR-0004 PlaceId/FlowEnv) so
-      laundering through an untyped binder or a data structure stops defeating
-      it — the same hole that defeats ownership `move` tracking; loop-carried
-      accounting for named `let`; and VM parity, since the HoTT type checker
-      runs on the LLVM path only and the bytecode VM enforces nothing
-      (ADR-0004, ADR-0000 Stage 12).
+      forms, and `let` alias chains. **Extended in the same release** to the
+      remaining control-flow forms — `cond`, `case`, `when`, `unless`, `do`,
+      `guard`, `match` and `set!` are all walked, clause ladders by their exact
+      worst path — to alias laundering through an immediately applied `lambda`
+      and through a `set!` move, and to rejecting a bare linear reference stored
+      into an untyped container. **VM engine parity closed**: the bytecode VM
+      runs the same judgment (not a second implementation), so source execution
+      and `--emit-eskb` both refuse a violating program and write no bytecode.
+      **Remaining BUILD ITEMS**, each announced per binding on stderr rather
+      than silently assumed, and specified in
+      `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` 3.6.8: loop-carried accounting,
+      so a named `let` or `do` whose body names the qubit can be ruled on rather
+      than reported undecidable; a `guard` whose handler names the binding;
+      `call/cc` re-entry; once-closures / affine closure typing for dynamic
+      duplication; and the last name-keyed residue — a qubit returned from a
+      function with an unannotated return type, which needs interprocedural
+      inference and is what ADR-0004's **place-keyed** PlaceId/FlowEnv closes,
+      for linear types and ownership `move` alike (ADR-0004, ADR-0000
+      Stage 12).
 - [ ] Quantum register types `qreg<n>` with compile-time dimension
 - [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 - [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9

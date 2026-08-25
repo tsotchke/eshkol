@@ -76,8 +76,11 @@ of a linear type (`Qubit`) stops code generation, exits nonzero and writes no
 binary with or without `--strict-types` — that is what makes the no-cloning
 guarantee a type error rather than a convention. `--unsafe`, documented as
 bypassing no-cloning for FFI and low-level work, still suppresses it silently.
-See [the specification, 3.6.8](../../COMPLETE_LANGUAGE_SPECIFICATION.md) for
-which shapes are enforced and which are not yet.
+The rule is enforced identically on the bytecode VM: `--profile hosted-vm
+--emit-eskb` refuses a violating program and writes no `.eskb`, and the
+standalone VM refuses to run one. See
+[the specification, 3.6.8](../../COMPLETE_LANGUAGE_SPECIFICATION.md) for which
+shapes are enforced and which are not yet.
 
 ### Search paths
 

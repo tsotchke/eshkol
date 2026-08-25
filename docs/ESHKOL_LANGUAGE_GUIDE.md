@@ -1453,12 +1453,17 @@ mode accepts idiomatic dynamic-but-validated code without escape hatches:
   mode and not only under `--strict-types` — giving quantum-register operations
   a no-cloning guarantee at the type level rather than by convention.
   `--unsafe` remains the documented escape hatch. The judgment is a static
-  worst-case-path analysis: it accepts a qubit consumed once in each branch of
-  an `if`, follows `let` aliases, and for a body it cannot decide (`cond`,
-  `case`, `when`, named `let`, aliasing through data structures) it says so on
-  stderr and rules neither way. See
+  worst-case-path analysis: it accepts a qubit consumed once in each mutually
+  exclusive branch of an `if`, `cond`, `case` or `match`, walks `when`,
+  `unless`, `do`, `guard` and `set!`, follows aliases through `let`, through an
+  immediately applied `lambda` and through a `set!` move, and rejects a bare
+  linear reference stored into an untyped container. For a body it cannot decide
+  — a loop whose body names the qubit, a `guard` whose handler does, `call/cc`
+  — it says so on stderr, naming the form, and rules neither way. The same rule
+  is enforced on the bytecode VM, which runs the same judgment rather than a
+  second implementation of it. See
   [the specification, 3.6.8](COMPLETE_LANGUAGE_SPECIFICATION.md) for the exact
-  enforced and unenforced sets, including the VM engine-parity gap.
+  enforced and unenforced sets.
 
 ---
 

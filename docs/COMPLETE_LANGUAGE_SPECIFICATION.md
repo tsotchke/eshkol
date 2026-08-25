@@ -923,14 +923,20 @@ low-level work.
 
 ##### What is enforced
 
-The judgment is a static, worst-case-path analysis of the binder's own body. It
-charges the condition plus the **larger** of the two branches of an `if` (the
-branches are mutually exclusive, so `(if b (X q) (Z q))` consumes `q` exactly
-once and is accepted), the **sum** across `begin` sequences and across `and`/`or`
-(short-circuiting only ever evaluates fewer operands, and a linear binding any
-path can duplicate is ill-typed), and it follows aliases through `let`, so
-rebinding a qubit under a second name does not launder a clone. A closure
-capturing a linear value counts as a use of it.
+The judgment is a static, worst-case-path analysis of the binder's own body,
+asking one question: how many times can this binding be used along a single
+worst-case execution path. It charges the condition plus the **larger** of the
+two branches of an `if` (the branches are mutually exclusive, so
+`(if b (X q) (Z q))` consumes `q` exactly once and is accepted), the **sum**
+across `begin` sequences and across `and`/`or` (short-circuiting only ever
+evaluates fewer operands, and a linear binding any path can duplicate is
+ill-typed), and the **exact worst path through a clause ladder** for `cond`,
+`case` and `match` — reaching clause *k* runs the tests of clauses 0..*k* and
+then exactly one body, so one use per clause is accepted while two uses in one
+clause is the clone it is. It follows aliases through `let`, through a chain of
+them, through an immediately applied `lambda`, and through a `set!` that moves
+the value to another name, so rebinding a qubit does not launder a clone. A
+closure capturing a linear value counts as a use of it.
 
 Enforced shapes — a violation in any of these is fatal:
 
@@ -940,10 +946,28 @@ Enforced shapes — a violation in any of these is fatal:
 | Two uses across a `begin`, an `and`/`or`, or the arguments of one call | error |
 | A use inside a closure plus a use outside it, or two uses inside one closure | error |
 | A use rebound through a `let` alias — or a chain of them — then used twice | error |
+| Two uses inside one `cond`, `case`, `when`, `unless` or `match` clause body | error |
+| Two uses inside a `guard` body whose handlers do not name the binding | error |
+| Two uses around a `do` loop that does not itself name the binding | error |
+| A qubit laundered through an immediately applied `lambda`, then used twice | error |
+| A qubit moved by `set!` to another name, then used twice through it | error |
+| A bare linear reference stored into an untyped container (`cons`, `vector`, …) | error |
 | A linear binding never used at all | error |
 | One use in each branch of an `if` | accepted |
+| One use in each `cond`, `case` or `match` clause | accepted |
+| One use in a `when`/`unless` body, or in a `guard` body | accepted |
+| One use beside a loop that does not name the binding | accepted |
+| A `set!` move followed by exactly one use | accepted |
 | An alias chain ending in exactly one use | accepted |
+| A container built from gate **results** rather than the binding itself | accepted |
 | Distinct linear bindings each used once | accepted |
+
+The rule holds on **both engines**. The LLVM path enforces it before code
+generation, for AOT (`-o`) and JIT (`-r`) alike, and `-r` publishes no cached
+run binary for a rejected program. The bytecode VM enforces the same rule, by
+running the same judgment rather than a second implementation of it: source
+execution and `--profile hosted-vm --emit-eskb` both refuse a violating program,
+and no `.eskb` is written.
 
 ##### What is not enforced yet
 
@@ -952,54 +976,56 @@ for a body it cannot account for, and says so on stderr rather than guessing:
 
 ```
 [WARN] Linearity not enforced: linear variable 'q' is not statically decidable
-here (body contains a control-flow or special form outside the decidable
-fragment); use-exactly-once is NOT enforced for it
+here (body contains a named let loop body that may run any number of times);
+use-exactly-once is NOT enforced for it
 ```
 
 Refusing to rule is deliberate. Under-approximating misses a clone; over-
 approximating rejects a correct quantum program, and that is the failure this
-must not have. The shapes outside the enforced set today:
+must not have. The note names the form that stopped the analysis, so the
+boundary is visible in the build log and not only here. The shapes outside the
+enforced set today:
 
-- **`cond`, `case`, `when`, `unless`, `do`, `guard`, `match`, `call/cc`,
-  `set!`** and other special forms whose clause structure the analysis does not
-  model. A qubit used only inside one of these draws the note above and is not
-  checked.
-- **Named `let`** — a loop body runs an unknown number of times, so a
-  single-path use count says nothing about it.
-- **Laundering through an untyped binder — the name-keyed tracking hole.**
-  Tracking is keyed by NAME, and a name is tracked only where the checker can
-  see a linear type on it. A `let` alias keeps the type (and is enforced,
-  including through a chain), but passing the qubit into an *unannotated*
-  parameter, returning it from an unannotated function, or `set!`-ing it into a
-  binding inferred as something else all erase the linear type, and the clone
-  that follows is not diagnosed:
+- **Loops that use the binding.** A named `let` or a `do` whose loop-carried
+  region names the qubit runs an unknown number of times, so a single-path use
+  count says nothing about it: one use in the body is one use *per iteration*.
+  A loop that does not name the binding contributes zero uses whatever its trip
+  count, and stays enforced. Closing the rest needs loop-carried linear
+  accounting.
+- **A `guard` whose handler names the binding.** An exception can be raised at
+  any point in the body, including after the body already consumed the
+  resource, so the handler's use is a second use on some paths and the first on
+  others. Charging both would reject a correct program; charging the maximum
+  would miss a double consumption.
+- **`call/cc` and `dynamic-wind`.** A captured continuation can re-enter the
+  body, which is dynamic duplication a static count cannot see.
+- **Laundering through a separately defined unannotated function.** Tracking is
+  keyed by NAME, and a name is tracked only where the checker can see a linear
+  type on it. Direct `let` aliases, alias chains, immediately applied lambdas,
+  and `set!` moves are all followed now, and a bare reference handed to a
+  container is rejected outright. What remains is a qubit returned from a
+  function whose return type is unannotated:
 
   ```scheme
-  ((lambda (a) (cons (h a) (h a))) q)        ; NOT diagnosed
+  (define (id x) x)
   (let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed
-  (let ((v (vector q))) (h (vector-ref v 0)) (h (vector-ref v 0)))  ; NOT diagnosed
   ```
 
-  This is the same shape that defeats the ownership analyzer's name-keyed move
-  tracking (`(define alias x)` after a `move` compiles clean), and it is what
-  ADR-0004's **PlaceId/FlowEnv** design exists to close: tracking keyed by
-  *place* rather than by name, so an alias is the same place and a store into a
-  structure is a place the analysis can follow. Until then, aliasing through
-  anything but a direct `let` binding is outside the guarantee.
+  Deciding that requires the return type inferred interprocedurally. It is the
+  same shape that defeats the ownership analyzer's name-keyed move tracking
+  (`(define alias x)` after a `move` compiles clean), and it is what ADR-0004's
+  **PlaceId/FlowEnv** design exists to close: tracking keyed by *place* rather
+  than by name, so an alias is the same place whatever binder it passed
+  through.
 - **Dynamic duplication.** A closure that captures a qubit once and is then
   invoked many times is one static use; the analysis is static, not a use-count
   at runtime.
-- **The bytecode VM.** Linear checking lives in the HoTT type checker, which
-  runs on the LLVM code-generation path only. `--profile hosted-vm --emit-eskb`
-  and the standalone VM compile and run a clone without complaint. This is an
-  engine-parity gap, not a VM design decision.
 
-Closing these is tracked work (conformity-audit item a7, ADR-0004): extending
-the decidable fragment to the remaining control-flow forms, replacing name-keyed
-tracking with ADR-0004's place-keyed PlaceId/FlowEnv (which closes the
-laundering hole for linear types and for ownership `move` alike, since both are
-defeated by the same aliasing shape), and running the linear judgment on the VM
-path.
+Closing these is tracked work (conformity-audit item a7, ADR-0004): loop-carried
+linear accounting, once-closures / affine closure typing, and replacing the
+remaining name-keyed inference with ADR-0004's place-keyed PlaceId/FlowEnv
+(which closes the laundering residue for linear types and for ownership `move`
+alike, since both are defeated by the same aliasing shape).
 
 ### 3.7 Module System
 
