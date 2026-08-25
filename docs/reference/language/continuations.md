@@ -115,21 +115,19 @@ Two shapes do not behave as R7RS specifies, both tracked in
   conversion — boxing `set!`-assigned locals — which is not yet implemented.
   See ledger SW-53.
 
-### Known limitation — deep CPS chains (ESH-0080) — FIXED
+### Resolved history — deep CPS chains (ESH-0080)
 
-Very deep continuation-passing chains (e.g. the SICP ch4 `amb`
-nondeterministic search) used to crash with SIGILL beyond a moderate depth
-(observed around n ≳ 16 for that workload) on native JIT/AOT. **This was
-fixed on 2026-06-29** (commit `47338adb`, "run native O0 cleanup for deep
-CPS"): native `-O0` codegen was skipping LLVM's function cleanup passes
-entirely, leaving oversized stack frames for deep closure chains. The fix
-runs a small cleanup pipeline (sroa, early-cse, instcombine, simplifycfg) at
-`-O0`. The regression test, `tests/sicp/ch4_amb_deep_cps_test.esk`, still
-passes on both native JIT and AOT as of this page's last measurement.
-**Note:** despite living under this "continuations" page, ESH-0080's own
-regression test does not use `call/cc` at all — it is a manual-CPS/closure-
-chain program, so this was never actually evidence about `call/cc`
-specifically; it is unrelated to the single-shot/multi-shot question above.
+Very deep continuation-passing chains (for example the SICP ch4 `amb`
+nondeterministic search) once crashed with SIGILL beyond a moderate depth on
+native JIT and AOT. Fixed on 2026-06-29 in commit `47338adb`: native `-O0`
+codegen was skipping LLVM's function cleanup passes entirely, leaving
+oversized stack frames for deep closure chains, and the fix runs a small
+cleanup pipeline (sroa, early-cse, instcombine, simplifycfg) at `-O0`. The
+regression test is `tests/sicp/ch4_amb_deep_cps_test.esk`.
+
+Recorded here only because the issue was historically filed against this page.
+It never concerned `call/cc`: its regression test is a manual-CPS closure-chain
+program that does not use `call/cc` at all.
 
 ### Delivered: full multi-shot re-entrant continuations
 

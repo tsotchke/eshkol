@@ -3300,17 +3300,19 @@ Invoking a captured continuation `k` with value `v`:
 2. Restores the captured continuation's dynamic extent.
 3. Returns `v` as the result of the original `call/cc` expression.
 
-**Constraint:** Continuations are single-shot on the native (LLVM-compiled JIT
-and AOT) backend described by this section; invoking a continuation more
-than once after its capturing stack frame has returned results in undefined
-behavior (reproducibly SIGILL/SIGSEGV — see `.icc/silent-wrong-ledger.yaml`
-SW-51). This is a deliberate implementation choice for performance (setjmp/
-longjmp restores raw stack state with zero overhead on the non-escaping
-path), not merely an oversight — but note the bytecode VM uses a different
-mechanism (operand-stack/call-frame snapshotting) that survives some of
-these re-entry shapes while still not correctly implementing full multi-shot
-semantics either (SW-52). See `docs/reference/language/continuations.md` for
-the complete, measured per-engine account and the tracked build item.
+**Multi-shot:** A captured continuation may be invoked any number of times,
+from any dynamic extent, including after the procedure that captured it has
+returned. This holds on the native LLVM backend (both the `-r` JIT and the
+AOT compiler) and on the bytecode VM. Native gives a continuation that may
+outlive its frame a durable copy of the C stack it needs and restores those
+bytes to their original addresses before jumping; the VM snapshots its own
+operand stack and call frames, excluding the top-level binding slots, which
+are the store rather than the control state. Escape-only continuations —
+early return and exception-style unwinding — are recognised at compile time
+and keep the original zero-overhead `setjmp`/`longjmp` path, so the common
+case costs nothing. See `docs/reference/language/continuations.md` for the
+per-engine account, the ownership rule for continuations captured inside a
+region, and the two remaining limits.
 
 #### 16.1.3 Interaction with Dynamic Wind
 

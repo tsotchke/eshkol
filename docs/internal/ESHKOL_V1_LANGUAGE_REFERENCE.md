@@ -2926,14 +2926,13 @@ Division uses Smith's formula to avoid overflow when the denominator components 
 
 ## 25. First-Class Continuations
 
-Eshkol's native (LLVM JIT/AOT) backend implements single-shot continuations
-via `call/cc` (longjmp-based), with `dynamic-wind` for resource cleanup and
-`guard`/`raise` for structured exception handling. The separate bytecode VM
-backend captures continuations differently (an operand-stack/call-frame
-snapshot) and survives some re-entry shapes native cannot, but does not
-correctly deliver full multi-shot semantics either — see
-`docs/reference/language/continuations.md` for the measured per-engine
-account and `.icc/silent-wrong-ledger.yaml` SW-51/SW-52.
+Eshkol implements multi-shot, re-entrant continuations via `call/cc` on every
+engine — the native LLVM JIT, the AOT compiler, and the bytecode VM — with
+`dynamic-wind` for resource cleanup and `guard`/`raise` for structured
+exception handling. Native carries a durable copy of the C stack for captures
+that may outlive their frame; the VM snapshots its own operand stack and call
+frames. See `docs/reference/language/continuations.md` for the per-engine
+account and the remaining limits.
 
 ### 25.1 `call/cc` - Capture and Invoke Continuations
 
@@ -2964,11 +2963,11 @@ account and `.icc/silent-wrong-ledger.yaml` SW-51/SW-52.
 (display (safe-divide 10 0))     ; => division by zero
 ```
 
-Eshkol's native backend continuations are single-shot: invoking a captured
-continuation more than once after its capturing frame has returned is
-undefined behavior (reproducibly SIGILL/SIGSEGV, `.icc/silent-wrong-ledger.yaml`
-SW-51). This reflects the longjmp-based implementation and avoids the
-overhead of multi-shot continuation support on the common escape-only path.
+A captured continuation may be invoked any number of times, including after
+its capturing frame has returned. Escape-only captures — where the
+continuation provably cannot outlive the frame — are recognised at compile
+time and keep the original zero-overhead `setjmp`/`longjmp` path, so the
+common non-local-exit case pays nothing for re-entrancy.
 
 ### 25.2 `dynamic-wind` - Before/After Thunks
 

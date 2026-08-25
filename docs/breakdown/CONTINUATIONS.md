@@ -22,32 +22,34 @@ they can be stored in variables, passed to functions, and invoked like
 procedures. Invoking a continuation abandons the current computation and resumes
 execution at the captured point, returning the supplied value.
 
-Eshkol's continuations are **single-shot**: a captured continuation may be
-invoked at most once. This restriction follows from the `setjmp`/`longjmp`
-implementation strategy, where the call stack frame that established the
-`setjmp` point must still be live at invocation time. Attempting to invoke a
-continuation after its establishing frame has returned yields undefined
-behavior. This is a deliberate tradeoff -- full multi-shot continuations
-(as in traditional Scheme) require stack copying or CPS transformation, neither
-of which is compatible with Eshkol's goals of zero-overhead native compilation.
+Eshkol's continuations are **multi-shot and re-entrant**: a captured
+continuation may be invoked any number of times, from any dynamic extent,
+including after the procedure that captured it has returned. That is what
+generators, coroutines and `amb`-style backtracking search require.
 
-The single-shot restriction is sufficient for the most common continuation use
-cases: early exit from nested computations, exception handling, and coroutine-
-style control flow where each continuation is used exactly once.
+Zero-overhead native compilation is preserved by paying for re-entrancy only
+where it is needed. A `setjmp` point alone cannot survive its frame's return,
+so a capture whose continuation may outlive its frame also takes a durable
+copy of the C stack it needs; invoking restores those bytes to their original
+addresses and then jumps, which keeps every interior pointer valid without
+relocation, and the copy is never mutated, so it can be restored any number of
+times. A capture whose continuation provably cannot outlive its frame — the
+early-exit and exception-unwinding idiom, which is most uses of `call/cc` — is
+recognised at compile time and keeps exactly the `setjmp`/`longjmp` sequence
+it always had, with no copy at all.
 
-**Scope note:** everything on this page describes the **native (LLVM-compiled
-JIT and AOT) backend** specifically — the setjmp/longjmp mechanism is a
-property of that codegen, not of "Eshkol continuations" as a whole. Eshkol
-also ships a separate bytecode VM engine (`lib/backend/vm_run.c`) whose
-`call/cc` captures a continuation by snapshotting its own operand stack and
-call-frame array instead of using setjmp/longjmp; this survives some
-re-entry shapes that crash on native but does not correctly implement full
-multi-shot semantics either — see `docs/reference/language/continuations.md`
-for the measured, per-engine account and `.icc/silent-wrong-ledger.yaml`
-entries SW-51 (native) / SW-52 (VM) for exact reproductions
-(`tests/continuations/`). Direct measurement 2026-08-25 confirmed the
-"undefined behavior" predicted below for native is not hypothetical: it
-reproduces as SIGILL/SIGSEGV on both JIT and AOT.
+**Scope note:** the mechanism described on this page is the native
+(LLVM-compiled JIT and AOT) backend's. Eshkol also ships a separate bytecode
+VM engine (`lib/backend/vm_run.c`) which reaches the same semantics by a
+different route: it snapshots its own operand stack and call-frame array
+rather than the C stack, deliberately excluding the top-level binding slots,
+which are the store rather than the control state. Both engines are gated on
+the same fixtures in `tests/continuations/`, compared transcript-for-
+transcript on native JIT, native AOT and the VM by
+`scripts/run_continuation_tests.sh`. See
+`docs/reference/language/continuations.md` for the per-engine account, the
+ownership rule for continuations captured inside a region, and the two
+remaining limits.
 
 ---
 
@@ -163,8 +165,11 @@ callables.
 Calls `before` (a zero-argument procedure), then `thunk`, then `after`.
 Returns the result of `thunk`. The key guarantee: `after` is called even if
 control exits `thunk` via a non-local jump (continuation invocation), and
-`before` is called when control re-enters the dynamic extent (not applicable
-for single-shot continuations, but the machinery is in place).
+`before` is called when control re-enters the dynamic extent. Re-entry is a
+reroot, not merely an unwind: the runtime splits the current and target wind
+chains at their common ancestor, runs `after` outward from the innermost
+extent being left, then `before` inward to the outermost extent being
+entered.
 
 ### 3.2 Wind Stack Architecture
 
@@ -509,34 +514,37 @@ guard's `number?` clause matches, returning `84`.
       (lambda () (set! path (cons 'in path)))
       (lambda ()
         (when (null? path)
-          (k k)))   ; re-enter (single-shot: only works once)
+          (k k)))   ; re-enter (may be invoked repeatedly)
       (lambda () (set! path (cons 'out path)))))
   (reverse path))
 ```
 
 This demonstrates the interaction: the `after` thunk fires when the
 continuation `k` is invoked, and the `before` thunk fires on re-entry into
-the `dynamic-wind` scope. With single-shot semantics, the continuation can
-only be used once.
+the `dynamic-wind` scope. The continuation may be invoked any number of
+times, and each re-entry re-runs `before`.
 
 ---
 
 ## 8. Comparison with Full Continuations
 
-| Property                | Eshkol (single-shot)      | Full Scheme (multi-shot)     |
-|-------------------------|---------------------------|------------------------------|
-| Implementation          | setjmp/longjmp            | Stack copying or CPS         |
-| Capture cost            | O(1)                      | O(stack depth)               |
-| Invocation cost         | O(W) wind unwind          | O(stack depth) + O(W)        |
-| Multiple invocations    | Undefined behavior        | Fully supported              |
+| Property                | Eshkol                              | Full Scheme (multi-shot)     |
+|-------------------------|-------------------------------------|------------------------------|
+| Implementation          | setjmp/longjmp + stack copy when needed | Stack copying or CPS     |
+| Capture cost            | O(1) escape-only, O(stack depth) otherwise | O(stack depth)        |
+| Invocation cost         | O(stack depth) + O(W) wind reroot   | O(stack depth) + O(W)        |
+| Multiple invocations    | Fully supported                     | Fully supported              |
 | Coroutines              | Limited (one-shot)        | Full cooperative threading   |
 | Memory overhead         | 40-byte state + closure   | Full stack copy per capture  |
 | LLVM compatibility      | Native (no special passes)| Requires custom lowering     |
 
-The single-shot design is a principled engineering choice. It enables Eshkol to
-compile continuations to efficient native code using only standard C runtime
-facilities (`setjmp`/`longjmp`), without requiring stack manipulation
-intrinsics, CPS transformation passes, or runtime stack copying.
+The design pays for re-entrancy only where it is needed. Escape-only captures
+— the early-exit and exception-unwinding idiom that is most uses of `call/cc` —
+are recognised at compile time and compile to efficient native code using only
+standard C runtime facilities (`setjmp`/`longjmp`), with no stack manipulation
+intrinsics and no CPS transformation pass. A capture whose continuation may
+outlive its frame additionally copies the stack it needs, which is what buys
+general multi-shot re-entry.
 
 ---
 

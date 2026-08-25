@@ -304,7 +304,7 @@ Exactness tracking via `ESHKOL_FLAG_EXACT` in the tagged value flags byte. R7RS 
 
 ### First-Class Continuations
 
-- `call/cc` / `call-with-current-continuation` — single-shot continuations via setjmp/longjmp
+- `call/cc` / `call-with-current-continuation` — multi-shot re-entrant continuations; escape-only captures keep the zero-overhead setjmp/longjmp path
 - `dynamic-wind` — before/after thunks with proper unwinding on non-local exit
 - `guard`/`raise` — R7RS exception handling with cond-style clauses
 - `with-exception-handler` — low-level exception handler installation
@@ -436,7 +436,7 @@ URL validation. See [SECURITY.md](../../SECURITY.md) and
 - Package ecosystem is growing (40 stdlib modules, eshkol-pkg package manager, git-based registry)
 - IDE support includes LSP server (1,019 lines) with completions, hover, go-to-definition, and a VSCode extension
 - Debugging support via `--dump-ir` and `--dump-ast` flags, plus REPL JIT for interactive development
-- Multi-shot continuations not supported (single-shot via setjmp/longjmp covers most use cases)
+- Multi-shot continuations supported on native JIT, native AOT and the bytecode VM (escape-only captures still compile to plain setjmp/longjmp)
 
 ---
 
@@ -480,7 +480,7 @@ Eshkol is Scheme with different trade-offs:
 
 **Compilation:** Racket compiles to bytecode or uses a JIT. Guile interprets or JITs. Chez Scheme compiles to native code. Eshkol compiles to native via LLVM with access to LLVM's full optimization suite.
 
-**Continuations:** Racket/Chez provide full multi-shot continuations. Eshkol provides single-shot via setjmp/longjmp (sufficient for non-local exit, insufficient for coroutines).
+**Continuations:** Racket/Chez provide full multi-shot continuations. Eshkol provides them too — stack copying on native, operand-stack snapshotting on the bytecode VM — while keeping escape-only captures on the zero-overhead setjmp/longjmp path, so coroutines, generators and backtracking are supported.
 
 **Memory:** Both Racket and Guile use precise garbage collectors. Eshkol uses arenas. For programs with predictable lifetimes (scientific simulations), arenas are faster. For programs with complex object graphs (symbolic algebra), GC may be easier.
 
