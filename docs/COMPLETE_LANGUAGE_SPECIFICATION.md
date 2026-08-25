@@ -104,10 +104,35 @@ These types store data directly in the `eshkol_tagged_value_t` struct (no heap a
 
 #### 2.1.6 `SYMBOL` (Interned Symbol)
 - **Type Tag:** `ESHKOL_VALUE_SYMBOL` (5)
-- **Syntax:** `'foo`, `'hello-world`, `'+`
+- **Syntax:** `'foo`, `'hello-world`, `'+`, and as of v1.3.5 (#462) the R7RS
+  7.1.1 third `<identifier>` production, `<vertical line> <symbol
+  element>* <vertical line>` — `'|weird sym|`, `'||` (the empty symbol),
+  `'|\x48;i|` (inline hex escape, reads as `Hi`)
 - **Description:** Interned string used for identifiers
 - **Comparison:** Uses pointer equality (fast)
 - **Example:** `(symbol? 'x)` => `#t`
+
+**Vertical-line (`|...|`) syntax, R7RS 7.1.1.** All four Eshkol readers
+(native tokenizer, VM tokenizer, native runtime `read`, VM runtime `read`)
+accept the full `<symbol element>` alphabet between bars: any character
+except `|` and `\`, the mnemonic escapes `\a \b \t \n \r`, `\|`, and the
+inline hex escape `\x<hex>;`; plus `\\` as a superset R7RS does not
+require but every other Scheme accepts. The bars request a **verbatim**
+spelling, so `#!fold-case` does not apply inside them — `|Foo|` stays
+`Foo` where bare `Foo` folds to `foo`. `.` is the one name where bars
+change meaning: bare `.` is the dotted-pair delimiter (§3.x), so `(a . b)`
+is a dotted pair, while `(a |.| b)` is an ordinary 3-element list whose
+middle element is the symbol named `"."`.
+
+`write` emits bars when, and only when, a name cannot be spelled bare
+under the R7RS 7.1.1 `<identifier>` grammar (a name that would otherwise
+read back as a number, contains whitespace, is the bare dot, or collides
+with a claimed token such as `->` or `+inf.0`); ordinary names (`foo`,
+`with->arrow`, `...`, `+`, `+soup+`, a leading-colon name like `:key`)
+print bare exactly as before. `display` never emits bars — it is a
+`write`-only concern. See `inc/eshkol/core/symbol_syntax.h` (the shared
+predicate/escaper both the native and VM writers call, so their decisions
+are byte-identical) and `tests/features/pipe_symbol_test.esk`.
 
 #### 2.1.7 `DUAL_NUMBER` (Forward-mode AD)
 - **Type Tag:** `ESHKOL_VALUE_DUAL_NUMBER` (6)

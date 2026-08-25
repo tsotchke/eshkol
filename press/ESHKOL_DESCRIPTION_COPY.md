@@ -110,9 +110,12 @@ Each item below cites the file or measurement that grounds the claim.
   `(vqe-energy ...)` composes with ordinary `gradient`/optimizer code (the
   release gate requires the bridged adjoint to match Moonlab's native adjoint
   to within `1e-8` and a central finite difference to within `1e-4`). A
-  permanent 16K-shot CHSH Bell-inequality gate (`bell-chsh`) measures S ≈ 2.86,
-  beyond the classical bound of 2, proving genuine quantum correlations rather
-  than a classical imitation, and `quantum-random` draws from Moonlab's
+  permanent 16K-shot CHSH Bell-inequality gate (`bell-chsh`,
+  `tests/quantum/bell_chsh_test.esk`) requires `2.4 < S <= 2.95`, beyond the
+  classical bound of 2 — a fresh run this cycle measured S = 2.835 (PASS); the
+  exact value is a random-shot measurement that varies run to run within
+  those gate bounds — proving genuine quantum correlations rather than a
+  classical imitation. `quantum-random` draws from Moonlab's
   Bell-verified QRNG when quantum is enabled, with an honestly-labeled
   classical fallback otherwise. The companion `agent.pqc` module provides
   ML-KEM (FIPS 203) post-quantum key encapsulation — `mlkem-keygen`/
@@ -168,7 +171,11 @@ Each item below cites the file or measurement that grounds the claim.
 - **Flat memory for resident and daemon workloads.** Self-tail-recursive loops — both
   named-let and plain `define`, including a catch-all guard body — get automatic,
   zero-annotation per-iteration arena-scope reclamation, verified to hold RSS flat
-  (1,369 MB unbounded growth to 224 MB flat on a 1,000,000-iteration test loop). The
+  (1,369 MB unbounded growth to 224 MB flat on a 1,000,000-iteration test loop).
+  The AOT gate for the plain-`define` case
+  (*tests/memory/define_loop_flat_rss_aot_test.sh*, ESH-0214b) was re-run this
+  cycle: 8 MB peak RSS with the fix on vs. 2,620 MB with it compiled out
+  (`ESHKOL_NO_ITER_SCOPE=1`), same 1,000,000-iteration program. The
   S-expression reader was rewritten from per-element native recursion to an iterative
   loop, so reading back a very large persisted data structure no longer risks a
   native-stack overflow (verified clean at 20 million elements, where the prior
@@ -212,6 +219,20 @@ Each item below cites the file or measurement that grounds the claim.
   double SF64 emulation for native float64 absence, and a CUDA path through cuBLAS.
   Backend chosen per operation by *lib/backend/blas_backend.cpp*, configurable via
   `ESHKOL_GPU_PRECISION`, `ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_GPU_PEAK_GFLOPS`.
+  The Ozaki-II CRT exact-GEMM certification gate
+  (*tests/gpu/ozaki_certification_test.esk*) was re-run this cycle on Metal
+  (Apple M2 Ultra): 16 CRT moduli, 0 mismatches across 25 samples, max 58
+  correct dot-product bits, verdict PASS — floating-point GEMM certified
+  bit-exact against the integer reference, not merely close.
+
+- **A molecular Hessian from a compiled Scheme's own AD, no finite
+  differences.** *examples/h2_vibrational.esk* writes the STO-3G H2
+  Born-Oppenheimer energy curve as ordinary Eshkol code and differentiates
+  it to exact second order with `derivative-n`. Re-run this cycle:
+  equilibrium R* = 1.3887 bohr, E(R*) = -1.1373 Ha, force constant
+  d²E/dR² = 0.4771 Ha/bohr², vibrational frequency = **5003.2 cm⁻¹**
+  (experimental H2 ≈ 4401 cm⁻¹; the gap is the STO-3G basis, not the AD —
+  the second derivative itself is exact).
 
 - **Native agent FFI.** libcurl-backed HTTP client (*lib/agent/c/agent_http_client.c*),
   sqlite3 (*lib/agent/c/agent_sqlite.c*), `posix_spawn` subprocess execution with
@@ -294,9 +315,24 @@ Arbitrary-order AD, run for real (`eshkol-run -r`):
 (display (exact? (derivative-n f 7 12)))  ;; => #t
 ```
 
+Exact rational derivatives, not just exact integer ones — a rational seed
+propagates through `derivative-n` as an exact fraction with no floating-point
+rounding at any step:
+
+```scheme
+(define (g x) (* 8 (* x x)))
+(display (derivative-n g 1/3 1))          ;; => 16/3
+(display (exact? (derivative-n g 1/3 1))) ;; => #t
+```
+
 ---
 
 ## Dual backend
+
+Re-verified this cycle: `(gradient f 3.0 4.0)` on `f(x,y) = x²y + y³`
+returns the byte-identical `#(24 57)` under the native JIT, native AOT, and
+the bytecode VM (three independent executions, one source file). The
+compiler's own version string on this build is `v1.3.4-evolve`.
 
 Eshkol ships two production execution backends with the same language
 semantics and independent value representations. The LLVM backend compiles

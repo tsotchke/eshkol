@@ -149,7 +149,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Boolean | `#t`, `#f` | True/False |
 | Character | `#\a`, `#\newline` | Unicode |
 | String | `"hello"` | UTF-8 |
-| Symbol | `'foo` | Interned identifier |
+| Symbol | `'foo`, `'\|weird sym\|` | Interned identifier. R7RS 7.1.1 vertical-line syntax (`\|...\|`) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims — as of v1.3.5 (#462). `write` emits bars only when a name cannot be spelled bare; `display` never bars. |
 | List | `(list 1 2 3)` | Linked cons cells |
 | Vector | `(vector 1 2 3)` | Indexed array (heterogeneous) |
 | Tensor | `#(1.0 2.0 3.0)` | N-dimensional array (homogeneous doubles) |

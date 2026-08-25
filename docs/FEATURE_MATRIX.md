@@ -640,10 +640,10 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Call C functions | Yes | Eshkol → C | extern declarations |
 | Access C globals | Yes | Eshkol → C | extern-var |
 | C calls Eshkol | Planned | C → Eshkol | Planned callback API |
-| **Python Integration** |
+| **Python Integration** — see [reference/bindings/python.md](reference/bindings/python.md) |
 | Call Python from Eshkol | Yes | v1.2 | Stable C FFI |
 | Call Eshkol from Python | Yes | v1.2 | pybind11 bindings (`bindings/python/`) |
-| NumPy interop | Yes | v1.2 | Zero-copy array interop |
+| NumPy interop | Yes | v1.2; lifetime-hardened v1.3.5 (#458) | Zero-copy array interop; an exported array now holds a strong reference to its owning `Context` via a NumPy capsule, so the array stays valid past the `Context` object's own lifetime (closes audit H1, SW-44) |
 | **Data Formats** |
 | JSON | Yes | - | Parse and generate |
 | CSV | Yes | - | Read and write |
@@ -704,7 +704,12 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 > This section is a historical snapshot and may lag; see the canonical,
 > continuously-updated [ROADMAP.md](../ROADMAP.md) for current status. As of
-> v1.3.1, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve have all shipped.
+> v1.3.4-evolve (shipped 2026-08-19), the entire v1.1-accelerate through
+> v1.3.4-evolve line has shipped. The dates below were re-anchored to
+> measured velocity in the v1.3.5 documentation wave — see ROADMAP.md's
+> "Development workstreams" section for the six workstreams (W1-W6,
+> including distributed computing as a first-class W6 track) every release
+> from v1.3.5 now draws from.
 
 ### v1.1-accelerate (Q1 2026) — COMPLETED
 
@@ -717,38 +722,75 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 - **Optimizers**: Adam, L-BFGS, conjugate gradient in stdlib
 - **R7RS Extensions**: call/cc, dynamic-wind, bytevectors, let-syntax
 
-### v1.2-scale (Q2 2026) — SHIPPED
+### v1.2-scale (May 2026) — SHIPPED
 
 - **Data I/O**: Image/audio I/O, typed buffers, streams, DataFrame, plotting
-- **Vulkan Compute**: Cross-platform GPU backend, multi-GPU
-- **Model Deployment**: Serialization, ONNX export, quantization
-- **Python Bindings**: Call Eshkol from Python and vice versa
-- **Distributed Training**: AllReduce, MPI, gRPC
+- **Model Deployment**: `.eshkol-model` serialization (ESKB-extended binary format)
+- **Python Bindings**: Stable C FFI + pybind11, NumPy zero-copy interop
 
-### v1.3-evolve (Q3 2026) — SHIPPED as v1.3.0-evolve
+Not part of the actual v1.2 ship (still ahead, on the W6/W3 ladder — see
+ROADMAP.md): Vulkan Compute, ONNX export, model quantization, and
+distributed training (AllReduce/MPI/gRPC). An earlier revision of this table
+listed those as shipped in v1.2; they were not, and ONNX/StableHLO export
+specifically ships only once there is a training win to export, per the
+locked interop-first sequence.
+
+### v1.3-evolve (Jul 2026) — SHIPPED as v1.3.0-evolve through v1.3.4-evolve
 
 - **Language Extensions**: Full R7RS library system, string interpolation, keyword arguments
-- **Advanced Types**: Refinement types, effect types, higher-rank types, row polymorphism
-- **Compiler Optimization**: PGO, whole-program optimization, polyhedral loop optimization
+- **Arbitrary-order AD**: all 13 phases (P0-P12) shipped in v1.3.0-evolve
+- **Resident/quantum/high-precision wave**: opt-in Moonlab quantum stack,
+  `core.dbsp`, linear `Qubit`, Ozaki-II exact GEMM, VM region-reclaim gap
+  narrowed to the evacuator alone — shipped across v1.3.1 through
+  v1.3.4-evolve (tagged 2026-08-19)
 
-### v1.4-connection (Q4 2026)
+Advanced type-theory items (refinement types, effect types, higher-rank
+types, row polymorphism) did not ship in the v1.3 line; they remain staged
+at v1.9.0-types. PGO remains a build-time scaffold (workload selection is
+the open gap); whole-program optimization and polyhedral loop optimization
+are not yet scheduled to a specific release.
 
-- **Platform Abstraction**: Cross-platform windows and event system (the portable event loop already SHIPPED in v1.3.4-evolve)
-- **Real-Time Audio**: Device management, synthesis, MIDI I/O
-- **Networking**: TCP/UDP sockets with linear resource management
-- **Embedded & Robotics**: GPIO, I2C/SPI/UART, PWM, ADC/DAC, mobile targets
+### v1.3.5 — the consolidation release (target: late Sep 2026)
 
-### v1.5-intelligence (Q1 2027)
+- **VM region evacuator**: `with-region` reclaims on the bytecode VM
+  (flagship item)
+- **Assurance wave 1**: harness CI lanes, oracle/ledger schema checks,
+  self-verdict scanner
+- **Performance wave 1**: benchmarks on Eshkol's own axes, published and
+  reproducible
 
+### v1.4.0-connection (target: Nov 2026)
+
+- **Networking**: TCP/UDP/TLS sockets, Unix domain sockets, HTTP client/
+  server, WebSocket, with linear resource management
+- **Distributed computing (W6 spike)**: PJRT client spike, XLA multi-device
+  single-host, native collectives over sockets
+- **Interop wave 2**: exactness across the Python/NumPy boundary, silent-
+  demotion CI gate, definition-of-done rule goes live
+
+### v1.5.0-intelligence (target: Q1 2027)
+
+- **Resident/DBSP spine**: `core.dbsp` GA, native PGO in the release workflow
 - **Neuro-Symbolic Bridge**: Soft unification, symbol embeddings, attention over KB
+- **Advanced Neural**: LSTM/GRU cells
+- **Distributed computing (W6)**: Tier-1 data-parallel + Tier-2 mesh
+  bit-identity gate
+
+### v1.7.0-synthesis (target: Q3-Q4 2027)
+
 - **Program Synthesis**: Type-directed holes, neural-guided search
-- **Advanced Neural**: LSTM/GRU cells, Graph Neural Networks
+- **Advanced Neural**: Graph Neural Networks
 
-### v2.0-starlight (2027+)
+### v2.0-starlight (target: Q4 2028)
 
+- **Unified differentiation**: `differentiate` primitive over `numeric` and
+  `incremental` interpretations
 - **Quantum Computing**: QAOA and circuit-level optimisation (Qubit types with linear tracking, gates and VQE already SHIPPED in v1.3.3/v1.3.4-evolve)
-- **Formal Verification**: Proof assistant integration, certified compilation
+- **Formal Verification**: Lean kernel export re-checks the compiler on the
+  normative corpus; "HoTT-inspired" retired as a claim
 - **Next-Gen Types**: Session types, algebraic effects, quantitative type theory
+- **Distributed computing (W6) gates**: Tier 1 >=85% scaling efficiency at 8
+  devices; Tier 2 bit-identical gradients at any node count
 
 ---
 
@@ -783,8 +825,9 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 ### Not Yet Production
 
-- Distributed computing
-- Model serialization/ONNX export
+- Distributed computing (W6 spike targeted at v1.4.0; see ROADMAP.md)
+- ONNX/StableHLO export (ships post-training-win, no fixed date; `.eshkol-model`
+  native serialization itself has been production since v1.2-scale)
 - Vulkan Compute
 
 ---

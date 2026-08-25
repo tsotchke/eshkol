@@ -94,6 +94,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Objects promoted out of a region live in the enclosing arena for its lifetime,
   which is OALR's semantics and is equally true natively.
 
+### Fixed
+
+- **Python bindings: NumPy capsule keeps the tensor buffer alive (#458,
+  audit H1).** A NumPy array exported from a tensor `eval()` held no
+  reference back to its owning `Context`; deleting (or losing the last
+  reference to) the `Context` object called `eshkol_ffi_shutdown()`
+  unconditionally, with nothing to stop that while an exported array — or
+  a view/slice/reshape of one — was still alive and depending on that
+  memory staying valid. `EshkolContext` now holds the context as a
+  `std::shared_ptr`, and every exported array's `base` capsule carries its
+  own copy; real shutdown is deferred until every holder, including every
+  live array's capsule, has released its reference. Closes
+  `.icc/silent-wrong-ledger.yaml` SW-44 (interop/lifetime, SILENT-WRONG
+  bucket — the pre-fix behavior read silently corrupted memory at exit 0,
+  no diagnostic). New regression: `tests/bindings/python_capsule_lifetime_test.py`,
+  wired into `ctest` as `python_bindings_capsule_lifetime`. See
+  [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
+
+### Added
+
+- **Assurance wave 1: ledger-integrity and oracle-schema gates with
+  self-tests (#454).** `scripts/check_ledger_integrity.py` fails
+  `.icc/silent-wrong-ledger.yaml` on a parse error, a duplicate `id`
+  across the file, or an entry missing a required field or closure
+  evidence (`SW-33`/`SW-35`/`SW-42` were each independently double-
+  allocated across branches, invisible to a textual merge).
+  `scripts/check_oracle_schema.py` fails `.icc/completion-oracles.yaml` on
+  a parse error or a structurally invalid criterion, and always reports
+  declared-vs-graded criteria counts per oracle. `scripts/gate_no_silent_wrong.py`
+  gains `--self-test`. All three wired into the `eshkol-compiler-readiness`
+  oracle, added as `ctest` entries, and run in a new `assurance-gates` CI
+  job. See [docs/TESTING.md](docs/TESTING.md#assurance-gates-v135-wave-1-454).
+
+### Changed
+
+- **CI: docs-only PRs now get every required context reported (#455).**
+  `paths-ignore` on the `pull_request` trigger previously meant a
+  docs-only PR (like this one) never started the main workflow at all, so
+  8 of 9 required branch-protection contexts never reported a status and
+  permanently blocked the PR. The docs-only decision moved into a
+  job-level `changes` gate instead, so a docs-only PR now gets every
+  required context reported as skipped. See
+  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
+
+### Added
+
+- **R7RS 7.1.1 vertical-line symbol syntax: read and write (#462).**
+  `<identifier> -> <vertical line> <symbol element>* <vertical line>` is
+  one of R7RS's three `<identifier>` productions; Eshkol previously
+  implemented only the other two, so `'|weird sym|` lexed as two separate
+  tokens. All four readers (native tokenizer, VM tokenizer, native
+  runtime `read`, VM runtime `read`) now accept the full `<symbol
+  element>` alphabet, including the mnemonic escapes, `\|`, and
+  `\x<hex>;`. The bars request a verbatim spelling (`#!fold-case` does not
+  apply inside them), and `|.|` is an ordinary symbol distinct from the
+  bare `.` dotted-pair delimiter. `write` emits bars only when a name
+  cannot be spelled bare under the R7RS grammar; `display` never bars.
+  Shared predicate/escaper in `inc/eshkol/core/symbol_syntax.h` keeps the
+  native and VM writers byte-identical. New regression:
+  `tests/features/pipe_symbol_test.esk` (51 checks), run on native
+  JIT/AOT/VM as a three-way parity check. See
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+
+### Documentation
+
+- **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
+  executed): the previously published v1.4-v2.0 dates were not achievable at
+  measured velocity (the v1.3.1-v1.3.4 line averaged ~5 weeks/point release);
+  v2.0 moves from the previously published "Q1 2027" to ~Q4 2028. Added the
+  six standing workstreams every release now draws from (W1 resident/DBSP
+  spine, W2 assurance, W3 performance, W4 codebase health, W5 interop &
+  adoption, W6 two-tier distributed computing — PJRT/XLA scale-tier plus a
+  native exact-allreduce mesh tier), replaced the stale per-version AD
+  staging bullets with pointers to the already-shipped P0-P12 truth, and
+  added the v1.3.5/v1.4.1/v1.5.1/v1.6.1/v1.8.1/v1.9.1/v1.9.2 point-release
+  rows. `docs/KNOWN_ISSUES.md`'s future-releases table re-pinned off the new
+  ladder (distributed/multi-GPU rows point at the W6 ladder instead of a
+  fixed version; PGO -> v1.5.0-intelligence; ONNX -> post-training-win, no
+  fixed date; Python bindings row tracks the v1.4.0-connection interop wave).
+  `docs/FEATURE_MATRIX.md`'s historical-snapshot roadmap section corrected
+  (it had listed Vulkan Compute, ONNX export, quantization, and distributed
+  training as SHIPPED in v1.2-scale; none of those shipped) and re-dated to
+  match. Press sheets (`press/ESHKOL_DESCRIPTION_COPY.md`,
+  `press/ESHKOL_PRESS_INFORMATION_SHEET.md`) refreshed with numbers
+  re-measured this cycle against a from-source build of commit `694c3179`:
+  exact rational derivative (`(derivative-n g 1/3 1)` => `16/3`, exact),
+  the H2 vibrational example (5003.2 cm⁻¹), the Ozaki-II Metal exact-GEMM
+  certification gate (25/25, 0 mismatches), a fresh CHSH run (S = 2.835,
+  gate `2.4 < S <= 2.95`), gradient parity across native JIT / native AOT /
+  bytecode VM (byte-identical `#(24 57)`), and the ESH-0214b flat-RSS AOT
+  gate (8 MB vs. 2,620 MB with the fix compiled out). Added a new
+  [Python bindings reference page](docs/reference/bindings/python.md) (no
+  such page existed previously) documenting the `Context.eval`/
+  `derivative`/`gradient` API and the #458 capsule-lifetime guarantee, with
+  a working example re-run against a from-source build including the
+  merged fix; flagged in passing that the module's own docstring example
+  (`ctx.derivative('sin', 0.5)`) does not work against the current
+  `func_source` validation and needs a full `(lambda ...)` form instead.
+  Documented the #454 assurance gates and #455 CI fix in
+  [docs/TESTING.md](docs/TESTING.md), re-running all three gates'
+  `--self-test` modes plus both non-self-test invocations against the
+  real repo files. Added a "Bytecode VM Region Reclamation" section to
+  [docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md)
+  (the one doc file #461 didn't already normalize) with the full
+  `ESHKOL_VM_REGION_*` variable table and a fresh flat-RSS measurement
+  (25/26/27 MB at 1,000/4,000/16,000 iterations vs. 793 MB with the
+  evacuator disabled); `docs/VM_PARITY.md` checked and needs no changes
+  (its row counts still match `tests/vm_parity/PARITY.tsv` exactly).
+  `ROADMAP.md`'s v1.3.5 section and Release Timeline row updated to mark
+  the evacuator, H1 fix, and assurance-wave items shipped rather than
+  planned. Documented the #462 vertical-line symbol syntax in
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol),
+  [Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)'s Data Types table, and
+  [FAQ.md](docs/FAQ.md)'s R7RS conformance answer, re-running
+  `tests/features/pipe_symbol_test.esk` myself on native JIT, native AOT,
+  and the bytecode VM (51/51 checks, 0 errors, all three paths agree).
+  Checked #406 (Moonlab pin bump to the real v1.2.0 tag SHA,
+  `e441957b`→`4bf83a6c`) against every doc referencing the Moonlab
+  version: the published label was already "v1.2.0" everywhere and stays
+  "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
+  version Eshkol advertises — so no doc text needed to change.
+
 ## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
