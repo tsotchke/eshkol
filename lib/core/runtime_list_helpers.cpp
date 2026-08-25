@@ -464,10 +464,17 @@ bool eshkol_tensor_collection_is_nested(const eshkol_tagged_value_t* input) {
 // Extract up to `max_n` scalar doubles from an AD operator input that may be a
 // Scheme vector (HEAP_SUBTYPE_VECTOR, 16-byte tagged elements), a cons list, or
 // a tensor (HEAP_SUBTYPE_TENSOR, 8-byte double bit patterns). Writes them into
-// `out` and returns the count. Used by the multi-parameter finite-difference
+// `out` and returns the count. Used by the multi-parameter
 // hessian/laplacian/directional-derivative paths, which need the point as a
 // plain double array to call an N-ary function without constructing AD nodes
 // (reverse-mode AD nodes passed as separate args crash function dispatch).
+//
+// Those paths were finite differences when this helper was written and are not
+// any more — they seed forward-over-forward jets and read the mixed second-order
+// component, exactly (autodiff_codegen.cpp, `evalDual2`). The stale word
+// "finite-difference" was removed here rather than left to imply an FD fallback
+// that no longer exists; `(ad-finite-difference-evals)` is the authority on
+// whether any FD ran, and it stays 0 through these paths.
 int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
                                   double* out, int64_t max_n) {
     if (!input || !out || max_n <= 0) return 0;

@@ -134,6 +134,19 @@
 ;; returns a scalar. Returns the output node. Use when an analytic backward is
 ;; unavailable or not worth deriving; prefer record-op! with an exact backward
 ;; when you have one.
+;;
+;; This is the ONE finite-difference site on the native gradient surface, and it
+;; is opt-in by name — nothing lowers to it implicitly. It is NOT covered by the
+;; "no finite-difference fallback anywhere in the gradient path" guarantee,
+;; which is about what `gradient`/`hessian`/`laplacian`/… lower to; it is the
+;; explicit numeric escape hatch ADR-0002 keeps deliberately.
+;;
+;; Because it IS finite differences, every perturbation evaluation reports
+;; itself through (ad-note-finite-difference!), so (ad-finite-difference-evals)
+;; is nonzero for any backward pass that ran through here. That is what makes
+;; the exactness assertion `(= (ad-finite-difference-evals) 0)` a measurement
+;; rather than a tautology: a program that does FD can be told from one that
+;; does not. See ADR-0002 §"Non-breaking migration path" item 1.
 (define tape-fd-eps 1.0e-6)
 
 (define (tape-reverse lst)
@@ -154,7 +167,12 @@
           (if (pair? vs)
               (let* ((vp (tape-list-set vals i (+ (car vs) tape-fd-eps)))
                      (vm (tape-list-set vals i (- (car vs) tape-fd-eps)))
-                     (d  (/ (- (fwd vp) (fwd vm)) (* 2.0 tape-fd-eps))))
+                     ;; Two perturbation evaluations per input — reported one
+                     ;; by one so the counter equals the number of extra primal
+                     ;; evaluations this backward actually paid for.
+                     (fp (begin (ad-note-finite-difference!) (fwd vp)))
+                     (fm (begin (ad-note-finite-difference!) (fwd vm)))
+                     (d  (/ (- fp fm) (* 2.0 tape-fd-eps))))
                 (loop (+ i 1) (cdr vs) (cons (* g d) acc)))
               (tape-reverse acc)))))))
 

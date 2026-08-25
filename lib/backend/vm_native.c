@@ -8585,6 +8585,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2084: { vm_push(vm, INT_VAL((int64_t)vm->ad_reverse_passes)); break; }
     case 2085: { vm_push(vm, INT_VAL((int64_t)vm->ad_tape_allocations)); break; }
     case 2086: { vm_push(vm, INT_VAL((int64_t)vm->ad_finite_difference_evals)); break; }
+    case 2088: { /* ad-note-finite-difference! — report ONE FD perturbation eval */
+        vm->ad_finite_difference_evals++;
+        vm_push(vm, NIL_VAL);
+        break;
+    }
     case 2087: { /* ad-counters → ordered five-entry association list */
         Value result = NIL_VAL;
         result = vm_cons_value(vm, vm_alist_entry(vm, "finite-difference-evals",

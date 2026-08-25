@@ -1,0 +1,147 @@
+;; fd_counter_negative_test.esk — the FD counter's negative control.
+;;
+;; WHY THIS TEST EXISTS
+;;
+;; Eshkol ships a headline guarantee: "exact gradients … no finite-difference
+;; fallback anywhere in the gradient path". Its executable form is the assertion
+;; `(= (ad-finite-difference-evals) 0)` in tests/ad/one_pass_gradient_test.esk.
+;;
+;; That assertion was VACUOUS. The counter's only writer, `eshkol_ad_count_fd()`
+;; (lib/core/runtime_autodiff.cpp), had ZERO callers anywhere in lib/, inc/,
+;; exe/, tests/ or scripts/ on the native back end. `finite_difference_evals`
+;; was structurally incapable of being nonzero, so the assertion was true by
+;; construction and would have stayed green if a finite-difference fallback had
+;; been introduced the next day. A gate that cannot fail is not a gate.
+;;
+;; So this file is the negative control the positive gate needs. It proves the
+;; counter is a live instrument by making it read nonzero — running a REAL
+;; finite-difference backward through the stdlib tape's `record-fd-op!`, which
+;; is the one genuine FD site on the native gradient surface — and then checking
+;; that the exactness assertion evaluates #f under exactly those conditions.
+;;
+;; Both halves matter and neither alone is sufficient:
+;;
+;;   POSITIVE  an exact gradient leaves the counter at 0
+;;             (also asserted by one_pass_gradient_test.esk)
+;;   NEGATIVE  a finite-difference backward drives the counter above 0,
+;;             AND the shipped assertion form goes #f when it does
+;;
+;; If the NEGATIVE half ever starts passing with a zero count, the counter has
+;; come unwired again and every `finite_difference_evals == 0` assertion in the
+;; tree has silently reverted to proving nothing. That is the regression this
+;; file is here to catch.
+;;
+;; See docs/design/adr/0002-ad-staged-dense-kernels.md §"Non-breaking migration
+;; path" item 1 ("a counter incremented at every FD site") and .icc/silent-wrong-
+;; ledger.yaml SW-47.
+
+(require core.ad.tape)
+
+(display "TEST: AD finite-difference counter negative control") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+(define (close? a b tol) (<= (abs (- a b)) (+ tol (* tol (abs b)))))
+
+;; ---------------------------------------------------------------------------
+;; 1. The write end exists and moves the read end.
+;;    This is the single fact the old code could not establish: that SOMETHING
+;;    in the process is able to raise finite_difference_evals at all.
+;; ---------------------------------------------------------------------------
+(ad-reset-counters!)
+(check "reset leaves the counter at 0" (= (ad-finite-difference-evals) 0))
+
+(ad-note-finite-difference!)
+(check "one reported perturbation reads back as 1" (= (ad-finite-difference-evals) 1))
+
+(ad-note-finite-difference!)
+(ad-note-finite-difference!)
+(check "reports accumulate (1 + 2 = 3)" (= (ad-finite-difference-evals) 3))
+
+;; The shipped assertion FORM, evaluated in the state a finite-difference run
+;; leaves behind. This is the line that proves the gate can go red.
+(check "the shipped exactness assertion is #f once FD has run"
+       (not (= (ad-finite-difference-evals) 0)))
+
+(ad-reset-counters!)
+(check "reset clears it again" (= (ad-finite-difference-evals) 0))
+
+;; ---------------------------------------------------------------------------
+;; 2. A REAL finite-difference backward reports itself.
+;;    `record-fd-op!` computes its backward by central differences, so a
+;;    gradient taken through it costs 2 extra primal evaluations per input.
+;;    The counter must show exactly those evaluations — not "nonzero", the
+;;    right number — or it is counting something other than the work done.
+;; ---------------------------------------------------------------------------
+
+;; f(x, y) = x^3 + 2y  — no hand-written backward, so record-fd-op! must
+;; difference it. d/dx = 3x^2 = 12 at x=2; d/dy = 2.
+(define (cubic-plus vals)
+  (let ((x (car vals)) (y (car (cdr vals))))
+    (+ (* x (* x x)) (* 2.0 y))))
+
+(ad-reset-counters!)
+(define fd-grad
+  (with-tape "fd-negative-control"
+    (lambda ()
+      (let* ((t (current-tape))
+             (x (tape-input t 2.0))
+             (y (tape-input t 5.0))
+             (out (record-fd-op! t (list x y) cubic-plus)))
+        (tape-gradient t out (list x y))))))
+(define fd-count-after (ad-finite-difference-evals))
+
+(check "FD backward is numerically right: d/dx = 3x^2 = 12"
+       (close? (car fd-grad) 12.0 1.0e-3))
+(check "FD backward is numerically right: d/dy = 2"
+       (close? (car (cdr fd-grad)) 2.0 1.0e-3))
+
+;; 2 inputs x 2 perturbations (central difference: +eps and -eps) = 4.
+(check "the counter reports every perturbation: 2 inputs x 2 evals = 4"
+       (= fd-count-after 4))
+
+(check "an FD gradient makes the exactness assertion #f"
+       (not (= fd-count-after 0)))
+
+;; ---------------------------------------------------------------------------
+;; 3. Positive control on the same instrument.
+;;    An EXACT tape gradient over the same shape of computation must leave the
+;;    counter at 0. Without this, part 2 could be satisfied by a counter that
+;;    is simply always nonzero, which would be just as useless in the other
+;;    direction.
+;; ---------------------------------------------------------------------------
+(ad-reset-counters!)
+(define exact-grad
+  (with-tape "exact-control"
+    (lambda ()
+      (let* ((t (current-tape))
+             (x (tape-input t 2.0))
+             (y (tape-input t 5.0))
+             (x2 (tape-mul t x x))
+             (x3 (tape-mul t x2 x))
+             (ty (tape-add t y y))
+             (out (tape-add t x3 ty)))
+        (tape-gradient t out (list x y))))))
+(define exact-count-after (ad-finite-difference-evals))
+
+(check "exact tape gradient is right: d/dx = 3x^2 = 12"
+       (close? (car exact-grad) 12.0 1.0e-9))
+(check "exact tape gradient is right: d/dy = 2"
+       (close? (car (cdr exact-grad)) 2.0 1.0e-9))
+(check "an exact gradient leaves the counter at 0 (assertion holds honestly)"
+       (= exact-count-after 0))
+
+;; ---- Summary ---------------------------------------------------------------
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "fd_counter_negative_test: ALL PASS") (newline))
+    (begin (display "fd_counter_negative_test: FAIL") (newline)))

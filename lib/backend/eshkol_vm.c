@@ -441,6 +441,11 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-reset-counters!", 2082, 0}, {"ad-primal-calls", 2083, 0},
     {"ad-reverse-passes", 2084, 0}, {"ad-tape-allocations", 2085, 0},
     {"ad-finite-difference-evals", 2086, 0}, {"ad-counters", 2087, 0},
+    /* Write end of the finite-difference counter: every FD site — compiler,
+     * runtime or stdlib Scheme — reports one perturbation evaluation through
+     * this, so `(= (ad-finite-difference-evals) 0)` is a measurement and not a
+     * tautology. See lib/core/ad/tape.esk `record-fd-op!`. */
+    {"ad-note-finite-difference!", 2088, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */

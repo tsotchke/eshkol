@@ -2215,6 +2215,7 @@ public:
         function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
         function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
         function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
+        function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
         function_return_types["ad-counters"] = BuiltinTypes::List;
         function_return_types["temp-directory"] = BuiltinTypes::String;
         function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
@@ -16241,6 +16242,7 @@ private:
         if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
         if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
         if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
+        if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
         if (func_name == "ad-counters") return system_->adCounters(op);
         if (func_name == "temp-directory") return system_->tempDirectory(op);
         if (func_name == "prevent-sleep") return system_->preventSleep(op);

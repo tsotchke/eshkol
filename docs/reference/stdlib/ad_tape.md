@@ -146,6 +146,14 @@ Custom ops also handle **vector-valued** nodes — `out-value` and each returned
 ### `(record-fd-op! t inputs fwd)`
 Record a custom op whose backward is computed by **central finite differences** on `fwd`. `fwd` takes the list of input **values** (scalars) and returns a scalar. Use when an analytic backward is unavailable or not worth deriving (e.g. differentiating through belief-propagation reconvergence / free energy). Prefer `record-op!` with an exact backward when you have one. Step size `tape-fd-eps = 1e-6`.
 
+This is the **one finite-difference site on the gradient surface**, and it is opt-in by name — nothing lowers to it implicitly, so it does not qualify the "no finite-difference fallback anywhere in the gradient path" guarantee, which is about what `gradient`, `hessian`, `laplacian` and friends lower to. Because it *is* finite differences, every perturbation evaluation reports itself through `(ad-note-finite-difference!)`, so a backward pass that ran through here shows up in `(ad-finite-difference-evals)`: **2 evaluations per input** (one at `+eps`, one at `-eps`). That is what lets a program prove it did no finite differences rather than merely assert it — see `tests/ad/fd_counter_negative_test.esk`.
+
+```scheme
+(ad-reset-counters!)
+;; ... a backward through (record-fd-op! t (list x y) f) ...
+(ad-finite-difference-evals)   ; => 4   (2 inputs x 2 perturbations)
+```
+
 ```scheme
 ;; recordfd.esk — differentiate an arbitrary scalar fn with no hand backward
 (require core.ad.tape)
