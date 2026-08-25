@@ -261,7 +261,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 **LLVM IR instead of C.** Direct LLVM IR generation provides control over optimization, eliminates C compiler dependency, enables JIT compilation for the REPL, and gives access to LLVM's backend support for multiple architectures.
 
-**Arena memory instead of GC.** Deterministic performance is critical for real-time systems, finance, and control loops. O(1) allocation, zero GC pauses, and cache-friendly sequential allocation. Provably safe through ownership analysis.
+**Arena memory instead of GC.** Deterministic performance is critical for real-time systems, finance, and control loops. O(1) allocation, zero GC pauses, and cache-friendly sequential allocation. Provably safe through ownership analysis. The commitment is scoped to Eshkol's own semantics — hosting a garbage-collected guest language, whose heap becomes a region with the guest's own collector inside it, is a Planned capability ([ADR-0011](design/adr/0011-guest-collector-adapter.md)).
 
 **Compiler-integrated AD instead of library.** Operates on AST, runtime, and LLVM IR simultaneously. No framework boundaries or tracing overhead. Works on any Eshkol function automatically with natural Scheme syntax.
 

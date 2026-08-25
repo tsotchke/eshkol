@@ -178,6 +178,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md)
 - [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
 - [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
+- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
 
 ## Testing and Quality Gates
 
