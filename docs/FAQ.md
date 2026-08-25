@@ -76,6 +76,8 @@ Yes, Eshkol implements a substantial subset of R7RS Scheme including: `lambda`, 
 
 Some R7RS features are extended: `define-library` and R7RS `import` forms lower through Eshkol's existing module system, including `only`, `except`, `rename`, and `prefix` import sets. The type system adds HoTT-based gradual typing beyond what R7RS specifies.
 
+R7RS 7.1.1's third `<identifier>` production — vertical-line symbols like `'|weird sym|` and the empty symbol `'||` — is supported as of v1.3.5 (#462), on both the native and bytecode-VM readers/writers. See [Complete Language Specification §2.1.6](COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+
 ### What does "homoiconic" mean?
 
 Code is data. Every Eshkol expression is an S-expression — a data structure that the program can read, manipulate, and evaluate at runtime. Lambda closures retain their symbolic S-expression forms even after compilation. This enables metaprogramming at native speed.
