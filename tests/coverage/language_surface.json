@@ -34,7 +34,7 @@
     "io_port": 52,
     "string_char": 42,
     "consciousness": 37,
-    "misc": 28,
+    "misc": 29,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -4537,6 +4537,18 @@
         "native_llvm"
       ],
       "category": "tensor_ad"
+    },
+    {
+      "name": "gensym",
+      "ids": [
+        2227
+      ],
+      "arity": 0,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "geodesic-attention-forward",

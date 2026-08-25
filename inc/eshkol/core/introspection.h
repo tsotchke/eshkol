@@ -191,6 +191,22 @@ eshkol_tagged_value_t eshkol_gensym(void* arena);
 eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena);
 
 /**
+ * @brief Raw-pointer entry point for eshkol_gensym, used by the native LLVM
+ *        codegen's `(gensym)` builtin.
+ *
+ * Codegen represents heap values as a bare pointer to the object's data
+ * (past its header) and packs the HEAP_PTR tag itself — the same pattern
+ * `eshkol_intern_symbol_lookup` uses for `string->symbol` — rather than
+ * unpacking a by-value eshkol_tagged_value_t struct return. Returns NULL on
+ * the same failure conditions as eshkol_gensym (NULL arena, allocation
+ * failure).
+ *
+ * @param arena Arena for symbol string allocation.
+ * @return Pointer to the new symbol's string data (past its object header), or NULL.
+ */
+void* eshkol_gensym_ptr(void* arena);
+
+/**
  * @brief Convert a symbol to its string name.
  *
  * @param symbol Symbol value

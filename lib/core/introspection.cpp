@@ -39,9 +39,6 @@ namespace {
 // Global State
 // ============================================================================
 
-// Gensym counter for unique symbol generation
-std::atomic<uint64_t> g_gensym_counter{1};
-
 // Eval JIT context acquired through the bridge. The pointer is opaque —
 // only eshkol-repl-lib's strong implementation of eshkol_eval_jit_*
 // knows how to dereference it. If that implementation isn't linked (i.e.
@@ -499,68 +496,17 @@ eshkol_closure_t* eshkol_get_closure(eshkol_tagged_value_t value) {
 // ----------------------------------------------------------------------------
 // Symbol Manipulation API
 // ----------------------------------------------------------------------------
-
-/**
- * @brief Generate a unique (uninterned) symbol with the default "G" prefix.
- *
- * @param arena Arena for symbol string allocation.
- * @return New unique symbol as a tagged value (format G<counter>).
- */
-eshkol_tagged_value_t eshkol_gensym(void* arena) {
-    return eshkol_gensym_prefix("G", arena);
-}
-
-/**
- * @brief Generate a unique (uninterned) symbol with a caller-supplied prefix.
- *
- * Appends a process-wide monotonically increasing counter to @p prefix and
- * allocates the resulting string with a proper symbol object header (so
- * later ESHKOL_GET_HEADER dispatch correctly identifies it as
- * HEAP_SUBTYPE_SYMBOL) in the consolidated tagged-value encoding.
- *
- * @param prefix Prefix for the symbol name (defaults to "G" if NULL).
- * @param arena Arena for symbol string allocation.
- * @return New unique symbol as a tagged value, or a null value if @p arena is NULL or allocation fails.
- */
-eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
-    if (!arena) {
-        return make_null();
-    }
-
-    uint64_t counter = g_gensym_counter.fetch_add(1, std::memory_order_relaxed);
-
-    // Format: <prefix><counter>
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer), "%s%llu",
-             prefix ? prefix : "G",
-             (unsigned long long)counter);
-
-    // Allocate symbol string with a proper object header so ESHKOL_GET_HEADER
-    // can identify the subtype. The previous headerless allocation made
-    // ESHKOL_GET_HEADER read arena bookkeeping bytes as the header, producing
-    // garbage subtype values and occasional crashes in introspection code.
-    arena_t* a = static_cast<arena_t*>(arena);
-    size_t len = strlen(buffer);
-    char* sym_str = static_cast<char*>(
-        arena_allocate_symbol_with_header(a, len)
-    );
-
-    if (!sym_str) {
-        return make_null();
-    }
-
-    memcpy(sym_str, buffer, len + 1);
-
-    // Gensym produces fresh (uninterned) symbols in the consolidated encoding
-    // so header.subtype == HEAP_SUBTYPE_SYMBOL is authoritative for readers.
-    eshkol_tagged_value_t result;
-    result.type = ESHKOL_VALUE_HEAP_PTR;
-    result.flags = 0;
-    result.reserved = 0;
-    result.data.ptr_val = reinterpret_cast<uint64_t>(sym_str);
-
-    return result;
-}
+//
+// eshkol_gensym / eshkol_gensym_prefix / eshkol_gensym_ptr live in
+// lib/core/runtime_gensym.cpp, not here — see that file's header comment.
+// The short version: this TU (introspection.cpp) pulls in
+// eshkol/llvm_backend.h and is compiled only into eshkol-static (the
+// compiler/tool aggregate), never into the slim libeshkol-runtime.a that
+// AOT/JIT user binaries link against. `gensym` is a native-codegen builtin
+// that generated user programs call directly, so its implementation has to
+// live in a runtime-eligible TU (the same reason eshkol_intern_symbol_lookup
+// lives in symbol_intern.cpp rather than here) — declared in
+// introspection.h as before, just defined elsewhere.
 
 /**
  * @brief Convert a symbol to its string name.
