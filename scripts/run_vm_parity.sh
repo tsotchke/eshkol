@@ -162,6 +162,15 @@ if [ ! -x "$ESHKOL_RUN" ] || [ ! -x "$VM_BIN" ]; then
     exit 2
 fi
 
+# Record which exact binaries this run is about (D-11 BUILD FRESHNESS) —
+# scripts/check_build_fingerprint.py reads these at gate time and fails if
+# either binary is rebuilt/replaced before a gate reads this run's evidence,
+# or if it predates the source tree it claims to have been built from.
+# shellcheck source=lib/build_fingerprint.sh
+. "$REPO_ROOT/scripts/lib/build_fingerprint.sh"
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "run_vm_parity" "$BUILD_DIR" eshkol-run
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "run_vm_parity" "$BUILD_DIR" "$(basename "$VM_BIN")"
+
 if eshkol_durable_enabled; then
     WORK="$VM_PARITY_WORK/work"
     mkdir "$WORK"
@@ -202,6 +211,18 @@ else
          "the corpus loop below may still see a cold first hit under extreme load" \
          "(see $WORK/_warmup.err); the per-file retry-once still applies." >&2
 fi
+
+# Self-verdict manifest (D-05): a VERDICT<TAB>path<TAB>label row per captured
+# output this stage grades PASS-by-agreement, so
+# scripts/check_self_verdicts.py can catch what `cmp -s` structurally cannot
+# — both engines printing the IDENTICAL self-reported failure line, which
+# compares byte-equal and would otherwise pass silently. Checked at the end
+# of this script (see the final gate below).
+SELF_VERDICT_MANIFEST="$WORK/self_verdict_manifest.tsv"
+: > "$SELF_VERDICT_MANIFEST"
+record_self_verdict() { # verdict path label
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$SELF_VERDICT_MANIFEST"
+}
 
 # Normalize an output capture:
 #   * strip VM banners, ESKB loader lines, GPU init logs, compiler noise;
@@ -292,6 +313,10 @@ for f in "${corpus_files[@]}"; do
     else
         report PASS "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
             "identical newline-normalized output"
+        # Agreement is not correctness: two engines can print the SAME
+        # self-reported failure line and still cmp -s equal. Hand this
+        # PASS-by-agreement output to the self-verdict scanner.
+        record_self_verdict PASS "$d/native.out" "$nodeid::native-vs-vm-src"
     fi
 
     if [ $DO_ESKB -eq 1 ]; then
@@ -327,9 +352,25 @@ for f in "${corpus_files[@]}"; do
         else
             report PASS "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
                 "identical newline-normalized output"
+            record_self_verdict PASS "$d/native.out" "$nodeid::native-vs-vm-eskb"
         fi
     fi
 done
+
+# ── self-verdict gate: agreement is not correctness ─────────────────────
+echo
+echo "== self-verdict scan: every PASS-by-agreement capture above =="
+if ! self_verdict_out=$(python3 "$REPO_ROOT/scripts/check_self_verdicts.py" \
+        --manifest "$SELF_VERDICT_MANIFEST" --no-trace --format json 2>&1); then
+    echo "$self_verdict_out"
+    report FAIL "tests/vm_parity::self-verdict-scan" "vm_parity_self_verdict_scan" \
+        "a corpus program agreed between engines while self-reporting failure — see scripts/check_self_verdicts.py output above"
+else
+    echo "$self_verdict_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("self-verdict scan: %d artifact(s) clean" % d["examined"])' 2>/dev/null \
+        || echo "self-verdict scan: clean"
+    report PASS "tests/vm_parity::self-verdict-scan" "vm_parity_self_verdict_scan" \
+        "no PASS-by-agreement capture self-reports a failure"
+fi
 
 # ── stage 3: out-of-subset probes must fail cleanly ─────────────────────
 echo
