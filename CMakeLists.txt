@@ -162,6 +162,15 @@ set(CMAKE_CXX_STANDARD 20)
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
+# OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
+# default: turning it on changes the heap object representation, and the whole
+# toolchain -- runtime archive, precompiled stdlib bitcode, JIT modules and AOT
+# objects -- has to be rebuilt together or the mismatch is a silent miscompile
+# rather than a link error. Phase A only defines and pins the layouts; no
+# allocation site is migrated yet, so ON and OFF currently produce identical
+# object code apart from the reported ABI version. See
+# docs/design/ABI_V2_MIGRATION_INVENTORY.md.
+option(ESHKOL_MEMORY_ABI_V2 "Select the 32-byte OALR object header (ABI v2)" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer"            OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
@@ -2085,6 +2094,16 @@ add_compile_definitions(
   ESHKOL_VER="${ESHKOL_VERSION}-evolve"
 )
 
+# ADR-0001 SS3 / ADR-0000 Stage 4. Whole-project, not per-target: the object
+# header is a prefix every translation unit computes independently, so a
+# per-target definition would let half the build disagree with the other half.
+if(ESHKOL_MEMORY_ABI_V2)
+    add_compile_definitions(ESHKOL_MEMORY_ABI_V2_ENABLED=1)
+    message(STATUS "Eshkol object ABI: v2 (32-byte header) -- EXPERIMENTAL, ADR-0001 Phase A")
+else()
+    message(STATUS "Eshkol object ABI: v1 (8-byte header)")
+endif()
+
 if(ESHKOL_USING_MSVC)
     set(ESHKOL_WARNING_FLAGS /W4 /wd4100 /wd4018)
     set(ESHKOL_HARDENING_FLAGS /GS)
@@ -2117,6 +2136,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
+  lib/core/memory_abi_v2.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
   lib/core/runtime_shared_memory.cpp
@@ -4301,6 +4321,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     endif()
     target_link_libraries(runtime_object_alloc_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME runtime_object_alloc_test COMMAND runtime_object_alloc_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_abi_v2_test.cpp")
+    add_executable(memory_abi_v2_test tests/core/memory_abi_v2_test.cpp)
+    target_compile_features(memory_abi_v2_test PRIVATE cxx_std_17)
+    target_include_directories(memory_abi_v2_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(memory_abi_v2_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(memory_abi_v2_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(memory_abi_v2_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME memory_abi_v2_test COMMAND memory_abi_v2_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_tagged_cons_test.cpp")
