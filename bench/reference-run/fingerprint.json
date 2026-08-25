@@ -1,0 +1,34 @@
+{
+  "label": "eshkol-public-benchmarks",
+  "os": {
+    "name": "Darwin",
+    "version": "15.1",
+    "kernel": "24.1.0"
+  },
+  "cpu": {
+    "model": "Apple M2 Ultra",
+    "physical_cores": 24,
+    "logical_cores": 24
+  },
+  "memory_bytes": 206158430208,
+  "gpu_model": "Apple M2 Ultra",
+  "compiler": {
+    "cc": "Homebrew clang version 21.1.7",
+    "cxx": "Homebrew clang version 21.1.7",
+    "llvm": "21.1.7"
+  },
+  "blas": "Apple Accelerate (vecLib/AMX)",
+  "git": {
+    "sha": "4bf871a08774a39c97f01743c17e23eff59fbb55",
+    "branch": "feat/benchmarks-wave1",
+    "dirty": true
+  },
+  "eshkol_version": "1.3.4-evolve",
+  "build": {
+    "dir": "/Users/tyr/Desktop/eshkol/.worktrees/v135/benchmarks/build-quantum",
+    "type": "Release",
+    "quantum_enabled": "ON",
+    "gpu_enabled": "ON"
+  },
+  "load_average_at_capture": "166.93 153.50 162.74"
+}

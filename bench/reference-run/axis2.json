@@ -1,0 +1,291 @@
+{
+  "axis": "ozaki_ii_gemm",
+  "claims_tested": [
+    "Ozaki-II CRT GEMM computes the exact product and rounds once, where BLAS rounds every accumulation \u2014 measured here as error against a TRUE exact-rational reference, not just a differently-ordered float accumulation",
+    "the fast tier can beat vendor BLAS throughput at large N while trading exactness for ~1e-8 accuracy"
+  ],
+  "accuracy_honesty_note": "The correctness gate this axis's methodology follows (tests/gpu/ozaki_correctness_gate.sh) verifies Ozaki-II exact against a TOL=1e-9 threshold, not literal bit-exactness \u2014 its own reference is a naive f64 accumulation, accurate to ~K*epsilon. At the modest K this axis samples (N=64), vendor BLAS's own few accumulation steps can measure MORE accurate against a true exact-rational reference than Ozaki-II's fixed ~1e-13 CRT-reconstruction floor \u2014 that is not a regression, it is what a fixed reconstruction-precision floor vs a K-dependent accumulation error look like at small K. Ozaki-II's accuracy advantage over vendor BLAS is expected to widen as K grows and/or input dynamic range widens, since BLAS's per-step rounding error grows with K while Ozaki-II's stays governed by its fixed moduli budget. Report the numbers as measured; do not round this nuance away.",
+  "note_on_cuda_numbers": "CHANGELOG.md's CUDA INT8-Ozaki numbers (RTX 3090: 4.74 TFLOP/s-eq, 8.8x cublasDgemm; RTX PRO 6000 Blackwell: ~30 TFLOP/s, 20x) were measured on that other hardware, not this machine, and are NOT reproduced by this axis \u2014 this host has no NVIDIA GPU. Cited as prior published measurements only.",
+  "throughput_gflops_by_n": {
+    "amx": [
+      {
+        "n": 256,
+        "raw_ns_samples": [
+          162000,
+          150000,
+          145000
+        ],
+        "gflops_samples": [
+          207.1261234567901,
+          223.69621333333333,
+          231.40987586206896
+        ],
+        "gflops_median": 223.69621333333333
+      },
+      {
+        "n": 512,
+        "raw_ns_samples": [
+          4790000,
+          4741000,
+          5566000
+        ],
+        "gflops_samples": [
+          56.04080501043842,
+          56.62000759333473,
+          48.22771397772188
+        ],
+        "gflops_median": 56.04080501043842
+      },
+      {
+        "n": 1024,
+        "raw_ns_samples": [
+          20718000,
+          18219000,
+          19554000
+        ],
+        "gflops_samples": [
+          103.65303832416257,
+          117.87055535430046,
+          109.82324066687123
+        ],
+        "gflops_median": 109.82324066687123
+      },
+      {
+        "n": 2048,
+        "raw_ns_samples": [
+          116677000,
+          100678000,
+          95427000
+        ],
+        "gflops_samples": [
+          147.24298005605218,
+          170.6417408371243,
+          180.03153388454
+        ],
+        "gflops_median": 170.6417408371243
+      },
+      {
+        "n": 4096,
+        "raw_ns_samples": [
+          824306000,
+          771951000,
+          729163000
+        ],
+        "gflops_samples": [
+          166.7329286357251,
+          178.0410330085718,
+          188.48865544741025
+        ],
+        "gflops_median": 178.0410330085718
+      },
+      {
+        "n": 8192,
+        "raw_ns_samples": [
+          18397776000,
+          18861991000,
+          18303016000
+        ],
+        "gflops_samples": [
+          59.76329028986982,
+          58.29244790626822,
+          60.0727021041778
+        ],
+        "gflops_median": 59.76329028986982
+      }
+    ],
+    "ozaki": [
+      {
+        "n": 256,
+        "raw_ns_samples": [
+          2911000,
+          2891000,
+          2788000
+        ],
+        "gflops_samples": [
+          11.526771556166265,
+          11.606514008993429,
+          12.035305595408895
+        ],
+        "gflops_median": 11.606514008993429
+      },
+      {
+        "n": 512,
+        "raw_ns_samples": [
+          13485000,
+          13497000,
+          12709000
+        ],
+        "gflops_samples": [
+          19.906225880608083,
+          19.888527524635105,
+          21.121681957667793
+        ],
+        "gflops_median": 19.906225880608083
+      },
+      {
+        "n": 1024,
+        "raw_ns_samples": [
+          87825000,
+          47881000,
+          49586000
+        ],
+        "gflops_samples": [
+          24.451849109023627,
+          44.850434368538664,
+          43.308265397491226
+        ],
+        "gflops_median": 43.308265397491226
+      },
+      {
+        "n": 2048,
+        "raw_ns_samples": [
+          236484000,
+          194033000,
+          188460000
+        ],
+        "gflops_samples": [
+          72.6470678100844,
+          88.54096562955785,
+          91.15923370476494
+        ],
+        "gflops_median": 88.54096562955785
+      },
+      {
+        "n": 4096,
+        "raw_ns_samples": [
+          1676875000,
+          1294476000,
+          1114567000
+        ],
+        "gflops_samples": [
+          81.96135876079016,
+          106.17342729567795,
+          123.31152229699963
+        ],
+        "gflops_median": 106.17342729567795
+      },
+      {
+        "n": 8192,
+        "raw_ns_samples": [
+          14371745000,
+          13624296000,
+          13527009000
+        ],
+        "gflops_samples": [
+          76.50508882366059,
+          80.7022709853045,
+          81.28268620032708
+        ],
+        "gflops_median": 80.7022709853045
+      }
+    ],
+    "ozaki-fast": [
+      {
+        "n": 256,
+        "raw_ns_samples": [
+          3249000,
+          2513000,
+          2733000
+        ],
+        "gflops_samples": [
+          10.327618344105879,
+          13.3523406287306,
+          12.277508964507867
+        ],
+        "gflops_median": 12.277508964507867
+      },
+      {
+        "n": 512,
+        "raw_ns_samples": [
+          4187000,
+          3729000,
+          9411000
+        ],
+        "gflops_samples": [
+          64.1116446142823,
+          71.9859093590775,
+          28.52358474126023
+        ],
+        "gflops_median": 64.1116446142823
+      },
+      {
+        "n": 1024,
+        "raw_ns_samples": [
+          17933000,
+          10815000,
+          11710000
+        ],
+        "gflops_samples": [
+          119.75038465398984,
+          198.56529338881182,
+          183.38886831767718
+        ],
+        "gflops_median": 183.38886831767718
+      },
+      {
+        "n": 2048,
+        "raw_ns_samples": [
+          46809000,
+          53605000,
+          86629000
+        ],
+        "gflops_samples": [
+          367.02064098784416,
+          320.49005100270494,
+          198.31545076129242
+        ],
+        "gflops_median": 320.49005100270494
+      },
+      {
+        "n": 4096,
+        "raw_ns_samples": [
+          271084000,
+          258357000,
+          326697000
+        ],
+        "gflops_samples": [
+          506.9976592937982,
+          531.9730197827038,
+          420.69242592371523
+        ],
+        "gflops_median": 506.9976592937982
+      },
+      {
+        "n": 8192,
+        "raw_ns_samples": [
+          1788288000,
+          1604427000,
+          2169796000
+        ],
+        "gflops_samples": [
+          614.8403544485005,
+          685.2986317083919,
+          506.7350238344988
+        ],
+        "gflops_median": 614.8403544485005
+      }
+    ]
+  },
+  "accuracy_vs_exact_rational_reference": {
+    "amx": {
+      "max_relerr": 2.9364406455659404e-16,
+      "mean_relerr": 1.1093670990866015e-16,
+      "n_samples": 64
+    },
+    "ozaki": {
+      "max_relerr": 2.517167405089739e-13,
+      "mean_relerr": 1.2264984179833805e-13,
+      "n_samples": 64
+    },
+    "ozaki-fast": {
+      "max_relerr": 2.517167405089739e-13,
+      "mean_relerr": 1.2264984179833805e-13,
+      "n_samples": 64
+    }
+  },
+  "availability": {
+    "amx": true,
+    "ozaki": true,
+    "ozaki-fast": true
+  }
+}
