@@ -1125,11 +1125,16 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
         return errorAt(expr, "Unbound variable: " + name);
     }
 
-    // Track linear variable usage
+    // Track linear variable usage. The COUNT is kept (checkLinearVariable() and
+    // the branch snapshot/restore machinery read it), but the VERDICT is no
+    // longer drawn here. This site fired on the second name occurrence type
+    // synthesis happened to reach, which is neither an upper nor a lower bound
+    // on the real use count: it never sees a `cond` body at all, and it treats
+    // a plain `bind()` that SHADOWS a linear name as another use of the
+    // original, since bind() does not clear linear_vars_. The authoritative
+    // judgment is analyzeLinearUses(), run over the whole binder body at scope
+    // exit, which models both.
     if (ctx_.isLinear(name)) {
-        if (ctx_.isLinearUsed(name)) {
-            reportTypeIssue("linear variable '" + name + "' used more than once", expr);
-        }
         ctx_.useLinear(name);
     }
 
@@ -1452,6 +1457,7 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
 
     // Collect parameter types and bind parameters in context
     std::vector<TypeId> param_types;
+    std::vector<std::string> linear_params;
     for (size_t i = 0; i < lambda.num_params; i++) {
         std::string param_name = lambda.parameters[i].variable.id;
 
@@ -1466,6 +1472,7 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
         // Register linear parameters for use-once checking
         if (param_type.flags & TYPE_FLAG_LINEAR) {
             ctx_.bindLinear(param_name, param_type);
+            linear_params.push_back(param_name);
         } else {
             ctx_.bind(param_name, param_type);
         }
@@ -1474,17 +1481,13 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     // Synthesize body type
     auto body_result = synthesize(lambda.body);
 
-    // Check linear variable constraints before popping scope
-    if (!ctx_.checkLinearConstraints()) {
-        auto unused = ctx_.getUnusedLinear();
-        for (const auto& name : unused) {
-            reportTypeIssue("linear variable '" + name + "' was not consumed", expr);
-        }
-        auto overused = ctx_.getOverusedLinear();
-        for (const auto& name : overused) {
-            reportTypeIssue("linear variable '" + name + "' was consumed more than once", expr);
-        }
-    }
+    // Enforce linearity for THIS lambda's own linear parameters, over THIS
+    // lambda's body. The previous scope-exit check consulted
+    // checkLinearConstraints(), which ranges over every linear variable alive
+    // anywhere in the context — so an unrelated inner lambda closing its scope
+    // reported the ENCLOSING function's not-yet-consumed qubit as unconsumed,
+    // rejecting a correct program.
+    enforceLinearBindings(linear_params, lambda.body, expr);
 
     ctx_.popScope();
 
@@ -2851,12 +2854,14 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
 
         // Now push scope and bind parameters
         ctx_.pushScope();
+        std::vector<std::string> linear_params;
         for (size_t i = 0; i < def.num_params; i++) {
             if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
                 def.parameters[i].variable.id) {
                 // Register linear parameters for use-once checking
                 if (param_types[i].flags & TYPE_FLAG_LINEAR) {
                     ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
+                    linear_params.push_back(def.parameters[i].variable.id);
                 } else {
                     ctx_.bind(def.parameters[i].variable.id, param_types[i]);
                 }
@@ -2879,15 +2884,10 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
             }
         }
 
-        // Check linear variable constraints before popping scope
-        if (!ctx_.checkLinearConstraints()) {
-            for (const auto& name : ctx_.getUnusedLinear()) {
-                reportTypeIssue("linear variable '" + name + "' was not consumed", expr);
-            }
-            for (const auto& name : ctx_.getOverusedLinear()) {
-                reportTypeIssue("linear variable '" + name + "' was consumed more than once", expr);
-            }
-        }
+        // Enforce linearity for THIS define's own linear parameters, over THIS
+        // define's body — see the matching comment in synthesizeLambda() for
+        // why the old context-wide check was both too broad and too shallow.
+        enforceLinearBindings(linear_params, def.value, expr);
 
         ctx_.popScope();
 
@@ -2964,6 +2964,7 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     // Collect binding types
     std::vector<TypeId> binding_types;
     std::vector<std::string> binding_names;
+    std::vector<std::string> linear_bindings;
 
     // Process each binding
     for (size_t i = 0; i < let.num_bindings; i++) {
@@ -3004,10 +3005,18 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
 
         binding_names.push_back(name);
         binding_types.push_back(binding_type);
-        // NOTE(#320): let bindings use plain bind(), not bindLinear(), so a
-        // linear-typed let binding is NOT use-once checked. Linearity is enforced
-        // only on define/lambda parameters today; see Context's linear API docs.
-        ctx_.bind(name, binding_type);
+        // A linear-typed let binding is use-once checked over the let body, the
+        // same way a linear parameter is over a function body. This used to be
+        // skipped (#320) because the incidental usage counters were too coarse
+        // to decide it; analyzeLinearUses() is not, and leaving it out left
+        // `(let ((q : Qubit (alloc))) (cons q q))` as a one-line way to clone a
+        // qubit that the type system had just declared unclonable.
+        if (binding_type.flags & TYPE_FLAG_LINEAR) {
+            ctx_.bindLinear(name, binding_type);
+            linear_bindings.push_back(name);
+        } else {
+            ctx_.bind(name, binding_type);
+        }
     }
 
     // Handle named let (loop): pre-bind the loop name as a recursive function
@@ -3027,6 +3036,14 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
         // Re-bind with the actual return type (though this is after the fact)
         TypeId loop_type = env_.makeFunctionType(binding_types, body_result.inferred_type);
         ctx_.bind(let.name, loop_type);
+    }
+
+    // A named let is a loop: its body runs an unknown number of times, so a
+    // single-path use count says nothing about it. analyzeLinearUses() reports
+    // that as undecidable; skip the enforcement call entirely rather than emit
+    // a "not decidable" note for a binding nobody annotated linear on purpose.
+    if (!let.name) {
+        enforceLinearBindings(linear_bindings, let.body, expr);
     }
 
     ctx_.popScope();
@@ -3560,6 +3577,36 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
     addError(msg, node ? node->line : 0, node ? node->column : 0);
 }
 
+/**
+ * @brief Linearity enforcement point: report a no-cloning / no-discard
+ * violation, fatally.
+ *
+ * Same formatting and recording as reportTypeIssue(), with one deliberate
+ * difference: the severity does not depend on `--strict-types`. Gradual typing
+ * is a statement about how much the checker can INFER, not a licence to compile
+ * a program it has PROVEN ill-formed, and the no-cloning guarantee `Qubit`
+ * advertises is worth nothing if violating it still exits 0 and writes a
+ * runnable binary. `--unsafe` — documented precisely as "linear types can be
+ * duplicated (no-cloning bypassed)" — remains the one way to proceed anyway.
+ */
+void TypeChecker::reportLinearViolation(const std::string& msg,
+                                        const eshkol_ast_t* node) {
+    if (unsafe_mode_) return;
+
+    std::string loc_msg = msg;
+    if (node && node->line > 0) {
+        loc_msg += " (line " + std::to_string(node->line);
+        if (node->column > 0) {
+            loc_msg += ":" + std::to_string(node->column);
+        }
+        loc_msg += ")";
+    }
+
+    fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
+    linearity_violations_++;
+    addError(msg, node ? node->line : 0, node ? node->column : 0);
+}
+
 // ============================================================================
 // Dimension Checking (Phase 5.3)
 // ============================================================================
@@ -3679,6 +3726,330 @@ std::optional<CTValue> TypeChecker::extractDimension(TypeId type, size_t dim_ind
 // ============================================================================
 // Linear Type Checking (Phase 6.2)
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// Static linear-use analysis
+//
+// The incidental usage counters on Context are a by-product of type synthesis,
+// and type synthesis does not visit the whole program: `begin` synthesizes only
+// its LAST expression, `and`/`or` synthesize no operand at all, and
+// cond/case/when/unless/do/guard/match synthesize nothing and just answer
+// `Value`. Reading a linearity verdict off those counters is therefore wrong in
+// BOTH directions at once — it missed `(begin (h q) (z q))` (a clone counted as
+// one use) while rejecting `(cond (b (h q)) (else (z q)))` as "never consumed"
+// (a legal program whose only use is invisible). A warning can survive that
+// sloppiness; a fatal error cannot, so the enforcement this file now performs
+// is driven by a dedicated walk instead.
+//
+// The walk answers ONE question — how many times can this binding be used along
+// a single worst-case execution path — and it answers "I do not know" rather
+// than guessing. That is the decidability flag: any form outside the fragment
+// below sets `decidable = false`, and no verdict, fatal or otherwise, is drawn
+// from an undecidable body. Under-approximating (missing a clone) is a bounded
+// gap that a later release can close; over-approximating would reject correct
+// quantum programs, which is the one failure this must never have.
+//
+// Accounting rules, and why each is the worst case:
+//   * `if`         cond + max(then, else). The branches are mutually exclusive,
+//                  so no path runs both (#320 item 2).
+//   * sequence     sum. Every sub-expression of a `begin` runs.
+//   * `and`/`or`   sum. Short-circuit means FEWER evaluations on some paths,
+//                  never more, and linear typing rejects a binding that any
+//                  path can duplicate.
+//   * `let`-family sum of binding values + body, with two refinements: a
+//                  binding whose value is a bare reference to a tracked name is
+//                  an ALIAS and extends tracking to the new name (this is what
+//                  `(let ((a q)) (cons a a))` needs); a binding that shadows a
+//                  tracked name ends tracking for that name in the body.
+//   * `lambda`     body uses, counted as written. A closure that captures a
+//                  linear value and uses it twice clones it; a closure that
+//                  captures it once and is itself invoked many times is the
+//                  dynamic duplication this static analysis does not see, and
+//                  which the enforcement scope documents as out of range.
+//   * `define`     the body of an internal define, with the same shadowing rule.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Names currently aliasing the linear binding under analysis. */
+using LinearAliasSet = std::set<std::string>;
+
+/**
+ * @brief Worst-case count of uses of any name in @p names within @p e.
+ *
+ * Sets @p decidable to false (and records @p blocker) the first time it meets a
+ * form it cannot account for. Once false it stays false; the returned count is
+ * then meaningless and callers must not read it.
+ */
+static int countLinearUses(const eshkol_ast_t* e,
+                           const LinearAliasSet& names,
+                           bool& decidable,
+                           const char*& blocker);
+
+/** True if @p e is a bare reference to one of @p names (an alias source). */
+static bool isBareRefTo(const eshkol_ast_t* e, const LinearAliasSet& names) {
+    return e && e->type == ESHKOL_VAR && e->variable.id &&
+           names.count(e->variable.id) > 0;
+}
+
+/** Sum uses over a contiguous array of @p n sub-expressions. */
+static int sumUses(const eshkol_ast_t* items, uint64_t n,
+                   const LinearAliasSet& names, bool& decidable,
+                   const char*& blocker) {
+    int total = 0;
+    for (uint64_t i = 0; i < n && decidable; ++i) {
+        total += countLinearUses(&items[i], names, decidable, blocker);
+    }
+    return total;
+}
+
+/**
+ * @brief Uses within an `if`: condition + the LARGER of the two branches.
+ *
+ * Laid out as a call_op — variables[0]=condition, [1]=then, [2]=else — whether
+ * it arrived as ESHKOL_IF_OP or as the lowered call to the builtin "if".
+ */
+static int countIfUses(const eshkol_operations_t& op,
+                       const LinearAliasSet& names,
+                       bool& decidable, const char*& blocker) {
+    if (op.call_op.num_vars < 2) {
+        decidable = false;
+        blocker = "a malformed if";
+        return 0;
+    }
+    int cond = countLinearUses(&op.call_op.variables[0], names, decidable, blocker);
+    int then_uses = countLinearUses(&op.call_op.variables[1], names, decidable, blocker);
+    int else_uses = 0;
+    if (op.call_op.num_vars >= 3) {
+        else_uses = countLinearUses(&op.call_op.variables[2], names, decidable, blocker);
+    }
+    return cond + (then_uses > else_uses ? then_uses : else_uses);
+}
+
+/**
+ * @brief Uses within a `let`-family form, honouring aliasing and shadowing.
+ *
+ * A named `let` is a loop whose body can run any number of times, so its use
+ * count is not a single-path quantity at all — it is reported undecidable
+ * rather than counted once.
+ */
+static int countLetUses(const eshkol_operations_t& op,
+                        const LinearAliasSet& names,
+                        bool& decidable, const char*& blocker) {
+    const auto& let = op.let_op;
+    if (let.name) {                       // named let: an unbounded loop
+        decidable = false;
+        blocker = "named let";
+        return 0;
+    }
+
+    LinearAliasSet inner = names;
+    int total = 0;
+    for (uint64_t i = 0; i < let.num_bindings && decidable; ++i) {
+        const eshkol_ast_t& binding = let.bindings[i];
+        if (binding.type != ESHKOL_CONS) {
+            decidable = false;
+            blocker = "let binding";
+            return 0;
+        }
+        const eshkol_ast_t* value = binding.cons_cell.cdr;
+        // An alias binds the SAME resource under a new name: charge no use for
+        // the reference itself and track the new name instead. Anything else is
+        // an ordinary sub-expression whose uses are charged normally.
+        bool is_alias = isBareRefTo(value, inner);
+        if (!is_alias) {
+            total += countLinearUses(value, inner, decidable, blocker);
+        }
+        const eshkol_ast_t* var = binding.cons_cell.car;
+        if (var && var->type == ESHKOL_VAR && var->variable.id) {
+            if (is_alias) {
+                inner.insert(var->variable.id);
+            } else {
+                inner.erase(var->variable.id);   // shadows the tracked name
+            }
+        }
+    }
+    if (!decidable) return 0;
+    if (inner.empty()) return total;      // every tracked name was shadowed
+    return total + countLinearUses(let.body, inner, decidable, blocker);
+}
+
+static int countLinearUses(const eshkol_ast_t* e,
+                           const LinearAliasSet& names,
+                           bool& decidable,
+                           const char*& blocker) {
+    if (!e || !decidable || names.empty()) return 0;
+
+    switch (e->type) {
+        case ESHKOL_VAR:
+            return (e->variable.id && names.count(e->variable.id) > 0) ? 1 : 0;
+        case ESHKOL_UINT8:  case ESHKOL_UINT16: case ESHKOL_UINT32:
+        case ESHKOL_UINT64: case ESHKOL_INT8:   case ESHKOL_INT16:
+        case ESHKOL_INT32:  case ESHKOL_INT64:  case ESHKOL_DOUBLE:
+        case ESHKOL_STRING: case ESHKOL_CHAR:   case ESHKOL_BOOL:
+        case ESHKOL_NULL:   case ESHKOL_BIGNUM_LITERAL:
+        case ESHKOL_SYMBOL: case ESHKOL_UNTYPED:
+            return 0;   // a literal cannot mention a binding
+        case ESHKOL_CONS:
+            return countLinearUses(e->cons_cell.car, names, decidable, blocker) +
+                   countLinearUses(e->cons_cell.cdr, names, decidable, blocker);
+        case ESHKOL_OP:
+            break;
+        default:
+            decidable = false;
+            blocker = "unrecognised AST node";
+            return 0;
+    }
+
+    const auto& op = e->operation;
+    switch (op.op) {
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            return sumUses(op.sequence_op.expressions,
+                           op.sequence_op.num_expressions, names, decidable, blocker);
+
+        case ESHKOL_IF_OP:
+            return countIfUses(op, names, decidable, blocker);
+
+        case ESHKOL_CALL_OP:
+        case ESHKOL_ADD_OP:
+        case ESHKOL_SUB_OP:
+        case ESHKOL_MUL_OP:
+        case ESHKOL_DIV_OP: {
+            // The parser lowers `if` to a CALL of a builtin named "if" rather
+            // than to ESHKOL_IF_OP (synthesizeApplication routes it back to
+            // synthesizeIf on the same test). Summing its arguments the way an
+            // ordinary call is summed charges BOTH branches, which reports
+            // `(if b (h q) (z q))` — a qubit consumed exactly once on either
+            // path — as a clone. That is precisely the correct quantum program
+            // an over-strict rule must never reject (#320 item 2).
+            if (op.call_op.func && op.call_op.func->type == ESHKOL_VAR &&
+                op.call_op.func->variable.id &&
+                std::strcmp(op.call_op.func->variable.id, "if") == 0 &&
+                op.call_op.num_vars >= 2) {
+                return countIfUses(op, names, decidable, blocker);
+            }
+            int total = countLinearUses(op.call_op.func, names, decidable, blocker);
+            total += sumUses(op.call_op.variables, op.call_op.num_vars,
+                             names, decidable, blocker);
+            return total;
+        }
+
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            return countLetUses(op, names, decidable, blocker);
+
+        case ESHKOL_LAMBDA_OP: {
+            LinearAliasSet inner = names;
+            for (uint64_t i = 0; i < op.lambda_op.num_params; ++i) {
+                const eshkol_ast_t& p = op.lambda_op.parameters[i];
+                if (p.type == ESHKOL_VAR && p.variable.id) inner.erase(p.variable.id);
+            }
+            if (op.lambda_op.rest_param) inner.erase(op.lambda_op.rest_param);
+            if (inner.empty()) return 0;
+            return countLinearUses(op.lambda_op.body, inner, decidable, blocker);
+        }
+
+        case ESHKOL_DEFINE_OP: {
+            LinearAliasSet inner = names;
+            inner.erase(op.define_op.name ? op.define_op.name : "");
+            for (uint64_t i = 0; i < op.define_op.num_params; ++i) {
+                const eshkol_ast_t& p = op.define_op.parameters[i];
+                if (p.type == ESHKOL_VAR && p.variable.id) inner.erase(p.variable.id);
+            }
+            if (op.define_op.rest_param) inner.erase(op.define_op.rest_param);
+            if (inner.empty()) return 0;
+            return countLinearUses(op.define_op.value, inner, decidable, blocker);
+        }
+
+        case ESHKOL_THE_OP:
+            // The ascription is erased at runtime; the wrapped expression runs
+            // verbatim, so its uses are the form's uses.
+            return countLinearUses(op.the_op.expr, names, decidable, blocker);
+
+        case ESHKOL_QUOTE_OP:
+            return 0;   // quoted data is never evaluated
+
+        default:
+            // cond/case/when/unless/do/guard/match/call-cc/set!/tensor forms and
+            // everything else: an op-specific union layout this walk does not
+            // model. Refusing to guess is the whole point — see the header
+            // comment. The caller downgrades to a warning and says so.
+            decidable = false;
+            blocker = "a control-flow or special form outside the decidable fragment";
+            return 0;
+    }
+}
+
+}  // namespace
+
+/**
+ * @brief Count worst-case uses of the linear binding @p name within @p body.
+ *
+ * See the block comment above for the decidable fragment and the accounting
+ * rules. When the returned verdict is not `decidable`, its `uses` field carries
+ * no information and no linearity conclusion may be drawn from it.
+ */
+TypeChecker::LinearUseAnalysis
+TypeChecker::analyzeLinearUses(const eshkol_ast_t* body,
+                               const std::string& name) const {
+    LinearUseAnalysis result;
+    LinearAliasSet names{name};
+    result.uses = countLinearUses(body, names, result.decidable, result.blocker);
+    if (!result.decidable) result.uses = 0;
+    return result;
+}
+
+/**
+ * @brief Enforce use-exactly-once for each of @p linear_names over @p body.
+ *
+ * Reports at @p site (the `define`/`lambda`/`let` form) so the diagnostic
+ * points at the binder that made the promise. Two uses is a clone — the
+ * no-cloning violation the `Qubit` type exists to reject — and zero uses is a
+ * discard; both are fatal. A body outside the decidable fragment yields a
+ * warning that NAMES the form which stopped the analysis, because the honest
+ * report of an unenforced shape is "not checked here", not silence and not a
+ * guess.
+ */
+void TypeChecker::enforceLinearBindings(const std::vector<std::string>& linear_names,
+                                        const eshkol_ast_t* body,
+                                        const eshkol_ast_t* site) {
+    for (const auto& name : linear_names) {
+        auto verdict = analyzeLinearUses(body, name);
+        if (!verdict.decidable) {
+            // NOT routed through reportTypeIssue(): this says something about
+            // the CHECKER's reach, not about the program, so it must never be
+            // counted as a type error — under `--strict-types` that would
+            // reject `(cond (b (h q)) (else (z q)))`, a correct single-use
+            // quantum program, purely because the analysis does not model
+            // `cond` yet. It is printed unconditionally so the boundary of the
+            // no-cloning guarantee is visible in the build log and not only in
+            // the documentation.
+            if (!unsafe_mode_) {
+                std::string loc = "linear variable '" + name +
+                                  "' is not statically decidable here (body contains " +
+                                  verdict.blocker + "); use-exactly-once is NOT enforced for it";
+                if (site && site->line > 0) {
+                    loc += " (line " + std::to_string(site->line);
+                    if (site->column > 0) loc += ":" + std::to_string(site->column);
+                    loc += ")";
+                }
+                fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
+            }
+            continue;
+        }
+        if (verdict.uses > 1) {
+            reportLinearViolation("linear variable '" + name +
+                                  "' was consumed more than once", site);
+        } else if (verdict.uses == 0) {
+            reportLinearViolation("linear variable '" + name +
+                                  "' was not consumed", site);
+        }
+    }
+}
 
 /**
  * @brief True if @p type is linear (must be used exactly once): the no-cloning constraint.
