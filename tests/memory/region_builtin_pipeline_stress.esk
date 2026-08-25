@@ -1,0 +1,66 @@
+;;; Native OALR routing regression: every row creates canonical Scheme values,
+;;; base64 text, hash text, reader objects and a SQLite-bound value inside a
+;;; lexical region.  Nothing except the running integer escapes the row.
+(require stdlib)
+(require core.sexp)
+(require core.data.base64)
+(require agent.sqlite)
+
+(define (env-positive-int name fallback)
+  (let ((v (getenv name)))
+    (if v
+        (let ((n (string->number v)))
+          (if (and n (integer? n) (> n 0)) n fallback))
+        fallback)))
+(define rows (env-positive-int "ESHKOL_REGION_BUILTIN_ROWS" 50000))
+(define fixture (getenv "ESHKOL_REGION_BUILTIN_FIXTURE"))
+(if (not fixture) (error "ESHKOL_REGION_BUILTIN_FIXTURE is required") #t)
+
+;; Keep actual file I/O in the row path: production replay reads canonical
+;; forms from a journal rather than just from an in-memory string.
+(let ((out (open-output-file fixture)))
+  (display "(fixture canonical reader)\n" out)
+  (close-output-port out))
+
+(define db (sqlite-open ":memory:"))
+(if (< db 0) (error "sqlite open failed") #t)
+(define stmt (sqlite-prepare db "SELECT ?1"))
+(if (< stmt 0) (error "sqlite prepare failed") #t)
+
+(define (one-row i)
+  (with-region ('builtin-pipeline-row 65536)
+    (let* ((raw (make-string 16384 #\x))
+           (form (list (quote row) i raw))
+           (canonical (sexp->canonical-string form))
+           (encoded (base64-encode-string canonical))
+           (decoded (base64-decode-string encoded))
+           ;; The file hash builtin streams the fixture and returns another
+           ;; Scheme-visible string from the same current arena.
+           (digest (sha256-file fixture))
+           (port (open-input-string canonical))
+           (round-trip (read port))
+           (file-port (open-input-file fixture))
+           (fixture-form (read file-port)))
+      (close-input-port port)
+      (close-input-port file-port)
+      ;; SQLITE_TRANSIENT copies `encoded` during bind; reset/step complete
+      ;; before the region closes, so no SQLite pointer can outlive this row.
+      (sqlite-reset stmt)
+      (sqlite-bind-text stmt 1 encoded)
+      (let ((code (sqlite-step-code stmt)))
+        (sqlite-reset stmt)
+        (if (not (= code SQLITE_ROW)) (error "region pipeline sqlite step") #t)
+        (if (not (string? digest)) (error "region pipeline hash result") #t)
+        (if (not (string=? decoded canonical)) (error "region pipeline base64 round trip") #t)
+        (if (not (pair? round-trip)) (error "region pipeline canonical reader") #t)
+        (if (not (equal? fixture-form (quote (fixture canonical reader))))
+            (error "region pipeline file reader") #t)
+        #t))))
+
+(let loop ((i 0))
+  (if (= i rows)
+      #t
+      (begin (one-row i) (loop (+ i 1)))))
+(sqlite-finalize stmt)
+(sqlite-close db)
+(display "PASS: region builtin pipeline rows=") (display rows) (newline)

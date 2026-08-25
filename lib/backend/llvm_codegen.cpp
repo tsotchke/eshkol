@@ -960,7 +960,6 @@ namespace {
     std::unordered_map<std::string, uint64_t> g_repl_sexpr_values;         // sexpr_name -> s-expression pointer value
     std::unordered_map<std::string, std::vector<std::string>> g_repl_lambda_captures;  // lambda_name -> capture variable names
     std::unordered_map<std::string, std::pair<size_t, bool>> g_repl_variadic_functions;  // func_name -> (fixed_params, is_variadic)
-    std::unordered_set<std::string> g_repl_private_symbols;                // Private symbols (not exported from modules)
     // ── REPL HOT RELOAD ──────────────────────────────────────────────────────
     // The REPL implements live redefinition for ALL top-level bindings using
     // PLT/GOT-style indirection: every reachable binding name resolves at the
@@ -7449,13 +7448,6 @@ private:
 
         std::lock_guard<std::mutex> lock(g_repl_mutex);
 
-        // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
-        if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
-            eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
-            markFatalCodegenError();
-            return nullptr;
-        }
-
         // Check multiple name variations and track which one matched
         std::string actual_func_name;
 
@@ -11201,17 +11193,10 @@ private:
         // shadows the host math function when read as a value.
         if (g_repl_mode_enabled) {
             bool is_repl_user_var = false;
-            bool is_private = false;
             {
                 std::lock_guard<std::mutex> lock(g_repl_mutex);
                 is_repl_user_var =
                     g_repl_user_variable_names.count(var_name) > 0;
-                is_private = g_repl_private_symbols.count(var_name) > 0;
-            }
-            if (is_private) {
-                eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
-                markFatalCodegenError();
-                return nullptr;
             }
             if (is_repl_user_var) {
                 std::string storage_name = replVarStorageSymbolName(var_name);
@@ -11775,13 +11760,6 @@ private:
             // Then check if it's a regular variable (stored in g_repl_symbol_addresses)
             std::lock_guard<std::mutex> lock(g_repl_mutex);
 
-            // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
-            if (g_repl_private_symbols.find(var_name) != g_repl_private_symbols.end()) {
-                eshkol_error("Variable '%s' is private (not exported from its module)", var_name.c_str());
-                markFatalCodegenError();
-                return nullptr;
-            } else {
-
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end() ||
                 g_repl_user_variable_names.count(var_name) > 0) {
@@ -11804,7 +11782,6 @@ private:
                 // Load and return the value
                 return builder->CreateLoad(global_var->getValueType(), global_var);
             }
-            } // end else (not private symbol)
         }
 
         // NOTE: math_builtins are now handled at the top of this function
@@ -30784,11 +30761,7 @@ private:
 
             if (!outer_val && g_repl_mode_enabled) {
                 std::lock_guard<std::mutex> lock(g_repl_mutex);
-                if (g_repl_private_symbols.find(fv) != g_repl_private_symbols.end()) {
-                    eshkol_error("Named let '%s': free var '%s' is private (not exported from its module)",
-                                 loop_name.c_str(), fv.c_str());
-                    markFatalCodegenError();
-                } else if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
+                if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
                     std::string storage_name = replVarStorageSymbolName(fv);
                     GlobalVariable* repl_global = module->getGlobalVariable(storage_name);
                     if (!repl_global) {
@@ -41776,7 +41749,6 @@ void eshkol_repl_disable() {
     g_repl_sexpr_values.clear();
     g_repl_lambda_captures.clear();
     g_repl_variadic_functions.clear();
-    g_repl_private_symbols.clear();
     g_repl_user_function_names.clear();
     g_repl_user_variable_names.clear();
     g_repl_native_c_functions.clear();
@@ -41898,18 +41870,6 @@ void eshkol_repl_clear_last_value(void) {
     g_repl_last_value.flags = 0;
     g_repl_last_value.reserved = 0;
     g_repl_last_value.data.raw_val = 0;
-}
-
-void eshkol_repl_register_private_symbol(const char* name) {
-    if (!name) return;
-    std::lock_guard<std::mutex> lock(g_repl_mutex);
-    g_repl_private_symbols.insert(name);
-}
-
-bool eshkol_repl_is_private_symbol(const char* name) {
-    if (!name) return false;
-    std::lock_guard<std::mutex> lock(g_repl_mutex);
-    return g_repl_private_symbols.find(name) != g_repl_private_symbols.end();
 }
 
 void eshkol_repl_mark_user_variable(const char* name) {

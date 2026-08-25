@@ -29,7 +29,7 @@
 (require stdlib)
 (require core.memory)
 (require core.sexp)
-(require core.files)   ;; atomic-write-file for the head sidecar
+(require core.files)   ;; path-directory for durable sidecar publication
 
 (provide make-memory-store
          memory-store?
@@ -37,12 +37,19 @@
          memory-store-path
          memory-store-open
          memory-store-open-fast
+         memory-store-open-durable
+         memory-store-open-fast-durable
+         memory-store-close!
          memory-store-append!
          memory-store-verify
          memory-store-audit
+         memory-store-audit-linear
+         memory-store-linear-evidence
          memory-store-count
          memory-store-head
-         memory-store-sanitize)
+         memory-store-tail
+         memory-store-sanitize
+         memory-store-test-fail-next-first-file-parent-sync!)
 
 ;; ---- fixed-arity libc (ARM64-safe; see header) ----
 (extern ptr ms-fopen ptr ptr :real fopen)
@@ -51,26 +58,103 @@
 (extern i32 ms-fileno ptr :real fileno)
 (extern i32 ms-fsync i32 :real fsync)
 (extern i32 ms-fclose ptr :real fclose)
+(extern i32 ms-flock i32 i32 :real flock)
+(extern i32 ms-rename ptr ptr :real rename)
+(extern i32 ms-open-readonly ptr i32 :real open)
+(extern i32 ms-close i32 :real close)
+;; `fcntl(fd, F_FULLFSYNC, 0)` is an ABI-fixed use of fcntl: the third
+;; argument is always the integer zero for this command.  It is attempted on
+;; every host; non-Darwin hosts reject the Darwin command and retain fsync.
+(extern i32 ms-fcntl-fullfsync i32 i32 i64 :real fcntl)
+(define ms-f-fullfsync 51) ;; Darwin's F_FULLFSYNC; unsupported hosts use fsync.
+(define ms-lock-ex-nb 6)   ;; BSD flock: LOCK_EX | LOCK_NB
+(define ms-lock-un 8)      ;; BSD flock: LOCK_UN
+;; Maximum UTF-8 byte length of one persisted canonical event line, including
+;; its trailing newline.  This deliberately admits Noesis's 64 KiB learning
+;; WAL transaction after canonical_learning_history's exact base64 transaction
+;; envelope; it is a per-record safety bound only, never an event-count or
+;; fact-count limit.
+(define ms-max-canonical-event-line-bytes 131072)
+
+;; Test-only, one-shot fault seam.  It is deliberately narrower than the
+;; directory-sync helper: it can fail only the parent sync which makes the
+;; first journal filename durable, after that journal row's bytes have been
+;; flushed and synced.  With the hook disabled (the production default), the
+;; persistence path is byte-for-byte the normal path.
+(define ms-test-fail-next-first-file-parent-sync? #f)
+(define (memory-store-test-fail-next-first-file-parent-sync!)
+  (set! ms-test-fail-next-first-file-parent-sync? #t))
+
+(define (ms-full-sync! fd)
+  ;; fsync is mandatory everywhere.  On Darwin F_FULLFSYNC additionally asks
+  ;; the storage stack to flush through volatile drive caches.  Linux and
+  ;; other hosts reject command 51, for which fsync is the portable boundary.
+  (and (= (ms-fsync fd) 0)
+       (let ((full-sync-result (ms-fcntl-fullfsync fd ms-f-fullfsync 0)))
+         ;; A rejected F_FULLFSYNC is the normal Linux/BSD portability case;
+         ;; re-check fsync instead of treating an unchecked fcntl result as OK.
+         (or (= full-sync-result 0) (= (ms-fsync fd) 0)))))
+
+(define (ms-write-sync-close! f bytes)
+  ;; Acknowledge only a complete write followed by flush, durable sync and a
+  ;; successful close.  Each operation can expose a delayed I/O failure.  Do
+  ;; not short-circuit: even a failed write/flush must close its FILE*.
+  (let* ((wanted (string-byte-length bytes))
+         (written (ms-fwrite bytes 1 wanted f))
+         (flushed (ms-fflush f))
+         (fd (ms-fileno f))
+         (synced (if (>= fd 0) (ms-full-sync! fd) #f))
+         (closed (ms-fclose f)))
+    (and (= written wanted) (= flushed 0) synced (= closed 0))))
 
 (define (ms-append-fsync! path line)
   ;; T0: bytes hit the platter (or its cache-flush boundary) before we return.
-  (let ((f (ms-fopen path "a")))
+  ;; On first creation, the parent directory must be synced after closing the
+  ;; new file so its name is durable too.  If that final sync fails, the line
+  ;; itself is already committed but a durable handle must be poisoned by its
+  ;; caller rather than left able to append from an ambiguous boundary.
+  (let ((existed? (file-exists? path))
+        (f (ms-fopen path "a")))
     (if (null-ptr? f)
         #f
-        (begin
-          ;; fwrite's count is BYTES; string-length is CODEPOINTS. A line
-          ;; containing multibyte UTF-8 (e.g. an em-dash, 3 bytes/1 char)
-          ;; would otherwise be silently truncated on write. See
-          ;; docs/reference/agent/ffi.md "FFI marshalling gotchas".
-          (ms-fwrite line 1 (string-byte-length line) f)
-          (ms-fflush f)
-          (ms-fsync (ms-fileno f))
-          (ms-fclose f)
-          #t))))
+        (if (not (ms-write-sync-close! f line))
+            #f
+            (if (or existed?
+                    (if ms-test-fail-next-first-file-parent-sync?
+                        (begin
+                          (set! ms-test-fail-next-first-file-parent-sync? #f)
+                          #f)
+                        (ms-sync-parent-directory! path)))
+                #t
+                (quote committed-parent-sync-failed))))))
 
 ;; NULL from the FFI arrives as the empty list, not 0 (verified: fopen on a
 ;; missing path returns () under eshkol-run).
 (define (null-ptr? p) (null? p))
+
+;; The hosted `read-line` builtin uses a 1024-byte scratch buffer, so it
+;; silently splits large canonical records.  Journal rows are bounded and
+;; printable ASCII after sanitization; read them byte-for-byte into one
+;; preallocated buffer instead.  A row beyond the accepted bound becomes an
+;; unparseable empty row, making every strict reader fail closed.
+(define (ms-read-canonical-line port)
+  (ms-read-canonical-line-into
+   port (make-string (- ms-max-canonical-event-line-bytes 1) #\space)))
+
+(define (ms-read-canonical-line-into port buf)
+  ;; `buf` is caller-owned so long streaming audits can reuse one bounded
+  ;; scratch allocation instead of retaining a fresh max-row buffer per line.
+  (let loop ((i 0))
+    (let ((c (read-char port)))
+      (cond
+        ((eof-object? c)
+         (if (= i 0) c (substring buf 0 i)))
+        ((char=? c #\newline) (substring buf 0 i))
+        ((>= i (- ms-max-canonical-event-line-bytes 1)) "")
+        (else
+         (begin
+           (string-set! buf i c)
+           (loop (+ i 1))))))))
 
 ;; =====================================================================
 ;; Parser for the canonical subset (inverse of sexp->canonical-string for
@@ -80,7 +164,9 @@
 
 (define (ms-parse line)
   (let ((r (ms-parse-at line 0 (string-length line))))
-    (if r (car r) #f)))
+    ;; A journal row is exactly one canonical datum.  In particular, do not
+    ;; accept a valid prefix followed by a torn next row or arbitrary bytes.
+    (if (and r (= (cdr r) (string-length line))) (car r) #f)))
 
 ;; returns (value . next-index) or #f
 (define (ms-parse-at s i n)
@@ -176,12 +262,32 @@
               e))))
 
 ;; =====================================================================
-;; The store: #(mem-store log path)
+;; The store.  The historical public constructor stays a three-vector for
+;; compatibility.  Durable stores are eight-vectors:
+;; #(mem-store log path lock-file durable? authoritative-tail compact? count).
+;; `compact?` is the long-lived append-only journal mode: it keeps only the
+;; head/vclock/tail metadata, never the growing RGA projection.
 ;; =====================================================================
 
 (define (make-memory-store log path) (vector (quote mem-store) log path))
 (define (memory-store? s)
-  (and (vector? s) (= (vector-length s) 3) (eq? (vector-ref s 0) (quote mem-store))))
+  (and (vector? s)
+       (or (= (vector-length s) 3) (= (vector-length s) 8))
+       (eq? (vector-ref s 0) (quote mem-store))))
+(define (ms-make-durable-store log path lock tail compact? count)
+  (vector (quote mem-store) log path lock #t tail compact? count))
+(define (ms-store-durable? s) (= (vector-length s) 8))
+(define (ms-store-lock s) (if (ms-store-durable? s) (vector-ref s 3) #f))
+(define (ms-store-tail s) (if (ms-store-durable? s) (vector-ref s 5) #f))
+(define (ms-store-compact? s) (and (ms-store-durable? s) (vector-ref s 6)))
+(define (ms-store-count s) (if (ms-store-durable? s) (vector-ref s 7) #f))
+(define (ms-set-store-count! s n)
+  (if (ms-store-durable? s) (vector-set! s 7 n) #t))
+(define (ms-set-store-tail! s ev)
+  (if (ms-store-durable? s) (vector-set! s 5 ev) #t))
+(define (ms-store-writable? s)
+  (or (not (ms-store-durable? s))
+      (not (null-ptr? (ms-store-lock s)))))
 
 ;; Runtime tag check: the accessors below used to call vector-ref directly
 ;; on `s`, trusting every caller to have passed a real memory-store. A
@@ -199,6 +305,23 @@
 (define (memory-store-log s)  (vector-ref (ms-check-store s "memory-store-log") 1))
 (define (memory-store-path s) (vector-ref (ms-check-store s "memory-store-path") 2))
 
+(define (memory-store-close! store)
+  ;; Explicit lifetime boundary for the per-journal single-writer ownership.
+  ;; A closed durable handle is never silently writable again.
+  (ms-check-store store "memory-store-close!")
+  (if (not (ms-store-durable? store))
+      #t
+      (let ((lock-file (ms-store-lock store)))
+        (if (not (null-ptr? lock-file))
+            (let* ((fd (ms-fileno lock-file))
+                   ;; Closing owns lifetime even if fileno/flock fails.
+                   (unlocked (if (>= fd 0) (= (ms-flock fd ms-lock-un) 0) #f))
+                   (closed (= (ms-fclose lock-file) 0))
+                   (ok (and unlocked closed)))
+              (vector-set! store 3 (list))
+              ok)
+            #t))))
+
 ;; Rebuild the in-memory log from persisted events (replay). The stored id,
 ;; prev, vclock are TRUSTED ONLY until memory-store-verify re-derives them.
 (define (ms-replay-event! log ev)
@@ -211,28 +334,168 @@
 (define (ml-rga l)    (vector-ref l 2))
 (define (ml-vclock l) (vector-ref l 3))
 
-(define (memory-store-open node-id path)
-  ;; Open (or create) the durable chain at path. Replays existing events.
+(define (ms-proper-length? x n)
+  (if (= n 0) (null? x)
+      (and (pair? x) (ms-proper-length? (cdr x) (- n 1)))))
+
+(define (ms-canonical-event? ev)
+  ;; `memory-event?` intentionally only recognizes the tag, so journal input
+  ;; must additionally prove its exact arity before any accessor can run.
+  (and (ms-proper-length? ev 7)
+       (eq? (car ev) (quote mem-ev-v1))
+       (string? (list-ref ev 1))))
+
+(define (ms-valid-next-event? ev expected-prev)
+  (and (ms-canonical-event? ev)
+       (equal? (memory-event-prev ev) expected-prev)
+       (string=? (memory-event-id ev)
+                 (event-content-hash (memory-event-node ev)
+                                     (memory-event-prev ev)
+                                     (memory-event-vclock ev)
+                                     (memory-event-type ev)
+                                     (memory-event-payload ev)))))
+
+(define (ms-load-strict node-id path)
+  ;; -> (log . last-event), #f on an existing unreadable/malformed/torn log.
+  ;; No permissive "skip bad line" mode is valid for the canonical journal.
   (let ((log (make-memory-log node-id))
-        (f   (ms-fopen path "r")))
+        (f (ms-fopen path "r")))
     (if (null-ptr? f)
-        (make-memory-store log path)          ;; fresh chain — no file yet
-        (begin
-          (ms-fclose f)
-          (let ((port (open-input-file path)))
-            (let loop ()
-              (let ((line (read-line port)))
-                (if (eof-object? line)
-                    (close-port port)
-                    (begin
-                      (if (> (string-length line) 0)
-                          (let ((ev (ms-parse line)))
-                            (if (and ev (memory-event? ev))
-                                (ms-replay-event! log ev)
-                                (begin (display "memory-store: UNPARSEABLE line skipped") (newline))))
-                          #t)
-                      (loop)))))
-            (make-memory-store log path))))))
+        (if (file-exists? path) #f (cons log #f))
+        (if (not (= (ms-fclose f) 0))
+            #f
+            (let ((port (open-input-file path)))
+              (guard (e (#t (begin (close-port port) #f)))
+                (let loop ((expected-prev #f) (last #f))
+                  (let ((line (ms-read-canonical-line port)))
+                    (if (eof-object? line)
+                        (begin (close-port port) (cons log last))
+                        (let ((ev (ms-parse line)))
+                          (if (ms-valid-next-event? ev expected-prev)
+                              (begin (ms-replay-event! log ev)
+                                     (loop (memory-event-id ev) ev))
+                              (begin (close-port port) #f))))))))))))
+
+(define (ms-read-tail-by-id path tail-id)
+  ;; The first strict pass establishes `tail-id` while retaining no event.  A
+  ;; second scratch-scoped pass recovers only that one public tail event for
+  ;; the compact-handle compatibility API; every non-tail decode is reclaimed.
+  ;; The durable journal lock excludes a concurrent writer between the passes.
+  (let ((port (open-input-file path)))
+    (guard (e (#t (begin (close-port port) #f)))
+      (let loop ()
+        (let ((step
+               (with-region ('memory-store-tail-recover-row 65536)
+                 (let ((line (ms-read-canonical-line port)))
+                   (if (eof-object? line) (list (quote eof) #f)
+                       (let ((ev (ms-parse line)))
+                         (if (and (ms-canonical-event? ev)
+                                  (string=? (memory-event-id ev) tail-id))
+                             (list (quote found) ev)
+                             (list (quote next) #f))))))))
+          (cond ((eq? (car step) (quote found))
+                 (begin (close-port port) (car (cdr step))))
+                ((eq? (car step) (quote next)) (loop))
+                (else (begin (close-port port) #f))))))))
+
+(define (ms-scan-tail-strict path)
+  ;; -> (#t last-event count), #f on an existing malformed/torn
+  ;; journal.  This is the compact durable-open path: it validates
+  ;; identity/linkage without an RGA rebuild or retaining historic events.
+  (let ((f (ms-fopen path "r")))
+    (if (null-ptr? f)
+        (if (file-exists? path) #f (list #t #f 0))
+        (if (not (= (ms-fclose f) 0))
+            #f
+            (let ((port (open-input-file path)))
+              (guard (e (#t (begin (close-port port) #f)))
+                (let loop ((expected-prev #f) (count 0))
+                  ;; Reader/parser/hash allocations are per-record scratch.
+                  ;; Escape only the next link and tail clock required by the
+                  ;; compact handle; retaining `ev` here made a strict open
+                  ;; linearly retain every lossless semantic payload.
+                  (let ((step
+                         (with-region ('memory-store-tail-scan-row 65536)
+                           (let ((line (ms-read-canonical-line port)))
+                             (if (eof-object? line)
+                                 (list (quote eof) #f #f)
+                                 (let ((ev (ms-parse line)))
+                                   (if (ms-valid-next-event? ev expected-prev)
+                                       (list (quote row) (memory-event-id ev))
+                                       (list (quote invalid) #f #f))))))))
+                    (cond ((eq? (car step) (quote eof))
+                           (begin (close-port port)
+                                  (if expected-prev
+                                      (let ((tail (ms-read-tail-by-id path expected-prev)))
+                                        (if tail (list #t tail count) #f))
+                                      (list #t #f count))))
+                          ((eq? (car step) (quote row))
+                           (loop (car (cdr step)) (+ count 1)))
+                          (else (begin (close-port port) #f)))))))))))
+
+(define (memory-store-open node-id path)
+  ;; Compatibility constructor, now strict: bad data is never replayed as a
+  ;; valid prefix.  Production writers use memory-store-open-durable.
+  (let ((loaded (ms-load-strict node-id path)))
+    (if loaded (make-memory-store (car loaded) path) #f)))
+
+(define (ms-lock-path path) (string-append path ".lock"))
+
+(define (ms-acquire-journal-lock path)
+  ;; Keep this FILE* open for the store lifetime.  BSD flock is associated
+  ;; with this open file description, so a second process cannot acquire the
+  ;; same `<journal>.lock` until memory-store-close! unlocks and closes it.
+  (let ((f (ms-fopen (ms-lock-path path) "a")))
+    (if (null-ptr? f)
+        (list)
+        (let ((fd (ms-fileno f)))
+          (if (and (>= fd 0) (= (ms-flock fd ms-lock-ex-nb) 0))
+              f
+              (begin (ms-fclose f) (list)))))))
+
+(define (memory-store-open-durable node-id path)
+  ;; Canonical full reader/writer: strict replay plus one BSD-flock owner for
+  ;; the entire handle lifetime.  The lock file is a distinct namespace from
+  ;; both `path` and `path.head` (it is always `path.lock`).
+  (let ((lock (ms-acquire-journal-lock path)))
+    (if (null-ptr? lock)
+        #f
+        (let ((loaded (ms-load-strict node-id path)))
+          (if (not loaded)
+              (begin (ms-flock (ms-fileno lock) ms-lock-un) (ms-fclose lock) #f)
+              (let ((store (ms-make-durable-store (car loaded) path lock (cdr loaded) #f
+                                                  (length (memory-events (car loaded))))))
+                ;; A sidecar failure does not undo the already authoritative
+                ;; journal.  It is healed by the next open from file truth.
+                (if (ms-write-head! store) #t
+                    (begin (display "memory-store: durable journal opened; head sidecar unavailable") (newline)))
+                store))))))
+
+(define (memory-store-open-fast-durable node-id path)
+  ;; Canonical long-lived append-only journal: scan and validate the file but
+  ;; retain only vclock/head/full tail metadata, not the historical RGA.
+  (let ((lock (ms-acquire-journal-lock path)))
+    (if (null-ptr? lock)
+        #f
+        (let ((scan (ms-scan-tail-strict path)))
+          (if (not scan)
+              (begin (ms-flock (ms-fileno lock) ms-lock-un) (ms-fclose lock) #f)
+              (let* ((tail (list-ref scan 1))
+                     (count (list-ref scan 2))
+                     (log (make-memory-log node-id))
+                     (store (ms-make-durable-store log path lock tail #t count)))
+                (if tail
+                    (begin (vector-set! log 3 (memory-event-vclock tail))
+                           (vector-set! log 4 (memory-event-id tail)))
+                    #t)
+                ;; The sidecar is deliberately ignored as authority.  If it
+                ;; is stale/missing/corrupt, publish a replacement from tail.
+                (let ((head (ms-read-head path)))
+                  (if (and head tail (equal? (car head) (memory-event-id tail)))
+                      #t
+                      (if (ms-write-head! store) #t
+                          (begin (display "memory-store: committed journal; head sidecar unavailable") (newline))))
+                store)))))))
 
 (define (memory-store-append! store type payload)
   ;; PERSIST-BEFORE-ADVANCE (durability-critical). The in-memory head is advanced
@@ -244,7 +507,10 @@
   ;; advancing only on success keeps in-memory and disk in lockstep: a failed write
   ;; leaves the chain exactly as it was, so the next append links correctly.
   ;; Payload sanitized HERE (defense in depth — one unsanitized em-dash cost a link).
-  (let* ((clean (ms-sanitize-payload payload))
+  (ms-check-store store "memory-store-append!")
+  (if (not (ms-store-writable? store))
+      (begin (display "memory-store: append refused on closed durable handle") (newline) #f)
+      (let* ((clean (ms-sanitize-payload payload))
          (log   (memory-store-log store))
          (node  (ml-node log))
          (vc    (vector-clock-tick (ml-vclock log) node))
@@ -252,15 +518,39 @@
          (id    (event-content-hash node prev vc type clean))
          (ev    (list (quote mem-ev-v1) id prev vc node type clean))
          (line  (string-append (sexp->canonical-string ev) "\n")))
-    (if (ms-append-fsync! (memory-store-path store) line)
-        (begin                                   ;; persisted — NOW advance in-memory
-          (vector-set! log 2 (rga-append (ml-rga log) node ev))
-          (vector-set! log 3 vc)
-          (vector-set! log 4 id)
-          (ms-write-head! store)
-          ev)
-        (begin (display "memory-store: DURABILITY FAILURE (append not persisted; chain unchanged)")
-               (newline) #f))))
+        (if (> (string-byte-length line) ms-max-canonical-event-line-bytes)
+            (begin (display "memory-store: event exceeds canonical journal byte limit") (newline) #f)
+            (let ((append-result (ms-append-fsync! (memory-store-path store) line)))
+              (cond
+                ((eq? append-result (quote committed-parent-sync-failed))
+                 ;; The journal line may be durable but its directory entry
+                 ;; was not confirmed.  Never hand a normal event to a caller
+                 ;; that might make follow-on mutable effects: poison the
+                 ;; owner and force restart/recovery from journal truth.
+                 (memory-store-close! store)
+                 (error "memory-store: ambiguous journal commit; restart and recover from journal"))
+                (append-result
+            (begin                                   ;; persisted — NOW advance in-memory
+              ;; Compact durable journals intentionally do not retain an RGA
+              ;; projection.  Their full authoritative tail is retained below.
+              (if (ms-store-compact? store)
+                  #t
+                  (vector-set! log 2 (rga-append (ml-rga log) node ev)))
+              (vector-set! log 3 vc)
+              (vector-set! log 4 id)
+              (ms-set-store-tail! store ev)
+              (if (ms-store-durable? store)
+                  (ms-set-store-count! store (+ (ms-store-count store) 1))
+                  #t)
+              ;; Commit point is the journal line, never its optional cache.
+              ;; Returning #f here would leave disk ahead of a live handle and
+              ;; let a retry fork from an obsolete in-memory parent.
+              (if (ms-write-head! store) #t
+                  (begin (display "memory-store: event committed; head sidecar publish failed") (newline)))
+              ev))
+                (else
+                 (begin (display "memory-store: DURABILITY FAILURE (append not persisted; chain unchanged)")
+                        (newline) #f))))))))
 
 (define (ms-sanitize-payload payload)
   ;; alist of (key . string|number) -> same, with every string value sanitized
@@ -284,29 +574,50 @@
 
 (define (ms-head-path path) (string-append path ".head"))
 
+(define (ms-sync-parent-directory! path)
+  ;; Rename durability requires syncing its containing directory too.  `open`
+  ;; is used only in its fixed two-argument O_RDONLY form (no variadic mode).
+  (let ((fd (ms-open-readonly (path-directory path) 0)))
+    (if (< fd 0)
+        #f
+        ;; Always release the directory descriptor, even if sync fails.
+        (let* ((synced (ms-full-sync! fd))
+               (closed (= (ms-close fd) 0)))
+          (and synced closed)))))
+
 (define (ms-write-head! store)
-  (let ((log (memory-store-log store)))
-    (atomic-write-file
-      (ms-head-path (memory-store-path store))
-      (string-append
-        (sexp->canonical-string
-          (list (quote ms-head-v1) (vector-ref log 4) (vector-ref log 3)))
-        "\n"))))
+  ;; Publish the non-authoritative cache with temp-write + sync + rename +
+  ;; parent-directory sync.  The caller decides whether a cache failure is
+  ;; fatal; it never changes the journal commit point.
+  (let* ((log (memory-store-log store))
+         (target (ms-head-path (memory-store-path store)))
+         (tmp (string-append target ".tmp"))
+         (contents (string-append
+                    (sexp->canonical-string
+                     (list (quote ms-head-v1) (vector-ref log 4) (vector-ref log 3)))
+                    "\n"))
+         (f (ms-fopen tmp "w")))
+    (and (not (null-ptr? f))
+         (ms-write-sync-close! f contents)
+         (= (ms-rename tmp target) 0)
+         (ms-sync-parent-directory! target))))
 
 (define (ms-read-head path)
   ;; -> (prev . vclock) or #f
   (let ((f (ms-fopen (ms-head-path path) "r")))
     (if (null-ptr? f)
         #f
-        (begin
-          (ms-fclose f)
+        (if (not (= (ms-fclose f) 0))
+            #f
           (let ((port (open-input-file (ms-head-path path))))
-            (let ((line (read-line port)))
+            (let ((line (ms-read-canonical-line port)))
               (close-port port)
               (if (eof-object? line)
                   #f
                   (let ((h (ms-parse line)))
-                    (if (and h (pair? h) (eq? (car h) (quote ms-head-v1)))
+                    (if (and (ms-proper-length? h 3)
+                             (eq? (car h) (quote ms-head-v1))
+                             (string? (list-ref h 1)))
                         (cons (list-ref h 1) (list-ref h 2))
                         #f)))))))))
 
@@ -343,7 +654,7 @@
           (ms-fclose f)
           (let ((port (open-input-file path)))
             (define (go last)
-              (let ((line (read-line port)))
+              (let ((line (ms-read-canonical-line port)))
                 (if (eof-object? line)
                     (begin (close-port port) last)
                     (if (= (string-length line) 0)
@@ -361,10 +672,15 @@
   ;;     without this a removed line passes silently — we proved that gap.)
   ;;     Valid for a single-node chain; merged multi-node logs have legitimate
   ;;     forks and will need the CRDT-aware verifier when T1 fan-out lands.
-  (let ((content (memory-verify-chain (memory-store-log store))))
-    (if (not (eq? content #t))
-        content
-        (ms-verify-linkage (memory-events (memory-store-log store)) #f))))
+  (ms-check-store store "memory-store-verify")
+  (if (and (ms-store-durable? store) (ms-store-compact? store))
+      ;; Compact handles deliberately have no in-memory event projection.
+      ;; Re-scan the authoritative file rather than falsely verifying `()'.
+      (if (ms-scan-tail-strict (memory-store-path store)) #t (quote journal-invalid))
+      (let ((content (memory-verify-chain (memory-store-log store))))
+        (if (not (eq? content #t))
+            content
+            (ms-verify-linkage (memory-events (memory-store-log store)) #f)))))
 
 (define (ms-verify-linkage evs expected-prev)
   (if (null? evs)
@@ -377,11 +693,25 @@
                   (quote linkage-broken))))))
 
 (define (memory-store-count store)
-  (length (memory-events (memory-store-log store))))
+  (ms-check-store store "memory-store-count")
+  (if (ms-store-durable? store)
+      (ms-store-count store)
+      (length (memory-events (memory-store-log store)))))
 
 (define (memory-store-head store)
-  (let ((evs (memory-events (memory-store-log store))))
-    (if (null? evs) #f (memory-event-id (list-ref evs (- (length evs) 1))))))
+  ;; `log[4]` is authoritative for both replayed and compact fast stores.
+  (vector-ref (memory-store-log store) 4))
+
+(define (memory-store-tail store)
+  ;; The full canonical event corresponding to memory-store-head.  Durable
+  ;; compact stores retain this after a strict tail scan; reader stores derive
+  ;; it from their projection.  A caller can recover a canonical learning
+  ;; high-water mark without trusting the `.head` sidecar or SQLite.
+  (ms-check-store store "memory-store-tail")
+  (if (ms-store-durable? store)
+      (ms-store-tail store)
+      (let ((evs (memory-events (memory-store-log store))))
+        (if (null? evs) #f (list-ref evs (- (length evs) 1))))))
 
 ;; v1 payload-string sanitizer (see header): strip double-quotes, newlines, AND
 ;; every non-printable-ASCII character. The last one is load-bearing: fwrite's
@@ -390,15 +720,21 @@
 ;; write, ate the line terminator, and glued two events onto one line. Until
 ;; byte-length crosses the FFI, payload strings are printable ASCII only.
 (define (memory-store-sanitize str)
-  (let loop ((i 0) (n (string-length str)) (acc ""))
-    (if (>= i n) acc
-        (let ((c (string-ref str i)))
-          (loop (+ i 1) n
-                (if (or (char=? c #\")
-                        (char<? c #\space)
-                        (char>? c #\~))
-                    (string-append acc " ")
-                    (string-append acc (string c))))))))
+  ;; Preallocate: repeated string-append made a 64 KiB WAL-derived payload
+  ;; quadratic and exhausted the hosted heap before it could be journaled.
+  (let* ((n (string-length str))
+         (out (make-string n #\space)))
+    (let loop ((i 0))
+      (if (>= i n)
+          out
+          (let ((c (string-ref str i)))
+            (string-set! out i
+                         (if (or (char=? c #\")
+                                 (char<? c #\space)
+                                 (char>? c #\~))
+                             #\space
+                             c))
+            (loop (+ i 1)))))))
 
 ;; =====================================================================
 ;; Streaming audit — verify without building the log.
@@ -426,15 +762,13 @@
   (let ((port (open-input-file path))
         (seen (make-hash-table)))
     (define (go lineno count forks)
-      (let ((line (read-line port)))
+      (let ((line (ms-read-canonical-line port)))
         (if (eof-object? line)
             (begin (close-port port)
                    (list (quote ms-audit-v1) #t count forks))
-            (if (= (string-length line) 0)
-                (go (+ lineno 1) count forks)
-                (let ((ev (ms-parse line)))
+            (let ((ev (ms-parse line)))
                   (cond
-                    ((not (and ev (memory-event? ev)))
+                    ((not (ms-canonical-event? ev))
                      (begin (close-port port) (cons lineno (quote unparseable))))
                     ((not (string=? (memory-event-id ev)
                                     (event-content-hash (memory-event-node ev)
@@ -454,5 +788,93 @@
                        (if (memory-event-prev ev)
                            (hash-table-set! seen (string-append "child:" (memory-event-prev ev)) #t)
                            #t)
-                       (go (+ lineno 1) (+ count 1) (+ forks fork))))))))))
+                       (go (+ lineno 1) (+ count 1) (+ forks fork)))))))))
     (go 1 0 0)))
+
+;; =====================================================================
+;; Strict linear evidence — O(1) retained heap for the canonical writer path.
+;;
+;; Unlike memory-store-audit, this deliberately rejects every fork: a durable
+;; writer owns one journal lock and appends a single linear sequence.  It is
+;; suitable for cold evidence/rebuild gates that need count/head without an
+;; RGA projection or the CRDT audit's O(n) seen-id table.
+;;
+;; Returns (ms-audit-linear-v1 #t count head bytes), or
+;; (line-number . reason), reason = unreadable | unparseable | hash-mismatch |
+;; linkage-broken | source-changed.  A missing path is valid empty evidence.
+;; Byte stability is diagnostic only; path-only callers have no writer lock.
+;; =====================================================================
+
+(define (ms-linear-row-error ev expected-prev)
+  (cond
+    ((not (ms-canonical-event? ev)) (quote unparseable))
+    ((not (equal? (memory-event-prev ev) expected-prev))
+     (quote linkage-broken))
+    ((not (string=? (memory-event-id ev)
+                    (event-content-hash (memory-event-node ev)
+                                        (memory-event-prev ev)
+                                        (memory-event-vclock ev)
+                                        (memory-event-type ev)
+                                        (memory-event-payload ev))))
+     (quote hash-mismatch))
+    (else #f)))
+
+(define (memory-store-audit-linear path)
+  ;; Capture size on both sides of the pass.  That catches a concurrent append
+  ;; without pretending the path itself confers writer ownership.
+  (if (not (file-exists? path))
+      (list (quote ms-audit-linear-v1) #t 0 #f 0)
+      (let ((before (file-size path))
+            (f (ms-fopen path "r")))
+        (if (or (not (number? before)) (null-ptr? f))
+            (cons 0 (quote unreadable))
+            (if (not (= (ms-fclose f) 0))
+                (cons 0 (quote unreadable))
+                (guard (e (#t (cons 0 (quote unreadable))))
+                  (let ((port (open-input-file path))
+                        (buf (make-string (- ms-max-canonical-event-line-bytes 1) #\space)))
+                    (let loop ((lineno 1) (count 0) (prev #f))
+                      ;; This audit is intentionally linear and O(1) live
+                      ;; state.  The reusable input buffer/port stay outside;
+                      ;; every parsed event and canonical hash scratch dies at
+                      ;; the end of its native region.
+                      (let ((step
+                             (with-region ('memory-store-linear-audit-row 65536)
+                               (let ((line (ms-read-canonical-line-into port buf)))
+                                 (if (eof-object? line)
+                                     (list (quote eof) #f)
+                                     (let* ((ev (ms-parse line))
+                                            (problem (ms-linear-row-error ev prev)))
+                                       (if problem
+                                           (list (quote invalid) problem)
+                                           (list (quote row) (memory-event-id ev)))))))))
+                        (cond ((eq? (car step) (quote eof))
+                               (let ((after (file-size path)))
+                                 (close-port port)
+                                 (if (and (number? after) (= before after))
+                                     (list (quote ms-audit-linear-v1) #t count prev before)
+                                     (cons 0 (quote source-changed)))))
+                              ((eq? (car step) (quote invalid))
+                               (begin (close-port port) (cons lineno (car (cdr step)))))
+                              (else (loop (+ lineno 1) (+ count 1)
+                                          (car (cdr step))))))))))))))
+
+(define (memory-store-linear-evidence store)
+  ;; A durable open handle supplies the ownership missing from the path-only
+  ;; scanner.  Reject closed/non-durable stores, then prove the file evidence
+  ;; agrees with the in-memory append authority before handing it to rebuilds.
+  (ms-check-store store "memory-store-linear-evidence")
+  (if (not (and (ms-store-durable? store) (ms-store-writable? store)))
+      (error "memory-store-linear-evidence: requires an open durable store")
+      (let ((evidence (memory-store-audit-linear (memory-store-path store))))
+        (if (and (ms-proper-length? evidence 5)
+                 (eq? (car evidence) (quote ms-audit-linear-v1))
+                 (eq? (list-ref evidence 1) #t)
+                 (= (list-ref evidence 2) (ms-store-count store))
+                 (equal? (list-ref evidence 3) (memory-store-head store)))
+            evidence
+            (if (and (ms-proper-length? evidence 5)
+                     (eq? (car evidence) (quote ms-audit-linear-v1))
+                     (eq? (list-ref evidence 1) #t))
+                (cons 0 (quote handle-mismatch))
+                evidence)))))

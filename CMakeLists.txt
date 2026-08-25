@@ -2952,6 +2952,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/sqlite_step_code_test.esk")
+        add_test(
+            NAME sqlite_step_code_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/sqlite_step_code_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(sqlite_step_code_runtime_smoke
+            PROPERTIES
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/sqlite-step-code-jit-cache"
+                TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "Failed:[ ]+0"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.esk")
+        add_test(
+            NAME memory_store_durability_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(memory_store_durability_runtime_smoke
+            PROPERTIES
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/memory-store-durability-jit-cache"
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "Failed:[ ]+0"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_builtin_pipeline_stress_test.sh")
+        add_test(
+            NAME region_builtin_pipeline_oalr_release_gate
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_builtin_pipeline_stress_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+        )
+        set_tests_properties(region_builtin_pipeline_oalr_release_gate
+            PROPERTIES
+                ENVIRONMENT "ESHKOL_REGION_BUILTIN_ROWS=50000;ESHKOL_REGION_BUILTIN_CEIL_MB=512"
+                TIMEOUT 600
+                LABELS "release;oalr;runtime;strict;jit;aot"
+                PASS_REGULAR_EXPRESSION "PASS: native JIT/AOT region builtin pipeline stays bounded"
+                FAIL_REGULAR_EXPRESSION "FAIL:|Heap limit exceeded|heap usage")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/legacy_provide_jit_visibility_strict_test.esk")
+        add_test(
+            NAME legacy_provide_jit_visibility_strict_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/legacy_provide_jit_visibility_strict_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(legacy_provide_jit_visibility_strict_runtime_smoke
+            PROPERTIES
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/tests:${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/legacy-provide-jit-visibility-strict-cache"
+                TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "Failed:[ ]+0"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
+    endif()
+
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"

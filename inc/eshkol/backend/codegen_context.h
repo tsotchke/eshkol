@@ -287,6 +287,22 @@ public:
      */
     llvm::GlobalVariable* currentArenaPtr() { return global_arena_; }
 
+    /**
+     * Emit a load of the arena selected for this Scheme evaluation.
+     *
+     * `with-region` changes allocation ownership in runtime thread-local
+     * state; generated Scheme-visible allocation results must therefore call
+     * the runtime accessor rather than load the immortal bootstrap arena.
+     * Process-owned globals and interned literals deliberately continue to
+     * use globalArena().
+     */
+    llvm::Value* currentArena() {
+        auto callee = module_.getOrInsertFunction(
+            "eshkol_current_arena",
+            llvm::FunctionType::get(llvm::PointerType::getUnqual(context_), {}, false));
+        return builder_.CreateCall(callee, {}, "cur_arena");
+    }
+
     /** Get/set arena scope depth */
     size_t arenaScopeDepth() const { return arena_scope_depth_; }
     void setArenaScopeDepth(size_t depth) { arena_scope_depth_ = depth; }

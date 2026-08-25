@@ -74,6 +74,16 @@
   (chk "fold-lww picks last value (0.9)" (= (memory-fold-lww la (quote mood)) 0.9))
   (chk "fold-lww missing key = #f" (eq? (memory-fold-lww la (quote nonexistent)) #f))
 
+  ;; Interleaved value writes must still select the latest write for one key.
+  (define lf (make-memory-log (quote node-fold)))
+  (memory-append! lf (quote value) (cons (quote target) 1.0))
+  (memory-append! lf (quote value) (cons (quote other) 2.0))
+  (memory-append! lf (quote value) (cons (quote target) 3.0))
+  (chk "fold-lww interleaved values pick latest matching key (3.0)"
+       (= (memory-fold-lww lf (quote target)) 3.0))
+  (chk "fold-lww interleaved log missing key = #f"
+       (eq? (memory-fold-lww lf (quote absent)) #f))
+
   (display "Passed: ") (display (vector-ref pc 0)) (newline)
   (display "Failed: ") (display (vector-ref pc 1)) (newline))
 

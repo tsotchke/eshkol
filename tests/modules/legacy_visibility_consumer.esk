@@ -1,0 +1,10 @@
+;;; A separately loaded module resolves the owner's non-provided helper.
+;;; The legacy Eshkol profile and AOT flattening make this valid; it detects
+;;; a JIT process-global private-name deny-list poisoning a later module.
+
+(require modules.legacy_visibility_owner)
+
+(provide legacy-visibility-consumer)
+
+(define (legacy-visibility-consumer x)
+  (legacy-shared-helper x))

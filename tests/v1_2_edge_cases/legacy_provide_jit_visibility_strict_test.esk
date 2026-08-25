@@ -1,0 +1,41 @@
+;;; Legacy `(provide ...)` is informational in JIT as well as AOT.
+;;;
+;;; agent.crypto deliberately exports only the public base64url functions;
+;;; its character translators remain implementation helpers. The old JIT
+;;; recorded those helpers in a process-global bare-name deny-list after the
+;;; module loaded. Any later strict batch mentioning either helper then failed
+;;; codegen with "private (not exported)", even though legacy provide semantics
+;;; (and the AOT loader) leave that binding resolvable. This is a module
+;;; resolution regression, not an instruction to make helpers public.
+
+(require agent.crypto)
+(require modules.legacy_visibility_consumer)
+
+(define passed 0)
+(define failed 0)
+(define (check name ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display name) (newline))))
+
+;; A public function compiled in a later JIT batch must be able to call the
+;; owner's helper.  This is also the no-cross-module-poisoning case: owner and
+;; consumer have different module identities but reference the same bare name.
+(check "later module resolves non-provided helper without global poisoning"
+       (= (legacy-visibility-consumer 41) 42))
+(check "owner public function still calls its non-provided helper"
+       (= (legacy-visibility-owner 41) 42))
+
+;; These intentionally direct references compile after agent.crypto has
+;; loaded, which is the historical private-name false-positive boundary.
+(check "non-provided encoder helper remains resolvable in strict JIT"
+       (char=? (base64url-encode-char #\+) #\-))
+(check "non-provided decoder helper remains resolvable in strict JIT"
+       (char=? (base64url-decode-char #\_) #\/))
+(check "public base64url API calls its helper across later JIT batches"
+       (string=? (base64url-decode (base64url-encode "strict-visibility"))
+                 "strict-visibility"))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

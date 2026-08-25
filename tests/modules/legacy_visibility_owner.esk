@@ -1,0 +1,10 @@
+;;; Fixture for the legacy `(provide ...)` visibility contract.
+;;; `legacy-shared-helper` is intentionally not listed in provide.
+
+(provide legacy-visibility-owner)
+
+(define (legacy-visibility-owner x)
+  (legacy-shared-helper x))
+
+(define (legacy-shared-helper x)
+  (+ x 1))

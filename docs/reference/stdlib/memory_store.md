@@ -155,6 +155,19 @@ orphan-parent` on the first problem.
 ;; => (ms-audit-v1 #t <links> <forks>)
 ```
 
+### `(memory-store-audit-linear path)` / `(memory-store-linear-evidence store)`
+
+`memory-store-audit-linear` is the strict canonical-journal evidence scanner:
+it retains only the prior id while it streams, rejects a non-`#f` first parent,
+any fork/link discontinuity, torn/trailing row, or content-hash mismatch, and
+returns `(ms-audit-linear-v1 #t count head bytes)`. A missing path is valid
+empty evidence. It compares file size before and after scanning and returns
+`(0 . source-changed)` if it changed; that is diagnostic only, not ownership.
+
+`memory-store-linear-evidence` requires an open durable writer handle and also
+cross-checks the scanner's count/head against that handle. Use it when evidence
+will authorize a rebuild or other mutable follow-up.
+
 ## Known issues
 
 None. (Historically `memory-store-audit` was uncallable: its body references

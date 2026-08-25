@@ -450,7 +450,10 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_string(eshkol_ffi_context_t* ctx,
     (void)ctx;
     if (!str) return eshkol_ffi_null();
 
-    arena_t* arena = get_global_arena();
+    // FFI value construction can occur during a native evaluation.  These
+    // values are Scheme-visible temporaries, so honor that evaluation's OALR
+    // allocation domain rather than bypassing it through the process root.
+    arena_t* arena = eshkol_current_arena();
     if (!arena) return eshkol_ffi_null();
 
     size_t len = strlen(str);
@@ -470,7 +473,7 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_cons(eshkol_ffi_context_t* ctx,
                                                 eshkol_ffi_value_t car,
                                                 eshkol_ffi_value_t cdr) {
     (void)ctx;
-    arena_t* arena = get_global_arena();
+    arena_t* arena = eshkol_current_arena();
     if (!arena) return eshkol_ffi_null();
 
     void* cell = arena_allocate_tagged_cons_cell(arena);
@@ -590,7 +593,7 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_tensor_zeros(eshkol_ffi_context_t* ctx,
     (void)ctx;
     if (!shape || ndims <= 0 || ndims > 8) return eshkol_ffi_null();
 
-    arena_t* arena = get_global_arena();
+    arena_t* arena = eshkol_current_arena();
     if (!arena) return eshkol_ffi_null();
 
     int64_t total = 1;

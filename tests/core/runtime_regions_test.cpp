@@ -4,6 +4,11 @@
 #include <cstring>
 #include <iostream>
 
+extern "C" void eshkol_builtin_base64_encode_string(eshkol_tagged_value_t* out,
+                                                       const eshkol_tagged_value_t* in);
+extern "C" void eshkol_builtin_url_parse(eshkol_tagged_value_t* out,
+                                           const eshkol_tagged_value_t* in);
+
 namespace {
 
 int fail(const char* message) {
@@ -92,6 +97,36 @@ int main() {
         return fail("escaped tagged string content mismatch");
     }
     if (outer->escape_count != 4) return fail("outer escape count after tagged escape mismatch");
+
+    // Scheme-visible values made by native system builtins must allocate into
+    // the live OALR domain.  These cover the generic string constructor used
+    // by canonical/base64/hash/file results and the generic pair constructor
+    // used by alist-shaped results.  Process-owned registries deliberately do
+    // not use this route.
+    arena_t* builtin_saved = eshkol_region_enter(outer);
+    if (builtin_saved == nullptr || eshkol_current_arena() != outer->arena) {
+        return fail("current arena did not select active region");
+    }
+    eshkol_tagged_value_t encoded{};
+    eshkol_builtin_base64_encode_string(&encoded, &tagged);
+    if (encoded.type != ESHKOL_VALUE_HEAP_PTR || !encoded.data.ptr_val ||
+        !arena_contains(outer->arena, reinterpret_cast<void*>(encoded.data.ptr_val))) {
+        return fail("base64 builtin result bypassed active region");
+    }
+    char* url = static_cast<char*>(arena_allocate_string_with_header(outer->arena, 20));
+    if (!url) return fail("url input allocation failed");
+    std::memcpy(url, "https://e.sh/a?b=c", 19);
+    url[19] = '\0';
+    eshkol_tagged_value_t url_value{};
+    url_value.type = ESHKOL_VALUE_HEAP_PTR;
+    url_value.data.ptr_val = reinterpret_cast<uint64_t>(url);
+    eshkol_tagged_value_t parsed{};
+    eshkol_builtin_url_parse(&parsed, &url_value);
+    if (parsed.type != ESHKOL_VALUE_HEAP_PTR || !parsed.data.ptr_val ||
+        !arena_contains(outer->arena, reinterpret_cast<void*>(parsed.data.ptr_val))) {
+        return fail("builtin pair result bypassed active region");
+    }
+    eshkol_region_leave(builtin_saved);
 
     eshkol_region_t* inner = region_create("inner", 2048);
     if (!inner) return fail("inner region create failed");

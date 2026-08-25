@@ -21,6 +21,7 @@
 #include "agent_native_mutex.h"
 
 extern void* get_global_arena(void);
+extern void* eshkol_current_arena(void);
 extern char* arena_allocate_string_with_header(void*, size_t);
 extern void* arena_allocate_cons_with_header(void*);
 extern int64_t eshkol_string_byte_length(const char*);
@@ -115,7 +116,8 @@ static int sv_bytes(const sv_t* value, const char** data, int32_t* len) {
 
 static sv_t sv_string_copy(const char* data, size_t len) {
     if ((!data && len != 0) || len > SIZE_MAX - 1u) return sv_bool(0);
-    void* arena = get_global_arena();
+    /* Returned Scheme values are lexical/current-evaluation allocations. */
+    void* arena = eshkol_current_arena();
     if (!arena) return sv_bool(0);
     char* copy = arena_allocate_string_with_header(arena, len);
     if (!copy) return sv_bool(0);
@@ -129,7 +131,7 @@ static sv_t sv_string_copy(const char* data, size_t len) {
 
 static sv_t sv_bytevector_copy(const char* data, int32_t len) {
     if (len < 0 || (!data && len != 0)) return sv_bool(0);
-    void* arena = get_global_arena();
+    void* arena = eshkol_current_arena();
     if (!arena) return sv_bool(0);
     void* payload = eshkol_make_bytevector(arena, len, 0);
     if (!payload) return sv_bool(0);
@@ -141,7 +143,7 @@ static sv_t sv_bytevector_copy(const char* data, int32_t len) {
 }
 
 static sv_t sv_pair(sv_t car, sv_t cdr) {
-    void* arena = get_global_arena();
+    void* arena = eshkol_current_arena();
     if (!arena) return sv_bool(0);
     void* cell = arena_allocate_cons_with_header(arena);
     if (!cell) return sv_bool(0);

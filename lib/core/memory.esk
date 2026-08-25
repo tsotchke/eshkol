@@ -113,17 +113,37 @@
 
 ;; Fold 'value-type events for `key` into an LWW register; payload = (key . value).
 ;; Append order is the LWW timestamp (events are totally ordered, incl. post-merge).
-(define (memory-fold-lww log key)
-  (let loop ((evs (memory-events log)) (ts 0) (reg #f))
+(define (memory-lww-key-present? evs key)
+  ;; Keep the no-match search Boolean-only so the strict checker never has to
+  ;; join the absent-key result with the vector register representation.
+  (if (null? evs)
+      #f
+      (let ((ev (car evs)))
+        (if (and (eq? (memory-event-type ev) (quote value))
+                 (pair? (memory-event-payload ev))
+                 (equal? (car (memory-event-payload ev)) key))
+            #t
+            (memory-lww-key-present? (cdr evs) key)))))
+
+(define (memory-fold-lww-vector evs key)
+  ;; This helper is called only after a matching event was found.  `reg` is
+  ;; therefore vector-shaped for its entire recursive lifetime, starting with
+  ;; a harmless sentinel that is replaced by the first matching write.
+  (let loop ((evs evs) (ts 0)
+             (reg (make-lww-register #f -1 (quote memory-fold-lww))))
     (if (null? evs)
-        (if reg (lww-register-value reg) #f)
+        (lww-register-value reg)
         (let ((ev (car evs)))
           (if (and (eq? (memory-event-type ev) (quote value))
                    (pair? (memory-event-payload ev))
                    (equal? (car (memory-event-payload ev)) key))
               (let ((v (cdr (memory-event-payload ev))))
                 (loop (cdr evs) (+ ts 1)
-                      (if reg
-                          (lww-register-set reg v ts (memory-event-node ev))
-                          (make-lww-register v ts (memory-event-node ev)))))
+                      (lww-register-set reg v ts (memory-event-node ev))))
               (loop (cdr evs) (+ ts 1) reg))))))
+
+(define (memory-fold-lww log key)
+  (let ((evs (memory-events log)))
+    (if (memory-lww-key-present? evs key)
+        (memory-fold-lww-vector evs key)
+        #f)))

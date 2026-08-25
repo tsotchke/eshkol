@@ -108,8 +108,11 @@ static char* eshkol_portable_basename(char* path) {
     return sep ? sep + 1 : path;
 }
 
-/* Forward declarations from arena_memory.h */
+/* Forward declarations from arena_memory.h.  A builtin's returned Scheme
+ * value belongs to the current evaluation, not to a process-owned registry;
+ * use the OALR accessor so a native `with-region` can reclaim it. */
 extern void* get_global_arena(void);
+extern void* eshkol_current_arena(void);
 extern void* arena_allocate(void* arena, size_t size);
 extern char* arena_allocate_string_with_header(void* arena, size_t length);
 extern void* arena_allocate_cons_with_header(void* arena);
@@ -172,12 +175,12 @@ static eshkol_sysbuiltin_value_t sys_make_double(double val) {
 }
 
 /** Construct a tagged heap string of exactly @p len bytes copied from @p s,
- *  allocated in the global arena with a proper object header (NUL-terminated
+ *  allocated in the current evaluation arena with a proper object header (NUL-terminated
  *  for interop with C string functions). Returns null on allocation failure
  *  or a NULL @p s. */
 static eshkol_sysbuiltin_value_t sys_make_string_len(const char* s, size_t len) {
     if (!s) return sys_make_null();
-    void* arena = get_global_arena();
+    void* arena = eshkol_current_arena();
     if (!arena) return sys_make_null();
     /* Use arena_allocate_string_with_header so the string has a proper
      * object header — required by eshkol_display_value and the runtime. */
@@ -198,12 +201,12 @@ static eshkol_sysbuiltin_value_t sys_make_string(const char* s) {
     return s ? sys_make_string_len(s, strlen(s)) : sys_make_null();
 }
 
-/** Allocate an R7RS cons cell in the global arena with the given car/cdr and
+/** Allocate an R7RS cons cell in the current evaluation arena with the given car/cdr and
  *  return it as a tagged heap pointer (used to build Scheme-visible lists
  *  and alists from C). */
 static eshkol_sysbuiltin_value_t sys_make_pair(eshkol_sysbuiltin_value_t car,
                                                 eshkol_sysbuiltin_value_t cdr) {
-    void* arena = get_global_arena();
+    void* arena = eshkol_current_arena();
     if (!arena) return sys_make_null();
     void* cell = arena_allocate_cons_with_header(arena);
     if (!cell) return sys_make_null();

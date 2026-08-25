@@ -2781,10 +2781,12 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
  * genuinely provides that module name, returns immediately. Otherwise
  * resolves the module's source path (resolveModulePath()), reads and parses
  * it into ASTs, and processes it in two passes: `(provide ...)` and
- * `(define ...)` forms determine each module's exported vs. private symbol
- * surface (recorded into module_exports_ and, for private symbols,
- * private_symbols_ / eshkol_repl_register_private_symbol() after compilation
- * so intra-module forward references still work during loading); then
+ * `(define ...)` forms determine each module's importable surface for R7RS
+ * prefix aliases (recorded into module_exports_). Legacy `(provide ...)`
+ * remains informational, matching the AOT driver, so it must never become a
+ * process-global deny-list of otherwise resolvable bindings; true module
+ * privacy needs binding-resolved module identity rather than a bare spelling.
+ * Then
  * `(require/import ...)` dependency forms are executed immediately
  * (continuing past a failed dependency with a warning rather than aborting
  * the whole module), while all remaining top-level forms are collected and
@@ -2889,18 +2891,13 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     module_exports_[module_name] = has_provide ? exported_symbols : defined_symbols;
     module_exports_[module_path] = module_exports_[module_name];
 
-    // Mark private symbols (defined but not exported) - only if module has provide.
-    // Delay registering them with codegen until after the module finishes compiling
-    // so internal forward references still work while loading the module itself.
-    std::vector<std::string> private_symbols_to_register;
-    if (has_provide) {
-        for (const auto& sym : defined_symbols) {
-            if (exported_symbols.find(sym) == exported_symbols.end()) {
-                private_symbols_.insert(sym);
-                private_symbols_to_register.push_back(sym);
-            }
-        }
-    }
+    // `(provide ...)` is informational in the active legacy module profile,
+    // just as it is in the AOT driver.  Do not turn non-provided definitions
+    // into a process-global bare-name deny-list: that is neither lexical nor
+    // module-aware, and a later batch can reject this module's own helper as
+    // belonging to an unrelated load.  Keep export metadata above for import
+    // modifiers; enforce true privacy only after binding-resolved module
+    // identity exists.
 
     // SINGLE-PASS MODULE LOADING with deferred batch compilation:
     // - Process require/import immediately (load dependencies)
@@ -2943,11 +2940,6 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
-    }
-
-    for (const auto& sym : private_symbols_to_register) {
-        // Register after module compilation so only external accesses are blocked.
-        eshkol_repl_register_private_symbol(sym.c_str());
     }
 
     // Clean up ASTs
