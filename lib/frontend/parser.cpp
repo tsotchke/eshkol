@@ -10988,9 +10988,14 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
  *
  * Scans @p in_stream character-by-character (not via SchemeTokenizer) to find
  * the boundary of one complete top-level form, tracking string-quote state
- * (`"`, honoring backslash-escaping) and parenthesis nesting depth so commas,
- * quotes, and nested parens inside strings or character literals (`#\(`,
- * `#\)`, `#\"`, `#\;`) are not mistaken for structural tokens. Line comments
+ * (`"`) and R7RS 7.1.1 |...| vertical-line-symbol state (`|`) -- both
+ * honoring backslash-escaping, by the same odd/even trailing-backslash
+ * parity check, since both grammars use `\` as their escape character -- and
+ * parenthesis nesting depth, so commas, quotes, bars, and nested parens
+ * inside strings, |...| symbols, or character literals (`#\(`, `#\)`,
+ * `#\"`, `#\;`, `#\|`) are not mistaken for structural tokens. A `;` inside
+ * either a string or a |...| symbol is ordinary content, not a comment
+ * starter (R7RS 7.1.1's own example, `\x48;`, ends in one). Line comments
  * (`;`) are stripped from the accumulated text but their terminating newline
  * is preserved so downstream line-number tracking (@c g_stream_line /
  * @c g_stream_column) stays accurate. A bare top-level atom (not inside
@@ -11014,6 +11019,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     std::string input;
     bool in_quote = false;
+    bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol
     int bracket_depth = 0;
     bool found_expression = false;
 
@@ -11025,15 +11031,23 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
         if (in_stream.eof()) break;
 
         // If the current byte is the payload of a character literal such
-        // as #\(, #\), #\", or #\;, it is data, not reader syntax.
+        // as #\(, #\), #\", or #\;, it is data, not reader syntax. Not
+        // meaningful inside a |...| symbol: a bare '#' or '\' there is
+        // ordinary <symbol element> content, and '\' always starts THAT
+        // grammar's own escape (handled by the bar toggle below), never a
+        // character-literal prefix.
         bool is_char_literal_payload =
+            !in_bar_symbol &&
             input.size() >= 2 &&
             input[input.size() - 2] == '#' &&
             input[input.size() - 1] == '\\';
 
         // Handle comments - skip to end of line, but keep the trailing \n.
-        // BUT NOT when ; is part of a #\; character literal.
-        if (c == ';' && !in_quote && !is_char_literal_payload) {
+        // BUT NOT when ; is part of a #\; character literal, inside a
+        // string, or inside a |...| symbol -- R7RS 7.1.1 makes ';' an
+        // ordinary <symbol element> (e.g. the ';' terminating the inline
+        // hex escape \x48; in |\x48;i|), not a comment starter.
+        if (c == ';' && !in_quote && !in_bar_symbol && !is_char_literal_payload) {
             // Consume comment body (up to but not including the \n).
             while (!in_stream.eof()) {
                 int cc = in_stream.peek();
@@ -11050,8 +11064,10 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             continue;
         }
 
-        // Track quotes - a quote is escaped only if preceded by ODD number of backslashes
-        if (c == '"' && !is_char_literal_payload) {
+        // Track quotes - a quote is escaped only if preceded by ODD number of
+        // backslashes. Not meaningful inside a |...| symbol, where '"' is
+        // ordinary <symbol element> content rather than a string delimiter.
+        if (c == '"' && !is_char_literal_payload && !in_bar_symbol) {
             size_t backslash_count = 0;
             for (size_t i = input.size(); i > 0 && input[i-1] == '\\'; i--) {
                 backslash_count++;
@@ -11061,10 +11077,31 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             }
         }
 
+        // Track |...| vertical-line symbols (R7RS 7.1.1) the same way a
+        // string's quotes are tracked: a bar toggles bar-symbol mode unless
+        // it is itself escaped (odd trailing backslash count) -- the same
+        // parity check that isolates a string's \" from \\" isolates a
+        // symbol's \| from \\| here, since both grammars use '\' as their
+        // escape character. Not meaningful inside a string, where '|' is
+        // ordinary <string element> content, not a symbol delimiter.
+        bool bar_closed = false;
+        if (c == '|' && !is_char_literal_payload && !in_quote) {
+            size_t backslash_count = 0;
+            for (size_t i = input.size(); i > 0 && input[i-1] == '\\'; i--) {
+                backslash_count++;
+            }
+            if (backslash_count % 2 == 0) {
+                in_bar_symbol = !in_bar_symbol;
+                bar_closed = !in_bar_symbol;
+            }
+        }
+
         input += static_cast<char>(c);
 
-        // Track parentheses depth (only outside quotes)
-        if (!in_quote && !is_char_literal_payload) {
+        // Track parentheses depth (only outside quotes and |...| symbols --
+        // '(' ')' ';' '"' are all ordinary <symbol element> content between
+        // the bars, so none of them are structural while in_bar_symbol).
+        if (!in_quote && !in_bar_symbol && !is_char_literal_payload) {
             if (c == '(') {
                 bracket_depth++;
                 found_expression = true;
@@ -11073,6 +11110,12 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
                 if (bracket_depth == 0 && found_expression) {
                     break; // Complete expression found
                 }
+            } else if (bar_closed && bracket_depth == 0) {
+                // A bare top-level |...| symbol (no enclosing parens, e.g.
+                // a lone '|weird sym| or the |weird sym| a reader-prefix
+                // deferred into) just closed -- that IS the complete form.
+                found_expression = true;
+                break;
             } else if (!std::isspace((unsigned char)c) && bracket_depth == 0) {
                 // Reader prefix chars (' ` , #) modify the next expression —
                 // don't treat them as standalone atoms, continue to read what follows.
@@ -11080,14 +11123,18 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
                     found_expression = true;
                     continue;
                 }
-                // Found atom at top level - read until whitespace or special char
+                // Found atom at top level - read until whitespace or special
+                // char. '|' stops it too: a bare identifier can never
+                // legally contain one (R7RS 7.1.1 reserves it), so it marks
+                // the boundary before a following |...| symbol.
                 while (!in_stream.eof()) {
                     int next_c = in_stream.peek();
                     if (next_c == EOF || next_c == std::char_traits<char>::eof()) {
                         break;
                     }
                     if (std::isspace(static_cast<unsigned char>(next_c)) ||
-                        next_c == '(' || next_c == ')' || next_c == ';') {
+                        next_c == '(' || next_c == ')' || next_c == ';' ||
+                        next_c == '|') {
                         break;
                     }
                     c = in_stream.get();

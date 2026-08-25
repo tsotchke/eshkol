@@ -2118,10 +2118,14 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
 
-        /* Check for dot notation in params: (name x y . rest) */
+        /* Check for dot notation in params: (name x y . rest). A bare `.`
+         * marks the variadic tail; the R7RS 7.1.1 vertical-line spelling
+         * `|.|` is an ordinary parameter NAMED "." and must not trigger
+         * this (is_verbatim), matching every other dot-delimiter site. */
         int has_rest = 0, fixed_params = sig->n_children - 1;
         for (int i = 1; i < sig->n_children; i++) {
-            if (sig->children[i]->type == N_SYMBOL && strcmp(sig->children[i]->symbol, ".") == 0) {
+            if (sig->children[i]->type == N_SYMBOL && !sig->children[i]->is_verbatim &&
+                strcmp(sig->children[i]->symbol, ".") == 0) {
                 has_rest = 1;
                 fixed_params = i - 1;
                 break;
@@ -2694,11 +2698,14 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
     FuncChunk func; chunk_init_arrays(&func);
     func.enclosing = c;
 
-    /* Check for dot notation: (x y . rest) */
+    /* Check for dot notation: (x y . rest). A bare `.` marks the variadic
+     * tail; `|.|` (R7RS 7.1.1 vertical-line spelling) is an ordinary
+     * parameter NAMED "." and must not trigger this (is_verbatim). */
     int has_rest = 0;
     int fixed_params = params->n_children;
     for (int i = 0; i < params->n_children; i++) {
-        if (params->children[i]->type == N_SYMBOL && strcmp(params->children[i]->symbol, ".") == 0) {
+        if (params->children[i]->type == N_SYMBOL && !params->children[i]->is_verbatim &&
+            strcmp(params->children[i]->symbol, ".") == 0) {
             has_rest = 1;
             fixed_params = i; /* params before the dot */
             break;

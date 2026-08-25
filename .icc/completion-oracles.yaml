@@ -958,6 +958,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["pipe_symbol_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'R7RS 7.1.1 vertical-line symbols: |weird sym| reads as one symbol (full <symbol element> alphabet incl. \x<hex>;), |.| is distinct from the bare dotted-pair delimiter, write emits bars iff the name cannot be spelled bare, display never bars, write->read recovers an eq? symbol -- byte-identical across JIT, AOT and VM'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["edge_v134_dynamic_coverage"]
           event_values: ["PASS"]
         severity: high

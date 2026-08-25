@@ -19,6 +19,14 @@ typedef struct Node {
     int is_char;      /* N_NUMBER node that originated from a #\ character literal */
     int is_inexact;   /* N_NUMBER literal written in inexact (float) syntax: 2.0, 1e3 */
     int is_int;       /* N_NUMBER exact integer literal that fits int64 (ival holds it) */
+    int is_verbatim;  /* N_SYMBOL node spelled with R7RS 7.1.1 vertical bars (|...|),
+                       * e.g. |.| -- distinguishes it from the bare `.` TOKEN, which
+                       * is the R7RS 7.1.2 dotted-pair delimiter and never an ordinary
+                       * datum. Both spell the same one-byte symbol name ".", so this
+                       * flag is the only thing that lets compile_quote() (and any
+                       * other post-parse dot check) tell them apart -- the native
+                       * parser makes the same distinction via Token::verbatim /
+                       * token_is_dot_delimiter(). */
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
@@ -650,6 +658,11 @@ static Node* parse_sexp(void) {
         Node* pipe_node = make_node(N_SYMBOL);
         if (!pipe_node) return NULL;
         memcpy(pipe_node->symbol, pipe_buf, (size_t)pipe_len + 1);
+        /* |.| is the ordinary symbol named ".", never the R7RS 7.1.2 dotted-
+         * pair delimiter -- the bars request a verbatim spelling. Tag it so
+         * compile_quote()'s dot check (which only sees the spelled name by
+         * the time it runs) does not fold `(a |.| b)` into `(a . b)`. */
+        pipe_node->is_verbatim = 1;
         return pipe_node;
     }
 
@@ -1100,10 +1113,16 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * the element after the dot becomes the final cdr instead of '().
          * Without this `'(a . 42)` built the three-element list `(a |.| 42)`,
          * so `(cdr '(a . 42))` was `(. 42)` on the VM and `42` natively, and
-         * `(equal? '(:found . 42) (cons ':found 42))` was #f. */
+         * `(equal? '(:found . 42) (cons ':found 42))` was #f.
+         *
+         * `is_verbatim` excludes the R7RS 7.1.1 vertical-line spelling `|.|`
+         * from this check: it is the ORDINARY symbol named ".", not the dot
+         * delimiter, so `(a |.| b)` must stay the proper 3-element list it
+         * reads as, not fold into the dotted pair `(a . b)`. */
         int n = datum->n_children;
         int dotted = (n >= 3 &&
                       datum->children[n - 2]->type == N_SYMBOL &&
+                      !datum->children[n - 2]->is_verbatim &&
                       strcmp(datum->children[n - 2]->symbol, ".") == 0);
         if (dotted) {
             compile_quote(c, datum->children[n - 1]);
