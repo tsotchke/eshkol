@@ -1,3 +1,4 @@
+/* ci-wave proof PR: mixed (docs+code) test, throwaway, will be closed. */
 #include "eshkol/backend/vm_limits.h"
 
 #ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
