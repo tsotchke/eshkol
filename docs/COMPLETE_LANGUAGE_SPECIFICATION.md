@@ -939,9 +939,10 @@ Enforced shapes — a violation in any of these is fatal:
 | Direct double use of a linear parameter or `let` binding | error |
 | Two uses across a `begin`, an `and`/`or`, or the arguments of one call | error |
 | A use inside a closure plus a use outside it, or two uses inside one closure | error |
-| A use rebound through a `let` alias, then used twice | error |
+| A use rebound through a `let` alias — or a chain of them — then used twice | error |
 | A linear binding never used at all | error |
 | One use in each branch of an `if` | accepted |
+| An alias chain ending in exactly one use | accepted |
 | Distinct linear bindings each used once | accepted |
 
 ##### What is not enforced yet
@@ -965,9 +966,26 @@ must not have. The shapes outside the enforced set today:
   checked.
 - **Named `let`** — a loop body runs an unknown number of times, so a
   single-path use count says nothing about it.
-- **Aliasing through data structures.** Storing a qubit in a vector, list or
-  record and reading it back twice is not tracked; only direct `let` aliases
-  are. `(vector-ref v 0)` twice over a vector holding a qubit compiles.
+- **Laundering through an untyped binder — the name-keyed tracking hole.**
+  Tracking is keyed by NAME, and a name is tracked only where the checker can
+  see a linear type on it. A `let` alias keeps the type (and is enforced,
+  including through a chain), but passing the qubit into an *unannotated*
+  parameter, returning it from an unannotated function, or `set!`-ing it into a
+  binding inferred as something else all erase the linear type, and the clone
+  that follows is not diagnosed:
+
+  ```scheme
+  ((lambda (a) (cons (h a) (h a))) q)        ; NOT diagnosed
+  (let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed
+  (let ((v (vector q))) (h (vector-ref v 0)) (h (vector-ref v 0)))  ; NOT diagnosed
+  ```
+
+  This is the same shape that defeats the ownership analyzer's name-keyed move
+  tracking (`(define alias x)` after a `move` compiles clean), and it is what
+  ADR-0004's **PlaceId/FlowEnv** design exists to close: tracking keyed by
+  *place* rather than by name, so an alias is the same place and a store into a
+  structure is a place the analysis can follow. Until then, aliasing through
+  anything but a direct `let` binding is outside the guarantee.
 - **Dynamic duplication.** A closure that captures a qubit once and is then
   invoked many times is one static use; the analysis is static, not a use-count
   at runtime.
@@ -977,8 +995,11 @@ must not have. The shapes outside the enforced set today:
   engine-parity gap, not a VM design decision.
 
 Closing these is tracked work (conformity-audit item a7, ADR-0004): extending
-the decidable fragment to the remaining control-flow forms, tracking linear
-values through data structures, and running the linear judgment on the VM path.
+the decidable fragment to the remaining control-flow forms, replacing name-keyed
+tracking with ADR-0004's place-keyed PlaceId/FlowEnv (which closes the
+laundering hole for linear types and for ownership `move` alike, since both are
+defeated by the same aliasing shape), and running the linear judgment on the VM
+path.
 
 ### 3.7 Module System
 
