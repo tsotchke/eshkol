@@ -38,7 +38,15 @@
 #     mutual_tail_forms kinds pin the SPELLING-INDEPENDENCE of that guarantee
 #     (ESH-0102b): a tail call written with cond / when / or / case is a tail call
 #     by R7RS section 3.5 exactly as much as one written with `if`, and their
-#     100,000,000-hop cells are `pass` for the same reason.
+#     100,000,000-hop cells are `pass` for the same reason. mutual_tail_arity
+#     pins ARITY-INDEPENDENCE (ESH-0102c): R7RS says nothing about the two
+#     procedures having the same parameter list, and `musttail` cannot express
+#     that shape at all, so it is lowered through the tail-transfer dispatcher.
+#   * Every mutual_tail* cell is ALSO run in an `aot-xfer` lane with
+#     ESHKOL_TAIL_TRANSFER_ONLY=1, which makes an AArch64 host lower mutual tail
+#     calls the way a non-AArch64 target must (ESH-0171: those backends refuse an
+#     aggregate-return `musttail`). That lane is how the x86-64 / arm32 / riscv64
+#     guarantee is measured on hardware that cannot run those targets.
 #   * NON-TAIL recursion (non_tail) keeps one native frame per level, so it has a
 #     finite, environment-dependent stack ceiling and is NOT required to be
 #     unbounded. Its deep cells are `limit`: a CLEAN-LIMIT (a caught SIGBUS/SIGSEGV/
@@ -97,6 +105,10 @@ fi
 JIT_TIMEOUT="${JIT_TIMEOUT:-120}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-180}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
+# A transfer costs a record write plus a driver bounce per hop where a musttail
+# costs a branch, so the same 100,000,000-hop cell takes roughly five times as
+# long in the aot-xfer lane. The lane is measuring stack, not speed.
+XFER_RUN_TIMEOUT="${XFER_RUN_TIMEOUT:-300}"
 
 # macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).
 run_guarded() {
@@ -204,6 +216,7 @@ for path in "$GEN_DIR"/rec_*.esk; do
             rec_stdlib_length_d1000000.esk) continue ;;
             rec_mutual_tail_cond_d100000000.esk) continue ;;
             rec_mutual_tail_forms_d100000000.esk) continue ;;
+            rec_mutual_tail_arity_d100000000.esk) continue ;;
         esac
     fi
 
@@ -226,6 +239,32 @@ for path in "$GEN_DIR"/rec_*.esk; do
         fi
         rm -f "$bin"
         classify "$araw" "$expect" "$kind" "$depth" "$f" "aot"
+
+        # ----- AOT, non-AArch64 lowering (ESH-0171) -----
+        # `musttail` with an aggregate return is only lowerable by the AArch64
+        # backends, so on x86-64 / arm32 / riscv64 EVERY mutual tail call takes
+        # the tail-transfer dispatcher instead. ESHKOL_TAIL_TRANSFER_ONLY=1 makes
+        # this host lower them the same way, so the O(1) guarantee those targets
+        # now have is MEASURED here rather than argued from the emitted IR on a
+        # machine that cannot run it. The flag can only move a site from one O(1)
+        # lowering to the other, so it cannot manufacture a pass.
+        case "$kind" in
+            mutual_tail*)
+                bin="${TMPDIR:-/tmp}/rec_depth_${base}_xfer.bin"; rm -f "$bin"
+                cout=$(ESHKOL_TAIL_TRANSFER_ONLY=1 run_guarded "$AOT_COMPILE_TIMEOUT" \
+                        "$ESHKOL_RUN" "$path" -o "$bin" 2>&1); crc=$?
+                if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
+                    if printf '%s' "$cout" | grep -qiE "maximum recursion depth|[Ee]rror:|fatal signal"; then
+                        xraw=CLEAN-LIMIT; else xraw=SILENT-CRASH; fi
+                    [ "$crc" -eq 142 ] && xraw=HANG
+                else
+                    xout=$(run_guarded "$XFER_RUN_TIMEOUT" "$bin" 2>&1); xrc=$?
+                    xraw=$(raw_verdict "$xrc" "$xout")
+                fi
+                rm -f "$bin"
+                classify "$xraw" "$expect" "$kind" "$depth" "$f" "aot-xfer"
+                ;;
+        esac
     fi
 done
 

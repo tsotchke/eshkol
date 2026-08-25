@@ -1,0 +1,8 @@
+; Does SELF tail recursion through guard (ESH-0222) keep the enclosing guard
+; chain?  The handler re-raises, so the answer names which guard was next.
+(define (outer n) (guard (e (#t 'outer)) (s n)))
+(define (s n)
+  (guard (e ((= n 0) (raise 'again)) (#t (list 'inner n)))
+    (if (= n 0) (raise 'boom) (s (- n 1)))))
+(display (outer 3))
+(newline)

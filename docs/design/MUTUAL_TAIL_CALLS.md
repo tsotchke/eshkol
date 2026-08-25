@@ -1,7 +1,11 @@
-# Proper mutual tail calls (ESH-0102 / ESH-0171)
+# Proper mutual tail calls (ESH-0102 / ESH-0102b / ESH-0102c / ESH-0171)
 
-Status: **AArch64 done (ESH-0102, this PR). x86 / arm32 / riscv64 scoped as an ABI
-change (ESH-0171).**
+Status: **Done on every target.** `musttail` carries the AArch64 same-signature
+case (ESH-0102, ESH-0102b); the **tail-transfer dispatcher** (ESH-0102c) carries
+everything `musttail` cannot express — differing arities, and every non-AArch64
+target. The `i128` tagged-return ABI (ESH-0171) is no longer needed for
+correctness; it survives as a performance item, because `musttail` costs a branch
+per hop where a transfer costs a record write plus a driver bounce.
 
 ## The requirement
 
@@ -38,7 +42,7 @@ Result on AArch64 (the primary target): `mutual_tail2` / `mutual_tail3` run to
 `tests/stress/found/mutual_tail_1e7.esk` prints `OK ping` at ~225 MB (JIT) /
 ~27 MB (AOT). stdlib builds clean.
 
-## Why x86 / arm32 / riscv64 are deferred (ESH-0171)
+## Why x86 / arm32 / riscv64 could not use `musttail` (ESH-0171)
 
 Every Eshkol function returns the tagged value **by value** as the 16-byte struct
 `{i8, i8, i16, i32, i64}` (`type_system.cpp`). On LLVM 21, the x86, 32-bit arm,
@@ -63,12 +67,73 @@ This was confirmed by lowering a minimal two-function ping/pong module with
 Crucially, the same backends lower `musttail` fine when the return is a **scalar**
 (`i64` or `i128`) — it is specifically the by-value struct return they refuse
 (even under the `tailcc` calling convention). So the compiler emits the real
-`musttail` only on the AArch64 family and keeps the `TCK_Tail` hint (bounded, but
-never a build failure) elsewhere. This is what the original code was working
+`musttail` only on the AArch64 family. This is what the original code was working
 around when it disabled `musttail` on LLVM >= 18 — but it disabled it on *all*
 targets, including AArch64 where it works.
 
-## The x86 root fix (ESH-0171, estimated large)
+Elsewhere it used to keep the `TCK_Tail` hint, which the backend is free to
+ignore and which was therefore **bounded**. It no longer does: those sites take
+the tail-transfer dispatcher below, which returns through the ordinary aggregate
+return and never asks any backend for the lowering it refuses.
+
+## The tail-transfer dispatcher (ESH-0102c) — what actually shipped for the rest
+
+Rather than making every target able to lower `musttail`, the shapes it cannot
+take stop calling. A transfer site copies its evaluated arguments into a
+per-thread `eshkol_tail_transfer_t`, records the callee's *uniform entry*, raises
+`pending`, and **returns normally**; a driver loop compiled into the procedure's
+public entry runs the transfer in the caller's stead. Three symbols per
+participating procedure `F`:
+
+| symbol | linkage | shape | role |
+|---|---|---|---|
+| `F` | unchanged | unchanged | the DRIVER: call `F__eshkol_tail_body`, then loop while a transfer is pending |
+| `F__eshkol_tail_body` | internal | same as `F` | the real body, containing the transfer sites; never drives |
+| `F__eshkol_tail_uniform` | internal | `(const tagged*, i64) -> tagged` | loads the record's arguments and calls the body — this is where differing arities stop mattering |
+
+`F` keeps its name, type, linkage and `Function*` identity, so every table,
+export wrapper, closure value and FFI caller that already refers to it is
+unaffected; only the shape of what they call changes. The body is *moved* into
+the internal symbol, not copied.
+
+Two invariants make it sound, and violating either produces a silent wrong
+answer rather than a crash:
+
+1. **`musttail` targets `F__eshkol_tail_body`, never `F`.** Replacing this frame
+   with a *driver* would leave that driver live for the rest of the chain — one
+   frame every two hops, which is the growth the mechanism exists to remove.
+   Callees that turn out never to be split get the symbol anyway, as a one-
+   instruction `musttail` forwarder emitted at module finalization.
+2. **A function that emits EITHER lowering gets a driver** — not only one that
+   transfers. `musttail` hands this frame to a body that may queue a transfer,
+   and the flag it raises has to find a driver on the way out. Omitting this was
+   caught by `taylor_models_runtime_smoke` (`car: argument is not a pair`) when
+   `interval-add` musttail-ed into a split `iv-make`.
+
+`ESHKOL_TAIL_TRANSFER_ONLY=1` forces every mutual tail call onto the transfer
+lowering, so an AArch64 host can run the non-AArch64 code path;
+`scripts/run_recursion_depth.sh` uses it for the `aot-xfer` lane, which is how
+the x86-64 / arm32 / riscv64 guarantee is measured rather than argued.
+
+### What the dispatcher deliberately does not take
+
+- **Indirect tail calls.** A transfer names the callee's uniform entry; a
+  procedure VALUE carries only its public entry, and dispatching through that
+  re-enters the callee's own driver — one driver frame per hop. Lifting it needs
+  the universal invoke entry of ADR-0006 §3, reachable from the callable itself.
+- **Arguments that are pointers into the transferring frame.** The record holds
+  values; a pointer to storage this frame owns would cross the return that
+  destroys it (ADR-0006 §6 principle 8). Every such site in the tree is an
+  `extern` FFI declaration.
+- **`guard` bodies.** Not an optimization gap — R7RS 7.3 keeps the handler
+  installed for the body's whole dynamic extent, so the call is not in a tail
+  context at all. Measured against chibi-scheme 0.12: transferring these sites
+  made a caught exception escape, and made a nested pair of guards answer with
+  the wrong handler. A sound `guard` transfer needs the handler to be a
+  heap-owned continuation rather than a `setjmp` landing pad in the frame the
+  transfer destroys (ADR-0006 §4).
+
+## The x86 `musttail` route (ESH-0171) — now a performance option
 
 Return the tagged value as an **`i128` scalar** instead of the
 `{i8,i8,i16,i32,i64}` struct. i128 occupies the same two registers (RAX:RDX on
@@ -92,14 +157,21 @@ Scope (why it is a separate PR, not this one):
   tagged-value C-struct layout tests all re-run on x86_64 and arm64.
 
 Given that breadth and the risk to the C-runtime boundary, the i128 ABI change is
-tracked as **ESH-0171** rather than bundled into the AArch64 fix.
+tracked as **ESH-0171**. It is no longer on the correctness path: the dispatcher
+already gives those targets O(1) stack. What it would buy is the cheaper
+lowering — a branch per hop instead of a record write and a driver bounce, about
+5x on the 100,000,000-hop cells.
 
 ## Alternatives considered
 
-- **Trampoline** (`tail_call_codegen.cpp` already has `eshkol_trampoline` +
-  `BOUNCE_TAG`): correct and portable, but requires the mutually-recursive
-  functions and their callers to be restructured to return bounce thunks and run
-  under a driver loop — a larger, more invasive change than the i128 ABI, and it
-  taxes the fast path on targets where `musttail` already works.
+- **Trampoline** (`tail_call_codegen.cpp` has an unused `eshkol_trampoline` +
+  `BOUNCE_TAG` that no call site ever reaches): correct and portable, but it
+  carries only a packed zero-argument thunk pointer, so it cannot express
+  arguments at all — ADR-0006 §3 calls for it to be replaced rather than
+  extended. The dispatcher above is that replacement. The objection that it
+  "taxes the fast path on targets where `musttail` already works" was answered by
+  scoping rather than by dropping it: a procedure is split only when it actually
+  emits a mutual-tail lowering, and where `musttail` is legal it is still what
+  gets emitted, so the 100,000,000-hop `musttail` cells are unchanged.
 - **`tailcc` calling convention**: does not help — the x86 backend still refuses
   the *aggregate* return under `tailcc`, and switching CC would break C interop.

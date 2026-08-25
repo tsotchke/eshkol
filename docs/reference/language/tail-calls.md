@@ -71,6 +71,70 @@ depth-parametric probes `mutual_tail_cond` and `mutual_tail_forms`
 routes its tail call through a different one of the four forms at each hop, so a
 regression in any single form fails the gate.
 
+### The arity does not matter either (ESH-0102c)
+
+R7RS says nothing about two mutually tail-recursive procedures having the same
+parameter list, and neither does Eshkol:
+
+```scheme
+(define (ping n acc)   (if (= n 0) acc (pong (- n 1) (+ acc n) 0)))
+(define (pong n acc k) (if (= n 0) acc (ping (- n 1) (+ acc n))))
+(display (ping 100000000 0)) (newline)
+```
+```
+5000000050000000
+```
+
+`musttail` cannot express this shape at all — LLVM requires the caller and
+callee to have byte-identical signatures — so it takes the **tail-transfer
+dispatcher** instead. The depth-parametric probe `mutual_tail_arity` pins it at
+100,000,000.
+
+### How a tail call is lowered
+
+Two mechanisms, both O(1) in native stack. Which one a call site gets is not a
+choice about quality; it is a choice about what the target can express.
+
+| Call shape | Lowering | Stack |
+|---|---|---|
+| Self tail call, named `let` loop | branch to a loop header | O(1) |
+| Mutual tail call, same signature, AArch64 target | LLVM `musttail` | O(1) |
+| Mutual tail call with **differing arities**; **any** mutual tail call on a non-AArch64 target | **tail-transfer dispatcher** | O(1) |
+| Everything under "What is still not optimized" | ordinary call | one frame per hop |
+
+The dispatcher (ADR-0006 §3) works by *not calling* the callee. The transferring
+procedure copies its evaluated arguments into a per-thread transfer record,
+records the callee's uniform entry, raises a `pending` flag, and **returns
+normally**. A driver loop in the procedure's public entry sees the flag and runs
+the transfer in the caller's stead. Because the arguments live in a record the
+driver owns rather than in either frame, and because the callee's uniform entry
+supplies its own parameters out of that record, neither the two signatures nor
+the target's ability to lower an aggregate-return `musttail` matters any more.
+
+One consequence is visible in a profile rather than in a program's answer: a
+transfer costs a record write plus a driver bounce per hop where a `musttail`
+costs a branch, so a transfer-lowered chain runs roughly five times slower than
+a `musttail`-lowered one at the same depth. It is the same guarantee at a
+different constant.
+
+### Non-AArch64 targets are no longer bounded (ESH-0171)
+
+Eshkol procedures return an aggregate (the by-value tagged value), and on LLVM
+21 only the AArch64 backends lower `musttail` with an aggregate return; x86-64,
+arm32 and riscv64 reject it. Such a call used to keep a `tail` **hint**, which
+the backend is free to ignore and which was therefore bounded. It now takes the
+dispatcher, which returns through the ordinary aggregate return and never needs
+that lowering, so those targets have the same O(1) guarantee AArch64 has.
+
+`scripts/run_recursion_depth.sh` measures this rather than arguing it: every
+`mutual_tail*` cell runs a third time in an `aot-xfer` lane with
+`ESHKOL_TAIL_TRANSFER_ONLY=1`, which makes an AArch64 host lower mutual tail
+calls exactly as a non-AArch64 target must.
+
+The `i128` internal tagged-return ABI that ESH-0171 was opened for remains
+worthwhile — it would let those targets take the cheaper `musttail` lowering —
+but it is now a performance item, not a correctness one.
+
 ### What is still not optimized
 
 These shapes fall back to an ordinary, stack-consuming call. They are correct,
@@ -79,30 +143,46 @@ diagnostic ("most likely a stack overflow") rather than returning a wrong
 answer — but they are bounded, and deep recursion in these shapes will exhaust
 the stack:
 
-- **Mutually recursive procedures with different signatures.** `musttail`
-  requires the caller and callee to have identical parameter counts and types,
-  so `(define (ping n acc) … (pong a b c))` paired with `(define (pong n acc k)
-  … (ping a b))` is a bounded call in both directions. Give mutually
-  tail-recursive procedures the same arity.
 - **Indirect tail calls** — calling a procedure held in a variable or passed as
-  an argument, rather than named directly at the call site.
-- **Higher-order tail calls that forward a stack-allocated closure argument.**
-  `musttail` is illegal when an argument points into the caller's frame, since
-  that frame is gone before the callee runs, so these deliberately fall back.
-- **Tail calls in the body or a handler clause of `guard`.** Leaving a `guard`
-  owes a handler-stack pop that discarding the frame outright would skip, so
-  mutual tail calls are not optimized through `guard`. (Self tail recursion
-  through `guard` *is* optimized — it branches to a loop header with the handler
-  bookkeeping intact, ESH-0222.)
-- **Non-AArch64 targets.** Eshkol procedures return an aggregate (the by-value
-  tagged value), and on LLVM 21 only the AArch64 backends lower `musttail` with
-  an aggregate return; x86-64, arm32 and riscv64 reject it. There the call keeps
-  the `tail` hint, which is bounded. Lifting this needs the `i128` tagged-return
-  ABI tracked as ESH-0171.
+  an argument, rather than named directly at the call site. A transfer names the
+  callee's *uniform entry*; a procedure VALUE carries only its public entry, and
+  dispatching a transfer through that re-enters the callee's own driver loop,
+  which stacks one driver frame per hop instead of removing them. Lifting this
+  needs the universal invoke entry ADR-0006 §3 describes — reachable from the
+  callable itself, not from the call site's static knowledge of it.
+- **Mutual tail calls between procedures that are closures rather than named
+  top-level procedures** — including *internal* defines, which are normalized to
+  `letrec*` lambdas. The walker that offers sites to the mutual-tail lowering
+  runs over `define` bodies only, and a call between two `letrec`-bound lambdas
+  is indirect in any case, so it is bounded for both of the reasons above.
+- **Mutual tail calls made from inside a named `let` loop.** The loop body is a
+  separate function, and only the enclosing `define` participates.
+- **Higher-order tail calls that forward a pointer into the caller's frame.** A
+  transfer copies argument *values* into a record; a pointer to storage the
+  transferring frame owns would be carried across the return that destroys it
+  (ADR-0006 §6 principle 8), so those sites keep the ordinary call. In this tree
+  every such site is an `extern` FFI declaration taking a raw pointer, which must
+  not be transferred in any case.
+- **Tail calls in the body of `guard`.** R7RS 7.3 derives `guard` from
+  `with-exception-handler` wrapping the body, so the handler is installed for the
+  body's whole dynamic extent: a call in a guard body is **not in a tail
+  context**, and the guard must still be able to catch what the callee raises.
+  Optimizing it away is not merely hard, it is wrong — measured against
+  chibi-scheme 0.12, transferring these sites made
+  `(guard (e (#t 'caught)) (b n))` report an unhandled exception where the
+  reference answers `caught`, and made a nested pair of guards answer with the
+  outer handler instead of the inner one. Giving `guard` a genuine tail context
+  requires its handler to be a heap-owned continuation the driver can invoke
+  rather than a `setjmp` landing pad in the frame a transfer destroys
+  (ADR-0006 §4). Until then this stays an ordinary call.
+  (Self tail recursion through `guard` *is* transformed into a loop, ESH-0222 —
+  see SW-53 in `.icc/silent-wrong-ledger.yaml` for the conformance consequence
+  of that, which is a separate, pre-existing finding.)
 
 **Workaround for any of the above:** fold the state machine into a single
 self-recursive procedure that dispatches on a state argument, or give the
-procedures a common signature.
+mutually recursive procedures top-level `define`s and name the callee directly
+at the call site.
 
 ## Related known issue — non-tail stdlib list procedures (ESH-0108)
 

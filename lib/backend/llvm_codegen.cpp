@@ -3803,6 +3803,13 @@ public:
             }
             } // end else (not library_mode)
 
+            // TAIL TRANSFER: every <name>__eshkol_tail_body a musttail site named
+            // must have a definition by now. Callees that were split already do;
+            // the rest get a one-instruction forwarder. Must run before
+            // pruneUnusedFreestandingDeclarations() and verification, both of
+            // which treat a body-less internal function as an error.
+            finalizeTailTransferThunks();
+
             // Finalize DWARF debug info before verification
             if (emit_debug_info_ && di_builder_) {
                 di_builder_->finalize();
@@ -12879,6 +12886,14 @@ private:
             collectMutualTailCallSites(op->define_op.value, op->define_op.value, func_name);
         }
 
+        // TAIL TRANSFER: this body is allowed to lower a mutual tail call that
+        // `musttail` cannot take into a transfer (ADR-0006 §3). Saved and
+        // restored because a nested define is generated inside this one.
+        Function* prev_tt_home = tail_transfer_home_;
+        bool prev_tt_emitted = tail_transfer_emitted_;
+        tail_transfer_home_ = mutual_tail_call_sites_.empty() ? nullptr : function;
+        tail_transfer_emitted_ = false;
+
         // Generate function body
         Value* body_result = nullptr;
         if (op->define_op.value) {
@@ -12887,6 +12902,9 @@ private:
 
         // Clear mutual TCO sites after body generation
         mutual_tail_call_sites_.clear();
+        const bool tail_transfer_needs_driver = tail_transfer_emitted_;
+        tail_transfer_home_ = prev_tt_home;
+        tail_transfer_emitted_ = prev_tt_emitted;
 
         // Clear TCO context after body generation
         if (use_tco) {
@@ -12992,6 +13010,15 @@ private:
                 null_tagged = emitIterNurseryClose(null_tagged, define_nursery_saved_arena);
             }
             builder->CreateRet(null_tagged);
+        }
+
+        // TAIL TRANSFER: the body just emitted queues at least one transfer, so
+        // it needs a driver above it. Move the body into <name>__eshkol_tail_body
+        // and rebuild `function` -- same symbol, same type, same Function* -- as
+        // the loop that runs the queued transfers. Ordinary callers are
+        // unaffected; only the shape of what they call changes.
+        if (tail_transfer_needs_driver) {
+            splitFunctionForTailDriver(function);
         }
 
         // CRITICAL FIX (Bug #2): Register function reference for autodiff resolution FIRST
@@ -20527,26 +20554,103 @@ private:
             //                                                   site marked musttail"
             // (scalar i64/i128 returns lower fine everywhere; it is the struct return the
             // x86/arm/riscv backends refuse). So on the AArch64 family we emit the real
-            // musttail and get O(1)-stack mutual recursion; elsewhere we keep the old
-            // TCK_Tail hint (bounded, but never crashes the build). Giving x86 proper
-            // mutual TCO needs an ABI change (return the tagged value as i128), tracked as
-            // ESH-0171.
+            // musttail and get O(1)-stack mutual recursion.
+            //
+            // ESH-0171 UPDATE: elsewhere the site no longer degrades to a bounded
+            // `tail` HINT. It takes the tail-transfer dispatcher, which returns
+            // through the ordinary aggregate return and therefore never needs the
+            // lowering those backends refuse. x86-64, arm32 and riscv64 now get
+            // the same O(1) guarantee AArch64 gets, without the i128 internal ABI
+            // ESH-0171 was opened for. That ABI is still the faster answer — a
+            // transfer costs a record write plus a driver bounce per hop, where a
+            // musttail costs a branch — but it is now a performance item, not a
+            // correctness one.
             const llvm::Triple mod_triple = getModuleTargetTriple(*module);
             const llvm::Triple::ArchType arch = mod_triple.getArch();
+            // TEST HOOK. Setting ESHKOL_TAIL_TRANSFER_ONLY=1 makes an AArch64 host
+            // lower mutual tail calls exactly as a non-AArch64 target does, so the
+            // depth harness can MEASURE the non-AArch64 guarantee instead of
+            // arguing it from the IR. It only ever moves a site from the musttail
+            // lowering to the transfer lowering; both are O(1), so the flag cannot
+            // manufacture a pass.
+            static const bool force_transfer_only = [] {
+                const char* e = std::getenv("ESHKOL_TAIL_TRANSFER_ONLY");
+                return e && e[0] == '1';
+            }();
             const bool aggregate_musttail_ok =
+                !force_transfer_only &&
                 (arch == llvm::Triple::aarch64 ||
                  arch == llvm::Triple::aarch64_be ||
                  arch == llvm::Triple::aarch64_32);
 
-            if (musttail_ok) {
-                eshkol_debug("Mutual TCO: emitting %s call to %s",
-                             aggregate_musttail_ok ? "musttail" : "tail (hint)",
-                             func_name.c_str());
-                CallInst* call = builder->CreateCall(callee, args);
-                call->setTailCallKind(aggregate_musttail_ok ? CallInst::TCK_MustTail
-                                                            : CallInst::TCK_Tail);
-                builder->CreateRet(call);
-                return UndefValue::get(tagged_value_type);
+            // Both lowerings below require this function to end up with a driver,
+            // so both are confined to the function the define is emitting. The
+            // walker never offers a site from anywhere else; if that ever changed,
+            // the site falls through to the ordinary bounded call rather than to
+            // a musttail whose queued transfer nobody would run.
+            const bool tail_lowering_allowed =
+                tail_transfer_home_ && builder->GetInsertBlock() &&
+                builder->GetInsertBlock()->getParent() == tail_transfer_home_;
+
+            if (tail_lowering_allowed && musttail_ok && aggregate_musttail_ok) {
+                // `musttail` targets the callee's BODY symbol, never its public
+                // entry. A callee that contains transfer sites has a driver loop
+                // in front of its body; musttail-ing into that driver would keep
+                // its frame live for the remainder of the chain — one frame every
+                // two hops, which is precisely the growth this mechanism removes.
+                // finalizeTailTransferThunks() defines the symbol for callees that
+                // turn out not to be split, as a musttail forward that costs
+                // nothing. See splitFunctionForTailDriver().
+                Function* target = getOrDeclareTailBody(callee);
+                if (target) {
+                    eshkol_debug("Mutual TCO: emitting musttail call to %s",
+                                 target->getName().str().c_str());
+                    CallInst* call = builder->CreateCall(target, args);
+                    call->setTailCallKind(CallInst::TCK_MustTail);
+                    builder->CreateRet(call);
+                    // This function now needs a driver even though it queues no
+                    // transfer of its own. `musttail` REPLACES this frame with the
+                    // callee's body, and that body may queue a transfer; the flag
+                    // it raises has to find a driver on the way out, and the
+                    // nearest frame that can hold one is this function's public
+                    // entry. Without this the pending transfer would ride out
+                    // through an ordinary return and the caller would receive the
+                    // placeholder value instead of the chain's real result — a
+                    // silent wrong answer, found by taylor_models_runtime_smoke
+                    // ("car: argument is not a pair") when interval-add
+                    // musttail-ed into a split iv-make.
+                    tail_transfer_emitted_ = true;
+                    return UndefValue::get(tagged_value_type);
+                }
+            }
+
+            // TAIL TRANSFER (ADR-0006 §3). Everything `musttail` refused now takes
+            // the dispatcher instead of an ordinary, stack-consuming call:
+            //
+            //   * DIFFERING ARITIES between the two procedures — the transfer
+            //     record carries an argument vector and the callee's uniform
+            //     entry supplies its own parameters from it, so the two
+            //     signatures never have to agree;
+            //   * `guard` — the transfer RETURNS instead of calling, so the
+            //     eshkol_pop_exception_handler() that leaving a guard owes runs
+            //     on the ordinary exit path exactly as it always did. That is
+            //     the property `musttail` cannot have, and the reason GUARD_OP
+            //     is now walked (see collectMutualTailCallSites);
+            //   * NON-AArch64 TARGETS — the dispatcher chooses its own return
+            //     representation and never needs an aggregate-return musttail,
+            //     which is the whole of ESH-0171 for the mutual-tail case.
+            //
+            // Still NOT transferred, and still deliberately loud: a call whose
+            // arguments include a pointer into this frame (a capture slot). The
+            // transfer copies argument VALUES into a record the driver owns, so
+            // a pointer to a dying alloca would be carried across the return that
+            // kills it. emitTailTransfer() declines those and the ordinary path
+            // below keeps its diagnostics.
+            if (tail_lowering_allowed) {
+                if (Value* transferred = emitTailTransfer(callee, args)) {
+                    eshkol_debug("Mutual TCO: emitting tail transfer to %s", func_name.c_str());
+                    return transferred;
+                }
             }
         }
 
@@ -26660,6 +26764,375 @@ private:
     // Mutual TCO: set of operation nodes that are non-self tail calls in the current function
     std::unordered_set<const eshkol_operations_t*> mutual_tail_call_sites_;
 
+    // ===== TAIL-TRANSFER DISPATCHER (ADR-0006 §3) ==============================
+    //
+    // `musttail` is only one of the two lowerings a proper tail call may take.
+    // It requires byte-identical LLVM signatures, no argument pointing into the
+    // caller's frame, and a backend able to lower an aggregate return that way.
+    // The shapes that fail one of those conditions -- different arities between
+    // the two procedures, a `guard` frame that owes a handler-stack pop, and
+    // every non-AArch64 target -- take the transfer lowering instead.
+    //
+    // A transfer does not call the callee. It copies the evaluated arguments
+    // into the thread's eshkol_tail_transfer_t, records the callee's uniform
+    // entry, sets `pending`, and lets the value flow to the function's ordinary
+    // return. Returning normally is exactly what makes `guard` sound here where
+    // `musttail` is not: leaving the guard still runs its
+    // eshkol_pop_exception_handler(), because nothing about the epilogue is
+    // skipped. The driver loop then runs the transfer in the caller's stead.
+    //
+    // Three symbols implement it for a participating procedure F:
+    //
+    //   F                    public entry, unchanged type and linkage. Its body
+    //                        becomes the DRIVER: call F<BODY>, then loop while a
+    //                        transfer is pending. Every ordinary caller -- Eshkol
+    //                        code, the FFI, a closure value, an AOT export --
+    //                        keeps calling this symbol and is unaffected.
+    //   F<BODY>              internal, same type. The real body, with transfer
+    //                        sites in it. It never drives, so a transfer chain
+    //                        entered from one driver reuses that one frame.
+    //   F<UNIFORM>           internal, (const tagged*, i64) -> tagged. Loads the
+    //                        record's arguments into SSA values and calls
+    //                        F<BODY>. This is where differing arities stop
+    //                        mattering: every transfer target has this one shape.
+    //
+    // musttail sites target F<BODY> rather than F, because musttail into a
+    // driver would leave that driver's frame live for the rest of the chain --
+    // one frame every two hops, which is the growth this work exists to remove.
+    // A callee that was never split still needs the symbol, so
+    // finalizeTailTransferThunks() gives every remaining F<BODY> declaration a
+    // one-instruction forwarder.
+    static constexpr const char* kTailBodySuffix = "__eshkol_tail_body";
+    static constexpr const char* kTailUniformSuffix = "__eshkol_tail_uniform";
+
+    // Set for the duration of one define body that is allowed to emit transfer
+    // sites; null everywhere else. Guards against a nested lambda or a stale
+    // AST-node match emitting a transfer into a function that has no driver.
+    Function* tail_transfer_home_ = nullptr;
+    // True once tail_transfer_home_ has emitted EITHER lowering. Both need the
+    // driver: a transfer queues one directly, and a `musttail` into a callee's
+    // body hands this frame to code that may queue one, with no other frame left
+    // to catch it. A function with no mutual tail call at all is untouched.
+    bool tail_transfer_emitted_ = false;
+    // Every F<BODY> this module has referred to, so finalization can tell a real
+    // split body from a declaration that still needs a forwarder.
+    std::vector<Function*> tail_body_decls_;
+
+    /**
+     * @brief Declare eshkol_tail_transfer_slot(), the per-thread record accessor.
+     */
+    Function* getTailTransferSlotFunc() {
+        Function* f = module->getFunction("eshkol_tail_transfer_slot");
+        if (!f) {
+            FunctionType* ft = FunctionType::get(builder->getPtrTy(), {}, false);
+            f = Function::Create(ft, Function::ExternalLinkage,
+                                 "eshkol_tail_transfer_slot", module.get());
+        }
+        return f;
+    }
+
+    /**
+     * @brief The (const tagged*, i64) -> tagged shape every uniform entry has.
+     */
+    FunctionType* tailUniformEntryType() {
+        return FunctionType::get(tagged_value_type,
+                                 {builder->getPtrTy(), int64_type}, false);
+    }
+
+    /**
+     * @brief The F<BODY> symbol for @p target, declaring it if needed.
+     *
+     * Returns null when the name is already taken by something of another type,
+     * in which case the caller must keep the ordinary lowering rather than emit
+     * a call it cannot type-check.
+     */
+    Function* getOrDeclareTailBody(Function* target) {
+        if (!target) return nullptr;
+        std::string name = target->getName().str() + kTailBodySuffix;
+        if (Function* existing = module->getFunction(name)) {
+            return existing->getFunctionType() == target->getFunctionType() ? existing
+                                                                            : nullptr;
+        }
+        Function* body = Function::Create(target->getFunctionType(),
+                                          Function::InternalLinkage, name, module.get());
+        body->setCallingConv(target->getCallingConv());
+        tail_body_decls_.push_back(body);
+        return body;
+    }
+
+    /**
+     * @brief The F<UNIFORM> entry for @p target, generating it on first use.
+     *
+     * Loads exactly the callee's declared number of arguments out of the
+     * record-owned buffer -- by value, before calling the body, so a transfer
+     * the body performs may overwrite that buffer -- and calls F<BODY>. Any
+     * argument the transfer did not supply arrives as tagged null, matching
+     * what the ordinary arity-mismatch path would have produced.
+     */
+    Function* getOrCreateTailUniformEntry(Function* target) {
+        if (!target) return nullptr;
+        std::string name = target->getName().str() + kTailUniformSuffix;
+        if (Function* existing = module->getFunction(name)) {
+            return existing->getFunctionType() == tailUniformEntryType() ? existing
+                                                                        : nullptr;
+        }
+        // The record's buffer is what the entry reads from, so a procedure with
+        // more parameters than the buffer holds cannot be a transfer target.
+        if (target->getFunctionType()->getNumParams() >
+            (unsigned)ESHKOL_TAIL_TRANSFER_MAX_ARGS) {
+            return nullptr;
+        }
+        Function* body = getOrDeclareTailBody(target);
+        if (!body) return nullptr;
+
+        Function* uniform = Function::Create(tailUniformEntryType(),
+                                             Function::InternalLinkage, name, module.get());
+        uniform->addFnAttr(Attribute::NoInline);
+
+        IRBuilder<>::InsertPointGuard guard(*builder);
+        auto saved_debug_loc = builder->getCurrentDebugLocation();
+        builder->SetCurrentDebugLocation(DebugLoc());
+
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", uniform);
+        builder->SetInsertPoint(entry);
+
+        Argument* argv = uniform->getArg(0);
+        Argument* argc = uniform->getArg(1);
+        argv->setName("tt_argv");
+        argc->setName("tt_argc");
+
+        const unsigned nparams = target->getFunctionType()->getNumParams();
+        std::vector<Value*> args;
+        args.reserve(nparams);
+        for (unsigned i = 0; i < nparams; ++i) {
+            Value* slot = builder->CreateGEP(tagged_value_type, argv,
+                                             ConstantInt::get(int64_type, i));
+            // Slots the transfer did not fill are read as tagged null rather
+            // than as whatever a previous transfer left behind.
+            Value* supplied = builder->CreateICmpULT(ConstantInt::get(int64_type, i),
+                                                     argc, "tt_arg_supplied");
+            Value* loaded = builder->CreateLoad(tagged_value_type, slot, "tt_arg");
+            args.push_back(builder->CreateSelect(supplied, loaded,
+                                                 packNullToTaggedValue(), "tt_arg_sel"));
+        }
+
+        CallInst* call = builder->CreateCall(body, args);
+        builder->CreateRet(call);
+
+        builder->SetCurrentDebugLocation(saved_debug_loc);
+        return uniform;
+    }
+
+    /**
+     * @brief Field address inside the thread's transfer record.
+     */
+    Value* tailTransferField(Value* slot, size_t offset, const char* name) {
+        return builder->CreateGEP(int8_type, slot,
+                                  ConstantInt::get(int64_type, (int64_t)offset), name);
+    }
+
+    /**
+     * @brief Emit a tail TRANSFER to @p callee in place of a call.
+     *
+     * Stores the arguments into the thread's record, names the callee's uniform
+     * entry as the target, raises `pending`, and returns the value the enclosing
+     * expression should yield -- tagged null, which no epilogue interprets. The
+     * caller must NOT emit a `ret`: the whole point is that control leaves this
+     * frame through the ordinary return path, running every pop, scope end and
+     * handler unwind that path owes.
+     *
+     * @return the placeholder value, or null if this site cannot be transferred
+     *         (in which case the caller keeps the ordinary, bounded lowering).
+     */
+    Value* emitTailTransfer(Function* callee, const std::vector<Value*>& args) {
+        if (!callee || !tail_transfer_home_) return nullptr;
+        // Only the function that will receive a driver may transfer.
+        BasicBlock* here = builder->GetInsertBlock();
+        if (!here || here->getParent() != tail_transfer_home_) return nullptr;
+        // The record fixes the widest argument list a transfer can express.
+        if (args.size() > (size_t)ESHKOL_TAIL_TRANSFER_MAX_ARGS) return nullptr;
+        // The uniform entry supplies the callee's declared parameters from the
+        // record, so the site has to be an exact-arity call to a non-variadic
+        // callee; anything else keeps the ordinary path and its diagnostics.
+        FunctionType* callee_type = callee->getFunctionType();
+        if (callee_type->isVarArg()) return nullptr;
+        if (args.size() != callee_type->getNumParams()) return nullptr;
+        for (unsigned i = 0; i < callee_type->getNumParams(); ++i) {
+            // Only by-value tagged data crosses a transfer. A pointer argument
+            // -- a capture slot, or a raw pointer at an FFI declaration -- is
+            // refused: ADR-0006 principle 8 forbids a caller-frame pointer from
+            // crossing a tail transfer, and the transfer returns from the frame
+            // that owns it. Every such site in the tree is an `extern` FFI
+            // declaration, and those must not be transferred in any case.
+            if (!args[i] || args[i]->getType() != tagged_value_type) return nullptr;
+            if (callee_type->getParamType(i) != tagged_value_type) return nullptr;
+        }
+        if (callee_type->getReturnType() != tagged_value_type) return nullptr;
+
+        Function* uniform = getOrCreateTailUniformEntry(callee);
+        if (!uniform) return nullptr;
+
+        Value* slot = builder->CreateCall(getTailTransferSlotFunc(), {}, "tt_slot");
+        for (size_t i = 0; i < args.size(); ++i) {
+            Value* dst = tailTransferField(
+                slot,
+                offsetof(eshkol_tail_transfer_t, argv) + i * sizeof(eshkol_tagged_value_t),
+                "tt_argv_slot");
+            builder->CreateStore(args[i], dst);
+        }
+        builder->CreateStore(
+            ConstantInt::get(int32_type, (uint32_t)args.size()),
+            tailTransferField(slot, offsetof(eshkol_tail_transfer_t, argc), "tt_argc_p"));
+        builder->CreateStore(
+            uniform,
+            tailTransferField(slot, offsetof(eshkol_tail_transfer_t, target), "tt_target_p"));
+        // `pending` last: everything the driver will read is in place before the
+        // flag that tells it to read them.
+        builder->CreateStore(
+            ConstantInt::get(int32_type, 1),
+            tailTransferField(slot, offsetof(eshkol_tail_transfer_t, pending), "tt_pending_p"));
+
+        tail_transfer_emitted_ = true;
+        return packNullToTaggedValue();
+    }
+
+    /**
+     * @brief Turn @p f into F (driver) + F<BODY> once its body is complete.
+     *
+     * The body is MOVED, not copied: `f` keeps its name, type, linkage and
+     * Function* identity, so every table, export wrapper and closure value that
+     * already refers to it stays correct, while the code that contains transfer
+     * sites moves into an internal symbol that never drives.
+     *
+     * @return true if the split happened.
+     */
+    bool splitFunctionForTailDriver(Function* f) {
+        if (!f || f->isDeclaration()) return false;
+        Function* body = getOrDeclareTailBody(f);
+        if (!body || !body->isDeclaration()) return false;
+
+        body->setAttributes(f->getAttributes());
+        body->setCallingConv(f->getCallingConv());
+        // The debug-info scope has to travel with the instructions that carry
+        // DILocations into it, or the verifier rejects every one of them.
+        if (DISubprogram* sp = f->getSubprogram()) {
+            f->setSubprogram(nullptr);
+            body->setSubprogram(sp);
+        }
+
+        // Move the basic blocks, then rebind the parameters.
+        body->splice(body->begin(), f);
+        for (unsigned i = 0; i < f->arg_size(); ++i) {
+            Argument* from = f->getArg(i);
+            Argument* to = body->getArg(i);
+            to->setName(from->getName());
+            from->replaceAllUsesWith(to);
+        }
+
+        IRBuilder<>::InsertPointGuard guard(*builder);
+        auto saved_debug_loc = builder->getCurrentDebugLocation();
+        builder->SetCurrentDebugLocation(DebugLoc());
+
+        BasicBlock* entry = BasicBlock::Create(*context, "tt_driver_entry", f);
+        BasicBlock* loop = BasicBlock::Create(*context, "tt_loop", f);
+        BasicBlock* drive = BasicBlock::Create(*context, "tt_drive", f);
+        BasicBlock* done = BasicBlock::Create(*context, "tt_done", f);
+
+        builder->SetInsertPoint(entry);
+        std::vector<Value*> fwd;
+        fwd.reserve(f->arg_size());
+        for (Argument& a : f->args()) fwd.push_back(&a);
+        Value* first = builder->CreateCall(body, fwd, "tt_first");
+        Value* slot = builder->CreateCall(getTailTransferSlotFunc(), {}, "tt_slot");
+        Value* pending_p = tailTransferField(
+            slot, offsetof(eshkol_tail_transfer_t, pending), "tt_pending_p");
+        Value* target_p = tailTransferField(
+            slot, offsetof(eshkol_tail_transfer_t, target), "tt_target_p");
+        Value* argc_p = tailTransferField(
+            slot, offsetof(eshkol_tail_transfer_t, argc), "tt_argc_p");
+        Value* argv_p = tailTransferField(
+            slot, offsetof(eshkol_tail_transfer_t, argv), "tt_argv_p");
+        builder->CreateBr(loop);
+
+        builder->SetInsertPoint(loop);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "tt_result");
+        result->addIncoming(first, entry);
+        Value* pending = builder->CreateLoad(int32_type, pending_p, "tt_pending");
+        builder->CreateCondBr(
+            builder->CreateICmpNE(pending, ConstantInt::get(int32_type, 0)), drive, done);
+
+        builder->SetInsertPoint(drive);
+        Value* target = builder->CreateLoad(builder->getPtrTy(), target_p, "tt_target");
+        Value* argc = builder->CreateZExt(
+            builder->CreateLoad(int32_type, argc_p, "tt_argc"), int64_type);
+        // Clear before dispatching: the callee is entitled to queue the next
+        // transfer, and must not have this one's flag still standing.
+        builder->CreateStore(ConstantInt::get(int32_type, 0), pending_p);
+        Value* next = builder->CreateCall(tailUniformEntryType(), target,
+                                          {argv_p, argc}, "tt_next");
+        result->addIncoming(next, builder->GetInsertBlock());
+        builder->CreateBr(loop);
+
+        builder->SetInsertPoint(done);
+        builder->CreateRet(result);
+
+        builder->SetCurrentDebugLocation(saved_debug_loc);
+        eshkol_debug("Tail transfer: split %s into driver + %s",
+                     f->getName().str().c_str(), body->getName().str().c_str());
+        return true;
+    }
+
+    /**
+     * @brief Give every F<BODY> that was referenced but never split a forwarder.
+     *
+     * A musttail site names the callee's F<BODY> without knowing whether that
+     * callee will contain transfer sites of its own. When it does not, the
+     * symbol is still owed a definition: a single forwarding call to the public
+     * entry. It is a `musttail` forward wherever the target can lower one, so
+     * the forwarder's frame is replaced rather than stacked and the chain stays
+     * flat; where it cannot, transfers are the only lowering in use and the
+     * forwarder is entered once per hop from a driver that reclaims it.
+     */
+    void finalizeTailTransferThunks() {
+        const llvm::Triple mod_triple = getModuleTargetTriple(*module);
+        const llvm::Triple::ArchType arch = mod_triple.getArch();
+        const char* transfer_only = std::getenv("ESHKOL_TAIL_TRANSFER_ONLY");
+        const bool aggregate_musttail_ok =
+            !(transfer_only && transfer_only[0] == '1') &&
+            (arch == llvm::Triple::aarch64 || arch == llvm::Triple::aarch64_be ||
+             arch == llvm::Triple::aarch64_32);
+
+        IRBuilder<>::InsertPointGuard guard(*builder);
+        auto saved_debug_loc = builder->getCurrentDebugLocation();
+        builder->SetCurrentDebugLocation(DebugLoc());
+
+        for (Function* body : tail_body_decls_) {
+            if (!body || !body->isDeclaration()) continue;
+            std::string name = body->getName().str();
+            const size_t suffix_len = std::strlen(kTailBodySuffix);
+            if (name.size() <= suffix_len) continue;
+            Function* target = module->getFunction(name.substr(0, name.size() - suffix_len));
+            if (!target || target->getFunctionType() != body->getFunctionType()) {
+                // Nothing to forward to. Leaving the declaration would fail the
+                // link; an explicit trap is the loud form of "the compiler lost
+                // track of this callee".
+                eshkol_error("Tail transfer: no public entry for %s", name.c_str());
+                markFatalCodegenError();
+                continue;
+            }
+            BasicBlock* entry = BasicBlock::Create(*context, "entry", body);
+            builder->SetInsertPoint(entry);
+            std::vector<Value*> fwd;
+            fwd.reserve(body->arg_size());
+            for (Argument& a : body->args()) fwd.push_back(&a);
+            CallInst* call = builder->CreateCall(target, fwd);
+            call->setTailCallKind(aggregate_musttail_ok ? CallInst::TCK_MustTail
+                                                        : CallInst::TCK_Tail);
+            builder->CreateRet(call);
+        }
+        builder->SetCurrentDebugLocation(saved_debug_loc);
+    }
+
     // Check if an AST node is in tail position within its parent
     // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
     bool isInTailPosition(const eshkol_ast_t* expr, const eshkol_ast_t* body) {
@@ -27264,13 +27737,39 @@ private:
                 // a missing optimization. The traversal below mirrors, form for
                 // form, the tail rules already encoded in isInTailPosition().
                 //
-                // GUARD_OP is deliberately NOT descended into even though
-                // isInTailPosition() treats its body and handler tails as tail
-                // positions: `musttail` discards the caller frame outright, which
-                // would skip the handler-stack pop that leaving a `guard` owes.
-                // Self-TCO can treat guard bodies as tail because it branches to
-                // a loop header with the handler bookkeeping intact (ESH-0222);
-                // a mutual musttail cannot. See docs/reference/language/tail-calls.md.
+                // GUARD_OP is still NOT descended into, and the tail-transfer
+                // dispatcher does not change that — for a reason deeper than the
+                // one #478 recorded.
+                //
+                // #478 excluded it because `musttail` discards the caller frame
+                // and would skip the handler-stack pop that leaving a `guard`
+                // owes. A transfer does not have that problem: it returns, so the
+                // pop happens. But performing the pop is the WRONG THING. R7RS
+                // 7.3 derives `guard` from `with-exception-handler` wrapping the
+                // body, so the handler is installed for the body's entire dynamic
+                // extent — a call in a guard body is NOT in a tail context, and
+                // the guard must still be able to catch what the callee raises.
+                // Measured against chibi-scheme 0.12 (R7RS reference), with the
+                // fixtures in the PR's evidence directory:
+                //
+                //   (define (a n) (guard (e (#t (list 'caught-by-a n))) (b n)))
+                //   (define (b n) (if (= n 0) (raise 'boom) (a (- n 1))))
+                //   (a 3)   =>  reference (caught-by-a 0);  Eshkol (caught-by-a 0)
+                //
+                // With the site transferred, `a` pops its handler before `b`
+                // runs and the same program reports an unhandled exception; the
+                // nested-guard variant answers with the WRONG handler. Making it
+                // sound is not a matter of where the pop goes: the handler's
+                // escape target is a `jmp_buf` in the frame a transfer destroys,
+                // so a guard can only survive a tail transfer once its handler is
+                // a heap-owned continuation the driver can invoke, rather than a
+                // setjmp landing pad (ADR-0006 §4). Until then a tail call under
+                // `guard` keeps its ordinary, bounded, loud lowering.
+                //
+                // isInTailPosition() still answers `true` for these positions —
+                // it is consulted by the self-TCO path as well, whose separate
+                // treatment of guard bodies (ESH-0222) is what SW-53 records.
+                // See docs/reference/language/tail-calls.md.
 
                 case ESHKOL_COND_OP:
                     // COND_OP uses call_op: each variables[i] is a clause, itself

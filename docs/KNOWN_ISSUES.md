@@ -473,11 +473,23 @@ block ordinary use.
   between 500,000 and 5,000,000 hops, while the identical program written with
   `if` ran flat. All six now run flat to 100,000,000 hops under both the JIT and
   AOT, pinned by the `mutual_tail_cond` / `mutual_tail_forms` depth-parametric
-  probes. Remaining bounded exceptions, all loud rather than silent: mutually
-  recursive procedures with **differing signatures**, **indirect** tail calls
-  through a procedure value, higher-order tail calls that forward a
-  stack-allocated closure argument, tail calls through `guard`, and non-AArch64
-  targets (aggregate-return `musttail`, ESH-0171). See
+  probes. As of ESH-0102c two further shapes are unbounded, both through the
+  **tail-transfer dispatcher** (ADR-0006 §3) rather than `musttail`: mutually
+  recursive procedures with **differing arities** (pinned at 100,000,000 by the
+  `mutual_tail_arity` probe), and **non-AArch64 targets**, where LLVM 21 refuses
+  the aggregate-return `musttail` — a mutual tail call there used to keep a
+  bounded `tail` hint and now takes the dispatcher, so ESH-0171 is a performance
+  item rather than a correctness one. That lowering is measured, not argued: the
+  harness re-runs every `mutual_tail*` cell with `ESHKOL_TAIL_TRANSFER_ONLY=1`,
+  which makes an AArch64 host lower them the way a non-AArch64 target must.
+  Remaining bounded exceptions, all loud rather than silent: **indirect** tail
+  calls through a procedure value (and therefore mutual tail calls between
+  `letrec`-bound lambdas, which internal defines become), mutual tail calls made
+  from inside a named `let` loop, tail calls that forward a pointer into the
+  caller's frame, and tail calls in the body of `guard`. The last of those is
+  not an optimization gap: R7RS 7.3 keeps the handler installed for the body's
+  whole dynamic extent, so a call in a guard body is not in a tail context, and
+  making it one changes which handler answers. See
   [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body

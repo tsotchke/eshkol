@@ -3386,6 +3386,103 @@ entries:
       on non-AArch64 targets where LLVM 21 refuses aggregate-return musttail
       (ESH-0171). Each of those was measured on this branch at 5,000,000 hops
       and each fails LOUDLY with the same fatal-signal diagnostic.
+    followup: >-
+      ESH-0102c (branch feat/tail-transfer-complete) closes two of those five
+      with the tail-transfer dispatcher: DIFFERING ARITIES (probe
+      `mutual_tail_arity`, 100,000,000 hops flat on JIT and AOT) and NON-AArch64
+      TARGETS (the harness's `aot-xfer` lane, same depth). It leaves INDIRECT
+      tail calls and CALLER-FRAME POINTER arguments bounded and loud, with the
+      requirement for each recorded in docs/design/MUTUAL_TAIL_CALLS.md, and it
+      REFUTES the `guard` item: a call in a guard body is not in a tail context
+      under R7RS 7.3 at all, so optimizing it is not merely hard but wrong. See
+      SW-53, which is the conformance consequence of the sibling decision on the
+      self-TCO side.
+
+  - id: SW-53
+    bucket: SILENT-WRONG
+    status: open
+    title: "Self tail recursion through `guard` collapses the handler chain, so a re-raise reaches the wrong handler"
+    repro: >-
+      A self-recursive procedure whose recursion sits in a `guard` body, where
+      the innermost handler re-raises:
+      `(define (outer n) (guard (e (#t 'outer)) (s n)))`
+      `(define (s n) (guard (e ((= n 0) (raise 'again)) (#t (list 'inner n)))`
+      `                (if (= n 0) (raise 'boom) (s (- n 1)))))`
+      `(display (outer 3))`.
+      Committed as
+      tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk,
+      alongside three control fixtures (01/02/03) on which Eshkol and the
+      reference AGREE. That directory's README carries the reference answers,
+      the measurement commands, and why these are deliberately not wired into
+      scripts/run_tco_tests.sh (that runner gates on a clean exit, which this
+      defect passes).
+    observed: >-
+      Eshkol prints `outer`, exit 0, no diagnostic — on the JIT and AOT alike,
+      and on origin/master as well as on the ESH-0102c branch, so this is not
+      introduced by either.
+    correct: >-
+      `(inner 1)`. Measured on chibi-scheme 0.12 (R7RS reference implementation)
+      with the identical program. R7RS 7.3 derives `guard` from
+      `with-exception-handler` wrapping the body, so each activation of `s`
+      installs its own handler and they NEST: at n=0 there are four live guards.
+      The n=0 clause re-raises, which R7RS raises in the dynamic environment of
+      that guard's outer context — the n=1 guard, whose `n` is 1, so its `#t`
+      clause answers `(inner 1)`. `outer` should never be reached.
+    root_cause: >-
+      ESH-0222 made isInTailPosition() and
+      TailCallCodegen::allSelfCallsInTailPosition() treat a `guard` BODY as a
+      tail position, so a self-call there is turned into a branch to the loop
+      header, and emitTCOBackEdge() (lib/backend/llvm_codegen.cpp) drains
+      `tco_ctx.open_guard_handlers` pops before branching. One activation with a
+      mutated `n` therefore replaces the four nested activations, and with them
+      the three enclosing handlers the re-raise was supposed to find. The
+      handler-stack draining is correct FOR A LOOP; what is wrong is treating
+      the position as tail at all. R7RS's tail-context grammar (7.1.3) does not
+      list `guard`, and it cannot: the handler's whole purpose is to be in
+      effect while the body runs.
+    impact: >-
+      Confined to programs where a guard handler RE-RAISES (or otherwise depends
+      on an enclosing guard of the same recursive procedure). The common shapes
+      agree with the reference: a guard that simply catches answers identically,
+      because the innermost activation's own guard is the one that fires either
+      way — verified on three further fixtures (guard_sem1/2/4) where Eshkol and
+      chibi both answer `(caught-by-a 0)`, `(gb 0)` and `inner`.
+    fix_requires: >-
+      A `guard` frame that survives without a native frame — its handler held as
+      a heap-owned continuation the driver can invoke rather than a `setjmp`
+      landing pad in a frame the transform destroys (ADR-0006 §4,
+      "make continuations explicit and heap-owned"). Reverting ESH-0222 instead
+      would restore conformance at the cost of the resident-tick-loop capability
+      it shipped for (docs/LONG_RUNNING_LOOPS.md), i.e. trade a rare wrong
+      answer for a common crash, so it is not the fix.
+    evidence: >-
+      Differential against chibi-scheme 0.12 on four fixtures, three agreeing
+      and one diverging; the diverging one is guard_sem5. The same differential
+      is what stopped ESH-0102c from extending the tail-transfer dispatcher
+      through `guard` on the mutual side — the mechanism worked, the semantics
+      did not.
+    caught_by: [esh-0102c-guard-soundness-differential, reference-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest, recursion-depth-parametric, vm-parity]
+    notes: >-
+      Filed as SW-53: SW-46..SW-50 are taken or reserved by #466 / #473 / #474
+      and the S4 lane, and SW-51 / SW-52 are taken by in-flight #480. Verified
+      next-free with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml |
+      sort -V | tail -3` plus that PR's body.
+      recursion-depth-parametric is in missed_by for the same reason it was in
+      SW-50's: its `guard` kind measures how DEEP a guard can nest, not which
+      handler answers. A depth sweep cannot see a semantic defect that costs no
+      stack.
+    waiver:
+      reason: >-
+        Pre-existing on master, not introduced by ESH-0102c, and narrow: it
+        requires a guard handler that re-raises into an enclosing guard of the
+        same self-recursive procedure. The fix is the heap-owned continuation
+        rework named in fix_requires, which is a trajectory item (ADR-0006 §4)
+        rather than a patch, and guessing at it is exactly the silent-wrong risk
+        this ledger exists to prevent.
+      expires: "2027-12-31"
+      owner: tsotchke
+
   - id: SW-54
     bucket: SILENT-WRONG
     status: closed

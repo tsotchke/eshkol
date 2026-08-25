@@ -18,6 +18,9 @@ rec_mutual_tail_cond_d100000000.esk	mutual_tail_cond	100000000	pass
 rec_mutual_tail_forms_d500000.esk	mutual_tail_forms	500000	pass
 rec_mutual_tail_forms_d5000000.esk	mutual_tail_forms	5000000	pass
 rec_mutual_tail_forms_d100000000.esk	mutual_tail_forms	100000000	pass
+rec_mutual_tail_arity_d500000.esk	mutual_tail_arity	500000	pass
+rec_mutual_tail_arity_d5000000.esk	mutual_tail_arity	5000000	pass
+rec_mutual_tail_arity_d100000000.esk	mutual_tail_arity	100000000	pass
 rec_non_tail_d10000.esk	non_tail	10000	pass
 rec_non_tail_d100000.esk	non_tail	100000	boundary
 rec_non_tail_d200000.esk	non_tail	200000	boundary

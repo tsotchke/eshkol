@@ -1,0 +1,6 @@
+; The silent-wrong form: an OUTER guard answers instead of the inner one.
+(define (outer n) (guard (e (#t 'outer)) (a n)))
+(define (a n) (guard (e (#t 'inner)) (b n)))
+(define (b n) (if (= n 0) (raise 'boom) (a (- n 1))))
+(display (outer 3))
+(newline)

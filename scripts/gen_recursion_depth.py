@@ -11,6 +11,8 @@ Kinds (see .swarm/DEPTH_PARAMETRIC_TESTING.md):
   mutual_tail3   mutual tail recursion, 3-cycle -> proper tail call, O(1) stack (musttail)
   mutual_tail_cond   mutual tail recursion spelled with cond  -> O(1) stack (ESH-0102b)
   mutual_tail_forms  mutual 4-cycle via cond/when/or/case     -> O(1) stack (ESH-0102b)
+  mutual_tail_arity  mutual tail recursion, DIFFERENT arities -> O(1) stack (ESH-0102c,
+                     via the tail-transfer dispatcher; `musttail` cannot take this shape)
   non_tail       non-tail recursion (stack acc) -> documented CLEAN ceiling (ESH-0112)
   cps            CPS / explicit continuation    -> clean 100000 guard (ESH-0080 fixed #93)
   through_map    recursion through map (h.o.)    -> clean 100000 guard
@@ -140,6 +142,33 @@ KINDS = {
                  "(define (mfc n acc) (if (= n 0) acc (or #f (mfd (- n 1) (+ acc n)))))\n"
                  "(define (mfd n acc) (case n ((0) acc) (else (mfa (- n 1) (+ acc n)))))"),
         "call": "(mfa {N} 0)",
+        "oracle": "tri",
+        "stdlib": False,
+        "ladder": [
+            (500000, "pass"),
+            (5000000, "pass"),
+            (100000000, "pass"),
+        ],
+    },
+    "mutual_tail_arity": {
+        # ESH-0102c: mutual tail recursion between procedures of DIFFERENT
+        # ARITY. `musttail` requires byte-identical LLVM signatures, so this
+        # shape could never take that lowering: it fell back to an ordinary
+        # call, grew one native frame per hop, and died of stack exhaustion
+        # (SIGBUS + the fatal-signal diagnostic) between 500,000 and 5,000,000
+        # hops -- while the same state machine written with equal arities ran
+        # flat past 100,000,000. R7RS section 3.5 says nothing about arity, so
+        # this was a conformance defect and these cells are `pass`.
+        #
+        # It is now lowered through the tail-transfer dispatcher (the callee's
+        # uniform entry supplies its own parameters out of a record-owned
+        # argument vector, so the two signatures never have to agree), which is
+        # what makes the deep cells reachable. A CLEAN-LIMIT here means the
+        # dispatcher stopped taking this shape.
+        "doc": "mutual tail recursion between DIFFERENT-ARITY procedures -- proper tail call, O(1) stack",
+        "defs": ("(define (aping n acc) (if (= n 0) acc (apong (- n 1) (+ acc n) 0)))\n"
+                 "(define (apong n acc k) (if (= n 0) acc (aping (- n 1) (+ acc n))))"),
+        "call": "(aping {N} 0)",
         "oracle": "tri",
         "stdlib": False,
         "ladder": [
@@ -281,7 +310,7 @@ KINDS = {
 # order files deterministically
 KIND_ORDER = [
     "self_tail", "mutual_tail2", "mutual_tail3",
-    "mutual_tail_cond", "mutual_tail_forms", "non_tail",
+    "mutual_tail_cond", "mutual_tail_forms", "mutual_tail_arity", "non_tail",
     "cps", "through_map", "metacircular",
     "dynamic_wind", "callcc", "guard", "stdlib_length",
 ]
