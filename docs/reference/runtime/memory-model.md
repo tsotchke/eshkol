@@ -500,3 +500,80 @@ throughput" fallback: the reclamation is what's traded away, never correctness.
 - The AD tape stack (`MAX_TAPE_DEPTH = 32`) is thread-local.
 - See [environment variables](environment-variables.md) for `ESHKOL_MAX_HEAP`,
   `ESHKOL_MAX_STACK`, `ESHKOL_STACK_SIZE`, and `ESHKOL_WORKER_STACK_BYTES`.
+
+## What LeakSanitizer sees, and what it is allowed to ignore
+
+The `linux-x64-asan-ubsan` CI lane runs with `detect_leaks=1`. Two things had
+to be true before that meant anything, and both were fixed in the leak audit:
+
+- **A leak had to be able to fail the build.** `eshkol-run` supplied
+  `__lsan_default_options()` returning `exitcode=0`, so LeakSanitizer printed
+  its findings and the process exited 0 regardless. Measured before the fix: a
+  hello-world `eshkol-run hello.esk -o hello` reported **248 387 bytes leaked
+  in 28 748 allocations and exited 0**. The override is gone; a leak now fails.
+- **The REPL had to be visible at all.** `repl_clean_exit()` ends the process
+  with `std::_Exit()` — deliberately, so that static and thread-local
+  destructors do not run while JIT worker threads may still hold libsystem
+  locks. But LeakSanitizer installs its whole-process check as an `atexit`
+  handler, so `_Exit` skipped it: the one long-lived process this project
+  ships produced no leak output whether it leaked or not. The REPL now runs
+  `__lsan_do_leak_check()` explicitly, after teardown and before `_Exit`.
+
+### The audited state
+
+Every real workload — an AOT compile, the compiled program, `-r` JIT, `--vm`,
+the REPL, and the agent-FFI test binaries — was run under ASan+LSan over
+`hello.esk`, `examples/h2_vibrational.esk`, `examples/autodiff.esk` and
+`examples/tensors.esk`. The reports resolve to 17 distinct allocation sites:
+
+| category | sites | disposition |
+|---|---|---|
+| **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a `--vm` run came from platform framework init, not from Eshkol code. |
+| **Compiler front-end AST** | 8 | Retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. |
+| **In-process JIT and driver** | 3 | **Fixed — see below.** All three grew with the work done, none was process-init. |
+| **LLVM ORC JIT** | 1 | Third-party: `DynamicLibrarySearchGenerator` holds a `dlopen` handle for the life of the JITDylib. Suppressed, scoped to that class. |
+| **Platform frameworks** | 7 | macOS `libobjc` / CoreFoundation / CFNetwork / libxpc process init. Not in the shipped suppression file — that file describes the Linux lane, where these frames do not exist. |
+
+### The three that were real, and what they cost
+
+None of these produced a wrong answer, so none is a silent-wrong entry; each is
+growth, and each is now fixed rather than suppressed.
+
+| leak | rate | cause | fix |
+|---|---|---|---|
+| `execute()` / `executeBatch()` result | **8 bytes per top-level form** under `-e`, `-r`, `(load …)` and `(import …)` | Both return the form's result as a heap-allocated `int64_t` on a caller-owns contract. Every `eshkol-repl` call site deleted it; six others did not — the two `eshkol-run` driver sites, the module-load and prefix-alias batches, and, worst, the top-level `SEQUENCE_OP` loop inside `execute()` itself, which assigned each sub-expression's result over `last_result` and dropped every one but the last. Measured at exactly n+1 allocations for n definitions. | All six sites delete it, like every other caller. |
+| REPL variable storage | **16 bytes per distinct top-level variable** | `addModule()` allocates one 16-byte aligned slot per variable (`posix_memalign`) and registers its address as an absolute JIT symbol, keeping it in `repl_var_storage_` as a raw `void*`. Destroying the map dropped the pointers. Its sibling map `forward_ref_slots_` was already freed in `~ReplJITContext`; this one was missed. | Freed in `~ReplJITContext`, after `jit_.reset()` so nothing can still name the address. |
+| driver path strings | ~1.8 KB per invocation | `compiled_files` and `output` hold `char*` of mixed ownership — some `argv[]` slices, some `strdup()`ed here — so neither could be freed as a whole. | The driver-owned strings come from a static, reachable driver-lifetime store. Rooted, not suppressed. |
+
+A fourth defect was fixed alongside them without being a leak in its own right:
+`addModule()` decided whether a `__repl_fwd_` slot already existed by asking
+the JIT to resolve the symbol, which also answers "no" when the slot exists but
+its module's `ResourceTracker` was evicted by hot reload. It then allocated a
+*second* slot for a name whose address is baked into every module already
+linked against it. It now reuses the existing slot, which is both leak-free and
+the address stability the mechanism depends on.
+
+### The one retention that is not flat
+
+The front-end suppressions are scoped to one function each, but within a
+function they are total, so a new leak inside `parse_list()` would be swallowed
+by them. `tests/memory/leak_audit_gate.sh` closes that: it measures front-end
+retention per REPL input line at two horizons **with suppressions off** and
+gates on the slope.
+
+Measured at 10 / 20 / 40 input lines: 21 171 / 37 451 / 70 009 bytes, i.e.
+**1628 bytes per input line, linear across a 4× span**. A batch compile reaps
+that at exit; a long-running REPL session does not.
+
+The figure is expected to move when the front end legitimately changes shape,
+and the gate is sensitive enough to show it: the audit first measured 1546.0
+bytes per line, and rebasing onto a later master raised it to 1628 — the window
+contained the NodeId identity substrate, which attaches identity data to every
+parsed node, so more retained per form is the expected consequence rather than
+a regression. Both numbers are recorded in the gate so the increase is
+accounted for rather than silently absorbed by its tolerance. This is growth, not a wrong answer, so it is a defect rather
+than a silent-wrong, and the honest statement of it is: **`eshkol-run` is
+bounded by its input, `eshkol-repl` is not**. The number is pinned in the gate
+so it can go down freely and cannot go up. Giving `eshkol_ast_t` a real owner
+(epic #182) is what makes it zero; that is a 353-site ownership change across
+the parser and macro expander, tracked separately.

@@ -230,6 +230,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["leak_audit_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No unsuppressed leak in the real workloads under ASan+LSan — an AOT compile, the compiled program, the VM and the REPL all run leak-clean against the per-entry-justified .icc/lsan-suppressions.txt, and the one retention those rules do hide (the front-end AST, epic #182) is held to a pinned per-input-line slope so a growth regression cannot hide behind a suppression (ADR-0010 A12) (tests/memory/leak_audit_gate.sh)'
+        action: BUILD_DIR=build-asan ./tests/memory/leak_audit_gate.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
           event_values: ["PASS"]
         severity: high

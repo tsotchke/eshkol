@@ -27,6 +27,38 @@
 
 using namespace eshkol::repl;
 
+/* ---------------------------------------------------------------------------
+ * LeakSanitizer visibility for the REPL (ADR-0010 gap A12).
+ *
+ * repl_clean_exit() ends the process with std::_Exit(), deliberately: it must
+ * not run atexit handlers or static destructors while JIT worker threads may
+ * still hold libsystem locks. But LeakSanitizer installs its whole-process
+ * leak check AS an atexit handler, so _Exit() skips it — and the REPL, the one
+ * genuinely long-lived process this project ships, was therefore structurally
+ * invisible to leak detection. A REPL that leaked a megabyte per input line
+ * would have produced exactly the output an entirely clean one does: none.
+ *
+ * Under ASan/LSan we therefore run the leak check EXPLICITLY, at the last
+ * point where the process state is still the one we want to audit — after the
+ * ordered teardown above, before _Exit tears the process down. Outside a
+ * sanitizer build this compiles to nothing.
+ * ------------------------------------------------------------------------- */
+#ifndef ESHKOL_HAS_ASAN
+# if defined(__SANITIZE_ADDRESS__)
+#  define ESHKOL_HAS_ASAN 1
+# elif defined(__clang__)
+#  if defined(__has_feature)
+#   if __has_feature(address_sanitizer) || __has_feature(leak_sanitizer)
+#    define ESHKOL_HAS_ASAN 1
+#   endif
+#  endif
+# endif
+#endif
+
+#ifdef ESHKOL_HAS_ASAN
+#include <sanitizer/lsan_interface.h>
+#endif
+
 // Jump buffer for exception handling during JIT execution
 static jmp_buf g_repl_exception_jmp_buf;
 
@@ -72,6 +104,14 @@ void save_readline_history();
     std::fflush(stderr);
     thread_pool_global_shutdown();
     eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+#ifdef ESHKOL_HAS_ASAN
+    /* _Exit() below skips LSan's atexit leak check; run it here so the REPL
+     * is auditable at all. __lsan_do_leak_check() honours ASAN_OPTIONS'
+     * detect_leaks (it is a no-op when leak detection is off) and terminates
+     * the process itself with the configured exitcode if it finds leaks, so
+     * the _Exit(code) below is reached only on a clean check. */
+    __lsan_do_leak_check();
+#endif
     std::_Exit(code);
 }
 

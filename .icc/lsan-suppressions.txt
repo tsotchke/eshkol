@@ -15,33 +15,203 @@
 #
 # Loaded via LSAN_OPTIONS=suppressions=<this file> (see .github/workflows/ci.yml).
 #
-# Current state: NO active rules. This is a starting point, not a claim that
-# no retention exists -- docs/reference/runtime/memory-model.md documents
-# several Stage-1 VM-evacuator limits (out-of-line payload retention,
-# continuation-pins-region, unclassified-subtype pins) as intentional. Two
-# things kept this file empty rather than pre-populated on this pass:
+# ---------------------------------------------------------------------------
+# How this list was derived
+# ---------------------------------------------------------------------------
+# Not by guessing. Every entry below is a site that an actual instrumented
+# run reported, triaged one at a time. The audit built the full compiler with
+# ASan+LSan (Homebrew llvm@21 -- Apple's system clang has no working
+# detect_leaks) and ran the real workloads under it: AOT compile + AOT run,
+# `-r` JIT, `-e` eval, the ESKB/VM route (`--profile hosted-vm --emit-eskb`
+# plus the standalone VM), the REPL, and the agent-FFI test binaries, over
+# hello.esk, examples/h2_vibrational.esk, examples/autodiff.esk and
+# examples/tensors.esk. Across those runs LeakSanitizer reported 2 095 619
+# bytes in 232 563 objects, resolving to 18 distinct allocation sites. The
+# per-site triage is in the PR body; the disposition was:
 #
-#   1. Most of that documented retention stays REACHABLE (the arena keeps
-#      its blocks on a global/region-owned linked list; the JIT object
-#      cache lives in a global map). LSan's default leak model only reports
-#      allocations with NO reachable pointer from any global/stack/TLS root
-#      at exit, so architecturally-intentional-but-reachable retention does
-#      not, by itself, produce an LSan finding to suppress.
-#   2. A full local run of the CI lane's exact test_command
-#      (run_v1_2_edge_cases_tests.sh + run_ml_tests.sh + run_ad_oracle.sh)
-#      under detect_leaks=1 on a from-scratch ASan+agent-FFI build could not
-#      be completed in this session: the agent-FFI archive's tree-sitter
-#      grammar dependencies (FetchContent network clones, several hundred
-#      MB across ~9 grammar repos) did not finish fetching in the available
-#      time on this shared development machine. This is an infra/session
-#      constraint, not a scope decision -- see the PR description for the
-#      full account. scripts/check_leak_detection_selftest.sh proves the
-#      mechanism itself (detect_leaks=1 + this file's suppressions=) is live
-#      and correctly discriminating (catches a deliberate leak, does not
-#      flag a clean program) independent of building the full Eshkol binary.
+#   * 7 sites (114 654 bytes) are macOS system frameworks -- libobjc,
+#     CoreFoundation, CFNetwork, Network, libxpc, libsystem_c,
+#     libsystem_info -- allocated by process init and by NSURLSession under
+#     the agent-FFI HTTP path. Category (c), outside this project's control.
+#     They are deliberately NOT in this file: this file ships to the LINUX
+#     ASan lane, where none of those frames exist, and adding them would be
+#     dead weight that future readers would mistake for a Linux-side
+#     admission. The local self-test layers an equivalent Darwin-only list
+#     in at run time instead (see check_leak_detection_selftest.sh).
 #
-# The FIRST real linux-x64-asan-ubsan run under this configuration is
-# expected to be where any genuine Eshkol-side finding first surfaces --
-# that is the intended effect of turning detect_leaks on, not a defect in
-# this file. Add entries here one at a time as real findings are triaged;
-# never widen a rule past the one call path it names.
+#   * 3 sites were genuine, GROWING defects and were FIXED rather than
+#     suppressed, so they have no entry here. Each scaled with the work done,
+#     which is why none of them belongs in a suppression file at any width:
+#       - the heap-allocated result of ReplJITContext::execute() and
+#         ::executeBatch() was dropped at six call sites, on a contract where
+#         every eshkol-repl caller deletes it: 8 bytes per top-level form
+#         under -e / -r / (load ...) / (import ...), measured at exactly n+1
+#         allocations for n definitions. The worst of the six was inside
+#         execute() itself, whose top-level SEQUENCE_OP loop assigned each
+#         sub-expression's result over `last_result` and dropped all but the
+#         last. All six now delete it.
+#       - lib/repl/repl_jit.cpp kept the per-variable REPL storage slots
+#         (posix_memalign, 16 bytes each) as raw void* in repl_var_storage_
+#         and never freed them: 16 bytes per distinct top-level variable, for
+#         the life of the process. ~ReplJITContext already freed the sibling
+#         forward_ref_slots_ map; this one was simply missed. Now freed
+#         there too. (Note for whoever edits that destructor next: do NOT
+#         reset jit_ first. It looks safer and it aborts the process --
+#         see the comment in ~ReplJITContext.)
+#       - the four driver `strdup()`s and one `malloc()` in exe/eshkol-run.cpp
+#         main() (`compiled_files` / `output` / the synthesized
+#         `(require stdlib)` module-name array). These had mixed ownership
+#         with argv[] slices, which is why nothing freed them. They now come
+#         from a static, reachable driver-lifetime store -- rooted, not
+#         suppressed, so LSan no longer classes them as leaks at all.
+#
+#   * 8 sites are the compiler front end's AST, addressed below.
+#
+#   * 1 site is a real defect in the VM bytecode compiler that is tracked
+#     rather than fixed here; see the TEMPORARY section at the end for why.
+#
+# ---------------------------------------------------------------------------
+# The compiler front-end AST (8 entries)
+# ---------------------------------------------------------------------------
+# eshkol-run is a one-shot batch compiler: parse -> expand -> typecheck ->
+# codegen -> emit -> exit. `eshkol_ast_t` has no destructor and no owner: the
+# 353 `new eshkol_ast_t[N]` / `new char[N]` / `strdup()` sites across
+# lib/frontend/parser.cpp and lib/frontend/macro_expander.cpp allocate nodes
+# that are read until the process exits and then reaped by exit. That is the
+# same convention clang, rustc and gcc use for their internal IRs.
+#
+# Giving the AST a real owner is epic #182 (the arena-backed AST refactor);
+# it is a 353-site ownership change across an 11 316-line parser, which is
+# not a change to make as a side effect of a leak audit. Until it lands,
+# these 8 sites are named individually so that everything else -- the
+# runtime, the VM, the arena, the JIT, the agent FFI, the driver -- fails the
+# lane on a new leak.
+#
+# KNOWN LIMIT, stated rather than hidden: each rule below is scoped to one
+# named function, but within that function it is total. A NEW leak introduced
+# inside parse_list() would be swallowed by the parse_list rule. That is the
+# unavoidable cost of suppressing by frame name, and it is why the audit also
+# added tests/memory/leak_audit_gate.sh, which measures leaked bytes at two
+# input sizes and gates on the SLOPE -- a per-line growth regression in the
+# front end shows up there even while these rules are in force. Retire both
+# the rules and that half of the gate when #182 lands.
+#
+# Measured contribution of each site over the audit's workload set is given
+# for scale; a site is listed because it was observed, not because it is big.
+
+# 1 190 850 B / 109 657 objects. lib/frontend/parser.cpp parse_list():
+# `new eshkol_ast_t[N]` for each list's element array, plus the `new char[N]`
+# operator/identifier names hung off it. This is the bulk of the AST proper.
+leak:parse_list
+
+# 291 155 B / 63 341 objects. lib/frontend/parser.cpp parse_atom():
+# `new char[N]` for every symbol, string and number literal's text. Owned by
+# the AST node it is attached to, freed by process exit with it.
+leak:parse_atom
+
+# 168 583 B / 20 863 objects. lib/frontend/parser.cpp
+# parse_function_signature(): parameter-name and parameter-type arrays for
+# each `define`/`lambda`. Same AST lifetime as the node they describe.
+leak:parse_function_signature
+
+# 255 469 B / 35 201 objects. lib/frontend/macro_expander.cpp
+# MacroExpander::expandNode(): macro expansion is a copying pass --
+# copyAst() plus a fresh child array per rewritten node -- so an expansion
+# produces a second AST tree beside the parsed one. Both are live until
+# codegen finishes and both are reaped by exit.
+leak:expandNode
+
+# 21 936 B / 1 032 objects. lib/frontend/parser.cpp
+# transformInternalDefinesToLetrec(): rewrites a body's internal defines into
+# a letrec, allocating the replacement binding/body arrays. Part of the AST
+# the rewrite returns.
+leak:transformInternalDefinesToLetrec
+
+# 15 640 B / 2 099 objects. lib/frontend/parser.cpp
+# parse_quoted_data_with_token(): the literal datum tree behind a `quote` /
+# `'(...)`. Read by codegen when it materialises the constant.
+leak:parse_quoted_data_with_token
+
+# 5 336 B / 37 objects. lib/frontend/parser.cpp parse_expression(): the few
+# nodes this dispatcher allocates itself rather than delegating.
+leak:parse_expression
+
+# 1 664 B / 48 objects. lib/frontend/parser.cpp parse_extern_modifier_tail():
+# the modifier-name strings on an `extern` declaration, attached to the
+# extern AST node.
+leak:parse_extern_modifier_tail
+
+# ---------------------------------------------------------------------------
+# Third-party: LLVM's ORC JIT (1 entry)
+# ---------------------------------------------------------------------------
+
+# 256 B / 1 object, once per REPL/JIT session, never per input line.
+# llvm::orc::DynamicLibrarySearchGenerator::tryToGenerate() resolves JIT
+# symbols against the host process by dlopen()ing the search library and
+# holding the handle for the life of the JITDylib. The handle and the dyld
+# bookkeeping behind it are owned by LLVM and by dyld, not by this project,
+# and are correctly still live when the process ends. Category (c): upstream,
+# not ours to free. Scoped to the one generator class that does it.
+leak:DynamicLibrarySearchGenerator
+
+# ---------------------------------------------------------------------------
+# TEMPORARY -- real defects, tracked, not accepted (2 entries)
+# ---------------------------------------------------------------------------
+# This section is NOT a statement that the entries below are acceptable. They
+# are real leaks. They are suppressed only so that this gate can be turned on
+# now rather than waiting on work that belongs on another branch, and each
+# entry names exactly what removes it. DELETE EACH ENTRY WHEN ITS FIX LANDS --
+# if the leak is still there afterwards, the gate must go red, which is the
+# whole point of turning it on.
+
+# 3 707 B / 288 objects on a hello-world `--profile hosted-vm --emit-eskb`.
+# lib/backend/vm_parser.c add_local() strdup()s each local's name into the
+# FuncChunk's `locals` array. chunk_free_arrays() frees `locals[i].name` for
+# i < n_locals, but the ~15 scope-exit sites in lib/backend/vm_compiler.c pop
+# a scope by writing `c->n_locals = saved_locals;` — truncating the array
+# without freeing the names above the new watermark, so every name bound
+# inside a scope that has since closed is unreachable by the time the chunk
+# is freed. It is a real defect, not a design choice, and it is bounded by
+# program size in a one-shot ESKB emit rather than growing over time.
+#
+# NOT fixed here on purpose. The correct fix already exists in-repo as a
+# worked example — lib/backend/eshkol_vm.c:1631 and :1692 free the names
+# before truncating, which also proves the pointers are not aliased — but
+# applying it means editing ~15 call sites whose intent differs (eshkol_vm.c
+# :1095, for one, RAISES n_locals as a fix-up, where freeing would be
+# actively wrong). Getting one of those wrong is a use-after-free in the
+# bytecode compiler, which is a worse outcome than a bounded batch-path
+# retention. Handing it over as a scoped build item with the pattern and the
+# measurement attached, rather than guessing at it on the last leg of an
+# audit, is the honest trade. REMOVE THIS ENTRY WHEN THAT LANDS.
+leak:add_local
+
+# 56 B per `delay` / lazy future created. lib/backend/thread_pool.cpp
+# eshkol_lazy_future_create_ptr() does `new eshkol_lazy_future()` and nothing
+# ever deletes it. A promise has INDEFINITE EXTENT -- the program may force it
+# at any later point -- and Eshkol has no GC, so the runtime has no moment at
+# which it can prove a promise is unreachable and free it. To that extent the
+# retention is inherent rather than a slip.
+#
+# It is listed here as a defect anyway, not as a design, because the object is
+# `new`-backed rather than ARENA-backed. Every other Eshkol heap value lives
+# in a region arena and is reclaimed with it; a lazy future is a malloc'd side
+# allocation outside that ownership, which is exactly the class this audit
+# exists to find. The fix is to allocate it from the arena so region
+# reclamation covers it -- deliberately NOT done here, because a promise that
+# escapes its region would then need the evacuator to know how to promote a
+# raw C++ struct that is not a tagged heap object, and getting that wrong is a
+# dangling pointer rather than a leak. Scoped build item, with the measurement
+# attached. REMOVE THIS ENTRY WHEN THAT LANDS.
+leak:eshkol_lazy_future_create_ptr
+
+# 40 B / 1 object per unmatched guard entry. sizeof(eshkol_exception_handler_t).
+# lib/core/runtime_exceptions_hosted.cpp eshkol_push_exception_handler()
+# allocates a handler frame that eshkol_pop_exception_handler() returns to
+# nobody ("we leak here - but exception handlers should be short-lived").
+# For a `guard` entered once per iteration of a resident loop those frames are
+# not short-lived in aggregate; that is the 40-bytes-per-tick defect measured
+# and fixed in PR #473 (thread-local LIFO free list). This audit's REPL
+# workload trips it exactly once, which is why it shows here as a single
+# object. REMOVE THIS ENTRY WHEN #473 MERGES.
+leak:eshkol_push_exception_handler

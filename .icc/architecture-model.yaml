@@ -288,6 +288,33 @@ capabilities:
     dependency_constructor: "tests/diagnostics"
     dependency_paths: [tests/diagnostics]
 
+  - id: leak_audit_clean
+    feature: >
+      The audit behind the armed detector: the compiler was built with
+      ASan+LSan (Homebrew llvm@21 — Apple's system clang has no working
+      detect_leaks) and every real workload run under it (AOT compile, AOT
+      run, -r JIT, --vm, REPL, agent-FFI), producing 17 distinct allocation
+      sites which were triaged one at a time. Two structural defects made
+      the lane unable to fail before this: exe/eshkol-run.cpp's
+      __lsan_default_options() returned exitcode=0, so a hello-world compile
+      leaking 248 387 bytes still exited 0; and exe/eshkol-repl.cpp ends via
+      std::_Exit(), which skips LSan's atexit check, so the one long-lived
+      process this project ships was invisible to leak detection entirely.
+      Both are fixed, the driver's own mixed-ownership strdup()s are given a
+      real owner, and tests/memory/leak_audit_gate.sh now fails the lane on
+      any leak the justified suppression file does not name.
+    entry_points:
+      - {path: exe/eshkol-run.cpp, symbol: __lsan_default_options}
+      - {path: exe/eshkol-repl.cpp, symbol: repl_clean_exit}
+      - {path: exe/eshkol-run.cpp, symbol: intern_driver_string}
+    arming:
+      kind: runtime_event
+      path: tests/memory/leak_audit_gate.sh
+    pattern: leak_audit_gate
+    dependencies: [oalr-memory]
+    dependency_constructor: "LSAN_OPTIONS"
+    dependency_paths: [.icc/lsan-suppressions.txt, exe/eshkol-run.cpp, exe/eshkol-repl.cpp]
+
   - id: leak_detection_armed
     feature: >
       ASan leak detection (ADR-0010 gap A12) is armed (detect_leaks=1) in

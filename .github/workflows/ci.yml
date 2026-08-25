@@ -1096,6 +1096,25 @@ jobs:
           set -euxo pipefail
           ./scripts/check_leak_detection_selftest.sh
 
+      # ADR-0010 gap A12, second half. The step above proves the DETECTOR is
+      # armed; this one proves the PRODUCT is clean under it. It runs an AOT
+      # compile, the compiled program, the VM and the REPL under
+      # detect_leaks=1 with the checked-in suppression file, and fails on any
+      # leak that file does not already name and justify — plus a slope check
+      # on the one retention the suppressions do hide (the front-end AST,
+      # epic #182), so a per-form growth regression cannot slip in behind a
+      # suppression rule. Verified to go red: with a 4321-byte unfreed
+      # allocation added to eshkol_runtime_init() and nothing else changed,
+      # this step fails and names eshkol_runtime_init as the site.
+      - name: No unsuppressed leak in the real workloads
+        if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          ./tests/memory/leak_audit_gate.sh
+
       - name: Run Tests
         timeout-minutes: 120
         shell: bash
