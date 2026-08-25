@@ -2,6 +2,31 @@
 
 Campaign research artifact, 2026-07-09. Distilled from an independent architecture research run.
 
+> **Status: SUPERSEDED-BY `tests/vm_parity/PARITY.tsv` for the op-by-op
+> table below** (corrected 2026-08-25, conformity audit item c5). This
+> table is a 2026-07-09 snapshot that stops alphabetically around
+> `op:LOGIC_VAR_PRED` and was never regenerated; it now disagrees with the
+> live `tests/vm_parity/PARITY.tsv` on `op:GRADIENT` (this table says
+> `gap`/"returns 0"; the TSV says `vm-supported`, correct — promoted in
+> v1.3.4 by #337), `op:DERIVATIVE`, `op:LOGIC_VAR`, and `op:IMPORT`. Treat
+> `tests/vm_parity/PARITY.tsv` (956 rows, machine-checked by
+> `scripts/vm_parity_audit.py` on every run) as ground truth for current
+> per-op status; this document's op table is retained below as a dated
+> research artifact, not a live reference. See `docs/VM_PARITY.md` for the
+> current, maintained accounting.
+>
+> **ADR-0000's disposition to "keep this as the standing parity gate"
+> (conformity audit item c6):** the mechanism is real —
+> `scripts/run_vm_parity.sh` is a genuine 4-stage gate (AUDIT / CORPUS on 3
+> axes / OOS / FATAL; see `docs/VM_PARITY.md`) — but it has two known
+> blind spots, kept here as BUILD ITEMs (target v1.4.1): (1) `--no-eskb`
+> disables the whole compiled-bytecode axis while the gate still reports
+> `vm_parity_gate PASS`, so a bytecode-only regression can pass silently;
+> (2) the differential's `normalize()` strips **all** newlines from both
+> sides before comparing, so a dropped `(newline)` call is invisible to the
+> gate. Neither closes the gate's value — both are hardening work on top
+> of it.
+
 ## Op-by-op VM<->LLVM parity (vm-supported / gap+failing-test / native-only-justified)
 
 ```
