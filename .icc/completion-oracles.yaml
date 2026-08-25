@@ -116,6 +116,37 @@ oracles:
         label: 'This completion-oracle file parses and every criterion in every oracle validates to the same count declared — no criterion is silently dropped by the grader (scripts/check_oracle_schema.py)'
         action: python3 scripts/check_oracle_schema.py
 
+      # 2026-08-25 (F19 / ADR-0010 A13): every oracle target now carries at
+      # least one severity:high criterion, so absent evidence forces
+      # `blocked` (scripts/audit_oracle_false_green.py enforces that
+      # invariant below). This criterion covers the OTHER half of A13's
+      # proposal: evidence that exists but is stale. ICC's own grader has
+      # no `max_age_days` support for `runtime_event` criteria (only
+      # `performance_budget` — see scripts/check_evidence_staleness.py's
+      # docstring for the exact code path), so staleness is graded here,
+      # repo-side, over the trace corpus, and fed back in as an ordinary
+      # eshkol_smoke event the same way the schema/ledger gates above are.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["evidence_staleness_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No severity:high criterion''s newest matching runtime-event evidence is older than the configured window (default 14 days; scripts/check_evidence_staleness.py --max-age-days / $ESHKOL_EVIDENCE_MAX_AGE_DAYS)'
+        action: python3 scripts/check_evidence_staleness.py
+
+      # 2026-08-25 (F19 / ADR-0010 A13): no oracle target may read `ready`
+      # (or escape `blocked`) purely because it has zero severity:high
+      # criteria — the exact mechanism that let gpu-execution read
+      # `ready/94` on a host that had run no GPU code at all. This
+      # criterion is this file's own regression test against that class.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["oracle_false_green_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every oracle target has at least one severity:high criterion, so total absence of evidence forces `blocked` rather than `ready`/`incomplete` (scripts/audit_oracle_false_green.py)'
+        action: python3 scripts/audit_oracle_false_green.py
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
