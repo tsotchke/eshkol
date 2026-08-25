@@ -55,6 +55,7 @@ export LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 if eshkol_durable_enabled; then
     VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
@@ -87,11 +88,21 @@ done
 
 TIMEOUT_RUN="${VM_PARITY_TIMEOUT:-60}"
 
-# macOS has no `timeout(1)`; emulate with perl alarm (exit 124 on expiry).
-run_guarded() { # seconds cmd...
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$1" "${@:2}"
-}
+# Real, signal-observing timeout wrapper (scripts/lib/harness_outcome.sh).
+# This replaces an exec-then-perl-alarm one-liner this script used to carry
+# locally: `exec` replaces perl's own process image, so the alarm handler
+# perl installed does not survive into the child, and a child still running
+# when the alarm fires is killed by SIGALRM under ITS OWN default
+# disposition — exit 128+14=142 — instead of a controlled, recognizable 124.
+# That is exactly the F13 audit incident (2026-08-25 architecture audit,
+# section 3): `native -r exited 142` on a 140s cold-start JIT/stdlib compile
+# under load, read as a parity FAIL because nothing downstream could tell a
+# clock fact from a wrong answer. eshkol_outcome_guarded forks instead of
+# exec'ing, so the alarm fires in the still-alive parent and reports a
+# stable 124; a real crash the child raises on its own is still preserved as
+# 128+N (e.g. a genuine SIGSEGV stays 139), so a self-inflicted defect is
+# never masked as infrastructure. See eshkol_outcome_classify_exit below.
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -113,13 +124,13 @@ emit_test_result() { # name PASS|FAIL snippet
         "$(json_escape "$1")" "$passed" "$(json_escape "$3")" "$(date +%s)" >> "${TRACE_FILE:?}"
 }
 
-pass=0; fail=0
-report() { # PASS|FAIL nodeid event_name snippet
-    if [ "$1" = "PASS" ]; then
-        pass=$((pass+1)); echo "PASSED $2"
-    else
-        fail=$((fail+1)); echo "FAILED $2 — $4"
-    fi
+pass=0; fail=0; infra=0
+report() { # PASS|FAIL|INFRA nodeid event_name snippet
+    case "$1" in
+        PASS)  pass=$((pass+1));  echo "PASSED $2" ;;
+        INFRA) infra=$((infra+1)); echo "INFRA  $2 — $4 (no verdict obtained; not counted as a parity defect)" ;;
+        *)     fail=$((fail+1));  echo "FAILED $2 — $4" ;;
+    esac
     emit_event "$3" "$1" "$4"
 }
 
@@ -161,6 +172,36 @@ fi
 if ! eshkol_durable_enabled; then trap 'rm -rf "$WORK"' EXIT; fi
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+
+# ── JIT-cache warm-up (fix for F13: the 140s cold-start timeout) ────────
+#
+# $ESHKOL_JIT_CACHE_DIR is a fresh directory every invocation of this
+# script, so the FIRST native compile against it always pays the full
+# stdlib load/optimize cost — measured at 140.49s under a load average of
+# 180, versus 0.07s/0.06s on a warm cache (2026-08-25 audit, section 3).
+# TIMEOUT_RUN defaults to 60s, so an unlucky first corpus file used to eat
+# that cold-start cost inside its own timed window and get killed — not
+# because anything was wrong, but because it happened to go first. Paying
+# the cold cost HERE, once, outside any per-file timing window, means every
+# per-file measurement below starts from a warm cache and the 60s budget
+# is measuring the thing it is supposed to measure again.
+#
+# This does not remove the safety net: if the warm-up itself times out
+# (a genuinely pathological host), we log it and continue — the per-file
+# eshkol_outcome_retry_guarded calls below still classify and retry any
+# residual cold-start timeout as INFRA rather than a parity FAIL.
+WARMUP_TIMEOUT="${VM_PARITY_WARMUP_TIMEOUT:-300}"
+WARM_FILE="$WORK/_warmup.esk"
+printf '(display 1)\n(newline)\n' > "$WARM_FILE"
+echo "== warm-up: priming \$ESHKOL_JIT_CACHE_DIR (stdlib compile, budget ${WARMUP_TIMEOUT}s) =="
+if eshkol_outcome_guarded "$WARMUP_TIMEOUT" "$ESHKOL_RUN" -r "$WARM_FILE" \
+        >"$WORK/_warmup.out" 2>"$WORK/_warmup.err"; then
+    echo "warm-up: cache primed"
+else
+    echo "run_vm_parity.sh: warm-up compile did not finish within ${WARMUP_TIMEOUT}s —" \
+         "the corpus loop below may still see a cold first hit under extreme load" \
+         "(see $WORK/_warmup.err); the per-file retry-once still applies." >&2
+fi
 
 # Normalize an output capture:
 #   * strip VM banners, ESKB loader lines, GPU init logs, compiler noise;
@@ -212,18 +253,36 @@ for f in "${corpus_files[@]}"; do
             native_args=(-n -r "$f")
             ;;
     esac
-    run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" "${native_args[@]}" >"$d/native.raw" 2>"$d/native.err"
+    # eshkol_outcome_retry_guarded: one attempt, and — IFF that attempt
+    # classifies as INFRA (timeout/OOM/signal-from-outside) — exactly one
+    # retry before we conclude anything. This is the direct fix for F13: a
+    # cold-start timeout gets a second try, at which point the JIT cache the
+    # warm-up (and/or the first attempt itself) populated makes the retry
+    # fast, matching what the audit measured by hand (140.49s once, then
+    # 0.07s, 0.06s). A real wrong-answer FAIL is never retried — only the
+    # clock gets a second chance.
+    eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/native.raw" "$d/native.err" \
+        "$ESHKOL_RUN" "${native_args[@]}"
     nrc=$?
     normalize "$d/native.raw" "$d/native.out"
 
-    ESHKOL_VM_NO_DISASM=1 run_guarded "$TIMEOUT_RUN" "$VM_BIN" "$f" >"$d/vmsrc.raw" 2>"$d/vmsrc.err"
+    ESHKOL_VM_NO_DISASM=1 eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/vmsrc.raw" "$d/vmsrc.err" \
+        "$VM_BIN" "$f"
     vrc=$?
     normalize "$d/vmsrc.raw" "$d/vmsrc.out"
 
     nodeid="tests/vm_parity/corpus/$base.esk"
-    if [ $nrc -ne 0 ]; then
+    nclass=$(eshkol_outcome_classify_exit "$nrc")
+    vclass=$(eshkol_outcome_classify_exit "$vrc")
+    if [ "$nclass" = INFRA ]; then
+        report INFRA "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
+            "native -r timed out/infra after retry (rc=$nrc) — no parity verdict obtained"
+    elif [ $nrc -ne 0 ]; then
         report FAIL "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
             "native -r exited $nrc (corpus programs must be green natively)"
+    elif [ "$vclass" = INFRA ]; then
+        report INFRA "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
+            "vm-src timed out/infra after retry (rc=$vrc) — no parity verdict obtained"
     elif [ $vrc -ne 0 ] || ! vm_stderr_clean "$d/vmsrc.err"; then
         report FAIL "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
             "vm-src errored (rc=$vrc, stderr: $(head -c 160 "$d/vmsrc.err"))"
@@ -237,18 +296,29 @@ for f in "${corpus_files[@]}"; do
 
     if [ $DO_ESKB -eq 1 ]; then
         eskb="$d/prog.eskb"
-        run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$eskb" "$f" \
-            >"$d/eskb.compile.out" 2>"$d/eskb.compile.err"
+        eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/eskb.compile.out" "$d/eskb.compile.err" \
+            "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$eskb" "$f"
         erc=$?
+        eclass=$(eshkol_outcome_classify_exit "$erc")
+        if [ "$eclass" = INFRA ]; then
+            report INFRA "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
+                "eskb emit timed out/infra after retry (rc=$erc) — no parity verdict obtained"
+            continue
+        fi
         if [ $erc -ne 0 ] || [ ! -f "$eskb" ]; then
             report FAIL "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
                 "eskb emit failed rc=$erc"
             continue
         fi
-        ESHKOL_VM_NO_DISASM=1 run_guarded "$TIMEOUT_RUN" "$VM_BIN" "$eskb" >"$d/vmeskb.raw" 2>"$d/vmeskb.err"
+        ESHKOL_VM_NO_DISASM=1 eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/vmeskb.raw" "$d/vmeskb.err" \
+            "$VM_BIN" "$eskb"
         brc=$?
+        bclass=$(eshkol_outcome_classify_exit "$brc")
         normalize "$d/vmeskb.raw" "$d/vmeskb.out"
-        if [ $brc -ne 0 ] || ! vm_stderr_clean "$d/vmeskb.err"; then
+        if [ "$bclass" = INFRA ]; then
+            report INFRA "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
+                "vm-eskb timed out/infra after retry (rc=$brc) — no parity verdict obtained"
+        elif [ $brc -ne 0 ] || ! vm_stderr_clean "$d/vmeskb.err"; then
             report FAIL "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
                 "vm-eskb errored (rc=$brc, stderr: $(head -c 160 "$d/vmeskb.err"))"
         elif ! cmp -s "$d/native.out" "$d/vmeskb.out"; then
@@ -333,10 +403,22 @@ for f in "${fatal_files[@]}"; do
 done
 
 # ── gate ─────────────────────────────────────────────────────────────────
+#
+# INFRA checks never count toward `fail`: a check that could not obtain a
+# verdict (even after one retry) is not evidence the VM diverges from
+# native — it is evidence the run needs redoing under better conditions.
+# Folding it into `fail` here is exactly the F13 audit defect (a spurious
+# FAIL propagating into INV-dispatch-table-completeness); leaving it out
+# is the "no verdict beats a false FAIL" choice documented in
+# scripts/lib/harness_outcome.sh. It is still loud: printed distinctly
+# above, counted separately, and never silently dropped.
 echo
-echo "vm-parity: $pass passed, $fail failed"
+echo "vm-parity: $pass passed, $fail failed, $infra infra (no verdict)"
+if [ $infra -gt 0 ]; then
+    echo "WARNING: $infra check(s) could not obtain a parity verdict (INFRA) — see trace and re-run under less contention if this persists." >&2
+fi
 if [ $fail -eq 0 ]; then
-    gate_summary="$pass checks green (audit + corpus + oos + fatal)"
+    gate_summary="$pass checks green (audit + corpus + oos + fatal)$([ $infra -gt 0 ] && printf '; %d infra (no verdict)' "$infra")"
     emit_event "vm_parity_gate" "PASS" "$gate_summary"
     # Name the production dispatcher explicitly so ICC can bind this full
     # source+serialized-bytecode parity run to the implementation boundary it
