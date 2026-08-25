@@ -159,8 +159,13 @@ Scope (why it is a separate PR, not this one):
 Given that breadth and the risk to the C-runtime boundary, the i128 ABI change is
 tracked as **ESH-0171**. It is no longer on the correctness path: the dispatcher
 already gives those targets O(1) stack. What it would buy is the cheaper
-lowering — a branch per hop instead of a record write and a driver bounce, about
-5x on the 100,000,000-hop cells.
+lowering — a branch per hop instead of a record write and a driver bounce. That
+is worth less than it sounds: measured on the 100,000,000-hop `cond` probe, AOT,
+mean of three runs on an idle host, `musttail` 2.99 s versus the dispatcher
+3.35 s — **about 12%**, not the order of magnitude the shape of the mechanism
+suggests. Ordinary calls into a split procedure are not measurably affected at
+all: a stdlib-heavy workload (200,000-element `sort` plus twenty `append`/`length`
+passes) runs 0.71 s on both this branch and #478's.
 
 ## Alternatives considered
 

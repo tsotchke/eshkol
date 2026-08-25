@@ -106,8 +106,10 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-120}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-180}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
 # A transfer costs a record write plus a driver bounce per hop where a musttail
-# costs a branch, so the same 100,000,000-hop cell takes roughly five times as
-# long in the aot-xfer lane. The lane is measuring stack, not speed.
+# costs a branch: measured at about 12% on the 100,000,000-hop cells (2.99s vs
+# 3.35s, mean of three, idle arm64-darwin). The generous ceiling is for loaded
+# CI hosts, where the same cells have been seen to take an order of magnitude
+# longer -- this lane is measuring stack, not speed.
 XFER_RUN_TIMEOUT="${XFER_RUN_TIMEOUT:-300}"
 
 # macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).

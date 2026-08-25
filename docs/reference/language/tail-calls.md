@@ -113,9 +113,12 @@ the target's ability to lower an aggregate-return `musttail` matters any more.
 
 One consequence is visible in a profile rather than in a program's answer: a
 transfer costs a record write plus a driver bounce per hop where a `musttail`
-costs a branch, so a transfer-lowered chain runs roughly five times slower than
-a `musttail`-lowered one at the same depth. It is the same guarantee at a
-different constant.
+costs a branch. Measured on the 100,000,000-hop `cond` probe, AOT, mean of three
+runs on an idle arm64-darwin host: **2.99 s under `musttail`, 3.35 s under the
+dispatcher — about 12%**, at 8.3 MB and 8.9 MB peak RSS respectively. It is the
+same guarantee at a slightly different constant. (An earlier figure of "five
+times" in this file was measured on a loaded machine and was wrong; the numbers
+above are what a quiet one reports.)
 
 ### Non-AArch64 targets are no longer bounded (ESH-0171)
 
