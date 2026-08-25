@@ -1,0 +1,400 @@
+name: Pillars Nightly (ADR-0010 §2.5)
+
+# The expensive half of "arm the pillar harnesses so readiness is
+# machine-reachable" (see docs/design/PILLAR_CI_INVENTORY.md for the full
+# harness census). ci.yml's `pillars-fast` job carries the sub-two-minute
+# gates on every PR; everything here is a real sweep (depth-parametric
+# corpora, seeded fuzz, metamorphic/differential corpora, the full ICC
+# smoke battery, SICP) that would add tens of minutes to every PR's
+# critical path if it ran there instead. Nightly + manual only, exactly
+# the same shape as adversarial-nightly.yml (which this workflow
+# deliberately does not touch or duplicate — that one owns the P8
+# escape-closure pillar and TSan/packaging lanes).
+#
+# Every job below has its own timeout-minutes AND a disk-budget guard
+# (df before/after with a hard cap, checked with `if: always()` so it
+# still runs after a gate fails) — project rule, after a prior fuzz
+# harness with neither filled a shared node's disk.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'      # 08:00 UTC nightly (offset from adversarial-nightly's 07:00)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MAJOR: '21'
+
+concurrency:
+  group: pillars-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # P6: the depth-parametric family. None of these six scripts were
+  # referenced by any workflow before this PR — each sweeps its construct
+  # family to a max-correct-depth and feeds its own oracle target plus
+  # v1.3-evolve.
+  # ---------------------------------------------------------------------
+  pillars-depth-sweep:
+    name: pillars-depth-sweep
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          cmake --build build --target eshkol-run eshkol-vm-standalone-test stdlib --parallel
+
+      - name: Disk budget guard (before)
+        shell: bash
+        run: df -Pk . | tee "$RUNNER_TEMP/disk-before.txt"
+
+      - name: run_ad_depth.sh (P6a; feeds ad-depth, v1.3-evolve, ad-taylor-campaign)
+        timeout-minutes: 45
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_ad_depth.sh
+
+      - name: run_recursion_depth.sh (P6b; feeds recursion-depth, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_recursion_depth.sh
+
+      - name: gen_numeric_depth.py + run_numeric_depth.sh (P6d; feeds numeric-depth, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: |
+          python3 scripts/gen_numeric_depth.py
+          bash scripts/run_numeric_depth.sh
+
+      - name: run_metaprog_depth.sh (P6e; feeds metaprog-depth, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_metaprog_depth.sh
+
+      - name: run_nesting_depth.sh (P6c; feeds nesting-depth, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_nesting_depth.sh
+
+      - name: run_tensor_collection_depth.sh (P6f; feeds tensor-collection-depth)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_tensor_collection_depth.sh
+
+      - name: Disk budget guard (after; fail if net growth exceeds 20GB)
+        if: always()
+        shell: bash
+        run: |
+          df -Pk . | tee "$RUNNER_TEMP/disk-after.txt"
+          before_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-before.txt")
+          after_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-after.txt")
+          used_kb=$(( before_kb > after_kb ? before_kb - after_kb : 0 ))
+          echo "net disk growth during pillars-depth-sweep: $((used_kb / 1024)) MB"
+          if [ "$used_kb" -gt $((20 * 1024 * 1024)) ]; then
+            echo "::error::pillars-depth-sweep grew disk usage by more than 20GB ($((used_kb / 1024)) MB)."
+            exit 1
+          fi
+
+      - name: Clean up generated corpora
+        if: always()
+        shell: bash
+        run: |
+          # numeric_depth is the one family that writes generated .esk files
+          # directly into tests/numeric_depth/ (no generated/ subdir) rather
+          # than a dedicated generated/ directory; the runner is ephemeral
+          # either way, so this is hygiene, not correctness.
+          rm -rf tests/ad_depth/generated tests/recursion_depth/generated \
+                 tests/metaprog_depth/generated \
+                 tests/nesting_depth/generated tests/tensor_collection_depth/generated \
+                 2>/dev/null || true
+          find tests/numeric_depth -maxdepth 1 -name '*.esk' -delete 2>/dev/null || true
+
+      - name: Upload trace evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-pillars-depth-sweep
+          path: |
+            scripts/icc_traces/
+            docs/reports/AD_DEPTH_REPORT.md
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # Adversarial sweeps: differential (native+VM axes), edge-pair
+  # composition, deterministic metamorphic laws, and the bounded
+  # ASan/UBSan-independent sanitizer-fuzz gate (this one runs on a plain
+  # Release build — the sanitizer axis itself lives in ci.yml's
+  # linux-x64-asan-ubsan lane, unrelated to this job).
+  # ---------------------------------------------------------------------
+  pillars-adversarial-sweep:
+    name: pillars-adversarial-sweep
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          cmake --build build --target eshkol-run eshkol-vm-standalone-test stdlib --parallel
+
+      - name: Disk budget guard (before)
+        shell: bash
+        run: df -Pk . | tee "$RUNNER_TEMP/disk-before.txt"
+
+      - name: run_differential.sh (feeds differential-clean)
+        timeout-minutes: 45
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_differential.sh
+
+      - name: run_differential_fuzz.sh --seed 42 --count 200 (feeds differential-clean)
+        timeout-minutes: 45
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_differential_fuzz.sh --seed 42 --count 200
+
+      - name: gen_matrix.py + run_edge_matrix.sh (feeds edge-matrix)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: |
+          python3 tests/edge_matrix/gen_matrix.py
+          bash scripts/run_edge_matrix.sh
+
+      - name: run_metamorphic.sh (feeds metamorphic-laws, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_metamorphic.sh
+
+      # run_sanitizer_fuzz.sh already caps its own artifact disk usage at
+      # 300MB by default (ESHKOL_FUZZ_MAX_GB) and runs the bounded gate
+      # sweep unless --full is passed; the job-level guard below is a
+      # second, independent net.
+      - name: run_sanitizer_fuzz.sh (feeds sanitizer-fuzz-clean, v1.3-evolve)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_sanitizer_fuzz.sh
+
+      - name: Disk budget guard (after; fail if net growth exceeds 20GB)
+        if: always()
+        shell: bash
+        run: |
+          df -Pk . | tee "$RUNNER_TEMP/disk-after.txt"
+          before_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-before.txt")
+          after_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-after.txt")
+          used_kb=$(( before_kb > after_kb ? before_kb - after_kb : 0 ))
+          echo "net disk growth during pillars-adversarial-sweep: $((used_kb / 1024)) MB"
+          if [ "$used_kb" -gt $((20 * 1024 * 1024)) ]; then
+            echo "::error::pillars-adversarial-sweep grew disk usage by more than 20GB ($((used_kb / 1024)) MB)."
+            exit 1
+          fi
+
+      - name: Clean up generated corpora
+        if: always()
+        shell: bash
+        run: |
+          rm -rf tests/edge_matrix/generated 2>/dev/null || true
+
+      - name: Upload trace evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-pillars-adversarial-sweep
+          path: scripts/icc_traces/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # The full ICC smoke battery (66 probes; never ran in any workflow
+  # before this PR) plus SICP.
+  # ---------------------------------------------------------------------
+  pillars-smoke-sweep:
+    name: pillars-smoke-sweep
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      # run_icc_smoke.sh exercises agent-FFI + input2 tensor-gradient
+      # probes, so this build enables both, matching what unix-matrix's own
+      # lite lanes build with.
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_BUILD_AGENT_FFI=ON
+          cmake --build build --parallel
+
+      - name: Disk budget guard (before)
+        shell: bash
+        run: df -Pk . | tee "$RUNNER_TEMP/disk-before.txt"
+
+      - name: run_icc_smoke.sh (feeds most eshkol_smoke-based criteria; never ran in CI before)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_icc_smoke.sh
+
+      - name: run_sicp_smoke.sh (feeds sicp-completeness — partial, see PILLAR_CI_INVENTORY.md)
+        timeout-minutes: 30
+        env: { BUILD_DIR: build }
+        shell: bash
+        run: bash scripts/run_sicp_smoke.sh
+
+      - name: Disk budget guard (after; fail if net growth exceeds 20GB)
+        if: always()
+        shell: bash
+        run: |
+          df -Pk . | tee "$RUNNER_TEMP/disk-after.txt"
+          before_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-before.txt")
+          after_kb=$(awk 'NR==2{print $4}' "$RUNNER_TEMP/disk-after.txt")
+          used_kb=$(( before_kb > after_kb ? before_kb - after_kb : 0 ))
+          echo "net disk growth during pillars-smoke-sweep: $((used_kb / 1024)) MB"
+          if [ "$used_kb" -gt $((20 * 1024 * 1024)) ]; then
+            echo "::error::pillars-smoke-sweep grew disk usage by more than 20GB ($((used_kb / 1024)) MB)."
+            exit 1
+          fi
+
+      - name: Upload trace evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-pillars-smoke-sweep
+          path: scripts/icc_traces/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # The payoff: merge every trace this workflow's three sweeps produced
+  # and ask ICC for a real readiness verdict, following the same
+  # ICC_AVAILABLE pattern release.yml's release-readiness-gate uses. This
+  # is advisory (never fails the workflow) — ICC is not provisioned on
+  # stock GitHub-hosted runners; the point is that the trace bundle this
+  # produces is a documented one-command readiness verdict away on any
+  # machine that does have ICC, instead of requiring a human to re-run
+  # every pillar script by hand first.
+  # ---------------------------------------------------------------------
+  pillars-readiness-nightly:
+    name: pillars-readiness-nightly
+    needs: [pillars-depth-sweep, pillars-adversarial-sweep, pillars-smoke-sweep]
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
+      ICC_REPO: ${{ vars.ICC_REPO || 'eshkol_lang' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all pillar trace evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: icc-evidence-pillars-*
+          path: nightly-evidence
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Merge collected traces into scripts/icc_traces/
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p scripts/icc_traces
+          find nightly-evidence -name '*.jsonl' -exec cp -n {} scripts/icc_traces/ \; 2>/dev/null || true
+          echo "collected traces:"
+          ls -la scripts/icc_traces/ || true
+
+      - name: Resolve ICC binary (informational — never fails this workflow)
+        shell: bash
+        run: |
+          set -uo pipefail
+          ICC_BIN="${ICC_BIN_OVERRIDE:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+          if [[ -n "$ICC_BIN" && -x "$ICC_BIN" ]]; then
+            echo "ICC_BIN=$ICC_BIN" >> "$GITHUB_ENV"
+            echo "ICC_AVAILABLE=true" >> "$GITHUB_ENV"
+            "$ICC_BIN" --version || true
+          else
+            echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "::notice title=ICC not provisioned on this runner::Download the icc-evidence-pillars-* / pillars-readiness-nightly-evidence artifacts from this run and pass scripts/icc_traces/ to 'icc readiness --target v1.3-evolve --trace-dir scripts/icc_traces' on a machine that has ICC to get a verdict from this exact nightly run's evidence."
+          fi
+
+      - name: icc readiness --target v1.3-evolve
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -uxo pipefail
+          "$ICC_BIN" index --repo "$ICC_REPO" || true
+          "$ICC_BIN" readiness --repo "$ICC_REPO" --target v1.3-evolve \
+            --trace-dir scripts/icc_traces --format markdown | tee readiness-report.md
+          "$ICC_BIN" readiness --repo "$ICC_REPO" --target v1.3-evolve \
+            --trace-dir scripts/icc_traces --format json > readiness-report.json || true
+
+      - name: Upload merged trace bundle + readiness report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pillars-readiness-nightly-evidence
+          path: |
+            scripts/icc_traces/
+            readiness-report.md
+            readiness-report.json
+          if-no-files-found: ignore
