@@ -32223,9 +32223,68 @@ private:
             builder->SetInsertPoint(after_matmul_compute);
         }
 
-        // Record on AD tape if autodiff mode is active
+        // ── ADR-0002b dense tensor AD node: PRESENT BUT NOT ENABLED ──────────
+        //
+        // What follows is the dense-node sketch ADR-0002 specifies: ONE
+        // AD_NODE_MATMUL tape node carrying A, B, the result and {M,K,N},
+        // instead of the 2*M*N*K scalar nodes the loop above emits. It has
+        // never executed in a compiled Eshkol program, and the guard that kept
+        // it out said so only by accident.
+        //
+        // The guard used to read `autodiff_ && ad_mode && !after_matmul_compute`.
+        // `after_matmul_compute` is assigned non-null at the top of this block
+        // under exactly `autodiff_ && ad_mode`, so the conjunction was
+        // unsatisfiable and this code was unreachable — while reading like a
+        // live fallback for "the scalarizing path did not install". Reviewers,
+        // ADR readers and the roadmap's Stage-7 gate all took it for a switch
+        // waiting to be flipped. It is not. Measured on this branch, flipping
+        // it does not produce a slower-but-correct gradient or a different
+        // gradient; it SIGSEGVs on the first `(gradient (lambda (x) (tensor-sum
+        // (matmul x c))) ...)`, identically under -r and AOT.
+        //
+        // Three independent things are unfinished, and the crash is only the
+        // first one to fire:
+        //
+        //   1. recordADNodeTensor (autodiff_codegen.cpp) stores NULL into
+        //      field 7 (`tensor_gradient`), commented "allocated during
+        //      backward" — but the reverse pass SELECTS the tensor backward by
+        //      testing field 7 non-null (autodiff_codegen.cpp, "TENSOR GRADIENT
+        //      FAST PATH"). A node this function builds therefore falls through
+        //      to the SCALAR dispatch for op 24 and dereferences its null
+        //      input1/input2. Constructor and consumer each wait for the other.
+        //   2. The dense node produced here is dropped: this block computes
+        //      `ad_node`, sets its params, and then the function returns a
+        //      plain HEAP_PTR tensor. Nothing downstream can find it. The
+        //      input side of that representation does exist
+        //      (extractTensorAndADNode reads an AD-node-tagged tensor operand),
+        //      so only the producing half is missing.
+        //   3. Under AD the scalarizing path leaves AD-node POINTERS in the
+        //      result tensor's elements, which is what tensor-sum and friends
+        //      consume. A dense matmul writes plain doubles there, so even a
+        //      working dense node would sever the chain at the next tensor op
+        //      until those ops learn the dense representation.
+        //
+        // Nothing on the compiled path ever sets `tensor_gradient`; the only
+        // writers are the qLLM bridge C entry points (lib/bridge/qllm_bridge.cpp)
+        // and the backward rules themselves. So eshkol_tensor_backward_dispatch
+        // is likewise unreachable from compiled Eshkol today.
+        //
+        // Finishing this is ADR-0002 Position A ("dense resident tape"),
+        // scheduled for v1.6 and unstarted. Until then the deadness is
+        // DECLARED rather than accidental: the block stays compiled and
+        // type-checked so it cannot bit-rot, gated on a named constant that
+        // states the truth instead of a guard that hid it. The scalar node
+        // counts this costs are measured and ratcheted by
+        // tests/ad/matmul_tape_node_count_test.esk, so the day the dense path
+        // lands the drop is provable rather than asserted.
+        //
+        // See docs/design/adr/0002-ad-staged-dense-kernels.md,
+        // docs/design/adr/0000-unified-trajectory.md Stages 7-8, and
+        // .icc/silent-wrong-ledger.yaml SW-48.
+        constexpr bool kDenseTensorADNodesEnabled = false;
+
         GlobalVariable* ad_mode = ctx_->adModeActive();
-        if (autodiff_ && ad_mode && !after_matmul_compute) {
+        if (kDenseTensorADNodesEnabled && autodiff_ && ad_mode) {
             Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
 
             Function* current_func = builder->GetInsertBlock()->getParent();
