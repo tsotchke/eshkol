@@ -53,6 +53,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 # Keep the Perl timeout wrapper independent of host locale availability.
 export LC_ALL=C
@@ -98,11 +99,14 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-120}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-180}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
 
-# macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).
-run_guarded() {
-    perl -e 'my $seconds = shift; alarm $seconds; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh), replacing
+# a local exec-then-alarm one-liner. `exec` replaced the perl process
+# itself, so its pending alarm delivered SIGALRM to the CHILD under the
+# child's own default disposition (terminate -> 128+14=142), rather than a
+# controlled code a still-alive wrapper chose. eshkol_outcome_guarded forks
+# instead, so the alarm always fires in the parent and reports a stable
+# 124; raw_verdict() below checks 124 first (142 kept for back-compat).
+run_guarded() { eshkol_outcome_guarded "$@"; }
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -120,7 +124,7 @@ emit_event() {
 # raw_verdict rc out -> PASS|WRONG-VALUE|CLEAN-LIMIT|SILENT-CRASH|HANG
 raw_verdict() {
     local rc="$1" out="$2"
-    if [ "$rc" -eq 142 ]; then echo HANG; return; fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo HANG; return; fi
     if printf '%s' "$out" | grep -q '^WRONG:'; then echo WRONG-VALUE; return; fi
     if [ "$rc" -eq 0 ]; then
         if printf '%s' "$out" | grep -q '^PASS:'; then echo PASS; return; fi
@@ -219,7 +223,7 @@ for path in "$GEN_DIR"/rec_*.esk; do
         if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
             if printf '%s' "$cout" | grep -qiE "maximum recursion depth|[Ee]rror:|fatal signal"; then
                 araw=CLEAN-LIMIT; else araw=SILENT-CRASH; fi
-            [ "$crc" -eq 142 ] && araw=HANG
+            { [ "$crc" -eq 124 ] || [ "$crc" -eq 142 ]; } && araw=HANG
         else
             aout=$(run_guarded "$AOT_RUN_TIMEOUT" "$bin" 2>&1); arc=$?
             araw=$(raw_verdict "$arc" "$aout")

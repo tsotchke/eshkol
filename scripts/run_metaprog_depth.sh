@@ -28,6 +28,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 # Keep the Perl timeout wrapper independent of host locale availability.
 export LC_ALL=C
@@ -78,12 +79,17 @@ if [ "$REGEN" -eq 1 ]; then
 fi
 [ -f "$MANIFEST" ] || { echo "no manifest at $MANIFEST" >&2; exit 2; }
 
-# macOS has no timeout(1); emulate with perl alarm (exit 124 on expiry).
-run_to() {
-    local secs="$1"; shift
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$secs" "$@"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh). This
+# script already intended 124 as its timeout signal — classify_run() below
+# has checked `[ "$ec" -eq 124 ]` from day one — but the local
+# exec-then-`local $SIG{ALRM}` implementation it used to carry could never
+# actually produce it: `exec` replaces the perl process whose handler was
+# just installed, so a still-running child at expiry died from SIGALRM
+# under ITS OWN default disposition (128+14=142) instead. That check was
+# therefore dead code; eshkol_outcome_guarded forks instead of exec'ing, so
+# the alarm fires in the still-alive parent and 124 is what actually comes
+# back.
+run_to() { eshkol_outcome_guarded "$@"; }
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
 }
