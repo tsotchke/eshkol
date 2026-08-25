@@ -1,79 +1,110 @@
 #!/usr/bin/env python3
-"""Release gate: every branch-protection required status context is
-REPORTABLE on every PR shape this repo's CI can produce.
+"""Release gate: every INTENDED branch-protection required status context
+is REPORTABLE on every PR shape this repo's CI can produce.
 
 Motivating incident: `.github/workflows/ci.yml`'s `docs-only-required-
-context-stubs` job (added by PR #455) exists because GitHub Actions does
-not expand a skipped matrix job's `${{ matrix.name }}` into per-leg check
-runs — a skipped `unix-matrix`/`windows-matrix` leg reports exactly one
-check run named with the literal, unresolved string `"${{ matrix.name }}"`,
-which matches no required context. PR #455's stub job worked around this
-by running its OWN matrix, over the literal names of the 7 contexts that
-were required at the time, whenever `docs_only == 'true'`. Branch
-protection later grew 5 more matrix-derived required contexts
+context-stubs` job (added by PR #455) exists because a `unix-matrix` /
+`windows-matrix` leg is `needs: changes` gated and its `if:` depends on
+`docs_only`. On a docs-only PR those jobs never instantiate at all, so
+their per-leg contexts (`linux-x64-xla`, `macos-arm64-lite`, ...) are
+ABSENT from the head SHA's check-run set entirely — not reported under a
+wrong name, simply never created. Branch protection cannot resolve a
+required context that no check run ever reports for, so it blocks forever
+with no timeout. PR #455's stub job works around this by running its OWN
+matrix, over the literal names that needed it at the time, whenever
+`docs_only == 'true'`, so a check run under each real name still exists.
+
+Branch protection later grew 5 more matrix-derived required contexts
 (windows-arm64-lite, macos-arm64-xla, macos-x64-xla, macos-arm64-lite,
 macos-x64-lite) and nobody extended the stub matrix to match — the same
 permanent-block failure PR #455 fixed, reopened for those 5, silently:
-`docs-only-required-context-stubs` and `.github/branches/master/
-protection`'s required list are two lists a human keeps in sync by hand,
-with nothing that failed a build when they drifted. With
-`enforce_admins: true` now set, a drift like this makes a docs-only PR
-permanently unmergeable by ANYONE, not just non-admins.
+`docs-only-required-context-stubs` and branch protection's required list
+are two lists a human keeps in sync by hand, with nothing that failed a
+build when they drift. With `enforce_admins: true` set, a drift like this
+makes a docs-only PR permanently unmergeable by ANYONE, not just
+non-admins — confirmed directly: a real docs-only PR was MERGEABLE/BLOCKED
+with those 5 required, and MERGEABLE/CLEAN the moment they were removed
+from branch protection, no other change, no new CI run. Branch protection
+has (as of this gate's introduction) been temporarily narrowed to exclude
+those 5 while this fix ships; this gate's job is to certify the FULL
+intended set is reportable so they can be safely restored, not merely to
+agree with whatever is required at this exact moment.
 
-This gate is that missing consistency check. It computes, by parsing the
-actual workflow YAML (never by regexing job text), the set of status
-contexts that are REPORTABLE on every PR shape:
+A context that IS emitted, but with a SKIPPED conclusion, is a different
+and unproblematic case: a job that is skipped via a STATIC (non-matrix)
+`if:` still reports one check run under its own real name with conclusion
+`skipped`, and branch protection treats `skipped` as SATISFYING a required
+context (confirmed directly: `wasm-execute-diff`, a static-named job
+gated the same way as the matrix jobs above, stayed required throughout
+and never blocked anything). The two look superficially identical in the
+YAML ("skipped when docs_only") but have opposite consequences, which is
+exactly why this gate must distinguish them rather than treating "gated on
+docs_only" as one bucket:
+
+    a required context is satisfiable iff it is
+      (a) emitted unconditionally, or
+      (b) emitted by a job skipped via a STATIC `if:` (reports `skipped`,
+          which satisfies branch protection), or
+      (c) present in the docs-only stub matrix (covers a MATRIX job's
+          per-leg names, which are otherwise ABSENT — never reported under
+          any name at all — when the job is skipped).
+
+A required context produced only by a skipped MATRIX job, uncovered by (c),
+is case (a)-and-(b)-and-(c) failing simultaneously: ABSENT on a docs-only
+PR. A required context that matches no job's name in ANY checked workflow
+is unreportable on every PR shape — a name nothing in CI could ever emit
+at all, which is at least as bad.
+
+This gate computes the above by parsing the actual workflow YAML (never by
+regexing job text):
 
     required_contexts SUBSET-OF  unconditional_contexts
-                                  UNION stub_matrix_contexts
-                                  UNION (skippable_contexts INTERSECT stub_matrix_contexts)
+                                  UNION static_skipped_contexts
+                                  UNION (matrix_skipped_contexts INTERSECT stub_matrix_contexts)
 
-  - `unconditional_contexts`: jobs whose `if:` never depends on the
-    docs-only predicate (includes jobs from a workflow, such as
-    identity-guard.yml, that has no docs-only concept at all — "a workflow
-    with no docs paths-ignore" is exactly a workflow where every job
-    classifies as unconditional here).
-  - `skippable_contexts`: jobs whose `if:` is gated on
-    `needs.changes.outputs.docs_only == 'false'` — these do not run, and
-    so cannot report, on a docs-only PR UNLESS a stub also covers the name.
-  - `stub_matrix_contexts`: the name list of whichever job's `if:` is
-    gated on `docs_only == 'true'` (the stub job) — it runs ONLY on
-    docs-only PRs, so it complements the skippable set exactly when the
-    two name sets match.
+Which required-context set is graded, and why LIVE alone is not enough
+    A gate that only ever graded the CURRENTLY live required-context set
+    would, right now, read branch protection's temporarily-narrowed 11
+    contexts as complete and say nothing about the 5 that are missing
+    specifically because this gate's own fix has not landed yet — the
+    exact "checked nothing, reported success" shape this whole file exists
+    to prevent, just one level up. So grading is always done against a
+    committed TARGET file (`.icc/required-status-contexts.json`), which
+    records the INTENDED full required-context set independent of branch
+    protection's state at any given moment. LIVE branch protection (via a
+    GITHUB_TOKEN/GH_TOKEN, or an authenticated `gh` CLI) is fetched
+    best-effort and folded into the graded set too (the union of target
+    and live — so an ungoverned addition to live that nobody added to the
+    target file is *also* checked, not silently skipped), and the
+    difference between the two is always reported, never silently
+    resolved one way. Update the target file by hand whenever the intended
+    policy changes; this script does not write it.
 
-A required context that is in `skippable_contexts` but NOT stubbed is
-unreportable on a docs-only PR. A required context that appears in NEITHER
-set at all is unreportable on ANY PR shape — a name nothing in CI could
-ever emit, which is at least as bad (a required context that can never
-even go green once, on any diff).
-
-Where the required set comes from
-    LIVE      `GET /repos/{repo}/branches/{branch}/protection` via a
-              GITHUB_TOKEN/GH_TOKEN in the environment (or `--token`), or
-              via the `gh` CLI if it is already authenticated. Tried in
-              that order; either failure falls through to the next method
-              rather than crashing.
-    FALLBACK  a committed snapshot (`.icc/required-status-contexts.json`)
-              used when no token and no authenticated `gh` are available.
-              This is NOT re-verified against live branch protection by
-              this script — it is only as fresh as whoever last updated it
-              by hand after a `gh api .../protection` change. FALLBACK mode
-              says so on every run.
-    NO_DATA   neither LIVE nor FALLBACK produced a required-context list
-              at all (no token, no `gh`, and no readable fallback file).
-              This is NOT a PASS: nothing has been verified. NO_DATA exits
-              2, distinct from PASS (0) and FAIL (1), specifically so a
-              caller cannot mistake "we never checked" for "we checked and
-              it's fine" — the exact vacuous-assurance shape this gate
-              itself was written to close elsewhere in this file's history.
+Modes
+    TARGET_ONLY        `--offline`, or no token/`gh` available: grades the
+                        committed target file alone.
+    TARGET_PLUS_LIVE    both the target file and a live fetch succeeded:
+                        grades their union; reports contexts that differ
+                        between the two (current-vs-intended visibility).
+    LIVE_ONLY_NO_TARGET the target file is missing/unreadable but a live
+                        fetch succeeded: grades live alone, with a loud
+                        warning that the committed intended-policy record
+                        is itself missing.
+    NO_DATA             neither the target file nor a live fetch produced
+                        anything to grade. This is NOT a PASS: nothing has
+                        been verified. NO_DATA exits 2, distinct from PASS
+                        (0) and FAIL (1), specifically so a caller cannot
+                        mistake "we never checked" for "we checked and
+                        it's fine."
 
 Grading
-    PASS      LIVE or FALLBACK produced a required-context list, and every
-              context in it is reportable per the SUBSET-OF rule above.
-    FAIL      LIVE or FALLBACK produced a required-context list, and at
-              least one context in it is not reportable — OR a workflow
-              file is missing/unparseable (fails closed, same as this
-              repo's other gates).
+    PASS      a graded context set was obtained (any mode but NO_DATA),
+              and every context in it is reportable per the SUBSET-OF rule
+              above.
+    FAIL      a graded context set was obtained and at least one context
+              in it is not reportable — OR a workflow file is
+              missing/unparseable (fails closed, same as this repo's other
+              gates).
     NO_DATA   no required-context list could be obtained at all. Exit 2.
 
 Usage
@@ -106,7 +137,7 @@ DEFAULT_WORKFLOWS = [
     os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml"),
     os.path.join(REPO_ROOT, ".github", "workflows", "identity-guard.yml"),
 ]
-DEFAULT_FALLBACK_FILE = os.path.join(REPO_ROOT, ".icc", "required-status-contexts.json")
+DEFAULT_TARGET_FILE = os.path.join(REPO_ROOT, ".icc", "required-status-contexts.json")
 DEFAULT_TRACE_DIR = os.path.join(REPO_ROOT, "scripts", "icc_traces")
 TRACE_BASENAME = "required_context_consistency_gate.jsonl"
 PROBE_ID = "required_context_consistency_clean"
@@ -346,60 +377,116 @@ def fetch_required_via_gh_cli(repo: str, branch: str, timeout: float = 15.0) -> 
     return [str(c) for c in contexts]
 
 
-def load_fallback(path: str) -> list[str]:
+def load_target(path: str) -> list[str]:
+    """The committed INTENDED required-context set — the source of truth
+    this gate grades against, independent of whatever branch protection
+    currently requires (which may be temporarily narrower mid-rollout, or
+    could in principle drift wider without anyone updating this file)."""
+
     if not os.path.isfile(path):
-        raise ConsistencyError(f"fallback contexts file not found at {path}")
+        raise ConsistencyError(f"target contexts file not found at {path}")
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except Exception as exc:
-        raise ConsistencyError(f"fallback contexts file at {path} is not valid JSON: {exc}") from exc
+        raise ConsistencyError(f"target contexts file at {path} is not valid JSON: {exc}") from exc
     contexts = data.get("contexts") if isinstance(data, dict) else None
     if not isinstance(contexts, list) or not contexts:
-        raise ConsistencyError(f"fallback contexts file at {path} has no non-empty `contexts` list")
+        raise ConsistencyError(f"target contexts file at {path} has no non-empty `contexts` list")
     return [str(c) for c in contexts]
 
 
-def determine_required_contexts(args: argparse.Namespace) -> tuple[str, list[str] | None, list[str]]:
-    """Returns (mode, contexts_or_None, notes). mode in LIVE_HTTP / LIVE_GH /
-    FALLBACK / NO_DATA. contexts is None only for NO_DATA."""
+def fetch_live(args: argparse.Namespace) -> tuple[list[str] | None, list[str]]:
+    """Best-effort LIVE branch-protection fetch. Returns (contexts_or_None,
+    notes). Never raises — a failure is just a note, since LIVE is always
+    optional (the target file alone is sufficient to grade)."""
+
+    notes: list[str] = []
+    if args.offline:
+        notes.append("--offline requested: skipping any network/gh attempt")
+        return None, notes
+
+    token = args.token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        try:
+            contexts = fetch_required_via_http(args.repo, args.branch, token)
+            notes.append(f"LIVE via GitHub API (token present), repo={args.repo} branch={args.branch}")
+            return contexts, notes
+        except LiveFetchError as exc:
+            notes.append(f"LIVE via GitHub API failed: {exc}")
+    else:
+        notes.append("no GITHUB_TOKEN/GH_TOKEN in environment and no --token given")
+
+    try:
+        contexts = fetch_required_via_gh_cli(args.repo, args.branch)
+        notes.append(f"LIVE via authenticated `gh` CLI, repo={args.repo} branch={args.branch}")
+        return contexts, notes
+    except LiveFetchError as exc:
+        notes.append(f"LIVE via `gh` CLI unavailable: {exc}")
+
+    return None, notes
+
+
+def determine_grading_contexts(args: argparse.Namespace) -> dict:
+    """Returns {"mode", "target_contexts", "live_contexts",
+    "effective_contexts", "notes"}. `effective_contexts` (what actually
+    gets graded) is None only for NO_DATA.
+
+    Grading is ALWAYS anchored on the committed target file when it is
+    available — never on live alone — specifically so a live set that is
+    temporarily (or permanently, by mistake) narrower than intended cannot
+    make this gate agree that nothing is missing. When live also succeeds,
+    the graded set is target UNION live, so an ungoverned addition on the
+    live side gets checked too rather than silently ignored.
+    """
 
     notes: list[str] = []
 
-    if args.offline:
-        notes.append("--offline requested: skipping any network/gh attempt")
-    else:
-        token = args.token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if token:
-            try:
-                contexts = fetch_required_via_http(args.repo, args.branch, token)
-                notes.append(f"LIVE via GitHub API (token present), repo={args.repo} branch={args.branch}")
-                return "LIVE_HTTP", contexts, notes
-            except LiveFetchError as exc:
-                notes.append(f"LIVE via GitHub API failed, falling back: {exc}")
-        else:
-            notes.append("no GITHUB_TOKEN/GH_TOKEN in environment and no --token given")
-
-        try:
-            contexts = fetch_required_via_gh_cli(args.repo, args.branch)
-            notes.append(f"LIVE via authenticated `gh` CLI, repo={args.repo} branch={args.branch}")
-            return "LIVE_GH", contexts, notes
-        except LiveFetchError as exc:
-            notes.append(f"LIVE via `gh` CLI unavailable, falling back: {exc}")
-
+    target_contexts: list[str] | None = None
     try:
-        contexts = load_fallback(args.fallback_file)
-        notes.append(
-            f"FALLBACK: read committed snapshot {args.fallback_file} — NOT re-verified against "
-            "live branch protection; stale if that snapshot was not updated by hand after the "
-            "last `gh api .../protection` change"
-        )
-        return "FALLBACK", contexts, notes
+        target_contexts = load_target(args.target_file)
     except ConsistencyError as exc:
-        notes.append(f"FALLBACK unavailable: {exc}")
+        notes.append(f"target file unavailable: {exc}")
 
-    notes.append("no LIVE source and no usable FALLBACK file — required-context set is UNKNOWN")
-    return "NO_DATA", None, notes
+    live_contexts, live_notes = fetch_live(args)
+    notes.extend(live_notes)
+
+    if target_contexts is not None and live_contexts is not None:
+        effective = sorted(set(target_contexts) | set(live_contexts))
+        live_only = sorted(set(live_contexts) - set(target_contexts))
+        target_only = sorted(set(target_contexts) - set(live_contexts))
+        if live_only:
+            notes.append(
+                f"LIVE requires {len(live_only)} context(s) not in the target file "
+                f"(update {args.target_file}): {live_only}"
+            )
+        if target_only:
+            notes.append(
+                f"target file intends {len(target_only)} context(s) live does not currently "
+                f"require (expected mid-rollout; restore in branch protection once this gate "
+                f"is green): {target_only}"
+            )
+        if not live_only and not target_only:
+            notes.append("LIVE and the target file agree exactly")
+        return {"mode": "TARGET_PLUS_LIVE", "target_contexts": target_contexts,
+                "live_contexts": live_contexts, "effective_contexts": effective, "notes": notes}
+
+    if target_contexts is not None:
+        return {"mode": "TARGET_ONLY", "target_contexts": target_contexts,
+                "live_contexts": None, "effective_contexts": target_contexts, "notes": notes}
+
+    if live_contexts is not None:
+        notes.append(
+            "grading LIVE ONLY: the committed target/intended-policy file is missing or "
+            "unreadable, so only what branch protection currently requires is being checked, "
+            "not the full intended policy"
+        )
+        return {"mode": "LIVE_ONLY_NO_TARGET", "target_contexts": None,
+                "live_contexts": live_contexts, "effective_contexts": live_contexts, "notes": notes}
+
+    notes.append("no target file and no LIVE source — required-context set is UNKNOWN")
+    return {"mode": "NO_DATA", "target_contexts": None, "live_contexts": None,
+            "effective_contexts": None, "notes": notes}
 
 
 # ───────────────────────── grading ─────────────────────────
@@ -414,10 +501,11 @@ def check(required_contexts: list[str], reportable: dict) -> dict:
             continue
         if context in reportable["skippable_matrix"]:
             reason = (
-                "produced by a MATRIX job that is skipped on docs-only PRs (its `if:` requires "
-                "docs_only == 'false'); a skipped matrix job reports one check run under the "
-                "literal unresolved '${{ matrix.name }}' string, not this name, and this name is "
-                "NOT covered by the docs-only stub matrix"
+                "ABSENT entirely on a docs-only PR: produced by a MATRIX job whose `if:` requires "
+                "docs_only == 'false', and a skipped matrix job never instantiates its per-leg "
+                "names (they collapse to one check run under the literal unresolved "
+                "'${{ matrix.name }}' string) — this name is NOT covered by the docs-only stub "
+                "matrix, so no check run bearing it is ever created on that PR shape"
             )
             reason_kind = "NOT_STUBBED"
         elif context in all_known:
@@ -587,34 +675,72 @@ def self_test() -> bool:
             print(f"           {detail}")
 
     # Mode-selection self-test: NO_DATA must be reachable and distinguishable
-    # from FALLBACK, without ever touching the network.
+    # from TARGET_ONLY, without ever touching the network.
     with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-context-gate-mode-") as tmp_dir:
-        missing_fallback = os.path.join(tmp_dir, "does-not-exist.json")
+        missing_target = os.path.join(tmp_dir, "does-not-exist.json")
         offline_args = argparse.Namespace(
             offline=True, token=None, repo=DEFAULT_REPO, branch=DEFAULT_BRANCH,
-            fallback_file=missing_fallback,
+            target_file=missing_target,
         )
-        mode, contexts, _notes = determine_required_contexts(offline_args)
-        if mode == "NO_DATA" and contexts is None:
-            print("  [OK] mode_selection_no_data: --offline + missing fallback file -> NO_DATA, contexts=None")
+        grading = determine_grading_contexts(offline_args)
+        if grading["mode"] == "NO_DATA" and grading["effective_contexts"] is None:
+            print("  [OK] mode_selection_no_data: --offline + missing target file -> NO_DATA, contexts=None")
         else:
-            print(f"  [GATE IS BROKEN] mode_selection_no_data: expected NO_DATA/None, got {mode}/{contexts}")
+            print(f"  [GATE IS BROKEN] mode_selection_no_data: expected NO_DATA/None, got "
+                  f"{grading['mode']}/{grading['effective_contexts']}")
             all_ok = False
 
-        present_fallback = os.path.join(tmp_dir, "fallback.json")
-        with open(present_fallback, "w", encoding="utf-8") as handle:
+        present_target = os.path.join(tmp_dir, "target.json")
+        with open(present_target, "w", encoding="utf-8") as handle:
             json.dump({"contexts": ["guard", "alpha"]}, handle)
-        offline_args.fallback_file = present_fallback
-        mode, contexts, _notes = determine_required_contexts(offline_args)
-        if mode == "FALLBACK" and contexts == ["guard", "alpha"]:
-            print("  [OK] mode_selection_fallback: --offline + present fallback file -> FALLBACK, contexts read back")
+        offline_args.target_file = present_target
+        grading = determine_grading_contexts(offline_args)
+        if grading["mode"] == "TARGET_ONLY" and grading["effective_contexts"] == ["guard", "alpha"]:
+            print("  [OK] mode_selection_target_only: --offline + present target file -> TARGET_ONLY, contexts read back")
         else:
-            print(f"  [GATE IS BROKEN] mode_selection_fallback: expected FALLBACK/['guard','alpha'], got {mode}/{contexts}")
+            print(f"  [GATE IS BROKEN] mode_selection_target_only: expected TARGET_ONLY/['guard','alpha'], got "
+                  f"{grading['mode']}/{grading['effective_contexts']}")
             all_ok = False
+
+        # THE decisive regression case for this incident: branch protection
+        # was measured live-narrower than intended (11 required, temporarily
+        # missing 5 matrix-derived contexts) specifically BECAUSE this gate's
+        # own fix had not shipped yet. A gate that graded live alone would
+        # have read that narrowed set as complete and said nothing. Simulate
+        # "live" by union-ing the target file with a narrower set by hand
+        # (rather than a real network call) and confirm the STILL-required,
+        # still-unstubbed name in the target file is caught even though a
+        # live-only view would have missed it entirely.
+        target_says_beta_required = os.path.join(tmp_dir, "target_with_beta.json")
+        with open(target_says_beta_required, "w", encoding="utf-8") as handle:
+            json.dump({"contexts": _MISSING_STUB_REQUIRED}, handle)  # ["guard", "alpha", "beta"]
+        live_narrowed_without_beta = ["guard", "alpha"]  # what a rolled-back live set would show
+        effective = sorted(set(_MISSING_STUB_REQUIRED) | set(live_narrowed_without_beta))
+        try:
+            ci_path = os.path.join(tmp_dir, "narrow_ci.yml")
+            identity_path = os.path.join(tmp_dir, "narrow_identity.yml")
+            _write(ci_path, _MISSING_STUB_CI_YML)
+            _write(identity_path, _GOOD_IDENTITY_YML)
+            reportable = compute_reportable([ci_path, identity_path])
+            result_live_only = check(live_narrowed_without_beta, reportable)
+            result_target_union = check(effective, reportable)
+        except ConsistencyError as exc:
+            print(f"  [GATE IS BROKEN] narrowed_live_would_have_hidden_gap: fixture setup failed: {exc}")
+            all_ok = False
+        else:
+            if result_live_only["passed"] and not result_target_union["passed"]:
+                print("  [OK] narrowed_live_would_have_hidden_gap: grading live's narrowed set alone would "
+                      "wrongly PASS ('beta' never checked); grading target UNION live correctly FAILS on it")
+            else:
+                print(f"  [GATE IS BROKEN] narrowed_live_would_have_hidden_gap: expected live-only PASS "
+                      f"(false confidence) and union FAIL, got live-only passed="
+                      f"{result_live_only['passed']}, union passed={result_target_union['passed']}")
+                all_ok = False
 
     if all_ok:
-        print("self-test: PASS — the gate fails on every broken fixture, passes the well-formed one, "
-              "and NO_DATA is reachable and distinct from FALLBACK/PASS")
+        print("self-test: PASS — the gate fails on every broken fixture, passes the well-formed ones, "
+              "NO_DATA is reachable and distinct from TARGET_ONLY/PASS, and grading target UNION live "
+              "catches a gap a narrowed live-only view would hide")
     else:
         print("self-test: FAIL — the gate did not behave as specified", file=sys.stderr)
     return all_ok
@@ -629,9 +755,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--token", default=None, help="GitHub token; else $GITHUB_TOKEN / $GH_TOKEN")
-    parser.add_argument("--fallback-file", default=DEFAULT_FALLBACK_FILE)
+    parser.add_argument("--target-file", default=DEFAULT_TARGET_FILE,
+                         help="committed INTENDED required-context list; always graded when present")
     parser.add_argument("--offline", action="store_true",
-                         help="never attempt network/gh; go straight to the fallback file (or NO_DATA)")
+                         help="never attempt network/gh; grade the target file alone (or NO_DATA)")
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIR)
     parser.add_argument("--no-trace", action="store_true", help="grade only, write no trace")
     parser.add_argument("--format", choices=("text", "json"), default="text")
@@ -643,7 +770,8 @@ def main(argv: list[str] | None = None) -> int:
 
     workflows = args.workflows or DEFAULT_WORKFLOWS
 
-    mode, required_contexts, notes = determine_required_contexts(args)
+    grading = determine_grading_contexts(args)
+    mode, required_contexts, notes = grading["mode"], grading["effective_contexts"], grading["notes"]
 
     if mode == "NO_DATA":
         snippet = "NO_DATA: " + "; ".join(notes)
@@ -675,11 +803,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if result["passed"]:
         snippet = (
-            f"[{mode}] {result['required_count']} required contexts, all reportable on every "
+            f"[{mode}] {result['required_count']} graded contexts, all reportable on every "
             f"PR shape ({result['reportable_count']} contexts reportable overall)"
         )
     else:
-        snippet = f"[{mode}] {len(result['missing'])} required context(s) unreportable: " + "; ".join(
+        snippet = f"[{mode}] {len(result['missing'])} graded context(s) unreportable: " + "; ".join(
             f"{m['context']!r} ({m['reason_kind']})" for m in result["missing"][:5]
         )
 
@@ -687,12 +815,12 @@ def main(argv: list[str] | None = None) -> int:
         emit_trace(args.trace_dir, status, snippet)
 
     if args.format == "json":
-        print(json.dumps({"status": status, "mode": mode, "notes": notes, **result}, indent=2))
+        print(json.dumps({"status": status, **grading, **result}, indent=2))
     else:
         print(f"{PROBE_ID}: {status}  [mode={mode}]")
         for note in notes:
             print(f"  note: {note}")
-        print(f"  required contexts : {result['required_count']}")
+        print(f"  graded contexts   : {result['required_count']}")
         print(f"  reportable always : {result['reportable_count']}")
         if result["missing"]:
             print("  UNREPORTABLE REQUIRED CONTEXTS:")

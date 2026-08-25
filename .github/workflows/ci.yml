@@ -478,15 +478,17 @@ jobs:
       # --offline deliberately: reading branch-protection settings needs
       # administration:read, which the default workflow token does not
       # carry, and this job's `permissions:` are not widened just to grant
-      # it. This step grades the FALLBACK path — the committed
-      # .icc/required-status-contexts.json snapshot — the same evidence
-      # every contributor without elevated credentials gets, so its result
-      # here is deterministic rather than depending on the runner's
-      # incidental `gh` auth state. Run
-      # `python3 scripts/check_required_context_consistency.py` locally
-      # with an authenticated `gh` (or GITHUB_TOKEN/GH_TOKEN with
-      # administration:read) to grade the LIVE branch-protection contexts
-      # directly, and update the snapshot by hand if it disagrees.
+      # it. This step grades the committed INTENDED target file
+      # (.icc/required-status-contexts.json) alone — which is what this gate
+      # always grades regardless of LIVE availability, precisely so a live
+      # required-context set that is temporarily narrower than intended
+      # cannot read as "nothing to fix" — so this step's result is
+      # deterministic rather than depending on the runner's incidental `gh`
+      # auth state. Run `python3 scripts/check_required_context_consistency.py`
+      # locally with an authenticated `gh` (or GITHUB_TOKEN/GH_TOKEN with
+      # administration:read) to additionally fold in and diff against LIVE
+      # branch-protection contexts, and update the target file by hand when
+      # the INTENDED policy itself changes.
       - name: Every required status context is reportable on every PR shape (docs-only included)
         shell: bash
         run: python3 scripts/check_required_context_consistency.py --offline --no-trace
@@ -745,13 +747,20 @@ jobs:
   # lite, macos-arm64-xla, macos-x64-xla, macos-arm64-lite, macos-x64-lite —
   # all produced by unix-matrix/windows-matrix's `${{ matrix.name }}`, never
   # this job's), and nobody extended this matrix to match. That reopened the
-  # identical unresolved-name failure PR #455 closed, for those 5 names —
-  # a required context and its stub coverage are two lists that must be
-  # kept in sync by hand, and this is the second time they drifted out of
-  # sync. scripts/check_required_context_consistency.py (assurance-gates)
-  # now fails the build the day they drift again, on EITHER side: a name
-  # required but missing here, or a name added here that no real job ever
-  # emits. See .icc/silent-wrong-ledger.yaml VA-01.
+  # identical failure PR #455 closed, for those 5 names — confirmed directly
+  # on a real docs-only PR (#484): MERGEABLE/BLOCKED with those 5 required,
+  # MERGEABLE/CLEAN the instant they were removed from branch protection, no
+  # other change. A required context and its stub coverage are two lists
+  # that must be kept in sync by hand, and this is the second time they
+  # drifted out of sync. scripts/check_required_context_consistency.py
+  # (assurance-gates) now fails the build the day they drift again, on
+  # EITHER side: a name required but missing here, or a name added here
+  # that no real job ever emits. It grades against the INTENDED full set
+  # committed in .icc/required-status-contexts.json, not just whatever
+  # branch protection currently requires — branch protection is temporarily
+  # narrowed to exclude these 5 while this fix ships, and grading live
+  # alone would have read that narrowed state as already-correct. See
+  # .icc/silent-wrong-ledger.yaml VA-01.
   #
   # This job's own matrix DOES expand correctly, because it only runs
   # (job-level `if` true) on docs-only PRs — the opposite condition from
