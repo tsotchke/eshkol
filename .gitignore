@@ -180,3 +180,8 @@ tests/generative-diff/corpus/
 # ICC emits timestamped architecture verdicts here. They are local runtime
 # evidence, not source artifacts; release readiness consumes the newest one.
 .icc/runtime-traces-oracle-view/
+
+# bench/run_public_benchmarks.sh ad-hoc runs (default --out-dir). The
+# committed reference numbers live at bench/reference-run/, which is NOT
+# ignored — see bench/README.md.
+bench/results/
