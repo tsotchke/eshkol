@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
+  AST node the parser produces now carries a stable `NodeId`, and a side table
+  maps that id to a `SourceSpan` — the first column of the
+  `NodeId -> {SourceSpan, BindingId, TypedExprInfo}` substrate that ADR-0000 §7
+  risk 1 calls "the single most important co-design constraint in the whole
+  program", and that ADRs 0004, 0006 and 0008 all have to be built on if the
+  compiler, LSP, docs, REPL and VM are to give one answer rather than five.
+
+  New: `inc/eshkol/frontend/node_identity.h` (the API),
+  `lib/frontend/node_identity.cpp` (a chunked, lock-free-read span table),
+  `eshkol_ast_t::node_id` (the 4-byte key; the payload stays out of line, per
+  ADR-0008 §4.2), and `tests/frontend/node_identity_test.cpp`.
+
+  The parser's 32 location-stamping sites now write the location and the
+  identity in one statement, so the two cannot drift apart, and the stream
+  reader closes each top-level form's span with a measured *extent* — the first
+  place in the frontend that records where a construct ends rather than only
+  where it begins.
+
+  `NodeId`s are tagged, not bare indices, because `eshkol_ast_t` is declared
+  uninitialised in a dozen places (`macro_expander.cpp`, `sexp_to_ast.cpp`,
+  `introspection.cpp`) and an unset field holds garbage. A garbage word is
+  rejected by its tag and again by its bound, so it reads as "unknown" — the
+  same discipline `source_file_id` already follows, for the same reason: a
+  diagnostic may fail to name a location, but it must never name a wrong one
+  confidently.
+
+  Strictly additive. `line`, `column` and `source_file_id` keep their exact
+  previous values and every consumer that has not moved onto the substrate
+  reads what it always read.
+
+- **The LLVM codegen dispatcher resolves diagnostics through the substrate.**
+  `codegenAST` asks `NodeId -> SourceSpan` for the file, line and column it
+  reports, falling back to the node's own fields when the substrate does not
+  know a node (one synthesized after parsing — an import lowered to a `define`
+  alias, a macro expansion). This is the first real consumer, and it is the
+  diagnostics path deliberately: it is where ESH-0364 (a location naming the
+  wrong file) and ESH-0365 (a location on the closing paren) both landed.
+
+  Emitted locations are unchanged — the span was recorded from the same token
+  that set `line`/`column`. What changes is that a node's *file* no longer
+  depends on the traversal that reached it: `source_file_id` is stamped only on
+  top-level forms and every inner node borrowed the ambient context, whereas in
+  the span table each stamped node carries its own file. `ScopedAstProvenance`
+  gained the integer fast path its own comment always claimed, now that it runs
+  per node instead of per top-level form.
+
+- **`scripts/run_node_identity_gate.py` measures substrate coverage.** With
+  `ESHKOL_NODE_IDENTITY_STATS=1` every frontend process prints
+  `eshkol-node-identity: allocated=N queried=N resolved=N located=N extent=N`
+  as it exits. The gate compiles a mixed corpus, aggregates, and emits
+  `node_identity_substrate_present` and `node_identity_span_coverage` as ICC
+  `runtime_event` traces against a monotonic floor in
+  `tests/coverage/NODE_IDENTITY_BASELINE.json`. Graded by the new
+  `adr0000-s1-identity` completion oracle.
+
+  The gated number is measured at a *consumer*, not at the parser: a
+  parser-side count says only how many ids were minted, never whether the
+  answer arrived where it was needed. "Has an identity", "has a location" and
+  "has an extent" stay three separate numbers so none can be read as another.
+  This is what makes the stage falsifiable, which is the whole point of
+  ADR-0000's gates.
+
+  Phase A only, and the oracle says so: `BindingId` (ADR-0006 slices 1-2),
+  `TypedExprInfo` (ADR-0004 spine part 1), the one semantic tooling core
+  (ADR-0008 M0/M1 — the LSP still counts parentheses by hand), byte-offset
+  canonical spans and the expansion-origin table are all still outstanding, and
+  none of them is half-built here.
+
 - **The bytecode VM reclaims memory: a Stage-1 OALR region evacuator ports
   `with-region` reclamation to the VM heap (SW-14, the v1.3.5 flagship item).**
   `(with-region ...)` used to lower to `begin` on the VM. The body ran, its

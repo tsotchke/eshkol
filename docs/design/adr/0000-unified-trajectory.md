@@ -228,6 +228,52 @@ is the gate, not the label.
   identical module graph; Z-set reference fixtures (insert / delete / duplicate /
   cancellation / canonical serialization) are byte-stable across regeneration.
 
+#### Stage 1 attainment — phase A of the identity substrate has landed
+
+This subsection records what is in the tree against the stage above. It adds
+evidence; it does not narrow the stage. Everything the stage asks for that is
+not listed as landed is still owed.
+
+**Landed** (`inc/eshkol/frontend/node_identity.h`,
+`lib/frontend/node_identity.cpp`):
+
+- `NodeId` — a stable, dense, tagged identity minted by the parser for every
+  node it gives a location to, carried on `eshkol_ast_t::node_id` as a 4-byte
+  key only, with the payload out of line exactly as §4.2 of ADR-0008 requires
+  during the v1.x migration.
+- `SourceSpan` — the first of the three columns, as a real side table.
+  Top-level forms carry a measured *extent*; inner nodes are points.
+- One consumer moved off its ad-hoc mechanism: the LLVM codegen dispatcher
+  resolves the file, line and column of its diagnostics through
+  `NodeId -> SourceSpan`, falling back to the node's own fields for nodes the
+  substrate does not know. Emitted locations are unchanged — the substrate is
+  additive — but a node's file no longer depends on the traversal that
+  reached it.
+- A number: `scripts/run_node_identity_gate.py` reports substrate coverage at
+  that consumer as an ICC `runtime_event` trace on a monotonic floor, graded by
+  the `adr0000-s1-identity` oracle. First reading 99.49%, floor 99.48%.
+
+**Still owed by Stage 1**, each in its own slice and none of them half-built:
+
+- The `BindingId` column — ADR-0006 slices 1-2 (sequenced into Stage 2).
+- The `TypedExprInfo` column — ADR-0004 spine part 1 (sequenced into Stage 2).
+  Both must key on the *same* `NodeId`; that constraint is now expressible,
+  because the key exists.
+- ADR-0008 M0 proper: `Diagnostic v1`, the semantic-catalog seed, the module
+  resolver extracted from `eshkol-run` behind a shared API, the LLVM-free
+  analysis target, byte-offset canonical spans (the current reader strips line
+  comments before tokenizing, so a token offset is not a file offset and byte
+  spans recorded today would be wrong rather than merely absent), and the
+  expansion-origin table — whose absence is exactly what the coverage gate's
+  ~0.5% of unresolved nodes is made of.
+- The 0002 Phase A, 0001 Phase A, 0007 Phase 0 and 0009 contract-freeze
+  tranches, and the stage gate's counter, region and Z-set clauses.
+
+The risk-1 falsifier — the cross-consumer fixture in which compiler, LSP, docs
+and REPL report an identical identity and span for the same source — is still
+not green, and cannot be until `SymbolId`/`ModuleId` exist. It is, however, now
+*expressible* for the span half, which it was not before.
+
 ### Stage 2 — v1.3.3b: "Binding resolution and interned type terms"
 
 - Theme: kill string-based identity in the frontend before any typed feature stores
