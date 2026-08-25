@@ -1,0 +1,12 @@
+;; Type System Test: a CHAIN of aliases does not launder a clone
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'b' was consumed more than once
+
+;; q -> a -> b, then b used twice. Every link is checked, and the diagnostic
+;; names the link that actually clones (b), not an earlier one.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (bad-chain-alias (q : Qubit))
+  (let* ((a q) (b a))
+    (cons (h b) (h b))))

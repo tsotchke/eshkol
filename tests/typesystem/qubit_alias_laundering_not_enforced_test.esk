@@ -1,0 +1,25 @@
+;; Type System Test: laundering a qubit through an UNTYPED binder is not caught
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: was consumed more than once
+
+;; Linear tracking is keyed by NAME, and a name is tracked only where the
+;; checker can see a linear type on it. Passing a qubit into an unannotated
+;; parameter erases that: `a` below is inferred dynamic, so the clone inside is
+;; NOT diagnosed and this program compiles and runs.
+;;
+;; This is a real hole and it is the same shape that defeats the ownership
+;; analyzer's name-keyed move tracking. It is pinned here as an ACCEPT on
+;; purpose: the fixture records what the compiler does today, so the day
+;; place-keyed tracking lands (ADR-0004 PlaceId/FlowEnv) this file must be
+;; changed to a reject -- deliberately, by someone who reads this comment --
+;; rather than the gap being rediscovered by a consumer.
+;;
+;; Direct aliases ARE caught: see qubit_clone_via_let_alias_test.esk and
+;; qubit_clone_via_alias_chain_test.esk.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (laundered (q : Qubit))
+  ((lambda (a) (cons (h a) (h a))) q))
+(display "laundering through an untyped binder is not enforced")
+(newline)
