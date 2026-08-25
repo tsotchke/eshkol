@@ -99,6 +99,69 @@ jobs:
           set -euo pipefail
           python3 scripts/test_language_coverage_gate.py -v
 
+  # v1.3.5 assurance wave 1: three release gates that used to be doctrine
+  # living only in prose (a memory file, a script's docstring) rather than
+  # something that could actually fail a PR. All three are pure Python over
+  # committed YAML — no compiler, no eshkol-run binary — so, like
+  # surface-manifest above, this belongs in a fast required job rather than
+  # only inside the heavy matrix or (for gate_no_silent_wrong.py) nowhere at
+  # all, which is where it lived before this job existed.
+  #
+  #   - gate_no_silent_wrong.py checks .icc/silent-wrong-ledger.yaml: no open,
+  #     unwaived SILENT-WRONG flaw ships. It existed on master already but
+  #     was never wired into any CI workflow — a gate nobody runs is not a
+  #     gate.
+  #   - check_ledger_integrity.py checks the SAME ledger for the structural
+  #     defect gate_no_silent_wrong.py does not look for: duplicate ids
+  #     across the whole file. A textual git merge does not conflict when two
+  #     branches independently allocate the same next-free id, so this class
+  #     of bug is invisible to code review. SW-33 collided three times this
+  #     way, SW-35 twice and SW-42 twice, before being resolved by hand.
+  #   - check_oracle_schema.py checks .icc/completion-oracles.yaml, the file
+  #     `icc readiness` reads to grade this repo's release criteria. PR #429
+  #     dropped a list-item opener while adding a criterion and broke the
+  #     YAML parse; the sharper failure mode the gate is built for is the one
+  #     where the file still parses but a criterion silently normalises to
+  #     nothing (a `runtime_event` with no `event_kinds`, a duplicated
+  #     criterion id) — readiness keeps running and prints a verdict computed
+  #     over fewer criteria than the file's author wrote, with nothing in the
+  #     output to say so.
+  #
+  # Each gate also carries a `--self-test` mode exercised here: it feeds the
+  # gate deliberately-broken fixtures (malformed YAML, a duplicate id, a
+  # missing required field) and asserts the gate goes RED on every one of
+  # them, plus a well-formed fixture asserting it does not fail on
+  # everything indiscriminately. A gate that cannot fail is not a gate.
+  assurance-gates:
+    name: assurance-gates
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install PyYAML
+        shell: bash
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
+      - name: Self-test — each gate must be able to fail
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gate_no_silent_wrong.py --self-test
+          python3 scripts/check_ledger_integrity.py --self-test
+          python3 scripts/check_oracle_schema.py --self-test
+
+      - name: No open, unwaived SILENT-WRONG flaw ships
+        shell: bash
+        run: python3 scripts/gate_no_silent_wrong.py --no-trace
+
+      - name: Silent-wrong ledger has no duplicate ids and every entry is well-formed
+        shell: bash
+        run: python3 scripts/check_ledger_integrity.py --no-trace
+
+      - name: Completion-oracle file parses and every criterion is gradeable
+        shell: bash
+        run: python3 scripts/check_oracle_schema.py --no-trace
+
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative
   # without turning the default required CI set into a Moonlab availability

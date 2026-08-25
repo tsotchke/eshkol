@@ -82,6 +82,40 @@ oracles:
         label: 'No open, unwaived SILENT-WRONG flaw ships: every entry in .icc/silent-wrong-ledger.yaml whose bucket is SILENT-WRONG (or which is IN-FLIGHT but silent_wrong_class) is closed/fixed/guarded with evidence, or carries an owner/reason/unexpired waiver — wrong values, wrong derivatives and wrong memory outcomes with no diagnostic and exit 0 are tag-blocking'
         action: python3 scripts/gate_no_silent_wrong.py
 
+      # ── Assurance wave 1 (2026-08-24) ─────────────────────────────────
+      # The silent-wrong gate above answers "is every KNOWN flaw closed or
+      # waived" but assumes its own input — the ledger file — is trustworthy.
+      # It is a text file merged like any other: SW-33 was independently
+      # allocated on three separate branches, SW-35 twice and SW-42 twice,
+      # none of which conflicted in git because a textual merge does not
+      # notice two branches picking the same next-free id. This criterion is
+      # the check that would have caught each collision before merge instead
+      # of after.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ledger_integrity_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Silent-wrong ledger has no duplicate ids across the whole file and every entry has id/bucket/status/title plus closure evidence when not open (scripts/check_ledger_integrity.py)'
+        action: python3 scripts/check_ledger_integrity.py
+
+      # This oracle's own definition lives in a YAML file merged the same
+      # way the ledger is. PR #429 dropped a list-item opener while adding a
+      # criterion and broke the parse outright (icc readiness blocked, score
+      # 85) until c8449f8a restored it by hand. The sharper failure this
+      # criterion is built for is quieter: the file still parses but a
+      # criterion silently normalises to nothing (a runtime_event with no
+      # event_kinds, a duplicated criterion id) and readiness keeps running,
+      # grading fewer criteria than this file's author wrote, with nothing
+      # in the output to say so.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["oracle_schema_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'This completion-oracle file parses and every criterion in every oracle validates to the same count declared — no criterion is silently dropped by the grader (scripts/check_oracle_schema.py)'
+        action: python3 scripts/check_oracle_schema.py
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
