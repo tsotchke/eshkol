@@ -3320,6 +3320,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # where `(hessian f point)` answers `#((12))`, and crashed for other shapes.
     # It now RAISES. This pins the raise so a regression to the silent zero (or
     # to the memory-unsafe read) fails instead of shipping a wrong derivative.
+    # These runtime tests import modules from the source-tree standard library.
+    # `-L` is a native linker search path; it is not an Eshkol module path.
+    # Keep the test environment explicit so CTest exercises the same modules as
+    # direct source-tree invocations.
+    set_tests_properties(
+        autodiff_tensor_reductions_runtime_smoke
+        ad_structural_int_guard_runtime_smoke
+        guw_multivariate_runtime_smoke
+        sparse_tensors_runtime_smoke
+        reverse_over_taylor_runtime_smoke
+        checkpointed_reverse_runtime_smoke
+        diff_control_flow_runtime_smoke
+        tensor_tower_runtime_smoke
+        taylor_numerics_runtime_smoke
+        taylor_models_runtime_smoke
+        PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     add_test(
         NAME ad_curried_gradient_nested_loud_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
