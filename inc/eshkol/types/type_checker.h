@@ -627,6 +627,17 @@ public:
                                         const std::string& name) const;
 
     /**
+     * @brief As analyzeLinearUses(), over a REGION of expressions evaluated in
+     *        sequence rather than a single body.
+     *
+     * A `let` binding's scope is not just the body: the values of every LATER
+     * binding are evaluated in it too, and that is where a chained alias
+     * (`(let* ((a q) (b a)) …)`) consumes the earlier one.
+     */
+    LinearUseAnalysis analyzeLinearUses(const std::vector<const eshkol_ast_t*>& region,
+                                        const std::string& name) const;
+
+    /**
      * @brief Enforce use-exactly-once for each name in @p linear_names over
      *        @p body, reporting violations at @p site.
      *
@@ -637,6 +648,19 @@ public:
     void enforceLinearBindings(const std::vector<std::string>& linear_names,
                                const eshkol_ast_t* body,
                                const eshkol_ast_t* site);
+
+    /** As enforceLinearBindings(), but each name carries its own scope region. */
+    void enforceLinearRegions(
+        const std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>>& regions,
+        const eshkol_ast_t* site);
+
+    /** Turn one analysis verdict into the right diagnostic (or none). */
+    void reportLinearVerdict(const std::string& name,
+                             const LinearUseAnalysis& verdict,
+                             const eshkol_ast_t* site);
+
+    /** Append " (line L:C)" for @p node when it carries a plausible position. */
+    static void appendLocation(std::string& msg, const eshkol_ast_t* node);
 
 private:
     bool strict_types_ = false;

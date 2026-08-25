@@ -2964,7 +2964,9 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     // Collect binding types
     std::vector<TypeId> binding_types;
     std::vector<std::string> binding_names;
-    std::vector<std::string> linear_bindings;
+    // Name plus the index it was bound at: a binding's scope runs from the next
+    // binding's value through the body, so its region depends on where it sits.
+    std::vector<std::pair<std::string, size_t>> linear_bindings;
 
     // Process each binding
     for (size_t i = 0; i < let.num_bindings; i++) {
@@ -3013,7 +3015,7 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
         // qubit that the type system had just declared unclonable.
         if (binding_type.flags & TYPE_FLAG_LINEAR) {
             ctx_.bindLinear(name, binding_type);
-            linear_bindings.push_back(name);
+            linear_bindings.push_back({name, i});
         } else {
             ctx_.bind(name, binding_type);
         }
@@ -3042,8 +3044,22 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     // single-path use count says nothing about it. analyzeLinearUses() reports
     // that as undecidable; skip the enforcement call entirely rather than emit
     // a "not decidable" note for a binding nobody annotated linear on purpose.
-    if (!let.name) {
-        enforceLinearBindings(linear_bindings, let.body, expr);
+    if (!let.name && !linear_bindings.empty()) {
+        // Each linear binding's scope is the values of the bindings that FOLLOW
+        // it plus the body — not the body alone. `(let* ((a q) (b a)) (h b))`
+        // consumes `a` in the value of `b`, and analysing only the body counted
+        // that as zero and rejected a correct program as a discard.
+        std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>> regions;
+        for (const auto& entry : linear_bindings) {
+            std::vector<const eshkol_ast_t*> region;
+            for (size_t j = entry.second + 1; j < let.num_bindings; ++j) {
+                const eshkol_ast_t& later = let.bindings[j];
+                if (later.type == ESHKOL_CONS) region.push_back(later.cons_cell.cdr);
+            }
+            region.push_back(let.body);
+            regions.push_back({entry.first, std::move(region)});
+        }
+        enforceLinearRegions(regions, expr);
     }
 
     ctx_.popScope();
@@ -3578,6 +3594,24 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
 }
 
 /**
+ * @brief Append " (line L:C)" to @p msg for @p node, when the position is real.
+ *
+ * Nodes synthesized by lowering (internal defines becoming a `letrec*`, for
+ * one) do not always carry a source position, and an uninitialised column
+ * prints as a nine-digit number that makes a correct diagnostic look like a
+ * compiler fault. A column past any plausible line length is treated as absent
+ * rather than printed.
+ */
+void TypeChecker::appendLocation(std::string& msg, const eshkol_ast_t* node) {
+    if (!node || node->line <= 0) return;
+    msg += " (line " + std::to_string(node->line);
+    if (node->column > 0 && node->column < 100000) {
+        msg += ":" + std::to_string(node->column);
+    }
+    msg += ")";
+}
+
+/**
  * @brief Linearity enforcement point: report a no-cloning / no-discard
  * violation, fatally.
  *
@@ -3594,13 +3628,7 @@ void TypeChecker::reportLinearViolation(const std::string& msg,
     if (unsafe_mode_) return;
 
     std::string loc_msg = msg;
-    if (node && node->line > 0) {
-        loc_msg += " (line " + std::to_string(node->line);
-        if (node->column > 0) {
-            loc_msg += ":" + std::to_string(node->column);
-        }
-        loc_msg += ")";
-    }
+    appendLocation(loc_msg, node);
 
     fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
     linearity_violations_++;
@@ -4013,6 +4041,29 @@ TypeChecker::analyzeLinearUses(const eshkol_ast_t* body,
 }
 
 /**
+ * @brief As analyzeLinearUses(), over a region of expressions run in sequence.
+ *
+ * A `let` binding is NOT consumed only in the body. The values of every later
+ * binding in the same form are evaluated in its scope too, and that is exactly
+ * where a chained alias consumes it: in `(let* ((a q) (b a)) (h b))` the sole
+ * use of `a` is the value of `b`. Analysing the body alone counted zero and
+ * rejected that correct program as a discard.
+ */
+TypeChecker::LinearUseAnalysis
+TypeChecker::analyzeLinearUses(const std::vector<const eshkol_ast_t*>& region,
+                               const std::string& name) const {
+    LinearUseAnalysis result;
+    LinearAliasSet names{name};
+    int total = 0;
+    for (const eshkol_ast_t* e : region) {
+        if (!result.decidable) break;
+        total += countLinearUses(e, names, result.decidable, result.blocker);
+    }
+    result.uses = result.decidable ? total : 0;
+    return result;
+}
+
+/**
  * @brief Enforce use-exactly-once for each of @p linear_names over @p body.
  *
  * Reports at @p site (the `define`/`lambda`/`let` form) so the diagnostic
@@ -4027,36 +4078,48 @@ void TypeChecker::enforceLinearBindings(const std::vector<std::string>& linear_n
                                         const eshkol_ast_t* body,
                                         const eshkol_ast_t* site) {
     for (const auto& name : linear_names) {
-        auto verdict = analyzeLinearUses(body, name);
-        if (!verdict.decidable) {
-            // NOT routed through reportTypeIssue(): this says something about
-            // the CHECKER's reach, not about the program, so it must never be
-            // counted as a type error — under `--strict-types` that would
-            // reject `(cond (b (h q)) (else (z q)))`, a correct single-use
-            // quantum program, purely because the analysis does not model
-            // `cond` yet. It is printed unconditionally so the boundary of the
-            // no-cloning guarantee is visible in the build log and not only in
-            // the documentation.
-            if (!unsafe_mode_) {
-                std::string loc = "linear variable '" + name +
-                                  "' is not statically decidable here (body contains " +
-                                  verdict.blocker + "); use-exactly-once is NOT enforced for it";
-                if (site && site->line > 0) {
-                    loc += " (line " + std::to_string(site->line);
-                    if (site->column > 0) loc += ":" + std::to_string(site->column);
-                    loc += ")";
-                }
-                fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
-            }
-            continue;
+        reportLinearVerdict(name, analyzeLinearUses(body, name), site);
+    }
+}
+
+/**
+ * @brief As enforceLinearBindings(), but each name carries its own scope region.
+ */
+void TypeChecker::enforceLinearRegions(
+    const std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>>& regions,
+    const eshkol_ast_t* site) {
+    for (const auto& entry : regions) {
+        reportLinearVerdict(entry.first, analyzeLinearUses(entry.second, entry.first), site);
+    }
+}
+
+/** Turn one analysis verdict into the right diagnostic (or none). */
+void TypeChecker::reportLinearVerdict(const std::string& name,
+                                      const LinearUseAnalysis& verdict,
+                                      const eshkol_ast_t* site) {
+    if (!verdict.decidable) {
+        // NOT routed through reportTypeIssue(): this says something about the
+        // CHECKER's reach, not about the program, so it must never be counted
+        // as a type error — under `--strict-types` that would reject
+        // `(cond (b (h q)) (else (z q)))`, a correct single-use quantum
+        // program, purely because the analysis does not model `cond` yet. It is
+        // printed anyway so the boundary of the no-cloning guarantee is visible
+        // in the build log and not only in the documentation.
+        if (!unsafe_mode_) {
+            std::string loc = "linear variable '" + name +
+                              "' is not statically decidable here (body contains " +
+                              verdict.blocker + "); use-exactly-once is NOT enforced for it";
+            appendLocation(loc, site);
+            fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
         }
-        if (verdict.uses > 1) {
-            reportLinearViolation("linear variable '" + name +
-                                  "' was consumed more than once", site);
-        } else if (verdict.uses == 0) {
-            reportLinearViolation("linear variable '" + name +
-                                  "' was not consumed", site);
-        }
+        return;
+    }
+    if (verdict.uses > 1) {
+        reportLinearViolation("linear variable '" + name +
+                              "' was consumed more than once", site);
+    } else if (verdict.uses == 0) {
+        reportLinearViolation("linear variable '" + name +
+                              "' was not consumed", site);
     }
 }
 
