@@ -2997,6 +2997,78 @@ entries:
       qualify as SILENT-WRONG, which is why both engines are fixed together here rather
       than treating the VM half as out of scope.
 
+  - id: LE-12
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "VM: `when`/`unless`/`and`/`or` and local-allocating `let` bodies are not tail positions, so a tail call there dies at 256 frames"
+    repro: >-
+      Two mutually tail-recursive procedures whose tail call is spelled with
+      `when` instead of `if`, run under the bytecode VM:
+      `(define (wping n acc) (if (= n 0) acc (when #t (wpong (- n 1) (+ acc n)))))`
+      `(define (wpong n acc) (if (= n 0) acc (when #t (wping (- n 1) (+ acc n)))))`
+      `(display (wping 200000 0))` via
+      `ESHKOL_VM_NO_DISASM=1 build/eshkol-vm-standalone-test`. Same for a tail
+      call in a `let` body that allocated locals:
+      `(define (lping n acc) (if (= n 0) acc (let ((m (- n 1))) (lpong m (+ acc n)))))`.
+      The `if` spelling and the differing-arity and indirect shapes are the
+      controls and all answer 20000100000.
+    observed: >-
+      `FRAME OVERFLOW` on stderr, empty stdout, **exit 0** — see LE-07, which is
+      why this is silent to any caller that checks the exit status. Measured at
+      200,000 hops; the real ceiling is ESHKOL_VM_MAX_FRAMES = 256
+      (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly depth 300.
+    correct: >-
+      20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last
+      operand of `and`/`or` tail positions exactly as much as the branches of
+      `if`, and a `let` body inherits the tail position of the `let`.
+    root_cause: >-
+      The VM has no separate tail analysis; lib/backend/vm_compiler.c threads a
+      boolean `tail` down compile_expr(). compile_form_when / compile_form_unless
+      compile their bodies with a literal 0 rather than with `tail`, and so do
+      the last operands of `and` / `or` — which additionally leave a DUP'd value
+      on the stack that a tail call would strand, so those two are not a
+      one-character fix. The let-family bodies drop to 0 whenever the scope
+      allocated locals that need OP_POPN cleanup. This is the VM's exact
+      analogue of SW-50 on the native side, still open.
+    impact: >-
+      NOT a gap in the tail-transfer dispatcher's coverage: the VM needs no
+      dispatcher. Its call frames are a heap-allocated array in the VM struct,
+      not the C stack, and OP_TAIL_CALL (lib/backend/vm_run.c) already reuses the
+      current frame generically — measured, the VM ALREADY has the two shapes
+      ESH-0102c fixed and could not fix on native: mutual tail recursion between
+      DIFFERENT-ARITY procedures, and an INDIRECT tail call through a procedure
+      parameter, both correct at 200,000 hops. The VM's `guard` handling is also
+      more conformant than native's: its guard BODY is deliberately non-tail,
+      which is what R7RS 7.3 requires (see SW-53). The gap is purely which
+      SPELLINGS reach OP_TAIL_CALL.
+    fix_requires: >-
+      Propagate `tail` through compile_form_when / compile_form_unless (direct),
+      and through the last operand of `and` / `or` after resolving the DUP'd
+      short-circuit value. The let-family case needs the tail call to happen
+      after OP_POPN, i.e. an opcode that pops N locals and tail-calls in one
+      step, or the same shared tail epilogue ADR-0006 section 3 calls for on the
+      native side. Wiring tests/tco/*.esk as a VM lane in run_vm_parity.sh would
+      gate it, minus guard_loop_tail_test.esk and apply_loop_tail_test.esk which
+      the VM fails by design.
+    evidence: >-
+      tests/vm_parity/found/when_tail_call_no_tco.esk (pre-existing) and
+      tests/vm_parity/found/vm_tail_let_locals_no_tco.esk, with the two CONTROLS
+      that bound the finding committed beside them:
+      vm_tail_arity_ok.esk and vm_tail_indirect_ok.esk, both of which the VM
+      answers correctly at 200,000 hops. The
+      depth-parametric recursion harness has NO VM lane at all
+      (scripts/run_recursion_depth.sh mentions the VM only in a comment about
+      LLVM musttail), which is why a 256-frame ceiling on five tail spellings
+      has no gate.
+    caught_by: [esh-0102c-vm-assessment, parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
+    notes: >-
+      Filed as LE-12 (next free LE id, verified with `grep -o 'id: LE-[0-9]*'
+      .icc/silent-wrong-ledger.yaml | sort -V | tail -3`). Bucket LOUD-ERROR
+      follows LE-07's classification of the same exit-0-with-stderr shape, and
+      LE-07's "Borderline SILENT-WRONG" note applies here unchanged.
+
   - id: SW-43
     bucket: SILENT-WRONG
     status: closed
