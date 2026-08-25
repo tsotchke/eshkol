@@ -33,6 +33,14 @@ name: GPU Execution Gate
 # Actions self-hosted runner agent). Do NOT repoint this at a
 # GitHub-hosted runner — that silently turns it back into a
 # compile-only gate, defeating the point of this file.
+#
+# Registering that runner — which is what closes ADR-0010 gap A13 and
+# silences the warning gpu-gate-visibility emits below — is written up
+# step by step in docs/platform/SELF_HOSTED_RUNNERS.md. Note in
+# particular its label rule: `gpu` means a real, addressable GPU DEVICE,
+# not merely a GPU toolchain. A runner carrying `gpu` without a device
+# would let this job report success while measuring the CPU fallback,
+# which is the exact failure this workflow exists to detect.
 on:
   workflow_dispatch: {}
   schedule:

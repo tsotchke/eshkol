@@ -135,6 +135,7 @@ pages and lets them fan out to their siblings.
 - [Build-system integration](BUILD_INTEGRATION.md) — compiling `.esk` sources from a CMake project (e.g. embedding Eshkol in a larger C/C++ project)
 - [Build notes](platform/BUILD_NOTES.md)
 - [CI lanes](platform/CI_LANES.md) — required vs. non-required CI lanes and what each covers
+- [Self-hosted runners](platform/SELF_HOSTED_RUNNERS.md) — attaching the maintainer's own machines as GitHub Actions runners: label taxonomy, provisioning, registration, why no mesh lane is a required check
 - [ICC contract surface](platform/ICC_CONTRACT_SURFACE.md)
 - [Windows x86 under KVM](platform/WINDOWS_X86_KVM.md)
 - [Target Support Matrix](platform/TARGET_SUPPORT_MATRIX.md)

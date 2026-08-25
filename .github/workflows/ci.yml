@@ -24,7 +24,27 @@ name: CI
 
 on:
   push:
-    branches: [master, develop, 'feat/**']
+    # Integration branches ONLY. `feat/**` used to be listed here and must not
+    # come back: every PR is opened from a topic branch, so a topic branch in
+    # this list makes GitHub start TWO full runs of this workflow for the same
+    # commit — one `push` run and one `pull_request` run — each spinning up the
+    # whole 14-lane matrix. That is half the repo's runner capacity spent
+    # producing a duplicate of a signal we already have.
+    #
+    # The duplicate is not merely wasteful, it is actively harmful. The two
+    # runs land in DIFFERENT concurrency groups (a push run keys on
+    # `refs/heads/<branch>`, a pull_request run on the PR number), so they
+    # never dedupe against each other; but successive pushes to the topic
+    # branch DO cancel the previous push run, and a cancelled run leaves
+    # `cancelled` check-runs sitting on the branch head. Those cancelled
+    # contexts share their names with the required contexts branch protection
+    # is watching, so the merge button reports a required check in a
+    # non-success state that no rerun of the PR run will ever clear.
+    #
+    # Topic branches lose nothing: the `pull_request` trigger below already
+    # covers every one of them from the moment a PR exists, and a topic branch
+    # with no PR open has nothing to gate.
+    branches: [master, develop]
     # Docs/markdown-only changes cannot affect the build or tests, so they must
     # not spin up the full compile/test/wasm/asan matrix. Research ADRs and
     # documentation live under docs/ and **/*.md; skip CI when a change touches
@@ -69,10 +89,22 @@ on:
     - cron: '0 6 * * 1'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # One group per pull request, or per branch for the push runs. Keying a PR
+  # run on its NUMBER rather than on `github.ref` keeps the group stable across
+  # a force-push and across a base-branch change, so a superseded run is always
+  # the one that gets cancelled.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   # Master is the public release gate. Let those runs finish so we get a
   # complete matrix signal even while follow-up commits are landing.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  #
+  # Everything else — every pull_request run above all — cancels in progress.
+  # A push to a PR branch invalidates the run for the previous head SHA, and
+  # holding runners for a result nobody will read is the single largest source
+  # of queueing on this repo's matrix. Stated explicitly for `pull_request`
+  # rather than left to the `github.ref != master` fallback, because a PR run's
+  # `github.ref` is `refs/pull/N/merge` and the equivalence is not obvious to
+  # the next person editing this block.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/master' }}
 
 env:
   LLVM_MAJOR: '21'
@@ -90,10 +122,57 @@ jobs:
   # than a vendored paths-filter action: this repo has no other third-party
   # filtering action in its supply chain, and the predicate is a single
   # `git diff --name-only` plus a case match.
+  #
+  # ── FAILURE MODE THIS JOB MUST NOT HAVE ──────────────────────────────
+  # Every heavy job below carries `needs: changes`. That makes this job a
+  # single point of failure for the whole run: when it exits non-zero,
+  # nothing downstream is merely skipped, the entire matrix is blocked.
+  #
+  # The original implementation exited 128 whenever a PR branch was
+  # force-pushed while its run was in flight. GitHub starts the run for a
+  # specific head SHA; a force-push orphans that object, and
+  # `git diff <base>...<orphaned head>` then dies with `fatal: bad object`.
+  # Under `set -e` that killed the job and blocked the PR (measured on
+  # PR #465). With several branches rebasing at once this is not an edge
+  # case, it is the normal weather.
+  #
+  # Two rules follow, and both are load-bearing:
+  #
+  #   1. PREFER INPUTS THAT CANNOT DANGLE. The GitHub API answers
+  #      "which files does this PR touch" with FILENAMES, never object
+  #      ids, so a force-pushed-away head cannot make it fail. A
+  #      three-dot diff against the live base branch is the git-side
+  #      equivalent: it names a ref that still exists. The two-SHA form
+  #      is kept only as a last resort, and only after `git cat-file -e`
+  #      confirms both objects actually resolve.
+  #
+  #   2. FAIL SAFE, NOT LOUD. If no strategy can determine the answer,
+  #      this job reports `docs_only=false` — the CONSERVATIVE answer,
+  #      meaning "run the whole matrix" — and exits 0 with a warning.
+  #      A gate that cannot compute its predicate must degrade toward
+  #      MORE testing, never toward a blocked merge. "I could not run"
+  #      is not the same verdict as "this failed", and this job is
+  #      structurally incapable of confusing the two: the step never
+  #      exits non-zero, which is why it deliberately does not use
+  #      `set -e`.
+  #
+  # The third leg is the `concurrency` block at the top of this file. It
+  # keys pull_request runs on the PR NUMBER with `cancel-in-progress`, so
+  # a force-push supersedes the in-flight run rather than racing it: the
+  # stale run is cancelled, and the fresh `synchronize` event starts a run
+  # whose head SHA is by construction the one that now exists. The
+  # hardening here is what keeps the *already-started* run from failing in
+  # the window before that cancellation lands.
+  # ─────────────────────────────────────────────────────────────────────
   changes:
     name: changes
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+    # Scoped to this job only; the rest of the workflow keeps the repository
+    # default. `pull-requests: read` is what lets the API strategy below work.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.filter.outputs.docs_only }}
     steps:
@@ -104,24 +183,83 @@ jobs:
       - name: Determine whether this change is docs-only
         id: filter
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            head="${{ github.event.pull_request.head.sha }}"
-            changed_files="$(git diff --name-only "$base...$head")"
+          # NOTE the missing `-e`. Intentional, and the whole point — see the
+          # job comment. Nothing in this step may abort the job.
+          set -uo pipefail
+
+          changed_files=""
+          source=""
+
+          # Does this object still exist in this checkout?
+          have_obj() { [[ -n "${1:-}" ]] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            # Strategy 1 — the API. Immune to a force-pushed-away head SHA,
+            # because it never mentions one.
+            if api_files="$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" \
+                              --paginate --jq '.[].filename' 2>/dev/null)"; then
+              changed_files="$api_files"
+              source="GitHub API repos/$REPO/pulls/$PR_NUMBER/files"
+            fi
+
+            # Strategy 2 — three-dot diff against the live base branch. Names a
+            # ref that cannot dangle, and on a pull_request run HEAD is the
+            # merge commit, so `base...HEAD` is exactly the PR's own change set.
+            if [[ -z "$source" ]]; then
+              git fetch --no-tags --prune origin \
+                "+refs/heads/${PR_BASE_REF}:refs/remotes/origin/${PR_BASE_REF}" >/dev/null 2>&1 || true
+              if git rev-parse --verify -q "refs/remotes/origin/${PR_BASE_REF}" >/dev/null 2>&1 \
+                 && d="$(git diff --name-only "refs/remotes/origin/${PR_BASE_REF}...HEAD" 2>/dev/null)"; then
+                changed_files="$d"
+                source="git diff origin/${PR_BASE_REF}...HEAD"
+              fi
+            fi
+
+            # Strategy 3 — the original two-SHA form, guarded. This is the one
+            # that used to explode; it now runs only when both objects resolve.
+            if [[ -z "$source" ]] && have_obj "$PR_BASE_SHA" && have_obj "$PR_HEAD_SHA"; then
+              if d="$(git diff --name-only "${PR_BASE_SHA}...${PR_HEAD_SHA}" 2>/dev/null)"; then
+                changed_files="$d"
+                source="git diff ${PR_BASE_SHA}...${PR_HEAD_SHA}"
+              fi
+            fi
           else
-            before="${{ github.event.before }}"
-            if [[ -z "$before" || "$before" == "0000000000000000000000000000000000000000" ]]; then
-              # First push of a branch, or force-push with no usable
-              # `before`: nothing to diff against, so don't claim docs-only.
-              changed_files="__unknown__"
-            else
-              changed_files="$(git diff --name-only "$before" "${{ github.sha }}")"
+            # Push runs. `before` is absent on a branch's first push and can be
+            # orphaned by a force-push to the branch, so it gets the same guard.
+            if [[ -n "$PUSH_BEFORE" && "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]] \
+               && have_obj "$PUSH_BEFORE" && have_obj "$PUSH_SHA"; then
+              if d="$(git diff --name-only "$PUSH_BEFORE" "$PUSH_SHA" 2>/dev/null)"; then
+                changed_files="$d"
+                source="git diff $PUSH_BEFORE $PUSH_SHA"
+              fi
             fi
           fi
 
-          echo "Changed files:"
+          if [[ -z "$source" ]]; then
+            # Could not run — NOT a failure. Answer conservatively and let the
+            # full matrix decide, which is the same outcome as a code change.
+            echo "::warning title=changes: changed-file set could not be computed::Every strategy failed (most likely the head SHA this run started for was orphaned by a force-push). Reporting docs_only=false so the FULL matrix runs — the conservative answer. This is not a build failure and must never block the run."
+            {
+              echo "### changes"
+              echo
+              echo "Could not compute the changed-file set; assuming **not** docs-only and running the full matrix."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "docs_only=false" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed files (via $source):"
           printf '%s\n' "$changed_files"
 
           # Exactly the path list the old trigger-level paths-ignore used:
@@ -132,18 +270,21 @@ jobs:
           # `docs/**`.
           docs_only=true
           if [[ -z "$changed_files" ]]; then
+            # An empty set from a strategy that "succeeded" is not evidence of a
+            # docs-only change; it is evidence something is off. Same
+            # conservative answer.
             docs_only=false
           fi
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              __unknown__) docs_only=false ;;
               *.md|docs/*|notes/*|press/*|.swarm/*|LICENSE) ;;
               *) docs_only=false ;;
             esac
           done <<< "$changed_files"
 
           echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+          exit 0
 
   # ─────────────────────────────────────────────────────────────────────
   # ADVISORY mesh-gate placeholder (see the top-of-file comment above for
