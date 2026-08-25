@@ -1,4 +1,4 @@
-; SW-46 / SW-47 / SW-48: a quoted datum keeps its KIND on both engines.
+; SW-54 / SW-55 / SW-56: a quoted datum keeps its KIND on both engines.
 ;
 ; Before the fix the two substrates disagreed three ways, all silently and all
 ; with exit 0:

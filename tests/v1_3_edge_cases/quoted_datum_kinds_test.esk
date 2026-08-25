@@ -1,9 +1,9 @@
-;; quoted_datum_kinds_test.esk — SW-46 / SW-47 / SW-48 regression.
+;; quoted_datum_kinds_test.esk — SW-54 / SW-55 / SW-56 regression.
 ;;
 ;; A quoted datum must keep its KIND. `quote` selects a value; it never
 ;; converts one datum kind into another. Three shipped defects broke that:
 ;;
-;;   SW-46 (native)  the reader's quoted-data dispatch had no branch for `#(`,
+;;   SW-54 (native)  the reader's quoted-data dispatch had no branch for `#(`,
 ;;                   so `'#(...)` fell through to parse_atom, which returns an
 ;;                   empty node and leaves the vector's own tokens in the
 ;;                   stream. Where the leftovers happened to balance — `'#()`
@@ -12,11 +12,11 @@
 ;;                   become `()`. This is the residue of #229: the function
 ;;                   body `(or x '#())` answered `()` for EVERY input,
 ;;                   `(g 7)` included.
-;;   SW-47 (VM)      the VM reader desugars `#(1 2)` to the call node
+;;   SW-55 (VM)      the VM reader desugars `#(1 2)` to the call node
 ;;                   `(vector 1 2)`; compile_quote then quoted that node as a
 ;;                   LIST, so `(vector? '#(1 2))` was #f and
 ;;                   `(vector-ref '#(9 8) 1)` was ().
-;;   SW-48 (VM)      compile_quote's numeric arm read only the `is_int` reader
+;;   SW-56 (VM)      compile_quote's numeric arm read only the `is_int` reader
 ;;                   flag, dropping `is_char` and `is_inexact`: `'(#\a)` became
 ;;                   the integer list `(97)` and `'(2.0)` became the EXACT 2.
 ;;
@@ -34,7 +34,7 @@
       (begin (display "FAIL: ") (display name) (newline)
              (set! failed (+ failed 1)))))
 
-;; --- SW-46: the #229 residue itself. The body must return its argument. ---
+;; --- SW-54: the #229 residue itself. The body must return its argument. ---
 (define (or-vec x) (or x '#()))
 (define (or-nil x) (or x '()))
 (define (and-vec x) (and x '#()))
@@ -68,7 +68,7 @@
 (check "quoted vector holds booleans" (eq? (vector-ref '#(#t) 0) #t))
 (check "quoted vector holds a list"   (list? (vector-ref '#((1 2)) 0)))
 
-;; --- SW-48: char-ness and exactness survive quoting ---
+;; --- SW-56: char-ness and exactness survive quoting ---
 (check "quoted char stays a char"     (char? (car '(#\a))))
 (check "quoted char value"            (char=? (car '(#\a)) #\a))
 (check "quoted char in a vector"      (char? (vector-ref '#(#\a #\b) 0)))

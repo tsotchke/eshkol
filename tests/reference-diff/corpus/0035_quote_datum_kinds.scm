@@ -1,6 +1,6 @@
 ;; quote / datum_kinds  (R7RS-small portable; reference-differential corpus)
 ;;
-;; SW-46/47/48. R7RS 7.1.2 makes <vector> a <datum>, so '#(...) is a vector
+;; SW-54/55/56. R7RS 7.1.2 makes <vector> a <datum>, so '#(...) is a vector
 ;; literal, and 4.1.2 makes ' , ` inside quoted data ordinary list structure.
 ;; Predicates rather than printed datums, so a divergence is a value mismatch
 ;; and not a printing convention.
