@@ -302,6 +302,28 @@ class EshkolRepl {
                 // satisfies a WASM built with these runtime imports
                 // (architecture-model wasm-import-glue-equality invariant).
                 eshkol_init_global_arena: () => {},
+                // Tail-transfer record (ESH-0102c). NOT a no-op stub: only the
+                // AArch64 backends can lower an aggregate-return `musttail`, so
+                // on wasm32 EVERY mutual tail call takes the tail-transfer
+                // dispatcher, and the compiled code writes the pending flag, the
+                // target and the arguments into this record for its driver loop
+                // to read back. One allocation off the same bump pointer the
+                // symbol/port helpers below use, memoised so every call in a
+                // module returns the same address; sized for the C struct's
+                // widest form (two u32 and a pointer padded to the tagged-value
+                // alignment, then ESHKOL_TAIL_TRANSFER_MAX_ARGS 16-byte slots).
+                // Linear memory starts zeroed and the bump pointer never
+                // reuses, so `pending` reads 0 before the first transfer. One
+                // record is correct here where native needs a thread_local,
+                // because the browser lite runtime is single-threaded.
+                eshkol_tail_transfer_slot: () => {
+                    if (!this._tailTransferSlot) {
+                        if (!this._bumpPtr) this._bumpPtr = 131072;  // 128 KB
+                        this._tailTransferSlot = this._bumpPtr;
+                        this._bumpPtr += 16 + 32 * 16;
+                    }
+                    return this._tailTransferSlot;
+                },
                 eshkol_tagged_cons_set_tagged_value: () => {},
 
                 // R7RS parameter-object runtime (make-parameter / parameterize).

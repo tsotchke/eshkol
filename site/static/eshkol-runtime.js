@@ -379,6 +379,23 @@ class EshkolRuntime {
                 eshkol_qrng_uint64: () => BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
                 eshkol_qrng_range: (min, max) => BigInt(Math.floor(Math.random() * Number(max - min)) + Number(min)),
                 eshkol_init_global_arena: () => {},
+                // Tail-transfer record (ESH-0102c). NOT a no-op stub: only the
+                // AArch64 backends can lower an aggregate-return `musttail`, so
+                // on wasm32 EVERY mutual tail call takes the tail-transfer
+                // dispatcher, and the compiled code writes the pending flag, the
+                // target and the arguments into this record for its driver loop
+                // to read back. One bump allocation, memoised so every call in a
+                // module returns the same address; sized for the C struct's
+                // widest form (two u32 and a pointer padded to the tagged-value
+                // alignment, then ESHKOL_TAIL_TRANSFER_MAX_ARGS 16-byte slots).
+                // Linear memory starts zeroed and `_bump` never reuses, so
+                // `pending` reads 0 before the first transfer. One record is
+                // correct here where native needs a thread_local, because the
+                // browser lite runtime is single-threaded.
+                eshkol_tail_transfer_slot: (() => {
+                    let slot = 0;
+                    return () => (slot || (slot = rt._bump(16 + 32 * 16)));
+                })(),
                 // R7RS parameter-object runtime (make-parameter / parameterize):
                 // opaque no-ops in the browser lite runtime (no arena), matching
                 // the other hosted-runtime imports. Full fidelity on native + VM.
