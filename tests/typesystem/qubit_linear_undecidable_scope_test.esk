@@ -1,0 +1,27 @@
+;; Type System Test: the UNENFORCED boundary is announced, not silently assumed
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: is not statically decidable here
+;; EXPECT-STDERR: use-exactly-once is NOT enforced for it
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: was consumed more than once
+
+;; `cond` is outside the decidable fragment of the linear-use analysis: type
+;; synthesis does not visit its clauses, so the analysis cannot tell a single
+;; use from none and refuses to rule. That refusal is deliberate and is the
+;; reason this program compiles: the previous, coarser check counted zero uses
+;; and rejected this correct single-use program outright under --strict-types.
+;;
+;; This fixture pins BOTH halves of the honest claim. The compile must succeed
+;; (no false rejection), AND the compiler must SAY that no-cloning is not
+;; enforced for this binding, so the boundary shows up in the build log and
+;; cannot quietly widen or vanish. When the fragment grows to cover `cond`,
+;; this fixture is the one that must be updated, deliberately.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (pick-cond (b : Bool) (q : Qubit))
+  (cond (b (h q))
+        (else (z q))))
+(display "cond bodies are outside the enforced fragment")
+(newline)

@@ -1,0 +1,16 @@
+;; Type System Test: no-cloning is a compile-time type error WITHOUT --strict-types
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; The documented claim — the language guide, the specification, RELEASE_NOTES
+;; and the public announcement all say a linear `Qubit` makes the no-cloning
+;; theorem a compile-time TYPE ERROR — has to hold in the DEFAULT compilation
+;; mode, not only under an opt-in flag. Before this fixture existed, cloning a
+;; qubit produced "[WARN] Type warning", exited 0, and wrote a runnable binary:
+;; a convention with a diagnostic attached, not a type error. The companion
+;; fixture qubit_no_cloning_test.esk pins the same rejection under
+;; --strict-types; this one pins it with no flags at all.
+(define (bad-clone (q : Qubit))
+  (cons q q))          ; q used twice -> no-cloning violation

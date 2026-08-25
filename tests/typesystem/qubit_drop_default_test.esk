@@ -1,0 +1,9 @@
+;; Type System Test: dropping a qubit without using it is a compile-time error
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was not consumed
+
+;; "Use exactly once" has two halves. Discarding a linear resource is the other
+;; one, and it is fatal in the default mode for the same reason cloning is.
+(define (bad-drop (q : Qubit))
+  42)

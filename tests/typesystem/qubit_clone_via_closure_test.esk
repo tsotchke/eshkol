@@ -1,0 +1,12 @@
+;; Type System Test: capturing a qubit in a closure and also using it is a clone
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+
+;; A closure that captures a linear resource holds it; using it again outside
+;; the closure duplicates it. Both occurrences are charged, so the pair is
+;; rejected — a qubit cannot be both stashed for later and consumed now.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (bad-capture (q : Qubit))
+  (cons (lambda () (h q)) (h q)))

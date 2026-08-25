@@ -1,0 +1,14 @@
+;; Type System Test: a qubit passed to two different calls is a clone
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+
+;; Every sub-expression of a `begin` runs, so naming the same qubit in two of
+;; them consumes it twice. This shape used to be invisible: type synthesis
+;; visits only the LAST expression of a sequence, so the first (h q) was never
+;; seen and the clone type-checked clean even under --strict-types.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-two-calls (q : Qubit))
+  (begin (h q) (z q)))

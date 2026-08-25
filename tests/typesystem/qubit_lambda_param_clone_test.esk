@@ -1,0 +1,8 @@
+;; Type System Test: a linear LAMBDA parameter is enforced like a define parameter
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+
+;; The guarantee cannot depend on which binder introduced the qubit.
+(define bad-lambda
+  (lambda ((q : Qubit)) (cons q q)))

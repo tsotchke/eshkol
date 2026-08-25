@@ -1,0 +1,25 @@
+;; Type System Test: an unrelated inner binder does not steal the outer qubit's verdict
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; Both of these are correct single-use programs, and both were REJECTED under
+;; --strict-types before linearity became a per-binder analysis: the check ran
+;; over every linear variable alive anywhere in the context, so an inner define
+;; or lambda closing its own scope reported the ENCLOSING function's
+;; not-yet-consumed qubit as unconsumed. The qubit is used once, after the
+;; inner binder, in each case.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (outer-define (q : Qubit)) : Qubit
+  (define (helper x) x)
+  (h q))
+
+(define (outer-lambda (q : Qubit)) : Qubit
+  (begin
+    (lambda (x) x)
+    (h q)))
+(display "inner binders do not leak the outer linear verdict")
+(newline)
