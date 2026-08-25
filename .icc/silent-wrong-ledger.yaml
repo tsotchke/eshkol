@@ -845,7 +845,7 @@ entries:
   - id: SW-14
     bucket: LOUD-LIMITATION
     status: closed
-    closed_at: "PLACEHOLDER_SHA"
+    closed_at: "34ef6833"
     closed_by: "branch feat/vm-region-evacuator — v1.3.5 flagship, Stage-1 VM OALR evacuator"
     disposition: "v1.3.5 flagship: VM OALR Stage-1 evacuator port — LANDED"
     title: "The bytecode VM does not reclaim: with-region is a pass-through there (native reclaims; VM announces that it does not)"
@@ -1021,7 +1021,7 @@ entries:
         a constructor) PIN the region. A pinned region promotes wholesale, i.e.
         degrades to the pre-Stage-1 leak, never to a dangling index.
       measured:
-        at_sha: "PLACEHOLDER_SHA"
+        at_sha: "34ef6833"
         with: "build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
         fixture: >-
           tests/memory/vm_region_flat_rss_test.sh — the shape of
@@ -1030,12 +1030,12 @@ entries:
         flat_sweep:
           - "1000 iterations x 120 conses: 26 MB"
           - "4000 iterations x 120 conses: 26 MB"
-          - "16000 iterations x 120 conses: 28 MB"
-        with_region_16000: "27 MB"
-        evacuator_disabled_16000: "791 MB (ESHKOL_VM_REGION_EVAC=0, same binary, same program)"
+          - "16000 iterations x 120 conses: 26 MB"
+        with_region_16000: "26 MB"
+        evacuator_disabled_16000: "796 MB (ESHKOL_VM_REGION_EVAC=0, same binary, same program)"
         unwrapped_control_16000: "704 MB (`begin` in place of `with-region`)"
         finding: >-
-          16x the iteration count costs 2 MB, not 16x the memory: the curve is
+          16x the iteration count costs nothing measurable: the curve is
           FLAT. Compare the branch-point measurement recorded above, where the
           wrapped and unwrapped runs were the same to within 0.06% because the
           form reclaimed nothing. `with-region` is now the mechanism that

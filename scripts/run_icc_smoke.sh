@@ -545,7 +545,7 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
-probe vm_region_flat_rss 'SW-14 close: (with-region ...) MEASURABLY reclaims on the bytecode VM — flat peak RSS across a swept iteration count (26/26/28 MB at 1000/4000/16000) against 791 MB with the evacuator disabled, same answers either way' \
+probe vm_region_flat_rss 'SW-14 close: (with-region ...) MEASURABLY reclaims on the bytecode VM — flat peak RSS across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, same answers either way' \
     'cd "$REPO_ROOT";
      ## SW-14 close condition. At the branch point this fixture peaked at the
      ## SAME RSS with and without the with-region wrapper (1.503 vs 1.504 GB)

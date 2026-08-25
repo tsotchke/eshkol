@@ -276,8 +276,8 @@ The reclamation itself is measured, never asserted. On
 |---|---|
 | 1 000 | 26 MB |
 | 4 000 | 26 MB |
-| 16 000 | 28 MB |
-| 16 000, evacuator disabled | 791 MB |
+| 16 000 | 26 MB |
+| 16 000, evacuator disabled | 796 MB |
 
 Before the evacuator the same fixture peaked at 1.503 GB *with* the wrapper and
 1.504 GB *without* it — the form was inert. Gated by

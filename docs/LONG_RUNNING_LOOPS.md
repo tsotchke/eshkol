@@ -141,7 +141,7 @@ automatic per-iteration scoping, independent of whether guard is used.
 All of that is the **native engine**. The bytecode VM has no automatic
 per-iteration scoping, so a long-running VM loop must ask: wrapped in an explicit
 `(with-region ...)` it reclaims through the Stage-1 evacuator and stays flat
-(26/26/28 MB across 1 000/4 000/16 000 iterations of the reference fixture);
+(26 MB across 1 000/4 000/16 000 iterations of the reference fixture);
 unwrapped it grows monotonically. If you want flatness without annotating the
 loop, that is `eshkol-run`. See
 [memory model](reference/runtime/memory-model.md#which-engine-reclaims).

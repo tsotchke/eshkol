@@ -24,8 +24,8 @@ Measured on the bytecode VM with the Stage-1 evacuator
 |---|---|
 | 1 000 | 26 MB |
 | 4 000 | 26 MB |
-| 16 000 | 28 MB |
-| 16 000, evacuator disabled (`ESHKOL_VM_REGION_EVAC=0`) | 791 MB |
+| 16 000 | 26 MB |
+| 16 000, evacuator disabled (`ESHKOL_VM_REGION_EVAC=0`) | 796 MB |
 
 Sixteen times the work costs two megabytes: the curve is flat. Before the
 evacuator the same fixture peaked at 1,503,297,536 bytes *with* the

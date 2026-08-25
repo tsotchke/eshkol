@@ -164,7 +164,7 @@ oracles:
           event_names: ["vm_region_flat_rss"]
           event_values: ["PASS"]
         severity: high
-        label: 'SW-14: (with-region ...) measurably reclaims on the bytecode VM — peak RSS flat across a swept iteration count (26/26/28 MB at 1000/4000/16000) against 791 MB with the evacuator disabled, same printed answer either way'
+        label: 'SW-14: (with-region ...) measurably reclaims on the bytecode VM — peak RSS flat across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, same printed answer either way'
         action: ./scripts/run_icc_smoke.sh
 
       - runtime_event:

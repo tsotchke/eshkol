@@ -1881,13 +1881,13 @@ semantics, by different mechanisms. On the <strong>bytecode VM</strong>
 all three spellings evaluate the body identically and return the same
 value — the form is value- and effect-transparent — <strong>and
 reclaim</strong>, through the Stage-1 region evacuator
-(<code>lib/backend/vm_region_evac.c</code>): measured flat at 26/26/28
-MB across 1 000/4 000/16 000 iterations against 791 MB with the
-evacuator disabled. The VM sweeps at arena-block granularity rather than
-copying the escaping subgraph, so an escaping value with an out-of-line
-payload retains a little more there. Outside a region the VM heap still
-grows monotonically, and says so when the growth crosses a heap budget.
-The user-reachable <code>region-open</code> / <code>region-close</code>
+(<code>lib/backend/vm_region_evac.c</code>): measured flat at 26 MB
+across 1 000/4 000/16 000 iterations against 796 MB with the evacuator
+disabled. The VM sweeps at arena-block granularity rather than copying
+the escaping subgraph, so an escaping value with an out-of-line payload
+retains a little more there. Outside a region the VM heap still grows
+monotonically, and says so when the growth crosses a heap budget. The
+user-reachable <code>region-open</code> / <code>region-close</code>
 handles remain bookkeeping-only on the VM (Stage-2). See <a
 href="reference/runtime/memory-model.md#which-engine-reclaims">memory
 model</a>.</p>

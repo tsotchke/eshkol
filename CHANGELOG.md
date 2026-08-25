@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   It now reclaims, and the claim is measured rather than asserted. The same
   fixture, swept by iteration count: **26 MB at 1 000 iterations, 26 MB at
-  4 000, 28 MB at 16 000** — sixteen times the work for two megabytes — against
-  **791 MB** for the identical program on the identical binary with
+  4 000, 26 MB at 16 000** — sixteen times the work for two megabytes — against
+  **796 MB** for the identical program on the identical binary with
   `ESHKOL_VM_REGION_EVAC=0`. Gated by
   `tests/memory/vm_region_flat_rss_test.sh`, which requires the flat curve, the
   on/off separation, *and* the printed answer to be identical either way.

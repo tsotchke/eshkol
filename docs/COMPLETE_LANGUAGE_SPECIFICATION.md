@@ -1897,8 +1897,8 @@ struct arena {
 mechanisms. On the **bytecode VM** all three spellings evaluate the body
 identically and return the same value — the form is value- and
 effect-transparent — **and reclaim**, through the Stage-1 region evacuator
-(`lib/backend/vm_region_evac.c`): measured flat at 26/26/28 MB across
-1 000/4 000/16 000 iterations against 791 MB with the evacuator disabled. The VM
+(`lib/backend/vm_region_evac.c`): measured flat at 26 MB across
+1 000/4 000/16 000 iterations against 796 MB with the evacuator disabled. The VM
 sweeps at arena-block granularity rather than copying the escaping subgraph, so
 an escaping value with an out-of-line payload retains a little more there.
 Outside a region the VM heap still grows monotonically, and says so when the

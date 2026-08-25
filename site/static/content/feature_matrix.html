@@ -3987,9 +3987,9 @@ for ONE undocumented spelling (<code>(with-region (quote name))</code>
 with no other body), not for reclamation: the Stage-1 VM region
 evacuator (<code>lib/backend/vm_region_evac.c</code>, SW-14) brackets
 the body with native 2213/2214 and reclaims measurably — flat peak RSS
-at 26/26/28 MB across 1 000/4 000/16 000 iterations against 791 MB with
-the evacuator disabled. Every documented spelling is value-identical on
-both substrates</td>
+at 26 MB across 1 000/4 000/16 000 iterations against 796 MB with the
+evacuator disabled. Every documented spelling is value-identical on both
+substrates</td>
 </tr>
 <tr>
 <td>Region handles (<code>region-open</code> /
