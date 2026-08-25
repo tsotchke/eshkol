@@ -34,6 +34,14 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out) {
     return 0;
 }
 
+/* The linear-check hook the drivers install on every platform. There is no VM
+ * here to consult it — every ESKB entry point below already refuses — so
+ * accepting and discarding the installation keeps the driver source identical
+ * across platforms instead of scattering #ifdefs through main(). */
+void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn) {
+    (void)fn;
+}
+
 int eshkol_emit_eskb(const char* source, const char* output_path) {
     (void)source;
     (void)output_path;
