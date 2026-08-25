@@ -138,6 +138,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   required context reported as skipped. See
   [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
 
+### Added
+
+- **R7RS 7.1.1 vertical-line symbol syntax: read and write (#462).**
+  `<identifier> -> <vertical line> <symbol element>* <vertical line>` is
+  one of R7RS's three `<identifier>` productions; Eshkol previously
+  implemented only the other two, so `'|weird sym|` lexed as two separate
+  tokens. All four readers (native tokenizer, VM tokenizer, native
+  runtime `read`, VM runtime `read`) now accept the full `<symbol
+  element>` alphabet, including the mnemonic escapes, `\|`, and
+  `\x<hex>;`. The bars request a verbatim spelling (`#!fold-case` does not
+  apply inside them), and `|.|` is an ordinary symbol distinct from the
+  bare `.` dotted-pair delimiter. `write` emits bars only when a name
+  cannot be spelled bare under the R7RS grammar; `display` never bars.
+  Shared predicate/escaper in `inc/eshkol/core/symbol_syntax.h` keeps the
+  native and VM writers byte-identical. New regression:
+  `tests/features/pipe_symbol_test.esk` (51 checks), run on native
+  JIT/AOT/VM as a three-way parity check. See
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+
 ### Documentation
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
@@ -185,7 +204,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its row counts still match `tests/vm_parity/PARITY.tsv` exactly).
   `ROADMAP.md`'s v1.3.5 section and Release Timeline row updated to mark
   the evacuator, H1 fix, and assurance-wave items shipped rather than
-  planned.
+  planned. Documented the #462 vertical-line symbol syntax in
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol),
+  [Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)'s Data Types table, and
+  [FAQ.md](docs/FAQ.md)'s R7RS conformance answer, re-running
+  `tests/features/pipe_symbol_test.esk` myself on native JIT, native AOT,
+  and the bytecode VM (51/51 checks, 0 errors, all three paths agree).
+  Checked #406 (Moonlab pin bump to the real v1.2.0 tag SHA,
+  `e441957b`→`4bf83a6c`) against every doc referencing the Moonlab
+  version: the published label was already "v1.2.0" everywhere and stays
+  "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
+  version Eshkol advertises — so no doc text needed to change.
 
 ## [1.3.4-evolve] - 2026-07-31
 
