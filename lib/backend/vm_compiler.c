@@ -4021,7 +4021,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             compile_expr(c, node->children[3], tail);
             patch(c, jend, OP_JUMP, c->code_len);
         } else {
+            /* One-armed `if`: the false path must still leave a value. Every
+             * consumer of an expression's result assumes exactly one — the
+             * `begin` sequencer, the operand-tracking helpers, and the
+             * top-level driver, all of which emit an unconditional OP_POP.
+             * Falling straight through to the merge point pushed nothing, so
+             * that POP removed a slot the expression never pushed, leaving sp
+             * one below the live top. Nothing faulted: reads go by absolute
+             * slot index, so the damage only surfaced when the next push
+             * overwrote the top-level binding sitting just above sp, silently
+             * replacing a live variable with an unrelated value. */
+            int jend = placeholder(c);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+            chunk_emit(c, OP_VOID, 0);
+            patch(c, jend, OP_JUMP, c->code_len);
         }
         return;
     }

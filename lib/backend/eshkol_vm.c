@@ -960,6 +960,10 @@ static int compile_and_run(const char* source) {
      * Scheme prelude; user definitions start here (R7RS 5.3.1 redefinition
      * may only reassign a location the user program itself created). */
     vm_set_user_locals_base(main_chunk.n_locals);
+    /* STORE/CONTROL boundary: every top-level binding slot established so
+     * far is the store, which a continuation re-entry must not roll back.
+     * See OP_GLOBAL_MARK in vm_core.c and vm_restore_continuation_stack(). */
+    chunk_emit(&main_chunk, OP_GLOBAL_MARK, main_chunk.n_locals);
     src_ptr = source;
 
     /* TWO-PASS COMPILATION:
@@ -1137,6 +1141,7 @@ static int compile_and_run(const char* source) {
                 compile_expr(&main_chunk, expr, 0);
             }
         }
+        chunk_emit(&main_chunk, OP_GLOBAL_MARK, main_chunk.n_locals);
 
         /* Compile non-define expressions until next define group */
         while (expr_i < n_top_exprs && !IS_GROUPABLE_FUNC_DEFINE(top_exprs[expr_i])) {
@@ -1175,6 +1180,7 @@ static int compile_and_run(const char* source) {
                     chunk_emit(&main_chunk, OP_POP, 0);
                 }
             }
+            chunk_emit(&main_chunk, OP_GLOBAL_MARK, main_chunk.n_locals);
             expr_i++;
         }
     }
@@ -1222,7 +1228,8 @@ static int compile_and_run(const char* source) {
         "STRRF","STRLN",
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
-        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL"
+        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
+        "GMARK"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
