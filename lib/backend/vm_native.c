@@ -13982,6 +13982,29 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
+    case 2226: { /* _display2(value, port) -- the `display` counterpart to
+                  * _write2/618. `display` had no 2-argument (explicit port)
+                  * form at all on the VM: the compiler's only `display`
+                  * special case matches exactly 1 argument (OP_PRINT, always
+                  * to current-output-port), so `(display x port)` fell
+                  * through to the arity-1 BUILTINS preamble closure called
+                  * with 2 arguments -- an arity mismatch that silently wrote
+                  * to stdout instead of `port` and left the evaluation stack
+                  * one slot off, corrupting whatever the call's result fed
+                  * into. write_syntax=0 here is the only difference from
+                  * _write2: display never adds quotes/bars. */
+        Value port_value = vm_pop(vm);
+        Value value = vm_pop(vm);
+        VmPort* port = vm_value_as_port(vm, port_value);
+        if (!port || port->dir != VM_PORT_OUTPUT) {
+            fprintf(stderr, "ERROR: display requires an open output port\n");
+            vm->error = 1;
+        } else {
+            vm_write_value_port(vm, value, port, 0);
+        }
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
     case 214: { /* inexact->exact */
         Value a = vm_pop(vm);

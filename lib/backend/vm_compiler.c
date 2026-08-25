@@ -3500,6 +3500,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_VOID, 0);  /* push unspecified return value */
         return;
     }
+    /* (display value port) — the explicit-port form. Without this, `display`
+     * has no 2-argument shape at all: the arity-1 case above only matches
+     * n_children==2, so a 2-argument call fell through to the arity-1
+     * BUILTINS preamble closure invoked with an extra argument -- an arity
+     * mismatch that silently wrote to stdout instead of `port` and left the
+     * evaluation stack one slot off, corrupting anything the call result fed
+     * into. Native 2226 (_display2) is vm_write_value_port() with
+     * write_syntax=0 -- the same routine _write2/618 already uses, just
+     * without quotes/bars -- so both forms share one port-writing
+     * implementation. Operand order matches _write2: value pushed first,
+     * then port, so native pops port then value. */
+    if (is_sym(head, "display") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 2226);
+        return;
+    }
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */
     /* SW-31: integer? is NOT number?. Aliasing it to OP_NUM_P made
      * (integer? 5.5) answer #t and (integer? <bignum>) answer #f. It lowers to
