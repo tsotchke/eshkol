@@ -22897,6 +22897,22 @@ private:
     // ===== CALL/CC — First-class continuations =====
     // Syntax: (call/cc proc) or (call-with-current-continuation proc)
     // Uses setjmp/longjmp: setjmp captures the return point, longjmp invokes the continuation
+    // True when this call/cc's continuation provably cannot outlive the
+    // capturing frame, so no stack image is needed. Requires proc to be a
+    // literal 1-parameter lambda whose body only ever calls the parameter;
+    // any other shape (a named procedure, a variadic lambda, a stored or
+    // returned reference) is treated as escaping.
+    bool callCCContinuationStaysLocal(const eshkol_operations_t* op) {
+        const eshkol_ast_t* proc = op->call_cc_op.proc;
+        if (!proc || proc->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* pop = &proc->operation;
+        if (pop->op != ESHKOL_LAMBDA_OP) return false;
+        if (pop->lambda_op.is_variadic || pop->lambda_op.num_params != 1) return false;
+        const eshkol_ast_t* params = pop->lambda_op.parameters;
+        if (!params || params[0].type != ESHKOL_VAR || !params[0].variable.id) return false;
+        return continuationUseStaysLocal(pop->lambda_op.body, params[0].variable.id);
+    }
+
     Value* codegenCallCC(const eshkol_operations_t* op) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -22958,14 +22974,21 @@ private:
         // the jmp_buf *after* setjmp wrote it, or resuming would jump through
         // a stale buffer. Failure inside the helper is non-fatal and leaves
         // the continuation escape-only, exactly as before.
-        Function* capture_stack_func = module->getFunction("eshkol_continuation_capture_stack");
-        if (!capture_stack_func) {
-            FunctionType* capture_stack_type = FunctionType::get(builder->getVoidTy(),
-                {builder->getPtrTy(), builder->getPtrTy()}, false);
-            capture_stack_func = Function::Create(capture_stack_type, Function::ExternalLinkage,
-                "eshkol_continuation_capture_stack", module.get());
+        //
+        // Skipped entirely when the continuation provably cannot outlive this
+        // frame — the escape/early-return idiom — so that overwhelmingly
+        // common use keeps the zero-overhead setjmp/longjmp path it has
+        // always had. See continuationUseStaysLocal().
+        if (!callCCContinuationStaysLocal(op)) {
+            Function* capture_stack_func = module->getFunction("eshkol_continuation_capture_stack");
+            if (!capture_stack_func) {
+                FunctionType* capture_stack_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy()}, false);
+                capture_stack_func = Function::Create(capture_stack_type, Function::ExternalLinkage,
+                    "eshkol_continuation_capture_stack", module.get());
+            }
+            builder->CreateCall(capture_stack_func, {arena_ptr, state_ptr});
         }
-        builder->CreateCall(capture_stack_func, {arena_ptr, state_ptr});
 
         // Evaluate the procedure argument
         Value* proc_val = codegenAST(op->call_cc_op.proc);
@@ -28617,6 +28640,89 @@ private:
     // bindings. Drives codegenDo's storage-class decision.
     bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ClosureCapture);
+    }
+
+    // ── Escape analysis for a captured continuation ───────────────────────
+    //
+    // Snapshotting the C stack is what makes a continuation survive its
+    // frame's return, but it costs an arena copy proportional to the live
+    // stack at every capture. The overwhelmingly common use of call/cc —
+    // early return / exception-style unwinding, `(call/cc (lambda (k) … (k v)
+    // …))` — never needs it: such a continuation can only be invoked while
+    // proc is running, hence while the capturing frame is still live, so the
+    // plain setjmp/longjmp path is already correct and free. Measured before
+    // this analysis: an escape-only call/cc at depth 200 burned ~270KB of
+    // arena per capture and drove a 3000-iteration loop into the 1GB heap
+    // limit, where it had previously used none.
+    //
+    // Returns true only when EVERY use of `name` is the operator of a direct
+    // call and none appears inside a nested lambda or named let (which could
+    // outlive the frame). Anything this does not model falls through to
+    // astReferencesVar(), so an unrecognised form is treated as escaping. The
+    // safe direction of error is `false`: a spurious false only pays for a
+    // stack copy that was not needed, whereas a spurious true would drop the
+    // image a later re-entry depends on.
+    bool continuationUseStaysLocal(const eshkol_ast_t* ast, const std::string& name) {
+        if (!ast) return true;
+        if (ast->type == ESHKOL_CONS) {
+            return continuationUseStaysLocal(ast->cons_cell.car, name) &&
+                   continuationUseStaysLocal(ast->cons_cell.cdr, name);
+        }
+        // A bare reference hands the continuation to something else.
+        if (ast->type == ESHKOL_VAR) {
+            return !(ast->variable.id && name == ast->variable.id);
+        }
+        if (ast->type != ESHKOL_OP) return true;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                const eshkol_ast_t* f = op->call_op.func;
+                const bool calls_it = f && f->type == ESHKOL_VAR && f->variable.id &&
+                                      name == f->variable.id;
+                if (!calls_it && !continuationUseStaysLocal(f, name)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!continuationUseStaysLocal(&op->call_op.variables[i], name))
+                        return false;
+                }
+                return true;
+            }
+            // Same func + variables[] layout, but no operator exemption: the
+            // head of an `if` is a value, not a callee.
+            case ESHKOL_IF_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP: {
+                if (!continuationUseStaysLocal(op->call_op.func, name)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!continuationUseStaysLocal(&op->call_op.variables[i], name))
+                        return false;
+                }
+                return true;
+            }
+            // A multi-expression lambda body is a sequence, so this is the
+            // shape the common `(lambda (k) … (k v) …)` idiom actually takes.
+            case ESHKOL_SEQUENCE_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (!continuationUseStaysLocal(&op->sequence_op.expressions[i], name))
+                        return false;
+                }
+                return true;
+            case ESHKOL_SET_OP:
+                // (set! g k) reaches the VAR case through the value and fails.
+                return continuationUseStaysLocal(op->set_op.value, name);
+            case ESHKOL_LAMBDA_OP:
+                // Any reference from inside a nested lambda may outlive us.
+                if (paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                     op->lambda_op.is_variadic ? op->lambda_op.rest_param
+                                                               : nullptr,
+                                     name)) {
+                    return true;
+                }
+                return !astReferencesVar(op->lambda_op.body, name);
+            default:
+                return !astReferencesVar(ast, name);
+        }
     }
 
     bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
