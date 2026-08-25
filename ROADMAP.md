@@ -477,6 +477,13 @@ workstreams rather than a single theme:
 deep-walk evacuation on the bytecode VM, poison and flat-RSS validation, so
 `with-region` reclaims on the VM the way it already does on native codegen.
 
+- Interop wave 1: **H1 NumPy capsule-lifetime fix, SHIPPED (#458)** — the
+  Python bindings' zero-copy tensor array now holds a strong reference to
+  its owning `Context` via its NumPy capsule, so the array stays valid past
+  the `Context` object's own lifetime (closed `.icc/silent-wrong-ledger.yaml`
+  SW-44). See [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
+  The separate exactness-across-the-Python-boundary design doc remains a
+  v1.4.0-connection item (implementation, not this fix).
 - AD: SW-05 forward-over-reverse; ESH-0101 (recursion-depth guard coverage
   for top-level `define`d self-recursive functions, maintainer ruling
   2026-08-13 — see KNOWN_ISSUES.md); P6/P11 exact-coefficient and
