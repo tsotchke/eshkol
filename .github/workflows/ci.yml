@@ -7,6 +7,15 @@ on:
     # not spin up the full compile/test/wasm/asan matrix. Research ADRs and
     # documentation live under docs/ and **/*.md; skip CI when a change touches
     # only those. A change that also touches code still runs the full matrix.
+    #
+    # Kept here deliberately (unlike pull_request below): branch protection's
+    # required contexts are read off the SHA that GitHub associates with the
+    # PR, which the pull_request-triggered run always supplies once the
+    # `changes` job exists; nothing here needs to gate a merge. A push run
+    # that never starts because a commit was pure docs (e.g. a docs-only
+    # branch pushed straight to master, or a squash-merge landing on
+    # master/develop) is simply less CI to run, not a missing required
+    # check on anyone's PR.
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -16,13 +25,18 @@ on:
       - 'LICENSE'
   pull_request:
     branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'notes/**'
-      - 'press/**'
-      - '.swarm/**'
-      - 'LICENSE'
+    # NOTE: deliberately NO paths-ignore here (see the `changes` job below).
+    # A trigger-level paths-ignore on `pull_request` means GitHub never
+    # starts this workflow at all for a docs-only PR, so none of its jobs —
+    # including the ones branch protection has marked required — ever
+    # report a status for that PR's head SHA. A required context that never
+    # reports blocks the PR forever; branch protection has no timeout, only
+    # "hasn't reported yet". A context that reports SKIPPED satisfies
+    # branch protection. So the workflow now always starts on
+    # pull_request, and the docs-only decision is pushed down to a fast
+    # `changes` job whose `docs_only` output every heavy job's `if:` reads
+    # — same path list as before, just evaluated after the workflow starts
+    # instead of before.
   schedule:
     # Weekly touch of the Windows LLVM SDK caches so actions/cache's 7-day
     # idle-eviction can never strand a run on the cold download+extract path
@@ -45,6 +59,70 @@ env:
   CUDA_PACKAGE_SERIES: '12-4'
 
 jobs:
+  # Job-level replacement for the old trigger-level `paths-ignore` on
+  # pull_request (see the comment on that trigger above). Computes the exact
+  # same docs-only predicate — same path list, same "any non-matching file
+  # makes it false" semantics — but as a job output every heavy job below can
+  # gate on, so those jobs still get scheduled and can report a SKIPPED
+  # status rather than never starting. Deliberately plain git + bash rather
+  # than a vendored paths-filter action: this repo has no other third-party
+  # filtering action in its supply chain, and the predicate is a single
+  # `git diff --name-only` plus a case match.
+  changes:
+    name: changes
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether this change is docs-only
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            changed_files="$(git diff --name-only "$base...$head")"
+          else
+            before="${{ github.event.before }}"
+            if [[ -z "$before" || "$before" == "0000000000000000000000000000000000000000" ]]; then
+              # First push of a branch, or force-push with no usable
+              # `before`: nothing to diff against, so don't claim docs-only.
+              changed_files="__unknown__"
+            else
+              changed_files="$(git diff --name-only "$before" "${{ github.sha }}")"
+            fi
+          fi
+
+          echo "Changed files:"
+          printf '%s\n' "$changed_files"
+
+          # Exactly the path list the old trigger-level paths-ignore used:
+          #   **/*.md, docs/**, notes/**, press/**, .swarm/**, LICENSE
+          # A case pattern's `*` matches `/` too (that restriction is a
+          # filename-globbing thing, not general shell pattern matching), so
+          # `*.md` here already behaves like `**/*.md` and `docs/*` like
+          # `docs/**`.
+          docs_only=true
+          if [[ -z "$changed_files" ]]; then
+            docs_only=false
+          fi
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            case "$f" in
+              __unknown__) docs_only=false ;;
+              *.md|docs/*|notes/*|press/*|.swarm/*|LICENSE) ;;
+              *) docs_only=false ;;
+            esac
+          done <<< "$changed_files"
+
+          echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+
   # The language-surface manifest is the ground truth the execution-backed
   # coverage floor is measured against, so a stale manifest fails the coverage
   # gate. That gate lives in the quantum lane, which is both advisory and the
@@ -168,7 +246,8 @@ jobs:
   # gate; branch-protection configuration must not add this check as required.
   quantum-macos:
     name: quantum-macos (advisory)
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: macos-14
     continue-on-error: true
     timeout-minutes: 120
@@ -318,9 +397,55 @@ jobs:
           path: ${{ runner.temp }}/eshkol-language-coverage
           if-no-files-found: error
 
+  # ─────────────────────────────────────────────────────────────────────
+  # Stub job that exists ONLY to satisfy branch protection's literal
+  # per-lane required context names on a docs-only PR. This is not
+  # optional decoration: GitHub Actions does NOT expand a matrix job's
+  # `${{ matrix.x }}` name expressions into individual check runs when the
+  # job itself is skipped via a job-level `if:` — a skipped matrix job
+  # instead produces exactly ONE check run, named with the literal,
+  # unresolved string "${{ matrix.name }}" (verified empirically; see the
+  # proof-PR evidence under .worktrees/v135/evidence/ci-wave/). That
+  # unresolved name matches none of branch protection's required contexts,
+  # so without this stub, `linux-x64-xla`, `linux-arm64-xla`,
+  # `linux-x64-cuda`, `linux-arm64-cuda`, `linux-x64-asan-ubsan`,
+  # `windows-arm64-xla`, and `windows-x64-cuda` would each go right back to
+  # never reporting on a docs-only PR — the exact permanent-block failure
+  # this whole change exists to fix. `wasm-execute-diff` needs no such stub
+  # because it isn't matrix-based; its job-level skip already produces a
+  # correctly-named, SKIPPED check run.
+  #
+  # This job's own matrix DOES expand correctly, because it only runs
+  # (job-level `if` true) on docs-only PRs — the opposite condition from
+  # unix-matrix/windows-matrix — so its check runs and theirs are never
+  # produced for the same PR at once, and the real matrix legs below take
+  # over normally the moment a change touches non-doc paths.
+  # ─────────────────────────────────────────────────────────────────────
+  docs-only-required-context-stubs:
+    name: ${{ matrix.name }}
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'true'
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        name:
+          - linux-x64-xla
+          - linux-arm64-xla
+          - linux-x64-cuda
+          - linux-arm64-cuda
+          - linux-x64-asan-ubsan
+          - windows-arm64-xla
+          - windows-x64-cuda
+    steps:
+      - name: Docs-only PR — real lane skipped, this stub satisfies branch protection
+        shell: bash
+        run: |
+          echo "docs-only PR: ${{ matrix.name }} did not run. See the unix-matrix / windows-matrix jobs (reported skipped under an unresolved matrix.name check run) for why. This stub exists solely to give branch protection's required context '${{ matrix.name }}' a status."
+
   unix-matrix:
     name: ${{ matrix.name }}
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -666,7 +791,8 @@ jobs:
   # own curl entirely; a miss here falls back unchanged to that curl.
   prefetch-windows-llvm-archives:
     name: prefetch-windows-llvm-archives (${{ matrix.arch }})
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
     continue-on-error: true
     strategy:
@@ -709,8 +835,8 @@ jobs:
 
   windows-matrix:
     name: ${{ matrix.name }}
-    if: github.event_name != 'schedule'
-    needs: prefetch-windows-llvm-archives
+    needs: [changes, prefetch-windows-llvm-archives]
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
     # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
@@ -1084,7 +1210,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   wasm-execute-diff:
     name: wasm-execute-diff
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
