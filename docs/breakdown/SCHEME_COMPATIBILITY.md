@@ -977,7 +977,9 @@ Compile to WebAssembly with 73 DOM/Canvas/Event API bindings:
 
 ### Semantic Differences
 
-**Memory model:** Eshkol uses arena allocation instead of garbage collection. For most programs this is transparent, but programs that create cyclic data structures may accumulate memory until the arena is reset. Long-running programs with complex object graphs should use explicit arena management.
+**Memory model:** Eshkol uses arena allocation instead of garbage collection. For most programs this is transparent, but programs that create cyclic data structures may accumulate memory until the enclosing region exits. Long-running programs with complex object graphs should scope that work with `with-region` or a `region-open`/`region-close` handle.
+
+The no-GC commitment is scoped to Eshkol's own semantics: Eshkol values are never traced and no Eshkol program pauses for a collection. It does not exclude hosting a garbage-collected guest language, whose heap becomes a region with its own collector inside it. Planned; see [ADR-0011](../design/adr/0011-guest-collector-adapter.md).
 
 **Tail calls:** Properly implemented. Mutual tail recursion, named-let loops, and letrec tail calls all run in O(1) stack space.
 

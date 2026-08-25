@@ -6,6 +6,42 @@ deterministic at region exit. This is a deliberate design choice for real-time,
 financial, and embedded workloads where latency predictability matters — Eshkol
 will never have a GC.
 
+## Scope of the no-GC commitment
+
+The commitment is precise, and the precision is what makes it useful. **It is a
+statement about Eshkol's own semantics.** Eshkol values are never traced, never
+reference-counted behind your back, and never reclaimed by a collector you did
+not invoke. No Eshkol program pauses for a collection, ever.
+
+It is *not* a statement that no collector may run anywhere in an Eshkol process.
+A garbage-collected guest language — Python, Common Lisp — can be **hosted** on
+regions: the guest heap is a region, the region supplies the arena, the byte
+ceiling and the bulk teardown, and the guest's own collector traces the guest's
+own object graph inside it. Eshkol traces nothing; the guest brings its collector
+and pays for it only inside its own region, on a declared budget.
+
+| | Eshkol's own values | A hosted guest's values |
+|---|---|---|
+| Traced by Eshkol | Never | Never |
+| Traced at all | Never | By the guest's collector, inside the guest's region |
+| Reclaimed | At region exit, in bulk | By the guest, whenever the guest decides |
+| Pauses Eshkol code | Never | Never — only the guest pauses |
+| Cycles reclaimed mid-scope | No (see below) | Yes, by the guest |
+
+So the boundary is: **no GC for Eshkol, permanently; guest collectors welcome
+inside their own regions.** Status: hosting is **Planned** — the adapter ABI and
+its falsifier are specified in
+[ADR-0011](../../design/adr/0011-guest-collector-adapter.md), sequenced behind
+the OALR ABI v2 work of [ADR-0001](../../design/adr/0001-oalr-concurrent-resident.md).
+
+Within Eshkol's own semantics one limit follows from the same theorem and is not
+a defect: an unreachable **cycle** allocated inside a region is not reclaimed
+until that region exits. Arbitrary aliasing, arbitrary mutation, and automatic
+cycle reclamation cannot be had together without tracing, reference accounting,
+or an ownership restriction. Eshkol chooses the region bound. Programs that build
+cyclic garbage in a hot loop should scope it with `with-region` or a
+`region-open`/`region-close` handle.
+
 ## Which engine reclaims
 
 **Read this before relying on any reclamation claim on this page.** Eshkol has

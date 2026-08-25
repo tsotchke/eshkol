@@ -23,6 +23,8 @@ Eshkol uses **OALR (Ownership-Aware Lexical Regions)** - a memory management sys
 
 **No garbage collector.** Memory is deterministic and predictable.
 
+Scope: the commitment covers Eshkol's own semantics — Eshkol values are never traced, and no Eshkol program pauses for a collection. Hosting a garbage-collected *guest* language is a separate, Planned capability: a guest heap becomes a region and the guest's own collector runs inside it on a declared budget, with Eshkol tracing nothing. See [ADR-0011](../design/adr/0011-guest-collector-adapter.md).
+
 ---
 
 ## OALR System (Ownership-Aware Lexical Regions)

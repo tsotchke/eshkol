@@ -194,6 +194,10 @@ right one. The change that made the rest findable is listed first.
 **Arena memory (OALR) instead of garbage collection**
 Deterministic O(1) allocation with zero GC pauses. Arena regions are lexically scoped and freed automatically on scope exit. This is a deliberate architectural choice for real-time, financial, and embedded workloads where latency predictability matters. Eshkol will never have a garbage collector.
 
+The commitment is scoped to Eshkol's own semantics: Eshkol values are never traced and no Eshkol program pauses for a collection. It does not exclude *hosting* a garbage-collected guest language — a Python or Common Lisp heap can live in a region with its own collector running inside it, on a declared byte budget, with Eshkol tracing nothing. That is a Planned capability; see [ADR-0011](design/adr/0011-guest-collector-adapter.md) and the [memory model](reference/runtime/memory-model.md#scope-of-the-no-gc-commitment).
+
+One consequence within Eshkol's own semantics: an unreachable **cycle** allocated inside a region is not reclaimed until that region exits. This follows from the same theorem rather than from an implementation gap — aliasing, mutation, and automatic cycle reclamation cannot all be had without tracing, reference accounting, or an ownership restriction. Scope cyclic garbage with `with-region` or a `region-open`/`region-close` handle.
+
 **Gradual typing (warnings, not errors)**
 Type annotations are optional and informational. This preserves Scheme's exploratory programming model. Programs compile and run regardless of type warnings. This is the intended behavior — Eshkol is a dynamically-typed language with optional static analysis, not a statically-typed language with escape hatches.
 

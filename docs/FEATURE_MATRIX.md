@@ -8,7 +8,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 the declared language surface is **1,106** constructs. This is not a new
 number competing with the ones previously cited elsewhere (1,091 here and in
 `docs/COMPILER_ROADMAP.md`; 1,078 in `.icc/architecture-model.yaml`; 1,058 in
-ADR-0010 §2.1; "550+ built-in functions"/"39 special forms" in `README.md`)
+ADR-0011 §2.1; "550+ built-in functions"/"39 special forms" in `README.md`)
 — it is the same manifest, `tests/coverage/language_surface.json` (1,040
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
@@ -254,8 +254,9 @@ number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 | Escape analysis | Yes | Compile-time | Region-based with conservative heap fallback |
 | Reference counting | Planned | Runtime | Planned (`shared`, `weak-ref`) |
 | **Garbage Collection** |
-| Mark-sweep GC | No | - | By design (arena-based instead) |
-| Generational GC | No | - | By design |
+| Mark-sweep GC for Eshkol values | No | - | By design, permanently (arena-based instead) |
+| Generational GC for Eshkol values | No | - | By design, permanently |
+| Hosted guest collector (Python / CL heap in a region) | Planned | Runtime | Guest traces its own heap inside its own region on a declared budget; Eshkol traces nothing ([ADR-0011](design/adr/0011-guest-collector-adapter.md)) |
 
 ---
 
