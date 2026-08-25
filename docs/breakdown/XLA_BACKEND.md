@@ -93,8 +93,9 @@ or JIT contexts.
 
 ### 3.1 Core Struct
 
-Tensors in the XLA runtime are represented by `eshkol_tensor_t`
-(`lib/backend/xla/xla_runtime.cpp`):
+Tensors in the XLA runtime are represented by the canonical `eshkol_tensor_t`
+defined in `lib/core/arena_memory.h` and included directly by
+`lib/backend/xla/xla_runtime.cpp` (it does not declare its own copy):
 
 ```c
 typedef struct eshkol_tensor {
@@ -102,6 +103,7 @@ typedef struct eshkol_tensor {
     uint64_t  num_dimensions; // idx 1: rank (0 = scalar, 1 = 1-D, 2 = matrix, ...)
     int64_t*  elements;       // idx 2: doubles stored as int64 bit patterns
     uint64_t  total_elements; // idx 3: product of all dimensions
+    uint64_t  dtype;          // idx 4: eshkol_tensor_dtype_t (0 = f64, the default)
 } eshkol_tensor_t;
 ```
 
@@ -109,6 +111,14 @@ The struct is laid out contiguously in arena memory immediately after an 8-byte 
 (which stores `HEAP_SUBTYPE_TENSOR`). The object header sits at `ptr - 8` relative to the
 tensor struct pointer; this is how `vector-for-each` and similar operations distinguish tensors
 from heterogeneous vectors at runtime.
+
+Every `eshkol_xla_*` entry point in `xla_runtime.cpp` operates purely on `double` data (via the
+BLAS/SIMD/GPU cascade) and explicitly sets `result->dtype = ESHKOL_TENSOR_DTYPE_F64` on every
+tensor it allocates, rather than relying only on `arena_allocate_tensor_full`'s own default.
+`xla_runtime.cpp` carries a `static_assert(sizeof(eshkol_tensor_t) == 40, ...)` immediately after
+including `arena_memory.h`, so a future divergent re-typedef of `struct eshkol_tensor` in that
+file — the historical bug this note used to describe — fails the build instead of silently
+truncating tensors.
 
 ### 3.2 int64 Bit Pattern Encoding
 
@@ -127,19 +137,21 @@ elements can be compared and hashed as integers when needed.
 
 ### 3.3 Arena Allocation
 
-All tensors are allocated from the Eshkol arena via `arena_allocate_tensor_full`:
+All tensors are allocated from the Eshkol arena via `arena_allocate_tensor_full`
+(`lib/core/arena_memory.h` / `lib/core/runtime_tensor_alloc.cpp`), called from `xla_runtime.cpp`
+with the `void* arena` XLA entry points cast to `arena_t*`:
 
 ```c
-extern "C" eshkol_tensor_t* arena_allocate_tensor_full(
-    void* arena, uint64_t num_dims, uint64_t total_elements);
-// lib/backend/xla/xla_runtime.cpp
+eshkol_tensor_t* arena_allocate_tensor_full(
+    arena_t* arena, uint64_t num_dims, uint64_t total_elements);
+// lib/core/arena_memory.h
 ```
 
 This function allocates a single contiguous block containing:
 
 ```
 [8-byte header: HEAP_SUBTYPE_TENSOR tag]
-[eshkol_tensor_t struct: 32 bytes]
+[eshkol_tensor_t struct: 40 bytes]
 [dimensions array: num_dims * 8 bytes]
 [elements array: total_elements * 8 bytes]
 ```

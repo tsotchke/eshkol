@@ -38,23 +38,47 @@ static void ensure_gpu_initialized() {
     });
 }
 
-// Arena allocation functions
-extern "C" void* arena_allocate_aligned(void* arena, size_t size, size_t alignment);
+// Canonical tensor type + arena allocator.
+//
+// This file used to carry its own forward-declared copy of `struct
+// eshkol_tensor` (4 fields, 32 bytes) instead of including the canonical
+// definition in arena_memory.h (5 fields, 40 bytes — dtype was added at idx 4
+// after this file was written and never updated to match). That is an ODR
+// violation: the same struct tag with two different definitions in the same
+// program. It stayed latent here only because every use in this file goes
+// through pointers returned by arena_allocate_tensor_full — whose real,
+// canonical 40-byte layout is what actually gets allocated — with no
+// by-value copy or local sizeof(eshkol_tensor_t)/eshkol_tensor_t-on-the-stack
+// use in this file. It also meant `->dtype` could never be set here, so
+// every XLA result silently depended on arena_allocate_tensor_full's default
+// rather than this file asserting its own dtype.
+//
+// There is no header-cycle or C/C++ linkage reason to avoid the canonical
+// header: it is extern "C"-wrapped throughout and already included from
+// other lib/backend/*.cpp translation units (collection_codegen.cpp,
+// llvm_codegen.cpp, parallel_codegen.cpp, tensor_backward.cpp,
+// tensor_conv_kernel.cpp, thread_pool.cpp). Including it here instead of
+// re-declaring removes the divergent copy outright.
+#include "../../core/arena_memory.h"
 
-// Forward-declare the canonical tensor type and allocator from arena_memory.h
-// struct eshkol_tensor { uint64_t* dimensions, uint64_t num_dimensions,
-//                        int64_t* elements, uint64_t total_elements }
-// arena_allocate_tensor_full allocates tensor struct WITH object header
-// (HEAP_SUBTYPE_TENSOR at ptr-8) + dimensions array + elements array
-typedef struct eshkol_tensor {
-    uint64_t* dimensions;     // idx 0: dimension sizes array
-    uint64_t  num_dimensions; // idx 1: rank
-    int64_t*  elements;       // idx 2: doubles as int64 bit patterns
-    uint64_t  total_elements; // idx 3: product of all dimensions
-} eshkol_tensor_t;
+// Compile-time guard: if this TU's view of eshkol_tensor_t is ever no longer
+// the canonical (dtype-bearing) one — e.g. a local re-typedef creeps back
+// in, or arena_memory.h's own layout assert is bypassed for this TU — fail
+// the build here rather than silently truncating tensors allocated by
+// arena_allocate_tensor_full.
+static_assert(sizeof(eshkol_tensor_t) == 40,
+    "xla_runtime.cpp must use the canonical, dtype-bearing eshkol_tensor_t "
+    "from arena_memory.h (4 core fields + dtype) — do not reintroduce a "
+    "local re-typedef of struct eshkol_tensor");
 
-extern "C" eshkol_tensor_t* arena_allocate_tensor_full(
-    void* arena, uint64_t num_dims, uint64_t total_elements);
+// All eshkol_xla_* entry points below dispatch to the BLAS/SIMD/GPU f64
+// kernels above and only ever read/write `double` data — none of them
+// produce or consume reduced-precision (f32/f16/bf16) or dual-number tensor
+// storage. So every tensor allocated or mutated in this file is logically
+// f64 (ESHKOL_TENSOR_DTYPE_F64). arena_allocate_tensor_full's header
+// allocator already defaults a fresh tensor's dtype to F64, but each
+// function below sets `result->dtype` explicitly too, so this file's
+// correctness does not depend on that default.
 
 // XLA matmul runtime function - called by generated LLVM IR
 // Performs matrix multiplication using the existing BLAS/SIMD backend
@@ -91,8 +115,9 @@ extern "C" void* eshkol_xla_matmul(
 
     // Allocate result tensor with object header (HEAP_SUBTYPE_TENSOR)
     // arena_allocate_tensor_full gives us: header + tensor struct + dims + elements
-    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, 2, M * N);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), 2, M * N);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
 
     // Set dimension sizes
     result->dimensions[0] = M;
@@ -145,8 +170,9 @@ extern "C" void* eshkol_xla_elementwise(
     if (total_elements <= 0 || !a_data) return nullptr;
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
-        arena, static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
+        reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
 
     // Copy shape
     for (int64_t i = 0; i < rank; i++) {
@@ -249,8 +275,9 @@ extern "C" void* eshkol_xla_reduce(
 
     if (axis == -1) {
         // Reduce all — result is a scalar tensor (rank 1, 1 element)
-        eshkol_tensor_t* result = arena_allocate_tensor_full(arena, 1, 1);
+        eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), 1, 1);
         if (!result) return nullptr;
+        result->dtype = ESHKOL_TENSOR_DTYPE_F64;
         result->dimensions[0] = 1;
 
         double* out = reinterpret_cast<double*>(result->elements);
@@ -325,8 +352,9 @@ extern "C" void* eshkol_xla_reduce(
     }
     if (j == 0) { out_dims[0] = 1; out_total = 1; }
 
-    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, out_rank, out_total);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), out_rank, out_total);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (uint64_t i = 0; i < out_rank; i++) result->dimensions[i] = out_dims[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -418,8 +446,9 @@ extern "C" void* eshkol_xla_softmax(
 
     // Allocate result tensor with same shape
     uint64_t out_rank = static_cast<uint64_t>(rank);
-    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, out_rank, static_cast<uint64_t>(total_elements));
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), out_rank, static_cast<uint64_t>(total_elements));
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < rank; i++) result->dimensions[i] = shape[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -530,9 +559,10 @@ extern "C" void* eshkol_xla_normalize(
     if (axis < 0 || axis >= rank) return nullptr;
 
     // Allocate result tensor with same shape
-    eshkol_tensor_t* result = arena_allocate_tensor_full(arena,
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena),
         static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < rank; i++) result->dimensions[i] = shape[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -605,8 +635,9 @@ extern "C" void* eshkol_xla_argreduce(
 
     if (axis == -1) {
         // Argreduce all — return scalar tensor with flattened index as double
-        eshkol_tensor_t* result = arena_allocate_tensor_full(arena, 1, 1);
+        eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), 1, 1);
         if (!result) return nullptr;
+        result->dtype = ESHKOL_TENSOR_DTYPE_F64;
         result->dimensions[0] = 1;
 
         int64_t best_idx = 0;
@@ -638,8 +669,9 @@ extern "C" void* eshkol_xla_argreduce(
     }
     if (j == 0) { out_dims[0] = 1; out_total = 1; }
 
-    eshkol_tensor_t* result = arena_allocate_tensor_full(arena, out_rank, out_total);
+    eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), out_rank, out_total);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (uint64_t i = 0; i < out_rank; i++) result->dimensions[i] = out_dims[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -689,8 +721,9 @@ extern "C" void* eshkol_xla_reduce_gradient(
     if (!grad_data || !input_data || total_input <= 0) return nullptr;
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
-        arena, static_cast<uint64_t>(input_rank), static_cast<uint64_t>(total_input));
+        reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(input_rank), static_cast<uint64_t>(total_input));
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < input_rank; i++) {
         result->dimensions[i] = input_shape[i];
     }
@@ -827,8 +860,9 @@ extern "C" void* eshkol_xla_transpose(
     }
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
-        arena, static_cast<uint64_t>(rank), total);
+        reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(rank), total);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < rank; i++) result->dimensions[i] = out_shape[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -924,8 +958,9 @@ extern "C" void* eshkol_xla_broadcast(
     for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
-        arena, static_cast<uint64_t>(tgt_rank), total);
+        reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(tgt_rank), total);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < tgt_rank; i++) result->dimensions[i] = tgt_shape[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
@@ -994,8 +1029,9 @@ extern "C" void* eshkol_xla_slice(
     }
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
-        arena, static_cast<uint64_t>(rank), total);
+        reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(rank), total);
     if (!result) return nullptr;
+    result->dtype = ESHKOL_TENSOR_DTYPE_F64;
     for (int64_t i = 0; i < rank; i++) result->dimensions[i] = out_shape[i];
 
     double* out = reinterpret_cast<double*>(result->elements);
