@@ -1,0 +1,187 @@
+;; Standalone VM closure-upvalue-capacity regression (SW-45).
+;;
+;; WHAT BROKE. A procedure's own closure captures one upvalue for every
+;; DISTINCT name it references that lives in an enclosing scope — and that
+;; includes an ordinary call to another top-level `define`d procedure, not
+;; just a variable read: `(make-fact ...)`, `(length x)`, `(string-append
+;; ...)` are each resolved as a free-variable reference to that procedure's
+;; own top-level binding, exactly like any other name. So a procedure calling
+;; N distinct top-level procedures needs N upvalues to relay them.
+;;
+;; The compiler capped that count at 32 (MAX_UPVALUES, vm_parser.c) and
+;; enforced it. The runtime closure representation's `upvalues`/`open_slots`
+;; arrays (vm_core.c's HeapObject.closure) were fixed at 16 — HALF the
+;; compiler's limit, and nothing kept the two in sync. A closure needing 17
+;; to 32 upvalues compiled cleanly and then, at OP_CLOSURE (vm_run.c), had
+;; its count silently clamped to 16: the runtime popped only 16 of the >16
+;; values the compiler had pushed to feed it, stranding the rest on the
+;; operand stack. No error, exit 0 — but every stack-slot offset the compiler
+;; had computed for the REST OF THE PROGRAM was now off by the leaked count,
+;; so the very next top-level `define` read back whatever stray value the
+;; leak left in its slot instead of its own closure, and calling it failed
+;; with "calling non-function". This is how it was found: a VM evacuator
+;; fixture with one procedure carrying ~20 constructor calls (each a
+;; distinct top-level procedure) corrupted the `define` compiled right after
+;; it (see tests/memory/vm_region_evac_subtype_coverage_test.esk on
+;; feat/vm-region-evacuator, whose header documents the same defect and why
+;; that fixture is split across two procedures as a workaround).
+;;
+;; THE FIX. inc/eshkol/backend/vm_limits.h now defines
+;; ESHKOL_VM_MAX_CLOSURE_UPVALUES as the single source of truth for BOTH the
+;; compiler's cap (vm_parser.c's MAX_UPVALUES) and the runtime array capacity
+;; (vm_core.c), so they cannot diverge again. OP_CLOSURE (vm_run.c, both the
+;; computed-goto and switch dispatch loops) no longer silently clamps — an
+;; encoded upvalue count exceeding the shared capacity is now a fatal runtime
+;; error (only reachable via a corrupted or build-mismatched .eskb, since the
+;; compiler enforces the same bound). And the compiler's own capacity check
+;; (vm_compiler.c, both the read and `set!` upvalue-resolution paths) now
+;; calls vm_compile_error() and refuses to run the program when a single
+;; lexical scope needs more than the shared limit, instead of silently
+;; leaving the missing capture's index at -1.
+;;
+;; THIS FILE pins three points: just past the OLD broken threshold (17, which
+;; used to corrupt everything compiled after it), the full NEW capacity (32,
+;; proving there is real headroom rather than a bare pass at the boundary),
+;; and the ORIGINAL discovery shape (a procedure built from `vector-set!`
+;; constructor calls, matching the evacuator fixture almost exactly). Each
+;; case is followed immediately by another top-level `define` — the binding
+;; the defect used to corrupt — and checks that the SECOND define reads back
+;; as its own callable, not a stray leaked value.
+;;
+;; A negative companion (a scope needing 33 upvalues, one past the new shared
+;; capacity, must now fail the compile LOUDLY rather than corrupt anything)
+;; lives in tests/closures/closure_upvalue_capacity_overflow_test.esk /
+;; .sh, gated separately because "refuses to compile" is the PASSING outcome
+;; there and does not fit this suite's convention of a clean, error-free run.
+
+;; ── Case A: minimal — 17 distinct top-level calls (old capacity was 16) ────
+(define (a-helper0 x) (+ x 0))
+(define (a-helper1 x) (+ x 1))
+(define (a-helper2 x) (+ x 2))
+(define (a-helper3 x) (+ x 3))
+(define (a-helper4 x) (+ x 4))
+(define (a-helper5 x) (+ x 5))
+(define (a-helper6 x) (+ x 6))
+(define (a-helper7 x) (+ x 7))
+(define (a-helper8 x) (+ x 8))
+(define (a-helper9 x) (+ x 9))
+(define (a-helper10 x) (+ x 10))
+(define (a-helper11 x) (+ x 11))
+(define (a-helper12 x) (+ x 12))
+(define (a-helper13 x) (+ x 13))
+(define (a-helper14 x) (+ x 14))
+(define (a-helper15 x) (+ x 15))
+(define (a-helper16 x) (+ x 16))
+(define (a-big i)
+  (+ i (a-helper0 i) (a-helper1 i) (a-helper2 i) (a-helper3 i) (a-helper4 i)
+     (a-helper5 i) (a-helper6 i) (a-helper7 i) (a-helper8 i) (a-helper9 i)
+     (a-helper10 i) (a-helper11 i) (a-helper12 i) (a-helper13 i)
+     (a-helper14 i) (a-helper15 i) (a-helper16 i)))
+;; The define this defect used to corrupt.
+(define (a-probe x) (+ x 1))
+
+(display (if (and (= (a-big 0) 136) (= (a-probe 41) 42)) "PASS" "FAIL"))
+(display ": 17-upvalue procedure (one past the old 16-slot capacity) leaves the next define intact")
+(newline)
+
+;; ── Case B: margin — the full new capacity, 32 distinct top-level calls ───
+(define (b-helper0 x) (+ x 0))
+(define (b-helper1 x) (+ x 1))
+(define (b-helper2 x) (+ x 2))
+(define (b-helper3 x) (+ x 3))
+(define (b-helper4 x) (+ x 4))
+(define (b-helper5 x) (+ x 5))
+(define (b-helper6 x) (+ x 6))
+(define (b-helper7 x) (+ x 7))
+(define (b-helper8 x) (+ x 8))
+(define (b-helper9 x) (+ x 9))
+(define (b-helper10 x) (+ x 10))
+(define (b-helper11 x) (+ x 11))
+(define (b-helper12 x) (+ x 12))
+(define (b-helper13 x) (+ x 13))
+(define (b-helper14 x) (+ x 14))
+(define (b-helper15 x) (+ x 15))
+(define (b-helper16 x) (+ x 16))
+(define (b-helper17 x) (+ x 17))
+(define (b-helper18 x) (+ x 18))
+(define (b-helper19 x) (+ x 19))
+(define (b-helper20 x) (+ x 20))
+(define (b-helper21 x) (+ x 21))
+(define (b-helper22 x) (+ x 22))
+(define (b-helper23 x) (+ x 23))
+(define (b-helper24 x) (+ x 24))
+(define (b-helper25 x) (+ x 25))
+(define (b-helper26 x) (+ x 26))
+(define (b-helper27 x) (+ x 27))
+(define (b-helper28 x) (+ x 28))
+(define (b-helper29 x) (+ x 29))
+(define (b-helper30 x) (+ x 30))
+(define (b-helper31 x) (+ x 31))
+(define (b-big i)
+  (+ i (b-helper0 i) (b-helper1 i) (b-helper2 i) (b-helper3 i) (b-helper4 i)
+     (b-helper5 i) (b-helper6 i) (b-helper7 i) (b-helper8 i) (b-helper9 i)
+     (b-helper10 i) (b-helper11 i) (b-helper12 i) (b-helper13 i)
+     (b-helper14 i) (b-helper15 i) (b-helper16 i) (b-helper17 i)
+     (b-helper18 i) (b-helper19 i) (b-helper20 i) (b-helper21 i)
+     (b-helper22 i) (b-helper23 i) (b-helper24 i) (b-helper25 i)
+     (b-helper26 i) (b-helper27 i) (b-helper28 i) (b-helper29 i)
+     (b-helper30 i) (b-helper31 i)))
+;; The define this defect used to corrupt.
+(define (b-probe x) (+ x 1))
+
+(display (if (and (= (b-big 0) 496) (= (b-probe 41) 42)) "PASS" "FAIL"))
+(display ": 32-upvalue procedure (the full new shared capacity) leaves the next define intact")
+(newline)
+
+;; ── Case C: original discovery shape — vector-set! constructor calls ──────
+;; Mirrors the evacuator fixture almost exactly: one procedure whose body is
+;; ~20 `vector-set!` calls, each constructing a value via a DIFFERENT
+;; top-level procedure (each one more distinct upvalue to relay).
+(define c-slots (make-vector 20 0))
+(define (c-big i)
+  (begin
+    (vector-set! c-slots 0 (list i (car (make-list 1 i))))
+    (vector-set! c-slots 1 (let ((n i)) (lambda (x) (+ x n))))
+    (vector-set! c-slots 2 (string-append "s" (number->string i)))
+    (vector-set! c-slots 3 (string->symbol (string-append "sym" (number->string i))))
+    (vector-set! c-slots 4 (vector i i "v"))
+    (vector-set! c-slots 5 (/ (+ i 1) 7))
+    (vector-set! c-slots 6 (+ (expt 2 100) i))
+    (vector-set! c-slots 7 (/ (+ (expt 2 100) i) 3))
+    (vector-set! c-slots 8 (make-rectangular (+ i 1) 2))
+    (vector-set! c-slots 9 (let ((b (make-bytevector 4 0)))
+                             (bytevector-u8-set! b 0 (modulo i 251))
+                             b))
+    (vector-set! c-slots 10 (delay (+ i 1)))
+    (vector-set! c-slots 11 (let ((h (make-hash-table)))
+                              (hash-set! h 7 (+ i 100))
+                              h))
+    (vector-set! c-slots 12 (make-parameter (+ i 1000)))
+    (vector-set! c-slots 13 (call-with-values
+                             (lambda () (values i i))
+                             (lambda (p q) (list p q))))
+    (vector-set! c-slots 14 (make-fact 'r i (+ i 1)))
+    (vector-set! c-slots 15 (let ((kb (make-kb)))
+                              (kb-assert! kb (make-fact 'r i (+ i 1)))
+                              kb))
+    (vector-set! c-slots 16 (let ((ws (make-workspace 4 2)))
+                              (ws-register! ws "m" (lambda (x) (cons 1.0 x)))
+                              ws))
+    (vector-set! c-slots 17 (let ((fg (make-factor-graph 3 #(2 2 2))))
+                              (fg-add-factor! fg #(0 1) #(0.1 0.2 0.3 0.4))
+                              fg))
+    (vector-set! c-slots 18 (make-substitution))
+    (vector-set! c-slots 19 (tensor (+ i 5) 2 3 4))
+    0))
+(define c-r (c-big 7))
+;; The define this defect used to corrupt.
+(define (c-probe x) (+ x 1))
+
+(display (if (and (= c-r 0)
+                   (fact? (vector-ref c-slots 14))
+                   (workspace? (vector-ref c-slots 16))
+                   (tensor? (vector-ref c-slots 19))
+                   (= (c-probe 41) 42))
+             "PASS" "FAIL"))
+(display ": 20 vector-set! constructor calls (original discovery shape) leaves the next define intact")
+(newline)

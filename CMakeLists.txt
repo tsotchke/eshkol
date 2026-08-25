@@ -4043,6 +4043,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# SW-45 gate: the bytecode VM's per-scope closure-upvalue capacity
+# (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h) is enforced
+# consistently by both the compiler and the runtime — a procedure needing up
+# to the shared capacity runs correctly (and does not corrupt the top-level
+# `define` compiled right after it, which is what this defect used to do
+# silently), and one past the capacity fails the compile loudly instead.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh")
+    if(TARGET eshkol-vm-standalone-test)
+        set(ESHKOL_UV_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_UV_GATE_VM "none")
+    endif()
+    add_test(NAME closure_upvalue_capacity_overflow_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/closure_upvalue_capacity_overflow_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_UV_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/closure-upvalue-capacity-gate")
+    set_tests_properties(closure_upvalue_capacity_overflow_gate PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: closure upvalue capacity enforced"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)

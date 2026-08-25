@@ -3027,6 +3027,142 @@ entries:
       double*-demotion / exactness-across-the-FFI-boundary issue is an explicitly
       different, still-open v1.4.0 lane and is not touched here.
 
+  - id: SW-45
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/vm-large-proc-define"
+    closed_by: "branch fix/vm-large-proc-define"
+    note: >-
+      SW-44 was reserved by PR #458 (pybind capsule-lifetime fix) at the time
+      this entry was first filed on the pre-#458 base; it was renumbered to
+      SW-45 then, and confirmed still the next free id after rebasing onto
+      origin/master with #458 merged and SW-44 present (verified via `grep -o
+      'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml | sort -V | uniq -d`
+      returning empty).
+    title: "A VM procedure referencing more than 16 distinct top-level procedures silently corrupts the next top-level define"
+    repro: >-
+      A single bytecode-VM procedure that calls 17 or more DISTINCT other
+      top-level procedures (each such call resolves as a free-variable
+      reference through the same upvalue-capture machinery as any other
+      captured name, so the procedure's own closure must relay one upvalue
+      per distinct name) compiled and ran fine — the corruption showed up in
+      the TOP-LEVEL DEFINE COMPILED RIGHT AFTER IT. Minimal form: 17
+      `(define (helperK x) ...)` procedures, one `(define (big i) (+ i
+      (helper0 i) ... (helper16 i)))`, then `(define (probe x) (+ x 1))`;
+      calling `(probe 41)` failed. Discovered via
+      tests/memory/vm_region_evac_subtype_coverage_test.esk on
+      feat/vm-region-evacuator, whose phase-2 fixture originally called ~20
+      distinct constructor procedures (make-fact, make-kb, make-workspace,
+      tensor, ...) from one procedure; its header documents the same defect
+      and the two-procedure split used as a workaround, which this fix makes
+      unnecessary (verified: tests/vm/closure_upvalue_capacity_surface_regression.esk's
+      case C re-merges that exact shape into one procedure and passes).
+    observed: >-
+      Calling the procedure defined immediately after the big one raised
+      "ERROR: calling non-function at pc=... argc=... type=0" (VAL_NIL in the
+      minimal repro; a stray leaked upvalue Value in general — the original
+      report's "reads back as an integer" is a different manifestation of the
+      identical leak: which stray operand-stack value lands in the corrupted
+      slot depends on what else was on the stack at the time). Exit path was
+      always through a hard runtime error in every reproduction attempted, but
+      the value corruption itself carried NO diagnostic and would have exited
+      0 (a `define` bound to a non-closure value only fails when something
+      tries to CALL it; a define whose corrupted value happens to go unused
+      would silently carry the wrong value with exit 0). Preceded by "UPVALUE
+      INDEX OUT OF BOUNDS" on stderr from an unrelated GET_UPVALUE access,
+      itself a symptom of the same stack desync.
+    correct: >-
+      The procedure compiled right after a large procedure must always read
+      back as its own closure, regardless of how many distinct top-level
+      procedures the large procedure calls, up to the documented capacity;
+      beyond that capacity the compiler must refuse to compile at all rather
+      than emit a program that runs with a missing capture.
+    root_cause: >-
+      Two independent limits on the same quantity, never kept in sync. The
+      compiler's per-scope upvalue cap (MAX_UPVALUES, lib/backend/vm_parser.c)
+      was 32, enforced when registering a new upvalue in the free-variable
+      resolution walk (lib/backend/vm_compiler.c, both the plain-reference
+      path in compile_expr_impl and the compile_form_set_bang path). The
+      RUNTIME closure representation (HeapObject.closure.upvalues[16] /
+      open_slots[16] in lib/backend/vm_core.c) was fixed at HALF that, 16, and
+      nothing enforced parity between the two. A closure needing 17-32
+      upvalues compiled cleanly under the 32 cap: the compiler emitted exactly
+      that many upvalue-capture push instructions (OP_GET_LOCAL/OP_GET_UPVALUE)
+      followed by one OP_CLOSURE encoding the true count in its operand. At
+      runtime, OP_CLOSURE (lib/backend/vm_run.c, both the computed-goto
+      dispatch's lbl_CLOSURE and the switch dispatch's case OP_CLOSURE)
+      silently clamped that count to 16 (`if (n_upvalues > 16) n_upvalues =
+      16;`) and then only popped the CLAMPED count of values off the operand
+      stack (`for (int i = n_upvalues - 1; i >= 0; i--) { ...upvalues[i] =
+      vm_pop(vm); }`) — leaving the excess (count - 16) values the compiler
+      had already pushed permanently stranded on the stack. Every stack-slot
+      offset the compiler had computed at compile time for the rest of the
+      program (every subsequent top-level define's binding slot, every local
+      variable's frame offset) assumed those values would be consumed; from
+      that point on the runtime stack held (count - 16) more live values than
+      the compiler's bookkeeping expected, so the next top-level `define`'s
+      OP_SET_LOCAL/local-slot bookkeeping landed on a slot that actually held
+      one of the stranded values instead of the newly constructed closure.
+    fix: >-
+      inc/eshkol/backend/vm_limits.h now defines
+      ESHKOL_VM_MAX_CLOSURE_UPVALUES=32 as the single shared constant: it is
+      aliased to MAX_UPVALUES for the compiler (lib/backend/vm_parser.c) and
+      used directly to size HeapObject.closure.upvalues[]/open_slots[] in
+      lib/backend/vm_core.c, so the two limits cannot diverge again (a
+      `#error` guards it against ever exceeding the CLOSURE instruction's
+      8-bit upvalue-count operand field). lib/backend/vm_run.c's two
+      OP_CLOSURE handlers no longer clamp: if the encoded count ever exceeds
+      the shared capacity (only reachable via a corrupted or
+      build-mismatched .eskb, since the compiler now enforces the identical
+      bound) they report a fatal runtime error and refuse to run rather than
+      silently popping fewer values than were pushed. lib/backend/vm_native.c's
+      upvalue-closing loop (native 252, letrec-style leaked-closure handling)
+      had the same hardcoded 16 and is fixed the same way. Symmetrically,
+      lib/backend/vm_compiler.c's two upvalue-registration sites (the
+      plain-reference read path and the `set!` path) now call
+      vm_compile_error() and fail the whole compilation — via the existing
+      fail-closed g_vm_compile_failed flag both compile drivers already
+      checked (eshkol_vm.c's JIT-run and ESKB-emit paths) — when a scope
+      would need MORE than the shared capacity, instead of leaving that
+      upvalue's index at -1 and continuing.
+    evidence: >-
+      tests/vm/closure_upvalue_capacity_surface_regression.esk (wired into
+      scripts/run_vm_surface_tests.sh's existing *_surface_regression.esk
+      glob, no script change needed): case A pins the historical minimum (17,
+      one past the old 16-slot capacity), case B pins the full new capacity
+      (32) as a margin so the fix is not merely correct at the boundary, and
+      case C re-merges the original evacuator-fixture shape (20 distinct
+      `vector-set!` constructor calls in one procedure) into a single
+      procedure and checks the define compiled right after it. All three
+      check BOTH the big procedure's own return value and that the following
+      define is callable and correct.
+      tests/closures/closure_upvalue_capacity_ok_test.esk (32, must run
+      correctly) and closure_upvalue_capacity_overflow_test.esk (33, must
+      fail the compile loudly) are exercised by
+      tests/closures/closure_upvalue_capacity_overflow_gate.sh, wired into
+      CTest as closure_upvalue_capacity_overflow_gate, covering both the
+      in-process compile-and-run path (eshkol-vm-standalone-test <src.esk>)
+      and the two-step build path (eshkol-run --profile hosted-vm
+      --emit-eskb, then load and run the .eskb) so the ESKB writer/reader
+      round-trip is covered too. ICC probe eshkol-vm-large-proc
+      (scripts/run_icc_smoke.sh) runs both and requires all three surface
+      cases to print PASS with no ERROR/FAIL, plus a clean run of the
+      overflow gate.
+    caught_by: [region-evacuator-fixture-development]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-surface-regression-suite, vm-parity]
+    notes: >-
+      The evacuator fixture's own header (tests/memory/vm_region_evac_subtype_coverage_test.esk
+      on feat/vm-region-evacuator) had already named this defect precisely —
+      "a single procedure carrying all twenty constructors trips an unrelated
+      VM binding-slot defect (the following top-level `define` reads back as
+      an integer)" — and worked around it by splitting phase 2 across
+      `heavy-a`/`heavy-b` rather than fixing it, since fixing the VM compiler
+      was out of scope for that branch. This entry closes the root cause so
+      that workaround is no longer necessary (though the evacuator branch
+      itself is untouched by this fix). Reproduces identically with `begin`
+      in place of `with-region`, confirming it has nothing to do with
+      regions — it is purely a function-body-size-driven upvalue count.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01
