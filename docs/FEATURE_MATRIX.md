@@ -4,6 +4,20 @@
 
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (45 suites, 770 individual tests).
 
+**Language surface count (canonical, corrected 2026-08-25 — conformity audit item d3):**
+the declared language surface is **1,106** constructs. This is not a new
+number competing with the ones previously cited elsewhere (1,091 here and in
+`docs/COMPILER_ROADMAP.md`; 1,078 in `.icc/architecture-model.yaml`; 1,058 in
+ADR-0010 §2.1; "550+ built-in functions"/"39 special forms" in `README.md`)
+— it is the same manifest, `tests/coverage/language_surface.json` (1,040
+builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
+name and with internal-only helpers excluded exactly the way
+`scripts/language_coverage.py` already deduplicates it to compute the
+number the coverage gate enforces: `tests/coverage/coverage_policy.json`
+`baseline_surface_total` = `tests/coverage/execution_deficit.json`
+`surface_total` = **1,106**. This is the figure this doc, README.md, and
+`docs/COMPILER_ROADMAP.md` now use uniformly.
+
 ---
 
 ## Core Language Features
@@ -123,8 +137,8 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | `jacobian` operator | Yes | Reverse | 15+ tests |
 | `hessian` operator | Yes | Reverse | 10+ tests |
 | **Vector Calculus** |
-| Divergence | Yes | Reverse | ∇·F (trace of Jacobian) |
-| Curl | Yes | Reverse | ∇×F (3D + generalized 2-forms) |
+| Divergence | Yes | Reverse (LLVM) / central-difference FD (VM) | ∇·F (trace of Jacobian); exact via `autodiff_codegen.cpp` on LLVM, but `vm_native.c:13552-13580` is `h=1e-7` central differences on the bytecode VM — corrected 2026-08-25, conformity audit item d5, see KNOWN_ISSUES.md |
+| Curl | Yes | Reverse (LLVM) / central-difference FD (VM) | ∇×F (3D + generalized 2-forms); exact on LLVM, `vm_native.c:13633-13649` is `h=1e-7` central differences on the VM — same caveat as Divergence |
 | Laplacian | Yes | Reverse | ∇²f (trace of Hessian) |
 | Directional derivative | Yes | Reverse | D_v f = ∇f·v |
 | `divergence` operator | Yes | Reverse | 5+ tests |
@@ -235,8 +249,8 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Region nesting | Yes | Manual | Stack-based |
 | Zero-copy views | Yes | Automatic | reshape, slice, transpose |
 | **Ownership** |
-| Linear types | Yes | Compile-time | `owned`, `move` markers |
-| Borrow checking | Yes | Compile-time | `borrow` construct |
+| Linear types | Yes | Advisory (not enforced) | `owned`, `move` markers accepted and type-checked as identity `Value`; no production enforcement path — corrected 2026-08-25, conformity audit item d6 |
+| Borrow checking | Yes | Advisory annotation + one runtime check | `borrow` construct; the complete `BorrowChecker` flow checker (`lib/types/type_checker.cpp:407-729`) has zero production callers — only `emitBorrowMutationCheck`, a runtime header-flag test, actually runs. Wiring `BorrowChecker` into the type-checker walk is a BUILD ITEM (ADR-0001 §7, docs/design/adr/0001-oalr-concurrent-resident.md) — corrected 2026-08-25, conformity audit item d6 |
 | Escape analysis | Yes | Compile-time | Region-based with conservative heap fallback |
 | Reference counting | Planned | Runtime | Planned (`shared`, `weak-ref`) |
 | **Garbage Collection** |
@@ -467,7 +481,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,025 builtins across a 1,091-construct declared surface |
+| API Reference | Yes | Complete | 1,040 builtins across a 1,106-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -504,9 +518,9 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Regularization | Yes | Production | L1/L2 in loss |
 | Early stopping | Yes | Production | Via user code |
 | **Model Operations** |
-| Save/load weights | WIP | - | Via file I/O |
-| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`) |
-| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` |
+| Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
+| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 795 lines) |
+| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
 | Lazy loading | Planned | - | Planned |
@@ -729,11 +743,15 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 - **Python Bindings**: Stable C FFI + pybind11, NumPy zero-copy interop
 
 Not part of the actual v1.2 ship (still ahead, on the W6/W3 ladder — see
-ROADMAP.md): Vulkan Compute, ONNX export, model quantization, and
-distributed training (AllReduce/MPI/gRPC). An earlier revision of this table
-listed those as shipped in v1.2; they were not, and ONNX/StableHLO export
-specifically ships only once there is a training win to export, per the
-locked interop-first sequence.
+ROADMAP.md): Vulkan Compute, model quantization, and distributed training
+(AllReduce/MPI/gRPC). An earlier revision of this table listed those as
+shipped in v1.2; they were not. **ONNX export is an exception, re-verified
+2026-08-25 by direct execution** (see the "Not Yet Production" note below):
+`onnx-export-tensor` is a real wired builtin producing valid ONNX files
+that pass `onnx.checker.check_model` with bit-exact round-trip, 9/9 on the
+Python validator — it did ship, and stays `Yes | v1.2` below. Only the
+StableHLO export path (a different, MLIR-dependent capability) remains
+gated on the locked interop-first sequence.
 
 ### v1.3-evolve (Jul 2026) — SHIPPED as v1.3.0-evolve through v1.3.4-evolve
 
@@ -743,6 +761,18 @@ locked interop-first sequence.
   `core.dbsp`, linear `Qubit`, Ozaki-II exact GEMM, VM region-reclaim gap
   narrowed to the evacuator alone — shipped across v1.3.1 through
   v1.3.4-evolve (tagged 2026-08-19)
+
+> **Corrected 2026-08-25 (conformity audit item d2, folded into the #464
+> v1.3.5 wave's own restructure of this section):** this row previously
+> also listed "Advanced Types: refinement types, effect types, higher-rank
+> types, row polymorphism" and "Compiler Optimization: PGO, whole-program
+> optimization, polyhedral loop optimization" as SHIPPED. None of the six
+> exists in the tree (`grep -i 'Refinement\|EffectRow\|SMT\|polyhedral'` is
+> empty; ROADMAP.md itself marks WPO `[ ]` and PGO `[~]`). These are real,
+> intended capabilities, not deleted — they are BUILD ITEMs below (v1.9.0),
+> targeted per ADR-0004 (types) and ADR-0007 (PGO/WPO/polyhedral), not
+> claimed as shipped. See also the paragraph immediately below, which #464
+> independently added making the same point.
 
 Advanced type-theory items (refinement types, effect types, higher-rank
 types, row polymorphism) did not ship in the v1.3 line; they remain staged
@@ -770,7 +800,10 @@ are not yet scheduled to a specific release.
 
 ### v1.5.0-intelligence (target: Q1 2027)
 
-- **Resident/DBSP spine**: `core.dbsp` GA, native PGO in the release workflow
+- **Resident/DBSP spine**: `core.dbsp` GA, native PGO in the release
+  workflow (BUILD ITEM, moved from v1.3-evolve per ADR-0007, conformity
+  audit item d2: workload-selection + canonical merge step to close out
+  the existing scaffold, `CMakeLists.txt:340-388`)
 - **Neuro-Symbolic Bridge**: Soft unification, symbol embeddings, attention over KB
 - **Advanced Neural**: LSTM/GRU cells
 - **Distributed computing (W6)**: Tier-1 data-parallel + Tier-2 mesh
@@ -781,13 +814,19 @@ are not yet scheduled to a specific release.
 - **Program Synthesis**: Type-directed holes, neural-guided search
 - **Advanced Neural**: Graph Neural Networks
 
+### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
+
+- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: Refinement types, effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)**: no closed-world root analysis, no LTO/ThinLTO exists yet
+
 ### v2.0-starlight (target: Q4 2028)
 
 - **Unified differentiation**: `differentiate` primitive over `numeric` and
   `incremental` interpretations
-- **Quantum Computing**: QAOA and circuit-level optimisation (Qubit types with linear tracking, gates and VQE already SHIPPED in v1.3.3/v1.3.4-evolve)
+- **Quantum Computing**: QAOA and circuit-level optimisation (Qubit types with linear tracking, gates and VQE already SHIPPED in v1.3.3/v1.3.4-evolve — but note the "linear tracking" qualifier: see the Qubit row above, tracking is advisory not enforced, conformity audit item a7)
 - **Formal Verification**: Lean kernel export re-checks the compiler on the
-  normative corpus; "HoTT-inspired" retired as a claim
+  normative corpus; "HoTT-inspired" retired as a claim; proof assistant
+  integration and certified compilation, per ADR-0000 Stage 14b
 - **Next-Gen Types**: Session types, algebraic effects, quantitative type theory
 - **Distributed computing (W6) gates**: Tier 1 >=85% scaling efficiency at 8
   devices; Tier 2 bit-identical gradients at any node count
@@ -798,7 +837,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,025 builtins)
+- Core language (116 special forms, 1,040 builtins — 1,106-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -826,9 +865,27 @@ are not yet scheduled to a specific release.
 ### Not Yet Production
 
 - Distributed computing (W6 spike targeted at v1.4.0; see ROADMAP.md)
-- ONNX/StableHLO export (ships post-training-win, no fixed date; `.eshkol-model`
-  native serialization itself has been production since v1.2-scale)
+- StableHLO export path specifically (requires MLIR; see "Beta Quality"
+  above — separate from raw ONNX tensor export, which is production, see
+  below)
 - Vulkan Compute
+
+(**Re-verified 2026-08-25 during rebase onto #464 (docs/conformity-audit-resolution
+vs docs/v135-refresh):** the two PRs disagreed here — #464's merged text put
+"ONNX/StableHLO export" in this list as "ships post-training-win, no fixed
+date"; this branch's own conformity-audit fix (item d4) had instead removed
+ONNX specifically, keeping only StableHLO. Re-checked by direct execution
+rather than trusting either prior claim: `eshkol-run -r
+tests/v1_2_edge_cases/onnx_export_test.esk` → 7/7 PASS, and the deeper
+Python validator `tests/v1_2_edge_cases/onnx_export_test.py` (which calls
+the real `onnx` package's `onnx.checker.check_model` and verifies bit-exact
+value round-trip for 1D/2D/3D tensors) → **9/9 PASS**, both against a
+from-source build at this branch's tip. `onnx-export-tensor` is a real,
+wired native builtin (`lib/core/system_builtins.c:5028`), not a stub.
+Conclusion: raw ONNX tensor export is production (kept as "Yes | v1.2" in
+Model Operations below, `model_io_test` also PASS); only the *StableHLO*
+export path — a different, MLIR-dependent capability — remains genuinely
+not-yet-production, and is listed above accordingly.)
 
 ---
 
@@ -837,8 +894,8 @@ are not yet scheduled to a specific release.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 64-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch |
-| 694 native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter |
+| 66-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 66` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
+| 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |
@@ -857,14 +914,14 @@ are not yet scheduled to a specific release.
 | Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result. The contradiction diagnostic added in v1.3.4 is likewise compile-time, so runtime parity is unchanged |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |
-| 3-way verification | Yes | Reference = simulated = matrix-based (126/126 inline, 123/123 traced) |
+| 3-way verification | Yes | Reference = simulated = matrix-based (127/127 inline, 124/124 traced — corrected 2026-08-25 from "126/126, 123/123" by direct execution: `build/tools/weight_matrices` → `=== Results: 127 passed, 0 failed ===`; matches `docs/SDNC.md`, conformity audit item d8) |
 | QLMW binary export | Yes | For qLLM weight loading |
 | 82 canonical opcodes in weights | Yes | `OP_NATIVE_CALL` remains the external dispatch boundary |
 | **qLLM Bridge** |
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Complete | Zero stubs, zero stdout contamination; gated by the VM source suite, the 81/81 C-API suite, and the 184/184 VM parity differential |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). But `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
@@ -896,10 +953,16 @@ are not yet scheduled to a specific release.
 
 ## Known Limitations
 
+This is a short summary list; the full, actively-maintained catalogue of
+known issues and limitations (including engine-parity gaps, AD scope
+caveats, and the items filed by the 2026-08-25 conformity audit) lives in
+[docs/KNOWN_ISSUES.md](KNOWN_ISSUES.md) — corrected 2026-08-25, conformity
+audit item d12; numbering below also corrected (previously skipped item 2).
+
 1. **Single GPU dispatch** - One GPU at a time (multi-GPU not yet scheduled)
-3. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
-4. **Learning curve** - Functional programming + AD concepts require study
-5. **Platform support** - Linux, macOS, and native Windows x64
+2. **Small ecosystem** - Growing standard library, but not as extensive as Python/Julia
+3. **Learning curve** - Functional programming + AD concepts require study
+4. **Platform support** - Linux, macOS, and native Windows x64
 
 ---
 

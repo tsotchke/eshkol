@@ -4,6 +4,44 @@
 - Date: 2026-07-09
 - Owners: frontend, module loader, type system, native/VM backends
 - Scope: R7RS-small language profile, Eshkol `require`/`provide`, AOT, ORC JIT/REPL, precompiled libraries, and proper tail calls
+- **Attainment reviewed:** 2026-08-25, against `4bf871a0` (conformity audit
+  items c8, c9; `docs/design/AUDIT_2026_08_25_RESOLUTION.md`) — status
+  below, kept as tracked work targeting ADR-0000 Stage 2, nothing deleted.
+
+### Attainment as of `4bf871a0` (2026-08-25)
+
+- **`BindingId` — ABSENT.** Identity is still spelling; the library
+  registry is `dotted-string -> set<string>` (`lib/frontend/library_registry.h:94`).
+- **Import algebra / recursive `ImportSet` — ABSENT.** `R7rsImportSpec`
+  (`parser.cpp:3914-3920`) is four flattened fields;
+  `parse_r7rs_import_set_body` (`:4279-4347`) **overwrites** `only`,
+  **appends** `except`, and concatenates prefixes — order-sensitive
+  composition is destroyed.
+- **"Stop lowering imports to value-copying `define` aliases" — DIVERGES,
+  the opposite is present** (conformity audit item c8). Still there in
+  three separate copies: `parser.cpp:3997` + `:4440`/`:4455`,
+  `exe/eshkol-run.cpp:3118-3130`/`:3159`, `lib/repl/repl_jit.cpp:206-227`.
+  **BUILD ITEM:** replace all three with binding resolution against a
+  `BindingId`, target v1.3.3b/v1.4.0 (ADR-0000 Stage 2).
+- **One `Tail` annotator + `ProperTailVerifier` — ABSENT; the opposite is
+  present.** ≥8 distinct tail walkers across 3 back ends; the permissive
+  `default: return true;` this ADR indicts is still at
+  `tail_call_codegen.cpp:559-562`.
+- **Strict R7RS visibility + `--legacy-open-modules` — ABSENT; codified
+  opposite.** `exe/eshkol-run.cpp:3889-3912` documents `(provide ...)` as
+  "INFORMATIONAL, not a hard export boundary" and `(void)rename_private_symbols;`
+  deliberately dead-codes the private-name rewriter.
+  `tests/modules/visibility_fail_test.esk:20-23` *asserts* a non-provided
+  helper IS callable — the test suite pins the pre-ADR behavior.
+- **`--language=r7rs-small` "earned by evidence" — no such flag exists**
+  (conformity audit item c9). `cond-expand` reports feature `r7rs` true
+  unconditionally from a hard-coded predicate in two places
+  (`parser.cpp:7350`, `llvm_codegen.cpp:16477`) — advertised, not earned.
+  **BUILD ITEM:** land the flag and gate the `r7rs` feature-report on it,
+  target v1.4.0.
+- **i128 tagged-return ABI, tail-transfer dispatcher, heap continuations —
+  ABSENT.** Caps still `MAX_APPLY_ARGS = 8; MAX_APPLY_CAPTURES = 8`.
+  `musttail` at exactly one site, AArch64-only.
 
 ## Decision summary
 

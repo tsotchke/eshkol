@@ -7,6 +7,18 @@ disagree, `ROADMAP.md` is correct and this document needs updating.
 `docs/NOESIS_TRAJECTORY.md` is the Noesis-readiness view of the same plan;
 both stay consistent with `ROADMAP.md`.
 
+**ADR-0000 cross-reference (added 2026-08-25, conformity audit item b6):**
+this document previously never cited
+[ADR-0000](design/adr/0000-unified-trajectory.md), the 14-stage
+architectural ladder that sequences the load-bearing rewrites (binding/type
+identity, OALR ABI v2, staged AD kernels, DBSP, resident sessions)
+underneath the release lines below. As of `4bf871a0` (2026-08-25): **0 of
+14 stages SATISFIED, 2 PARTIAL, 12 NOT STARTED** — see ADR-0000's own
+"Attainment" section and `docs/design/AUDIT_2026_08_25_RESOLUTION.md` for
+the full breakdown. The engineering-detail task tiers below (M0-M4) are
+release-line work; ADR-0000's stages are the substrate they build on, and
+the two should be read together, not as competing plans.
+
 Two axes are tracked side-by-side:
 
 1. **Release version** (v1.2, v1.3, …, v2.0) — when a feature ships to users.
@@ -28,9 +40,25 @@ research-grade Noesis.
 **Base release**: v1.3.3-evolve (2026-07-16).
 **Status**: v1.3.4-evolve cut — a resident-correctness release followed by a
 consumer-hardening correctness wave. Release gates measured on the cut:
-aggregate suite 45/45 suites and 770 tests, CTest 183/183, executable language
-coverage 1,091/1,091 (100.0%), SICP 88/88, reference differential 34/34 AGREE
-vs chibi-scheme 0.12.0, VM parity 184/184, ICC readiness 100 (`ready`).
+aggregate suite 45/45 suites and 770 tests, CTest **190/190** (remeasured
+2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the
+stale 183/183 figure — the suite has grown), executable language coverage
+**1,106/1,106** (100.0%) — the canonical surface count, see
+[FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
+figure, conformity audit item b2/d3), SICP 88/88, reference differential
+34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
+(`scripts/run_vm_parity.sh`) is 188/188 (remeasured 2026-08-25,
+`evidence/audit/06_vm_parity.log`; corrects "184/184", which was the
+corpus-differential count, not the full manifest); the full manifest
+(`tests/vm_parity/PARITY.tsv`) is 956 rows — 581 `vm-supported`, 44
+`native-only-justified`, 331 `gap` — plus 328 further names in
+`tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see
+[VM_PARITY.md](VM_PARITY.md)); citing only "184/184" or "188/188" alone
+substitutes one narrow metric for the full parity picture — corrected
+2026-08-25, conformity audit item b2. ICC readiness 100 (`ready`) — the
+audit found this reproducible only via a full local pillar-script run, not
+as a repository-enforced gate (see ADR-0010's own diagnosis of that
+anti-pattern); not re-litigated here as it is outside this doc's scope.
 
 The v1.2.x record below is retained as the history of that milestone.
 
@@ -83,10 +111,23 @@ Verification snapshot:
 
 ## Version timeline
 
-| Version | Codename | Target date | Theme |
+> **Staleness note (added 2026-08-25, conformity audit item b5):** every
+> target date below from v1.4 onward has passed or is passing (today is
+> 2026-08-25) — this table was last true as of its original 2026-05-20
+> authoring. Rather than invent new unauthorized dates here, the honest
+> statement is: **v1.4 onward is behind schedule pending the closure of
+> ADR-0000 Stage 1 (instrumentation/identity substrate) and Stage 2
+> (binding resolution)**, both PARTIAL/NOT STARTED as of `4bf871a0` — see
+> "ADR-0000 stage attainment" in `ROADMAP.md` and
+> `docs/design/adr/0000-unified-trajectory.md`. `ROADMAP.md` owns the
+> authoritative re-dating (in flight on PR #464); this table's codename/theme
+> columns remain accurate and are not re-dated here to avoid conflicting
+> with that PR.
+
+| Version | Codename | Target date (stale, see note above) | Theme |
 |---|---|---|---|
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
-| v1.3.0-evolve | evolve | Jul 2026 — **SHIPPED** | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12), 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
+| v1.3.0-evolve | evolve | Jul 2026 — **SHIPPED** | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
 | v1.4 | connection | Jul 2026 | Networking + concurrency + linear types |
 | v1.5 | intelligence | Aug 2026 | Neuro-symbolic bridge |
 | v1.6 | reasoning | Sep 2026 | Production logic engine |
@@ -157,16 +198,24 @@ Eshkol. The remaining work is v1.3+ productization.
 
 ## v1.3 — "evolve" (SHIPPED as v1.3.0-evolve, July 2026)
 
-> **SHIPPED.** v1.3.0-evolve is released (tag `v1.3.0-evolve`; ICC
-> `v1.3-evolve` readiness oracle: `ready`, score 100). It delivered the
-> planned R7RS/dev-experience/stdlib work below **and much more**: the full
-> arbitrary-order Taylor-tower AD matrix (all 13 phases P0–P12), full R7RS
+> **SHIPPED, with two of the "Dev experience" Phase-3 exit criteria below
+> unmet at ship time (corrected 2026-08-25, conformity audit item b3).**
+> v1.3.0-evolve is released (tag `v1.3.0-evolve`; ICC `v1.3-evolve`
+> readiness oracle: `ready`, score 100). It delivered the planned
+> R7RS/stdlib work below and much more: the full arbitrary-order
+> Taylor-tower AD matrix (all 13 phases P0–P12, LLVM backend), full R7RS
 > conformance (34/34 vs. chibi-scheme 0.12.0), TCO/closure/memory robustness
 > hardening, and permanent adversarial-testing infrastructure. The AD phases
 > P4–P12 — originally staged across v1.4 through v2.0 — all landed here ahead
-> of schedule. The task tiers below are retained as the as-planned engineering
-> record; see the canonical [`../ROADMAP.md`](../ROADMAP.md) and
-> [`../CHANGELOG.md`](../CHANGELOG.md) for as-shipped contents.
+> of schedule. **But the "Dev experience" section's debugger and sampling
+> profiler (below) do not exist** — `docs/FEATURE_MATRIX.md` itself lists
+> both as `Planned`, and the only debug support shipped is `-g` DWARF
+> (`exe/eshkol-run.cpp:2285`). Both are kept as BUILD ITEMs: debugger,
+> target v1.9.1 (ADR-0000 Stage 13, session-protocol work); sampling
+> profiler, target v1.4.1. The task tiers below are retained as the
+> as-planned engineering record; see the canonical
+> [`../ROADMAP.md`](../ROADMAP.md) and [`../CHANGELOG.md`](../CHANGELOG.md)
+> for as-shipped contents.
 
 R7RS polish, language ergonomics, stdlib expansion, developer experience.
 
@@ -422,7 +471,7 @@ Acceptance:
 |---|---|---|
 | #156 | Threads + mutex + condvars | 1 week |
 | #157 | Channels (CSP, bounded/unbounded) | 3 days |
-| #158 | Async I/O event loop (epoll / kqueue / IOCP) | 1 week |
+| #158 | Async I/O event loop (epoll / kqueue / IOCP) | **SHIPPED in v1.3.4-evolve** — corrected 2026-08-25 from "1 week" remaining effort; `docs/FEATURE_MATRIX.md` documents the backends and `PARITY.tsv` marks it `vm-supported` (conformity audit item b1) |
 | #159 | Fibers / coroutines | 1 week |
 | #160 | Promises / futures | 2 days |
 | — | Atomic ops (CAS, fetch-add) | 1-2 days |
@@ -752,9 +801,9 @@ target release version. Use this as the handoff cheatsheet.
 | #144 | Binary ports + bytevector I/O | M0 | v1.2.x |
 | #145 | HTTP server | M1 | v1.4 |
 | #146 | WebSocket server | M1 | v1.4 |
-| #147 | Structured logging | M1 | v1.3 |
+| #147 | Structured logging | M1 | v1.3/v1.4 (production integration remains open — corrected 2026-08-25, conformity audit item b1) |
 | #148 | Prometheus metrics | M1 | v1.4 |
-| #149 | Capability hooks | M1 | v1.3 |
+| #149 | Capability hooks | M1 | v1.3/v1.4 (production integration remains open — corrected 2026-08-25, conformity audit item b1) |
 | #150 | Resource limits | M1 | v1.4 |
 | #151 | HNSW vector index | M2 | v1.5 |
 | #152 | Tokenizer | M2 | v1.5 |

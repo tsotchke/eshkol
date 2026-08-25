@@ -21,11 +21,16 @@ to miss.
 
 ### v1.3.4-evolve parity changes
 
-- **Tensor matmul parity is now COMPLETE on the hosted VM.** `arange` (1-, 2-,
-  and 3-argument forms), nested-literal tensor operands, and multi-dimensional
+- **2-D matmul-surface parity lands on the hosted VM** (corrected 2026-08-25
+  from "COMPLETE" — conformity audit item g5). `arange` (1-, 2-, and
+  3-argument forms), nested-literal tensor operands, and multi-dimensional
   `tensor-ref` / `tensor-set!` now compute the same answers on the bytecode VM
   as on native codegen. The parity corpus gains `31_tensor_matmul`; the former
-  matmul-surface `gap` rows are retired to `vm-supported`.
+  matmul-surface `gap` rows for that corpus are retired to `vm-supported`. The
+  corpus itself is 2-D only, with small exactly-representable values, and does
+  not cover batched or rank-3+ contraction — 37 `PARITY.tsv` rows still carry
+  "tensor linalg/manipulation fid missing in VM". Full tensor-linalg VM parity
+  is a build item, target v1.5.0.
 - **Reverse/forward-mode `gradient` is now `vm-supported` (#337).** The VM lowers
   an arity-resolved forward/reverse-mode `gradient` — direct, through a callable
   parameter, and curried — byte-identical to native codegen across the `native`,
@@ -52,6 +57,15 @@ statuses:
 | `native-only-justified` | conscious, permanent waiver (FFI, OALR regions, static type syntax, OS/process, parallel runtime, front-end module machinery) — justification mandatory |
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
+**"Justification mandatory" is formally true (0 rows have an empty
+justification field) and substantively uneven** — corrected 2026-08-25,
+conformity audit item g2: 20 of the 44 `native-only-justified` rows share one
+boilerplate string, and roughly 55% of the 331 `gap` rows share four bulk
+strings; only a minority carry a per-symbol argument. Raising justification
+specificity across the ledger is a low-priority build item — the field is
+present and non-empty everywhere, which is what the ledger schema enforces
+today.
+
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
 probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 581
 `vm-supported`, 44 `native-only-justified`, 331 `gap`** (counted from
@@ -72,6 +86,17 @@ aborting the VM with "undefined variable", none of them in this ledger, while
 this audit reported OK.
 Verified behavioral divergences remain explicit `gap` rows with reproducible
 programs under `tests/vm_parity/found/`.
+
+**`tests/vm_parity/SURFACE_BASELINE.tsv` — the delta the 956-row ledger does
+not count** (added 2026-08-25, conformity audit item g6, cross-referenced
+from FEATURE_MATRIX.md d9 and KNOWN_ISSUES.md e6). This file holds **328**
+further names that native resolves and the VM does not, all tagged `NO-ROW`
+and entirely outside the `PARITY.tsv` ledger above — they were excused from
+the ratchet rather than entered into it. The project's own ledger (PR-02,
+`.icc/silent-wrong-ledger.yaml`) puts it plainly: "the 956-row parity
+accounting understates the real delta by about a third." Any statement of VM
+parity that cites only the 956-row breakdown (581/44/331) without this
+baseline understates the gap; both numbers should be read together.
 
 ## The ratchet workflow
 
@@ -104,17 +129,27 @@ no justification.
 
 ## The differential gate
 
-`scripts/run_vm_parity.sh` (honors `BUILD_DIR`, default `build/`) runs three
-stages:
+`scripts/run_vm_parity.sh` (honors `BUILD_DIR`, default `build/`) runs
+**four** stages (corrected 2026-08-25 from "three", conformity audit item
+g4):
 
-1. **AUDIT** — the ratchet above.
-2. **CORPUS** — a VM-vs-native differential over `tests/vm_parity/corpus/`
+1. **AUDIT** (stage 1) — the ratchet above, codegen-vs-VM surface audit.
+2. **CORPUS** (stage 2) — a VM-vs-native differential over `tests/vm_parity/corpus/`
    (programs inside the VM's verified subset) across axes:
    - `native`  — `./build/eshkol-run -r f.esk`
    - `vm-src`  — `./build/eshkol-vm-standalone-test f.esk`
    - `vm-eskb` — emit ESKB via `--profile hosted-vm --emit-eskb`, then run it
      through `eshkol-vm-standalone-test`.
-3. **Verdict** — any divergence outside the manifest is a failure.
+3. **OOS** (stage 3) — programs outside the VM's verified subset
+   (`tests/vm_parity/oos/`) must fail cleanly on the VM, not fabricate a value.
+4. **FATAL** (stage 4) — programs whose first failing form is fatal must fail
+   closed (nonzero exit) on both substrates.
+
+Any divergence outside the manifest, at any stage, is a failure. Remeasured
+2026-08-25 against `4bf871a0`: **188 passed, 0 failed**, exit 0
+(`evidence/audit/06_vm_parity.log` in this resolution's evidence root;
+corrects the stale "140/140" figure carried in `docs/KNOWN_ISSUES.md`
+before this pass, conformity audit item e3).
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
