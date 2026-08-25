@@ -4073,6 +4073,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The
+# bytecode VM used to enforce nothing — it ran a qubit clone to completion with
+# exit 0 and `--emit-eskb` wrote the bytecode for it — while the LLVM engine
+# refused to compile the same program. That is an engine-parity defect on a
+# type-system GUARANTEE, so it gets a gate rather than a note: the script pins
+# rejection AND acceptance on both VM entry points, because a "fix" that
+# refused every qubit program would otherwise pass.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh")
+    if(TARGET eshkol-vm-standalone-test)
+        set(ESHKOL_LINEAR_PARITY_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_LINEAR_PARITY_VM "none")
+    endif()
+    add_test(NAME qubit_linearity_engine_parity_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LINEAR_PARITY_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/qubit-linearity-engine-parity")
+    set_tests_properties(qubit_linearity_engine_parity_gate PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: qubit linearity engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)

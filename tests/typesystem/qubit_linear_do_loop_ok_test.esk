@@ -1,0 +1,25 @@
+;; Type System Test: a do loop that does not touch the qubit stays enforceable
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; A loop body runs an unknown number of times, so a use INSIDE it is not a
+;; single-path quantity (BI-2, still open -- see
+;; qubit_linear_undecidable_scope_test.esk). But a loop that never mentions the
+;; binding contributes exactly zero uses whatever its trip count, and that IS
+;; decidable. Before this, any `do` at all made the whole enclosing body
+;; undecidable and surrendered enforcement of every use around it.
+;;
+;; Here the qubit is consumed once, outside the loop, and the compile must be
+;; clean -- no violation and no "not enforced" note.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (count-then-use (q : Qubit))
+  (begin
+    (do ((i 0 (+ i 1))) ((= i 3)) (display i))
+    (newline)
+    (h q)))
+(display "a loop that ignores the qubit charges nothing")
+(newline)

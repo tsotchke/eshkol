@@ -1,0 +1,18 @@
+;; Type System Test: one use per exclusive match clause is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_match_test.esk. Exactly one clause body
+;; runs, so one use in each is one use at runtime.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (pick-match (k : Int) (q : Qubit)) : Qubit
+  (match k
+    (0 (h q))
+    (_ (z q))))
+(display "match clauses are exclusive")
+(newline)

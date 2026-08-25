@@ -1,0 +1,25 @@
+;; Type System Test: one use per exclusive cond clause is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_cond_test.esk, and the program that used
+;; to live in qubit_linear_undecidable_scope_test.esk as an example of what the
+;; analysis could not rule on. cond clauses are mutually exclusive, so a qubit
+;; consumed once in each clause is consumed exactly once at runtime -- it is not
+;; a clone, and it must compile with NO diagnostic of any kind, not even the
+;; "not enforced" note.
+;;
+;; This is the shape that makes an exact clause-ladder walk necessary rather
+;; than a cheap `sum(tests) + max(body)`: over-charging a ladder is how a
+;; correct quantum program gets rejected.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (pick-cond (b : Bool) (q : Qubit)) : Qubit
+  (cond (b (h q))
+        (else (z q))))
+(display "cond clauses are exclusive")
+(newline)

@@ -1,0 +1,14 @@
+;; Type System Test: a single use inside an unless body is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_unless_test.esk.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (unless-h (b : Bool) (q : Qubit))
+  (unless b (h q)))
+(display "unless body charged once")
+(newline)

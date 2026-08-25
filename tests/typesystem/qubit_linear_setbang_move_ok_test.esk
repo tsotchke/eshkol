@@ -1,0 +1,20 @@
+;; Type System Test: a set! move followed by ONE use is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_setbang_test.esk, and the reason the move
+;; must charge ZERO uses rather than one. `(set! a q)` does not consume the
+;; qubit -- it relocates it -- so charging the assignment as a use would make
+;; the single consumption through `a` read as a second one and reject this
+;; correct program.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (move-then-use (q : Qubit))
+  (let ((a 0))
+    (set! a q)
+    (h a)))
+(display "a set! move is not a use")
+(newline)

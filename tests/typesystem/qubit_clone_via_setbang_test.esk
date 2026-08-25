@@ -1,0 +1,22 @@
+;; Type System Test: laundering a qubit through set! is CAUGHT
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `(set! a q)` MOVES the resource into `a`. #471 measured this as a live
+;; laundering route (BI-3): `a` was inferred from its initializer, keeping a
+;; non-linear type, so the two uses through it were invisible and the program
+;; compiled and ran.
+;;
+;; The sequence walk now carries the tracked-name set FORWARD across a `begin`:
+;; a `set!` whose value is a bare reference to a tracked binding charges no use
+;; (it is a move, not a consumption) and extends tracking to the assigned name
+;; for the rest of the sequence. The clone through `a` is then the clone it is.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (launder-setbang (q : Qubit))
+  (let ((a 0))
+    (set! a q)
+    (cons (h a) (z a))))

@@ -1,0 +1,17 @@
+;; Type System Test: a clone inside a case clause is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `case` is walked as a clause ladder like `cond`, with the key charged once up
+;; front -- it is evaluated exactly once, before any datum comparison -- and the
+;; datums of the clauses tried so far forming the prefix. Two uses inside one
+;; clause body is a clone on the path that reaches it (BI-1).
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-case (k : Int) (q : Qubit))
+  (case k
+    ((1) (cons (h q) (z q)))
+    (else 0)))
