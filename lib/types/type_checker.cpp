@@ -3997,6 +3997,15 @@ TypeChecker::LinearUseAnalysis
 TypeChecker::analyzeLinearUses(const eshkol_ast_t* body,
                                const std::string& name) const {
     LinearUseAnalysis result;
+    if (!body) {
+        // No body to walk: an `extern`/`is_external` define takes its
+        // implementation from a linked object, so nothing here can say how its
+        // parameters are used. Zero uses would read as a discard and reject a
+        // perfectly good declaration.
+        result.decidable = false;
+        result.blocker = "no body (external declaration)";
+        return result;
+    }
     LinearAliasSet names{name};
     result.uses = countLinearUses(body, names, result.decidable, result.blocker);
     if (!result.decidable) result.uses = 0;
