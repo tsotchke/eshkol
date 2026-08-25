@@ -20624,28 +20624,34 @@ private:
                 }
             }
 
-            // TAIL TRANSFER (ADR-0006 §3). Everything `musttail` refused now takes
-            // the dispatcher instead of an ordinary, stack-consuming call:
+            // TAIL TRANSFER (ADR-0006 §3). The two shapes `musttail` refused now
+            // take the dispatcher instead of an ordinary, stack-consuming call:
             //
             //   * DIFFERING ARITIES between the two procedures — the transfer
             //     record carries an argument vector and the callee's uniform
             //     entry supplies its own parameters from it, so the two
             //     signatures never have to agree;
-            //   * `guard` — the transfer RETURNS instead of calling, so the
-            //     eshkol_pop_exception_handler() that leaving a guard owes runs
-            //     on the ordinary exit path exactly as it always did. That is
-            //     the property `musttail` cannot have, and the reason GUARD_OP
-            //     is now walked (see collectMutualTailCallSites);
-            //   * NON-AArch64 TARGETS — the dispatcher chooses its own return
-            //     representation and never needs an aggregate-return musttail,
-            //     which is the whole of ESH-0171 for the mutual-tail case.
+            //   * NON-AArch64 TARGETS — the dispatcher returns through the
+            //     ordinary aggregate return and never needs the
+            //     aggregate-return musttail those backends refuse, which is the
+            //     whole of ESH-0171 for the mutual-tail case.
             //
-            // Still NOT transferred, and still deliberately loud: a call whose
-            // arguments include a pointer into this frame (a capture slot). The
-            // transfer copies argument VALUES into a record the driver owns, so
-            // a pointer to a dying alloca would be carried across the return that
-            // kills it. emitTailTransfer() declines those and the ordinary path
-            // below keeps its diagnostics.
+            // Two shapes are still NOT transferred, and each is loud rather than
+            // wrong:
+            //
+            //   * a call whose arguments include a POINTER into this frame (a
+            //     capture slot; in this tree, always an `extern` FFI
+            //     declaration). The transfer copies argument VALUES into a
+            //     record the driver owns, so a pointer to a dying alloca would
+            //     be carried across the return that kills it — ADR-0006 §6
+            //     principle 8. emitTailTransfer() declines those and the
+            //     ordinary path below keeps its diagnostics.
+            //   * anything under a `guard`, which the walker does not offer at
+            //     all. Not a limitation of the dispatcher: R7RS 7.3 keeps the
+            //     handler installed for the body's whole dynamic extent, so the
+            //     call is not in a tail context and optimizing it changes which
+            //     handler answers. See collectMutualTailCallSites()'s GUARD_OP
+            //     note for the reference differential that established that.
             if (tail_lowering_allowed) {
                 if (Value* transferred = emitTailTransfer(callee, args)) {
                     eshkol_debug("Mutual TCO: emitting tail transfer to %s", func_name.c_str());
