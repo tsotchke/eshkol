@@ -198,6 +198,29 @@ oracles:
         label: 'Every branch-protection required status context is reportable on every PR shape CI can produce, including docs-only (scripts/check_required_context_consistency.py)'
         action: python3 scripts/check_required_context_consistency.py
 
+      # ── Harness infra-vs-defect taxonomy (2026-08-25 architecture audit,
+      # section 3) ──────────────────────────────────────────────────────
+      # Every runtime_event criterion in THIS oracle — including the ones
+      # above and below this line — depends on the same premise: a probe
+      # that could not obtain a verdict must never publish the same "PASS"
+      # this criterion's own event_values match on for a probe that
+      # genuinely succeeded, and must never publish a false FAIL either. A
+      # 140s cold-start JIT compile killed by a 60s alarm once turned the
+      # HIGH invariant INV-dispatch-table-completeness red through exactly
+      # this channel. scripts/lib/harness_outcome.sh is the shared fix;
+      # this criterion is the regression test proving the PASS/FAIL/INFRA
+      # split it provides is real (tests/harness/harness_outcome_taxonomy_test.sh,
+      # 17 checks: timeout and missing-binary classify INFRA and publish no
+      # test_result, a completed wrong answer and a self-raised crash still
+      # classify FAIL and do publish one, and only INFRA is ever retried).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["harness_outcome_taxonomy"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'scripts/lib/harness_outcome.sh distinguishes infrastructure failure (timeout, missing binary — INFRA, no false test_result, retried once) from a genuine code defect (wrong answer or self-raised crash — FAIL, always recorded, never retried)'
+        action: bash tests/harness/harness_outcome_taxonomy_test.sh
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
