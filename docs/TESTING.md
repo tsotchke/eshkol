@@ -281,3 +281,71 @@ executable language coverage **1,091/1,091** (100.0%, floor PASS); SICP
 full-book **88/88** probes under both `-r` and AOT; reference-Scheme
 differential **34/34 AGREE** against chibi-scheme 0.12.0; VM parity
 differential **184/184**; qLLM oracle gate **10/10**.
+
+---
+
+## Assurance gates (v1.3.5 wave 1, #454)
+
+Three release doctrines that used to live only as prose are now enforced,
+self-testing CI gates:
+
+- **`scripts/check_ledger_integrity.py`** fails
+  `.icc/silent-wrong-ledger.yaml` on a YAML parse error, any duplicate `id`
+  across the whole file, or an entry missing `id`/`bucket`/`status`/`title`
+  or closure evidence when its status isn't `open`. Motivating incident:
+  `SW-33` was independently allocated on three separate branches, `SW-35`
+  twice and `SW-42` twice — a textual merge doesn't notice two branches
+  picking the same next-free id, so nothing short of an explicit
+  uniqueness check catches it.
+- **`scripts/check_oracle_schema.py`** fails `.icc/completion-oracles.yaml`
+  on a parse error, or on any criterion that is structurally invalid for
+  its kind (e.g. a `runtime_event` criterion with no `event_kinds`, or a
+  duplicate criterion id), and always prints a declared-vs-graded criteria
+  count per oracle so a silently-under-grading oracle is visible on every
+  run rather than only when someone thinks to ask. Motivating incident:
+  PR #429 once broke this file's parse by dropping a list-item opener
+  while adding a criterion.
+- **`scripts/gate_no_silent_wrong.py --self-test`** — the existing
+  no-open-silent-wrong gate gained a self-test mode; it graded the ledger
+  already but had never actually been wired into any CI workflow before
+  this wave.
+
+Each gate's self-test feeds it deliberately-broken fixtures (malformed
+YAML, a duplicate id, a missing required field) plus one well-formed one,
+generated into a repo-local temp directory and cleaned up immediately, and
+asserts the gate goes red on every broken fixture and green on the good
+one. Re-run directly for this documentation wave against commit `6d8e5c4e`
+(all three `--self-test` PASS; both non-self-test invocations against the
+real repo files also PASS — the ledger currently carries 87 entries across
+7 buckets, and every oracle's declared criteria count matches its graded
+count):
+
+```bash
+python3 scripts/check_ledger_integrity.py --self-test   # PASS
+python3 scripts/check_oracle_schema.py --self-test       # PASS
+python3 scripts/gate_no_silent_wrong.py --self-test      # PASS
+python3 scripts/check_ledger_integrity.py                # PASS (87 entries, 0 errors)
+python3 scripts/check_oracle_schema.py                   # PASS (every oracle's criteria fully graded)
+```
+
+Both non-self-test gates are wired into the `eshkol-compiler-readiness`
+oracle alongside the pre-existing `no_open_silent_wrong` criterion, added
+as `ctest` entries next to the repo's other Python-based validators, and
+run in a fast `assurance-gates` CI job (pure Python over checked-out
+files, no build step) modeled on the existing surface-manifest job.
+
+## CI: docs-only PRs now actually report required contexts (#455)
+
+`paths-ignore` on the `pull_request` trigger meant GitHub never started
+the main CI workflow for a docs-only PR (this documentation wave included)
+— so 8 of the repo's 9 required branch-protection contexts never reported
+a status for that PR's head SHA, and a required context with no status
+blocks a PR forever. The docs-only decision moved into a fast `changes`
+job (git diff against the PR's merge-base over the same path list the old
+`paths-ignore` used: `**/*.md`, `docs/**`, `notes/**`, `press/**`,
+`.swarm/**`, `LICENSE`), with every heavy job gated on its `docs_only`
+output. A docs-only PR now gets every required context reported as
+skipped (satisfying branch protection); a PR touching any non-doc file
+still runs the full matrix exactly as before. `paths-ignore` remains on
+the `push` trigger, where it only reduces CI load rather than blocking a
+merge.
