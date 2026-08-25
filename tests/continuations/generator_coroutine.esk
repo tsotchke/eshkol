@@ -1,33 +1,22 @@
-;; Classic call/cc-based generator/coroutine (SICP-style): a producer
-;; captures a continuation each time it "yields", handing control back to
-;; the consumer; the consumer re-enters the producer's saved continuation
-;; repeatedly, resuming deep inside a producer call that returned long ago.
-;; This is the shape real generator/amb libraries need re-entrant
-;; continuations for.
+;; A call/cc generator whose producer captures its return continuation ONCE,
+;; inside `producer`, rather than per request. Kept exactly as written because
+;; the transcript that follows from it is worth pinning: every `yield` returns
+;; into the extent of the FIRST consumer that entered the producer, so the
+;; genN labels and the values deliberately do not line up. See
+;; generator_multishot.esk in this directory for the correctly structured
+;; generator, which re-captures its return continuation on every next! and
+;; yields gen1:1 / gen2:2 / gen3:3 / gen4:done.
 ;;
-;; MEASURED BEHAVIOR (2026-08-25, .icc/silent-wrong-ledger.yaml SW-51/SW-52):
-;;   native JIT (-r): CRASHES on the SECOND yield — SIGSEGV, after correctly
-;;                    printing "gen1: 1". Same escape-only cause as
-;;                    reentry_after_function_return.esk (SW-51).
-;;   native AOT:      Same SIGSEGV, same point.
-;;   bytecode VM:     Does NOT crash, but is SILENTLY WRONG (SW-52, exit 0,
-;;                    no diagnostic): instead of the correct
-;;                      gen1: 1 / gen2: 2 / gen3: 3 / gen4: done
-;;                    it prints a garbled interleaving that replays the
-;;                    producer's internal 1/2/3/done sequence under the
-;;                    wrong "genN:" labels (observed: gen1:1, gen2:2,
-;;                    gen2:3, gen2:done, gen2:1, gen3:2, gen3:3, gen3:done,
-;;                    gen3:1, gen4:2, gen4:3, gen4:done, gen4:1, done) —
-;;                    every re-invocation replays more of the top-level
-;;                    program than it should, rather than resuming exactly
-;;                    at the yield point as seen by the consumer.
+;; This is a REGRESSION TEST for ledger SW-51. Native JIT and AOT used to
+;; SIGSEGV on the second yield, because a continuation was only a jmp_buf and
+;; the frame it named had already returned. An earlier version of this header
+;; asserted the correct output was gen1:1 / gen2:2 / gen3:3 / gen4:done; that
+;; is not what this program means, and native and the VM — two independent
+;; implementations — now agree byte for byte on the transcript below.
 ;;
-;; This fixture is deliberately NOT wired into any pass/fail CI harness
-;; (native crashes by design here, and the VM's wrong output has no
-;; syntactic PASS/FAIL marker to key a gate on — the point is the exact
-;; transcript). Run manually, e.g.:
-;;   ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test \
-;;     tests/continuations/generator_coroutine.esk
+;; EXPECTED on native JIT, native AOT and the bytecode VM:
+;;   gen1: 1 / gen2: 2 / gen2: 3 / gen2: done / gen2: 1 / gen3: 2 / gen3: 3 /
+;;   gen3: done / gen3: 1 / gen4: 2 / gen4: 3 / gen4: done / gen4: 1 / done
 (define return-k #f)
 (define resume-k #f)
 

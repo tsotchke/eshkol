@@ -1,36 +1,19 @@
-;; Classic multi-shot hazard: a continuation is captured inside a function
-;; call (f), which then RETURNS normally, and only afterward is the saved
-;; continuation invoked again from a completely different dynamic extent
-;; (top level, after several intervening calls to display/newline).
+;; A continuation captured inside a function call which then RETURNS normally,
+;; re-invoked afterwards from a different dynamic extent. This is the shape a
+;; jmp_buf alone cannot survive: by the second invocation the capturing frame
+;; has been popped and its memory reused.
 ;;
-;; This is the shape escape-only setjmp/longjmp continuations cannot handle:
-;; by the time of the second invocation, f's native stack frame has been
-;; popped and its memory reused by the intervening calls.
+;; This is a REGRESSION TEST for ledger SW-51. Native JIT and AOT used to SIGILL
+;; the instant the popped frame was re-entered.
 ;;
-;; MEASURED BEHAVIOR (2026-08-25, .icc/silent-wrong-ledger.yaml SW-51):
-;;   native JIT (-r): CRASHES — SIGILL ("illegal instruction"), after
-;;                    printing "f returned: 2" and
-;;                    "about to re-invoke k after f's extent exited".
-;;                    Eshkol's own signal handler catches it and reports
-;;                    "this is most likely a stack overflow" (a reasonable
-;;                    guess given the symptom, but the actual cause is
-;;                    longjmp restoring a stack/frame-pointer state whose
-;;                    backing memory has been overwritten).
-;;   native AOT:      Same SIGILL, same point.
-;;   bytecode VM:     Does NOT crash — correctly prints
-;;                    "re-invoke result: 11" and then "done". The VM
-;;                    captures continuations by snapshotting its own
-;;                    operand stack and call-frame array (not the C stack),
-;;                    so re-entering a popped Scheme-level frame is not
-;;                    inherently unsafe there the way it is for setjmp/
-;;                    longjmp. (Contrast with generator_coroutine.esk, where
-;;                    a second re-entry on the VM DOES go wrong — the VM's
-;;                    continuation support is not fully multi-shot either,
-;;                    it is just broken in a different way than native's.)
+;; Note the second "about to re-invoke" line is correct, not a replay bug:
+;; re-entering k returns 11 into the `(display (f))` of the first line, and
+;; execution then continues forward through the remaining top-level forms with
+;; k now #f.
 ;;
-;; This fixture is deliberately NOT wired into any pass/fail CI harness
-;; (native crashes by design here). Run manually, e.g.:
-;;   ./build/eshkol-run -r tests/continuations/reentry_after_function_return.esk
+;; EXPECTED on native JIT, native AOT and the bytecode VM:
+;;   f returned: 2 / about to re-invoke k after f's extent exited /
+;;   re-invoke result: 11 / about to re-invoke k after f's extent exited / done
 (define k #f)
 (define (f)
   (+ 1 (call/cc (lambda (c) (set! k c) 1))))

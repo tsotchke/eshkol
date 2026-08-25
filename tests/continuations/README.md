@@ -1,56 +1,60 @@
-# Continuation re-entry measurement fixtures
+# Continuation re-entry fixtures
 
-These three programs measure exactly what happens when a captured
-`call/cc` continuation is invoked more than once — specifically, after the
-dynamic extent that captured it has already exited (the classic
-generator/`amb` shape). They were written to settle a documentation
-dispute: `docs/reference/language/continuations.md` claimed Eshkol has
-"full re-entrant continuations, not merely a one-shot escape," while three
-other docs (`docs/breakdown/CONTINUATIONS.md`,
-`docs/COMPLETE_LANGUAGE_SPECIFICATION.md`,
-`docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md`,
-`docs/breakdown/SCHEME_COMPATIBILITY.md`) state call/cc is single-shot via
-setjmp/longjmp. Neither side had a re-entry test to point to.
+These programs pin what happens when a captured `call/cc` continuation is
+invoked more than once — in particular after the dynamic extent that captured
+it has already exited, which is the shape every generator, coroutine and
+`amb`-style backtracking search needs.
 
-See `docs/reference/language/continuations.md` for the resolved, precise,
-per-engine account of current behavior, and `.icc/silent-wrong-ledger.yaml`
-entries SW-51 (native, LOUD-ERROR) and SW-52 (bytecode VM, SILENT-WRONG,
-waived) for the ledgered defects these fixtures reproduce.
-
-## Why these are not wired into any pass/fail CI harness
-
-Every file here reproduces either a crash (native JIT/AOT) or an infinite
-loop / silently wrong transcript (bytecode VM) by design — that is the
-finding. There is no well-formed PASS/FAIL marker convention in this
-repository's test harnesses for "must crash the same way it did last time"
-or "must hang," and building one was judged not worth the risk of an
-unstable CI lane for a measurement fixture. Run them manually:
+They are **gated in CI** by `scripts/run_continuation_tests.sh`, which runs
+each fixture on all three engines — native JIT (`-r`), native AOT, and the
+bytecode VM — and compares the transcript against the committed expected file
+in `expected/`. Comparing the exact transcript on all three engines, rather
+than looking for a `PASS` marker, is deliberate: these programs measure WHERE
+control resumes, and the way to get that wrong is to produce plausible output
+in the wrong order or from the wrong extent. Output is normalised the same way
+`scripts/run_vm_parity.sh` normalises it (banner lines stripped, all newlines
+removed), because the VM emits a newline after every `display` where native
+emits none.
 
 ```
-# doc_example_multishot.esk — correct on native, hangs on the VM (kill it):
-./build/eshkol-run -r tests/continuations/doc_example_multishot.esk
-ESHKOL_VM_NO_DISASM=1 timeout 5 ./build/eshkol-vm-standalone-test tests/continuations/doc_example_multishot.esk
-
-# reentry_after_function_return.esk — SIGILLs on native, correct on the VM:
-./build/eshkol-run -r tests/continuations/reentry_after_function_return.esk
-ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test tests/continuations/reentry_after_function_return.esk
-
-# generator_coroutine.esk — SIGSEGVs on native, silently wrong on the VM:
-./build/eshkol-run -r tests/continuations/generator_coroutine.esk
-ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test tests/continuations/generator_coroutine.esk
+scripts/run_continuation_tests.sh              # all fixtures, all three engines
+BUILD_DIR=build scripts/run_continuation_tests.sh
 ```
 
-(macOS has no `timeout(1)` by default; wrap with a manual background +
-`kill` if it is not installed.)
+## The fixtures
 
-## What this settles
+| fixture | what it pins |
+| --- | --- |
+| `doc_example_multishot.esk` | the documented top-level multi-shot example; regression test for SW-52 |
+| `reentry_after_function_return.esk` | re-entry after the capturing frame returned; regression test for SW-51 |
+| `generator_coroutine.esk` | a generator that captures its return continuation once, inside the producer |
+| `generator_multishot.esk` | a correctly structured generator, re-capturing per request |
+| `amb_backtracking.esk` | McCarthy `amb`: each choice point re-entered once per alternative |
+| `region_capture_resume.esk` | capture inside `with-region`, resumed after the region exits |
 
-- `call/cc` being escape-only is not, by itself, a defect — most real uses
-  of `call/cc` (early return, exception-style unwinding) are escape-only
-  and native handles those correctly and efficiently.
-- The defect is that `continuations.md` claimed capability the
-  implementation does not have, and that the three other docs disagreed
-  with it instead of all three being reconciled to the measured truth.
-- Full multi-shot re-entrant continuations remain a tracked goal — see the
-  "Build item: full multi-shot re-entrant continuations" section of
-  `docs/reference/language/continuations.md` for scope and target.
+## History
+
+These fixtures were written to settle a documentation dispute, and originally
+sat outside CI because every one of them either crashed (native SIGILL/SIGSEGV,
+ledger SW-51) or hung / produced a wrong transcript (bytecode VM, SW-52) by
+design — that was the finding. Both defects are fixed, so they are gates now.
+
+Two expectations recorded during that investigation were themselves wrong and
+have been corrected here:
+
+- `generator_coroutine.esk` was said to owe
+  `gen1: 1 / gen2: 2 / gen3: 3 / gen4: done`. It does not: the program captures
+  `return-k` once, inside `producer`, so every `yield` returns into the extent
+  of the FIRST consumer that entered the producer. Native and the VM — two
+  independent implementations — now agree byte for byte on the transcript that
+  actually follows. `generator_multishot.esk` is the correctly structured
+  generator and does owe `gen1: 1 / gen2: 2 / gen3: 3 / gen4: done`.
+- The second `about to re-invoke` line in
+  `reentry_after_function_return.esk` is correct, not a replay defect: invoking
+  `k` returns 11 into the `(display (f))` of the first line, and execution then
+  continues forward through the remaining top-level forms.
+
+See `docs/reference/language/continuations.md` for the per-engine account of
+how re-entry is implemented, the ownership rule for regions, and the two
+remaining limits (a VM-only representation limit that fails loudly, and
+SW-53).

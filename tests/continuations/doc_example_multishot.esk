@@ -1,31 +1,15 @@
-;; Exact example transcribed from docs/reference/language/continuations.md's
-;; "Re-invocable (multi-shot) continuations" section (the doc's own claimed
-;; demonstration of full multi-shot re-entrant call/cc).
+;; Exact example from docs/reference/language/continuations.md: a continuation
+;; captured at top level, saved, and re-invoked until a counter runs out.
 ;;
-;; MEASURED BEHAVIOR (2026-08-25, .icc/silent-wrong-ledger.yaml SW-52):
-;;   native JIT (-r): correct — prints "1" "2" "3" "done", exit 0.
-;;   native AOT:      correct — prints "1" "2" "3" "done", exit 0.
-;;   bytecode VM:     WRONG — prints "1" then an unbounded stream of "2",
-;;                    forever. Does not terminate: the VM's own runaway-
-;;                    instruction safety net (ESHKOL_VM_MAX_INSN, default
-;;                    10,000,000) does not fire either, because the local
-;;                    instruction counter in the dispatch loop is
-;;                    reinitialised every time a continuation invocation
-;;                    unwinds back into that loop, so the counter never
-;;                    accumulates far enough to trip.
+;; This is a REGRESSION TEST for ledger SW-52. The bytecode VM used to print
+;; "1" and then an unbounded stream of "2", never terminating: a continuation
+;; snapshotted and restored the whole operand stack, and because the VM binds
+;; every top-level define to an operand-stack slot, re-entry rolled `n` back to
+;; its capture-time value along with the control state. The loop guard could
+;; therefore never advance. R7RS call/cc captures the control state, not the
+;; store, so `set!` must survive re-entry.
 ;;
-;; Why native "works" here: this specific shape re-enters entirely within
-;; the same top-level flow (no intervening function call has returned), so
-;; the setjmp/longjmp jmp_buf target is still live stack. It is NOT evidence
-;; of general multi-shot support — see reentry_after_function_return.esk and
-;; generator_coroutine.esk in this directory for shapes where a captured
-;; continuation's frame has actually returned before re-invocation, which is
-;; the case escape-only (setjmp/longjmp) implementations cannot handle.
-;;
-;; This fixture is deliberately NOT wired into any pass/fail CI harness: the
-;; VM run does not terminate. Run manually with a timeout, e.g.:
-;;   ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test \
-;;     tests/continuations/doc_example_multishot.esk   # (kill after a few seconds)
+;; EXPECTED on native JIT, native AOT and the bytecode VM: 1 / 2 / 3 / done.
 (define k #f)
 (define n 0)
 (display (+ 1 (call/cc (lambda (c) (set! k c) 0))))
