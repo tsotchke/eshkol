@@ -9,6 +9,8 @@ Kinds (see .swarm/DEPTH_PARAMETRIC_TESTING.md):
   self_tail      self tail recursion            -> must be O(1) stack (1e8 ok)
   mutual_tail2   mutual tail recursion, 2-cycle -> proper tail call, O(1) stack (musttail)
   mutual_tail3   mutual tail recursion, 3-cycle -> proper tail call, O(1) stack (musttail)
+  mutual_tail_cond   mutual tail recursion spelled with cond  -> O(1) stack (ESH-0102b)
+  mutual_tail_forms  mutual 4-cycle via cond/when/or/case     -> O(1) stack (ESH-0102b)
   non_tail       non-tail recursion (stack acc) -> documented CLEAN ceiling (ESH-0112)
   cps            CPS / explicit continuation    -> clean 100000 guard (ESH-0080 fixed #93)
   through_map    recursion through map (h.o.)    -> clean 100000 guard
@@ -101,6 +103,49 @@ KINDS = {
             (200000, "pass"),
             (500000, "pass"),
             (5000000, "pass"),
+        ],
+    },
+    "mutual_tail_cond": {
+        # ESH-0102b REGRESSION: mutual tail recursion spelled with `cond` instead
+        # of `if`. Before the fix this shape was never offered to the mutual-TCO
+        # lowering at all (collectMutualTailCallSites descended only through
+        # if/begin/let, while isInTailPosition already understood cond), so it
+        # lowered to an ordinary call, grew one native frame per hop and died of
+        # stack exhaustion between 500,000 and 5,000,000 hops -- while the
+        # byte-identical program spelled with `if` ran flat to 5,000,000+.
+        # R7RS section 3.5 makes a cond clause tail, so these cells are `pass`:
+        # a CLEAN-LIMIT here is the regression, not a platform boundary.
+        "doc": "mutual tail recursion, 2-cycle spelled with cond -- proper tail call, O(1) stack",
+        "defs": ("(define (cping n acc) (cond ((= n 0) acc) (else (cpong (- n 1) (+ acc n)))))\n"
+                 "(define (cpong n acc) (cond ((= n 0) acc) (else (cping (- n 1) (+ acc n)))))"),
+        "call": "(cping {N} 0)",
+        "oracle": "tri",
+        "stdlib": False,
+        "ladder": [
+            (500000, "pass"),
+            (5000000, "pass"),
+            (100000000, "pass"),
+        ],
+    },
+    "mutual_tail_forms": {
+        # ESH-0102b REGRESSION, breadth cell: one 4-cycle that routes its tail
+        # call through a DIFFERENT non-`if` conditional at each hop -- cond, then
+        # when, then or, then case. Every one of the four was silently excluded
+        # from mutual TCO by the same traversal gap, so a single passing run at
+        # 100,000,000 hops pins all four at once: if any one of them regressed to
+        # an ordinary call the cycle would grow ~25,000,000 native frames.
+        "doc": "mutual tail recursion, 4-cycle through cond/when/or/case -- proper tail call, O(1) stack",
+        "defs": ("(define (mfa n acc) (cond ((= n 0) acc) (else (mfb (- n 1) (+ acc n)))))\n"
+                 "(define (mfb n acc) (if (= n 0) acc (when #t (mfc (- n 1) (+ acc n)))))\n"
+                 "(define (mfc n acc) (if (= n 0) acc (or #f (mfd (- n 1) (+ acc n)))))\n"
+                 "(define (mfd n acc) (case n ((0) acc) (else (mfa (- n 1) (+ acc n)))))"),
+        "call": "(mfa {N} 0)",
+        "oracle": "tri",
+        "stdlib": False,
+        "ladder": [
+            (500000, "pass"),
+            (5000000, "pass"),
+            (100000000, "pass"),
         ],
     },
     "non_tail": {
@@ -235,7 +280,8 @@ KINDS = {
 
 # order files deterministically
 KIND_ORDER = [
-    "self_tail", "mutual_tail2", "mutual_tail3", "non_tail",
+    "self_tail", "mutual_tail2", "mutual_tail3",
+    "mutual_tail_cond", "mutual_tail_forms", "non_tail",
     "cps", "through_map", "metacircular",
     "dynamic_wind", "callcc", "guard", "stdlib_length",
 ]

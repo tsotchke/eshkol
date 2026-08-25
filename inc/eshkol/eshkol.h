@@ -502,6 +502,16 @@ typedef struct eshkol_object_header {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
                      "Object header must be 8 bytes for alignment");
 
+/* OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4).
+ *
+ * Defines the 32-byte successor header, the layout-descriptor record, and
+ * static assertions pinning BOTH layouts. Selecting v2 is off by default; with
+ * the flag off nothing below changes the live object ABI. Included here rather
+ * than standalone because it pins the v1 layout above alongside the v2 one, and
+ * because ESHKOL_STATIC_ASSERT and eshkol_object_header_t must already exist.
+ * See docs/design/ABI_V2_MIGRATION_INVENTORY.md. */
+#include "eshkol/memory_abi_v2.h"
+
 // ───────────────────────────────────────────────────────────────────────────
 // HEAP_PTR SUBTYPES (type = ESHKOL_VALUE_HEAP_PTR = 8)
 // Data structures allocated on the arena

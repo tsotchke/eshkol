@@ -27222,6 +27222,94 @@ private:
                     collectMutualTailCallSites(op->let_op.body, body, self_name);
                     break;
 
+                // ESH-0102b: the six non-`if` conditional forms.
+                //
+                // This walker decides which call sites are OFFERED to the
+                // mutual-TCO lowering in codegenCall; isInTailPosition() then
+                // confirms each offer. Until this fix the walker only descended
+                // through `if` / `begin` / `let`, while isInTailPosition already
+                // understood cond, case, when, unless, and, or — so the ORACLE
+                // was strictly wider than the TRAVERSAL and a mutual tail call
+                // spelled with any of those six forms was never even considered.
+                // It lowered to an ordinary call, grew the native stack one frame
+                // per hop, and died of stack exhaustion (SIGBUS with the fatal-
+                // signal diagnostic) a few million hops in, while the identical
+                // program spelled with `if` ran flat. R7RS section 3.5 makes all
+                // of these tail positions, so this was a conformance defect, not
+                // a missing optimization. The traversal below mirrors, form for
+                // form, the tail rules already encoded in isInTailPosition().
+                //
+                // GUARD_OP is deliberately NOT descended into even though
+                // isInTailPosition() treats its body and handler tails as tail
+                // positions: `musttail` discards the caller frame outright, which
+                // would skip the handler-stack pop that leaving a `guard` owes.
+                // Self-TCO can treat guard bodies as tail because it branches to
+                // a loop header with the handler bookkeeping intact (ESH-0222);
+                // a mutual musttail cannot. See docs/reference/language/tail-calls.md.
+
+                case ESHKOL_COND_OP:
+                    // COND_OP uses call_op: each variables[i] is a clause, itself
+                    // a CALL_OP whose func is the test (NOT tail) and whose vars
+                    // are the clause body (implicit begin). Only the LAST body
+                    // expression of each clause inherits cond's tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_OP ||
+                            clause->operation.op != ESHKOL_CALL_OP ||
+                            clause->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = clause->operation.call_op.num_vars - 1;
+                        collectMutualTailCallSites(
+                            &clause->operation.call_op.variables[last], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_CASE_OP:
+                    // CASE_OP uses call_op: func = key (NOT tail), variables[i] =
+                    // clause CONS(car=datums, cdr=body). The body is a CALL_OP
+                    // whose LAST expression inherits case's tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) {
+                            continue;
+                        }
+                        const eshkol_ast_t* clause_body = clause->cons_cell.cdr;
+                        if (clause_body->type != ESHKOL_OP ||
+                            clause_body->operation.op != ESHKOL_CALL_OP ||
+                            clause_body->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = clause_body->operation.call_op.num_vars - 1;
+                        collectMutualTailCallSites(
+                            &clause_body->operation.call_op.variables[last], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    // when/unless use call_op: variables[0] = test (NOT tail),
+                    // variables[1..] = body (implicit begin). Only the LAST body
+                    // expression is in tail position.
+                    if (op->call_op.num_vars > 1) {
+                        collectMutualTailCallSites(
+                            &op->call_op.variables[op->call_op.num_vars - 1], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    // and/or use sequence_op: every operand but the last is a
+                    // (non-tail) short-circuit test; only the LAST operand
+                    // supplies the result and inherits the form's tail position.
+                    if (op->sequence_op.num_expressions > 0) {
+                        collectMutualTailCallSites(
+                            &op->sequence_op.expressions[
+                                op->sequence_op.num_expressions - 1],
+                            body, self_name);
+                    }
+                    break;
+
                 case ESHKOL_LAMBDA_OP:
                     // Don't recurse into nested lambdas
                     break;

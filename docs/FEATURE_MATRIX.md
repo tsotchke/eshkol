@@ -54,7 +54,7 @@ number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 | Closure homoiconicity | Yes | Display shows source code | Verified |
 | **Tail Call Optimization** |
 | Self-recursive TCO | Yes | Functions calling themselves | 15+ tests |
-| Mutual recursion TCO | Yes | Functions calling each other | Trampoline-based |
+| Mutual recursion TCO | Yes | Functions calling each other, in every tail spelling (`if`/`cond`/`case`/`when`/`unless`/`and`/`or`) | LLVM `musttail`; 1e8 hops flat, JIT + AOT |
 | Trampoline runtime | Yes | Non-self tail calls | 5+ tests |
 
 ---
