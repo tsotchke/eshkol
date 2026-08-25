@@ -640,10 +640,10 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Call C functions | Yes | Eshkol → C | extern declarations |
 | Access C globals | Yes | Eshkol → C | extern-var |
 | C calls Eshkol | Planned | C → Eshkol | Planned callback API |
-| **Python Integration** |
+| **Python Integration** — see [reference/bindings/python.md](reference/bindings/python.md) |
 | Call Python from Eshkol | Yes | v1.2 | Stable C FFI |
 | Call Eshkol from Python | Yes | v1.2 | pybind11 bindings (`bindings/python/`) |
-| NumPy interop | Yes | v1.2 | Zero-copy array interop |
+| NumPy interop | Yes | v1.2; lifetime-hardened v1.3.5 (#458) | Zero-copy array interop; an exported array now holds a strong reference to its owning `Context` via a NumPy capsule, so the array stays valid past the `Context` object's own lifetime (closes audit H1, SW-44) |
 | **Data Formats** |
 | JSON | Yes | - | Parse and generate |
 | CSV | Yes | - | Read and write |
