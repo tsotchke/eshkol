@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 if eshkol_durable_enabled; then
     LANGUAGE_COVERAGE_WORK="$(eshkol_durable_prepare_dir language-coverage)" || exit $?
     TRACE_DIR=${ICC_TRACE_DIR:-"$LANGUAGE_COVERAGE_WORK/traces"}
@@ -14,6 +15,15 @@ else
     TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
 fi
 TRACE_FILE=${LANGUAGE_COVERAGE_TRACE:-"$TRACE_DIR/language_surface_coverage.jsonl"}
+# Informational only — never read by language_coverage.py, never gates the
+# floor computation below. Records whether the full-suite/quantum-probe
+# PREREQUISITE runs that generate execution-trace evidence were themselves
+# clean, so a genuine full-suite regression stays visible even though (see
+# "Fresh core/native/VM execution evidence" below) it no longer aborts the
+# coverage measurement itself.
+PREREQ_TRACE="$TRACE_DIR/language_surface_coverage_prereq.jsonl"
+mkdir -p "$TRACE_DIR"
+: > "$PREREQ_TRACE"
 RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS:-}
 EXTRA_RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_EXTRA_RUNTIME_TRACE_DIRS:-}
 BUILD_DIR=${BUILD_DIR:-build}
@@ -111,16 +121,63 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
     QUANTUM_TRACE="$GENERATED_TRACE_ROOT/quantum"
     mkdir -p "$CORE_TRACE" "$QUANTUM_TRACE"
 
+    # 2026-08-25 architecture audit, section 3 (case b): under this script's
+    # top-level `set -euo pipefail`, a bare nonzero exit from either
+    # prerequisite below used to abort the WHOLE script immediately — before
+    # gen_language_surface.py / language_coverage.py ever ran — even though
+    # run_all_tests.sh (see its own header: "DO NOT use set -e — we need to
+    # continue after suite failures") had already run every suite to
+    # completion and every trace file was already fully written. One
+    # environment-driven flake in one suite, among thousands of tests, made
+    # the coverage-floor probe report exit 1 while a direct re-run gave exit
+    # 0 with 1106/1106 (100.0%), 0 uncovered — the SAME evidence either way,
+    # just never reached the first time. Coverage measurement and full-suite
+    # correctness are different questions answered by different gates
+    # (this vs. scripts/run_ctest_gate.sh / scripts/run_all_tests.sh's own
+    # exit code in CI); capturing the exit code here instead of dying on it
+    # lets this script answer only the one it owns, using whatever execution
+    # evidence the prerequisite already produced. A REAL regression is not
+    # hidden: it is still visible in run_all_tests.sh's own console summary
+    # above, in $PREREQ_TRACE below, and (independently) in the CI-required
+    # ctest gate — this script's job is coverage, not suite health.
     echo "== Fresh core/native/VM execution evidence =="
+    core_rc=0
     ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR="$CORE_TRACE" \
-        BUILD_DIR="$BUILD_DIR_FOR_TESTS" "$REPO_ROOT/scripts/run_all_tests.sh"
+        BUILD_DIR="$BUILD_DIR_FOR_TESTS" "$REPO_ROOT/scripts/run_all_tests.sh" || core_rc=$?
+    if [ "$core_rc" -ne 0 ]; then
+        core_class=$(eshkol_outcome_classify_exit "$core_rc")
+        echo "run_language_coverage: run_all_tests.sh prerequisite exited $core_rc" \
+             "(classified $core_class) — continuing to measure coverage from the" \
+             "execution evidence it already produced; see run_ctest_gate.sh / CI for" \
+             "full-suite pass/fail." >&2
+        eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq core_suite "$core_class" \
+            "run_all_tests.sh exited $core_rc"
+    else
+        eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq core_suite PASS \
+            "run_all_tests.sh exited 0"
+    fi
 
     echo "== Fresh quantum/PQC execution evidence =="
+    quantum_issues=0
     for test in "$REPO_ROOT"/tests/quantum/*.esk; do
         echo "== ${test#"$REPO_ROOT"/} =="
+        q_rc=0
         ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR="$QUANTUM_TRACE" \
-            "$QUANTUM_RUN" -r "$test" "-L$QUANTUM_BUILD_DIR_PATH"
+            "$QUANTUM_RUN" -r "$test" "-L$QUANTUM_BUILD_DIR_PATH" || q_rc=$?
+        if [ "$q_rc" -ne 0 ]; then
+            q_class=$(eshkol_outcome_classify_exit "$q_rc")
+            quantum_issues=$((quantum_issues + 1))
+            echo "run_language_coverage: ${test#"$REPO_ROOT"/} exited $q_rc" \
+                 "(classified $q_class) — continuing; other quantum probes still" \
+                 "contribute their own execution evidence." >&2
+            eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq \
+                "quantum_${test##*/}" "$q_class" "exited $q_rc"
+        fi
     done
+    if [ "$quantum_issues" -eq 0 ]; then
+        eshkol_outcome_emit_event "$PREREQ_TRACE" language_coverage_prereq quantum_suite PASS \
+            "all quantum probes exited 0"
+    fi
 
     # Refuse to publish coverage evidence gathered across a rebuild.
     if ! eshkol_test_toolchain_verify "$BUILD_DIR_PATH" core; then
