@@ -1,0 +1,31 @@
+; SW-46 / SW-47 / SW-48: a quoted datum keeps its KIND on both engines.
+;
+; Before the fix the two substrates disagreed three ways, all silently and all
+; with exit 0:
+;   native  '#(...) had no reader branch at all, so (or x '#()) answered ()
+;           for every input;
+;   VM      '#(1 2) quoted as the LIST (vector 1 2), so (vector? '#(1 2)) was #f
+;           and (vector-ref '#(9 8) 1) was ();
+;   VM      '(#\a) quoted as the integer list (97), and '(2.0) as the EXACT 2.
+;
+; Results are printed as predicates and lengths rather than as the datum
+; itself, so a divergence shows up as a value mismatch and not merely as a
+; printing difference.
+(define (or-vec x) (or x '#()))
+(display (or-vec 7)) (newline)
+(display (vector? (or-vec #f))) (newline)
+(display (vector-length (or-vec #f))) (newline)
+(display (vector? '#(1 2))) (newline)
+(display (vector-length '#(1 2))) (newline)
+(display (vector-ref '#(9 8) 1)) (newline)
+(display (vector? '#())) (newline)
+(display (null? '#())) (newline)
+(display (symbol? (vector-ref '#(a b) 0))) (newline)
+(display (vector? (vector-ref '#(#(1) #(2)) 0))) (newline)
+(display (char? (car '(#\a)))) (newline)
+(display (char? (vector-ref '#(#\a #\b) 1))) (newline)
+(display (exact? (car '(2.0)))) (newline)
+(display (exact? (car '(2)))) (newline)
+(display (list? '(vector 1 2))) (newline)
+(display (vector? '(vector 1 2))) (newline)
+(display (length '(vector 1 2))) (newline)

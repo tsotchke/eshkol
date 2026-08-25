@@ -1,0 +1,103 @@
+;; quoted_datum_kinds_test.esk — SW-46 / SW-47 / SW-48 regression.
+;;
+;; A quoted datum must keep its KIND. `quote` selects a value; it never
+;; converts one datum kind into another. Three shipped defects broke that:
+;;
+;;   SW-46 (native)  the reader's quoted-data dispatch had no branch for `#(`,
+;;                   so `'#(...)` fell through to parse_atom, which returns an
+;;                   empty node and leaves the vector's own tokens in the
+;;                   stream. Where the leftovers happened to balance — `'#()`
+;;                   as the last argument of an enclosing form — the program
+;;                   compiled and ran with exit 0 while the datum had silently
+;;                   become `()`. This is the residue of #229: the function
+;;                   body `(or x '#())` answered `()` for EVERY input,
+;;                   `(g 7)` included.
+;;   SW-47 (VM)      the VM reader desugars `#(1 2)` to the call node
+;;                   `(vector 1 2)`; compile_quote then quoted that node as a
+;;                   LIST, so `(vector? '#(1 2))` was #f and
+;;                   `(vector-ref '#(9 8) 1)` was ().
+;;   SW-48 (VM)      compile_quote's numeric arm read only the `is_int` reader
+;;                   flag, dropping `is_char` and `is_inexact`: `'(#\a)` became
+;;                   the integer list `(97)` and `'(2.0)` became the EXACT 2.
+;;
+;; Ground truth for every check below is chibi-scheme 0.12.0; the same
+;; assertions ride the reference-differential corpus
+;; (tests/reference-diff/corpus/0035_quote_datum_kinds.scm) and the VM parity
+;; corpus (tests/vm_parity/corpus/quoted_datum_kinds.esk).
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; --- SW-46: the #229 residue itself. The body must return its argument. ---
+(define (or-vec x) (or x '#()))
+(define (or-nil x) (or x '()))
+(define (and-vec x) (and x '#()))
+
+(check "(or x '#()) returns x"        (= (or-vec 7) 7))
+(check "(or x '#()) fallback is a vector" (vector? (or-vec #f)))
+(check "(or x '#()) fallback is empty"    (= (vector-length (or-vec #f)) 0))
+(check "(or x '()) returns x"         (= (or-nil 7) 7))
+(check "(or x '()) fallback is null"  (null? (or-nil #f)))
+(check "(and x '#()) is the vector"   (vector? (and-vec 7)))
+(check "(and #f '#()) is #f"          (not (and-vec #f)))
+
+;; --- Quoted vectors are vectors, everywhere they can appear ---
+(check "'#(1 2) is a vector"          (vector? '#(1 2)))
+(check "'#(1 2) length"               (= (vector-length '#(1 2)) 2))
+(check "'#(9 8) ref 0"                (= (vector-ref '#(9 8) 0) 9))
+(check "'#(9 8) ref 1"                (= (vector-ref '#(9 8) 1) 8))
+(check "'#() is a vector"             (vector? '#()))
+(check "'#() is empty"                (= (vector-length '#()) 0))
+(check "'#() is not null"             (not (null? '#())))
+(check "quoted vector equal? built"   (equal? '#(1 2) (vector 1 2)))
+(check "vector inside quoted list"    (vector? (car (cdr '(a #(1 2) b)))))
+(check "quoted list around vector"    (= (length '(a #(1 2) b)) 3))
+(check "nested quoted vectors"        (vector? (vector-ref '#(#(1) #(2)) 0)))
+(check "nested quoted vector ref"     (= (vector-ref (vector-ref '#(#(1) #(2)) 1) 0) 2))
+
+;; Elements of a quoted vector are DATA: symbols stay symbols.
+(check "quoted vector holds symbols"  (symbol? (vector-ref '#(a b) 0)))
+(check "quoted vector symbol value"   (eq? (vector-ref '#(a b) 1) 'b))
+(check "quoted vector holds strings"  (string? (vector-ref '#("x") 0)))
+(check "quoted vector holds booleans" (eq? (vector-ref '#(#t) 0) #t))
+(check "quoted vector holds a list"   (list? (vector-ref '#((1 2)) 0)))
+
+;; --- SW-48: char-ness and exactness survive quoting ---
+(check "quoted char stays a char"     (char? (car '(#\a))))
+(check "quoted char value"            (char=? (car '(#\a)) #\a))
+(check "quoted char in a vector"      (char? (vector-ref '#(#\a #\b) 0)))
+(check "quoted inexact stays inexact" (not (exact? (car '(2.0)))))
+(check "quoted inexact value"         (= (car '(2.0)) 2))
+(check "quoted exact stays exact"     (exact? (car '(2))))
+
+;; --- Nested reader macros under quote are DATA, not evaluation (R7RS 4.1.2) ---
+(check "''a is a list"                (list? ''a))
+(check "''a head is quote"            (eq? (car ''a) 'quote))
+(check "'(a ,b) length"               (= (length '(a ,b)) 2))
+(check "'(a ,b) tail head is unquote" (eq? (car (car (cdr '(a ,b)))) 'unquote))
+(check "'(a `b) tail is quasiquote"   (eq? (car (car (cdr '(a `b)))) 'quasiquote))
+
+;; --- Negative controls: only the READER's #( makes a vector ---
+;; A hand-written (vector 1 2) inside quote is still the three-element LIST it
+;; reads as. If this ever flips, the fix has started guessing from the head
+;; symbol instead of the reader's own record of what it read.
+(check "'(vector 1 2) is a list"      (list? '(vector 1 2)))
+(check "'(vector 1 2) is not a vector" (not (vector? '(vector 1 2))))
+(check "'(vector 1 2) car is a symbol" (eq? (car '(vector 1 2)) 'vector))
+(check "'(vector 1 2) length"         (= (length '(vector 1 2)) 3))
+;; And an UNQUOTED #( still evaluates its elements into a vector.
+(check "unquoted #(1 2) is a vector"  (vector? #(1 2)))
+(check "unquoted #( evaluates"        (= (vector-ref #((+ 1 2)) 0) 3))
+
+;; --- Summary ---
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: quoted_datum_kinds_test") (newline) (exit 0))
+    (begin (display "FAIL: quoted_datum_kinds_test") (newline) (exit 1)))

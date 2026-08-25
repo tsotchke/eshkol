@@ -2526,25 +2526,90 @@ static eshkol_ast_t parse_quoted_data(SchemeTokenizer& tokenizer) {
  * @brief Parses a quoted datum whose first token, @p token, has already been consumed.
  *
  * Dispatches on @p token: `(` begins a (possibly dotted) quoted list via
- * parse_quoted_list_internal(); a nested quote token recurses and wraps
- * the result in an ESHKOL_QUOTE_OP node; anything else is parsed as a
- * literal atom via parse_atom(). Unlike expression parsing, quoted data is
- * treated as literal — symbols and lists are not evaluated as calls.
+ * parse_quoted_list_internal(); `#(` begins a quoted vector literal
+ * (R7RS 7.1.2 `<vector>` is a `<datum>`) parsed into a 1-D ESHKOL_TENSOR_OP
+ * of quoted elements; a nested quote / quasiquote / unquote / unquote-splicing
+ * token recurses and wraps the result in the matching homoiconic op node
+ * (inside a quote those markers are DATA, so `'(a ,b)` is the two-element list
+ * `(a (unquote b))`); anything else is parsed as a literal atom via
+ * parse_atom(). Unlike expression parsing, quoted data is treated as literal —
+ * symbols and lists are not evaluated as calls.
+ *
+ * ESH-0229-residue: this dispatch used to be a bare
+ * `if (LPAREN) … else parse_atom(token)`, the same partial-dispatch shape that
+ * #229 fixed in the `and` / `or` argument loops. `parse_atom` has no case for
+ * TOKEN_VECTOR_START / TOKEN_BACKQUOTE / TOKEN_COMMA / TOKEN_COMMA_AT, so it
+ * returned an empty node and left the datum's own tokens in the stream. When
+ * those leftovers happened to balance — `'#()` in `(or x '#())`, whose only
+ * leftover is the `)` the enclosing form wanted anyway — the program compiled
+ * and ran with exit 0 while the quoted datum had silently become `()`: the
+ * function body `(or x '#())` answered `()` for every input, including `(g 7)`.
+ * When they did not balance, the whole rest of the file was swallowed and the
+ * compile failed with "source parsing failed". One partial dispatch, two
+ * failure modes; the fix is to give every legal datum token a real branch.
  */
 static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Token token) {
     if (token.type == TOKEN_LPAREN) {
         // Parse a list without requiring a symbol as first element
         return parse_quoted_list_internal(tokenizer);
-    } else if (token.type == TOKEN_QUOTE) {
-        // Nested quote - parse recursively
-        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-        eshkol_ast_t ast;
+    } else if (token.type == TOKEN_VECTOR_START) {
+        // Quoted vector literal: '#(1 two "three"). R7RS 7.1.2 makes a vector
+        // a datum, so its elements are quoted data (symbols stay symbols, not
+        // variable references) and nesting is arbitrary. Represented as the
+        // same 1-D TENSOR_OP the quasiquote reader builds, which
+        // codegenQuotedOperation materialises into a Scheme vector.
+        std::vector<eshkol_ast_t> elements;
+        while (true) {
+            Token elem_token = tokenizer.nextToken();
+            if (elem_token.type == TOKEN_RPAREN) break;
+            if (elem_token.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(elem_token,
+                    "unexpected end of input in quoted vector #(...)");
+                return {.type = ESHKOL_INVALID};
+            }
+            eshkol_ast_t elem = parse_quoted_data_with_token(tokenizer, elem_token);
+            if (elem.type == ESHKOL_INVALID) return elem;
+            elements.push_back(elem);
+        }
+        eshkol_ast_t ast = {};
         ast.type = ESHKOL_OP;
-        ast.operation.op = ESHKOL_QUOTE_OP;
+        ast.line = token.line;
+        ast.column = token.column;
+        ast.operation.op = ESHKOL_TENSOR_OP;
+        ast.operation.tensor_op.num_dimensions = 1;
+        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions[0] = elements.size();
+        ast.operation.tensor_op.total_elements = elements.size();
+        ast.operation.tensor_op.elements =
+            elements.empty() ? nullptr : new eshkol_ast_t[elements.size()];
+        for (size_t i = 0; i < elements.size(); i++) {
+            ast.operation.tensor_op.elements[i] = elements[i];
+        }
+        return ast;
+    } else if (token.type == TOKEN_QUOTE ||
+               token.type == TOKEN_BACKQUOTE ||
+               token.type == TOKEN_COMMA ||
+               token.type == TOKEN_COMMA_AT) {
+        // Nested reader macro inside quoted data. All four are DATA here, not
+        // evaluation: R7RS 4.1.2 says `''a` reads as `(quote a)`, and by the
+        // same rule `'(a ,b)` reads as `(a (unquote b))`. Wrap the inner datum
+        // in the matching homoiconic op — codegenQuotedOperation renders each
+        // as the two-element list `(<tag> <datum>)`.
+        eshkol_ast_t inner = parse_quoted_data(tokenizer);
+        if (inner.type == ESHKOL_INVALID) return inner;
+        eshkol_ast_t ast = {};
+        ast.type = ESHKOL_OP;
+        ast.line = token.line;
+        ast.column = token.column;
+        ast.operation.op =
+            token.type == TOKEN_QUOTE     ? ESHKOL_QUOTE_OP :
+            token.type == TOKEN_BACKQUOTE ? ESHKOL_QUASIQUOTE_OP :
+            token.type == TOKEN_COMMA     ? ESHKOL_UNQUOTE_OP :
+                                            ESHKOL_UNQUOTE_SPLICING_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
         ast.operation.call_op.variables = new eshkol_ast_t[1];
-        ast.operation.call_op.variables[0] = quoted;
+        ast.operation.call_op.variables[0] = inner;
         return ast;
     } else {
         // Atom
