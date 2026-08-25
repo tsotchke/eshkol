@@ -903,10 +903,82 @@ the numeric types that flow into it (so an integer accumulator that later takes 
 rational or real value is accepted rather than rejected).
 
 #### 3.6.8 Linear Types — `Qubit`
-`Qubit` is a first-class **linear** type: its values must be used exactly once. A
-`define`d function may declare linear parameters, and the checker enforces the
-use-exactly-once discipline (both double-use and drop are rejected), giving
-quantum-register operations a no-cloning guarantee at the type level.
+`Qubit` is a first-class **linear** type: its values must be used exactly once.
+A `define` or `lambda` parameter, or a `let`-family binding, may declare a
+linear type, and the checker enforces the use-exactly-once discipline. Both
+double-use (a clone) and drop are **compile-time type errors**: the compile
+exits nonzero and no artifact is written — in the default compilation mode, not
+only under `--strict-types`. This is what gives quantum-register operations a
+no-cloning guarantee at the type level rather than by convention.
+
+```scheme
+(define (bad-clone (q : Qubit)) (cons q q))   ; error: consumed more than once
+(define (bad-drop  (q : Qubit)) 42)           ; error: was not consumed
+(define (ok-thread (q : Qubit)) : Qubit (h (h q)))   ; fine: used exactly once
+```
+
+`--unsafe` is the one documented escape hatch and suppresses linear checking
+entirely: linear values may be duplicated there, silently, for FFI and
+low-level work.
+
+##### What is enforced
+
+The judgment is a static, worst-case-path analysis of the binder's own body. It
+charges the condition plus the **larger** of the two branches of an `if` (the
+branches are mutually exclusive, so `(if b (X q) (Z q))` consumes `q` exactly
+once and is accepted), the **sum** across `begin` sequences and across `and`/`or`
+(short-circuiting only ever evaluates fewer operands, and a linear binding any
+path can duplicate is ill-typed), and it follows aliases through `let`, so
+rebinding a qubit under a second name does not launder a clone. A closure
+capturing a linear value counts as a use of it.
+
+Enforced shapes — a violation in any of these is fatal:
+
+| Shape | Verdict |
+|---|---|
+| Direct double use of a linear parameter or `let` binding | error |
+| Two uses across a `begin`, an `and`/`or`, or the arguments of one call | error |
+| A use inside a closure plus a use outside it, or two uses inside one closure | error |
+| A use rebound through a `let` alias, then used twice | error |
+| A linear binding never used at all | error |
+| One use in each branch of an `if` | accepted |
+| Distinct linear bindings each used once | accepted |
+
+##### What is not enforced yet
+
+The analysis reports **no verdict at all** — neither acceptance nor rejection —
+for a body it cannot account for, and says so on stderr rather than guessing:
+
+```
+[WARN] Linearity not enforced: linear variable 'q' is not statically decidable
+here (body contains a control-flow or special form outside the decidable
+fragment); use-exactly-once is NOT enforced for it
+```
+
+Refusing to rule is deliberate. Under-approximating misses a clone; over-
+approximating rejects a correct quantum program, and that is the failure this
+must not have. The shapes outside the enforced set today:
+
+- **`cond`, `case`, `when`, `unless`, `do`, `guard`, `match`, `call/cc`,
+  `set!`** and other special forms whose clause structure the analysis does not
+  model. A qubit used only inside one of these draws the note above and is not
+  checked.
+- **Named `let`** — a loop body runs an unknown number of times, so a
+  single-path use count says nothing about it.
+- **Aliasing through data structures.** Storing a qubit in a vector, list or
+  record and reading it back twice is not tracked; only direct `let` aliases
+  are. `(vector-ref v 0)` twice over a vector holding a qubit compiles.
+- **Dynamic duplication.** A closure that captures a qubit once and is then
+  invoked many times is one static use; the analysis is static, not a use-count
+  at runtime.
+- **The bytecode VM.** Linear checking lives in the HoTT type checker, which
+  runs on the LLVM code-generation path only. `--profile hosted-vm --emit-eskb`
+  and the standalone VM compile and run a clone without complaint. This is an
+  engine-parity gap, not a VM design decision.
+
+Closing these is tracked work (conformity-audit item a7, ADR-0004): extending
+the decidable fragment to the remaining control-flow forms, tracking linear
+values through data structures, and running the linear judgment on the VM path.
 
 ### 3.7 Module System
 

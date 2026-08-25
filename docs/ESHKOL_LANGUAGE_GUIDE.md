@@ -1447,10 +1447,18 @@ mode accepts idiomatic dynamic-but-validated code without escape hatches:
   rather than being rejected when it widens (e.g. integer accumulator that later
   takes a rational or real value).
 - **Linear `Qubit` type.** A first-class linear type whose values must be used
-  exactly once; a `define`d function may declare linear parameters and the
-  checker enforces the use-exactly-once discipline (double-use and drop are both
-  rejected), giving quantum-register operations a no-cloning guarantee at the
-  type level.
+  exactly once. `define`/`lambda` parameters and `let` bindings may declare a
+  linear type, and double-use (a clone) and drop are both **compile-time type
+  errors** — the compile exits nonzero and writes no artifact, in the default
+  mode and not only under `--strict-types` — giving quantum-register operations
+  a no-cloning guarantee at the type level rather than by convention.
+  `--unsafe` remains the documented escape hatch. The judgment is a static
+  worst-case-path analysis: it accepts a qubit consumed once in each branch of
+  an `if`, follows `let` aliases, and for a body it cannot decide (`cond`,
+  `case`, `when`, named `let`, aliasing through data structures) it says so on
+  stderr and rules neither way. See
+  [the specification, 3.6.8](COMPLETE_LANGUAGE_SPECIFICATION.md) for the exact
+  enforced and unenforced sets, including the VM engine-parity gap.
 
 ---
 

@@ -69,6 +69,16 @@ errors stops before code generation, the command exits **nonzero**, and **no
 output binary is written**. In the default gradual mode the same programs report
 `[WARN] Type warning: …` and compile as before.
 
+**Linearity violations are the exception, and are fatal in both modes.** Gradual
+typing governs how much the checker is required to INFER; it is not a licence to
+compile a program the checker has PROVEN ill-formed. Cloning or dropping a value
+of a linear type (`Qubit`) stops code generation, exits nonzero and writes no
+binary with or without `--strict-types` — that is what makes the no-cloning
+guarantee a type error rather than a convention. `--unsafe`, documented as
+bypassing no-cloning for FFI and low-level work, still suppresses it silently.
+See [the specification, 3.6.8](../../COMPLETE_LANGUAGE_SPECIFICATION.md) for
+which shapes are enforced and which are not yet.
+
 ### Search paths
 
 | Flag | Alias | Meaning |
