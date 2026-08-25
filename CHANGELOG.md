@@ -173,6 +173,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merged fix; flagged in passing that the module's own docstring example
   (`ctx.derivative('sin', 0.5)`) does not work against the current
   `func_source` validation and needs a full `(lambda ...)` form instead.
+  Documented the #454 assurance gates and #455 CI fix in
+  [docs/TESTING.md](docs/TESTING.md), re-running all three gates'
+  `--self-test` modes plus both non-self-test invocations against the
+  real repo files. Added a "Bytecode VM Region Reclamation" section to
+  [docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md)
+  (the one doc file #461 didn't already normalize) with the full
+  `ESHKOL_VM_REGION_*` variable table and a fresh flat-RSS measurement
+  (25/26/27 MB at 1,000/4,000/16,000 iterations vs. 793 MB with the
+  evacuator disabled); `docs/VM_PARITY.md` checked and needs no changes
+  (its row counts still match `tests/vm_parity/PARITY.tsv` exactly).
+  `ROADMAP.md`'s v1.3.5 section and Release Timeline row updated to mark
+  the evacuator, H1 fix, and assurance-wave items shipped rather than
+  planned.
 
 ## [1.3.4-evolve] - 2026-07-31
 
