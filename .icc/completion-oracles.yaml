@@ -1310,11 +1310,58 @@ oracles:
         action: run_ad_sparse_gate
 
   # -----------------------------------------------------------------
-  # v1.4-connection readiness -- adds the AD infrastructure track
-  # assigned to v1.4 without replacing the networking/resource theme.
+  # v1.4-connection readiness — the "resource-sound systems profile"
+  # (docs/design/adr/0000-unified-trajectory.md Stage 3 / v1.4.0).
+  #
+  # This used to carry exactly one criterion for the entire release theme:
+  # a runtime_event nothing ever emitted (kind v1_4_connection / name
+  # connection_theme_deliverables, action replace_with_v1_4_connection_
+  # oracle). `icc readiness` graded that stub as a permanent, uninformative
+  # FAIL — it could never distinguish "hasn't started" from "half done"
+  # from "shipped". scripts/run_v14_connection_gate.sh replaces it: one
+  # criterion per deliverable from ROADMAP.md's v1.4-connection section,
+  # docs/COMPILER_ROADMAP.md's v1.4 Networking/Concurrency/Wire-formats/
+  # Linear-types sections (#145/#146/#148/#150/#156-#160/#161-#163/#175),
+  # docs/design/adr/0004-type-system-trajectory.md's v1.4 resource-sound
+  # exit gates, and docs/design/adr/0010-closed-loop-assurance.md's A8/
+  # A10-A13 assurance gaps.
+  #
+  # Investigation (2026-08-25) found several v1.4 deliverables already
+  # SHIPPED — real primitives with real round-trip tests already running in
+  # CI, just never wired into this oracle (same pattern as the P4/P6/P11 AD
+  # criteria below, and as the event_loop_works criterion that shipped in
+  # v1.3.4 but sat ungated until the eshkol-compiler-readiness target
+  # picked it up — see the comment above line ~513): the HTTP server
+  # (#145), Prometheus /metrics (#148, plus a NEW real over-HTTP round-trip
+  # test added alongside this gate — tests/v1_2_edge_cases/
+  # metrics_http_roundtrip_test.sh), Unix domain sockets (real primitives,
+  # real round-trip test, just never given a real AF_UNIX listener until
+  # this gate supplies one), resource limits (#150, a real CTest gate
+  # nothing ever invoked), threads/mutex/condvar (#156), channels (#157),
+  # the async event loop (#158, already gated elsewhere — re-emitted here
+  # under this family to prove the new oracle's own wiring end-to-end),
+  # promises/futures (#160), MessagePack (#162), and CAS + Merkle trees
+  # (#175). Genuinely absent: TCP/UDP/TLS, a WebSocket SERVER (only a
+  # client exists), fibers/coroutines, semaphores/barriers, Protocol
+  # Buffers, static (compile-time) rejection of a leaked or double-closed
+  # socket, the borrow pattern wired to real resources, v1.4.1's OALR ABI
+  # v2 and portable tail transfer (Stage 4 — included here per the task
+  # that authored this stanza, explicitly labelled v1.4.1-STAGE so it is
+  # never mistaken for a v1.4.0 blocker), assurance gaps A10-A12, and the
+  # distribution items. See scripts/run_v14_connection_gate.sh for the
+  # exact evidence (or absence-of-evidence grep) behind every PASS/FAIL.
+  #
+  # DISTRIBUTION criteria near the end of this list are marked PENDING R7:
+  # ~/Desktop/Selene/ESHKOL-ROADMAP-v135-to-v20-DRAFT.md section 5 records
+  # an UNRESOLVED maintainer ruling on whether W6 distributed execution
+  # ships as two tiers (PJRT/XLA scale + a native deterministic-allreduce
+  # mesh) or Tier 1 only. This oracle measures only the three items that
+  # draft stages for v1.4.0 regardless of how R7 is ruled (PJRT client
+  # spike, XLA multi-device single-host, native collectives over sockets)
+  # and does not commit the project to either branch of that ruling.
   # -----------------------------------------------------------------
-  - name: v1.4-release
-    aliases: [v1.4, release-1.4, connection]
+  - name: v1.4-connection
+    aliases: [v1.4, v1.4-release, release-1.4, connection]
     requires:
       - runtime_event:
           event_kinds: [ad_exact]
@@ -1355,13 +1402,306 @@ oracles:
         label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
         action: run_icc_smoke
 
+      # ─────────────────────────────────────────────────────────
+      # Networking (#145/#146/#148/#150/#161)
+      # ─────────────────────────────────────────────────────────
       - runtime_event:
           event_kinds: [v1_4_connection]
-          event_names: ["connection_theme_deliverables"]
+          event_names: ["v14_http_server_roundtrip"]
           event_values: ["PASS"]
         severity: high
-        label: Placeholder for v1.4 networking, TLS, event loop, and linear resource deliverables
-        action: replace_with_v1_4_connection_oracle
+        label: 'HTTP server (#145): http-server-create/-accept/-respond/-close round-trip a real GET request over loopback (fork+client, tests/v1_2_edge_cases/http_server_smoke_test.sh)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_metrics_http_roundtrip"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Prometheus metrics + /metrics endpoint (#148): a real GET /metrics over loopback returns Prometheus text-exposition format (HELP/TYPE preamble + counter value) — tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh, added alongside this gate (the primitive and the endpoint route already existed; no test had driven a real HTTP round trip against /metrics before)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_unix_socket_roundtrip"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Unix domain sockets for local IPC: unix-socket-connect/socket-send/socket-recv/socket-close round-trip against a REAL AF_UNIX listener (tests/vm/unix_socket_surface_regression.esk T1-T8, driven with ESHKOL_VM_UNIX_SOCKET_TEST set for the first time by this gate — previously only the hermetic negative paths ran by default anywhere)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_resource_limits_enforced"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Resource limits (#150): CPU/wall-time/memory/tensor-element/string-length/stack ceilings terminate with their documented ESHKOL_EXIT_LIMIT_* exit codes and name the violated variable on stderr; an unreached ceiling changes nothing; ESHKOL_ENFORCE_LIMITS=false downgrades a breach to a warning (tests/limits/resource_limits_enforcement_gate.sh, CMake-registered but never invoked via ctest by any CI workflow until this gate)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_tcp_roundtrip"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'TCP sockets (#161): listen/accept/connect/read/write/close, local/remote addr, non-blocking mode, error objects — NOT YET IMPLEMENTED (no tcp-connect/tcp-listen/tcp-accept primitive exists anywhere in lib/, inc/, or tests/)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_udp_roundtrip"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'UDP sockets (#161): bind/sendto/recvfrom — NOT YET IMPLEMENTED (no udp-socket/udp-bind primitive exists anywhere in lib/, inc/, or tests/)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_tls_handshake_verified"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'TLS/SSL via system libraries: server and client contexts, certificate/key loading, peer verification, a local self-signed-cert smoke handshake — NOT YET IMPLEMENTED (no TLS primitive exists anywhere in lib/, inc/, or tests/)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_websocket_server_echo"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'WebSocket SERVER (#146): upgrade handshake, text/binary frames, close/ping/pong, backpressure — NOT YET IMPLEMENTED for the server side (only a WebSocket CLIENT exists — lib/core/system_builtins.c websocket-connect/-send/-receive/-close performs the client-side opening handshake against a remote server; there is no Sec-WebSocket-Accept computation or listen/accept loop anywhere)'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # Concurrency (#156-#160, M3)
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_async_io_event_loop"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'Same evidence as the event_loop_works criterion above, re-emitted under the v1_4_connection family so this new oracle proves its own trace wiring end-to-end rather than relying solely on a criterion authored under a different kind before this stanza existed'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_threads_mutex_condvar"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Threads + mutex + condvars (#156): real pthread-backed make-mutex/mutex-lock!/make-condvar/make-thread/thread-join (lib/core/threads.esk + lib/core/threads.c); 8 parallel-map workers x 1000 mutex-protected increments on a shared cell preserve the exact total — a real race would lose increments (tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk, CI-wired via the *.esk glob but never fed to this oracle)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_channels_csp"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Channels, CSP bounded/unbounded (#157): real bounded-ring-buffer make-channel/channel-send!/-recv!/-try-send!/-try-recv!/-close! built on core.threads (lib/core/channels.esk); parallel-map producer/consumer traffic preserves the total and drains the channel to empty (tests/v1_2_edge_cases/channels_test.esk)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_promises_futures"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Promises/futures (#160): future/force/force-future are real pthread-backed VM builtins (a live pthread mutex+cond per future); core.threads'' make-thread is built directly on (future thunk); multiple futures resolve independently and force actually runs the thunk (regression #222 — pre-fix, force silently fell through to "return as-is") — tests/v1_2_edge_cases/future_force_test.esk'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_atomics_surface"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Atomic ops (CAS, fetch-add): atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-sub!/-and!/-or!/-xor! with explicit memory-order args are correct SEQUENTIALLY (tests/ffi/low_level_memory_surface_test.esk) — no cross-thread contention probe exists yet, so this criterion certifies the primitive surface only, not cross-thread atomicity'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_fibers_coroutines"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Fibers/coroutines (#159): lightweight cooperative tasks — NOT YET IMPLEMENTED (no make-fiber/fiber-*/coroutine primitive exists anywhere in lib/ or tests/)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_semaphores_barriers"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'Semaphores/barriers — NOT YET IMPLEMENTED (no make-semaphore/make-barrier primitive exists; the only "barrier" hits in the tree are the GC region write-barrier in lib/core/runtime_regions.cpp, unrelated to concurrency)'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # Wire formats (#162/#163/#175)
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_msgpack_roundtrip"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'MessagePack (#162): encode/decode round-trips nil/bool/signed+unsigned int/fixstr-str8-str16/bin8-bin16/fixarray-array16/fixmap-map16 against exact wire bytes (lib/core/msgpack.esk — a documented deterministic subset, no ext-type hooks, no int64/float) — tests/v1_2_edge_cases/msgpack_test.esk via core.testing''s run-tests'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_cas_merkle_roundtrip"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Content-addressable storage + Merkle trees (#175): tree build/determinism/order-sensitivity, inclusion-proof verify (valid/tampered/empty), and full CAS put/get/dedup round-trip (lib/core/merkle.esk + lib/core/merkle.c) — tests/v1_2_edge_cases/merkle_test.esk'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_protobuf_roundtrip"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Protocol Buffers, proto3 (#163): a parser/compiler subset sufficient for generated encoders/decoders — NOT YET IMPLEMENTED (lib/core/onnx_export.c hand-writes protobuf wire bytes for ONE fixed ONNX schema; no .proto parser or schema compiler exists)'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # Linear resource types + borrow pattern
+      # (docs/design/adr/0004-type-system-trajectory.md "v1.4: the
+      # resource-sound systems profile")
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_linear_consume_exactly_once_static"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Generative linear/affine kernel (ADR-0004): Context::bindLinear/useLinear/checkLinearConstraints is wired into the real checking pass and already enforces exactly-once consumption STATICALLY on the Qubit type (which carries TYPE_FLAG_LINEAR, the same mechanism ADR-0004 proposes reusing for Own/socket typestate) — a program that uses a linear Qubit twice is REJECTED under --strict-types, not merely warned (tests/typesystem/qubit_no_cloning_test.esk, EXPECT-COMPILE: fail)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_socket_leak_rejected_statically"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'A program that opens a socket/file/thread resource and never closes it on every path FAILS TO COMPILE with a static type error (negative test — the v1.4 exit gate ADR-0004 calls "every resource acquisition has a statically verified consume/cleanup path") — NOT YET IMPLEMENTED: no ESHKOL_VALUE_SOCKET / linear socket type exists; real OS resources (lib/core/system_builtins.c) are plain runtime integers checked only DYNAMICALLY ("use-after-close fails closed... a catchable condition")'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_double_close_rejected_statically"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Double-close and use-after-close on a typed handle are STATIC errors when the type checker can see them (ADR-0004: "the compiler should reject double-close and obvious use-after-close where the type checker can see it") — NOT YET IMPLEMENTED: same gap as v14_socket_leak_rejected_statically — today both are only dynamic, catchable, runtime errors'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_borrow_pattern_honored"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Borrow pattern for temporary resource access: a borrowed handle used after its borrow scope ends is rejected — NOT YET IMPLEMENTED for real resources: the BorrowChecker class (Owned/Moved/Dropped/BorrowedShared/BorrowedMut, move/drop/borrowShared/borrowMut) exists in lib/types/type_checker.cpp, but only canBorrowMut/getState are wired into the real checking pass (one mutation-target call site); move/drop/borrowShared/returnBorrow are exercised only by isolated gtest unit tests, never reachable by compiling an actual .esk program'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # v1.4.1-STAGE (docs/design/adr/0000-unified-trajectory.md Stage 4:
+      # "OALR ABI v2 and portable tail transfer"). v1.4.1 is its own
+      # release, one stage AFTER v1.4.0-connection (this target); these
+      # two criteria are included per the task that authored this stanza
+      # and are explicitly labelled so a v1.4.0 readiness reader does not
+      # mistake them for blocking the v1.4.0 cut.
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_1_oalr_abi_v2_header"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'v1.4.1-STAGE (S4): OALR ABI v2 — 8->32 byte header, exact layout descriptors ("every pointer-bearing layout registers a descriptor or startup fails"), alias-preserving escape ledgers, structured cross-thread transfer capsules — NOT YET IMPLEMENTED (the object header is still eshkol_object_header_t, statically asserted at 8 bytes in inc/eshkol/eshkol.h; zero hits anywhere for ESHKOL_MEMORY_ABI_V2 or a layout-descriptor/escape-ledger/transfer-capsule concept; design-only per ADR-0000/0004)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_1_portable_tail_transfer"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'v1.4.1-STAGE (S4): portable tail transfer — internal i128 tagged-return ABI, a general tail-transfer dispatcher, heap-owned continuation chains, verified musttail on every target backend — NOT YET IMPLEMENTED (musttail is emitted conditionally on the LLVM backend only for matching self/named-let tail calls; docs/reference/language/tail-calls.md documents mutual tail recursion as a KNOWN, UNFIXED limitation — SIGILL past ~500k depth — and no VM-backend equivalent exists)'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # Assurance (docs/design/adr/0010-closed-loop-assurance.md A8,
+      # A10-A13 — all target v1.4)
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_assurance_a8_tsan_lane"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'A8 — race/concurrency detection: a required (not merely advisory) nightly TSan lane over the generated concurrency corpus. The lane is real (.github/workflows/adversarial-nightly.yml, -DESHKOL_ENABLE_TSAN=ON, TSAN_OPTIONS=halt_on_error=1) but this fast local gate cannot rebuild a TSan-enabled LLVM toolchain to reproduce it, and "required" (branch-protection-blocking) is a policy step no local probe can verify — only a real nightly CI run feeds this event PASS'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_assurance_a10_packaging_manifest"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'A10 — toolchain-driver/type-checker/packaging manifest categories (toolchain_flag/type_diagnostic/package_surface) + a packaging lane that installs and runs the artifact — NOT YET IMPLEMENTED (ADR-0010''s own gap table marks this row "Planned"; no such manifest categories exist in .icc/architecture-model.yaml or .icc/completion-oracles.yaml; adversarial-nightly.yml''s homebrew install step is a partial precursor, not the manifest-driven lane A10 asks for)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_assurance_a11_diagnostic_corpus"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'A11 — diagnostic golden-corpus (input -> expected diagnostic code + span), gated per surface family — NOT YET IMPLEMENTED (no such corpus directory exists anywhere under tests/)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_assurance_a12_lsan_lane"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'A12 — an LSan lane with an arena/JIT-cache suppression file (not blanket detect_leaks=0), plus region_evac POISON extended to the VM route — NOT YET IMPLEMENTED (.github/workflows/ci.yml''s ASan lanes explicitly set detect_leaks=0; lib/backend/vm_core.c has zero ESHKOL_ARENA_POISON hits)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_assurance_a13_hosted_gpu_lane"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'A13 — a scheduled self-hosted (Jetson/Metal) GPU/quantum lane so the GPU oracles have recurring hosted evidence, with "no evidence in N days" as WARN rather than a silent pass. The lane already matches this ask (.github/workflows/gpu-execution-gate.yml, daily cron, runs-on: [self-hosted, gpu], emits a ::warning when no runner is registered), but this box has no self-hosted GPU runner registered, so only a real scheduled run on the registered runner feeds this event PASS'
+        action: run_v14_connection_gate
+
+      # ─────────────────────────────────────────────────────────
+      # Distribution (W6) — PENDING MAINTAINER RULING R7. See
+      # ~/Desktop/Selene/ESHKOL-ROADMAP-v135-to-v20-DRAFT.md section 5:
+      # whether W6 ships as two tiers (PJRT/XLA scale + a native
+      # deterministic-allreduce mesh) or Tier 1 only is UNRESOLVED. These
+      # three criteria cover only the items that draft stages for v1.4.0
+      # regardless of how R7 is ruled — NOT the v1.5.0+ Tier-2 bit-
+      # identical-allreduce mesh gate, which is out of v1.4 scope either
+      # way. This oracle does not commit the project to either branch of
+      # R7; low severity reflects "scope pending R7", not "unimportant".
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_distribution_pjrt_client_spike"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item (per the draft ladder): a PJRT client spike — NOT YET IMPLEMENTED (zero "pjrt"/"PJRT" hits anywhere in the repo — code, headers, docs, or build)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_distribution_xla_multi_device_single_host"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: XLA multi-device single-host execution — NOT YET IMPLEMENTED (lib/backend/xla/ has zero hits for device_ordinal/num_replicas/num_partitions; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations — XLA execution is single-device only today)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_distribution_native_collectives_over_sockets"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: native collectives over the v1.4.0 socket layer — NOT YET IMPLEMENTED (zero allreduce/sharding/GSPMD/replica hits in lib/backend/xla/ or lib/backend/gpu/; the only "distributed" module in the repo is pure-value Lamport/vector-clock/CRDT math, explicitly independent of sockets/async I/O)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_connection_sweep_clean"]
+          event_values: ["PASS"]
+        severity: low
+        label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
+        action: run_v14_connection_gate
 
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
