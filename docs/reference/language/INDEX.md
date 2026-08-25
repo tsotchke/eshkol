@@ -51,7 +51,7 @@ Consolidated list of language-core known issues referenced here:
 | ESH-0090 | A user `(define (raise …) …)` cannot shadow the builtin `raise`. |
 | ESH-0101 / ESH-0102 | Differential findings around `guard` value corruption / optimization-level-dependent crashes. |
 | ESH-0109 (part) | Curried `define` sugar `(define ((f x) y) …)` is a parse error, and `raise-continuable` is an unknown function on the native path (it exists in the bytecode VM). The `cond`/`case` `=>` and `define-values` parts of that ledger entry are done. |
-| — | Mutual tail recursion is **not** optimized; ping-pong recursion crashes around 500k depth (self tail recursion is fully optimized). |
+| — | Mutual tail recursion IS optimized, in every tail spelling (`if`, `cond`, `case`, `when`, `unless`, `and`/`or`), to 100,000,000 hops in constant stack (ESH-0102, ESH-0102b). Bounded exceptions — differing signatures, indirect tail calls, closure-forwarding higher-order tail calls, tail calls through `guard`, and non-AArch64 targets — are listed in [tail-calls.md](tail-calls.md). |
 
 Closed since v1.3.3 — kept here because earlier releases documented them, and
 each is now covered by an example in the page that used to carry the warning:

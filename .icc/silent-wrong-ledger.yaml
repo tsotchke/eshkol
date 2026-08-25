@@ -3262,6 +3262,111 @@ entries:
       in place of `with-region`, confirming it has nothing to do with
       regions — it is purely a function-body-size-driven upvalue count.
 
+  - id: SW-50
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: fixed
+    closed_at: "73cc7cbb"
+    closed_by: "branch feat/s4-abi-tail (ADR-0000 Stage 4)"
+    note: >-
+      Filed as SW-50, not SW-46: ids SW-46 through SW-49 are taken or reserved
+      by the in-flight PRs #466 / #473 / #474 at the time of filing, and this
+      branch is cut from origin/master 73cc7cbb where the highest id present is
+      SW-45. Verified next-free with `grep -o 'id: SW-[0-9]*b*'
+      .icc/silent-wrong-ledger.yaml | sort -V | tail -3`.
+      Bucket is LOUD-ERROR, not SILENT-WRONG: the defect crashes with the
+      runtime's fatal-signal diagnostic and a non-zero exit, so it never
+      returned a wrong value. It is filed anyway because it is an R7RS section
+      3.5 conformance defect (proper tail calls MUST run in constant space),
+      and because its shape — an analysis whose ORACLE was wider than its
+      TRAVERSAL — is the reusable lesson.
+    title: "Mutual tail recursion spelled with cond/case/when/unless/and/or was not tail-call optimized and exhausted the stack"
+    repro: >-
+      Two mutually tail-recursive procedures, written with `cond` instead of
+      `if`, driven past a few million hops:
+      `(define (ping n acc) (cond ((= n 0) acc) (else (pong (- n 1) (+ acc n)))))`
+      `(define (pong n acc) (cond ((= n 0) acc) (else (ping (- n 1) (+ acc n)))))`
+      `(display (ping 5000000 0))`.
+      The byte-identical program with `if` in place of `cond` is the control and
+      runs flat. Same result for `when`, for `(or #f …)`, and for a 3-cycle
+      written with `cond`. Committed as the depth-parametric probes
+      tests/recursion_depth/generated/rec_mutual_tail_cond_d*.esk and
+      rec_mutual_tail_forms_d*.esk (generator: scripts/gen_recursion_depth.py).
+    observed: >-
+      exit 138 (SIGBUS, 128+10) on arm64-apple-darwin24.1.0, with the runtime's
+      fatal-signal handler printing "[Eshkol] fatal signal: SIGBUS (bus error)
+      … this is most likely a stack overflow (recursion too deep)". Measured
+      ceiling: the cond/when/or/3-cycle spellings passed at 500,000 hops and
+      died between 500,000 and 5,000,000, while `if` passed 5,000,000. The
+      difference is visible directly in the emitted IR for the same program
+      (`eshkol-run --dump-ir -O0`): `musttail call %eshkol_tagged_value @pong`
+      for the `if` spelling versus a plain `call %eshkol_tagged_value @pong`
+      — not even a `tail` hint — for the `cond` spelling.
+    correct: >-
+      R7RS section 3.5 makes the selected `cond`/`case` clause, the `when`/
+      `unless` body and the last operand of `and`/`or` tail positions exactly as
+      much as the branches of `if`. A mutual tail call must therefore run in
+      constant stack in all six spellings, not only in `if`.
+    root_cause: >-
+      Two collaborating functions in lib/backend/llvm_codegen.cpp disagreed
+      about which forms have tail positions, and nothing made them agree.
+      collectMutualTailCallSites() is the WALKER that offers candidate call
+      sites to the mutual-TCO lowering in codegenCall; isInTailPosition() is the
+      ORACLE that confirms each offer. The oracle already handled COND_OP,
+      CASE_OP, WHEN_OP, UNLESS_OP, AND_OP, OR_OP and GUARD_OP (and had
+      handled cond and guard since ESH-0211 / ESH-0222 respectively), but the
+      walker's switch descended only into CALL_OP("if"), CALL_OP("begin"),
+      IF_OP, SEQUENCE_OP and the four LET forms, with `default: break` swallowing
+      everything else. A tail call sitting in a cond clause was therefore never
+      inserted into mutual_tail_call_sites_ at all, so codegenCall's
+      `mutual_tail_call_sites_.count(op)` guard failed and the site fell through
+      to the ordinary-call path — one native frame per hop. The self-tail path
+      was unaffected because it uses a different walker
+      (TailCallCodegen::allSelfCallsInTailPosition), which DOES handle all six;
+      that asymmetry is why the same six spellings TCO'd fine for self recursion
+      (documented as fixed in v1.3.3-evolve) and silently did not for mutual
+      recursion.
+    fix: >-
+      collectMutualTailCallSites() now descends into COND_OP, CASE_OP, WHEN_OP,
+      UNLESS_OP, AND_OP and OR_OP, mirroring form for form the tail rules
+      isInTailPosition() already encodes. GUARD_OP is deliberately still not
+      descended into, and the reason is recorded at the site: `musttail`
+      discards the caller frame outright, which would skip the handler-stack pop
+      that leaving a `guard` owes. Self-TCO can treat a guard body as tail
+      because it branches to a loop header with that bookkeeping intact
+      (ESH-0222); a mutual musttail cannot.
+    evidence: >-
+      Two new depth-parametric kinds in scripts/gen_recursion_depth.py, run by
+      scripts/run_recursion_depth.sh (pillar P6b) on BOTH the JIT and AOT lanes:
+      `mutual_tail_cond` (2-cycle spelled with cond) and `mutual_tail_forms`
+      (4-cycle that routes its tail call through a DIFFERENT form at each hop —
+      cond, then when, then or, then case — so a regression in any single form
+      fails the gate). Both ladders are 500,000 / 5,000,000 / 100,000,000 and
+      all cells are EXPECT pass, because a proper tail call is required to be
+      unbounded: a CLEAN-LIMIT in these cells is the regression, which is the
+      deliberate calibration difference from the `non_tail` kind. Measured after
+      the fix: 100,000,000 hops, correct triangular-number value, exit 0, ~3-5 s,
+      on JIT and AOT alike.
+    caught_by: [adr-0000-stage-4-review, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, recursion-depth-parametric]
+    notes: >-
+      recursion-depth-parametric is in missed_by even though it is the harness
+      that now catches this: its mutual_tail2 / mutual_tail3 kinds were both
+      written with `if`, so the pillar had a 5,000,000-hop cell for the one
+      spelling that worked and no cell at all for the five that did not. A
+      depth sweep that only exercises the canonical spelling of a construct
+      measures the spelling, not the construct.
+      NOT fixed by this entry, and now documented in
+      docs/reference/language/tail-calls.md rather than left to be discovered:
+      mutual tail calls still fall back to a bounded ordinary call when the two
+      procedures have DIFFERING SIGNATURES (musttail requires identical
+      parameter counts and types), when the call is INDIRECT (through a
+      procedure value rather than a name), when an argument points into the
+      caller's frame (a forwarded stack-allocated closure), through `guard`, and
+      on non-AArch64 targets where LLVM 21 refuses aggregate-return musttail
+      (ESH-0171). Each of those was measured on this branch at 5,000,000 hops
+      and each fails LOUDLY with the same fatal-signal diagnostic.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01

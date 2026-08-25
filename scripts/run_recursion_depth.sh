@@ -34,7 +34,11 @@
 #     tail-calling functions). Their deep cells are therefore `pass`: a CLEAN-LIMIT
 #     there is a real BUG (the tail call was not optimized) and fails the gate.
 #     Mutual tail calls are emitted as LLVM `musttail` (see llvm_codegen.cpp), so
-#     the 5,000,000-hop cells prove O(1) stack.
+#     the 5,000,000-hop cells prove O(1) stack. The mutual_tail_cond /
+#     mutual_tail_forms kinds pin the SPELLING-INDEPENDENCE of that guarantee
+#     (ESH-0102b): a tail call written with cond / when / or / case is a tail call
+#     by R7RS section 3.5 exactly as much as one written with `if`, and their
+#     100,000,000-hop cells are `pass` for the same reason.
 #   * NON-TAIL recursion (non_tail) keeps one native frame per level, so it has a
 #     finite, environment-dependent stack ceiling and is NOT required to be
 #     unbounded. Its deep cells are `limit`: a CLEAN-LIMIT (a caught SIGBUS/SIGSEGV/
@@ -198,6 +202,8 @@ for path in "$GEN_DIR"/rec_*.esk; do
         case "$f" in
             rec_self_tail_d100000000.esk|rec_self_tail_d10000000.esk) continue ;;
             rec_stdlib_length_d1000000.esk) continue ;;
+            rec_mutual_tail_cond_d100000000.esk) continue ;;
+            rec_mutual_tail_forms_d100000000.esk) continue ;;
         esac
     fi
 

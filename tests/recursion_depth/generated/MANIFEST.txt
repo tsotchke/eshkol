@@ -12,6 +12,12 @@ rec_mutual_tail3_d100000.esk	mutual_tail3	100000	pass
 rec_mutual_tail3_d200000.esk	mutual_tail3	200000	pass
 rec_mutual_tail3_d500000.esk	mutual_tail3	500000	pass
 rec_mutual_tail3_d5000000.esk	mutual_tail3	5000000	pass
+rec_mutual_tail_cond_d500000.esk	mutual_tail_cond	500000	pass
+rec_mutual_tail_cond_d5000000.esk	mutual_tail_cond	5000000	pass
+rec_mutual_tail_cond_d100000000.esk	mutual_tail_cond	100000000	pass
+rec_mutual_tail_forms_d500000.esk	mutual_tail_forms	500000	pass
+rec_mutual_tail_forms_d5000000.esk	mutual_tail_forms	5000000	pass
+rec_mutual_tail_forms_d100000000.esk	mutual_tail_forms	100000000	pass
 rec_non_tail_d10000.esk	non_tail	10000	pass
 rec_non_tail_d100000.esk	non_tail	100000	boundary
 rec_non_tail_d200000.esk	non_tail	200000	boundary

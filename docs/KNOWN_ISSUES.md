@@ -458,8 +458,19 @@ block ordinary use.
   does not, and instead runs much deeper before failing loudly on a signal
   (ESH-0101, see above). Mutual tail calls ARE now proper R7RS
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
-  resolved (2026-07-04). The remaining exception is a higher-order tail call that
-  forwards a stack-allocated closure argument, which falls back to a bounded call.
+  resolved (2026-07-04) — and as of ESH-0102b that holds for **every** tail
+  spelling, not only `if`: a mutual tail call written with `cond`, `case`,
+  `when`, `unless` or as the last operand of `and`/`or` used to lower to an
+  ordinary call and exhaust the stack (SIGBUS with the fatal-signal diagnostic)
+  between 500,000 and 5,000,000 hops, while the identical program written with
+  `if` ran flat. All six now run flat to 100,000,000 hops under both the JIT and
+  AOT, pinned by the `mutual_tail_cond` / `mutual_tail_forms` depth-parametric
+  probes. Remaining bounded exceptions, all loud rather than silent: mutually
+  recursive procedures with **differing signatures**, **indirect** tail calls
+  through a procedure value, higher-order tail calls that forward a
+  stack-allocated closure argument, tail calls through `guard`, and non-AArch64
+  targets (aggregate-return `musttail`, ESH-0171). See
+  [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body
   (e.g. `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))`). **Status: fixed**
