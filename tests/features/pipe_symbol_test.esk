@@ -1,0 +1,133 @@
+;; R7RS 7.1.1 vertical-line symbol syntax regression test.
+;;
+;; <identifier> -> <vertical line> <symbol element>* <vertical line>
+;; is one of three <identifier> productions; before this fix Eshkol
+;; implemented only the other two, so `|weird sym|` lexed as the two tokens
+;; `|weird` and `sym|` and `(symbol? '|weird sym|)` reported an arity error
+;; from the same split (tests/vm_parity/found/r7rs_pipe_delimited_symbol.esk).
+;;
+;; This file is run on ALL THREE paths (native JIT, native AOT, VM) via the
+;; icc smoke probe `pipe_symbol_oracle` -- see scripts/run_icc_smoke.sh --
+;; the same pattern as printer_roundtrip_test.esk (issue #310). Because the
+;; expected strings are hard-coded, running the same file on each path is
+;; itself the parity check: any path that reads or writes symbols
+;; differently fails here.
+;;
+;; On any mismatch a line containing "error:" is printed, which the features
+;; harness (scripts/run_features_tests.sh) flags as a failure.
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write got) (newline))))
+
+;; ── READ: the bars make one symbol out of text a bar-unaware tokenizer
+;;    would split on the embedded space ──
+(check "read: symbol?"       (symbol? (quote |weird sym|))          #t)
+(check "read: spelling"      (symbol->string (quote |weird sym|))   "weird sym")
+
+;; ── READ: the full <symbol element> alphabet ──
+(check "read: mnemonic \\t"  (symbol->string (quote |a\tb|))        "a\tb")
+(check "read: mnemonic \\n"  (symbol->string (quote |a\nb|))        "a\nb")
+(check "read: escaped bar"   (symbol->string (quote |a\|b|))        "a|b")
+(check "read: escaped \\\\"  (symbol->string (quote |a\\b|))        "a\\b")
+(check "read: hex escape"    (symbol->string (quote |\x48;i|))      "Hi")
+(check "read: hex escape 2"  (symbol->string (quote |x\x79;z|))     "xyz")
+
+;; ── READ: the empty symbol `||` ──
+(check "read: empty symbol"  (symbol->string (quote ||))            "")
+
+;; ── READ: `.` inside bars is an ordinary symbol, not the dotted-pair dot ──
+(check "read: |.| is a symbol" (symbol? (quote |.|))                #t)
+(check "read: |.| spelling"    (symbol->string (quote |.|))         ".")
+;; A literal `.` between list elements still means "dotted pair" (7.1.2) --
+;; the bars are the ONE spelling where wrapping a name in `|...|` changes
+;; what it means, and only for this one name.
+(check "read: bare . is still the dotted-pair delimiter"
+       (pair? (quote (a . b))) #t)
+(check "read: bare . dotted-pair cdr is not a list"
+       (list? (quote (a . b))) #f)
+;; `|.|` between list elements is an ordinary symbol: `(a |.| b)` is a
+;; proper 3-element list, not the dotted pair `(a . b)`.
+(check "read: |.| between elements makes a proper list"
+       (list? (quote (a |.| b))) #t)
+(check "read: |.| between elements list length"
+       (length (quote (a |.| b))) 3)
+(check "read: |.| between elements keeps its spelling"
+       (symbol->string (cadr (quote (a |.| b)))) ".")
+
+;; ── WRITE: names the R7RS grammar spells bare stay bare (no regression on
+;;    ordinary output) ──
+(define (write-str x)
+  (let ((port (open-output-string)))
+    (write x port)
+    (get-output-string port)))
+
+(check "write: foo stays bare"        (write-str (quote foo))          "foo")
+(check "write: with->arrow stays bare" (write-str (quote with->arrow)) "with->arrow")
+(check "write: ... stays bare"        (write-str (quote ...))          "...")
+(check "write: + stays bare"          (write-str (quote +))            "+")
+(check "write: +soup+ stays bare"     (write-str (quote +soup+))       "+soup+")
+(check "write: leading colon stays bare" (write-str (quote :key))      ":key")
+
+;; ── WRITE: names that cannot be spelled bare get bars ──
+(check "write: embedded space"   (write-str (string->symbol "weird sym")) "|weird sym|")
+(check "write: looks like 1"     (write-str (string->symbol "1"))         "|1|")
+(check "write: looks like +1"    (write-str (string->symbol "+1"))        "|+1|")
+(check "write: looks like .5"    (write-str (string->symbol ".5"))        "|.5|")
+(check "write: bare dot"         (write-str (string->symbol "."))         "|.|")
+(check "write: -> is a claimed token" (write-str (string->symbol "->"))   "|->|")
+(check "write: +inf.0 is a claimed spelling" (write-str (string->symbol "+inf.0")) "|+inf.0|")
+(check "write: embedded colon"   (write-str (string->symbol "a:b"))       "|a:b|")
+(check "write: empty symbol"     (write-str (string->symbol ""))          "||")
+(check "write: embedded bar escaped" (write-str (string->symbol "a|b"))   "|a\\|b|")
+(check "write: embedded backslash escaped" (write-str (string->symbol "a\\b")) "|a\\x5c;b|")
+
+;; ── `display` never bars -- it is a `write`-only concern ──
+(define (display-str x)
+  (let ((port (open-output-string)))
+    (display x port)
+    (get-output-string port)))
+
+(check "display: no bars on weird spelling" (display-str (string->symbol "weird sym")) "weird sym")
+(check "display: no bars on numeric spelling" (display-str (string->symbol "1")) "1")
+
+;; ── ROUND TRIP: write then read recovers an eq? symbol, for every case
+;;    that forced bars above plus the everyday bare spellings ──
+(define (roundtrips? sym)
+  (eq? sym (read (open-input-string (write-str sym)))))
+
+(for-each
+  (lambda (name-sym)
+    (check (string-append "round-trip " (car name-sym))
+           (roundtrips? (cdr name-sym))
+           #t))
+  (list (cons "weird sym"  (string->symbol "weird sym"))
+        (cons "1"          (string->symbol "1"))
+        (cons "+1"         (string->symbol "+1"))
+        (cons ".5"         (string->symbol ".5"))
+        (cons "."          (string->symbol "."))
+        (cons "->"         (string->symbol "->"))
+        (cons "+inf.0"     (string->symbol "+inf.0"))
+        (cons "a:b"        (string->symbol "a:b"))
+        (cons "empty"      (string->symbol ""))
+        (cons "embedded bar" (string->symbol "a|b"))
+        (cons "embedded backslash" (string->symbol "a\\b"))
+        (cons "foo"        (quote foo))
+        (cons "with->arrow" (quote with->arrow))
+        (cons ":key"       (quote :key))))
+
+;; ── usable as ordinary data, not just a bare top-level datum ──
+(check "vector element" (vector-length (vector 0 (quote |weird sym|) 2)) 3)
+(check "list element"   (length (list (quote |weird sym|) 1 2))          3)
+
+(newline)
+(if (= fail-count 0)
+    (display "ALL PIPE SYMBOL CHECKS PASSED\n")
+    (begin (display "error: ") (display fail-count)
+           (display " pipe symbol checks FAILED\n")))

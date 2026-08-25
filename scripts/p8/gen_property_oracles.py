@@ -103,13 +103,11 @@ _DATA_ATOMS = [
     # undefined variables; the compiler printed a diagnostic for each and
     # emitted a binary anyway, so this oracle passed while pinning nothing.
     #
-    # `|weird sym|` is deliberately absent: the reader does not yet implement
-    # R7RS 7.1.1 vertical-line symbol syntax, so `'|weird sym|` lexes as the
-    # two tokens `'|weird` and `sym|` and the latter becomes an undefined
-    # variable. That gap is pinned by
-    # tests/vm_parity/found/r7rs_pipe_delimited_symbol.esk -- restore this atom
-    # once the reader supports it.
-    "'sym", "'another-symbol", "'with->arrow",
+    # `|weird sym|` -- R7RS 7.1.1 vertical-line symbol syntax -- reads as one
+    # symbol whose name contains a space. Was deliberately absent here (the
+    # reader split it into two tokens); restored now that it's implemented and
+    # gated by tests/vm_parity/corpus/69_pipe_symbol_reader.esk.
+    "'|weird sym|", "'sym", "'another-symbol", "'with->arrow",
     "#t", "#f",
 ]
 

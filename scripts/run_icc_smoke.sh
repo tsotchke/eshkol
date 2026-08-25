@@ -753,6 +753,24 @@ probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display 
      fi;
      exit 0'
 
+probe pipe_symbol_oracle 'R7RS 7.1.1 vertical-line symbols: |weird sym| reads as ONE symbol (not two tokens), the full <symbol element> alphabet incl. \x<hex>; decodes, |.| is a symbol distinct from the bare dotted-pair delimiter, write emits bars iff the R7RS 7.1.1 <identifier> grammar cannot spell the name bare, display never bars, and write -> read recovers an eq? symbol — byte-identical across JIT, AOT and the VM' \
+    'cd "$REPO_ROOT"; t=tests/features/pipe_symbol_test.esk;
+     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "ALL PIPE SYMBOL CHECKS PASSED" || exit 1;
+     printf "%s" "$out" | grep -q "error:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "ALL PIPE SYMBOL CHECKS PASSED" || exit 1;
+     printf "%s" "$out" | grep -q "error:" && exit 1;
+     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     if [ -x "$vm" ]; then
+       out=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$REPO_ROOT/lib" "$vm" "$t" 2>/dev/null) || exit 1;
+       printf "%s" "$out" | grep -q "ALL PIPE SYMBOL CHECKS PASSED" || exit 1;
+       printf "%s" "$out" | grep -q "error:" && exit 1;
+     fi;
+     exit 0'
+
 probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
     'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
      out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;

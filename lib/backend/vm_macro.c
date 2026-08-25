@@ -591,12 +591,17 @@ static void macro_renames_push(MacroRenames* rn, const char* from) {
 
 /** @brief True if @p n is a template symbol eligible for renaming: a plain
  *         symbol that is NOT a pattern variable (those carry user code),
- *         not the ellipsis marker and not the `_` wildcard. */
+ *         not the ellipsis marker and not the `_` wildcard.
+ *
+ * The bare `.` exclusion is the dotted-formals delimiter, never a binder;
+ * `is_verbatim` keeps the R7RS 7.1.1 vertical-line spelling `|.|` -- an
+ * ordinary symbol NAMED "." -- out of that exclusion, so a template that
+ * actually binds `|.|` still gets hygienically renamed like any other name. */
 static int macro_is_template_binder(const MacroNode* n, const MacroBindings* bindings) {
     return n && n->type == N_SYMBOL &&
            !is_ellipsis(n) &&
            strcmp(n->symbol, "_") != 0 &&
-           strcmp(n->symbol, ".") != 0 &&
+           (n->is_verbatim || strcmp(n->symbol, ".") != 0) &&
            macro_bindings_lookup(bindings, n->symbol) == NULL;
 }
 

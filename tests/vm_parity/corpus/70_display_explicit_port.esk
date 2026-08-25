@@ -1,0 +1,55 @@
+; REGRESSION GATE. `display` had no 2-argument (explicit output port) form
+; on the VM at all -- unlike `write`, which dispatches to _write1/_write2 by
+; arity through a Scheme-level wrapper, "display" resolved straight to the
+; native-211 (`print_value`, always current-output-port) preamble closure at
+; EVERY arity. Calling `(display x port)` therefore invoked that arity-1
+; closure with 2 arguments: an arity mismatch that silently printed `x` to
+; stdout instead of `port`, left `port` untouched, AND (because the callee's
+; frame only accounted for one argument) left the evaluation stack one slot
+; off from that point on -- invisible when the call was a bare top-level
+; statement, but corrupting whatever the result fed into once used in
+; expression position (an argument to another call, a `let` binding
+; consumed later, even a bare variable reference read back afterward).
+; Found while adding R7RS 7.1.1 |...| symbol tests that exercised this exact
+; shape. Fixed by giving `display` a real 2-argument compiler special case
+; (mirroring the existing 1-argument one) that emits native 2226
+; (_display2), the `display`-flavoured (write_syntax=0) twin of _write2/618
+; -- same underlying vm_write_value_port(), just without write's quotes/bars.
+
+(define (capture x)
+  (let ((port (open-output-string)))
+    (display x port)
+    (get-output-string port)))
+
+; Bare statement position (this shape always worked -- kept as a control).
+(let ((port (open-output-string)))
+  (display "hello" port)
+  (display (get-output-string port)))
+(newline)
+
+; Expression position: the captured string flows into further computation.
+; This is exactly the shape that silently produced "" (port never written)
+; before the fix.
+(display (capture "hello"))
+(newline)
+(display (capture 42))
+(newline)
+(display (capture (quote foo)))
+(newline)
+(display (capture (list 1 2 3)))
+(newline)
+
+; The stack-imbalance half: a SECOND, unrelated computation performed right
+; after the corrupting call must see correct values, not whatever the stray
+; slot left behind.
+(display (+ 1 (string-length (capture "ab"))))
+(newline)
+
+; Passed straight into another call's argument list (not just a `let`).
+(display (string-append "[" (capture "x") "]"))
+(newline)
+
+; display to a port must not add write's quoting/escaping -- the one
+; difference from _write2/618.
+(display (capture "has \"quotes\" and \\backslash\\"))
+(newline)

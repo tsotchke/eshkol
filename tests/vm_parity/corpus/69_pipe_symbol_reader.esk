@@ -1,0 +1,74 @@
+; R7RS 7.1.1 vertical-line symbol syntax: the reader must accept
+;   <identifier> -> <vertical line> <symbol element>* <vertical line>
+; and `write` must emit it, and only it, when a symbol's name cannot be
+; spelled bare. Regression gate for tests/vm_parity/found/r7rs_pipe_delimited_symbol.esk
+; (FOUND: '|weird sym| lexed as two tokens, '|weird and sym|, before this fix).
+
+; ---- READ: the bars make one symbol out of text that would otherwise split ----
+(display (symbol? (quote |weird sym|))) (newline)
+(display (quote |weird sym|)) (newline)
+(display (symbol->string (quote |weird sym|))) (newline)
+
+; ---- READ: escapes inside |...| ----
+(display (quote |a\tb|)) (newline)          ; mnemonic escape \t
+(display (quote |a\|b|)) (newline)          ; \| -- a literal bar in the name
+(display (quote |a\\b|)) (newline)          ; \\ -- accepted though R7RS gives it no <symbol element>
+(display (quote |\x48;ello|)) (newline)     ; inline hex escape spells the first byte
+
+; ---- READ: the empty symbol ----
+(display (symbol->string (quote ||))) (newline)
+(display (string-length (symbol->string (quote ||)))) (newline)
+
+; ---- READ: `.` inside bars is an ordinary symbol, not the pair delimiter ----
+(display (symbol? (quote |.|))) (newline)
+(display (symbol->string (quote |.|))) (newline)
+
+; ---- WRITE: names the R7RS grammar spells bare stay bare ----
+(write (quote foo)) (newline)
+(write (quote with->arrow)) (newline)
+(write (quote ...)) (newline)
+(write (quote +)) (newline)
+(write (quote +soup+)) (newline)
+(write (quote :key)) (newline)
+
+; ---- WRITE: names that need bars get them, escaped ----
+(write (string->symbol "weird sym")) (newline)
+(write (string->symbol "1")) (newline)
+(write (string->symbol "+1")) (newline)
+(write (string->symbol ".5")) (newline)
+(write (string->symbol ".")) (newline)
+(write (string->symbol "->")) (newline)
+(write (string->symbol "+inf.0")) (newline)
+(write (string->symbol "a:b")) (newline)
+(write (string->symbol "")) (newline)
+(write (string->symbol "a|b")) (newline)
+(write (string->symbol "a\\b")) (newline)
+
+; ---- `display` never bars, even when `write` would ----
+(display (string->symbol "weird sym")) (newline)
+(display (string->symbol "1")) (newline)
+
+; ---- WRITE/READ round trip: write then read recovers an eq? symbol ----
+(define (roundtrips? sym)
+  (let ((port (open-output-string)))
+    (write sym port)
+    (let ((back (read (open-input-string (get-output-string port)))))
+      (and (eq? sym back) (symbol? back)))))
+
+(display (roundtrips? (string->symbol "weird sym"))) (newline)
+(display (roundtrips? (string->symbol "1"))) (newline)
+(display (roundtrips? (string->symbol "+1"))) (newline)
+(display (roundtrips? (string->symbol ".5"))) (newline)
+(display (roundtrips? (string->symbol "."))) (newline)
+(display (roundtrips? (string->symbol "->"))) (newline)
+(display (roundtrips? (string->symbol "+inf.0"))) (newline)
+(display (roundtrips? (string->symbol "a:b"))) (newline)
+(display (roundtrips? (string->symbol ""))) (newline)
+(display (roundtrips? (quote foo))) (newline)
+(display (roundtrips? (quote with->arrow))) (newline)
+(display (roundtrips? (string->symbol "a|b"))) (newline)
+(display (roundtrips? (string->symbol "a\\b"))) (newline)
+
+; ---- usable as ordinary data, not just at top level ----
+(display (vector-length (vector 0 (quote |weird sym|) 2))) (newline)
+(display (list? (list (quote |weird sym|) 1 2))) (newline)
