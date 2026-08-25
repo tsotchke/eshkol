@@ -63,6 +63,54 @@ stays under its ceilings is unaffected: the checks sit on the arena's
 block-acquisition path, on object creation, and on periodic VM/loop
 checkpoints, and none of them reads or writes a program value.
 
+### Bytecode VM Region Reclamation
+
+Added in v1.3.5 (SW-14, `lib/backend/vm_region_evac.c`): `with-region`
+reclaims on the bytecode VM the same way it does on native codegen, via a
+Stage-1 mark-and-sweep evacuator over the VM's index-addressed heap. See
+[memory model](../reference/runtime/memory-model.md#which-engine-reclaims)
+for the full mechanism and
+[environment-variables.md](../reference/runtime/environment-variables.md)
+for the complete descriptions; the variables themselves:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ESHKOL_VM_REGION_EVAC` | on | `0` disables VM region reclamation entirely and restores the pre-Stage-1 pass-through (for A/B measurement). |
+| `ESHKOL_VM_REGION_VERIFY` | off | After each region pop, independently audits the object table for any surviving reference to a retired index. Implied by `ESHKOL_ARENA_POISON`. |
+| `ESHKOL_VM_REGION_VERIFY_FATAL` | off | Makes that audit exit nonzero, so a CI lane can gate on it. |
+| `ESHKOL_VM_REGION_COMPACT` | on | `0` stops a surviving object's header from being copied out of the dying region (diagnostic only; keeps addresses stable). Forced off under `ESHKOL_ARENA_POISON`. |
+| `ESHKOL_VM_REGION_RECYCLE` | on | `0` stops retired heap indices from being reused; a stale reference then reads as invalid forever instead of aliasing a new object. Forced off under `ESHKOL_ARENA_POISON`. |
+| `ESHKOL_VM_REGION_QUIET` | off | Suppresses the one-time stderr note that a VM `region-close` (the handle surface, still bookkeeping-only in Stage-1) reclaims no heap. |
+| `ESHKOL_VM_HEAP_BUDGET_MB` | 1024 | VM arena size past which a diagnostic names the growth and its cause — for allocation that happens *outside* a region, which the VM still never reclaims. `0` disables the watchdog. |
+| `ESHKOL_VM_HEAP_BUDGET_FATAL` | off | Makes crossing the heap budget exit nonzero instead of advisory. |
+
+Re-verified for this documentation wave, run directly against a
+from-source build of commit `487c2a62` (`#461` merged onto `694c3179`):
+
+```
+$ bash tests/memory/vm_region_flat_rss_test.sh
+iterations=1000  peak RSS=25 MB  answer=120000
+iterations=4000  peak RSS=26 MB  answer=480000
+iterations=16000 peak RSS=27 MB  answer=1920000
+unwrapped control (begin instead of with-region): peak RSS=704 MB
+at 16000 iterations: with-region+evacuator=27 MB, evacuator disabled=793 MB
+vm-region-flat-rss: 6 passed, 0 failed  -- PASS
+
+$ bash tests/memory/vm_region_evac_subtype_coverage_test.sh
+peak RSS: default=80 MB, poison=130 MB, reclaim-off=129 MB
+vm-region-evac-subtype-coverage: 8 passed, 0 failed  -- PASS
+
+$ bash tests/memory/vm_region_growth_watchdog_test.sh
+vm-region-watchdog: 10 passed, 0 failed  -- PASS
+```
+
+The exact peak-RSS figures move a megabyte or two run to run (25-27 MB
+flat rather than a single fixed number); the CHANGELOG's own numbers from
+the same fixture (26/26/26 MB, 796 MB disabled) are consistent with this
+run within that noise band. What is gated and does not move: the curve is
+flat with reclamation on, an order of magnitude (or more) larger with it
+off, and the returned answer is identical either way.
+
 ### Stack Size
 
 | Variable | Default | Description |
