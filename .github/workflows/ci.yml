@@ -263,6 +263,24 @@ jobs:
   # missing required field) and asserts the gate goes RED on every one of
   # them, plus a well-formed fixture asserting it does not fail on
   # everything indiscriminately. A gate that cannot fail is not a gate.
+  #
+  # v1.3.5 assurance wave 2 (2026-08-25, F19 / ADR-0010 A13): the 2026-08-25
+  # architectural audit measured `icc readiness --target gpu-execution`
+  # returning `ready/94` with ZERO evidence, because its sole criterion was
+  # `severity: medium` and ICC's grader degrades an absent-evidence miss to
+  # WARN rather than FAIL unless severity is `high`. Fixed in
+  # .icc/completion-oracles.yaml (every criterion whose label asserts a
+  # correctness/capability claim is now `severity: high`, with explicit
+  # ADVISORY comments on the handful that are legitimately fixture
+  # bookkeeping). Two new gates keep it fixed:
+  #   - audit_oracle_false_green.py re-derives ICC's own status arithmetic
+  #     and fails if ANY oracle target has zero severity:high criteria —
+  #     the exact condition that let gpu-execution escape `blocked` on
+  #     total absence of evidence.
+  #   - check_evidence_staleness.py arms the other half of ADR-0010 A13
+  #     ("no evidence in N days = FAIL"), which ICC's `runtime_event`
+  #     grading path has no support for (only `performance_budget` does) —
+  #     see the script's docstring. Repo-side until that lands upstream.
   assurance-gates:
     name: assurance-gates
     if: github.event_name != 'schedule'
@@ -280,6 +298,8 @@ jobs:
           python3 scripts/gate_no_silent_wrong.py --self-test
           python3 scripts/check_ledger_integrity.py --self-test
           python3 scripts/check_oracle_schema.py --self-test
+          python3 scripts/audit_oracle_false_green.py --self-test
+          python3 scripts/check_evidence_staleness.py --self-test
 
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
@@ -292,6 +312,14 @@ jobs:
       - name: Completion-oracle file parses and every criterion is gradeable
         shell: bash
         run: python3 scripts/check_oracle_schema.py --no-trace
+
+      - name: No oracle target can read ready on zero evidence (F19 / A13)
+        shell: bash
+        run: python3 scripts/audit_oracle_false_green.py --no-trace
+
+      - name: No high-severity criterion's evidence is stale (ADR-0010 A13)
+        shell: bash
+        run: python3 scripts/check_evidence_staleness.py --no-trace
 
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative
