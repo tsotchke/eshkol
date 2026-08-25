@@ -24,76 +24,96 @@ In the first line, `(k 42)` abandons the pending `(+ 1 …)` and returns `42`
 directly. In the second, `(k 10)` escapes before `999` is reached, so the outer
 `(+ 1 …)` sees `10`.
 
-### Re-invoking a saved continuation — current behavior is engine-specific and single-shot in the general case
+### Re-invoking a saved continuation — multi-shot and re-entrant
 
-`call/cc` is implemented as a single `setjmp`/`longjmp` pair per capture on the
-native backend (the `-r` JIT and AOT compiler share this codegen), and as an
-operand-stack/call-frame snapshot-and-restore on the bytecode VM. **Neither
-engine currently delivers general, standards-conformant multi-shot re-entrant
-continuations** — invoking a saved continuation more than once is only
-reliable when the re-invocation stays within the same dynamic extent that is
-still live on the stack. An earlier version of this page claimed "a full
-re-entrant continuation, not merely a one-shot escape" without qualification;
-that claim was not measured against the classic generator/`amb` shape and did
-not hold up when tested. `call/cc` being escape-only is not itself a defect —
-most real uses of `call/cc` (early return, exception-style unwinding) are
-escape-only, and native handles those correctly and with no runtime overhead
-on the non-escaping path. The defect was the documentation claiming more than
-either engine delivers, compounded by four other Eshkol docs
-(`docs/breakdown/CONTINUATIONS.md`, `docs/COMPLETE_LANGUAGE_SPECIFICATION.md`,
-`docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md`,
-`docs/breakdown/SCHEME_COMPATIBILITY.md`) stating single-shot without
-qualification either, so all five disagreed. Measured 2026-08-25:
-
-**Native (JIT `-r` and AOT):** genuinely single-shot / escape-only. A saved
-continuation can safely be re-invoked only while the C stack frame that
-captured it is still live (has not returned). Example — this program's
-`call/cc` is invoked, returns normally, and `k` is re-invoked repeatedly, but
-because every re-invocation happens from the *same* top-level flow that
-called it (no intervening function call has returned in between), the
-`jmp_buf` target is still valid stack and this specific shape happens to work:
+A continuation captured by `call/cc` may be invoked any number of times, from
+any dynamic extent, including after the procedure that captured it has already
+returned. This is what generators, coroutines and `amb`-style backtracking
+search need, and it works identically on the native `-r` JIT, the native AOT
+compiler, and the bytecode VM.
 
 ```scheme
 (define k #f)
-(define n 0)
-(display (+ 1 (call/cc (lambda (c) (set! k c) 0))))
-(newline)
-(set! n (+ n 1))
-(if (< n 3) (k n))     ; re-invoke the saved continuation
-(display "done") (newline)
+(define (f)
+  (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(display (f)) (newline)          ; 2 — f returns normally
+(display (k 10)) (newline)       ; re-enters f's continuation after f returned
 ```
-```
-1
-2
-3
-done
-```
-Do not read this as general multi-shot support. The moment a continuation is
-captured *inside a function call that has since returned* — the shape every
-real generator, coroutine, or `amb`-style backtracking search needs —
-re-invoking it is undefined behavior on native and reproducibly crashes:
-`tests/continuations/reentry_after_function_return.esk` SIGILLs on both JIT
-and AOT the instant the popped frame is re-entered, and
-`tests/continuations/generator_coroutine.esk` (a call/cc-based generator)
-SIGSEGVs on its second `yield`. See `.icc/silent-wrong-ledger.yaml` SW-51.
 
-**Bytecode VM:** architecturally different — a continuation capture
-snapshots the VM's own operand stack and call-frame array rather than the C
-stack, which in principle *can* survive re-entry into an already-returned
-Scheme-level frame (and does, correctly, for
-`reentry_after_function_return.esk` above — see `tests/continuations/`). But
-the VM does not correctly implement multi-shot re-entry either: running the
-exact "re-invoke `k` in a loop" example above on the VM prints `1` and then
-loops printing `2` forever, never reaching `3` or `done` — the VM's restore
-path does not track a coherent notion of "resume exactly here," so it
-re-executes later top-level forms wholesale, and its own runaway-instruction
-safety net does not save you (the guard's counter is reset by every
-continuation invoke, so it never trips). `generator_coroutine.esk` on the VM
-does not crash but prints a garbled transcript. See
-`.icc/silent-wrong-ledger.yaml` SW-52 for both, waived pending the build item
-below, and `tests/continuations/README.md` for exact repro commands (these
-fixtures are not wired into automated CI because the point is that they hang
-or crash).
+The classic shapes are exercised as fixtures in `tests/continuations/`:
+`generator_multishot.esk` (a producer/consumer generator resumed repeatedly),
+`amb_backtracking.esk` (McCarthy's `amb`, re-entering each choice point once
+per alternative), `reentry_after_function_return.esk`, and
+`region_capture_resume.esk`.
+
+#### How each engine delivers it
+
+**Native (JIT and AOT).** `call/cc` still records a `setjmp` point, but a
+`jmp_buf` only names a stack address: once the capturing frame returns and its
+memory is reused, jumping back to it would resume on top of whatever now
+occupies those bytes. So a capture that may outlive its frame also copies the
+live C stack — from just below the capture point up to the thread's stack base
+— into the arena. Invoking the continuation copies those bytes back to *the
+same addresses* and then `longjmp`s. Restoring in place is what makes this safe
+without relocating anything: frame pointers, spilled registers, addresses of
+locals held by closures, and the `jmp_buf` itself all still point where they
+always did. The image is written once and never mutated, so re-invoking a
+continuation any number of times restores the same pristine copy.
+
+**Bytecode VM.** A capture snapshots the VM's own operand stack and call-frame
+array rather than the C stack. Crucially it snapshots only the *control* half:
+the VM binds every top-level definition to an operand-stack slot, and those
+slots are the *store*. R7RS `call/cc` captures the control state, not the
+store, so top-level bindings are excluded from both the snapshot and the
+restore — `set!` and `define` effects survive re-entry rather than being rolled
+back with it.
+
+#### Escape continuations pay nothing
+
+Most real uses of `call/cc` are escape-only — early return, exception-style
+unwinding — where the continuation is invoked while the capturing frame is
+still live. Those never need a stack image, so native does not take one: the
+compiler classifies a capture as non-escaping when `proc` is a literal
+one-parameter lambda whose parameter is only ever the operator of a direct
+call, with no reference from inside a nested lambda. Such a capture compiles to
+exactly the `setjmp`/`longjmp` it always did. Anything the analysis does not
+model is treated as escaping, so the error direction is a copy that was not
+needed rather than a missing image. Measured on an escape-only `call/cc`
+captured at depth 60, AOT, best of 9 interleaved runs: within noise of the
+pre-multi-shot implementation.
+
+#### Interaction with regions
+
+Eshkol has no garbage collector and reclaims by region at scope exit, so a
+continuation captured inside `with-region` and resumed after that region exits
+is an ownership question. **The rule on both engines: capturing a continuation
+inside a region pins it.** The region is promoted whole rather than reclaimed,
+so the failure direction is a leak, never a dangling reference. The VM says so
+on stderr ("a `with-region` body could not be reclaimed and was promoted
+whole"); set `ESHKOL_VM_REGION_QUIET=1` to silence the note.
+`tests/continuations/region_capture_resume.esk` resumes such a continuation
+three times after the region has exited, with heavy allocation churn in
+between, and checks that region-allocated data still reads correctly.
+
+#### Limits
+
+Two shapes do not behave as R7RS specifies, both tracked in
+`.icc/silent-wrong-ledger.yaml`:
+
+- **A top-level binding established after a capture, on the bytecode VM.**
+  Because the VM keeps top-level bindings in operand-stack slots, a binding
+  whose slot sits above a continuation's saved stack top cannot be preserved
+  and re-entered at the same time. The VM **refuses the resume with a
+  diagnostic** naming the cause and the workaround (move the definition above
+  the `call/cc`, or use the native backend) rather than resuming onto a
+  corrupted store. Native has no such restriction.
+- **A local variable mutated after capture is rolled back on re-entry**, on
+  both engines, when that variable is neither a top-level binding nor captured
+  by a closure. Such a variable lives directly in the restored frame, so the
+  image restores its capture-time value; R7RS says the location persists and
+  only the control state is captured. Making this sound needs assignment
+  conversion — boxing `set!`-assigned locals — which is not yet implemented.
+  See ledger SW-53.
 
 ### Known limitation — deep CPS chains (ESH-0080) — FIXED
 
@@ -111,37 +131,29 @@ regression test does not use `call/cc` at all — it is a manual-CPS/closure-
 chain program, so this was never actually evidence about `call/cc`
 specifically; it is unrelated to the single-shot/multi-shot question above.
 
-### Build item: full multi-shot re-entrant continuations
+### Delivered: full multi-shot re-entrant continuations
 
-Full, standards-conformant multi-shot re-entrant continuations remain a
-goal, not abandoned by the corrections above. What it would take:
+The build item recorded here — replacing the `jmp_buf`-per-capture design so a
+continuation survives its frame's return — is implemented. Of the two options
+this page previously named, the **heap-allocated stack copy** was taken and the
+front-end CPS transform was rejected.
 
-- **Native.** The current `jmp_buf`-per-capture design fundamentally cannot
-  survive re-entry once its capturing C stack frame has been reused —
-  fixing this means replacing the underlying stack representation, most
-  plausibly a segmented or heap-allocated stack (so a captured continuation
-  owns its own durable copy of the frames below it, the same idea the VM
-  already gestures at) or lowering `call/cc`-using code through a CPS
-  transform in the compiler front end so "the rest of the computation"
-  becomes an ordinary heap-allocated closure instead of a raw stack
-  address. Either is a substantial codegen/runtime redesign, not a local
-  fix — this is why the current design was chosen for `v1.x` (zero
-  overhead on the non-escaping path, no custom stack management).
-- **Bytecode VM.** The snapshot-and-restore mechanism is closer in spirit
-  to what full re-entry needs, but SW-52 shows its restore path does not
-  track a coherent "resume point" distinct from "replay the rest of the
-  program" — this needs its own design pass, and ideally a re-entry model
-  shared with whatever native ends up doing, so the two engines don't
-  diverge on what "resuming a continuation" means.
-- **No target version yet.** This is large enough (spanning the codegen,
-  the runtime stack/heap representation, and the VM's interpreter loop) that
-  it is not yet scoped into a specific release; it is tracked here and in
-  `.icc/silent-wrong-ledger.yaml` (SW-51, SW-52) rather than given an
-  unfounded date. Acceptance criterion when it is scoped: all three fixtures
-  in `tests/continuations/` produce the documented-correct output on both
-  native and the VM, and the doc-typed-claims/contradiction checks in
-  `docs/design/AUDIT_2026_08_25_RESOLUTION.md`'s lineage stay clean against
-  this page.
+The reason is scoping. Eshkol's native builtins call back into Eshkol closures
+(`map`, `for-each`, `sort`, the AD tape), the standard library is separately
+compiled, and the FFI lets a host call in. Deciding which code a CPS transform
+must cover across those boundaries needs whole-program information Eshkol does
+not have, so in practice everything reachable from a `call/cc` user would need
+a CPS variant — changing the calling convention globally, taxing code that
+never uses `call/cc`, and invalidating rather than composing with the
+tail-transfer ABI work. Stack copying keeps the existing zero-overhead escape
+path untouched and adds cost only where a continuation may actually outlive its
+frame.
+
+Stack geometry is platform-specific and the continuation runtime is
+freestanding core, so the hosted runtime installs a probe
+(`eshkol_set_stack_base_hook`) at startup. A freestanding target that installs
+no probe keeps escape-only continuations rather than copying a stack region it
+cannot bound.
 
 ## `dynamic-wind`
 

@@ -3576,7 +3576,7 @@ entries:
   - id: SW-51
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
+    status: fixed
     title: "call/cc re-entry into a returned native stack frame SIGILLs/SIGSEGVs (native JIT and AOT)"
     repro: >-
       tests/continuations/reentry_after_function_return.esk — a continuation
@@ -3621,11 +3621,35 @@ entries:
       is NOT itself the defect — the defect was continuations.md claiming
       more than native delivers. See SW-52 for the bytecode VM's own,
       differently-shaped defect in the same area.
+    resolution: >-
+      FIXED by implementing the BUILD ITEM's heap-allocated-stack option. A
+      capture that may outlive its frame now copies the live C stack into the
+      arena (eshkol_continuation_capture_stack, lib/core/runtime_continuations.cpp);
+      invoking restores those bytes to the SAME addresses and then longjmps
+      (eshkol_continuation_resume + resume_trampoline), so every interior
+      pointer — frame pointers, spilled registers, addresses of locals held by
+      closures, the jmp_buf itself — stays valid with no relocation. The image
+      is never mutated, so re-invocation is unbounded. Escape-only captures are
+      unaffected: codegenCallCC omits the copy when the continuation provably
+      cannot outlive the frame, so early-return/unwind `call/cc` keeps the
+      original zero-overhead setjmp/longjmp path (measured within noise of the
+      pre-change build). The CPS-transform alternative was rejected; the
+      reasoning is recorded in continuations.md's "Delivered" section.
+    measured: >-
+      Re-measured at closure SHA on native JIT and native AOT:
+      tests/continuations/reentry_after_function_return.esk exits 0 (was
+      SIGILL/exit 132 on both) and tests/continuations/generator_coroutine.esk
+      exits 0 (was SIGSEGV/exit 139 on both). Both now produce output
+      byte-identical to the bytecode VM. New fixtures
+      tests/continuations/generator_multishot.esk and amb_backtracking.esk
+      report ALL PASS on JIT, AOT and VM. ctest 191/191.
+    closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+    closed_by: "branch feat/multishot-continuations"
 
   # ───────────────────────── SILENT-WRONG ─────────────────────────
   - id: SW-52
     bucket: SILENT-WRONG
-    status: open
+    status: fixed
     title: "bytecode VM continuation re-invocation replays completed top-level forms — hangs or produces wrong values, no diagnostic, exit 0 (when it exits)"
     repro: >-
       tests/continuations/doc_example_multishot.esk — the exact "Re-invocable
@@ -3681,18 +3705,126 @@ entries:
       standalone bug in the VM's snapshot/restore mechanics.
     caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, tests/control_flow/*, tests/vm_parity/*]
+    resolution: >-
+      FIXED. The root cause was not "replays later top-level forms" but a
+      store/control confusion: the VM binds every top-level definition to an
+      operand-stack slot, and a continuation snapshotted and restored
+      stack[0..sp) wholesale, so re-entry rolled the STORE back along with the
+      control state. R7RS `call/cc` captures control state only. A continuation
+      now snapshots and restores only the control region above an explicit
+      STORE/CONTROL boundary (OP_GLOBAL_MARK raises vm->global_top; see
+      vm_capture_continuation_stack / vm_restore_continuation_stack in
+      lib/backend/vm_run.c), so `set!` and `define` effects survive re-entry.
+      The one shape this single-array representation cannot express — a
+      top-level binding slot above a continuation's saved stack top — now fails
+      LOUDLY with a diagnostic naming the cause and the workaround, rather than
+      resuming onto a corrupted store.
+      Two further defects found while measuring this and fixed with it: a
+      one-armed `(if test conseq)` left nothing on its false path while every
+      consumer emits an unconditional OP_POP, silently overwriting the
+      top-level binding just above sp (reproducible with no call/cc at all);
+      and the runaway-instruction budget was a vm_run() local, so it reset to
+      zero on every continuation invoke and never tripped — it now lives on the
+      VM and accumulates, so an unbounded continuation loop fails loudly
+      instead of hanging silently.
+      `dynamic-wind` was additionally only ever unwound, never rerooted, on
+      BOTH engines: re-entering a continuation captured inside a
+      `dynamic-wind` whose extent had been left did not re-run that extent's
+      `before` thunk, so the body resumed with its setup undone. Both engines
+      now split at the common ancestor and run `after` outward then `before`
+      inward; the VM's wind entries record the before-closure, which
+      OP_WIND_PUSH previously discarded as NIL.
+    measured: >-
+      Re-measured at closure SHA on the bytecode VM:
+      tests/continuations/doc_example_multishot.esk now terminates with the
+      documented 1/2/3/done (was an unbounded stream of "2"). A store-mutation
+      probe that previously reported x=0 forever now matches the native JIT and
+      AOT oracles exactly (x=0,1,2,3 then final=4).
+      tests/continuations/generator_coroutine.esk exits 0 with output
+      byte-identical to native JIT and AOT — and that cross-engine agreement
+      also corrects this entry's own "correct" expectation: the transcript
+      gen1:1/gen2:2/gen3:3/gen4:done is NOT right for that program, which
+      captures return-k once inside the producer so every yield returns into
+      the first consumer's extent. tests/continuations/generator_multishot.esk
+      is the correctly structured generator and reports ALL PASS on all three
+      engines. scripts/run_vm_tests.sh 73/73, scripts/run_vm_parity.sh 188/188,
+      ctest 191/191.
+    closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+    closed_by: "branch feat/multishot-continuations"
+
+  - id: SW-53
+    bucket: SILENT-WRONG
+    status: open
+    title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
+    repro: >-
+      (define k #f)
+      (define n 0)
+      (define (f)
+        (let ((x 0))
+          (call/cc (lambda (c) (set! k c)))
+          (set! x (+ x 1))
+          x))
+      (display "f=") (display (f)) (newline)
+      (set! n (+ n 1))
+      (if (< n 3) (k 'again))
+      (display "done") (newline)
+    observed: >-
+      native JIT, native AOT and the bytecode VM all print f=1 then 1 then 1
+      then done, exit 0, no diagnostic. `x` is restored to its capture-time
+      value on every re-entry.
+    correct: >-
+      f=1 then 2 then 3 then done. `let` creates one location for `x` per
+      invocation of `f`; R7RS `call/cc` captures the control state, not the
+      store, so re-entering the continuation resumes with that location
+      holding whatever the last `set!` put there.
+    root_cause: >-
+      Neither engine performs assignment conversion. A `set!`-assigned local
+      that no closure captures lives directly in the frame — an LLVM alloca on
+      native, an operand-stack slot on the VM — rather than in a heap cell, so
+      it is inside the region a continuation snapshots and is restored with it.
+      Closure-captured mutable variables are already boxed on both engines and
+      are therefore correct; top-level bindings are correct on both engines
+      too (native keeps them outside the stack, and the VM excludes them from
+      the snapshot via the STORE/CONTROL boundary added in SW-52's fix).
+      The sound fix is assignment conversion: box every `set!`-assigned local
+      so the frame holds only immutable values and restoring it cannot roll a
+      location back.
+    notes: >-
+      Pre-existing in the sense that no engine ever handled it, but only
+      reachable now that re-entry into a returned frame works at all — on
+      native it previously crashed (SW-51) and on the VM this exact program
+      looped forever (SW-52), so this is a strictly narrower residual of two
+      defects that were both worse. Documented under "Limits" in
+      docs/reference/language/continuations.md rather than left implicit.
+      Not made LOUD because detecting it needs the same whole-function
+      assignment analysis that would fix it outright; the analysis is the fix,
+      so the next step on this entry is to implement it rather than to add a
+      diagnostic.
+    caught_by: [direct-measurement, branch feat/multishot-continuations]
+    missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
     waiver:
       owner: tsotchke
       reason: >-
-        Pre-existing defect discovered while auditing the continuations.md
-        documentation claim, not introduced by this change. Fixing it for
-        real requires the same large continuation-representation rework as
-        SW-51 (segmented/heap-allocated stack or CPS transform on the VM
-        side too, plus a shared re-entry model between both engines) —
-        tracked as the "Build item: full multi-shot re-entrant
-        continuations" in docs/reference/language/continuations.md, no
-        fixed target version yet. Waived rather than closed so the release
-        gate does not block on a pre-existing gap this PR only made
-        visible and precisely documented; revisit when that build item is
-        scoped into a release.
-      expires: "2027-12-31"
+        FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
+        where making re-entry work moved behaviour from a loud failure to a
+        silently wrong value: on the pre-change build this exact program
+        SIGSEGV'd on native (SW-51) and looped forever on the VM (SW-52); it
+        now returns 1 three times where R7RS says 1, 2, 3. Every other shape
+        the change touches moved from crash/hang to correct.
+        It is waived rather than made loud because neither available way of
+        making it loud is honest. A compile-time rule precise enough to catch
+        it — "an escaping call/cc anywhere plus a set! to a non-boxed local
+        anywhere" — is sound only within one compilation unit and would reject
+        correct programs that never re-enter a frame holding a mutated local,
+        including ordinary uses of the separately compiled stdlib. A narrower
+        rule covering only the capturing function would miss the caller-frame
+        case (a mutated local in a frame BELOW the capture is restored too),
+        which is precisely the partial-detector-presented-as-a-gate pattern
+        this project is eliminating.
+        The sound fix is assignment conversion — box every `set!`-assigned
+        local so a frame holds only immutable values and restoring it cannot
+        roll a location back. That is a self-contained follow-up on both
+        engines and is the recommended next step on this entry; the analysis
+        needed to detect the defect IS the fix, so building the diagnostic
+        first would be wasted work.
+      expires: "2026-12-31"
