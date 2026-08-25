@@ -4870,6 +4870,73 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(ci_retry_selftest PROPERTIES TIMEOUT 60)
     endif()
+
+    # Assurance-wave-2 gates (v1.3.5): a self-verdict scanner (a suite
+    # printing its own FAIL line must not be gradeable PASS by any harness,
+    # ctest included) and a build-fingerprint gate (a harness's recorded
+    # evidence must still describe the binary now on disk, and that binary
+    # must not predate the source tree it was built from). Same contract as
+    # the wave-1 gates above: run against real state (must PASS today) plus
+    # --self-test (must be able to go RED on deliberately-broken fixtures).
+    #
+    # check_self_verdicts_gate runs with no --junit/--manifest/--pair here —
+    # ctest has not produced a JUnit file about itself yet at this point in
+    # its own run, so there is nothing to scan and the gate PASSes on "no
+    # input, nothing to contradict" (see its own module docstring). The real
+    # check against THIS suite's own JUnit output lives in
+    # scripts/run_ctest_gate.sh, which re-runs ctest with --output-junit and
+    # feeds the result to this same script.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py")
+        add_test(
+            NAME self_verdict_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME self_verdict_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(self_verdict_gate self_verdict_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_build_fingerprint.py")
+        add_test(
+            NAME build_fingerprint_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_build_fingerprint.py"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME build_fingerprint_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_build_fingerprint.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(build_fingerprint_gate build_fingerprint_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+
+    # Readiness artifact probe (v1.3.5 assurance wave 2, closing the last
+    # open v1.3.4 readiness gap): scripts/doc_audit/run_examples.py writes
+    # results-<mode>.json with nothing validating it. This is that validator,
+    # self-tested the same way as every other gate above. It takes no
+    # positional path here — --self-test is all ctest can run without a
+    # results file having been produced by an actual doc-example run first.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_audit/check_results_schema.py")
+        add_test(
+            NAME doc_examples_results_schema_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_audit/check_results_schema.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(doc_examples_results_schema_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")

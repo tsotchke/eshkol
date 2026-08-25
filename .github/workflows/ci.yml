@@ -422,6 +422,23 @@ jobs:
   #     ("no evidence in N days = FAIL"), which ICC's `runtime_event`
   #     grading path has no support for (only `performance_budget` does) —
   #     see the script's docstring. Repo-side until that lands upstream.
+  #
+  # v1.3.5 assurance wave 2 adds two more gates to this job, same contract:
+  #
+  #   - check_self_verdicts.py: no artifact from a run a harness counted as
+  #     PASSING may contain a self-reported failure marker (FAIL/FAILED/
+  #     MISMATCH/DIVERGENCE). SW-24 printed `FAIL: Expected 12` on the VM, out
+  #     loud, on a green baseline, for months. This job has built no compiler
+  #     yet, so it runs with no --junit/--manifest/--pair and PASSes on "no
+  #     evidence to contradict" — the real checks against live CTest/VM-parity
+  #     output are wired into scripts/run_ctest_gate.sh and
+  #     scripts/run_vm_parity.sh, in the jobs that build the compiler.
+  #   - check_build_fingerprint.py: a harness's recorded binary fingerprint
+  #     (mtime+size+sha256+git SHA, via scripts/lib/build_fingerprint.sh) must
+  #     still describe the binary now on disk, and that binary must not
+  #     predate the source tree it claims to have been built from. Wired for
+  #     real into scripts/run_icc_smoke.sh, scripts/run_vm_parity.sh and
+  #     scripts/run_ctest_gate.sh.
   assurance-gates:
     name: assurance-gates
     if: github.event_name != 'schedule'
@@ -447,6 +464,9 @@ jobs:
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
           python3 scripts/check_surface_counts.py --self-test
+          python3 scripts/check_self_verdicts.py --self-test
+          python3 scripts/check_build_fingerprint.py --self-test
+          python3 scripts/doc_audit/check_results_schema.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -521,7 +541,21 @@ jobs:
       # the INTENDED policy itself changes.
       - name: Every required status context is reportable on every PR shape (docs-only included)
         shell: bash
-        run: python3 scripts/check_required_context_consistency.py --offline
+        run: python3 scripts/check_required_context_consistency.py --offline --no-trace
+      # No compiler has been built in this fast job, so there is nothing yet
+      # to scan or fingerprint — both gates PASS on "no evidence to
+      # contradict" (see their own module docstrings). The self-test step
+      # above is what proves each gate CAN go red; the real checks against
+      # live harness evidence run inside scripts/run_ctest_gate.sh,
+      # scripts/run_icc_smoke.sh and scripts/run_vm_parity.sh, in the jobs
+      # that actually build the compiler.
+      - name: No self-reported failure hides behind a PASS verdict (no build in this job — vacuously clean)
+        shell: bash
+        run: python3 scripts/check_self_verdicts.py --no-trace
+
+      - name: No harness's recorded binary fingerprint is stale (no build in this job — vacuously clean)
+        shell: bash
+        run: python3 scripts/check_build_fingerprint.py --no-trace
 
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
