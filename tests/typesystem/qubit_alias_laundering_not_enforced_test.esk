@@ -1,25 +1,31 @@
-;; Type System Test: laundering a qubit through an UNTYPED binder is not caught
+;; Type System Test: laundering a qubit through an UNTYPED binder is CAUGHT
 ;; EXPECT-MODE: default
-;; EXPECT-COMPILE: ok
-;; EXPECT-NO-STDERR: was consumed more than once
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
 
-;; Linear tracking is keyed by NAME, and a name is tracked only where the
-;; checker can see a linear type on it. Passing a qubit into an unannotated
-;; parameter erases that: `a` below is inferred dynamic, so the clone inside is
-;; NOT diagnosed and this program compiles and runs.
+;; This fixture was written as an intentional ACCEPT: the analysis was keyed by
+;; NAME, a name was tracked only where the checker could see a linear type on
+;; it, and an unannotated parameter erased that -- so `a` was inferred dynamic,
+;; the clone inside was not diagnosed, and this program compiled and ran. The
+;; comment then standing said the day the hole closed this file must be flipped
+;; to a reject DELIBERATELY, by someone who read it, rather than the gap being
+;; rediscovered by a consumer. This is that flip.
 ;;
-;; This is a real hole and it is the same shape that defeats the ownership
-;; analyzer's name-keyed move tracking. It is pinned here as an ACCEPT on
-;; purpose: the fixture records what the compiler does today, so the day
-;; place-keyed tracking lands (ADR-0004 PlaceId/FlowEnv) this file must be
-;; changed to a reject -- deliberately, by someone who reads this comment --
-;; rather than the gap being rediscovered by a consumer.
+;; What closed it: `((lambda (a) BODY) q)` is a `let`, and the use analysis now
+;; treats it as one. An argument that is a bare reference to a tracked binding
+;; is an ALIAS, not a use -- exactly the rule that already caught
+;; `(let ((a q)) ...)` -- so the parameter is tracked through BODY and the two
+;; uses of `a` are the clone they always were. No type information is needed for
+;; this: the alias is a syntactic fact about the application, which is why it
+;; can be closed without the full ADR-0004 PlaceId/FlowEnv elaboration.
 ;;
-;; Direct aliases ARE caught: see qubit_clone_via_let_alias_test.esk and
-;; qubit_clone_via_alias_chain_test.esk.
+;; Still NOT closed, and still name-keyed: a qubit laundered through a call to a
+;; SEPARATELY DEFINED unannotated function -- `(let ((a (id q))) ...)` where
+;; `(define (id x) x)` carries no return annotation. Deciding that needs the
+;; return type inferred interprocedurally, which is the remaining half of BI-3.
+;; qubit_linear_undecidable_scope_test.esk pins the announced boundary.
 (define (h (q : Qubit)) : Qubit q)
 
 (define (laundered (q : Qubit))
   ((lambda (a) (cons (h a) (h a))) q))
-(display "laundering through an untyped binder is not enforced")
-(newline)

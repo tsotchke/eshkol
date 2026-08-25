@@ -1,0 +1,20 @@
+;; Type System Test: one use per exclusive case clause is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_case_test.esk. Exactly one clause body
+;; runs, so one use in each is one use at runtime. This is the S15 shape #471
+;; measured: correct, and rejected outright by the coarser pre-#471 check under
+;; --strict-types because the only use was invisible to type synthesis.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (pick-case (k : Int) (q : Qubit)) : Qubit
+  (case k
+    ((1) (h q))
+    (else (z q))))
+(display "case clauses are exclusive")
+(newline)
