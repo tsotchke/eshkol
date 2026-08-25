@@ -4158,6 +4158,25 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape
         ENVIRONMENT "ESHKOL_ARENA_POISON=1")
 endif()
 
+# ADR-0010 gap A12: the VM arena primitives (lib/backend/vm_arena.h) must honour
+# ESHKOL_ARENA_POISON the way the native arena and the VM evacuator already do.
+# Registered TWICE against the same binary because the environment lookup is
+# cached per process: the armed run asserts 0xCB is stamped, the disarmed run
+# asserts the bytes are left alone. Without the second entry an unconditional
+# memset would satisfy the first, and the gate would not be measuring the switch.
+# The header is self-contained, so this target links nothing.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vm_arena_poison_test.cpp")
+    add_executable(vm_arena_poison_test tests/core/vm_arena_poison_test.cpp)
+    target_compile_features(vm_arena_poison_test PRIVATE cxx_std_17)
+    target_include_directories(vm_arena_poison_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME vm_arena_poison_test COMMAND vm_arena_poison_test)
+    set_tests_properties(vm_arena_poison_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=1")
+    add_test(NAME vm_arena_poison_off_test COMMAND vm_arena_poison_test expect-off)
+    set_tests_properties(vm_arena_poison_off_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_closure_alloc_test.cpp")
     add_executable(runtime_closure_alloc_test tests/core/runtime_closure_alloc_test.cpp)
     target_compile_features(runtime_closure_alloc_test PRIVATE cxx_std_17)

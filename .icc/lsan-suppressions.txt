@@ -1,0 +1,47 @@
+# LeakSanitizer suppression file for the linux-x64-asan-ubsan CI lane
+# (ADR-0010 gap A12).
+#
+# Every rule below suppresses ONE specific, understood, intentional
+# retention -- never a blanket "leak:*" or a suppression by allocation size
+# alone. Each rule carries a comment stating WHAT it matches and WHY the
+# retention is by design rather than a bug. A rule with no comment, or a
+# rule broad enough to match more than the one call path it names, is not
+# acceptable here -- see scripts/check_leak_detection_selftest.sh, which
+# proves this file still lets a real leak through by leaking on purpose
+# under the exact suppressions configured here.
+#
+# Format: https://clang.llvm.org/docs/AddressSanitizer.html#suppressing-memory-leaks
+#   leak:<function-or-module-substring>
+#
+# Loaded via LSAN_OPTIONS=suppressions=<this file> (see .github/workflows/ci.yml).
+#
+# Current state: NO active rules. This is a starting point, not a claim that
+# no retention exists -- docs/reference/runtime/memory-model.md documents
+# several Stage-1 VM-evacuator limits (out-of-line payload retention,
+# continuation-pins-region, unclassified-subtype pins) as intentional. Two
+# things kept this file empty rather than pre-populated on this pass:
+#
+#   1. Most of that documented retention stays REACHABLE (the arena keeps
+#      its blocks on a global/region-owned linked list; the JIT object
+#      cache lives in a global map). LSan's default leak model only reports
+#      allocations with NO reachable pointer from any global/stack/TLS root
+#      at exit, so architecturally-intentional-but-reachable retention does
+#      not, by itself, produce an LSan finding to suppress.
+#   2. A full local run of the CI lane's exact test_command
+#      (run_v1_2_edge_cases_tests.sh + run_ml_tests.sh + run_ad_oracle.sh)
+#      under detect_leaks=1 on a from-scratch ASan+agent-FFI build could not
+#      be completed in this session: the agent-FFI archive's tree-sitter
+#      grammar dependencies (FetchContent network clones, several hundred
+#      MB across ~9 grammar repos) did not finish fetching in the available
+#      time on this shared development machine. This is an infra/session
+#      constraint, not a scope decision -- see the PR description for the
+#      full account. scripts/check_leak_detection_selftest.sh proves the
+#      mechanism itself (detect_leaks=1 + this file's suppressions=) is live
+#      and correctly discriminating (catches a deliberate leak, does not
+#      flag a clean program) independent of building the full Eshkol binary.
+#
+# The FIRST real linux-x64-asan-ubsan run under this configuration is
+# expected to be where any genuine Eshkol-side finding first surfaces --
+# that is the intended effect of turning detect_leaks on, not a defect in
+# this file. Add entries here one at a time as real findings are triaged;
+# never widen a rule past the one call path it names.
