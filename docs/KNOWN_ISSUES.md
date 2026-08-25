@@ -539,20 +539,25 @@ block ordinary use.
 
 ## Roadmap (Future Releases)
 
-These are planned features, not deficiencies in the current release:
+These are planned features, not deficiencies in the current release. Targets
+below were re-pinned in the v1.3.5 documentation wave against the re-dated
+ladder in [ROADMAP.md](../ROADMAP.md) (maintainer ruling R1, executed
+2026-08-24) — the previous "v1.3"/"v1.4" targets here were stale: the v1.3
+line has fully shipped (through v1.3.4-evolve, tagged 2026-08-19), and none
+of the rows below shipped inside it.
 
 | Feature | Target | Current Alternative |
 |---------|--------|-------------------|
-| Full R7RS library export filtering semantics | v1.3 | `define-library` and R7RS `import` forms, including `only`/`except`/`rename`/`prefix`, lower through the existing `require`/`provide` module system |
-| Visual debugger UI | v1.3 | GDB/LLDB on the DWARF data already emitted by `-g`; `--dump-ir` for IR-level inspection |
-| Full C callbacks from foreign threads | v1.3 | `extern` C function calls (in-thread) work; native HTTP, SQLite, subprocess, fs-watch FFI surfaces shipped in v1.2 |
-| Extended Python bindings | v1.4 | Stable C FFI with pybind11 + NumPy zero-copy interop shipped in v1.2 |
-| Distributed computing | v1.3 | Single-machine thread pool with `parallel-map`/`parallel-fold`/`future` |
-| Multi-GPU dispatch | v1.3 | Single GPU (Metal or CUDA) chosen automatically by the cost model |
-| Vulkan compute shaders | v1.3 | Metal (macOS) + CUDA (Linux/Windows-with-NVIDIA) |
-| ONNX export | v1.3 | Eshkol's native `.eshkol-model` serialiser shipped in v1.2; manual file I/O for other formats |
-| Profile-guided optimisation (PGO) | v1.3 | LLVM `-O3` + SIMD micro-kernels |
-| Mobile / embedded targets | v1.4 + freestanding-platform programme | Desktop / server only |
+| Bare `prefix` import over a module's whole export list (without an explicit `only`/`rename` clause) | No committed release — small backlog item (ROADMAP.md v1.3.0-evolve notes) | `define-library`/`import` with `only`, `except`, `rename`, or `prefix` combined with `only`/`rename` all lower through the module system today |
+| Visual debugger UI | No committed release — W4 codebase-health backlog | GDB/LLDB on the DWARF data already emitted by `-g`; `--dump-ir` for IR-level inspection |
+| Full C callbacks from foreign threads | No committed release | `extern` C function calls (in-thread) work; native HTTP, SQLite, subprocess, fs-watch FFI surfaces shipped in v1.2 |
+| Extended Python bindings | v1.4.0-connection (W5 interop wave 2: exactness across the Python/NumPy boundary + silent-demotion CI gate) | Stable C FFI with pybind11 + NumPy zero-copy interop shipped in v1.2 |
+| Distributed computing | On the W6 ladder: PJRT client spike + native collectives at v1.4.0, Tier-1 data-parallel + Tier-2 mesh bit-identity gate at v1.5.0, GSPMD multi-host at v1.6.x, gates at v2.0 | Single-machine thread pool with `parallel-map`/`parallel-fold`/`future` |
+| Multi-GPU dispatch | On the W6 ladder (no longer gated behind "demonstrated demand" — see ROADMAP.md "Development workstreams") | Single GPU (Metal or CUDA) chosen automatically by the cost model |
+| Vulkan compute shaders | v1.8.0-platform | Metal (macOS) + CUDA (Linux/Windows-with-NVIDIA) |
+| ONNX export | Post-training-win, no fixed date (W5: ships only once there is a training win worth exporting) | Eshkol's native `.eshkol-model` serialiser shipped in v1.2; manual file I/O for other formats |
+| Profile-guided optimisation (PGO) | v1.5.0-intelligence (native-product PGO in the release workflow, ADR-0007 Phase 1); the build-time scaffold (`-DESHKOL_PGO=generate/use`) already ships | LLVM `-O3` + SIMD micro-kernels |
+| Mobile / embedded targets | v1.8.0-platform + freestanding-platform programme | Desktop / server only |
 
 ---
 
