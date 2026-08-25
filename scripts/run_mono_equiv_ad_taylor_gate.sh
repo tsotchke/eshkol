@@ -63,5 +63,7 @@ printf '%s\n' \
   '{"kind":"mono_equiv","name":"ad_taylor_p3_jet8_subsumed","value":"PASS","snippet":"JIT+AOT tagged Taylor towers preserve exact behavior through order 8: 441/441 checks","confidence":1.0}' \
   | tee "$TRACE_FILE" >/dev/null
 
+eshkol_durable_mirror_trace "$TRACE_FILE" mono_equiv.jsonl
+
 echo "PASS: JIT+AOT monomorphized/runtime Taylor equivalence (441 checks each)"
 echo "$TRACE_FILE written"

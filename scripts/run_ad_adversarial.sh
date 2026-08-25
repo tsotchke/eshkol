@@ -277,6 +277,8 @@ fi
 emit_event "ad_adversarial_gate" "$gate" \
     "total=$total passed=$passed xknown=$xknown failed=$failed crashed=$crashed hung=$hung quick=$QUICK aot=$DO_AOT"
 
+eshkol_durable_mirror_trace "$TRACE_FILE" ad_adversarial.jsonl
+
 echo "ad_adversarial gate: $gate"
 if [ "$gate" = "PASS" ]; then
     echo "PASSED tests/ad_adversarial::gate"

@@ -417,10 +417,14 @@ echo "wasm-execute-diff: $pass passed, $fail failed, $xfail xfail (known WASM bu
 if [ $fail -eq 0 ]; then
     emit_event "wasm_parity_gate" "PASS" \
         "$pass checks green; $xfail documented WASM bugs (xfail); $excluded out-of-subset excluded with reasons"
+    # Mirror only after every event (including the final gate verdict) has
+    # been appended, so a durable-root mirror is never missing the summary.
+    eshkol_durable_mirror_trace "$TRACE_FILE" wasm_parity.jsonl
     echo "Trace written: $TRACE_FILE"
     exit 0
 else
     emit_event "wasm_parity_gate" "FAIL" "$fail of $((pass+fail)) checks failed (unexpected divergence or XPASS)"
+    eshkol_durable_mirror_trace "$TRACE_FILE" wasm_parity.jsonl
     echo "Trace written: $TRACE_FILE"
     exit 1
 fi

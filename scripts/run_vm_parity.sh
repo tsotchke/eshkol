@@ -345,12 +345,16 @@ if [ $fail -eq 0 ]; then
     emit_event "vm_dispatch_native" "PASS" \
         "vm_dispatch_native exercised by $gate_summary"
     emit_test_result "vm_parity_gate" "PASS" "$gate_summary"
-    echo "Trace written: $TRACE_FILE"
-    exit 0
+    rc=0
 else
     gate_summary="$fail of $((pass+fail)) checks failed"
     emit_event "vm_parity_gate" "FAIL" "$gate_summary"
     emit_test_result "vm_parity_gate" "FAIL" "$gate_summary"
-    echo "Trace written: $TRACE_FILE"
-    exit 1
+    rc=1
 fi
+
+# Mirror only after every event (including the final gate verdict) has been
+# appended, so a durable-root mirror is never missing the summary line.
+eshkol_durable_mirror_trace "$TRACE_FILE" vm_parity.jsonl
+echo "Trace written: $TRACE_FILE"
+exit "$rc"
