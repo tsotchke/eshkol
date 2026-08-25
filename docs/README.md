@@ -177,6 +177,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 
 ## Testing and Quality Gates
 
+- [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
 - [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 183/183
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
