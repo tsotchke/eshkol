@@ -614,6 +614,12 @@ public:
         bool decidable = true;      // false: body left the decidable fragment
         int  uses = 0;              // worst-case uses along any single path
         const char* blocker = "";   // name of the form that ended decidability
+        // Non-null when a bare reference to the binding was stored into an
+        // untyped container (`cons`, `vector`, …). The container's type carries
+        // no linearity, so every later read of it is an unchecked use — the
+        // laundering route BI-3 named. Reported only after the use count, so a
+        // genuine double use is still described as the clone it is.
+        const char* escaped_into = nullptr;
     };
 
     /**
