@@ -1,0 +1,9 @@
+;; Entry file. Requires ./module.esk, which has the actual fatal error.
+;; ESH-0364: under AOT (`-o`) compile, the diagnostic for the error inside
+;; module.esk must name module.esk (and module.esk's own line), never this
+;; entry file's name.
+
+(require module)
+
+(display "unreachable")
+(newline)

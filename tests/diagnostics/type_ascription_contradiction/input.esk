@@ -1,0 +1,8 @@
+;; Diagnostic corpus case: a PROVABLY FALSE `(the <type> expr)` is rejected.
+;; Seed: "type-ascription rejections" (ADR-0010 A11), same shape as
+;; tests/typesystem/ascription_contradiction_test.esk (SW-11).
+
+(define (identity-fn x) x)
+
+(display (the string (+ 1 2)))
+(newline)

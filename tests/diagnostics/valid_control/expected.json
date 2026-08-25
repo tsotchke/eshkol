@@ -1,0 +1,7 @@
+{
+  "description": "Positive control: a program with no diagnosable defect must compile and run cleanly. Counterpart to the 'diagnosed program must not build and run' contract -- proves the runner does not pass by rejecting everything indiscriminately.",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 0,
+  "stdout_contains": ["diagnostic-corpus-control-ok"]
+}

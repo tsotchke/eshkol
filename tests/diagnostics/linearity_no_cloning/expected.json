@@ -1,0 +1,15 @@
+{
+  "description": "A linear Qubit passed twice to the same form (cons q q) is a no-cloning violation and must be rejected under --strict-types (same shape as tests/typesystem/qubit_no_cloning_test.esk). Under default/gradual mode this is only a warning and the program is allowed to proceed to codegen, so this case pins the --strict-types fatal contract specifically.",
+  "mode": "strict-types",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "linear variable 'q' used more than once",
+      "span": {"line": 6, "col": 11}
+    },
+    {
+      "contains": "linear variable 'q' was consumed more than once",
+      "span": {"line": 5, "col": 2}
+    }
+  ]
+}

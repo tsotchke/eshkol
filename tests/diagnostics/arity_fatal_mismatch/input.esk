@@ -1,0 +1,9 @@
+;; Diagnostic corpus case: fatal arity mismatch.
+;; Seed: "arity-fatal errors" (ADR-0010 A11).
+;; f takes exactly 2 parameters; calling it with 4 must be a fatal,
+;; compile-time diagnostic that names the call site.
+
+(define (f x y) (+ x y))
+
+(display (f 1 2 3 4))
+(newline)

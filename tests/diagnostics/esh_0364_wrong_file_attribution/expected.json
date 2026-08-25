@@ -1,0 +1,14 @@
+{
+  "description": "ESH-0364: a fatal arity error inside a (require)d module (module.esk) must be attributed to module.esk and module.esk's own line number under AOT (-o) compile -- never to the requiring entry file's name. Before the fix, the AOT driver inlined every required module's forms into one flat AST array compiled under the entry file's ambient source context, so this diagnostic printed input.esk's name next to module.esk's line number (a line input.esk does not have).",
+  "esh_ref": "ESH-0364",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "Arity mismatch: g expects 2 arguments but got 4",
+      "span": {"file": "module.esk", "line": 11, "col": 21}
+    }
+  ],
+  "forbidden": [
+    "input.esk:11"
+  ]
+}
