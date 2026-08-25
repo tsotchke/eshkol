@@ -6,6 +6,7 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
+#include <eshkol/frontend/node_identity.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/logger.h>
@@ -43,6 +44,31 @@ static thread_local const char* g_parse_source = NULL;
 static thread_local uint32_t g_stream_line = 1;
 static thread_local uint32_t g_stream_column = 1;
 static thread_local bool g_parse_had_error = false;
+
+/**
+ * @brief Give a node its source location AND its substrate identity.
+ *
+ * ADR-0000 Stage 1 (phase A). Every site in this file that used to write
+ * `node.line` / `node.column` writes them through here instead, so a node's
+ * location and its `NodeId` are established in the same statement and cannot
+ * drift apart. The `line`/`column` fields keep their exact previous values —
+ * this is strictly additive, and every consumer that has not moved onto the
+ * substrate yet reads what it always read.
+ *
+ * The file comes from the ambient parse context, which is correct at the
+ * moment of the call: `eshkol_set_parse_source_context` rebinds it around
+ * every unit the driver, the REPL and `(load)` open, so a node stamped while
+ * a required module is being parsed records THAT module. `eshkol_ast_t`'s own
+ * `source_file_id` is stamped only on top-level forms (inner nodes inherit
+ * the ambient file at codegen time); the substrate stamps it on every node it
+ * touches, which is what lets a consumer resolve a location without depending
+ * on where in a traversal it happens to be.
+ */
+static inline void stamp_node(eshkol_ast_t& node, uint32_t line, uint32_t column) {
+    node.line = line;
+    node.column = column;
+    node.node_id = eshkol_node_id_new(g_parse_filename_id, line, column);
+}
 
 /* Emit error with file:line:col + caret underline.
  * Falls back to plain eshkol_error if source text unavailable. */
@@ -1101,8 +1127,7 @@ static eshkol_ast_t make_parser_string_ast(const std::string& value,
                                            uint32_t line,
                                            uint32_t column) {
     eshkol_ast_t ast = {};
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     size_t len = value.length();
     char* ptr = new char[len + 1];
     if (ptr) memcpy(ptr, value.c_str(), len + 1);
@@ -1121,8 +1146,7 @@ static eshkol_ast_t make_parser_var_ast(const char* name,
                                         uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_VAR;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     size_t len = strlen(name);
     ast.variable.id = new char[len + 1];
     if (ast.variable.id) memcpy(ast.variable.id, name, len + 1);
@@ -1146,8 +1170,7 @@ static eshkol_ast_t make_parser_call_ast(const char* name,
                                          uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_CALL_OP;
     ast.operation.call_op.func = new eshkol_ast_t;
     *ast.operation.call_op.func = make_parser_var_ast(name, line, column);
@@ -1225,8 +1248,7 @@ static eshkol_ast_t make_parser_quoted_symbol_ast(const std::string& name,
 
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_QUOTE_OP;
     ast.operation.call_op.func = nullptr;
     ast.operation.call_op.num_vars = 1;
@@ -1270,8 +1292,7 @@ static eshkol_ast_t make_parser_binding_ast(const char* name,
                                             uint32_t column) {
     eshkol_ast_t binding = {};
     binding.type = ESHKOL_CONS;
-    binding.line = line;
-    binding.column = column;
+    stamp_node(binding, line, column);
     binding.cons_cell.car = new eshkol_ast_t;
     *binding.cons_cell.car = make_parser_var_ast(name, line, column);
     binding.cons_cell.cdr = new eshkol_ast_t;
@@ -1314,8 +1335,7 @@ static eshkol_ast_t wrap_keyword_formal_body(
 
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_LET_OP;
     ast.operation.let_op.num_bindings = formals.size();
     ast.operation.let_op.bindings = new eshkol_ast_t[formals.size()];
@@ -1345,8 +1365,7 @@ static eshkol_ast_t wrap_keyword_formal_body(
 
         eshkol_ast_t sequence = {};
         sequence.type = ESHKOL_OP;
-        sequence.line = line;
-        sequence.column = column;
+        stamp_node(sequence, line, column);
         sequence.operation.op = ESHKOL_SEQUENCE_OP;
         sequence.operation.sequence_op.num_expressions = 2;
         sequence.operation.sequence_op.expressions = new eshkol_ast_t[2];
@@ -1507,8 +1526,7 @@ static eshkol_ast_t parse_interpolated_string_token(const Token& token) {
 static eshkol_ast_t parse_atom(const Token& token) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_INVALID;
-    ast.line = token.line;
-    ast.column = token.column;
+    stamp_node(ast, token.line, token.column);
 
     switch (token.type) {
         case TOKEN_STRING: {
@@ -1554,8 +1572,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
                         if (s[j] < '0' || s[j] > '9') return false;
                     }
                     memset(node, 0, sizeof(*node));
-                    node->line = token.line;
-                    node->column = token.column;
+                    stamp_node(*node, token.line, token.column);
                     *is_zero = false;
                     try {
                         int64_t v = std::stoll(s);
@@ -2697,8 +2714,7 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         eshkol_ast_t inner = parse_expression(tokenizer);
         eshkol_ast_t ast = {};
         ast.type = ESHKOL_OP;
-        ast.line = token.line;
-        ast.column = token.column;
+        stamp_node(ast, token.line, token.column);
         ast.operation.op = ESHKOL_UNQUOTE_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
@@ -2713,8 +2729,7 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         eshkol_ast_t inner = parse_expression(tokenizer);
         eshkol_ast_t ast = {};
         ast.type = ESHKOL_OP;
-        ast.line = token.line;
-        ast.column = token.column;
+        stamp_node(ast, token.line, token.column);
         ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
@@ -2783,8 +2798,7 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
              head.value == "quasiquote" || head.value == "quote")) {
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
-            ast.line = head.line;
-            ast.column = head.column;
+            stamp_node(ast, head.line, head.column);
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
@@ -3314,8 +3328,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             // at the root supertype rather than narrowing it to Null.
             val_ast = eshkol_ast_t{};
             eshkol_ast_make_null(&val_ast);
-            val_ast.line = def.line;
-            val_ast.column = def.column;
+            stamp_node(val_ast, def.line, def.column);
         } else {
             // Simple variable define - use value directly
             val_ast = *def.operation.define_op.value;
@@ -3854,8 +3867,7 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
                                               uint32_t column) {
     if (exprs.empty()) {
         eshkol_ast_t ast = {};
-        ast.line = line;
-        ast.column = column;
+        stamp_node(ast, line, column);
         eshkol_ast_make_null(&ast);
         return ast;
     }
@@ -3865,8 +3877,7 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
 
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_SEQUENCE_OP;
     ast.operation.sequence_op.num_expressions = exprs.size();
     ast.operation.sequence_op.expressions = new eshkol_ast_t[exprs.size()];
@@ -3932,8 +3943,7 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
                                      uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_REQUIRE_OP;
     ast.operation.require_op.num_modules = modules.size();
     ast.operation.require_op.module_names = new char*[modules.size()];
@@ -4000,8 +4010,7 @@ static eshkol_ast_t make_define_alias_ast(const std::string& alias,
                                            uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_DEFINE_OP;
     ast.operation.define_op.name = parser_copy_cstr(alias);
     ast.operation.define_op.value = new eshkol_ast_t;
@@ -4032,8 +4041,7 @@ static eshkol_ast_t make_parser_define_value_ast(const std::string& name,
                                                   uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_DEFINE_OP;
     ast.operation.define_op.name = copy_parser_string(name);
     ast.operation.define_op.value = new eshkol_ast_t(value);
@@ -4055,8 +4063,7 @@ static eshkol_ast_t make_parser_set_ast(const std::string& name,
                                         uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_SET_OP;
     ast.operation.set_op.name = copy_parser_string(name);
     ast.operation.set_op.value = new eshkol_ast_t(value);
@@ -4071,8 +4078,7 @@ static eshkol_ast_t make_parser_lambda_ast(const std::vector<std::string>& param
                                            uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_LAMBDA_OP;
     ast.operation.lambda_op.num_params = params.size();
     ast.operation.lambda_op.parameters = params.empty()
@@ -4103,8 +4109,7 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
                                      uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_PROVIDE_OP;
     ast.operation.provide_op.num_exports = exports.size();
     ast.operation.provide_op.export_names = new char*[exports.size()];
@@ -4633,8 +4638,7 @@ static eshkol_ast_t build_let_match_ast(const std::vector<LetMatchBinding>& bind
 
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
+    stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_MATCH_OP;
     ast.operation.match_op.expr = new eshkol_ast_t;
     *ast.operation.match_op.expr = bindings[index].expr;
@@ -4787,8 +4791,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
     Token token = tokenizer.nextToken();
     // Set source location from first token in the list
-    ast.line = token.line;
-    ast.column = token.column;
+    stamp_node(ast, token.line, token.column);
     
     // Empty list (ESH-0217).
     //
@@ -5064,8 +5067,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             std::vector<eshkol_ast_t> lowered;
             eshkol_ast_t false_ast = {};
-            false_ast.line = form_line;
-            false_ast.column = form_column;
+            stamp_node(false_ast, form_line, form_column);
             eshkol_ast_make_bool(&false_ast, false);
             for (const std::string& name : names) {
                 lowered.push_back(make_parser_define_value_ast(
@@ -5109,8 +5111,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 form_line, form_column);
             eshkol_ast_t invoke = {};
             invoke.type = ESHKOL_OP;
-            invoke.line = form_line;
-            invoke.column = form_column;
+            stamp_node(invoke, form_line, form_column);
             invoke.operation.op = ESHKOL_CALL_WITH_VALUES_OP;
             invoke.operation.call_with_values_op.producer =
                 new eshkol_ast_t(producer_lambda);
@@ -8352,8 +8353,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             size_t n = params.size();
 
             if (n == 0) {
-                body.line = parameterize_line;
-                body.column = parameterize_column;
+                stamp_node(body, parameterize_line, parameterize_column);
                 return body;
             }
 
@@ -8489,8 +8489,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             *wind.operation.dynamic_wind_op.after = pmMakeLambda(pmMakeSequence(pop_expressions));
 
             ast = pmMakeLet(evaluated_bindings, pmMakeLet(converted_bindings, wind));
-            ast.line = parameterize_line;
-            ast.column = parameterize_column;
+            stamp_node(ast, parameterize_line, parameterize_column);
             return ast;
         }
 
@@ -10857,8 +10856,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
                                   static_cast<uint32_t>(ESHKOL_TENSOR_OP),
                                   "vector");
             eshkol_ast_t ast = parse_vector_body(tokenizer);
-            ast.line = token.line;
-            ast.column = token.column;
+            stamp_node(ast, token.line, token.column);
             return ast;
         }
 
@@ -10875,8 +10873,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             // Create a quote operation
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
-            ast.line = token.line;
-            ast.column = token.column;
+            stamp_node(ast, token.line, token.column);
             ast.operation.op = ESHKOL_QUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10907,8 +10904,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             // Create a quasiquote operation
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
-            ast.line = token.line;
-            ast.column = token.column;
+            stamp_node(ast, token.line, token.column);
             ast.operation.op = ESHKOL_QUASIQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10930,8 +10926,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             // Create an unquote operation
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
-            ast.line = token.line;
-            ast.column = token.column;
+            stamp_node(ast, token.line, token.column);
             ast.operation.op = ESHKOL_UNQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10954,8 +10949,7 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             // Create an unquote-splicing operation
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
-            ast.line = token.line;
-            ast.column = token.column;
+            stamp_node(ast, token.line, token.column);
             ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -11189,6 +11183,33 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
              * that assign `line`) gives complete provenance with no chance of a
              * missed site. Inner nodes stay 0 and inherit this form's file. */
             result.source_file_id = g_parse_filename_id;
+
+            /* Close the form's span. This is the one place in the frontend
+             * that knows where a construct ENDS: the tokenizer reports where
+             * each token begins, and only the stream reader, which found this
+             * form's closing delimiter to cut `form_text` in the first place,
+             * has both halves. Recording it here turns the top-level form's
+             * entry from a point into a range, which is what a caret that
+             * underlines a whole form needs — and is measured separately from
+             * "has a location" by the Stage-1 gate, so an extent is never
+             * inferred where none was taken. Inner nodes are points until the
+             * lossless token stream of ADR-0008 M0 gives every node one. */
+            {
+                uint32_t end_line = form_line;
+                uint32_t end_column = form_column;
+                /* Walk PAST each character in [skip, end) so the counters land
+                 * on the position of `input[end]` — the form's last character,
+                 * which is what the span's end names. */
+                for (size_t i = skip; i < end && i < input.size(); ++i) {
+                    if (input[i] == '\n') {
+                        end_line++;
+                        end_column = 1;
+                    } else {
+                        end_column++;
+                    }
+                }
+                eshkol_node_span_set_extent(result.node_id, end_line, end_column);
+            }
 
             if (result.type == ESHKOL_OP && parser_language_coverage_enabled()) {
                 eshkol_language_coverage_accept(
