@@ -154,13 +154,6 @@ extern "C" void eshkol_ffi_shutdown(eshkol_ffi_context_t* ctx) {
  * Evaluation — in-process JIT via ReplJITContext
  * ============================================================================ */
 
-/* Unique-name counter for FFI result globals. The JIT entry function returns
- * an i32 exit code, not the expression value, so to capture the value we wrap
- * the last AST in (define __eshkol_ffi_result_N__ <expr>) and read the stored
- * tagged_value out of that named global after execution. Thread-safety: atomic
- * increment — concurrent FFI calls do not collide on counter values. */
-static std::atomic<uint64_t> g_ffi_result_counter{0};
-
 extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
                                 const char* source,
                                 eshkol_ffi_value_t* result) {
@@ -207,78 +200,38 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
         return -1;
     }
 
-    /* Determine which AST carries the value we want to return. If there is
-     * no result slot, every AST is executed purely for effect. Otherwise the
-     * LAST AST is wrapped in a unique (define __eshkol_ffi_result_N__ ...)
-     * so the JIT-emitted main stores its value into a named global that we
-     * can read back via lookupSymbol. This is the same pattern used by
-     * eshkol_eval (introspection.cpp:727); copying it here keeps the FFI
-     * aligned with the Scheme-level eval and avoids the old display+reparse
-     * round-trip that lost type information (lists → "(1 2 3)" strings). */
+    /* Determine which AST carries the value we want to return: the LAST
+     * one parsed, if a result slot was provided. We used to wrap that
+     * AST in a synthetic (define __eshkol_ffi_result_N__ ...) and read
+     * the value back out of that named global via lookupSymbol() after
+     * execution — mirroring what eshkol_eval() (introspection.cpp) did
+     * at the time this was written. That stopped working once the REPL
+     * JIT grew its own "last value" capture (ReplJITContext::executeTagged,
+     * lib/repl/repl_jit.cpp): the JIT-compiled body for a genuine
+     * top-level EXPRESSION emits a call that stashes its tagged value in
+     * a thread-local slot, which executeTagged() reads back directly —
+     * but a top-level DEFINE does not emit that capture call (defines
+     * are conventionally valueless at the REPL), so wrapping the
+     * caller's expression in one made it invisible to the very
+     * mechanism meant to surface it, and ctx->lookup() on the synthetic
+     * global name always came back 0 (every eval() unconditionally
+     * returned null to Python). ctx->execute() already returns the
+     * correctly captured eshkol_tagged_value_t for a plain expression
+     * (see eshkol_eval_jit_execute_fn_t in eval_bridge.h) — the fix
+     * below simply stops discarding it and stops wrapping. */
     const size_t last = asts.size() - 1;
-    eshkol_ast_t* wrapper = nullptr;
-    std::string result_name;
 
-    /* Some top-level forms (define / import / require / provide) have no
-     * expression value — don't wrap them, the wrapper would be semantically
-     * invalid. */
-    bool last_is_valueless = false;
-    if (asts[last].type == ESHKOL_OP) {
-        uint64_t op = asts[last].operation.op;
-        if (op == ESHKOL_DEFINE_OP || op == ESHKOL_IMPORT_OP ||
-            op == ESHKOL_REQUIRE_OP || op == ESHKOL_PROVIDE_OP) {
-            last_is_valueless = true;
-        }
-    }
-
-    if (result && !last_is_valueless) {
-        uint64_t id = g_ffi_result_counter.fetch_add(1, std::memory_order_relaxed);
-        char name_buf[64];
-        snprintf(name_buf, sizeof(name_buf), "__eshkol_ffi_result_%llu__",
-                 (unsigned long long)id);
-        result_name = name_buf;
-
-        wrapper = eshkol_alloc_symbolic_ast();
-        if (!wrapper) {
-            ffi_set_error("Failed to allocate FFI result wrapper AST");
-            for (auto& a : asts) eshkol_ast_clean(&a);
-            return -1;
-        }
-        /* The wrapper owns a heap-allocated copy of the original AST so the
-         * caller's vector-cleanup path stays intact. */
-        eshkol_ast_t* inner = eshkol_alloc_symbolic_ast();
-        if (!inner) {
-            eshkol_free_sexp_ast(wrapper);
-            ffi_set_error("Failed to allocate FFI inner AST");
-            for (auto& a : asts) eshkol_ast_clean(&a);
-            return -1;
-        }
-        *inner = asts[last];
-        /* Transfer ownership: clear the slot in the vector so
-         * eshkol_ast_clean below doesn't double-free the subtree. */
-        std::memset(&asts[last], 0, sizeof(eshkol_ast_t));
-
-        wrapper->type = ESHKOL_OP;
-        wrapper->operation.op = ESHKOL_DEFINE_OP;
-        wrapper->operation.define_op.name = strdup(name_buf);
-        wrapper->operation.define_op.value = inner;
-        wrapper->operation.define_op.is_function = 0;
-        wrapper->operation.define_op.parameters = nullptr;
-        wrapper->operation.define_op.num_params = 0;
-        wrapper->operation.define_op.is_variadic = 0;
-        wrapper->operation.define_op.rest_param = nullptr;
-        wrapper->operation.define_op.is_external = 0;
-        wrapper->operation.define_op.return_type = nullptr;
-        wrapper->operation.define_op.param_types = nullptr;
-    }
-
-    /* Execute all preceding ASTs for side effects, plus the last one (either
-     * as-is if no result is wanted, or through the DEFINE wrapper).
+    /* Execute every AST in source order; the last one's tagged value
+     * (if any — top-level define/import/require/provide are valueless
+     * and naturally come back null) is what a caller with a non-null
+     * result slot receives.
      *
      * Install a top-level exception handler so any unhandled Eshkol raise
      * longjmps back here instead of calling exit(1) and killing the Python
      * host process. On setjmp(...)==1 path, pull the raised value via
      * eshkol_get_raised_value and translate to a C FFI error + -1 return. */
+    eshkol_tagged_value_t last_value;
+    std::memset(&last_value, 0, sizeof(last_value));
     jmp_buf ffi_jmp;
     bool unwound = false;
     if (setjmp(ffi_jmp) != 0) {
@@ -297,21 +250,22 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
 
     if (!unwound) {
         for (size_t i = 0; i < asts.size(); i++) {
-            eshkol_ast_t* to_run = (i == last && wrapper) ? wrapper : &asts[i];
+            eshkol_ast_t* to_run = &asts[i];
             if (to_run->type == ESHKOL_INVALID) continue;
             try {
-                ctx->execute(ctx->jit, to_run);
+                eshkol_tagged_value_t v = ctx->execute(ctx->jit, to_run);
+                if (i == last) {
+                    last_value = v;
+                }
             } catch (const std::exception& e) {
                 eshkol_pop_exception_handler();
                 ffi_set_error("JIT execution failed: %s", e.what());
                 for (auto& a : asts) eshkol_ast_clean(&a);
-                if (wrapper) eshkol_free_sexp_ast(wrapper);
                 return -1;
             } catch (...) {
                 eshkol_pop_exception_handler();
                 ffi_set_error("JIT execution failed (unknown error)");
                 for (auto& a : asts) eshkol_ast_clean(&a);
-                if (wrapper) eshkol_free_sexp_ast(wrapper);
                 return -1;
             }
         }
@@ -332,22 +286,13 @@ extern "C" int eshkol_ffi_eval(eshkol_ffi_context_t* ctx,
         }
         ffi_set_error("Eshkol exception: %s", msg);
         for (auto& a : asts) eshkol_ast_clean(&a);
-        if (wrapper) eshkol_free_sexp_ast(wrapper);
         return -1;
     }
 
-    /* If we wrapped the last AST, read back the stored tagged_value. */
-    if (wrapper) {
-        uint64_t addr = ctx->lookup(ctx->jit, result_name.c_str());
-        if (addr != 0 && result) {
-            eshkol_tagged_value_t tv;
-            std::memcpy(&tv, reinterpret_cast<void*>(addr), sizeof(tv));
-            *result = to_ffi(tv);
-        }
-        eshkol_free_sexp_ast(wrapper);
+    if (result) {
+        *result = to_ffi(last_value);
     }
 
-    /* Clean up the non-wrapped ASTs. */
     for (auto& a : asts) eshkol_ast_clean(&a);
 
     return 0;

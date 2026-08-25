@@ -20,16 +20,38 @@
 
 #include <eshkol/eshkol_ffi.h>
 
+#include <memory>
 #include <string>
 #include <stdexcept>
 
 namespace py = pybind11;
 
 /**
+ * Shared ownership handle for an eshkol_ffi_context_t.
+ *
+ * The real teardown (eshkol_ffi_shutdown, which tears down the process-wide
+ * JIT/runtime state the context was keeping resident) only runs once every
+ * holder of one of these shared_ptrs has released it. EshkolContext holds
+ * one for its own lifetime; every NumPy array exported from that context
+ * (see the tensor branch of ffi_value_to_python below) holds a second,
+ * independent copy inside its base capsule. This is what closes audit H1:
+ * as long as any exported array — or any NumPy view derived from it, since
+ * NumPy propagates `base` through slicing/reshaping — is alive, the
+ * context cannot be shut down out from under it, even if the Python
+ * `Context` object that produced the array has already been deleted.
+ */
+using EshkolCtxHandle = std::shared_ptr<eshkol_ffi_context_t>;
+
+/**
  * Convert an Eshkol FFI value to a Python object.
  * Handles: null, int, double, bool, string, pair/list, tensor.
+ *
+ * @param ctx  Shared-ownership handle to the owning context. Threaded
+ *             through recursion only so the tensor branch can attach a
+ *             strong reference to any NumPy array it hands back — see
+ *             EshkolCtxHandle above.
  */
-static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_value_t val) {
+static py::object ffi_value_to_python(const EshkolCtxHandle& ctx, eshkol_ffi_value_t val) {
     switch (eshkol_ffi_type(val)) {
         case ESHKOL_FFI_TYPE_NULL:
             return py::none();
@@ -71,14 +93,22 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
              * arrays with wrong ndim and misinterpreted strides). If
              * ndim is suspicious (≤0 or > 64) we fall back to 1-D.
              *
-             * Zero-copy caveat (audit H1): the capsule deleter is a
-             * no-op because the arena is process-lifetime. If a
-             * caller destroys the FFI context (arena reset) while
-             * numpy still references the array, reads see freed
-             * memory. For now we document this lifecycle; full
-             * refcounting is a follow-up. Callers that need
-             * lifetime-decoupled arrays can .copy() on the Python
-             * side. */
+             * Zero-copy lifetime (audit H1, fixed): the tensor's backing
+             * storage is owned by the Eshkol runtime the context keeps
+             * resident, not by this array. The array's `base` is a
+             * capsule holding a strong reference (EshkolCtxHandle) to
+             * that context. NumPy keeps `base` alive for as long as this
+             * array — or any view/slice/reshape derived from it — is
+             * alive, and the capsule's destructor is the only thing that
+             * releases our copy of the shared_ptr. So even if the Python
+             * `Context` object is deleted (or every other reference to it
+             * dropped) while this array is still around, the underlying
+             * eshkol_ffi_shutdown() is deferred until the capsule itself
+             * is destroyed — i.e. until this is the last live reference.
+             * Callers that need a fully independent, lifetime-decoupled
+             * array can still .copy() on the Python side; that is no
+             * longer required for correctness, only to avoid pinning the
+             * context's resources. */
             double* tdata = eshkol_ffi_tensor_data(val);
             if (tdata) {
                 int64_t size = eshkol_ffi_tensor_size(val);
@@ -95,8 +125,15 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
                     for (int i = n - 2; i >= 0; i--) {
                         strides_v[i] = strides_v[i + 1] * shape_v[i + 1];
                     }
-                    auto capsule = py::capsule(tdata, [](void*) { /* arena-managed */ });
-                    return py::array_t<double>(shape_v, strides_v, tdata, capsule);
+                    /* Stateless deleter (no captures, so it decays to the
+                     * plain `void(*)(void*)` pybind11::capsule expects);
+                     * the state lives in the heap-allocated shared_ptr
+                     * copy the deleter frees. */
+                    auto* owner = new EshkolCtxHandle(ctx);
+                    py::capsule owner_capsule(owner, [](void* p) {
+                        delete static_cast<EshkolCtxHandle*>(p);
+                    });
+                    return py::array_t<double>(shape_v, strides_v, tdata, owner_capsule);
                 }
             }
 
@@ -111,27 +148,35 @@ static py::object ffi_value_to_python(eshkol_ffi_context_t* ctx, eshkol_ffi_valu
 
 /**
  * Eshkol evaluation context — wraps eshkol_ffi_context_t.
+ *
+ * The underlying handle is held via EshkolCtxHandle (shared_ptr with
+ * eshkol_ffi_shutdown as its deleter) rather than a raw pointer. This
+ * object's own destruction only releases ITS copy of that shared_ptr;
+ * the real eshkol_ffi_shutdown() call happens whenever the LAST copy
+ * goes away, which may be a NumPy array exported from this context
+ * (see the capsule attached in ffi_value_to_python) outliving the
+ * EshkolContext object itself. That deferral is audit H1's fix: a
+ * Context can be deleted, or fall out of scope, while arrays it
+ * produced are still in use, without invalidating them.
  */
 class EshkolContext {
 public:
     EshkolContext() {
-        ctx_ = eshkol_ffi_init();
-        if (!ctx_) {
+        eshkol_ffi_context_t* raw = eshkol_ffi_init();
+        if (!raw) {
             throw std::runtime_error("Failed to initialize Eshkol runtime");
         }
+        ctx_ = EshkolCtxHandle(raw, eshkol_ffi_shutdown);
     }
 
-    ~EshkolContext() {
-        if (ctx_) {
-            eshkol_ffi_shutdown(ctx_);
-            ctx_ = nullptr;
-        }
-    }
+    /* No custom destructor needed: ctx_'s shared_ptr deleter
+     * (eshkol_ffi_shutdown) runs automatically once this is the last
+     * reference — see the EshkolCtxHandle comment above. */
 
     /* Evaluate Eshkol source code, return Python value */
     py::object eval(const std::string& source) {
         eshkol_ffi_value_t result;
-        int rc = eshkol_ffi_eval(ctx_, source.c_str(), &result);
+        int rc = eshkol_ffi_eval(ctx_.get(), source.c_str(), &result);
         if (rc != 0) {
             const char* err = eshkol_ffi_last_error();
             throw std::runtime_error(err ? err : "Evaluation failed");
@@ -142,7 +187,7 @@ public:
     /* Evaluate and return as double (convenience for numeric work) */
     double eval_double(const std::string& source) {
         double result;
-        int rc = eshkol_ffi_eval_double(ctx_, source.c_str(), &result);
+        int rc = eshkol_ffi_eval_double(ctx_.get(), source.c_str(), &result);
         if (rc != 0) {
             const char* err = eshkol_ffi_last_error();
             throw std::runtime_error(err ? err : "Evaluation failed");
@@ -171,7 +216,7 @@ public:
         if (path.find('\0') != std::string::npos) {
             throw py::value_error("eval_file: path contains NUL byte");
         }
-        int rc = eshkol_ffi_eval_file(ctx_, path.c_str());
+        int rc = eshkol_ffi_eval_file(ctx_.get(), path.c_str());
         if (rc != 0) {
             const char* err = eshkol_ffi_last_error();
             throw std::runtime_error(err ? err : "File evaluation failed");
@@ -270,7 +315,7 @@ public:
     }
 
 private:
-    eshkol_ffi_context_t* ctx_;
+    EshkolCtxHandle ctx_;
 
     /* Non-copyable */
     EshkolContext(const EshkolContext&) = delete;

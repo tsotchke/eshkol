@@ -6446,14 +6446,32 @@ if(ESHKOL_PYTHON_BINDINGS)
         if(LLVM_LIBRARY_DIRS)
             target_link_directories(eshkol_py PRIVATE ${LLVM_LIBRARY_DIRS})
         endif()
-        # Force-load eshkol-static so JIT can resolve all runtime symbols
+        # Force-load eshkol-static AND eshkol-repl-lib so JIT can resolve
+        # all runtime symbols. Force-loading eshkol-static alone (the
+        # previous state of this block) is not enough: eshkol-repl-lib's
+        # eval_bridge_impl.cpp carries the strong eshkol_eval_jit_get_*
+        # overrides behind a static-constructor registrar
+        # (BridgeRegistrar in lib/repl/eval_bridge_impl.cpp), and nothing
+        # else in this module references that translation unit by symbol.
+        # Without force-loading the archive itself, the linker drops it
+        # entirely, eshkol_ffi_init() finds every eval_bridge accessor
+        # null, and every Context() construction fails at runtime with
+        # "JIT runtime is not linked" — the module never actually worked.
+        # This mirrors the eshkol-run / eshkol-agent-ffi-consumer force-load
+        # pairs elsewhere in this file (see the "-Wl,-force_load,PATH"
+        # comment on eshkol-run above): ld64's -force_load only applies to
+        # the single archive immediately following it, so each archive
+        # needs its own flag on Apple; --whole-archive/--no-whole-archive
+        # brackets the whole list on ELF/COFF linkers instead.
         if(APPLE)
             target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
-                "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>"
                 ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+            target_link_options(eshkol_py PRIVATE
+                "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
+                "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
         else()
             target_link_libraries(eshkol_py PRIVATE eshkol-repl-lib
-                "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "-Wl,--no-whole-archive"
+                "-Wl,--whole-archive" "$<TARGET_FILE:eshkol-static>" "$<TARGET_FILE:eshkol-repl-lib>" "-Wl,--no-whole-archive"
                 ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
         endif()
         if(TARGET eshkol-agent-ffi)
@@ -6468,6 +6486,31 @@ if(ESHKOL_PYTHON_BINDINGS)
         endif()
         set_target_properties(eshkol_py PROPERTIES OUTPUT_NAME "eshkol")
         message(STATUS "Python bindings: ENABLED (pybind11 ${pybind11_VERSION})")
+
+        # ctest wiring for the Python binding regression suite. There was no
+        # prior wiring at all — tests/v1_2_edge_cases/python_ffi_test.py and
+        # tests/stdlib/v12_python_test.py both predate this and have always
+        # been loose scripts a developer had to remember to run by hand.
+        # audit H1 (the NumPy tensor capsule lifetime fix) is the first
+        # binding-level fix in this repo to need reliable proof it stays
+        # fixed, so it gets the first real ctest entry; the two pre-existing
+        # scripts are unaffected and remain available for manual runs.
+        #
+        # ESHKOL_PYTHON3_EXECUTABLE is discovered earlier in this file (see
+        # its find_program(... NAMES python3 python) call above) and is the
+        # same interpreter every other Python-script ctest in this project
+        # uses. ESHKOL_PYTHON_MODULE_DIR points the test at THIS build's
+        # eshkol_py output directory directly via a generator expression,
+        # so it resolves correctly regardless of the build directory name
+        # (build, build-asan, build-xla, ...) — unlike the two older scripts'
+        # hardcoded "../../build" relative guess.
+        if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
+            add_test(NAME python_bindings_capsule_lifetime
+                     COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/python_capsule_lifetime_test.py")
+            set_tests_properties(python_bindings_capsule_lifetime PROPERTIES
+                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>")
+        endif()
     else()
         message(STATUS "Python bindings: pybind11 not found, skipping")
     endif()

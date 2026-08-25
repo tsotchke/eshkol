@@ -2929,6 +2929,104 @@ entries:
       answer on the native side that differs by input (pointer-address-dependent), and a
       different but equally wrong answer (0) on the VM.
 
+  - id: SW-44
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/pybind-capsule-lifetime"
+    closed_by: "branch fix/pybind-capsule-lifetime"
+    family: interop/lifetime
+    title: "Python bindings: a NumPy array from a tensor eval keeps no claim on the FFI context, so deleting the Context while the array is still live lets shutdown corrupt its backing memory (audit H1)"
+    repro: >-
+      tests/bindings/python_capsule_lifetime_test.py — construct eshkol.Context(),
+      evaluate a tensor literal to get a zero-copy NumPy array, register a shutdown
+      hook through the public eshkol_register_shutdown_hook() C API (the same
+      documented mechanism a real embedder uses to free its own arena-backed state on
+      shutdown — demonstrated in-tree by
+      tests/core/runtime_shutdown_teardown_race_test.cpp) that overwrites the array's
+      backing bytes, `del` the Context while the array is still referenced, then read
+      the array.
+    observed: >-
+      pre-fix (bindings/python/eshkol_module.cpp before this branch, with the two
+      enabling fixes below already applied so the module runs at all): `del ctx` calls
+      eshkol_ffi_shutdown() unconditionally and immediately, synchronously running
+      every registered shutdown hook before the array's own reference is ever
+      released. The array's bytes are silently overwritten (0xEF fill). Exit 0, no
+      diagnostic, no exception, no crash — the array just reads the wrong values.
+    correct: >-
+      the original tensor values ([1.0, 2.0, 3.0, 4.0] in the repro). Shutdown must be
+      deferred until every NumPy array (or view/slice/reshape derived from one)
+      exported from the context has been released — not merely until the Python
+      `Context` wrapper object itself is deleted.
+    root_cause: >-
+      bindings/python/eshkol_module.cpp's ffi_value_to_python() built each tensor's
+      NumPy array with a `base` capsule whose deleter was a stateless no-op ("arena
+      managed") and which held no reference back to the owning eshkol_ffi_context_t.
+      EshkolContext::~EshkolContext() called eshkol_ffi_shutdown() on the raw context
+      pointer unconditionally, with nothing to stop that call from running while an
+      exported array was still alive and referencing arena memory that a shutdown hook
+      (or a future teardown path) is free to reclaim or overwrite. The comment marked
+      "Zero-copy caveat (audit H1)" documented the hazard in the source but did not
+      close it.
+    fix: >-
+      bindings/python/eshkol_module.cpp: EshkolContext now holds the context as
+      EshkolCtxHandle (std::shared_ptr<eshkol_ffi_context_t> with eshkol_ffi_shutdown
+      as its deleter) instead of a raw pointer. ffi_value_to_python() threads that
+      shared handle through, and for every tensor it exports attaches a second,
+      independent copy of the shared_ptr to the returned array's `base` capsule
+      (heap-allocated, freed by the capsule's own destructor). NumPy keeps `base` alive
+      for as long as the array — or any view/slice/reshape derived from it — is alive,
+      so eshkol_ffi_shutdown() (the shared_ptr's deleter) only actually runs once every
+      holder, including every live array's capsule, has released its reference.
+      Deleting the Python Context object no longer invalidates arrays it already
+      produced. Two further, narrower fixes were required to make this defect (and its
+      fix) reachable and testable at all — both pre-existing, both unrelated to the
+      capsule logic itself, both necessary enabling plumbing rather than new
+      capability: (1) CMakeLists.txt's ESHKOL_PYTHON_BINDINGS block force-loaded only
+      eshkol-static, not eshkol-repl-lib, so the eval-bridge's static-constructor
+      registrar (BridgeRegistrar, lib/repl/eval_bridge_impl.cpp) was always linked out
+      and eshkol_ffi_init() always failed with "JIT runtime is not linked" — the
+      module never actually initialized under this build option before now; (2)
+      eshkol_ffi_eval() (lib/ffi/eshkol_ffi.cpp) wrapped its result-carrying AST in a
+      synthetic `(define __eshkol_ffi_result_N__ ...)` and tried to read the value
+      back via lookupSymbol(), a mechanism that predates and is defeated by
+      ReplJITContext::executeTagged()'s newer thread-local "last value" capture (which
+      does not fire for a top-level DEFINE) — ctx->execute()'s already-correctly
+      captured return value was being discarded, so every eval() unconditionally
+      returned null/None regardless of the source expression. Neither (1) nor (2) is
+      specific to tensors; fixing them is what let this ledger entry's repro (and the
+      pre-existing tests/v1_2_edge_cases/python_ffi_test.py, 19/19 passing at this SHA
+      for the first time) exercise the actual capsule code path at all.
+    evidence: >-
+      tests/bindings/python_capsule_lifetime_test.py, wired into ctest as
+      python_bindings_capsule_lifetime (ESHKOL_PYTHON_BINDINGS=ON). Red/green
+      demonstrated by hand at branch head: reverting only
+      bindings/python/eshkol_module.cpp to its pre-fix content (keeping the two
+      enabling fixes) reproduces the exact failure — "shutdown hook did NOT fire while
+      the array was still live" and "array values are intact after del(ctx)" both
+      FAIL, exit 1; restoring the fix, both PASS, exit 0. Full ctest suite 185/185 and
+      tests/v1_2_edge_cases/python_ffi_test.py 19/19 pass at the same SHA (RelWithDebInfo,
+      LLVM 21, arm64-apple-darwin24.1.0). Also run green under
+      -DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON (ASAN_OPTIONS=detect_leaks=0)
+      to confirm the shared_ptr/capsule mechanism itself introduces no memory error;
+      ASan does not additionally flag the repro's own poison step because it
+      overwrites still-allocated memory (this ledger entry's shape is a wrong VALUE at
+      exit 0, which is what SILENT-WRONG requires — a sanitizer-caught crash would be
+      a LOUD-ERROR, a different bucket).
+    caught_by: [maintainer-ratified-plan, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    notes: >-
+      The arena the tensor's data lives in is process-lifetime in the current hosted
+      runtime, and no production code registers a shutdown hook against it today — so
+      this was a latent hazard rather than a crash-on-every-run, and the repro
+      registers its own hook through the same public, documented mechanism
+      (eshkol_register_shutdown_hook) any embedder is free to use for exactly that
+      purpose, which is the scenario the pre-fix "audit H1" comment warned about.
+      Before this branch, ctest carried zero binding-level tests for
+      bindings/python/eshkol_module.cpp — python_bindings_capsule_lifetime is the
+      first. Scope: this closes only the capsule lifetime hazard. The separate
+      double*-demotion / exactness-across-the-FFI-boundary issue is an explicitly
+      different, still-open v1.4.0 lane and is not touched here.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01
