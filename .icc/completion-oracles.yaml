@@ -2479,6 +2479,19 @@ oracles:
   # a workstation/laptop with a dGPU or Apple Silicon Metal, the Jetson
   # AGX Xavier under nix/jetson/). See docs on wiring a self-hosted
   # GPU runner in .github/workflows/gpu-execution-gate.yml.
+  #
+  # severity: high (was `medium` until the 2026-08-25 architectural audit,
+  # finding F19 / ADR-0010 gap A13). `medium` meant a criterion with ZERO
+  # evidence degraded to WARN instead of FAIL, and because this is the
+  # target's ONLY criterion, `icc readiness --target gpu-execution` read
+  # `Status: ready  Score: 94` on a host that had never executed a single
+  # GPU kernel — a measured false green, not a hypothetical one. The four
+  # Ozaki targets below are the control: same file, same host, same absent
+  # GPU evidence, `severity: high`, correctly `blocked`. This criterion
+  # asserts a correctness claim (GPU output matches the CPU reference), so
+  # absent evidence must FAIL, not WARN — see the false-green sweep in
+  # scripts/audit_oracle_false_green.py, which fails closed if this ever
+  # regresses back to a non-`high` severity.
   # ─────────────────────────────────────────────────────────────────
   - name: gpu-execution
     aliases: [gpu-execution-gate, gpu-correctness, p-gpu-execution]
@@ -2487,7 +2500,7 @@ oracles:
           event_kinds: [gpu_execution]
           event_names: ["gpu_execution_gate"]
           event_values: ["PASS"]
-        severity: medium
+        severity: high
         label: GPU-accelerated tensor ops (matmul, elementwise, transpose, reduce) match the CPU reference within tolerance on a real GPU device
         action: ./tests/gpu/gpu_correctness_gate.sh
 
