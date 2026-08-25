@@ -1,5 +1,27 @@
 name: CI
 
+# ─────────────────────────────────────────────────────────────────────────
+# MESH-AS-MERGE-GATE: NOT YET. MAINTAINER DECISION REQUIRED BEFORE THE FLIP.
+#
+# The maintainer's heterogeneous compute mesh (see PR #391 / the
+# `mesh-gate-advisory` job below) can run the same lane batteries as
+# unix-matrix/windows-matrix/wasm-execute-diff on real hardware — including
+# real GPUs, unlike the hosted CUDA lanes — and produce one verdict via
+# `mesh gates run --lane eshkol --ref <sha>`. The eventual intent is for
+# that verdict to replace the equivalent hosted lanes as the actual merge
+# gate.
+#
+# THAT HAS NOT HAPPENED, and must not happen implicitly. The mesh's own
+# telemetry has been dark since at least 2026-08-17 — no fresh verdict, no
+# status endpoint reachable from a hosted GitHub Actions runner. Until the
+# mesh is observed live again AND a maintainer explicitly signs off, every
+# hosted lane below stays exactly as it is today, and every context
+# currently required by branch protection stays required. `mesh-gate-
+# advisory` is advisory-only (continue-on-error, not a required context)
+# and is presently a labeled no-op for exactly that reason — see its own
+# header comment further down.
+# ─────────────────────────────────────────────────────────────────────────
+
 on:
   push:
     branches: [master, develop, 'feat/**']
@@ -122,6 +144,37 @@ jobs:
           done <<< "$changed_files"
 
           echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # ADVISORY mesh-gate placeholder (see the top-of-file comment above for
+  # the full picture). This job never fails the build and its context must
+  # never be added to branch protection's required list.
+  #
+  # `mesh gates run --lane eshkol --ref <sha>` is the maintainer's own
+  # compute-mesh invocation, executed on a private, tailnet-only mesh — it
+  # has no endpoint reachable from a hosted GitHub Actions runner, and there
+  # is no vendored client/credential in this repository that could reach
+  # one even if it existed. Wiring this job to report a real mesh verdict
+  # therefore needs, at minimum: (1) the mesh's telemetry actually live
+  # again (dark since at least 2026-08-17 as of this writing), and (2) some
+  # CI-reachable way to ask it for a verdict (a public status endpoint, a
+  # signed artifact it publishes somewhere GitHub Actions can fetch, or
+  # similar) that does not yet exist. Until both are true this step is a
+  # clearly-labeled no-op: it reports that mesh telemetry is unavailable
+  # rather than fabricating a verdict or silently succeeding.
+  # ─────────────────────────────────────────────────────────────────────
+  mesh-gate-advisory:
+    name: mesh-gate-advisory (advisory, no-op)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - name: Report mesh verdict (placeholder)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::mesh telemetry unavailable — the physical compute mesh has had no live, CI-reachable verdict endpoint since at least 2026-08-17. This job is an advisory placeholder: it does not run the mesh's lane batteries and its result does not gate this PR. Flipping any hosted lane's required status to the mesh is a maintainer decision, made only once the mesh is observed live again (see the comment at the top of this file)."
+          echo "mesh-gate-advisory: mesh telemetry unavailable (placeholder, non-blocking)"
 
   # The language-surface manifest is the ground truth the execution-backed
   # coverage floor is measured against, so a stale manifest fails the coverage
