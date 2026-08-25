@@ -94,6 +94,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Objects promoted out of a region live in the enclosing arena for its lifetime,
   which is OALR's semantics and is equally true natively.
 
+### Documentation
+
+- **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
+  executed): the previously published v1.4-v2.0 dates were not achievable at
+  measured velocity (the v1.3.1-v1.3.4 line averaged ~5 weeks/point release);
+  v2.0 moves from the previously published "Q1 2027" to ~Q4 2028. Added the
+  six standing workstreams every release now draws from (W1 resident/DBSP
+  spine, W2 assurance, W3 performance, W4 codebase health, W5 interop &
+  adoption, W6 two-tier distributed computing — PJRT/XLA scale-tier plus a
+  native exact-allreduce mesh tier), replaced the stale per-version AD
+  staging bullets with pointers to the already-shipped P0-P12 truth, and
+  added the v1.3.5/v1.4.1/v1.5.1/v1.6.1/v1.8.1/v1.9.1/v1.9.2 point-release
+  rows. `docs/KNOWN_ISSUES.md`'s future-releases table re-pinned off the new
+  ladder (distributed/multi-GPU rows point at the W6 ladder instead of a
+  fixed version; PGO -> v1.5.0-intelligence; ONNX -> post-training-win, no
+  fixed date; Python bindings row tracks the v1.4.0-connection interop wave).
+  `docs/FEATURE_MATRIX.md`'s historical-snapshot roadmap section corrected
+  (it had listed Vulkan Compute, ONNX export, quantization, and distributed
+  training as SHIPPED in v1.2-scale; none of those shipped) and re-dated to
+  match. Press sheets (`press/ESHKOL_DESCRIPTION_COPY.md`,
+  `press/ESHKOL_PRESS_INFORMATION_SHEET.md`) refreshed with numbers
+  re-measured this cycle against a from-source build of commit `694c3179`:
+  exact rational derivative (`(derivative-n g 1/3 1)` => `16/3`, exact),
+  the H2 vibrational example (5003.2 cm⁻¹), the Ozaki-II Metal exact-GEMM
+  certification gate (25/25, 0 mismatches), a fresh CHSH run (S = 2.835,
+  gate `2.4 < S <= 2.95`), gradient parity across native JIT / native AOT /
+  bytecode VM (byte-identical `#(24 57)`), and the ESH-0214b flat-RSS AOT
+  gate (8 MB vs. 2,620 MB with the fix compiled out).
+
 ## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
