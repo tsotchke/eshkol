@@ -3899,3 +3899,147 @@ entries:
       instrumentation change under a full prelude-bytecode rewrite that no lane
       here can verify, so the new builtin is simply the 29th name the cache does
       not carry, consistent with the 28 before it.
+
+  # ──────────────── AD carrier wave (2026-08-25) ────────────────
+  #
+  # One architectural audit, four entries: the defect, the two checks that
+  # were green while it shipped, and the crash found beside it.
+
+  - id: SW-46
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — exact forward-dual curl/divergence in lib/backend/vm_native.c"
+    title: "VM curl is a central difference at h = 1e-7 and returns 1.1e-09 where the curl is exactly zero"
+    repro: "(define (F x y z) (list (* y z) (* x z) (* x y))) (display (curl F (list 1.0 2.0 3.0)))"
+    observed: "#(1.1102230246251565e-09 -3.3306690738754696e-09 0) on build/eshkol-vm-standalone-test"
+    correct: "#(0 0 0) — F is a gradient field, so its curl vanishes identically at every point"
+    cross_engine: >-
+      Not comparable. tests/vm_parity/PARITY.tsv records op:CURL as a gap, so the
+      corpus differential never attempts the comparison, and the native curl
+      operator SIGSEGVs on the same field (booked as LE-12). The defect was
+      therefore invisible to every engine-vs-engine check by construction.
+    observed_after: >-
+      #(0 0 0) exactly, and (ad-finite-difference-evals) reads 0 where it read 6.
+      Measured on the same binary and the same program before and after. Three
+      further fields at the same point: rigid rotation (-y, x, 0) went
+      1.9999999995023998 -> 2; (y^2 z, x z^2, x^2 y) went
+      #(-4.999999990706883 -6.661338147750939e-09 -2.9999999906493713) -> #(-5 0 -3);
+      a transcendental field's divergence was already exact and is byte-identical.
+    fixed_by: >-
+      lib/backend/vm_native.c — case 754 now seeds one forward dual per input
+      variable and reads the tangent of each output component (three closure
+      calls, against the six the difference quotient needed); case 753 drops its
+      finite-difference branch. Both route through the new shared reader
+      vm_ad_field_component_tangent(), so the two operators cannot drift apart
+      in exactness again.
+    evidence: >-
+      Structural: scripts/gate_ad_shared_node_model.py classifies case 753 and
+      754 as `finite-difference` on origin/master and as `vm-dual-forward` after
+      the fix. Behavioural: the ad_vm_curl_divergence_exact ICC smoke probe
+      pins #(0 0 0) and a zero finite-difference counter.
+    caught_by: [architectural-audit-2026-08-25, direct-measurement]
+    missed_by: [vm-parity-differential, icc-smoke, icc-readiness, INV-ad-exact-no-finite-differences]
+    notes: >-
+      A tensor-returning vector field still cannot carry tangents through
+      VmTensor. That shape now raises a named diagnostic instead of falling back
+      to a difference quotient — the ESH-0369 ruling applied to the same class of
+      problem. Closing it needs a tangent-carrying VmTensor; it is recorded as
+      fork_debt.blocked_on in .icc/ad-carrier-manifest.yaml.
+
+  - id: SW-51
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+    title: "INV-ad-exact-no-finite-differences was green while a central difference shipped in the VM"
+    repro: "icc invariants --repo eshkol (INV-ad-exact-no-finite-differences reads PASS at every SHA that contained SW-46)"
+    observed: "PASS, throughout the entire lifetime of the defect"
+    correct: >-
+      The invariant's name asserts that no finite difference backs a derivative.
+      Its mechanism is `kind: dependency-presence`: armed by ESHKOL_DERIVATIVE_OP,
+      it asks only whether one of createDualNumber / makeDual8 / makeDual4 /
+      seedForwardAndPush is PRESENT. All four are native symbols in
+      lib/backend/autodiff_codegen.cpp. Presence of an exact constructor on one
+      engine and presence of a difference quotient on the other are not mutually
+      exclusive, and on this repo both held at once. No VM file was in its site
+      set, so lib/backend/vm_native.c's `double h = 1e-7` was outside its field of
+      view by construction — the check could not have gone red.
+    observed_after: >-
+      The replacement was demonstrated red on unmodified origin/master before the
+      fix landed: it reported case 753 and case 754 as `finite-difference`, named
+      both epsilon sites at lib/backend/vm_native.c:13558 and :13636, and exited
+      1. It goes green only after the operators became exact. Its own --self-test
+      pairs nine red/green fixtures, including a clamp and an equality tolerance
+      at the same magnitude that must NOT be flagged.
+    fixed_by: >-
+      scripts/gate_ad_shared_node_model.py, graded by the ad_carrier_model_clean
+      oracle criterion, run in the assurance-gates CI job, plus the new
+      INV-ad-carrier-declared-for-every-vm-op key-space-equality in
+      .icc/architecture-model.yaml.
+    evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt and gate-green-after-fix.txt"
+    caught_by: [architectural-audit-2026-08-25]
+    missed_by: [icc-invariants, icc-readiness]
+    notes: >-
+      The original invariant is kept. It answers a real and narrower question —
+      is the native default gradient path still built on an exact jet — and it
+      answers it correctly. What changed is that it is no longer the only thing
+      standing behind the sentence "Eshkol's AD is exact".
+
+  - id: SW-52
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+    title: "The VM-parity output differential cannot detect that the two engines run two independent AD implementations"
+    repro: "scripts/run_vm_parity.sh (corpus stage) over tests/vm_parity/corpus/32_gradient_reverse.esk"
+    observed: >-
+      PASS. op:GRADIENT was promoted from gap to vm-supported in v1.3.4 on the
+      strength of it, on a VM-only VmDual carrier that shares no code and no node
+      vocabulary with lib/backend/autodiff_codegen.cpp.
+    correct: >-
+      The differential compares PROGRAM OUTPUT between engines. Two independently
+      correct implementations produce identical output, so agreement is evidence
+      of agreement and nothing else — it is structurally incapable of reporting
+      that the answers came from two implementations. It is also silent on any op
+      whose parity row is `gap`, because a gap row excludes the op from
+      comparison; that is precisely how SW-46 shipped.
+    observed_after: >-
+      The carrier fork is now enumerated, declared per operator and capped:
+      .icc/ad-carrier-manifest.yaml records 9 forked carriers against a
+      shrink-only budget of 9, every declaration is re-derived from source rather
+      than believed, and an op cannot be promoted to vm-supported without a
+      carrier row. The self-test proves the undeclared-promotion case red.
+    fixed_by: "scripts/gate_ad_shared_node_model.py checks C2 (coverage), C3 (source verification) and C5 (shrink-only fork ratchet)"
+    evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt"
+    caught_by: [architectural-audit-2026-08-25]
+    missed_by: [vm-parity-differential]
+    notes: >-
+      The differential is not being replaced. Output agreement remains the right
+      check for whether two engines answer the same; it was simply being read as
+      an answer to a question it never asked.
+
+  - id: LE-12
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "native curl SIGSEGVs on a list-returning vector field"
+    repro: >-
+      (define (F v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))
+      (display (curl F (vector 1.0 2.0 3.0)))
+    observed: >-
+      build/eshkol-run -r prints the field's own value correctly, then
+      "[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+      0x0000000000002002" at the curl call. With the components spread across
+      three parameters instead, the LLVM verifier rejects the module with
+      "Incorrect number of arguments passed to called function" — native curl
+      passes the whole point as ONE argument where the VM spreads it into N.
+    correct: "#(0 0 0) for that field, and a diagnostic rather than a crash for an arity it cannot accept"
+    caught_by: [architectural-audit-2026-08-25, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, vm-parity-differential]
+    notes: >-
+      Found while establishing a cross-engine baseline for SW-46, and the reason
+      no such baseline exists: op:CURL cannot be measured on native at all today.
+      Loud, so not tag-blocking, but it is what keeps op:CURL a gap now that the
+      VM side is exact. Two separable defects: the crash, and the arity-convention
+      divergence between the engines.

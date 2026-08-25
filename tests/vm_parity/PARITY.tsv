@@ -517,7 +517,7 @@ op:CASE_LAMBDA	gap	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	gap	compose undefined in VM
 op:COND	vm-supported	vm_compiler special-form dispatch
 op:COND_EXPAND	native-only-justified	parse-time form handled by the native front-end
-op:CURL	gap	AD surface diverges in VM
+op:CURL	gap	The VM side is now EXACT: case 754 in lib/backend/vm_native.c seeds one forward dual per input variable and reads the tangent of each output component, so a gradient field returns #(0 0 0) exactly where the previous central difference at h=1e-7 returned #(1.1102230246251565e-09 -3.3306690738754696e-09 0), and (ad-finite-difference-evals) reads 0 where it read 6 (ledger SW-46). The row stays a gap because the two engines cannot be COMPARED: native curl SIGSEGVs on a list-returning arity-1 vector field and the LLVM verifier rejects the N-arg-spread shape, since native curl passes the whole point as ONE argument where the VM spreads it into N (ledger LE-12). Two separable items block promotion — the native crash, and the arity convention. A tensor-returning field is exact on neither: VmTensor holds bare doubles and drops every tangent at construction, so the VM now raises a named diagnostic for that shape rather than approximating it.
 op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
 op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
@@ -527,7 +527,7 @@ op:DERIVATIVE_N	gap	arbitrary-order Taylor-tower AD operator not implemented on 
 op:DIFF	gap	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
 op:DIV	vm-supported	OP_DIV bytecode (exact-rational result diverges: see / gap row)
-op:DIVERGENCE	gap	AD surface diverges in VM
+op:DIVERGENCE	gap	The VM side is now EXACT for list- and vector-returning fields: case 753 in lib/backend/vm_native.c reads the tangent of output component i after seeding input i, and its finite-difference fallback branch (h=1e-7) is gone. Measured byte-identical to the analytic divergence on four polynomial fields and one transcendental field. The row stays a gap for the same reason op:CURL does — native divergence builds its Jacobian through the same operator path that crashes for curl (ledger LE-12), so no cross-engine comparison exists yet. A tensor-returning field raises a named diagnostic instead of falling back to a difference quotient; closing that needs a tangent-carrying VmTensor (.icc/ad-carrier-manifest.yaml fork_debt.blocked_on).
 op:DNC_ALLOC_WEIGHTS	gap	core.dnc has no VM fids
 op:DNC_CONTENT_ADDR	gap	core.dnc has no VM fids
 op:DNC_LOC_ADDR	gap	core.dnc has no VM fids
