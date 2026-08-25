@@ -178,6 +178,69 @@ jobs:
           exit $rc
 
   # ---------------------------------------------------------------------------
+  # SW-49 long-horizon residency: the flat-memory claim at a daemon's timescale.
+  #
+  # tests/memory/resident_longrun_flat_gate.sh runs per-PR at its default 200k /
+  # 1.6M horizon (ICC probe resident_longrun_flat). This lane re-runs it at 6.4M
+  # ticks — a 32x span — which is too slow for the PR budget and is the horizon
+  # at which a sub-byte-per-tick slope becomes unmistakable. It gates on the
+  # arena's exact byte counter, not peak RSS, so it does not care how loaded the
+  # runner is; the point of the long horizon is resolution, not realism.
+  # ---------------------------------------------------------------------------
+  resident-longrun:
+    name: resident-longrun (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            LLVM_CONFIG="$(brew --prefix llvm@${LLVM_MAJOR})/bin/llvm-config"
+          else
+            LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG"
+          cmake --build build --target eshkol-run stdlib --parallel
+
+      - name: Long-horizon residency gate (6.4M ticks)
+        shell: bash
+        env:
+          ESHKOL_GATE_DISK_CAP_MB: '1024'
+        run: |
+          set -uxo pipefail
+          BUILD_DIR=build bash tests/memory/resident_longrun_flat_gate.sh \
+            --short 400000 --long 6400000 --timeout 900
+
+  # ---------------------------------------------------------------------------
   # Axis 9: packaging lanes (advisory — alert only).
   # ---------------------------------------------------------------------------
   packaging-homebrew:
