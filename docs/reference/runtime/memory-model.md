@@ -11,24 +11,55 @@ will never have a GC.
 **Read this before relying on any reclamation claim on this page.** Eshkol has
 two execution engines and they do not currently share reclamation:
 
-| Engine | Binary | Region reclamation |
-|---|---|---|
-| **Native** (LLVM JIT and AOT) | `eshkol-run` | **Yes** — the full OALR contract on this page: region arenas, escape promotion, the mutation write barrier, and per-loop nursery reclamation. |
-| **Bytecode VM** | `eshkol-vm-standalone-test`, `eshkol-run --profile hosted-vm` | **No, not yet.** `with-region`, `region-open` and `region-close` all resolve, validate and return exactly as natively, but **nothing is freed**. |
+| Engine | Binary | `with-region` | `region-open` / `region-close` |
+|---|---|---|---|
+| **Native** (LLVM JIT and AOT) | `eshkol-run` | **Yes** — the full OALR contract on this page: region arenas, escape promotion, the mutation write barrier, and per-loop nursery reclamation. | **Yes** |
+| **Bytecode VM** | `eshkol-vm-standalone-test`, `eshkol-run --profile hosted-vm` | **Yes**, as of the Stage-1 region evacuator. Reclamation is real and measured; the escape semantics below hold. | **Not yet** — the handle protocol, its validation and its errors are identical to native, but a close reclaims no VM heap. Stage-2. |
 
-The VM's gap is not that regions reclaim *less* there — **the VM has no heap
-reclamation of any kind**, so `with-region` is inert rather than degraded.
-Measured: the same fixture peaks at 1,503,297,536 bytes of RSS *with* the
-`with-region` wrapper and 1,504,067,584 bytes *without* it
-(`tests/memory/vm_region_growth_watchdog_test.esk`). The prerequisite is a
-VM-heap escape evacuator; that port is the **v1.3.5 flagship item** (maintainer
-ruling 2026-08-13, ledger entry SW-14 in `.icc/silent-wrong-ledger.yaml`).
+Measured on the bytecode VM with the Stage-1 evacuator
+(`tests/memory/vm_region_flat_rss_test.sh`, the fixture
+`tests/memory/vm_region_growth_watchdog_test.esk` swept by iteration count):
 
-Until it lands the VM **says so** rather than growing quietly — a one-time note
-at the first region form, and a heap-budget diagnostic when the growth starts to
-bite. Both are configurable; see
+| Iterations x 120 conses | Peak RSS |
+|---|---|
+| 1 000 | 26 MB |
+| 4 000 | 26 MB |
+| 16 000 | 26 MB |
+| 16 000, evacuator disabled (`ESHKOL_VM_REGION_EVAC=0`) | 796 MB |
+
+Sixteen times the work costs two megabytes: the curve is flat. Before the
+evacuator the same fixture peaked at 1,503,297,536 bytes *with* the
+`with-region` wrapper and 1,504,067,584 bytes *without* it — the same to within
+0.06%, because the form reclaimed nothing (ledger entry SW-14 in
+`.icc/silent-wrong-ledger.yaml`).
+
+**Outside a region the VM still does not reclaim.** The global arena grows
+monotonically, so a long-running VM workload that never opens a region can still
+exhaust the host — and it says so, through a heap-budget diagnostic. See
 [Environment variables](environment-variables.md) and
 [Substrate support](#substrate-support) below.
+
+### What the VM port does differently, and what that costs
+
+The VM evacuator matches the native engine's *semantics*, not its
+implementation. Native copies the escaping subgraph (Cheney-style, with a
+forwarding map and a mutation write barrier at every store into a longer-lived
+slot). The VM **marks from its root set** and sweeps at arena-block granularity
+instead, because a VM value addresses the heap by a small integer index rather
+than by pointer: a copying evacuator there would have to rewrite indices, and a
+missed rewrite aliases a live object and produces a wrong *value* rather than a
+crash. Marking moves nothing, so `eq?` identity, shared structure and cycles all
+survive without special handling.
+
+Three Stage-1 limits follow, and none of them can produce a dangling reference —
+each degrades toward retaining memory:
+
+- an escaping object with an **out-of-line payload** (a vector's element array,
+  a bignum's limbs) keeps the arena block that payload occupies; escaping
+  cons/closure structure is copied out exactly;
+- a **continuation captured inside a region** pins that region, so it is
+  promoted whole rather than freed;
+- a subtype the evacuator does not classify pins its region and says so once.
 
 **Unless a section says otherwise, every reclamation statement on this page
 describes the NATIVE engine.**
@@ -82,9 +113,8 @@ The arena API lives in `lib/core/arena_memory.h` (impl in `lib/core/`).
 
 Regions are lexically-scoped arenas layered on top of the allocator
 (`lib/core/runtime_regions.cpp`). A thread-local region stack tracks the active
-region; allocations route to the current region's arena and, **on the native
-engine**, are reclaimed when the region exits. On the bytecode VM the same
-surface evaluates identically and reclaims nothing — see
+region; allocations route to the current region's arena and are reclaimed when
+the region exits. Both engines reclaim, by different mechanisms — see
 [Which engine reclaims](#which-engine-reclaims).
 
 ### Surface syntax
@@ -100,11 +130,11 @@ At least one body expression is required, and the region name/size specifier is
 is not a call. Non-final body expressions are evaluated for effect and their
 values discarded, exactly as in `begin`.
 
-The value of the last body expression is returned. **On the native engine**,
-because the region's arena is freed on exit, a returned heap value is
-**deep-copied out** into the parent/global arena so it survives (the "escape"
-mechanism); on the bytecode VM the value is returned unchanged and nothing is
-freed. The compiler emits
+The value of the last body expression is returned. Because the region's arena is
+freed on exit, a returned heap value survives — natively by being **deep-copied
+out** into the parent/global arena (the "escape" mechanism), on the bytecode VM
+by being found reachable from the operand stack and promoted out of the swept
+set. The native compiler emits
 `region_create` → `region_push` → `eshkol_region_enter` → *body* →
 `eshkol_region_unwind_to`, the single shared teardown primitive that also serves
 `region-close`, a `raise` crossing an open region, and a continuation escape: it
@@ -118,39 +148,41 @@ a raw unpacked literal would carry an uninitialised tag into the evacuator.
 Native (JIT and AOT) implements the full contract above. On the **bytecode VM**
 `with-region` is value- and effect-transparent — all three spellings evaluate the
 body identically and return the same value, pinned across the native, `vm-src`
-and `vm-eskb` axes by `tests/vm_parity/corpus/with_region_lowering.esk` — but it
-**reclaims nothing**: the VM heap has no escape evacuator to deep-promote a body
-result out with, so a real push/pop there would free the object graph the body
-just returned. This is the same boundary a VM `region-close` declares (see
+and `vm-eskb` axes by `tests/vm_parity/corpus/with_region_lowering.esk` — **and,
+since the Stage-1 region evacuator, it reclaims.** The compiler brackets the body
+with a region push and a single teardown call
+(`lib/backend/vm_compiler.c::compile_form_with_region`, native ids 2213/2214);
+the teardown is the one path a `raise` crossing the body and a continuation
+transfer out of it also take, so the structured and unstructured surfaces cannot
+drift apart — the same discipline native keeps around
+`eshkol_region_unwind_to()`.
+
+What the VM does *not* yet reclaim is the user-reachable handle surface: a VM
+`region-close` remains bookkeeping-only (see
 [User-reachable region handles](#user-reachable-region-handles-341) below and
-`tests/vm_parity/PARITY.tsv`). A VM-heap evacuator is the prerequisite for VM
-reclamation on either surface. That port is the **v1.3.5 flagship item**
-(maintainer ruling 2026-08-13): an OALR Stage-1 port of the native design —
-Cheney-style copying evacuation with a forwarding map and a mutation write
-barrier, with all 27 heap subtypes deep-walked rather than leaf-copied. When it
-lands, `with-region` brackets through that evacuator's unwind entry point
-rather than growing a second teardown mechanism.
+`tests/vm_parity/PARITY.tsv`), and it announces that at the point of use. That
+is Stage-2.
 
-The VM has **no heap reclamation of any kind** — `with-region` is the
-designated mechanism, not an optimisation on top of one. Measured on
-`tests/memory/vm_region_growth_watchdog_test.esk`, a VM run peaks at the same
-RSS with and without the wrapper, so a resident VM workload grows
-monotonically.
+The reclamation claim is measured, not asserted:
+`tests/memory/vm_region_flat_rss_test.sh` sweeps the fixture's iteration count
+and requires the peak-RSS curve to stay flat, requires a 2x separation against
+the same binary with `ESHKOL_VM_REGION_EVAC=0`, and requires the printed answer
+to be identical either way. Interior coverage — that every heap subtype a program
+can build inside a region survives the pop with its contents intact — is gated
+separately by `tests/memory/vm_region_evac_subtype_coverage_test.sh`, which reads
+every promoted value back under `ESHKOL_ARENA_POISON=1`.
 
-Since the point of reaching for a region is the memory, the VM **says so rather
-than staying quiet** (ledger entry SW-14, bucket LOUD-LIMITATION). The first
-region form executed on the VM prints a one-time note to stderr; the VM arena is
-sampled as it grows and crossing `ESHKOL_VM_HEAP_BUDGET_MB` prints a diagnostic
-that names the size, the budget and the cause. Neither changes an answer, and
-both are configurable — see
+Outside a region the VM heap still grows monotonically, and still says so: the
+arena is sampled as it grows and crossing `ESHKOL_VM_HEAP_BUDGET_MB` prints a
+diagnostic naming the size, the budget and the mechanism that reclaims. It
+changes no answer and is configurable — see
 [Environment variables](environment-variables.md). The behaviour is gated by
-`tests/memory/vm_region_growth_watchdog_test.sh` so it cannot be silently
-dropped.
+`tests/memory/vm_region_growth_watchdog_test.sh`, which also pins that the
+watchdog does *not* fire for a `with-region` loop that gets its memory back.
 
 ```scheme
-;; NATIVE ENGINE. Allocations inside the body are freed at region exit and the
-;; result escapes. Under the bytecode VM this same program computes the same
-;; total and frees nothing.
+;; Allocations inside the body are freed at region exit and the result escapes.
+;; Both engines: the same total, and a flat RSS curve across iterations.
 (define total
   (with-region ('scratch 65536)
     (let loop ((i 0) (acc 0))
@@ -223,9 +255,10 @@ tool for a scratch region whose entire contents should be freed at a lexical
 boundary; it is simply no longer *required* to achieve flat RSS in a resident
 loop.
 
-**Native engine only.** Both halves of that sentence — the automatic nursery and
-the explicit `with-region` twin — describe `eshkol-run`. On the bytecode VM
-neither reclaims, because neither has anything to reclaim with; see
+**Native engine only.** The AUTOMATIC half of that sentence — the per-loop
+nursery that reclaims without the program asking — describes `eshkol-run` alone.
+The bytecode VM has no nursery: a resident VM loop reclaims when it is wrapped in
+an explicit `with-region`, and not otherwise. See
 [Which engine reclaims](#which-engine-reclaims).
 
 ## User-reachable region handles (#341)
@@ -394,13 +427,15 @@ keeps the address ranges stable and makes peak RSS flat. This applies equally to
 
 Native (JIT and AOT) implements the full contract above. On the **bytecode VM**
 the handle protocol, its validation and its error text are identical — the same C
-implementation backs both — but a close reclaims nothing: the VM heap has no
-escape evacuator, which is also why `with-region` is a pass-through there. See
-`tests/vm_parity/PARITY.tsv`. Observable program output is byte-identical
+implementation backs both — but a close still reclaims no VM heap. This is now
+the ONE region surface the VM does not reclaim: the Stage-1 evacuator brackets
+`with-region`, whose lexical extent tells the teardown exactly where the region
+ends, whereas a handle can be closed out of order, from another dynamic extent,
+or not at all. Wiring the handle surface through the same evacuator is Stage-2.
+See `tests/vm_parity/PARITY.tsv`. Observable program output is byte-identical
 (`tests/vm_parity/corpus/region_handle_contract.esk` pins it); only the
-reclamation is absent. `region-open` on the VM emits the same one-time note as
-`with-region` does, for the same reason — see
-[Substrate support](#substrate-support) above.
+reclamation is absent, and `region-open` on the VM prints a one-time note saying
+so. `ESHKOL_VM_REGION_QUIET=1` silences it.
 
 ## Parallel workers: commit-only reclamation
 

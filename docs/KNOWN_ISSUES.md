@@ -12,8 +12,9 @@
   leaked one iteration's transient garbage forever. It is now lowered with a
   per-loop nursery region (ESH-0214e), so such a loop is flat at 34 MB —
   identical to its explicit `with-region` twin. `with-region` is no longer
-  required to get flat RSS in a resident loop. Native engine only — the
-  bytecode VM reclaims neither way (see "Region handles and `with-region` on
+  required to get flat RSS in a resident loop. The AUTOMATIC half is native-engine
+  only: the bytecode VM has no nursery, so a resident VM loop reclaims when it is
+  wrapped in an explicit `with-region` and not otherwise (see "Region handles on
   the VM" below). See
   [memory-model](reference/runtime/memory-model.md#automatic-per-iteration-reclamation-in-resident-loops-esh-0214e).
 - **`parallel-map` corrupted collection-valued results past the parallel
@@ -242,49 +243,64 @@ operation that demanded a tensor. `tensor` and `matmul` are `vm-supported` in
 `(tensor <rectangular nested collection>)` constructor, the manifest is the
 authority — consult the row rather than this page.
 
-### Region handles and `with-region` on the VM
-The surface is shared; the reclamation is not. `region-open?` is
-`vm-supported`, and `region-open` / `region-close` / `op:WITH_REGION` are
-`native-only-justified` because the name resolves on both substrates and the
-handle protocol, its validation and every error message are byte-identical (one
-shared C implementation). A VM program using regions computes the same answer
-as native — it simply does not get the memory back, because the region arena,
-the allocation-slot hijack and the escape promotion are native-arena constructs
-and the VM heap has no escape evacuator.
+### Region handles on the VM
+`with-region` **reclaims on the bytecode VM** as of the Stage-1 region
+evacuator (`lib/backend/vm_region_evac.c`). What remains native-only is the
+user-reachable HANDLE surface: `region-open?` is `vm-supported`, and
+`region-open` / `region-close` are `native-only-justified` because the name
+resolves on both substrates and the handle protocol, its validation and every
+error message are byte-identical (one shared C implementation) — but a VM close
+still reclaims no VM heap. A handle can be closed out of order, from another
+dynamic extent, or never; `with-region`'s lexical extent is what tells the
+teardown where the region ends, which is why it landed first. Wiring the handle
+surface through the same evacuator is Stage-2.
 
-**This is not a property of `with-region` alone: the bytecode VM has no heap
-reclamation of any kind.** Measured on
-`tests/memory/vm_region_growth_watchdog_test.esk`, peak RSS is identical with
-and without the `with-region` wrapper — 1.503 GB either way at 20k iterations
-of 200 conses. `with-region` is the designated reclamation mechanism and it is
-inert on this substrate, so a resident VM workload grows monotonically until
-the host gives out.
+`region-open` on the VM prints a one-time note to stderr saying that a close
+reclaims nothing here; `ESHKOL_VM_REGION_QUIET=1` silences it.
 
-**That growth is no longer silent.** Two guards now name it (SW-14 in
-`.icc/silent-wrong-ledger.yaml`), gated by
-`tests/memory/vm_region_growth_watchdog_test.sh`:
+**Outside a region the VM still does not reclaim.** The VM heap has no garbage
+collector and no per-loop nursery, so a resident VM workload that never opens a
+region grows monotonically until the host gives out. That growth is named
+rather than silent: the VM arena is sampled as it grows, and crossing
+`ESHKOL_VM_HEAP_BUDGET_MB` (default 1024) prints a diagnostic naming the size,
+the budget and the mechanism that reclaims. `ESHKOL_VM_HEAP_BUDGET_FATAL=1`
+makes it exit nonzero so a lane can gate on it; `ESHKOL_VM_HEAP_BUDGET_MB=0`
+disables it. The watchdog changes no answer, and it does *not* fire for a
+`with-region` loop that gets its memory back —
+`tests/memory/vm_region_growth_watchdog_test.sh` pins both halves.
 
-- The first region form executed on the VM prints a one-time note to stderr
-  saying that regions reclaim nothing here. `ESHKOL_VM_REGION_QUIET=1`
-  silences it.
-- The VM arena is sampled as it grows; crossing `ESHKOL_VM_HEAP_BUDGET_MB`
-  (default 1024) prints a diagnostic naming the size, the budget and the
-  cause. `ESHKOL_VM_HEAP_BUDGET_FATAL=1` makes it exit nonzero so a lane can
-  gate on it; `ESHKOL_VM_HEAP_BUDGET_MB=0` disables the watchdog.
+The reclamation itself is measured, never asserted. On
+`tests/memory/vm_region_growth_watchdog_test.esk`, swept by iteration count:
 
-Neither guard changes any answer. **Real VM reclamation is the v1.3.5 flagship
-item** (maintainer ruling 2026-08-13): an OALR Stage-1 port of the native
-engine's design — Cheney-style copying evacuation with a forwarding map and a
-mutation write barrier — with root enumeration over the operand stack and the
-VM's side tables, index-space recycling, and all 27 heap subtypes **deep-walked
-rather than leaf-copied**. That last clause is the ESH-0214d lesson written into
-the scope up front: natively, the subtypes left as shallow leaf copies were
-exactly the ones that had to be reopened later.
+| Iterations x 120 conses | Peak RSS |
+|---|---|
+| 1 000 | 26 MB |
+| 4 000 | 26 MB |
+| 16 000 | 26 MB |
+| 16 000, evacuator disabled | 796 MB |
 
-Until then, **use `eshkol-run` (the native engine) for workloads that depend on
-reclamation.** Tracked as SW-14 in `.icc/silent-wrong-ledger.yaml`, bucket
-LOUD-LIMITATION — the limitation is announced rather than discovered, and the
-entry stays open until the RSS measurement above goes flat.
+Before the evacuator the same fixture peaked at 1.503 GB *with* the wrapper and
+1.504 GB *without* it — the form was inert. Gated by
+`tests/memory/vm_region_flat_rss_test.sh` (flatness, the on/off comparison, and
+the printed answer being identical either way) and
+`tests/memory/vm_region_evac_subtype_coverage_test.sh` (every heap subtype a
+program can build inside a region read back after the pop, under
+`ESHKOL_ARENA_POISON=1`).
+
+Three Stage-1 limits are worth knowing, none of which can produce a dangling
+reference — each degrades toward retaining memory:
+
+- an escaping object with an **out-of-line payload** (a vector's element array,
+  a bignum's limbs) keeps the arena block that payload occupies; escaping
+  cons/closure structure is copied out exactly, which is why a cons-only loop is
+  perfectly flat and a payload-heavy one is merely much smaller;
+- a **continuation captured inside a region** pins that region: it is promoted
+  whole rather than freed;
+- objects promoted out of a region live in the enclosing arena for its lifetime,
+  which is OALR's semantics and is equally true natively.
+
+Tracked as SW-14 in `.icc/silent-wrong-ledger.yaml` — **closed**, with the RSS
+measurement above as the evidence.
 
 ### Reverse-mode gradient on the VM
 `gradient` now runs on the bytecode VM at full parity with native codegen
@@ -426,8 +442,9 @@ block ordinary use.
   from automatic reclamation by design. Wrap each optimization step in an
   explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
   now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
-  Native engine only; on the bytecode VM a per-step `with-region` reclaims
-  nothing (see "Region handles and `with-region` on the VM" above).
+  The AD-tape reclamation clause (#345) is native-only; on the bytecode VM a
+  per-step `with-region` reclaims through the Stage-1 evacuator, which does not
+  special-case the tape (see "Region handles on the VM" above).
   A lighter-weight tape mark/release API is planned so a bare training loop can
   reclaim without a per-step region.
 

@@ -428,6 +428,34 @@ invariants:
         path: lib/core/runtime_regions.cpp
         key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
 
+  # 6b. The SAME invariant for the bytecode VM's Stage-1 evacuator (SW-14).
+  #     It matters MORE here than natively: a VM `Value` addresses the heap by a
+  #     small integer, so a subtype whose interior references the walk misses
+  #     cannot be recovered by any pointer scan — the object is freed while live
+  #     and a later allocation aliases its index, which is a silently wrong
+  #     VALUE rather than a crash. vm_region_evac.c therefore classifies the
+  #     whole tag space with a row per subtype and a startup assertion; this
+  #     invariant is the machine-checked half, requiring the HeapType enum and
+  #     the coverage table to resolve the identical subtype set.
+  - id: INV-vm-region-evac-subtype-total
+    kind: key-space-equality
+    incident: vm-region-evac-uncovered-subtype
+    severity: critical
+    fidelity: grep
+    description: >
+      Every HeapType the bytecode VM declares must have an explicit row in the
+      Stage-1 region evacuator's coverage table. A subtype with no row would be
+      zero-filled by the designated initializer and read as "walk this, I know
+      how" — the one answer a forgotten subtype must never give. The enum and
+      the table must resolve the identical subtype set.
+    sites:
+      - id: vm-heap-type-enum
+        path: lib/backend/vm_core.c
+        key_pattern: '(HEAP_(?:CONS|CLOSURE|STRING|VECTOR|MULTI_VALUE|COMPLEX|RATIONAL|BIGNUM|DUAL|TENSOR|LOGIC_VAR|SUBST|FACT|KB|FACTOR_GRAPH|WORKSPACE|PORT|AD_TAPE|PROMISE|CONTINUATION|HASH|ERROR|BYTEVECTOR|PARAMETER|HYPER_DUAL|RIEMANNIAN_ADAM_STATE|FUTURE|I128))\b'
+      - id: vm-region-evac-coverage-table
+        path: lib/backend/vm_region_evac.c
+        key_pattern: '(HEAP_(?:CONS|CLOSURE|STRING|VECTOR|MULTI_VALUE|COMPLEX|RATIONAL|BIGNUM|DUAL|TENSOR|LOGIC_VAR|SUBST|FACT|KB|FACTOR_GRAPH|WORKSPACE|PORT|AD_TAPE|PROMISE|CONTINUATION|HASH|ERROR|BYTEVECTOR|PARAMETER|HYPER_DUAL|RIEMANNIAN_ADAM_STATE|FUTURE|I128))\b'
+
   # 7. AD-exactness, encoded as dependency-presence.  The default derivative path
   #    must construct the exact dual/jet tangent, never a finite-difference
   #    approximation.  Armed by the derivative-op dispatch; dependency is the

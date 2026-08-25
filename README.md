@@ -182,7 +182,7 @@ Automatic differentiation is not a library feature—it is intrinsic to the lang
 
 Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates garbage collection entirely, providing O(1) allocation and deterministic deallocation. This architecture ensures predictable performance characteristics essential for real-time systems and production machine learning deployments. As of v1.3.4, **automatic per-iteration reclamation matches explicit `with-region`** even in a resident tick/daemon loop that mutates persistent state every iteration: such a loop is lowered with a per-loop nursery whose write barriers promote escapees and whose back edge resets the nursery, so RSS stays flat without any explicit region annotation. `with-region` remains available for scratch regions but is no longer *required* to get flat RSS in a long-running loop.
 
-**Which engine reclaims.** Everything in this section describes the **native engine** (`eshkol-run`, JIT and AOT). The **bytecode VM** (`eshkol-vm-standalone-test`) evaluates `with-region` and the region handles identically and returns the same values, but **does not reclaim** — the VM heap has no escape evacuator yet, so a resident VM workload grows monotonically. The VM announces this at the first region form and again when the growth crosses a heap budget, and the VM evacuator is the v1.3.5 flagship item (maintainer ruling 2026-08-13). Use `eshkol-run` for workloads that depend on reclamation; see [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#which-engine-reclaims).
+**Which engine reclaims.** The *automatic* per-iteration nursery above is a **native-engine** capability (`eshkol-run`, JIT and AOT). The **bytecode VM** (`eshkol-vm-standalone-test`) has no nursery, but `with-region` reclaims there too as of the Stage-1 region evacuator: measured flat at 26 MB across 1 000/4 000/16 000 iterations of the same fixture, against 796 MB with the evacuator disabled. A resident VM loop therefore needs an explicit `with-region` where a native one does not. The one region surface the VM still does not reclaim is the handle API (`region-open` / `region-close`), which says so at the point of use. See [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#which-engine-reclaims).
 
 ```scheme
 ;; Automatic scope-based memory management (native engine)
@@ -190,7 +190,7 @@ Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates ga
   (let ((large-dataset (load-training-data)))
     (train-model large-dataset)))
 ;; All memory automatically freed - no GC pauses, ever
-;; (bytecode VM: same value, no reclamation yet)
+;; (bytecode VM: same value, and — wrapped in `with-region` — the same flat RSS)
 
 ;; Explicit ownership semantics when needed
 (define resource (owned (acquire-expensive-resource)))
@@ -364,7 +364,7 @@ differentiable control flow, and tower numerics — every example runnable.
         (data (load-training-batch)))
     (gradient-descent-step model data)))
 ;; Memory deterministically freed
-;; (bytecode VM: same value, no reclamation yet)
+;; (bytecode VM: same value, and — wrapped in `with-region` — the same flat RSS)
 
 ;; Ownership and borrowing semantics
 (define resource (owned (acquire-gpu-buffer)))

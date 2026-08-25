@@ -545,13 +545,36 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
-probe vm_region_growth_watchdog 'SW-14 interim guard: the bytecode VM NAMES its unbounded heap growth (with-region reclaims nothing there) instead of growing silently — note, budget diagnostic, fail-closed mode, and no change to answers' \
+probe vm_region_flat_rss 'SW-14 close: (with-region ...) MEASURABLY reclaims on the bytecode VM — flat peak RSS across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, same answers either way' \
     'cd "$REPO_ROOT";
-     ## SW-14: the VM heap has no reclamation at all; (with-region ...) is a
-     ## pass-through because the VM heap has no escape evacuator. Measured at
-     ## the branch point: identical peak RSS with and without the wrapper.
-     ## Reclamation is a separate build item; this probe gates the guard that
-     ## makes the growth LOUD, so the guard cannot be silently removed.
+     ## SW-14 close condition. At the branch point this fixture peaked at the
+     ## SAME RSS with and without the with-region wrapper (1.503 vs 1.504 GB)
+     ## because the form reclaimed nothing. The gate sweeps the iteration count
+     ## and requires flatness, requires a 2x separation against
+     ## ESHKOL_VM_REGION_EVAC=0, and requires the printed answer to be identical
+     ## either way — so the reclamation claim is a measurement, not an assertion.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_flat_rss_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "vm_region_flat_rss_test.sh: PASS"'
+
+probe vm_region_evac_subtype_coverage 'SW-14 close: every VM heap subtype a program can build inside a region survives the pop with its interior intact — read back and compared under ESHKOL_ARENA_POISON=1, under the post-sweep audit, and with reclamation disabled' \
+    'cd "$REPO_ROOT";
+     ## The VM counterpart of region_evac_subtype_coverage. A VM Value addresses
+     ## the heap by a small INTEGER, so a reference the per-subtype walk misses
+     ## cannot be recovered by any pointer scan and the object is freed while
+     ## live. Poison mode keeps dead blocks mapped and stamped 0xCB and refuses
+     ## to recycle retired indices, so a coverage hole faults instead of
+     ## aliasing; the audit stage independently scans the object table for a
+     ## surviving reference to a retired index.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "vm_region_evac_subtype_coverage_test.sh: PASS"'
+
+probe vm_region_growth_watchdog 'The VM heap growth watchdog after the SW-14 close: no false "reclaims nothing" claim for with-region, the still-true note on the bookkeeping-only region HANDLE surface, a loud budget diagnostic for unbounded growth with no region around it, fail-closed mode, and silence for the loop that now gets its memory back' \
+    'cd "$REPO_ROOT";
+     ## The watchdog outlived SW-14 because outside a region the VM heap still
+     ## grows monotonically. What changed is what it must NOT say: with-region
+     ## reclaims now, so the interim note claiming otherwise is gone, and the
+     ## same allocation volume that trips the budget unwrapped must not trip it
+     ## wrapped.
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_growth_watchdog_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "vm_region_growth_watchdog_test.sh: PASS"'
 

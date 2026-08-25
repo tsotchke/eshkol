@@ -1097,10 +1097,11 @@ deterministic, low-latency performance:</p>
 <p><strong>Benefits:</strong> - <strong>No GC pauses</strong> - Critical
 for real-time applications - <strong>Cache-friendly</strong> -
 Sequential allocation - <strong>Deterministic cleanup</strong> - Memory
-freed when scope exits (native engine; the bytecode VM does not reclaim
-yet — see <a
+freed when scope exits, on both engines; the bytecode VM has no
+automatic per-loop nursery, so a resident VM loop needs an explicit
+<code>with-region</code> — see <a
 href="reference/runtime/memory-model.md#which-engine-reclaims">memory
-model</a>) - <strong>Fast allocation</strong> - O(1) bump-pointer
+model</a> - <strong>Fast allocation</strong> - O(1) bump-pointer
 allocation</p>
 <h3 id="tagged-value-system">Tagged Value System</h3>
 <p>Every runtime value is a 16-byte tagged structure:</p>

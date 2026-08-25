@@ -869,7 +869,7 @@ static int run_source_tests(void) {
         "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 100))", "100");
 
     /* User-reachable region handles (#341). On the VM a close is
-     * bookkeeping-only (no escape evacuator in the VM heap), but the handle
+     * bookkeeping-only (Stage-2; `with-region` reclaims there), but the handle
      * PROTOCOL — open, live, close returning the keep, then not live — and every
      * misuse outcome must match native exactly; tests/vm_parity/corpus/
      * region_handle_contract.esk pins the full matrix differentially. These

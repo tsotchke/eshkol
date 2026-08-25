@@ -1841,8 +1841,10 @@ method</li>
 <ul>
 <li><strong>Arena Allocation:</strong> Bump-pointer allocation in large
 blocks</li>
-<li><strong>Scope-based Cleanup:</strong> Memory freed when scope exits
-(native engine; the bytecode VM does not reclaim yet — see 6.2.1)</li>
+<li><strong>Scope-based Cleanup:</strong> Memory freed when scope exits,
+on both engines. The bytecode VM has no automatic per-loop nursery, so a
+resident VM loop needs an explicit <code>with-region</code> where a
+native one does not — see 6.2.1</li>
 <li><strong>No Garbage Collection:</strong> Deterministic, predictable
 performance</li>
 <li><strong>Cache-Friendly:</strong> Linear allocation pattern</li>
@@ -1874,16 +1876,19 @@ Lexical Regions)</h3>
 - Memory freed when region exits, and the body result is deep-copied out
 so it survives (<strong>native engine</strong>) - Supports nesting
 (stack of regions)</p>
-<p><strong>Substrate note.</strong> The reclamation half of those
-semantics is implemented by the <strong>native engine</strong>
-(<code>eshkol-run</code>, JIT and AOT) only. On the <strong>bytecode
-VM</strong> all three spellings evaluate the body identically and return
-the same value — the form is value- and effect-transparent — but
-<strong>nothing is freed</strong>, because the VM heap has no escape
-evacuator yet. A VM program is therefore correct but grows
-monotonically; it announces this at the first region form and again when
-the growth crosses a heap budget. The VM evacuator is the v1.3.5
-flagship item. See <a
+<p><strong>Substrate note.</strong> Both engines implement these
+semantics, by different mechanisms. On the <strong>bytecode VM</strong>
+all three spellings evaluate the body identically and return the same
+value — the form is value- and effect-transparent — <strong>and
+reclaim</strong>, through the Stage-1 region evacuator
+(<code>lib/backend/vm_region_evac.c</code>): measured flat at 26 MB
+across 1 000/4 000/16 000 iterations against 796 MB with the evacuator
+disabled. The VM sweeps at arena-block granularity rather than copying
+the escaping subgraph, so an escaping value with an out-of-line payload
+retains a little more there. Outside a region the VM heap still grows
+monotonically, and says so when the growth crosses a heap budget. The
+user-reachable <code>region-open</code> / <code>region-close</code>
+handles remain bookkeeping-only on the VM (Stage-2). See <a
 href="reference/runtime/memory-model.md#which-engine-reclaims">memory
 model</a>.</p>
 <p><strong>Example:</strong></p>

@@ -1251,8 +1251,9 @@ and variable-bound points, #343) or nested scalar
 <code>region-close</code> / <code>region-open?</code>, a non-lexical
 surface over the same machinery. Generation-counted handles, so every
 stale token is detectably stale; out-of-order close is a defined
-cascade. <code>region-open?</code> is <code>vm-supported</code>; the
-reclamation itself is native-only</td>
+cascade. <code>region-open?</code> is <code>vm-supported</code>; HANDLE
+reclamation is native-only (Stage-2), while <code>with-region</code>
+reclaims on both engines</td>
 </tr>
 <tr>
 <td>Automatic per-iteration nursery</td>
@@ -3979,15 +3980,31 @@ forward reference now refused)</td>
 <code>event-loop-backend</code> all <code>vm-supported</code></td>
 </tr>
 <tr>
-<td>Region handles / <code>with-region</code></td>
-<td>Surface yes, reclamation no</td>
+<td><code>with-region</code></td>
+<td>Yes, including reclamation</td>
+<td><code>op:WITH_REGION</code> stays <code>native-only-justified</code>
+for ONE undocumented spelling (<code>(with-region (quote name))</code>
+with no other body), not for reclamation: the Stage-1 VM region
+evacuator (<code>lib/backend/vm_region_evac.c</code>, SW-14) brackets
+the body with native 2213/2214 and reclaims measurably — flat peak RSS
+at 26 MB across 1 000/4 000/16 000 iterations against 796 MB with the
+evacuator disabled. Every documented spelling is value-identical on both
+substrates</td>
+</tr>
+<tr>
+<td>Region handles (<code>region-open</code> /
+<code>region-close</code>)</td>
+<td>Surface yes, reclamation Stage-2</td>
 <td><code>region-open?</code> is <code>vm-supported</code>;
-<code>region-open</code>, <code>region-close</code> and
-<code>op:WITH_REGION</code> are <code>native-only-justified</code>. The
-name resolves on both substrates and the handle protocol, its validation
-and every error message are byte-identical (one shared C
-implementation), so output parity holds — what is native-only is the
-reclamation, because the VM heap has no escape evacuator</td>
+<code>region-open</code> and <code>region-close</code> are
+<code>native-only-justified</code>. The name resolves on both substrates
+and the handle protocol, its validation and every error message are
+byte-identical (one shared C implementation), so output parity holds —
+what is native-only is the reclamation. A handle can be closed out of
+order, from another dynamic extent, or never, whereas
+<code>with-region</code>’s lexical extent tells the teardown where the
+region ends; that is why the lexical form landed first. The VM announces
+the boundary at the point of use</td>
 </tr>
 <tr>
 <td>Checked ascription <code>(the &lt;type&gt; expr)</code></td>

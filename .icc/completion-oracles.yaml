@@ -183,6 +183,32 @@ oracles:
         label: 'ESH-0214d/e: region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)'
         action: ./scripts/run_icc_smoke.sh
 
+      # SW-14 close (v1.3.5 flagship). The criterion above certifies the NATIVE
+      # evacuator; these two certify the bytecode VM's, which did not exist
+      # until the Stage-1 port. They are separated deliberately: the first is
+      # the MEASUREMENT the ledger's close condition demands (a flat RSS curve,
+      # not an assertion that memory is returned), the second is the COVERAGE
+      # that keeps that reclamation from being wrong. On this substrate a
+      # heap reference is a small integer rather than a pointer, so a subtype
+      # the walk misses cannot be caught by any pointer scan — the object is
+      # freed while live, and the fixture reads every promoted value back to
+      # prove it was not.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["vm_region_flat_rss"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SW-14: (with-region ...) measurably reclaims on the bytecode VM — peak RSS flat across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, same printed answer either way'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["vm_region_evac_subtype_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SW-14: every VM heap subtype a program can construct inside a region survives the pop with its interior intact — contents read back and compared under ESHKOL_ARENA_POISON=1, under the independent post-sweep audit, and with reclamation disabled'
+        action: ./scripts/run_icc_smoke.sh
+
       # Generative adversarial AD-vs-finite-difference oracle. Where the
       # tensor_input2 gate above pins a FIXED set of second-operand losses,
       # this criterion certifies that a GENERATED family of differentiable
