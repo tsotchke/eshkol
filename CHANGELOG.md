@@ -112,6 +112,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wired into `ctest` as `python_bindings_capsule_lifetime`. See
   [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
 
+### Added
+
+- **Assurance wave 1: ledger-integrity and oracle-schema gates with
+  self-tests (#454).** `scripts/check_ledger_integrity.py` fails
+  `.icc/silent-wrong-ledger.yaml` on a parse error, a duplicate `id`
+  across the file, or an entry missing a required field or closure
+  evidence (`SW-33`/`SW-35`/`SW-42` were each independently double-
+  allocated across branches, invisible to a textual merge).
+  `scripts/check_oracle_schema.py` fails `.icc/completion-oracles.yaml` on
+  a parse error or a structurally invalid criterion, and always reports
+  declared-vs-graded criteria counts per oracle. `scripts/gate_no_silent_wrong.py`
+  gains `--self-test`. All three wired into the `eshkol-compiler-readiness`
+  oracle, added as `ctest` entries, and run in a new `assurance-gates` CI
+  job. See [docs/TESTING.md](docs/TESTING.md#assurance-gates-v135-wave-1-454).
+
+### Changed
+
+- **CI: docs-only PRs now get every required context reported (#455).**
+  `paths-ignore` on the `pull_request` trigger previously meant a
+  docs-only PR (like this one) never started the main workflow at all, so
+  8 of 9 required branch-protection contexts never reported a status and
+  permanently blocked the PR. The docs-only decision moved into a
+  job-level `changes` gate instead, so a docs-only PR now gets every
+  required context reported as skipped. See
+  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
+
 ### Documentation
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
