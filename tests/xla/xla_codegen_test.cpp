@@ -77,6 +77,14 @@ struct EshkolTensor {
     uint64_t  total_elements; // idx 3: product of all dimensions
 };
 
+// Dtype accessor (defined in lib/core/runtime_tensor_dtype.cpp) — the one
+// dtype-consuming path exercised by test_xla_result_dtype_roundtrip below.
+// ESHKOL_TENSOR_DTYPE_F64 == 0 (lib/core/arena_memory.h: eshkol_tensor_dtype_t);
+// referenced here as a plain constant rather than re-declaring the enum, to
+// avoid adding yet another divergent copy of tensor-related types to this TU.
+extern "C" int64_t eshkol_tensor_dtype_code(void* tensor_ptr);
+constexpr int64_t kDtypeF64 = 0;
+
 // Global test arena
 static arena_t* g_test_arena = nullptr;
 
@@ -182,6 +190,39 @@ bool test_xla_matmul_2x2() {
         TEST_ASSERT_NEAR(read_element(tensor, i), expected[i], 1e-10,
             "Result value mismatch at index " + std::to_string(i));
     }
+
+    std::cout << "PASS" << std::endl;
+    return true;
+}
+
+// ===== Test: XLA Result Dtype Round-Trip =====
+// Regression for the eshkol_tensor ODR bug (xla_runtime.cpp used to carry a
+// forward-declared 4-field/32-byte copy of `struct eshkol_tensor` that
+// diverged from arena_memory.h's canonical 5-field/40-byte, dtype-bearing
+// definition, so `->dtype` could never be set from this file). This exercises
+// the dtype end-to-end through the one dtype-consuming ABI path available
+// (eshkol_tensor_dtype_code) against a tensor the XLA runtime actually
+// produced, rather than just inspecting field offsets.
+bool test_xla_result_dtype_roundtrip() {
+    std::cout << "Test: XLA Result Dtype Round-Trip... ";
+
+    double a_data[] = {1.0, 2.0, 3.0, 4.0};
+    double b_data[] = {5.0, 6.0, 7.0, 8.0};
+    int64_t a_shape[] = {2, 2};
+    int64_t b_shape[] = {2, 2};
+
+    void* result = eshkol_xla_matmul(
+        g_test_arena,
+        a_data, b_data,
+        a_shape, b_shape,
+        2, 2);
+
+    TEST_ASSERT(result != nullptr, "Matmul should return non-null result");
+
+    int64_t dtype = eshkol_tensor_dtype_code(result);
+    TEST_ASSERT(dtype == kDtypeF64,
+        "XLA matmul result dtype must round-trip as F64 (0) through "
+        "eshkol_tensor_dtype_code");
 
     std::cout << "PASS" << std::endl;
     return true;
@@ -451,6 +492,7 @@ int main() {
 
     // Matmul tests
     run_test(test_xla_matmul_2x2);
+    run_test(test_xla_result_dtype_roundtrip);
     run_test(test_xla_matmul_3x2_2x4);
     run_test(test_xla_matmul_dim_mismatch);
     run_test(test_xla_matmul_invalid_rank);
