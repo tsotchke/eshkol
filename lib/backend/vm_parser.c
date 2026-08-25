@@ -715,7 +715,19 @@ typedef struct {
     int code_len;
 } ChunkEntry;
 
+/* MAX_UPVALUES is normally already provided (as an alias for
+ * ESHKOL_VM_MAX_CLOSURE_UPVALUES) by eshkol/backend/vm_limits.h, included
+ * above — this is only a fallback for a build of this file in isolation. It
+ * MUST equal the runtime closure representation's upvalue-array capacity
+ * (vm_core.c's HeapObject.closure.upvalues[]/open_slots[]); see the
+ * ESHKOL_VM_MAX_CLOSURE_UPVALUES comment in vm_limits.h for why these two
+ * counts have to come from the same constant rather than independent
+ * literals — a closure whose upvalue count fits the compiler's limit but not
+ * the runtime array's is exactly how a large procedure silently corrupted
+ * the top-level define compiled right after it. */
+#ifndef MAX_UPVALUES
 #define MAX_UPVALUES 32
+#endif
 #define CHUNK_INIT_CODE 256
 #define CHUNK_INIT_CONSTS 64
 #define CHUNK_INIT_LOCALS 32

@@ -14304,7 +14304,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             cl_val.as.ptr < vm->heap.next_free) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
             if (cl && cl->type == HEAP_CLOSURE) {
-                for (int i = 0; i < cl->closure.n_upvalues && i < 16; i++) {
+                for (int i = 0; i < cl->closure.n_upvalues && i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++) {
                     int32_t open_slot = cl->closure.open_slots[i];
                     if (open_slot < 0) continue;
                     if (open_slot < STACK_SIZE)

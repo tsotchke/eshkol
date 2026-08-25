@@ -717,6 +717,33 @@ probe higher_order_shadowing_oracle 'map/for-each/filter/fold/reduce/remove call
      printf "%s" "$c" | grep -q "PASS: higher-order shadowing (vm)" || exit 1;
      printf "%s" "$c" | grep -q "FAIL:" && exit 1;
      exit 0'
+# SW-45. A single VM procedure that references more than 16 distinct
+# top-level procedures (every call is a free-variable reference resolved as
+# an upvalue, exactly like a captured variable) needed to relay more than 16
+# upvalues to its own closure. The compiler capped that count at 32
+# (MAX_UPVALUES) but the runtime closure representation's arrays were fixed
+# at 16 (HeapObject.closure.upvalues[]/open_slots[], vm_core.c); OP_CLOSURE
+# silently clamped to 16 and popped only 16 of the >16 values the compiler
+# had pushed, stranding the rest on the operand stack with no diagnostic and
+# exit 0. Every stack-slot offset computed for the rest of the program was
+# off by the leaked count from then on, so the very next top-level `define`
+# read back a stray leaked value instead of its own closure — discovered via
+# a VM evacuator fixture with ~20 constructor calls in one procedure
+# corrupting the define compiled right after it. Fixed by sharing one
+# constant (ESHKOL_VM_MAX_CLOSURE_UPVALUES, inc/eshkol/backend/vm_limits.h)
+# between the compiler's cap and the runtime array capacity, and by failing
+# the compile loudly (never silently) if a scope still needs more upvalues
+# than that shared capacity holds.
+probe eshkol-vm-large-proc 'a VM procedure calling up to 32 distinct top-level procedures (17-32 used to silently corrupt the define compiled right after it) runs correctly, and one past the shared capacity fails the compile loudly instead (SW-45)' \
+    'cd "$REPO_ROOT";
+     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     [ -x "$vm" ] || exit 1;
+     out=$(ESHKOL_VM_NO_DISASM=1 "$vm" tests/vm/closure_upvalue_capacity_surface_regression.esk 2>&1) || exit 1;
+     [ "$(printf "%s" "$out" | grep -c "^PASS$")" -eq 3 ] || exit 1;
+     printf "%s" "$out" | grep -q "^FAIL$" && exit 1;
+     printf "%s" "$out" | grep -q "ERROR:" && exit 1;
+     bash tests/closures/closure_upvalue_capacity_overflow_gate.sh "$ESHKOL_RUN" "$vm" "$(mktemp -d)" >/dev/null 2>&1 || exit 1;
+     exit 0'
 probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solver reaches full-f64 residual (<=1e-12, computed in-test) on well-conditioned/identity systems and raises catchably on singular/dimension-mismatch — verified on JIT, AOT, and the VM' \
     'cd "$REPO_ROOT"; t=tests/features/linear_solve_test.esk;
      out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;

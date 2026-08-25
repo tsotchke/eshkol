@@ -666,7 +666,25 @@ void vm_run(VM* vm) {
     lbl_CLOSURE: {
         int const_idx = instr.operand & 0xFFFF;
         int n_upvalues = (instr.operand >> 16) & 0xFF;
-        if (n_upvalues > 16) n_upvalues = 16;
+        /* n_upvalues is the count the COMPILER pushed onto the operand stack
+         * to feed this closure (func.n_upvalues, bounded at compile time by
+         * MAX_UPVALUES). It must never exceed the runtime closure's array
+         * capacity: the two are the same constant (ESHKOL_VM_MAX_CLOSURE_
+         * UPVALUES, see vm_limits.h), so this can only fire on a corrupted
+         * or build-mismatched .eskb. Previously this silently clamped to a
+         * hardcoded 16 and then popped only the clamped count — leaving the
+         * excess already-pushed values stranded on the stack, which
+         * desynced every stack-slot offset the compiler had computed for
+         * the rest of the program. A too-small limit must fail loudly
+         * instead of running on with a corrupted stack. */
+        if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
+            fprintf(stderr,
+                    "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
+                    "(pc=%d) — refusing to run a program with a corrupted or "
+                    "build-mismatched closure encoding\n",
+                    n_upvalues, ESHKOL_VM_MAX_CLOSURE_UPVALUES, vm->pc - 1);
+            vm->error = 1; goto vm_exit;
+        }
         Value func_const = vm->constants[const_idx];
         int32_t func_pc = (int32_t)func_const.as.i;
         /* Arity packed by the compiler in bits 32..40 of the func-PC constant
@@ -680,7 +698,7 @@ void vm_run(VM* vm) {
         vm->heap.objects[ptr]->closure.func_pc = func_pc;
         vm->heap.objects[ptr]->closure.arity = clo_arity;
         vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
-        for (int i = 0; i < 16; i++)
+        for (int i = 0; i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++)
             vm->heap.objects[ptr]->closure.open_slots[i] = -1;
         for (int i = n_upvalues - 1; i >= 0; i--) {
             vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
@@ -1482,7 +1500,22 @@ vm_exit:
             /* Operand: low 16 bits = constant pool index, bits 16-23 = n_upvalues */
             int const_idx = instr.operand & 0xFFFF;
             int n_upvalues = (instr.operand >> 16) & 0xFF;
-            if (n_upvalues > 16) n_upvalues = 16;
+            /* See the identical check in lbl_CLOSURE above: n_upvalues must
+             * never exceed the runtime closure array's capacity, because the
+             * compiler already pushed exactly this many values to feed it.
+             * Silently clamping and popping fewer than were pushed strands
+             * the excess on the operand stack and desyncs every later
+             * stack-slot offset the compiler computed — the mechanism behind
+             * a large procedure corrupting the top-level define compiled
+             * right after it. Fail loudly instead. */
+            if (n_upvalues > ESHKOL_VM_MAX_CLOSURE_UPVALUES) {
+                fprintf(stderr,
+                        "ERROR: OP_CLOSURE upvalue count %d exceeds runtime capacity %d "
+                        "(pc=%d) — refusing to run a program with a corrupted or "
+                        "build-mismatched closure encoding\n",
+                        n_upvalues, ESHKOL_VM_MAX_CLOSURE_UPVALUES, vm->pc - 1);
+                vm->error = 1; break;
+            }
             Value func_const = vm->constants[const_idx];
             int32_t func_pc = (int32_t)func_const.as.i;
             int32_t clo_arity = ((func_const.as.i >> 40) & 1)
@@ -1493,7 +1526,7 @@ vm_exit:
             vm->heap.objects[ptr]->closure.func_pc = func_pc;
             vm->heap.objects[ptr]->closure.arity = clo_arity;
             vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
-            for (int i = 0; i < 16; i++)
+            for (int i = 0; i < ESHKOL_VM_MAX_CLOSURE_UPVALUES; i++)
                 vm->heap.objects[ptr]->closure.open_slots[i] = -1;
             /* Pop upvalues from stack (pushed before CLOSURE, in reverse order) */
             for (int i = n_upvalues - 1; i >= 0; i--) {

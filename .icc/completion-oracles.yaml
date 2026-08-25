@@ -290,6 +290,13 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["eshkol-vm-large-proc"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'VM closure-upvalue capacity: the compiler''s upvalue cap and the runtime closure array''s capacity are one shared constant (ESHKOL_VM_MAX_CLOSURE_UPVALUES) — a procedure referencing up to 32 distinct top-level procedures runs correctly and the top-level define compiled right after it is never corrupted (17-32 upvalues used to silently strand values on the operand stack via a hardcoded 16-slot runtime array), and one past the shared capacity fails the compile loudly instead of continuing with a missing capture (SW-45)'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["linear_solve_full_f64_oracle"]
           event_values: ["PASS"]
         severity: high
