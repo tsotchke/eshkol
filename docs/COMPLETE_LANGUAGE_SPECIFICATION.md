@@ -3300,7 +3300,17 @@ Invoking a captured continuation `k` with value `v`:
 2. Restores the captured continuation's dynamic extent.
 3. Returns `v` as the result of the original `call/cc` expression.
 
-**Constraint:** Continuations in Eshkol are single-shot; invoking a continuation more than once results in undefined behavior. This is a deliberate implementation restriction for performance (full `setjmp`/`longjmp` restores stack state, which is invalidated after first use).
+**Constraint:** Continuations are single-shot on the native (LLVM-compiled JIT
+and AOT) backend described by this section; invoking a continuation more
+than once after its capturing stack frame has returned results in undefined
+behavior (reproducibly SIGILL/SIGSEGV — see `.icc/silent-wrong-ledger.yaml`
+SW-51). This is a deliberate implementation choice for performance (setjmp/
+longjmp restores raw stack state with zero overhead on the non-escaping
+path), not merely an oversight — but note the bytecode VM uses a different
+mechanism (operand-stack/call-frame snapshotting) that survives some of
+these re-entry shapes while still not correctly implementing full multi-shot
+semantics either (SW-52). See `docs/reference/language/continuations.md` for
+the complete, measured per-engine account and the tracked build item.
 
 #### 16.1.3 Interaction with Dynamic Wind
 

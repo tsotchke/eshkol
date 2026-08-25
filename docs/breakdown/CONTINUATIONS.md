@@ -35,6 +35,20 @@ The single-shot restriction is sufficient for the most common continuation use
 cases: early exit from nested computations, exception handling, and coroutine-
 style control flow where each continuation is used exactly once.
 
+**Scope note:** everything on this page describes the **native (LLVM-compiled
+JIT and AOT) backend** specifically — the setjmp/longjmp mechanism is a
+property of that codegen, not of "Eshkol continuations" as a whole. Eshkol
+also ships a separate bytecode VM engine (`lib/backend/vm_run.c`) whose
+`call/cc` captures a continuation by snapshotting its own operand stack and
+call-frame array instead of using setjmp/longjmp; this survives some
+re-entry shapes that crash on native but does not correctly implement full
+multi-shot semantics either — see `docs/reference/language/continuations.md`
+for the measured, per-engine account and `.icc/silent-wrong-ledger.yaml`
+entries SW-51 (native) / SW-52 (VM) for exact reproductions
+(`tests/continuations/`). Direct measurement 2026-08-25 confirmed the
+"undefined behavior" predicted below for native is not hypothetical: it
+reproduces as SIGILL/SIGSEGV on both JIT and AOT.
+
 ---
 
 ## 2. call/cc -- Capturing and Invoking Continuations

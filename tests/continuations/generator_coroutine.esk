@@ -1,0 +1,58 @@
+;; Classic call/cc-based generator/coroutine (SICP-style): a producer
+;; captures a continuation each time it "yields", handing control back to
+;; the consumer; the consumer re-enters the producer's saved continuation
+;; repeatedly, resuming deep inside a producer call that returned long ago.
+;; This is the shape real generator/amb libraries need re-entrant
+;; continuations for.
+;;
+;; MEASURED BEHAVIOR (2026-08-25, .icc/silent-wrong-ledger.yaml SW-51/SW-52):
+;;   native JIT (-r): CRASHES on the SECOND yield — SIGSEGV, after correctly
+;;                    printing "gen1: 1". Same escape-only cause as
+;;                    reentry_after_function_return.esk (SW-51).
+;;   native AOT:      Same SIGSEGV, same point.
+;;   bytecode VM:     Does NOT crash, but is SILENTLY WRONG (SW-52, exit 0,
+;;                    no diagnostic): instead of the correct
+;;                      gen1: 1 / gen2: 2 / gen3: 3 / gen4: done
+;;                    it prints a garbled interleaving that replays the
+;;                    producer's internal 1/2/3/done sequence under the
+;;                    wrong "genN:" labels (observed: gen1:1, gen2:2,
+;;                    gen2:3, gen2:done, gen2:1, gen3:2, gen3:3, gen3:done,
+;;                    gen3:1, gen4:2, gen4:3, gen4:done, gen4:1, done) —
+;;                    every re-invocation replays more of the top-level
+;;                    program than it should, rather than resuming exactly
+;;                    at the yield point as seen by the consumer.
+;;
+;; This fixture is deliberately NOT wired into any pass/fail CI harness
+;; (native crashes by design here, and the VM's wrong output has no
+;; syntactic PASS/FAIL marker to key a gate on — the point is the exact
+;; transcript). Run manually, e.g.:
+;;   ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test \
+;;     tests/continuations/generator_coroutine.esk
+(define return-k #f)
+(define resume-k #f)
+
+(define (yield v)
+  (call/cc (lambda (k)
+    (set! resume-k k)
+    (return-k v))))
+
+(define (producer)
+  (call/cc (lambda (ret)
+    (set! return-k ret)
+    (yield 1)
+    (yield 2)
+    (yield 3)
+    (return-k 'done))))
+
+(define (next!)
+  (if resume-k
+      (let ((k resume-k))
+        (set! resume-k #f)
+        (k 'go))
+      (producer)))
+
+(display "gen1: ") (display (next!)) (newline)
+(display "gen2: ") (display (next!)) (newline)
+(display "gen3: ") (display (next!)) (newline)
+(display "gen4: ") (display (next!)) (newline)
+(display "done") (newline)

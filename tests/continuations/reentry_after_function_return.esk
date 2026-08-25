@@ -1,0 +1,47 @@
+;; Classic multi-shot hazard: a continuation is captured inside a function
+;; call (f), which then RETURNS normally, and only afterward is the saved
+;; continuation invoked again from a completely different dynamic extent
+;; (top level, after several intervening calls to display/newline).
+;;
+;; This is the shape escape-only setjmp/longjmp continuations cannot handle:
+;; by the time of the second invocation, f's native stack frame has been
+;; popped and its memory reused by the intervening calls.
+;;
+;; MEASURED BEHAVIOR (2026-08-25, .icc/silent-wrong-ledger.yaml SW-51):
+;;   native JIT (-r): CRASHES — SIGILL ("illegal instruction"), after
+;;                    printing "f returned: 2" and
+;;                    "about to re-invoke k after f's extent exited".
+;;                    Eshkol's own signal handler catches it and reports
+;;                    "this is most likely a stack overflow" (a reasonable
+;;                    guess given the symptom, but the actual cause is
+;;                    longjmp restoring a stack/frame-pointer state whose
+;;                    backing memory has been overwritten).
+;;   native AOT:      Same SIGILL, same point.
+;;   bytecode VM:     Does NOT crash — correctly prints
+;;                    "re-invoke result: 11" and then "done". The VM
+;;                    captures continuations by snapshotting its own
+;;                    operand stack and call-frame array (not the C stack),
+;;                    so re-entering a popped Scheme-level frame is not
+;;                    inherently unsafe there the way it is for setjmp/
+;;                    longjmp. (Contrast with generator_coroutine.esk, where
+;;                    a second re-entry on the VM DOES go wrong — the VM's
+;;                    continuation support is not fully multi-shot either,
+;;                    it is just broken in a different way than native's.)
+;;
+;; This fixture is deliberately NOT wired into any pass/fail CI harness
+;; (native crashes by design here). Run manually, e.g.:
+;;   ./build/eshkol-run -r tests/continuations/reentry_after_function_return.esk
+(define k #f)
+(define (f)
+  (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(display "f returned: ") (display (f)) (newline)
+;; f has now returned. Invoke the saved continuation from a completely
+;; different dynamic extent (top level, after several intervening calls).
+(display "about to re-invoke k after f's extent exited") (newline)
+(if k
+    (let ((k2 k))
+      (set! k #f)
+      (display "re-invoke result: ")
+      (display (k2 10))
+      (newline)))
+(display "done") (newline)

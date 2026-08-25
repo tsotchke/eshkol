@@ -3523,3 +3523,176 @@ entries:
     title: "68 header symbols and 59 shipped .esk exports have no documentation anywhere"
     evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
     caught_by: [pr-record-416]
+
+  - id: DD-13
+    bucket: DOC-DEBT
+    status: closed
+    title: "continuations.md claims full multi-shot re-entrant continuations; four other docs say single-shot; the ESH-0080 note describes an already-fixed, unrelated bug as an ongoing limitation"
+    evidence: >-
+      docs/reference/language/continuations.md:27-48 ("A captured
+      continuation can be stored and invoked more than once — it is a full
+      re-entrant continuation, not merely a one-shot escape") directly
+      contradicts docs/breakdown/CONTINUATIONS.md:25-34+510-524,
+      docs/COMPLETE_LANGUAGE_SPECIFICATION.md:3303,
+      docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md:2929+2960, and
+      docs/breakdown/SCHEME_COMPATIBILITY.md:456-465+974, all of which state
+      continuations are single-shot via setjmp/longjmp. Separately,
+      continuations.md's own "Known limitation — deep CPS chains (ESH-0080)"
+      section describes SIGILL past depth ~16 as an ONGOING limitation, but
+      ESH-0080 was fixed on 2026-06-29 (commit 47338adb, "run native O0
+      cleanup for deep CPS") and its regression test
+      (tests/sicp/ch4_amb_deep_cps_test.esk) does not even use call/cc — it
+      is a pure manual-CPS/closure-chain test; the SIGILL it fixed was
+      missing LLVM cleanup passes at -O0 for deep non-call/cc closure
+      chains, unrelated to call/cc's setjmp/longjmp mechanics.
+    measured: >-
+      Direct execution at this branch's head confirms: (1) ESH-0080's
+      regression test still passes on native JIT and AOT (`ALL PASS`,
+      exit 0) — the fix holds, the doc's framing of it as unresolved is
+      stale; (2) call/cc re-entry is genuinely single-shot on native
+      (SW-51) and differently, non-conformantly broken on the VM (SW-52) —
+      neither engine delivers what continuations.md claimed.
+    resolution: >-
+      All five docs corrected to state the measured per-engine behavior
+      precisely (native: escape-only via setjmp/longjmp, single-shot;
+      bytecode VM: attempts a stack-snapshot re-entry mechanism but does not
+      correctly deliver multi-shot semantics either, see SW-52) rather than
+      the doc claiming more than either engine delivers. The ESH-0080 note
+      is corrected to state it was fixed (commit 47338adb), with a citation,
+      instead of describing it as ongoing. The ambition of full multi-shot
+      re-entrant continuations is KEPT, not deleted, and filed as a tracked
+      BUILD ITEM in continuations.md's own "Build item" section, per the
+      docs-are-the-blueprint convention established in
+      docs/design/AUDIT_2026_08_25_RESOLUTION.md (PR #468).
+    closed_at: "fix/continuations-and-gensym"
+    closed_by: "branch fix/continuations-and-gensym (PR pending)"
+    caught_by: [direct-measurement, cl-feasibility-study-2026-08-25]
+
+  # ───────────────────────── LOUD-ERROR ─────────────────────────
+  # SW-46..SW-50 reserved by in-flight PRs #466/#473/#474 and the S4 lane at
+  # the time this branch was cut from origin/master (73cc7cbb); none of those
+  # ids exist on this branch's copy of the ledger, so numbering resumes at
+  # the next id genuinely free here, per `grep -o 'id: SW-[0-9]*b*' | sort -V`.
+  - id: SW-51
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "call/cc re-entry into a returned native stack frame SIGILLs/SIGSEGVs (native JIT and AOT)"
+    repro: >-
+      tests/continuations/reentry_after_function_return.esk — a continuation
+      captured inside `(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))`
+      is invoked a second time, from top level, after `f` has already
+      returned normally and several intervening `display`/`newline` calls
+      have run. Also tests/continuations/generator_coroutine.esk, a
+      call/cc-based generator whose second `yield` re-entry crashes the same
+      way.
+    observed: >-
+      native JIT (-r): SIGILL ("illegal instruction") on
+      reentry_after_function_return.esk immediately on the re-invoke, after
+      correctly printing "f returned: 2" and "about to re-invoke k after
+      f's extent exited". native AOT: identical SIGILL at the identical
+      point. generator_coroutine.esk SIGSEGVs on native JIT/AOT on the
+      SECOND yield (after correctly printing "gen1: 1"). Eshkol's own
+      fatal-signal handler catches both and prints "this is most likely a
+      stack overflow" — a reasonable generic guess, but the actual
+      mechanism is `longjmp` (lib/backend/llvm_codegen.cpp's continuation-
+      invoke codegen, ~line 8350) restoring a jmp_buf whose target stack
+      frame (`inc/eshkol/eshkol.h`'s `eshkol_continuation_state_t::jmp_buf_ptr`,
+      set once at capture and never invalidated) has already been popped
+      and its memory reused by intervening calls.
+    root_cause: >-
+      Native call/cc is implemented as a single setjmp/longjmp pair per
+      capture (lib/core/runtime_continuations.cpp
+      eshkol_make_continuation_state; codegen at llvm_codegen.cpp ~8230-8360).
+      This is correct and efficient for escape-only use (early return,
+      exception-style unwind) but is undefined behavior the moment the
+      capturing C stack frame has returned before re-invocation — exactly
+      the shape every real generator/`amb`/coroutine pattern needs. Fixing
+      this requires a fundamentally different continuation representation
+      (segmented/heap-allocated stack or a CPS transform), not a local
+      patch — see the "Build item: full multi-shot re-entrant
+      continuations" section of docs/reference/language/continuations.md.
+    caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+    notes: >-
+      Not tag-blocking under this ledger's own bucket rules (LOUD-ERROR is a
+      crash with a diagnostic, not a silent wrong answer), but tracked here
+      because it is the concrete evidence behind the continuations.md
+      documentation fix and the BUILD ITEM. `call/cc` remaining escape-only
+      is NOT itself the defect — the defect was continuations.md claiming
+      more than native delivers. See SW-52 for the bytecode VM's own,
+      differently-shaped defect in the same area.
+
+  # ───────────────────────── SILENT-WRONG ─────────────────────────
+  - id: SW-52
+    bucket: SILENT-WRONG
+    status: open
+    title: "bytecode VM continuation re-invocation replays completed top-level forms — hangs or produces wrong values, no diagnostic, exit 0 (when it exits)"
+    repro: >-
+      tests/continuations/doc_example_multishot.esk — the exact "Re-invocable
+      (multi-shot) continuations" example from
+      docs/reference/language/continuations.md, run on the bytecode VM.
+      Also tests/continuations/generator_coroutine.esk on the VM (a
+      call/cc-based generator/coroutine).
+    observed: >-
+      doc_example_multishot.esk on the VM: prints "1" once, then an
+      unbounded stream of "2" — never reaches "3" or "done". Left running
+      60s (~8.8 million lines of "2" printed) without the VM's own runaway-
+      instruction guard (ESHKOL_VM_MAX_INSN, default 10,000,000,
+      lib/backend/vm_run.c vm_limits_checkpoint) ever firing, because the
+      guard's instruction counter is a local variable
+      (`vm_insns_executed`) reinitialised to 0 every time control re-enters
+      the dispatch loop via a continuation invoke's
+      vm_escape_native_control()/longjmp, so it never accumulates far
+      enough to trip — an unconditional, silent hang with no built-in
+      escape valve. generator_coroutine.esk on the VM: does not hang, exits
+      0, prints no diagnostic, but the transcript is wrong — instead of
+      "gen1: 1 / gen2: 2 / gen3: 3 / gen4: done" it prints a garbled
+      replay (gen1:1, gen2:2, gen2:3, gen2:done, gen2:1, gen3:2, gen3:3,
+      gen3:done, gen3:1, gen4:2, gen4:3, gen4:done, gen4:1, done) —
+      OP_INVOKE_CC's full operand-stack/call-frame restore
+      (lib/backend/vm_run.c lbl_INVOKE_CC, ~line 1133) rewinds execution to
+      a point that then falls through the outer top-level-form driver and
+      re-executes later top-level forms a second (and third, and fourth)
+      time instead of resuming exactly at the consumer's `(next!)` call
+      site.
+    correct: >-
+      doc_example_multishot.esk should print "1" "2" "3" "done" and exit 0
+      (matches native JIT/AOT, which get this specific shape right — see
+      SW-51's notes on why). generator_coroutine.esk should print
+      "gen1: 1", "gen2: 2", "gen3: 3", "gen4: done".
+    cross_engine: >-
+      Native JIT/AOT get doc_example_multishot.esk's exact shape right
+      (same top-level frame, jmp_buf never invalidated) but SIGILL/SIGSEGV
+      on the other two fixtures (SW-51) — the two engines fail on
+      overlapping but non-identical re-entry shapes; neither delivers
+      general multi-shot re-entrant continuations.
+    root_cause: >-
+      The VM captures a continuation by snapshotting its own operand stack
+      and call-frame array (lib/backend/vm_run.c lbl_CALLCC, ~line 1069),
+      which is architecturally capable of real re-entry (unlike native's
+      setjmp/longjmp), but nothing in the restore path distinguishes "the
+      point the *consumer* is conceptually resuming at" from "replay the
+      rest of the top-level program from here" — every top-level form
+      after the resume point re-runs, including forms whose side effects
+      (mutating resume-k/return-k, printing labels) were already correct
+      the first time. Fixing this is part of the same BUILD ITEM as SW-51
+      (a real multi-shot design needs a coherent model of "the rest of the
+      program" that both engines implement the same way), not a
+      standalone bug in the VM's snapshot/restore mechanics.
+    caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, tests/control_flow/*, tests/vm_parity/*]
+    waiver:
+      owner: tsotchke
+      reason: >-
+        Pre-existing defect discovered while auditing the continuations.md
+        documentation claim, not introduced by this change. Fixing it for
+        real requires the same large continuation-representation rework as
+        SW-51 (segmented/heap-allocated stack or CPS transform on the VM
+        side too, plus a shared re-entry model between both engines) —
+        tracked as the "Build item: full multi-shot re-entrant
+        continuations" in docs/reference/language/continuations.md, no
+        fixed target version yet. Waived rather than closed so the release
+        gate does not block on a pre-existing gap this PR only made
+        visible and precisely documented; revisit when that build item is
+        scoped into a release.
+      expires: "2027-12-31"

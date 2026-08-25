@@ -2926,7 +2926,14 @@ Division uses Smith's formula to avoid overflow when the denominator components 
 
 ## 25. First-Class Continuations
 
-Eshkol implements single-shot continuations via `call/cc` (longjmp-based), with `dynamic-wind` for resource cleanup and `guard`/`raise` for structured exception handling.
+Eshkol's native (LLVM JIT/AOT) backend implements single-shot continuations
+via `call/cc` (longjmp-based), with `dynamic-wind` for resource cleanup and
+`guard`/`raise` for structured exception handling. The separate bytecode VM
+backend captures continuations differently (an operand-stack/call-frame
+snapshot) and survives some re-entry shapes native cannot, but does not
+correctly deliver full multi-shot semantics either — see
+`docs/reference/language/continuations.md` for the measured per-engine
+account and `.icc/silent-wrong-ledger.yaml` SW-51/SW-52.
 
 ### 25.1 `call/cc` - Capture and Invoke Continuations
 
@@ -2957,7 +2964,11 @@ Eshkol implements single-shot continuations via `call/cc` (longjmp-based), with 
 (display (safe-divide 10 0))     ; => division by zero
 ```
 
-Eshkol continuations are single-shot: invoking a captured continuation more than once is undefined. This reflects the longjmp-based implementation and avoids the overhead of multi-shot continuation support.
+Eshkol's native backend continuations are single-shot: invoking a captured
+continuation more than once after its capturing frame has returned is
+undefined behavior (reproducibly SIGILL/SIGSEGV, `.icc/silent-wrong-ledger.yaml`
+SW-51). This reflects the longjmp-based implementation and avoids the
+overhead of multi-shot continuation support on the common escape-only path.
 
 ### 25.2 `dynamic-wind` - Before/After Thunks
 
