@@ -113,6 +113,10 @@ pages and lets them fan out to their siblings.
   - [platform-utilities.md](reference/agent/platform-utilities.md) — regex, globbing, file watching, secrets, terminal/TUI, git
 - [Agent FFI (breakdown)](breakdown/AGENT_FFI.md) — native HTTP/SQLite/subprocess/fs-watch surfaces and AOT link wiring
 
+## Python Bindings
+
+- [Python bindings reference](reference/bindings/python.md) — `import eshkol`, the `Context.eval`/`derivative`/`gradient` API, and the NumPy capsule lifetime guarantee (audit H1, #458)
+
 ## GPU Acceleration
 
 - [GPU Acceleration (breakdown)](breakdown/GPU_ACCELERATION.md) — Metal compute, SF64 software float64, CUDA, cost model dispatch
