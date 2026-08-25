@@ -3027,6 +3027,29 @@ public:
                     }
                 }
 
+                // A linearity violation is fatal in EVERY mode but --unsafe.
+                // Checked before the --strict-types branch below because it is
+                // a different kind of finding: not "the checker could not
+                // convince itself this is well-typed" (which gradual typing
+                // downgrades to a warning by design) but "the checker proved
+                // this program violates a guarantee the type advertises". The
+                // language guide, the specification, RELEASE_NOTES and the
+                // public announcement all state that a linear `Qubit` makes
+                // no-cloning a compile-time TYPE ERROR; that is only true if
+                // the compile stops and no artifact is written. Same discipline
+                // v1.3.4 established for --strict-types just below: refuse
+                // codegen outright rather than emit a binary for a program
+                // already rejected, so nothing downstream can trust $? or the
+                // existence of the output and certify a clone.
+                if (type_checker.hasLinearityViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu linearity violation(s) detected "
+                                 "(linear types are use-exactly-once)",
+                                 type_checker.linearityViolations());
+                    eshkol_error("Refusing to generate code for a program that "
+                                 "violates linear (no-cloning) typing");
+                    return std::make_pair(nullptr, nullptr);
+                }
+
                 // Report accumulated type error summary
                 if (type_checker.hasErrors()) {
                     if (cfg->strict_types) {
