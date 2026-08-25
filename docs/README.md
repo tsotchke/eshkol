@@ -280,3 +280,5 @@ Missing something? This index links every document tracked under `docs/`, plus
 the adjacent `examples/`, `tests/`, `tools/icc_extras/`, `press/`, and
 `nix/jetson/` documentation. If you land on a page that isn't reachable from
 here, that's a bug in this index — please open an issue or fix it directly.
+
+<!-- ci-wave proof PR: mixed test, throwaway, will be closed -->
