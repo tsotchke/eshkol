@@ -4027,6 +4027,14 @@ int main(int argc, char **argv)
     __eshkol_argc = (int32_t)argc;
     __eshkol_argv = argv;
 
+    // Engine parity for the linear (no-cloning) rule. The `--emit-eskb` route
+    // hands source to the bytecode VM's own compiler, which has an independent
+    // reader and never builds a TypeChecker — so it used to write bytecode for
+    // a qubit clone this same binary refuses to compile natively. Installing
+    // the real judgment here means both routes out of this driver enforce ONE
+    // rule; see inc/eshkol/backend/vm.h for why the VM takes it as a hook.
+    eshkol_vm_install_linear_check(eshkol_linear_check_source);
+
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —
     // option handling, module resolution, parsing, type checking and codegen
