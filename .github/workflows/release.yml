@@ -362,6 +362,20 @@ jobs:
             --build-dir "${{ matrix.build_dir }}" \
             --package-dir "$pkg_dir"
 
+          # ADR-0010 gap A10: verify the staged package against the single
+          # declared manifest BEFORE the smoke test and BEFORE archiving, so
+          # a missing file is reported as "manifest violation: <file>"
+          # rather than surfacing later as an opaque smoke-test crash (or,
+          # worse, not surfacing at all if the smoke path never exercises
+          # the missing file).
+          release_platform="linux"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            release_platform="macos"
+          fi
+          python3 scripts/check_package_manifest.py \
+            --package-dir "$pkg_dir" \
+            --platform "$release_platform"
+
           python3 scripts/verify_release_package.py \
             --package-dir "$pkg_dir" \
             --smoke-source "tests/toolchain/windows-smoke.esk" \
@@ -967,6 +981,16 @@ jobs:
             --package-dir "$pkgDir"
           if ($LASTEXITCODE -ne 0) {
             throw "third-party license staging failed with exit code $LASTEXITCODE"
+          }
+
+          # ADR-0010 gap A10: verify the staged package against the single
+          # declared manifest (.icc/package-manifest.yaml) before the smoke
+          # test and before archiving.
+          python scripts/check_package_manifest.py `
+            --package-dir "$pkgDir" `
+            --platform windows
+          if ($LASTEXITCODE -ne 0) {
+            throw "package manifest verification failed with exit code $LASTEXITCODE"
           }
 
           # Preserve a full user-mode dump if the relocated package smoke
