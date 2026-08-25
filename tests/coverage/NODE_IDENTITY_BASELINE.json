@@ -1,0 +1,4 @@
+{
+  "_comment": "Ratchet for scripts/run_node_identity_gate.py (ADR-0000 Stage 1, node-identity substrate). span_coverage_floor is resolved/queried at the LLVM codegen dispatcher and may never fall.",
+  "span_coverage_floor": 0.9948
+}

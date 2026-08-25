@@ -575,6 +575,57 @@ oracles:
         action: python3 scripts/test_language_coverage_gate.py
 
   # ─────────────────────────────────────────────────────────────────
+  # ADR-0000 Stage 1 — the frontend node-identity substrate.
+  #
+  # ADR-0000 sequences fourteen stages and gives each one a falsifiable
+  # gate; Stage 1 is the DAG-roots stage that everything after it waits
+  # on. Its identity half is the substrate ADR-0000 §7 risk 1 calls "the
+  # single most important co-design constraint in the whole program":
+  #
+  #     NodeId -> { SourceSpan, BindingId, TypedExprInfo }
+  #
+  # shared by the compiler, LSP, docs, REPL and VM. ADRs 0004, 0006 and
+  # 0008 are three overlapping frontend rewrites over that one substrate;
+  # specified separately they fork the frontend and the "one answer"
+  # invariant is false by construction.
+  #
+  # This oracle grades PHASE A only, and grades it honestly: the NodeId
+  # key and the SourceSpan column exist, a real consumer resolves through
+  # them, and the coverage is a measured number on a ratchet. It does NOT
+  # claim Stage 1 attainment. Still outstanding for the stage, each in
+  # its own slice and none of them half-built here:
+  #   - BindingId column          -> ADR-0006 slices 1-2
+  #   - TypedExprInfo column      -> ADR-0004 spine part 1
+  #   - one semantic tooling core -> ADR-0008 M0/M1 (the LSP still
+  #                                  counts parentheses by hand)
+  #   - byte-offset canonical spans and the expansion-origin table
+  #   - 0002 Phase A / 0001 Phase A / 0007 Phase 0 / 0009 contract freeze
+  # ─────────────────────────────────────────────────────────────────
+  - name: adr0000-s1-identity
+    aliases: [s1-identity, node-identity, adr0000-stage1]
+    requires:
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["node_identity_substrate_present"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'The NodeId -> SourceSpan substrate exists and is consumed: the parser mints ids and a real consumer resolves locations through them'
+        action: python3 scripts/run_node_identity_gate.py
+
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["node_identity_span_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Substrate span coverage at the codegen dispatcher holds its monotonic floor (resolved/queried, measured on a mixed corpus)
+        action: python3 scripts/run_node_identity_gate.py
+
+      - test_evidence: true
+        severity: medium
+        label: 'Substrate contract tests are indexed: a garbage or unset NodeId never resolves to a location, ids survive by-value node copies, and the parser demonstrably stamps forms'
+        action: ctest -R node_identity_test
+
+  # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
   # When this oracle goes green, the agent's three blockers (HTTP,
   # subprocess, session persistence) are all cleared on the eshkol side.
