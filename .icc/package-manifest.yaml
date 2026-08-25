@@ -1,0 +1,132 @@
+# Eshkol release-package manifest (ADR-0010 gap A10 — "no packaging
+# manifest"). This file is the single declared source of truth for what a
+# release archive must contain. It is read by scripts/check_package_manifest.py,
+# which verifies a STAGED package directory — the `$pkg_dir` / `$pkgDir` built
+# by .github/workflows/release.yml's "Package Release Asset" step, BEFORE it is
+# tar'd/zipped — against these entries, so a release cannot silently drop a
+# file the packaging step forgot to keep in lockstep with this manifest.
+#
+# Ground truth for every entry below is release.yml itself (the three
+# "Package Release Asset" steps: macOS/Linux ~line 284, Windows ~line 829).
+# This manifest does not invent an aspirational package surface; it declares
+# what those steps actually stage today, so drift between the imperative
+# copy list and this manifest is exactly the class of bug this gate exists
+# to catch (e.g. a copy line deleted while refactoring, or a new archive
+# added to the CMake build but never added to the packaging step).
+#
+# Deliberately NOT covered here (already covered by dedicated, more precise
+# checks — this manifest does not duplicate them):
+#   - Linux shared-library runtime dependencies staged under
+#     lib/eshkol/runtime-deps/ (scripts/stage_linux_runtime_dependencies.py
+#     and the LINUX_REQUIRED_CODEC_ALIASES check in verify_release_package.py)
+#   - Third-party license files (scripts/stage_third_party_licenses.py)
+#   - Whether the packaged binary actually RUNS a program end to end
+#     (scripts/verify_release_package.py's cold/warm cache smoke test)
+#
+# platforms: "all" | list of [linux, macos, windows]. Entries default to
+# "all" when omitted.
+version: 1
+package_surface:
+  binaries:
+    - stem: eshkol-run
+      dir: bin
+      windows_ext: ".exe"
+      required: true
+      description: AOT/JIT compiler driver and run-cache entry point.
+    - stem: eshkol-repl
+      dir: bin
+      windows_ext: ".exe"
+      required: true
+      description: Interactive REPL.
+
+  # stdlib.o / stdlib.bc are staged twice (lib/ and lib/eshkol/) on every
+  # platform — both copies are load-bearing (the runtime searches lib/eshkol
+  # first, tooling that predates that convention still reads lib/ directly)
+  # so both are declared as independently required.
+  stdlib_artifacts:
+    - stem: stdlib.o
+      dirs: [lib, lib/eshkol]
+      required: true
+      description: Precompiled native object for the stdlib (fast native link).
+    - stem: stdlib.bc
+      dirs: [lib, lib/eshkol]
+      required: true
+      description: Portable LLVM bitcode form of the stdlib (JIT / -r path).
+
+  # Static archives. `posix_prefix: true` means the macOS/Linux copy carries
+  # the standard "lib" ar prefix (libeshkol-runtime.a) while the Windows
+  # .lib does not (eshkol-runtime.lib) — this mirrors release.yml exactly,
+  # it is not a stylistic choice of this manifest.
+  static_libraries:
+    - stem: eshkol-runtime
+      posix_prefix: true
+      dirs: [lib, lib/eshkol]
+      required: true
+      description: Core hosted runtime (arena, tagged values, printer, AD tower).
+    - stem: eshkol-agent-ffi
+      posix_prefix: true
+      dirs: [lib, lib/eshkol]
+      required: true
+      description: Agent FFI bridge (HTTP/SSE/subprocess/native capability surface).
+    - stem: eshkol-agent-pcre2
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    - stem: eshkol-agent-sqlite3
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    - stem: eshkol-agent-zlib
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    - stem: eshkol-agent-tree-sitter-grammars
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    - stem: eshkol-agent-tree-sitter
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    - stem: eshkol-agent-yoga
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+    # curl is only linked/staged on the Linux release lane (release.yml
+    # gates this archive on `$RUNNER_OS == "Linux"`); macOS/Windows do not
+    # build or stage it.
+    - stem: eshkol-agent-curl
+      posix_prefix: false
+      dirs: [lib, lib/eshkol]
+      required: true
+      platforms: [linux]
+
+  stdlib_sources:
+    - path: share/eshkol/stdlib.esk
+      required: true
+      description: The stdlib entry-point source (require/import resolve against this tree).
+    - path: share/eshkol/math.esk
+      required: true
+      description: Optional-in-source math shim staged whenever lib/math.esk exists.
+    # Every *.esk file under the repo's lib/ tree must be mirrored verbatim
+    # under share/eshkol/lib/ at the same relative path — this is what makes
+    # `(require ...)` / `(import ...)` resolvable from an installed package
+    # with no access to the source checkout. Checked as a full path-set
+    # mirror against the repo's real lib/**/*.esk tree, not a bare count, so
+    # a single dropped or renamed module fails the gate even if the total
+    # count happens to still look plausible.
+    - mirror_glob: "lib/**/*.esk"
+      dest_prefix: share/eshkol/lib
+      required: true
+      min_count: 50
+      description: Full stdlib source-module mirror (require/import resolution).
+
+  docs:
+    - path: README.md
+      required: true
+    - path: LICENSE
+      required: true
+    - path: CHANGELOG.md
+      required: true
+    - path: RELEASE_NOTES.md
+      required: true
