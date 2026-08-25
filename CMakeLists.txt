@@ -4416,6 +4416,67 @@ if(ESHKOL_BUILD_TESTS)
                     --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
         )
     endif()
+
+    # Assurance-wave-1 gates (v1.3.5): three ledger/oracle release gates that
+    # used to live only as prose in a memory file or as a script nobody ran in
+    # CI. Each gets two ctest entries: the gate run against the REAL committed
+    # ledger/oracle file (must PASS today, and regress loudly the day either
+    # file breaks), and its --self-test mode (must demonstrate the gate can
+    # actually go red on deliberately-broken input — "a gate that cannot fail
+    # is not a gate"). All three are pure Python over checked-out files; none
+    # needs a compiled artifact, so they are guarded on ESHKOL_PYTHON3_EXECUTABLE
+    # alone, same as the validators above.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_no_silent_wrong.py")
+        add_test(
+            NAME no_silent_wrong_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_no_silent_wrong.py"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME no_silent_wrong_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_no_silent_wrong.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(no_silent_wrong_gate no_silent_wrong_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ledger_integrity.py")
+        add_test(
+            NAME ledger_integrity_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ledger_integrity.py"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME ledger_integrity_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ledger_integrity.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ledger_integrity_gate ledger_integrity_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_oracle_schema.py")
+        add_test(
+            NAME oracle_schema_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_oracle_schema.py"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME oracle_schema_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_oracle_schema.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")

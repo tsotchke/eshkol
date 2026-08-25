@@ -30,6 +30,7 @@ Usage
     python3 scripts/gate_no_silent_wrong.py
     python3 scripts/gate_no_silent_wrong.py --ledger path/to/ledger.yaml
     python3 scripts/gate_no_silent_wrong.py --format json
+    python3 scripts/gate_no_silent_wrong.py --self-test
 
 Exit status is 0 on PASS and 1 on FAIL, so the script also works as a plain
 CI step without ICC.
@@ -45,6 +46,7 @@ import datetime as _dt
 import json
 import os
 import sys
+import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_LEDGER = os.path.join(REPO_ROOT, ".icc", "silent-wrong-ledger.yaml")
@@ -218,13 +220,118 @@ def emit_trace(trace_dir: str, status: str, snippet: str) -> str:
     return path
 
 
+# ───────────────────────────── self-test ─────────────────────────────
+#
+# "A gate that cannot fail is not a gate." Each fixture feeds grade() (or the
+# YAML loader) deliberately-broken input and asserts a FAIL; one well-formed
+# fixture asserts the gate does not fail on everything indiscriminately.
+
+_MALFORMED_YAML = """
+schema: eshkol.silent_wrong_ledger.v1
+entries:
+  - id: SW-X
+    bucket: SILENT-WRONG
+      status: open
+"""
+
+_WRONG_SCHEMA_LEDGER = """
+schema: eshkol.some_other_ledger.v1
+entries: []
+"""
+
+_OPEN_UNWAIVED_LEDGER = """
+schema: eshkol.silent_wrong_ledger.v1
+entries:
+  - id: SW-SELFTEST-OPEN
+    bucket: SILENT-WRONG
+    status: open
+    title: "open with no waiver at all"
+"""
+
+_EXPIRED_WAIVER_LEDGER = """
+schema: eshkol.silent_wrong_ledger.v1
+entries:
+  - id: SW-SELFTEST-EXPIRED
+    bucket: SILENT-WRONG
+    status: open
+    title: "waiver expired last year"
+    waiver:
+      owner: nobody
+      reason: "self-test fixture"
+      expires: "2020-01-01"
+"""
+
+_GOOD_LEDGER = """
+schema: eshkol.silent_wrong_ledger.v1
+entries:
+  - id: SW-SELFTEST-CLOSED
+    bucket: SILENT-WRONG
+    status: closed
+    title: "closed with a re-measurement SHA"
+    closed_at: "deadbeef"
+  - id: SW-SELFTEST-WAIVED
+    bucket: SILENT-WRONG
+    status: open
+    title: "open with an unexpired waiver"
+    waiver:
+      owner: someone
+      reason: "self-test fixture"
+      expires: "2999-01-01"
+"""
+
+
+def _run_fixture(name: str, text: str, tmp_dir: str) -> tuple[bool, str]:
+    path = os.path.join(tmp_dir, name + ".yaml")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    try:
+        data = _load_yaml(path)
+    except LedgerError as exc:
+        return False, f"ledger error (expected for a malformed/wrong-schema fixture): {exc}"
+    result = grade(data, _dt.date.today())
+    ids = ", ".join(e["id"] for e in result["blocking"]) or "none"
+    bad = ", ".join(f"{e['id']}:{e['why']}" for e in result["invalid"]) or "none"
+    return result["passed"], f"blocking=[{ids}] invalid=[{bad}]"
+
+
+def self_test() -> bool:
+    cases = [
+        ("malformed_yaml", _MALFORMED_YAML, False),
+        ("wrong_schema", _WRONG_SCHEMA_LEDGER, False),
+        ("open_unwaived", _OPEN_UNWAIVED_LEDGER, False),
+        ("expired_waiver", _EXPIRED_WAIVER_LEDGER, False),
+        ("well_formed", _GOOD_LEDGER, True),
+    ]
+
+    all_ok = True
+    with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-no-silent-wrong-") as tmp_dir:
+        print("gate_no_silent_wrong.py self-test:")
+        for name, text, expect_pass in cases:
+            passed, detail = _run_fixture(name, text, tmp_dir)
+            ok = passed == expect_pass
+            all_ok = all_ok and ok
+            verdict = "OK" if ok else "GATE IS BROKEN"
+            print(f"  [{verdict}] {name}: expected passed={expect_pass}, got passed={passed}")
+            print(f"           {detail}")
+
+    if all_ok:
+        print("self-test: PASS — the gate fails on every broken fixture and passes the well-formed one")
+    else:
+        print("self-test: FAIL — the gate did not discriminate broken input from good input", file=sys.stderr)
+    return all_ok
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ledger", default=os.environ.get("ESHKOL_FLAW_LEDGER", DEFAULT_LEDGER))
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIR)
     parser.add_argument("--no-trace", action="store_true", help="grade only, write no trace")
     parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument("--self-test", action="store_true", help="run built-in red/green fixtures and exit")
     args = parser.parse_args(argv)
+
+    if args.self_test:
+        return 0 if self_test() else 1
 
     try:
         data = _load_yaml(args.ledger)
