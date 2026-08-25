@@ -473,9 +473,19 @@ workstreams rather than a single theme:
 
 ## v1.3.5 — the consolidation release (target: late Sep 2026) - PLANNED
 
-**Flagship:** VM OALR Stage-1 evacuator port (SW-14 ruling) — full 27-subtype
-deep-walk evacuation on the bytecode VM, poison and flat-RSS validation, so
-`with-region` reclaims on the VM the way it already does on native codegen.
+**Flagship: SHIPPED (#461).** VM OALR Stage-1 evacuator port (SW-14
+ruling) — the full heap-tag space deep-walked on the bytecode VM (a
+compile-time-checked 33-wide table over the 28 `HeapType` members plus
+the manifold-tag macros and unassigned slots), poison and flat-RSS
+validation, so `with-region` reclaims on the VM the way it already does
+on native codegen. Re-measured for this documentation wave against a
+from-source build of the merge commit (`487c2a62`): flat 25-27 MB across
+1,000/4,000/16,000 iterations of the same fixture vs. 793 MB with the
+evacuator disabled and 704 MB for an unwrapped control — see
+[docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation).
+The user-reachable region **handle** surface (`region-open`/`region-close`)
+remains bookkeeping-only on the VM (Stage-2, not yet scheduled to a
+release).
 
 - Interop wave 1: **H1 NumPy capsule-lifetime fix, SHIPPED (#458)** — the
   Python bindings' zero-copy tensor array now holds a strong reference to
@@ -748,7 +758,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
 | **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
 | **v1.3.1 → v1.3.4-evolve** | Jul-Aug 2026 | Evolve | **SHIPPED 2026-08-19** (tag `v1.3.4-evolve`, commit `694c3179`). v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form, shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes. **Release gates** (RELEASE_NOTES.md, measured on the release cut): aggregate suite 45/45 suites / 770 tests; CTest 183/183; executable language coverage 1,091/1,091 (100.0%); SICP full-book gate 88/88; reference-Scheme differential 34/34 AGREE vs. chibi-scheme 0.12.0; VM parity differential 184/184 over a 956-row manifest; qLLM oracle gate 10/10; ICC readiness 100, verdict `ready` |
-| **v1.3.5** | late Sep 2026 | Consolidation | VM OALR Stage-1 evacuator (flagship); AD re-verification wave; correctness debt (#229/#244/mod-srem); W2 assurance wave 1; W3 benchmarks wave 1; W4 `vm_run.c` decomposition — see "Development workstreams" above |
+| **v1.3.5** | late Sep 2026 | Consolidation | VM OALR Stage-1 evacuator, **SHIPPED (#461)**; H1 Python-bindings capsule-lifetime fix, **SHIPPED (#458)**; assurance wave 1 (ledger-integrity/oracle-schema gates), **SHIPPED (#454)**; docs-only CI fix, **SHIPPED (#455)**; AD re-verification wave; correctness debt (#229/#244/mod-srem); W3 benchmarks wave 1; W4 `vm_run.c` decomposition — see "Development workstreams" above |
 | **v1.4.0-connection** | Nov 2026 | Systems profile | TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; W5 interop wave 2; W6 PJRT spike *(AD substrate P4/P6/P11 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.4.1** | Dec 2026 | ABI | OALR ABI v2, portable tail transfer, PGO training workload, `bignum.cpp` decomposition |
 | **v1.5.0-intelligence** | Q1 2027 | Intelligence | `core.dbsp` GA, native PGO, Noesis M2 surface, symbol embeddings, differentiable logic, LSTM/GRU; W6 Tier-1 data-parallel + Tier-2 mesh bit-identity gate *(high-order AD P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of schedule)* |
@@ -849,7 +859,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 ### Planned (v1.3.5+)
 - [x] Model Serialization + Python Bindings — v1.2 (shipped)
 - [x] R7RS Library System + String Interpolation + arbitrary-order AD — v1.3.0-evolve (shipped)
-- [ ] VM region evacuator (with-region reclaims on the bytecode VM) — v1.3.5
+- [x] VM region evacuator (with-region reclaims on the bytecode VM) — v1.3.5 (shipped, #461)
 - [ ] Networking + Linear Resource Types — v1.4.0-connection
 - [ ] Distributed computing, two-tier (W6: PJRT/XLA scale + native-mesh exact
       allreduce) — spike at v1.4.0, gates at v2.0 (no longer gated behind
