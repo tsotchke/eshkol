@@ -2914,6 +2914,21 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_
     add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
 endif()
 
+# ===== ADR-0000 Stage 1: frontend node-identity substrate =====
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/node_identity_test.cpp")
+    add_executable(node_identity_test tests/frontend/node_identity_test.cpp)
+    target_compile_features(node_identity_test PRIVATE cxx_std_20)
+    target_include_directories(node_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(node_identity_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(node_identity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(node_identity_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME node_identity_test COMMAND node_identity_test)
+    set_tests_properties(node_identity_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_io_test.cpp")
     add_executable(model_io_test tests/core/model_io_test.cpp)
     target_compile_features(model_io_test PRIVATE cxx_std_20)
