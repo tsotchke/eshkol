@@ -94,6 +94,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Objects promoted out of a region live in the enclosing arena for its lifetime,
   which is OALR's semantics and is equally true natively.
 
+### Fixed
+
+- **Python bindings: NumPy capsule keeps the tensor buffer alive (#458,
+  audit H1).** A NumPy array exported from a tensor `eval()` held no
+  reference back to its owning `Context`; deleting (or losing the last
+  reference to) the `Context` object called `eshkol_ffi_shutdown()`
+  unconditionally, with nothing to stop that while an exported array — or
+  a view/slice/reshape of one — was still alive and depending on that
+  memory staying valid. `EshkolContext` now holds the context as a
+  `std::shared_ptr`, and every exported array's `base` capsule carries its
+  own copy; real shutdown is deferred until every holder, including every
+  live array's capsule, has released its reference. Closes
+  `.icc/silent-wrong-ledger.yaml` SW-44 (interop/lifetime, SILENT-WRONG
+  bucket — the pre-fix behavior read silently corrupted memory at exit 0,
+  no diagnostic). New regression: `tests/bindings/python_capsule_lifetime_test.py`,
+  wired into `ctest` as `python_bindings_capsule_lifetime`. See
+  [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
+
 ### Documentation
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
@@ -121,7 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   certification gate (25/25, 0 mismatches), a fresh CHSH run (S = 2.835,
   gate `2.4 < S <= 2.95`), gradient parity across native JIT / native AOT /
   bytecode VM (byte-identical `#(24 57)`), and the ESH-0214b flat-RSS AOT
-  gate (8 MB vs. 2,620 MB with the fix compiled out).
+  gate (8 MB vs. 2,620 MB with the fix compiled out). Added a new
+  [Python bindings reference page](docs/reference/bindings/python.md) (no
+  such page existed previously) documenting the `Context.eval`/
+  `derivative`/`gradient` API and the #458 capsule-lifetime guarantee, with
+  a working example re-run against a from-source build including the
+  merged fix; flagged in passing that the module's own docstring example
+  (`ctx.derivative('sin', 0.5)`) does not work against the current
+  `func_source` validation and needs a full `(lambda ...)` form instead.
 
 ## [1.3.4-evolve] - 2026-07-31
 
