@@ -113,8 +113,9 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 Eshkol uses **Ownership-Aware Lexical Regions** (OALR) instead of garbage collection:
 
-- **Lexical scoping**: Memory freed when leaving scope (native engine; the
-  bytecode VM evaluates the same forms and does not reclaim yet)
+- **Lexical scoping**: Memory freed when leaving scope, on both engines; the
+  bytecode VM reclaims through its Stage-1 region evacuator and has no automatic
+  per-loop nursery, so a resident VM loop needs an explicit `with-region`
 - **Ownership tracking**: Compile-time analysis prevents leaks
 - **Arena allocation**: Bump-pointer allocation (extremely fast)
 - **Deterministic cleanup**: No GC pauses

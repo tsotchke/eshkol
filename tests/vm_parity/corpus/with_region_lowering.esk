@@ -16,12 +16,15 @@
 ;; followed by later bindings, nesting, use inside a procedure, and use inside a
 ;; loop, so the two substrates cannot drift again.
 ;;
-;; What is deliberately NOT compared here is reclamation. On the VM
-;; `with-region` is value- and effect-transparent but frees nothing: the VM heap
-;; has no escape evacuator to promote a body result out with, the same reason a
-;; `(region-close)` there is bookkeeping-only. Native brackets the body and
-;; tears it down through eshkol_region_unwind_to(). See tests/vm_parity/PARITY.tsv;
-;; native reclamation is gated by tests/memory/ and tests/v1_3_edge_cases/.
+;; What is deliberately NOT compared here is reclamation — not because the two
+;; substrates differ on it (they no longer do: native brackets the body and tears
+;; it down through eshkol_region_unwind_to(), the VM through native 2213/2214 and
+;; vm_region_bracket_unwind_to()), but because peak RSS is not a differential
+;; output. Reclamation is gated by tests/memory/: region_evac_subtype_coverage
+;; and iter_scope_partial_reclaim natively, vm_region_flat_rss and
+;; vm_region_evac_subtype_coverage on the VM. What IS still substrate-specific
+;; is the user-reachable HANDLE surface, whose VM close stays bookkeeping-only
+;; (Stage-2) — see tests/vm_parity/PARITY.tsv.
 
 ;; ── all three documented spellings, as statements with multi-expression bodies ──
 (with-region

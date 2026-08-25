@@ -149,19 +149,27 @@ The `ESHKOL_MAX_STACK` gap above (ESH-0101) is likewise a ledgered v1.3.5 item:
 wiring the variable where the guard already runs is the v1.3.4 scope, extending
 guard coverage to every top-level `define` is not.
 
-### Bytecode-VM heap growth watchdog
+### Bytecode-VM region reclamation and heap growth watchdog
 
-The bytecode VM has no heap reclamation: `(with-region ...)` is the designated
-mechanism and is a pass-through there, so a resident VM workload grows
-monotonically (SW-14; see [Memory model](memory-model.md) and
-`docs/KNOWN_ISSUES.md`). These knobs control the guards that make that growth
-loud instead of silent. Neither guard changes any answer.
+`(with-region ...)` reclaims on the bytecode VM as of the Stage-1 region
+evacuator. **Outside** a region the VM heap has no reclamation at all — no
+garbage collector, no per-loop nursery — so a resident VM workload that never
+opens a region still grows monotonically. See [Memory model](memory-model.md)
+and `docs/KNOWN_ISSUES.md`. None of these knobs changes any answer; the coverage
+gate re-runs its fixture with reclamation on and off and requires identical
+results.
 
 | Variable | Effect | Default |
 |----------|--------|---------|
-| `ESHKOL_VM_HEAP_BUDGET_MB` | VM arena size past which a diagnostic names the growth and its cause. `0` disables the watchdog. | 1024 |
+| `ESHKOL_VM_HEAP_BUDGET_MB` | VM arena size past which a diagnostic names the growth and the mechanism that reclaims. `0` disables the watchdog. | 1024 |
 | `ESHKOL_VM_HEAP_BUDGET_FATAL` | Make crossing the budget exit nonzero instead of advisory, so a lane can gate on it. | off |
-| `ESHKOL_VM_REGION_QUIET` | Suppress the one-time note that region forms reclaim nothing on the VM. | off |
+| `ESHKOL_VM_REGION_QUIET` | Suppress the one-time note that a VM `region-close` reclaims no heap (the handle surface is still bookkeeping-only), and the note a pinned region prints. | off |
+| `ESHKOL_VM_REGION_EVAC` | `0` disables region reclamation entirely and restores the pre-Stage-1 pass-through. Present so a gate can measure the same program with and without it. | on |
+| `ESHKOL_ARENA_POISON` | The same variable the native arena reads. On the VM it makes a region pop keep dead blocks mapped and stamped `0xCB`, and stops retired heap indices from being recycled, so a dangling reference faults instead of aliasing a fresh object. Diagnostic use: it retains all the memory a pop would have freed. | off |
+| `ESHKOL_VM_REGION_VERIFY` | After each region pop, run an audit independent of the mark: scan the object table for any surviving reference to an index the pop retired, and report it on stderr. Implied by `ESHKOL_ARENA_POISON`. | off |
+| `ESHKOL_VM_REGION_VERIFY_FATAL` | Make that audit exit nonzero, so a lane can gate on it. | off |
+| `ESHKOL_VM_REGION_COMPACT` | `0` stops a surviving object's fixed-size header from being copied out of the dying region, so its whole arena block is retained instead. Diagnostic only — it keeps every address stable. Forced off under `ESHKOL_ARENA_POISON`. | on |
+| `ESHKOL_VM_REGION_RECYCLE` | `0` stops retired heap indices from being handed out again. Costs 8 bytes per reclaimed object in the object table; makes a stale reference read as an invalid heap pointer forever. Forced off under `ESHKOL_ARENA_POISON`. | on |
 
 ## Parallelism & threading
 

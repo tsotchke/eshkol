@@ -1,20 +1,29 @@
-;;; tests/memory/vm_region_growth_watchdog_test.esk — SW-14 fixture, gated by
-;;; vm_region_growth_watchdog_test.sh.
+;;; tests/memory/vm_region_growth_watchdog_test.esk — the SW-14 fixture, gated
+;;; by vm_region_growth_watchdog_test.sh and by vm_region_flat_rss_test.sh.
 ;;;
 ;;; A per-iteration `(with-region ...)` around a body that allocates and then
-;;; drops everything it allocated. This is the shape the memory model
-;;; documents as the way to keep a resident loop flat
-;;; (docs/reference/runtime/memory-model.md), and it IS flat natively.
+;;; drops everything it allocated. This is the shape the memory model documents
+;;; as the way to keep a resident loop flat
+;;; (docs/reference/runtime/memory-model.md).
 ;;;
-;;; On the bytecode VM it is not flat, and nothing about the program says so:
-;;; the answer is right, the exit status is 0, and RSS climbs until the host
-;;; gives out. Measured at the branch point, this fixture peaks at the same
-;;; RSS with the `with-region` wrapper as without it — the form reclaims
-;;; nothing there.
+;;; WHAT IT MEASURED BEFORE. On the bytecode VM it was not flat, and nothing
+;;; about the program said so: the answer was right, the exit status was 0, and
+;;; RSS climbed until the host gave out. Measured at the branch point, this
+;;; fixture peaked at the SAME RSS with the `with-region` wrapper as without it
+;;; — 1.503 GB against 1.504 GB — because the form reclaimed nothing there.
 ;;;
-;;; The gate around this file asserts the interim guard: that the growth is
-;;; NAMED. Keep the allocation volume high enough to cross a 64 MB budget
-;;; quickly and low enough to finish fast.
+;;; WHAT IT MEASURES NOW. The Stage-1 region evacuator
+;;; (lib/backend/vm_region_evac.c) made the wrapper real: the same fixture holds
+;;; flat peak RSS as its iteration count is swept, which is the SW-14 close
+;;; condition. vm_region_flat_rss_test.sh sweeps it and compares against
+;;; ESHKOL_VM_REGION_EVAC=0 on the same binary; vm_region_growth_watchdog_test.sh
+;;; uses it to pin that the heap-growth watchdog no longer fires for a loop that
+;;; gets its memory back, while still firing for the same volume unwrapped.
+;;;
+;;; 4000 iterations x 120 conses: enough arena to cross a 64 MB budget on every
+;;; supported host when nothing reclaims, and the sum is a pure function of the
+;;; loop bounds so the printed answer pins that neither the guard nor the
+;;; evacuator changed any behaviour.
 (define (scratch-step k)
   (with-region ('step 65536)
     (let loop ((i 0) (acc '()))

@@ -2850,21 +2850,38 @@ static int is_quoted_symbol(Node* n) {
  *     The specifier is now recognised and skipped, as the native front end
  *     does (lib/frontend/parser.cpp, ESHKOL_WITH_REGION_OP).
  *
- * WHY THE BODY IS OTHERWISE A PASS-THROUGH (the honest VM boundary). Native
- * brackets the body with region_create/region_push/eshkol_region_enter and
- * tears it down through the single shared teardown primitive
- * `eshkol_region_unwind_to()` (llvm_codegen.cpp codegenWithRegion), which
- * promotes the body result one region level out before the arena dies. The VM
- * emits no such bracket because the VM heap has no escape evacuator to promote
- * a kept value with: a real push/pop here would free the object graph the body
- * just returned. This is the SAME boundary the user-reachable handle surface
- * declares — `(region-close)` on the VM is bookkeeping-only for exactly this
- * reason (vm_native.c fid 2211, tests/vm_parity/PARITY.tsv). So on the VM
- * `with-region` is value- and effect-transparent but reclaims nothing; VM-side
- * reclamation is gated on a VM-heap evacuator that does not exist yet.
- * Correspondingly this lowering must NOT grow a parallel teardown mechanism:
- * when the evacuator lands, the bracket belongs on `eshkol_region_unwind_to`'s
- * VM counterpart, not on an open-coded push/pop pair here.
+ * HOW THE BODY IS BRACKETED. Native emits
+ * region_create/region_push/eshkol_region_enter around the body and tears it
+ * down through the single shared teardown primitive `eshkol_region_unwind_to()`
+ * (llvm_codegen.cpp codegenWithRegion), which promotes the body result one
+ * region level out before the arena dies. The VM now emits the counterpart of
+ * exactly that shape:
+ *
+ *     OP_CONST <size-hint or 0>
+ *     OP_NATIVE_CALL 2213     ; heap_region_push + bracket mark
+ *     OP_POP                  ; 2213's unspecified value
+ *     <body ...>              ; non-final expressions each followed by OP_POP
+ *     OP_NATIVE_CALL 2214     ; vm_region_bracket_unwind_to
+ *
+ * Two properties of that sequence are load-bearing.
+ *
+ * The body result is left ON the operand stack across 2214. The Stage-1
+ * evacuator (lib/backend/vm_region_evac.c) decides what escapes by marking
+ * from the VM root set, and the operand stack is a root — so "the result is
+ * promoted" is not a special case in the teardown, it is the ordinary
+ * consequence of the result still being reachable. Popping it first would
+ * hand the evacuator a value nothing points at.
+ *
+ * The final body expression is compiled NON-TAIL even when the form itself is
+ * in tail position. A tail call would jump away from the frame and skip 2214,
+ * leaving the region open forever; native has the same constraint for the same
+ * reason (its unwind must run before the arena dies). The cost is one lost
+ * tail-call opportunity per region body, and it is paid deliberately.
+ *
+ * The user-reachable handle surface (`region-open` / `region-close`, native
+ * 2210-2212) is NOT part of this: it remains bookkeeping-only on the VM, sharing
+ * the native handle protocol with reclaim = 0 (tests/vm_parity/PARITY.tsv).
+ * Promoting it to a reclaiming close is Stage-2.
  */
 static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
     /* Recognise the optional region specifier. `'name` and `('name size)` are
@@ -2882,20 +2899,26 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
      * tests/vm_parity/found/with_region_explicit_quote_body_vm.esk and on the
      * op:WITH_REGION row of tests/vm_parity/PARITY.tsv. Every DOCUMENTED
      * spelling agrees on both substrates (corpus/with_region_lowering.esk). */
-    /* SW-14: say so. The form is honest about its VALUE and its EFFECTS but
-     * silent about the one thing the user reached for it to get — the memory
-     * back. Announced once per process; ESHKOL_VM_REGION_QUIET=1 silences it.
-     * Announced at COMPILE time because the form has no runtime footprint on
-     * this substrate at all, which is itself the point. */
-    vm_region_reclaim_notice();
+    (void)tail;   /* see the comment above: a region body is never a tail call */
 
     int body_start = 1;
+    int64_t size_hint = 0;
     Node* spec = node->children[1];
     if (is_quoted_symbol(spec)) {
         body_start = 2;                              /* (with-region 'name …) */
     } else if (spec && spec->type == N_LIST && spec->n_children >= 1 &&
                spec->n_children <= 2 && is_quoted_symbol(spec->children[0])) {
         body_start = 2;                       /* (with-region ('name size) …) */
+        /* The size hint is the arena tuning knob documented in
+         * docs/reference/runtime/memory-model.md: a region whose whole step
+         * fits in one block keeps peak RSS flat instead of walking it upward
+         * through geometric block doubling. It is a hint only — nothing about
+         * the form's value or effects depends on it. */
+        Node* sz = (spec->n_children == 2) ? spec->children[1] : NULL;
+        if (sz && sz->type == N_NUMBER) {
+            double v = sz->is_int ? (double)sz->ival : sz->numval;
+            if (v > 0 && v < 1e12) size_hint = (int64_t)v;
+        }
     }
 
     if (body_start >= node->n_children) {
@@ -2908,14 +2931,21 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    int ci = chunk_add_const(c, INT_VAL(size_hint));
+    if (ci >= 0) chunk_emit(c, OP_CONST, ci); else chunk_emit(c, OP_NIL, 0);
+    chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_PUSH);
+    chunk_emit(c, OP_POP, 0);
+
     for (int i = body_start; i < node->n_children; i++) {
         if (i < node->n_children - 1) {
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_POP, 0);
         } else {
-            compile_expr(c, node->children[i], tail);
+            compile_expr(c, node->children[i], 0);
         }
     }
+
+    chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_POP);
 }
 
 /**

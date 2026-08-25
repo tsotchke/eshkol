@@ -1,0 +1,214 @@
+;;; tests/memory/vm_region_evac_subtype_coverage_test.esk
+;;;
+;;; VM counterpart of tests/memory/region_evac_subtype_coverage_test.esk, and
+;;; the coverage half of the SW-14 close.
+;;;
+;;; WHAT IT IS FOR. The Stage-1 VM evacuator (lib/backend/vm_region_evac.c)
+;;; reclaims a `with-region` body by MARKING from the VM root set and then
+;;; releasing the arena blocks nothing needs. Payload buffers are covered
+;;; conservatively by a pointer scan, so exactly one thing is dangerous: a heap
+;;; object INDEX reachable only through a field the per-subtype walk forgot. A
+;;; VM `Value` names the heap by a small integer, which no pointer scan can
+;;; recognise, so a missed field frees a LIVE object.
+;;;
+;;; This file therefore builds one instance of every subtype a Scheme program
+;;; can construct INSIDE a region, escapes it into an outer vector, drops a
+;;; large amount of sibling garbage, and then READS EACH ESCAPED VALUE BACK and
+;;; checks its contents. Reading it back is the point: a check that only asked
+;;; whether the value is non-#f would pass against a dangling index. Every
+;;; assertion below dereferences the promoted object and compares payload it
+;;; could only still have if its interior survived the pop.
+;;;
+;;; Run under ESHKOL_ARENA_POISON=1 (the shell gate does). Poison keeps dead
+;;; blocks mapped and stamped 0xCB and stops retired object indices from being
+;;; recycled, so a missed reference reads a cleared slot rather than aliasing a
+;;; freshly allocated object.
+;;;
+;;; Prints exactly `PASS` on success; the shell gate greps for it.
+;;;
+;;; Why phase 2 is split across `heavy-a` and `heavy-b`: a single procedure
+;;; carrying all twenty constructors trips an unrelated VM binding-slot defect
+;;; (the following top-level `define` reads back as an integer). It reproduces
+;;; with `begin` in place of `with-region`, so it has nothing to do with
+;;; regions; splitting the body keeps this fixture measuring what it is for.
+
+(define passes 4000)
+(define slots 8)
+(define keep (make-vector slots 0))
+
+;; ── Phase 1 — flat-RSS tick with an escape ──────────────────────────────────
+;; Heavy transient garbage that dies at region exit, plus one small value
+;; promoted into a rotating outer vector on every pass. That outer store is the
+;; VM's analogue of native's mutation write barrier: nothing instruments it —
+;; the mark finds `keep` from the root set and follows it into the region.
+(define (tick i)
+  (if (>= i passes)
+      i
+      (begin
+        (with-region ('tick 65536)
+          (let ((scratch (make-list 40 i)))
+            (vector-set! keep (modulo i slots)
+                         (list i (length scratch) (car scratch)))))
+        (tick (+ i 1)))))
+
+(define p1 (tick 0))
+
+(define (slot-ok k)
+  (let* ((e (+ (- passes slots) k))
+         (v (vector-ref keep k)))
+    (and (pair? v) (= (car v) e) (= (cadr v) 40) (= (caddr v) e))))
+
+(define p1-ok
+  (and (= p1 passes)
+       (slot-ok 0) (slot-ok 1) (slot-ok 2) (slot-ok 3)
+       (slot-ok 4) (slot-ok 5) (slot-ok 6) (slot-ok 7)))
+
+;; ── Phase 2 — one live instance of every reachable subtype ──────────────────
+(define heavy-passes 600)
+(define heavy (make-vector 20 0))
+
+(define (heavy-a i)
+  (with-region ('heavy-a 65536)
+    (let ((scratch (make-list 20 i)))
+      ;; CONS — a list whose tail is region-allocated.
+      (vector-set! heavy 0 (list i (car scratch) (length scratch)))
+      ;; CLOSURE — an upvalue captured from inside the region.
+      (vector-set! heavy 1 (let ((n i)) (lambda (x) (+ x n))))
+      ;; STRING — VmString with an arena `data` buffer.
+      (vector-set! heavy 2 (string-append "s" (number->string i)))
+      ;; SYMBOL — the same VmString payload behind a different tag.
+      (vector-set! heavy 3 (string->symbol (string-append "sym" (number->string i))))
+      ;; VECTOR — VmVector.items, an arena array of Values.
+      (vector-set! heavy 4 (vector i (car scratch) "v"))
+      ;; RATIONAL — exact non-integer on the int64 fast path.
+      (vector-set! heavy 5 (/ (+ i 1) 7))
+      ;; BIGNUM — outside int64, so the limbs live in the arena.
+      (vector-set! heavy 6 (+ (expt 2 100) i))
+      ;; RATIONAL over BIGNUM — two nested VmBignum payloads (SW-18).
+      (vector-set! heavy 7 (/ (+ (expt 2 100) i) 3))
+      ;; COMPLEX — flat two-double payload.
+      (vector-set! heavy 8 (make-rectangular (+ i 1) 2))
+      ;; BYTEVECTOR — arena data buffer.
+      (vector-set! heavy 9 (let ((b (make-bytevector 4 0)))
+                             (bytevector-u8-set! b 0 (modulo i 251))
+                             (bytevector-u8-set! b 3 3)
+                             b))
+      ;; PROMISE — a VmVector of three slots whose thunk closure captures
+      ;; region-allocated scratch, so forcing it after the pop tests that both
+      ;; promise slots were walked.
+      (vector-set! heavy 10 (delay (length scratch)))
+      0)))
+
+(define (heavy-b i)
+  (with-region ('heavy-b 65536)
+    (let ((scratch (make-list 20 i)))
+      ;; HASH — VmHashTable with arena key/value/hash arrays.
+      (vector-set! heavy 11 (let ((h (make-hash-table)))
+                              (hash-set! h 7 (+ i 100))
+                              h))
+      ;; PARAMETER — current_value / converter / save_stack.
+      (vector-set! heavy 12 (make-parameter (+ i 1000)))
+      ;; MULTI-VALUE — the R7RS values packet.
+      (vector-set! heavy 13 (call-with-values
+                              (lambda () (values i (car scratch)))
+                              (lambda (a b) (list a b))))
+      ;; FACT — the inline-cons form, native 507's only shape.
+      (vector-set! heavy 14 (make-fact 'r i (+ i 1)))
+      ;; KNOWLEDGE BASE — facts[] plus each fact's interior args, whose
+      ;; references are packed as (tag<<32 | heap index) and are invisible to
+      ;; any pointer scan.
+      (vector-set! heavy 15 (let ((kb (make-kb)))
+                              (kb-assert! kb (make-fact 'r i (+ i 1)))
+                              kb))
+      ;; WORKSPACE — content buffer, module name, and the process_fn closure
+      ;; held through a bare void* that is really a Value*.
+      (vector-set! heavy 16 (let ((ws (make-workspace 4 2)))
+                              (ws-register! ws "m" (lambda (c) (cons 1.0 c)))
+                              ws))
+      ;; FACTOR GRAPH — nested raw numeric buffers.
+      (vector-set! heavy 17 (let ((fg (make-factor-graph 3 #(2 2 2))))
+                              (fg-add-factor! fg #(0 1) #(0.1 0.2 0.3 0.4))
+                              fg))
+      ;; SUBSTITUTION — VmValue terms array.
+      (vector-set! heavy 18 (make-substitution))
+      ;; TENSOR — shape/strides/data buffers.
+      (vector-set! heavy 19 (tensor (+ i 5) 2 3 4))
+      0)))
+
+(define (heavy-tick i)
+  (if (>= i heavy-passes)
+      i
+      (begin (heavy-a i) (heavy-b i) (heavy-tick (+ i 1)))))
+
+(define p2 (heavy-tick 0))
+(define n (- heavy-passes 1))
+
+;; ── Read every promoted object back and check its CONTENTS ──────────────────
+(define c-list (vector-ref heavy 0))
+(define ok-cons (and (pair? c-list) (= (car c-list) n)
+                     (= (cadr c-list) n) (= (caddr c-list) 20)))
+(define ok-closure (= ((vector-ref heavy 1) 5) (+ 5 n)))
+(define ok-string (string=? (vector-ref heavy 2) (string-append "s" (number->string n))))
+(define ok-symbol (eq? (vector-ref heavy 3)
+                       (string->symbol (string-append "sym" (number->string n)))))
+(define v4 (vector-ref heavy 4))
+(define ok-vector (and (vector? v4) (= (vector-ref v4 0) n)
+                       (= (vector-ref v4 1) n) (string=? (vector-ref v4 2) "v")))
+(define ok-rational (= (vector-ref heavy 5) (/ (+ n 1) 7)))
+(define ok-bignum (= (vector-ref heavy 6) (+ (expt 2 100) n)))
+(define ok-bigrational (= (vector-ref heavy 7) (/ (+ (expt 2 100) n) 3)))
+(define zz (vector-ref heavy 8))
+(define ok-complex (and (= (real-part zz) (+ n 1)) (= (imag-part zz) 2)))
+(define bvv (vector-ref heavy 9))
+(define ok-bytevector (and (bytevector? bvv) (= (bytevector-length bvv) 4)
+                           (= (bytevector-u8-ref bvv 0) (modulo n 251))
+                           (= (bytevector-u8-ref bvv 3) 3)))
+(define ok-promise (= (force (vector-ref heavy 10)) 20))
+(define ok-hash (= (hash-ref (vector-ref heavy 11) 7 -1) (+ n 100)))
+(define ok-parameter (= ((vector-ref heavy 12)) (+ n 1000)))
+(define mvv (vector-ref heavy 13))
+(define ok-values (and (pair? mvv) (= (car mvv) n) (= (cadr mvv) n)))
+(define ok-fact (fact? (vector-ref heavy 14)))
+(define ok-kb (pair? (kb-query (vector-ref heavy 15) (make-fact 'r n (+ n 1)))))
+(define step-done (ws-step! (vector-ref heavy 16)))
+(define ok-workspace (workspace? (vector-ref heavy 16)))
+(define infer-done (fg-infer! (vector-ref heavy 17) 3))
+(define ok-fg (factor-graph? (vector-ref heavy 17)))
+(define ok-subst (substitution? (vector-ref heavy 18)))
+(define tt (vector-ref heavy 19))
+(define ok-tensor (and (tensor? tt) (= (tensor-ref tt 0) (+ n 5))
+                       (= (tensor-ref tt 3) 4)))
+
+(define ok-p2
+  (and (= p2 heavy-passes)
+       ok-cons ok-closure ok-string ok-symbol ok-vector ok-rational ok-bignum
+       ok-bigrational ok-complex ok-bytevector ok-promise ok-hash ok-parameter
+       ok-values ok-fact ok-kb ok-workspace ok-fg ok-subst ok-tensor))
+
+(display "[vm_region_evac_subtype_coverage]")
+(display " p1=") (display p1-ok)
+(display " cons=") (display ok-cons)
+(display " closure=") (display ok-closure)
+(display " string=") (display ok-string)
+(display " symbol=") (display ok-symbol)
+(display " vector=") (display ok-vector)
+(display " rational=") (display ok-rational)
+(display " bignum=") (display ok-bignum)
+(display " bigrational=") (display ok-bigrational)
+(display " complex=") (display ok-complex)
+(display " bytevector=") (display ok-bytevector)
+(display " promise=") (display ok-promise)
+(display " hash=") (display ok-hash)
+(display " parameter=") (display ok-parameter)
+(display " values=") (display ok-values)
+(display " fact=") (display ok-fact)
+(display " kb=") (display ok-kb)
+(display " workspace=") (display ok-workspace)
+(display " factor-graph=") (display ok-fg)
+(display " substitution=") (display ok-subst)
+(display " tensor=") (display ok-tensor)
+(newline)
+
+(if (and p1-ok ok-p2)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline)))

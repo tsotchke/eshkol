@@ -41,8 +41,9 @@ extern int64_t eshkol_linear_solve(
  *
  * WHY A SECOND IMPLEMENTATION IS SOUND HERE. The VM only ever asks for the
  * BOOKKEEPING-ONLY contract (`reclaim` = 0, close with no keeps to promote):
- * its heap has no escape evacuator, so a close reclaims nothing on either
- * substrate — see tests/vm_parity/PARITY.tsv.  That contract is pure
+ * a VM close frees no VM heap, which is the Stage-2 boundary — `with-region`
+ * reclaims there through vm_region_evac.c, the handle surface does not yet.
+ * See tests/vm_parity/PARITY.tsv.  That contract is pure
  * slot+generation bookkeeping with no arena, no region stack and no evacuator
  * behind it, which is exactly the part that is expressible in this TU.  What
  * must not drift is the OBSERVABLE protocol — token layout, the open/live/
@@ -6966,6 +6967,16 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
          * identical on both substrates. */
         eshkol_region_handle_seq_unwind_to(
             vm->handler_stack[vm->n_handlers].region_handle_mark);
+        /* Stage-1 evacuator: close every `with-region` the raise is jumping
+         * out of, innermost first, BEFORE the operand stack is cut back. The
+         * raised condition is promoted out of each region on the way because
+         * vm->current_exception (set at the top of this function) is a mark
+         * root — the same guarantee native gets by passing the in-flight value
+         * to eshkol_region_unwind_to(). Doing it before the sp/fp restore also
+         * means anything the abandoned frames still hold is treated as live,
+         * which errs toward retention rather than toward a freed value. */
+        vm_region_bracket_unwind_to(
+            vm, vm->handler_stack[vm->n_handlers].region_bracket_mark);
         vm->sp = vm->handler_stack[vm->n_handlers].sp;
         vm->fp = vm->handler_stack[vm->n_handlers].fp;
         vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
@@ -16258,14 +16269,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * These call the SAME implementation the native backend does
      * (lib/core/runtime_regions.cpp), with reclaim = 0: the handle protocol,
      * its generation-tagged validation and its error text are byte-identical
-     * across substrates, but a close here reclaims nothing because the VM heap
-     * has no escape evacuator to promote kept values out with — exactly why
-     * `with-region` is a pass-through on the VM too. Errors are raised through
+     * across substrates, but a close here reclaims no VM heap: the Stage-1
+     * evacuator brackets `with-region`, whose lexical extent tells the teardown
+     * where the region ends, and a handle — closable out of order, from another
+     * dynamic extent, or never — is Stage-2. Errors are raised through
      * vm_raise_error_msg with the shared message text, so a `guard` around a
      * misused handle observes identical output on both substrates.
      * See tests/vm_parity/PARITY.tsv. */
     case 2210: { /* _region-open(name-or-#f, size-or-#f) -> handle token */
-        vm_region_reclaim_notice();   /* SW-14: the close will reclaim nothing */
+        vm_region_reclaim_notice();   /* Stage-2: the close will reclaim nothing */
         Value size_val = vm_pop(vm), name_val = vm_pop(vm);
         const char* name = NULL;
         uint64_t size_hint = 0;
@@ -16328,6 +16340,47 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value handle = vm_pop(vm);
         vm_push(vm, BOOL_VAL(handle.type == VAL_INT &&
                              eshkol_region_handle_live(handle.as.i) != 0));
+        break;
+    }
+
+    /* ── `with-region` bracket (2213/2214), compiler-emitted only ──────────
+     *
+     * These have no BUILTINS[] spelling on purpose: they are the VM
+     * counterpart of the native `region_push` / `eshkol_region_unwind_to`
+     * pair, and only compile_form_with_region() emits them. Keeping the
+     * bracket in bytecode rather than around the whole body in C is what lets
+     * a raise or a continuation transfer out of the body find the region stack
+     * in a defined state (vm_dispatch_exception unwinds it by mark, exactly as
+     * the native raise path does).
+     *
+     * The pair is stack-neutral in the compiler's accounting: 2213 consumes
+     * its size-hint operand and pushes the unspecified value (which the
+     * compiler discards), 2214 touches nothing at all — the body result must
+     * stay ON the operand stack across the pop, because that is what makes it
+     * a mark root and therefore what promotes it out. */
+    case 2213: { /* _region-evac-push(size-hint-or-#f) */
+        Value size_val = vm_pop(vm);
+        size_t hint = 0;
+        if (size_val.type == VAL_INT && size_val.as.i > 0)
+            hint = (size_t)size_val.as.i;
+        vm_evac_assert_table_total();
+        int mark = -1;   /* -1 records "this bracket owns no region" */
+        if (vm->n_region_brackets < VM_ARENA_MAX_REGIONS &&
+            heap_region_push(&vm->heap, NULL, hint)) {
+            mark = vm->heap.regions.depth;
+        }
+        /* A failed push (region-stack overflow, already reported by
+         * vm_region_push) runs the body UNBRACKETED rather than failing the
+         * program, and the matching 2214 becomes a no-op — never a pop of
+         * somebody else's region. */
+        if (vm->n_region_brackets < VM_ARENA_MAX_REGIONS)
+            vm->region_bracket_marks[vm->n_region_brackets++] = mark;
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+
+    case 2214: { /* _region-evac-pop() — body result stays on the stack */
+        vm_region_bracket_unwind_to(vm, vm->n_region_brackets - 1);
         break;
     }
 

@@ -169,6 +169,13 @@ static void vm_language_coverage_named_call(VM* vm, Value func);
 #define VM_NATIVE_PROMISE_CREATE 2098
 #define VM_NATIVE_PROMISE_P      2099
 
+/* Compiler-only `with-region` bracket, the VM counterpart of native's
+ * region_push / eshkol_region_unwind_to pair (vm_region_evac.c). Like the
+ * promise helpers above these have no BUILTINS[] spelling: only
+ * compile_form_with_region() emits them. */
+#define VM_NATIVE_REGION_EVAC_PUSH 2213
+#define VM_NATIVE_REGION_EVAC_POP  2214
+
 /* Model serialization helpers */
 #include "vm_model_io.c"
 
@@ -185,6 +192,12 @@ static void vm_language_coverage_named_call(VM* vm, Value func);
 
 /* Native function dispatch (550+ functions) */
 #include "vm_native.c"
+
+/* Stage-1 OALR region evacuator (SW-14). Included AFTER vm_native.c so every
+ * heap payload type it deep-walks — VmVector, VmContinuation, VmParameter,
+ * VmKnowledgeBase, VmWorkspace, VmFuture, ... — is already in scope, and
+ * BEFORE vm_run.c so the interpreter can call it. */
+#include "vm_region_evac.c"
 
 /* VM interpreter: 63-opcode dispatch loop */
 #include "vm_run.c"
@@ -790,9 +803,13 @@ static const BuiltinDef BUILTINS[] = {
      * only); `region-open?` is direct. All three dispatch into the SAME C
      * implementation the native backend uses (lib/core/runtime_regions.cpp), so
      * the handle protocol, its validation and its error text cannot diverge
-     * between substrates. What differs is only reclamation: the VM heap has no
-     * escape evacuator, so a close here is bookkeeping-only — the same reason
-     * `with-region` is a pass-through on the VM. See tests/vm_parity/PARITY.tsv.
+     * between substrates. What differs is only reclamation: a close here is
+     * bookkeeping-only and frees no VM heap. This is the ONE region surface the
+     * VM does not reclaim — `with-region` does, through the Stage-1 evacuator
+     * (vm_region_evac.c), whose lexical extent tells the teardown where the
+     * region ends; a handle can be closed out of order, from another dynamic
+     * extent, or never. Wiring handles through the same evacuator is Stage-2.
+     * See tests/vm_parity/PARITY.tsv.
      * ═══════════════════════════════════════════════════════════════ */
     {"_region-open", 2210, 2},
     {"_region-close-list", 2211, 2},

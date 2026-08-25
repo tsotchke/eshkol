@@ -5,6 +5,95 @@ All notable changes to Eshkol will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The bytecode VM reclaims memory: a Stage-1 OALR region evacuator ports
+  `with-region` reclamation to the VM heap (SW-14, the v1.3.5 flagship item).**
+  `(with-region ...)` used to lower to `begin` on the VM. The body ran, its
+  value was returned, and not one byte came back: measured on
+  `tests/memory/vm_region_growth_watchdog_test.esk`, peak RSS was 1.503 GB
+  *with* the wrapper and 1.504 GB *without* it — the same to within 0.06%. The
+  form was inert, not merely weak, and the VM had no heap reclamation of any
+  kind.
+
+  It now reclaims, and the claim is measured rather than asserted. The same
+  fixture, swept by iteration count: **26 MB at 1 000 iterations, 26 MB at
+  4 000, 28 MB at 16 000** — sixteen times the work for two megabytes — against
+  **791 MB** for the identical program on the identical binary with
+  `ESHKOL_VM_REGION_EVAC=0`. Gated by
+  `tests/memory/vm_region_flat_rss_test.sh`, which requires the flat curve, the
+  on/off separation, *and* the printed answer to be identical either way.
+
+  The port matches the native engine's semantics, not its implementation.
+  Native copies the escaping subgraph (Cheney-style, forwarding map, mutation
+  write barrier at every store into a longer-lived slot). The VM marks from its
+  root set and sweeps at arena-block granularity instead, because a VM value
+  addresses the heap by a small integer index rather than by pointer: a copying
+  evacuator there would have to rewrite indices, and a missed rewrite aliases a
+  live object and returns a wrong *value* rather than crashing — the failure
+  mode the SW-14 ruling called strictly worse than the leak. Marking moves
+  nothing, so `eq?` identity, shared structure and cycles survive without
+  special handling. Live objects' fixed-size headers are copied one level out,
+  which needs no layout knowledge because the object table is the only holder of
+  that address.
+
+  Coverage is total by construction. `vm_evac_subtype_table[]` classifies the
+  **full 33-wide heap tag space** — the 28 `HeapType` members plus the three
+  tags `vm_geometric.c` defines outside the enum as bare macros and the two
+  unassigned slots — with a compile-time span check, a fatal startup check that
+  every row is filled in, and a `default:` arm that pins the region rather than
+  guessing. That width is the ESH-0214d lesson applied up front: a switch over
+  the enum alone would have fallen through for the manifold tags exactly as
+  `evac_kind_for` once fell through for KB/FACT/SUBSTITUTION/WORKSPACE.
+  `tests/memory/vm_region_evac_subtype_coverage_test.esk` builds one live
+  instance of every subtype a program can construct inside a region, escapes it,
+  drops 600 regions' worth of sibling garbage and reads each one back to compare
+  its contents — under `ESHKOL_ARENA_POISON=1` (dead blocks stamped `0xCB` and
+  kept mapped, retired indices never recycled), under an audit that
+  independently scans the object table for a surviving reference to a retired
+  index, and with reclamation disabled.
+
+  A raise crossing a region and a continuation transfer out of one go through
+  the same teardown call as normal exit, so the structured and unstructured
+  surfaces cannot drift apart — the discipline native keeps around
+  `eshkol_region_unwind_to()`.
+
+  Every case the evacuator is not certain about degrades toward the leak and
+  never toward a dangling index: an unclassified subtype, a continuation
+  captured inside a region, or a failed bookkeeping allocation all pin the
+  region, which is then promoted whole.
+
+### Changed
+
+- **Outside a region the bytecode VM still does not reclaim**, and the heap
+  growth watchdog stays for exactly that case. What changed is what it must not
+  say: the interim note claiming `with-region` reclaims nothing is gone, the
+  budget diagnostic now names the mechanism that *does* reclaim, and
+  `tests/memory/vm_region_growth_watchdog_test.sh` pins that the same allocation
+  volume which trips the budget unwrapped does not trip it wrapped.
+- The user-reachable region **handle** surface (`region-open` / `region-close`)
+  remains bookkeeping-only on the VM and announces that at the point of use.
+  A handle can be closed out of order, from another dynamic extent, or never,
+  whereas `with-region`'s lexical extent tells the teardown where the region
+  ends — which is why the lexical form landed first. Stage-2.
+- New environment variables, all documented in
+  `docs/reference/runtime/environment-variables.md`: `ESHKOL_VM_REGION_EVAC`,
+  `ESHKOL_VM_REGION_VERIFY`, `ESHKOL_VM_REGION_VERIFY_FATAL`,
+  `ESHKOL_VM_REGION_COMPACT`, `ESHKOL_VM_REGION_RECYCLE`. `ESHKOL_ARENA_POISON`
+  — the same variable the native arena reads — now also arms the VM's.
+
+### Known limits of Stage-1
+
+- An escaping object with an **out-of-line payload** (a vector's element array,
+  a bignum's limbs) keeps the arena block that payload occupies; escaping
+  cons/closure structure is copied out exactly. A cons-only loop is therefore
+  perfectly flat and a payload-heavy one is merely much smaller.
+- A **continuation captured inside a region** pins that region.
+- Objects promoted out of a region live in the enclosing arena for its lifetime,
+  which is OALR's semantics and is equally true natively.
+
 ## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by

@@ -138,9 +138,12 @@ arena-scope reclamation (ESH-0214/ESH-0214b) shipped and is complementary: it
 further bounds RSS for named-let loops whose static shape qualifies for
 automatic per-iteration scoping, independent of whether guard is used.
 
-All of that is the **native engine**. The bytecode VM reclaims nothing yet —
-neither automatically nor through an explicit `(with-region ...)` — so a
-long-running loop belongs on `eshkol-run`; see
+All of that is the **native engine**. The bytecode VM has no automatic
+per-iteration scoping, so a long-running VM loop must ask: wrapped in an explicit
+`(with-region ...)` it reclaims through the Stage-1 evacuator and stays flat
+(26/26/28 MB across 1 000/4 000/16 000 iterations of the reference fixture);
+unwrapped it grows monotonically. If you want flatness without annotating the
+loop, that is `eshkol-run`. See
 [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 `guard`/`call/cc` bodies are expected to be on that feature's rejection
 list for automatic scoping (their handler/continuation state must survive

@@ -134,6 +134,15 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
         (size_t)vm->frame_count * sizeof(CallFrame);
     cont->n_winds = vm->n_winds;
     cont->n_parameter_bindings = vm->n_parameter_bindings;
+    cont->n_region_brackets = vm->n_region_brackets;
+    /* Stage-1 evacuator: a captured continuation can resurrect a stack state
+     * from inside a region body, and re-entering a region whose arena was
+     * released is not something Stage-1 supports. So every region open at
+     * capture time is PINNED — it will be promoted whole rather than freed.
+     * The cost is reclamation in the rare call/cc-inside-with-region case, and
+     * it is paid in the direction of a leak, never a dangling index. */
+    if (vm->heap.regions.depth > 0)
+        heap_region_pin_all(&vm->heap, "a continuation was captured inside a region");
     cont->saved_wind_befores = (Value*)cursor;
     cursor += (size_t)cont->n_winds * sizeof(Value);
     cont->saved_wind_afters = (Value*)cursor;
@@ -162,6 +171,13 @@ static void vm_restore_continuation_dynamic_state(VM* vm,
      * merely restoring a binding depth would otherwise leave captured
      * parameterize extents pointing at the values of the abandoned path. */
     vm_unwind_parameter_bindings(vm, 0);
+
+    /* Stage-1 evacuator: close every `with-region` the transfer is jumping out
+     * of, the counterpart of native's eshkol_region_unwind_for_continuation().
+     * The regions are pinned first, so nothing the abandoned path allocated is
+     * freed — the continuation's value may live anywhere in it and, unlike a
+     * raise, there is no single in-flight slot to promote. */
+    vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets);
 
     for (int i = 0; i < cont->n_winds; i++) {
         vm->wind_stack[i].before = cont->saved_wind_befores[i];
@@ -1081,6 +1097,7 @@ void vm_run(VM* vm) {
         vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
         vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
         vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
+        vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
         vm->n_handlers++;
         DISPATCH();
     }
@@ -1908,6 +1925,7 @@ vm_exit:
             vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
             vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
             vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
+            vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
             vm->n_handlers++;
             break;
         }

@@ -12,9 +12,11 @@
 ;; bounds-contract corpus file follows.
 ;;
 ;; What is deliberately NOT compared here is reclamation. On the VM a close is
-;; bookkeeping-only (no escape evacuator in the VM heap, the same reason
-;; with-region is a pass-through there); see tests/vm_parity/PARITY.tsv. Peak-RSS
-;; reclamation is gated separately by tests/memory/region_handle_training_rss_test.sh.
+;; bookkeeping-only — the Stage-2 boundary, and now the only region surface the
+;; VM does not reclaim, since `with-region` there brackets through
+;; lib/backend/vm_region_evac.c. See tests/vm_parity/PARITY.tsv. Peak-RSS
+;; reclamation is gated separately by tests/memory/region_handle_training_rss_test.sh
+;; natively and tests/memory/vm_region_flat_rss_test.sh on the VM.
 
 ;; ── protocol: open, live, close returning the kept value, then not live ──
 (define h1 (region-open))

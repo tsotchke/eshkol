@@ -567,7 +567,8 @@ const char* eshkol_region_handle_status_message(int status);
 // selects the substrate contract: non-zero performs the real
 // region_create/region_push/eshkol_region_enter (native), zero records a
 // bookkeeping-only handle whose close reclaims nothing (the bytecode VM, whose
-// heap has no escape evacuator — see tests/vm_parity/PARITY.tsv).
+// handle surface is Stage-2 — its `with-region` reclaims through
+// lib/backend/vm_region_evac.c; see tests/vm_parity/PARITY.tsv).
 int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint, int reclaim,
                                   int* status);
 

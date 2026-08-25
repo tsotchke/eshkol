@@ -1855,8 +1855,9 @@ JSON parsing and serialization:
 
 #### 6.1.1 Core Concepts
 - **Arena Allocation:** Bump-pointer allocation in large blocks
-- **Scope-based Cleanup:** Memory freed when scope exits (native engine; the
-  bytecode VM does not reclaim yet — see 6.2.1)
+- **Scope-based Cleanup:** Memory freed when scope exits, on both engines. The
+  bytecode VM has no automatic per-loop nursery, so a resident VM loop needs an
+  explicit `with-region` where a native one does not — see 6.2.1
 - **No Garbage Collection:** Deterministic, predictable performance
 - **Cache-Friendly:** Linear allocation pattern
 
@@ -1892,13 +1893,17 @@ struct arena {
   survives (**native engine**)
 - Supports nesting (stack of regions)
 
-**Substrate note.** The reclamation half of those semantics is implemented by
-the **native engine** (`eshkol-run`, JIT and AOT) only. On the **bytecode VM**
-all three spellings evaluate the body identically and return the same value —
-the form is value- and effect-transparent — but **nothing is freed**, because
-the VM heap has no escape evacuator yet. A VM program is therefore correct but
-grows monotonically; it announces this at the first region form and again when
-the growth crosses a heap budget. The VM evacuator is the v1.3.5 flagship item.
+**Substrate note.** Both engines implement these semantics, by different
+mechanisms. On the **bytecode VM** all three spellings evaluate the body
+identically and return the same value — the form is value- and
+effect-transparent — **and reclaim**, through the Stage-1 region evacuator
+(`lib/backend/vm_region_evac.c`): measured flat at 26/26/28 MB across
+1 000/4 000/16 000 iterations against 791 MB with the evacuator disabled. The VM
+sweeps at arena-block granularity rather than copying the escaping subgraph, so
+an escaping value with an out-of-line payload retains a little more there.
+Outside a region the VM heap still grows monotonically, and says so when the
+growth crosses a heap budget. The user-reachable `region-open` / `region-close`
+handles remain bookkeeping-only on the VM (Stage-2).
 See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Example:**

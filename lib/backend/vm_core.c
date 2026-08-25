@@ -278,19 +278,59 @@ typedef struct {
     };
 } HeapObject;
 
+/** @brief Per-open-region bookkeeping for the Stage-1 region evacuator.
+ *
+ * `slots` records, in allocation order, every heap-object index handed out
+ * while this region was the innermost open one.  It is the ONLY authority on
+ * region membership: `next_free` cannot be used as a base pointer once the
+ * evacuator recycles index-space, because a later region can be handed an
+ * index below its own start.
+ *
+ * `pinned` marks a region that must NOT be reclaimed — a region that allocated
+ * an object of a subtype the evacuator does not deep-walk, or one that had a
+ * continuation captured inside it.  A pinned region promotes wholesale into its
+ * parent (exactly the pre-evacuator behaviour) instead of freeing anything, so
+ * an uncovered case degrades to a leak and never to a dangling index.
+ */
+typedef struct {
+    int32_t* slots;
+    int32_t  n_slots;
+    int32_t  cap_slots;
+    int      pinned;
+    const char* pin_reason;
+} VmHeapRegionSlots;
+
 typedef struct {
     VmRegionStack regions;
     HeapObject** objects;    /* array of pointers to arena-allocated objects */
     int32_t next_free;
     int32_t capacity;
-    /* SW-14 growth watchdog. The VM heap has no reclamation of any kind —
-     * `(with-region ...)` is the designated mechanism and is a pass-through on
-     * this substrate (see vm_region_reclaim_notice()), so a long-running VM
-     * program's arena grows monotonically. That growth used to be entirely
-     * silent: correct answers, exit 0, and an RSS curve nobody was told about.
-     * These two fields turn it into a NAMED diagnostic at a budget. */
+    /* SW-14 growth watchdog. Before the Stage-1 evacuator the VM heap had no
+     * reclamation of any kind and this watchdog was the whole story; it is kept
+     * because `with-region` is opt-in and a workload that never opens a region
+     * still grows monotonically. These two fields turn that growth into a NAMED
+     * diagnostic at a budget. */
     uint32_t alloc_tick;         /* allocations since the last budget probe */
     int      budget_reported;    /* the budget diagnostic is emitted once */
+
+    /* ── Stage-1 region evacuator state (SW-14 close) ────────────────────── */
+    VmHeapRegionSlots region_slots[VM_ARENA_MAX_REGIONS];
+    unsigned char* markbits;     /* 1 bit per object index; grown with `objects` */
+    int32_t markbits_cap;        /* indices covered by `markbits` */
+    int32_t* mark_stack;         /* worklist of object indices during a mark   */
+    int32_t  mark_stack_n;
+    int32_t  mark_stack_cap;
+    int32_t* free_slots;         /* recycled object-table indices              */
+    int32_t  n_free_slots;
+    int32_t  cap_free_slots;
+    /* Cumulative evacuator metrics, reported by `(vm-region-stats)`-style
+     * diagnostics and asserted by tests/memory/vm_region_evacuator_test.sh. */
+    uint64_t regions_reclaimed;
+    uint64_t regions_pinned;
+    uint64_t objects_reclaimed;
+    uint64_t objects_promoted;
+    uint64_t bytes_reclaimed;
+    uint64_t bytes_promoted;
 } Heap;
 
 /** @return the VM arena budget in bytes past which the growth watchdog speaks,
@@ -324,11 +364,27 @@ static void heap_init(Heap* h) {
     h->next_free = 0;
     h->alloc_tick = 0;
     h->budget_reported = 0;
+    memset(h->region_slots, 0, sizeof(h->region_slots));
+    h->markbits = NULL;
+    h->markbits_cap = 0;
+    h->mark_stack = NULL;
+    h->mark_stack_n = 0;
+    h->mark_stack_cap = 0;
+    h->free_slots = NULL;
+    h->n_free_slots = 0;
+    h->cap_free_slots = 0;
+    h->regions_reclaimed = 0;
+    h->regions_pinned = 0;
+    h->objects_reclaimed = 0;
+    h->objects_promoted = 0;
+    h->bytes_reclaimed = 0;
+    h->bytes_promoted = 0;
 }
 
 /** @return total bytes the VM's arenas hold: the global arena plus every open
- *          region's arena. This is the VM's real memory footprint, because
- *          nothing is ever returned to the allocator (SW-14). */
+ *          region's arena. This is the VM's real memory footprint: the Stage-1
+ *          evacuator returns a popped region's dead blocks to the allocator,
+ *          but the global arena itself is never released. */
 static size_t heap_arena_bytes(const Heap* h) {
     size_t total = h->regions.global_arena.total_allocated;
     for (int i = 0; i < h->regions.depth; i++)
@@ -337,13 +393,18 @@ static size_t heap_arena_bytes(const Heap* h) {
 }
 
 /**
- * @brief SW-14 growth watchdog: name the VM's unbounded heap growth once it
- *        crosses the configured budget, instead of letting it stay silent.
+ * @brief Growth watchdog: name the VM's unbounded heap growth once it crosses
+ *        the configured budget, instead of letting it stay silent.
+ *
+ * This outlived the SW-14 close. `with-region` reclaims now, but OUTSIDE a
+ * region the VM heap has no reclamation of any kind — no collector, no
+ * per-loop nursery — so a workload that never opens a region still grows
+ * monotonically, and should be told so.
  *
  * Sampled every 4096 allocations so the per-allocation cost is a counter
  * increment and a compare. The message is deliberately specific: it names the
- * substrate boundary that causes the growth, so a reader does not have to
- * rediscover that `with-region` reclaims nothing here.
+ * mechanism that DOES reclaim on this substrate, so a reader who is growing
+ * without bound is told what to reach for rather than left to rediscover it.
  */
 static void heap_check_budget(Heap* h) {
     if (h->budget_reported) return;
@@ -357,13 +418,13 @@ static void heap_check_budget(Heap* h) {
     fprintf(stderr,
             "eshkol-vm: heap budget exceeded — %.1f MB of arena allocated "
             "(budget %.0f MB, ESHKOL_VM_HEAP_BUDGET_MB).\n"
-            "  The bytecode VM does not reclaim heap memory: `(with-region ...)` "
-            "is value- and effect-transparent here but frees nothing, because the "
-            "VM heap has no escape evacuator (docs/KNOWN_ISSUES.md, "
-            "docs/reference/runtime/memory-model.md).\n"
-            "  A long-running workload should use the native engine (eshkol-run) "
-            "until VM reclamation lands; set ESHKOL_VM_HEAP_BUDGET_MB=0 to silence "
-            "this, or ESHKOL_VM_HEAP_BUDGET_FATAL=1 to make it fail closed.\n",
+            "  Outside a region the bytecode VM does not reclaim heap memory: the "
+            "global arena grows monotonically. `(with-region ...)` is the "
+            "mechanism that returns memory here — it reclaims as of the Stage-1 "
+            "evacuator (docs/reference/runtime/memory-model.md).\n"
+            "  Wrap the allocating step in `(with-region ('step SIZE) ...)`, or "
+            "set ESHKOL_VM_HEAP_BUDGET_MB=0 to silence this, or "
+            "ESHKOL_VM_HEAP_BUDGET_FATAL=1 to make it fail closed.\n",
             (double)used / (1024.0 * 1024.0),
             (double)budget / (1024.0 * 1024.0));
     if (vm_heap_budget_fatal()) {
@@ -374,15 +435,17 @@ static void heap_check_budget(Heap* h) {
 }
 
 /**
- * @brief One-time notice that a region form on the bytecode VM reclaims
- *        nothing (SW-14).
+ * @brief One-time notice that the region HANDLE surface on the bytecode VM
+ *        reclaims nothing (Stage-2).
  *
- * `with-region`, `region-open` and `region-close` all resolve and behave
- * identically on both substrates — same handle protocol, same validation, same
- * error messages — but on the VM they reclaim no memory. A user who reached
- * for the memory tool and silently got no memory back is the SILENT half of
- * SW-14; this notice is the loud half. Emitted at most once per process, on
- * stderr, and suppressed by `ESHKOL_VM_REGION_QUIET=1`.
+ * `region-open` and `region-close` resolve and behave identically on both
+ * substrates — same handle protocol, same validation, same error messages —
+ * but on the VM a close reclaims no VM heap. `with-region` DOES reclaim here
+ * as of the Stage-1 evacuator (lib/backend/vm_region_evac.c), which is why
+ * this notice fires only on the handle surface: a user who reached for the
+ * memory tool and silently got no memory back is the thing worth saying, and
+ * saying it about `with-region` would now be false. Emitted at most once per
+ * process, on stderr, and suppressed by `ESHKOL_VM_REGION_QUIET=1`.
  */
 static void vm_region_reclaim_notice(void) {
     static int said = 0;
@@ -390,12 +453,39 @@ static void vm_region_reclaim_notice(void) {
     said = 1;
     if (vm_host_env_flag("ESHKOL_VM_REGION_QUIET")) return;
     fprintf(stderr,
-            "eshkol-vm: note: region forms reclaim no memory on the bytecode VM. "
-            "The body runs and its value is returned exactly as natively, but the "
-            "arena is not freed — the VM heap has no escape evacuator "
-            "(docs/reference/runtime/memory-model.md). Use eshkol-run for "
-            "workloads that depend on reclamation; set ESHKOL_VM_REGION_QUIET=1 "
-            "to silence this note.\n");
+            "eshkol-vm: note: the region HANDLE surface (region-open / "
+            "region-close) is bookkeeping-only on the bytecode VM — the handle "
+            "protocol, its validation and its errors are identical to native, "
+            "but a close reclaims no VM heap. `(with-region ...)` DOES reclaim "
+            "here as of the Stage-1 evacuator; the handle surface is Stage-2 "
+            "(docs/reference/runtime/memory-model.md). Set "
+            "ESHKOL_VM_REGION_QUIET=1 to silence this note.\n");
+}
+
+/** @brief Record heap index @p slot as belonging to the innermost open region.
+ *
+ * Membership is recorded explicitly rather than inferred from an index range,
+ * because index recycling means a region's slots are not contiguous and not
+ * necessarily above the region's start. On allocation failure the region is
+ * PINNED: an incomplete membership list must never let the evacuator conclude
+ * that an object it forgot about is dead.
+ */
+static void heap_region_record_slot(Heap* h, int32_t slot) {
+    int d = h->regions.depth - 1;
+    if (d < 0 || d >= VM_ARENA_MAX_REGIONS) return;
+    VmHeapRegionSlots* rs = &h->region_slots[d];
+    if (rs->n_slots >= rs->cap_slots) {
+        int32_t cap = rs->cap_slots > 0 ? rs->cap_slots * 2 : 256;
+        int32_t* grown = (int32_t*)realloc(rs->slots, (size_t)cap * sizeof(int32_t));
+        if (!grown) {
+            rs->pinned = 1;
+            rs->pin_reason = "region membership list could not grow";
+            return;
+        }
+        rs->slots = grown;
+        rs->cap_slots = cap;
+    }
+    rs->slots[rs->n_slots++] = slot;
 }
 
 /** @brief Allocate a new (zeroed) HeapObject slot from the arena and
@@ -404,7 +494,7 @@ static void vm_region_reclaim_notice(void) {
  *         failure.
  */
 static int32_t heap_alloc(Heap* h) {
-    if (h->next_free >= h->capacity) {
+    if (h->n_free_slots == 0 && h->next_free >= h->capacity) {
         /* The object table is a growable pointer array, not a fixed pool.
          * It used to be sized once at HEAP_SIZE, which turned any workload
          * whose live-object count exceeded that (e.g. an N-parameter
@@ -436,28 +526,89 @@ static int32_t heap_alloc(Heap* h) {
     HeapObject* obj = (HeapObject*)vm_alloc(&h->regions, sizeof(HeapObject));
     if (!obj) { fprintf(stderr, "ARENA OOM\n"); return -1; }
     memset(obj, 0, sizeof(HeapObject));
-    h->objects[h->next_free] = obj;
+
+    /* Prefer a slot recycled by a previous region pop over growing the table;
+     * the index space is a monotone counter otherwise, and a `with-region`
+     * loop that reclaimed its arena but not its indices would still climb
+     * (ledger SW-14, item 4 of scope_of_the_real_fix). Recycling is disabled
+     * under ESHKOL_VM_REGION_RECYCLE=0 and under poison mode, where a freed
+     * slot is deliberately left NULL forever so a missed reference faults
+     * instead of aliasing a fresh object. */
+    int32_t slot;
+    if (h->n_free_slots > 0) {
+        slot = h->free_slots[--h->n_free_slots];
+    } else {
+        slot = h->next_free++;
+    }
+    h->objects[slot] = obj;
+    if (h->regions.depth > 0) heap_region_record_slot(h, slot);
     heap_check_budget(h);
-    return h->next_free++;
+    return slot;
 }
 
 /** @brief Push a new arena region scope onto the heap (see OALR — objects
  *         allocated after this call are freed in bulk by the matching
- *         heap_region_pop()). */
-static void heap_region_push(Heap* h) {
-    vm_region_push(&h->regions, NULL, 0);
+ *         heap_region_pop(), minus whatever escapes). */
+static int heap_region_push(Heap* h, const char* name, size_t size_hint) {
+    if (!vm_region_push(&h->regions, name, size_hint)) return 0;
+    int d = h->regions.depth - 1;
+    if (d >= 0 && d < VM_ARENA_MAX_REGIONS) {
+        h->region_slots[d].n_slots = 0;
+        h->region_slots[d].pinned = 0;
+        h->region_slots[d].pin_reason = NULL;
+    }
+    return 1;
 }
 
-/** @brief Pop the most recent arena region scope, bulk-freeing everything
- *         allocated since the matching heap_region_push(). */
-static void heap_region_pop(Heap* h) {
-    vm_region_pop(&h->regions);
+/** @brief Mark the innermost open region as un-reclaimable, naming why.
+ *
+ * A pinned region promotes wholesale into its parent on pop: nothing is freed
+ * and no object slot is retired. Every case the evacuator is not certain it can
+ * walk goes through here, so an uncovered case degrades to the pre-evacuator
+ * leak instead of to a dangling heap index. */
+static void heap_region_pin(Heap* h, const char* reason) {
+    int d = h->regions.depth - 1;
+    if (d < 0 || d >= VM_ARENA_MAX_REGIONS) return;
+    if (h->region_slots[d].pinned) return;
+    h->region_slots[d].pinned = 1;
+    h->region_slots[d].pin_reason = reason;
 }
+
+/** @brief Pin every currently-open region (used when a captured continuation
+ *         could resurrect a region body that a pop would otherwise free). */
+static void heap_region_pin_all(Heap* h, const char* reason) {
+    for (int d = 0; d < h->regions.depth && d < VM_ARENA_MAX_REGIONS; d++) {
+        if (!h->region_slots[d].pinned) {
+            h->region_slots[d].pinned = 1;
+            h->region_slots[d].pin_reason = reason;
+        }
+    }
+}
+
+/* Defined in vm_region_evac.c (after every heap payload type is in scope).
+ *
+ * vm_region_evacuate_pop() pops the innermost region, promoting whatever is
+ * still reachable and returning the rest to the allocator.
+ *
+ * vm_region_bracket_unwind_to() is the SINGLE teardown entry point, the VM
+ * counterpart of native's eshkol_region_unwind_to(): normal `with-region`
+ * exit, a raise crossing a region, and a continuation transfer all go through
+ * it, so the structured and unstructured paths cannot drift apart. */
+static void vm_region_evacuate_pop(VM* vm);
+static void vm_region_bracket_unwind_to(VM* vm, int target_brackets);
+static void vm_region_bracket_unwind_pinned(VM* vm, int target_brackets);
+/* Fails the process if the evacuator's subtype coverage table has a hole. */
+static void vm_evac_assert_table_total(void);
 
 /** @brief Tear down the heap's arena region stack and free its object
  *         table. */
 static void heap_destroy(Heap* h) {
     vm_region_stack_destroy(&h->regions);
+    for (int i = 0; i < VM_ARENA_MAX_REGIONS; i++) free(h->region_slots[i].slots);
+    memset(h->region_slots, 0, sizeof(h->region_slots));
+    free(h->markbits);   h->markbits = NULL;   h->markbits_cap = 0;
+    free(h->mark_stack); h->mark_stack = NULL; h->mark_stack_n = h->mark_stack_cap = 0;
+    free(h->free_slots); h->free_slots = NULL; h->n_free_slots = h->cap_free_slots = 0;
     free(h->objects);
     h->objects = NULL;
 }
@@ -520,6 +671,14 @@ typedef struct VM {
          * opened after the handler was installed, so handle liveness after a
          * caught exception reads identically on the VM and on native. */
         uint64_t region_handle_mark;
+        /* Stage-1 evacuator: how many `with-region` brackets were open when
+         * this handler was installed. A raise closes every region entered
+         * since, promoting the raised value out of each on the way — the same
+         * guarantee the native raise path gives (runtime_exceptions_hosted.cpp
+         * calls eshkol_region_unwind_to with the in-flight value). Without it a
+         * caught exception would leave the region stack deeper than the
+         * program thinks it is, and the arenas would never be released. */
+        int region_bracket_mark;
     } handler_stack[16];
     int n_handlers;
     Value current_exception;
@@ -533,6 +692,14 @@ typedef struct VM {
      * actual native 702 push; normal 703 and exceptional exits pop LIFO. */
     Value parameter_bindings[64];
     int n_parameter_bindings;
+
+    /* `with-region` brackets currently open, innermost last. Each entry is the
+     * heap region depth the matching push established, or -1 for a bracket
+     * whose push was refused (region-stack overflow) and which must therefore
+     * pop nothing. Tracked separately from heap.regions.depth so a bracket can
+     * never close a region it did not open. */
+    int region_bracket_marks[VM_ARENA_MAX_REGIONS];
+    int n_region_brackets;
 
     /* Status */
     int halted;
@@ -774,7 +941,14 @@ static void vm_init(VM* vm) {
 /** @brief Bounds-check a heap object index against the live-object range
  *         [0, next_free). */
 static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
-    return ptr >= 0 && ptr < vm->heap.next_free;
+    /* The NULL-slot test is load-bearing since the Stage-1 region evacuator:
+     * a reclaimed index keeps its place in the table but its pointer is
+     * cleared, so a stale reference reads as an INVALID heap pointer (which
+     * every caller already handles) instead of dereferencing freed arena
+     * memory. Without it a missed reference would be a silent aliasing bug
+     * rather than a loud type error — the exact failure mode SW-14's ruling
+     * called strictly worse than the leak it replaces. */
+    return ptr >= 0 && ptr < vm->heap.next_free && vm->heap.objects[ptr] != NULL;
 }
 
 /** @brief VM-aware coercion of a Value to a double, extending as_number()
@@ -1205,6 +1379,10 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
 /* Continuation: saved VM state for call/cc */
 typedef struct {
     int pc, fp, sp, frame_count, n_handlers, n_winds, n_parameter_bindings;
+    /* `with-region` brackets open at capture. Invoking the continuation closes
+     * every bracket entered since, exactly as native's
+     * eshkol_region_unwind_for_continuation() does. */
+    int n_region_brackets;
     Value promise_mark;
     Value* saved_stack;
     CallFrame* saved_frames;

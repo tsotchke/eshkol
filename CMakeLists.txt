@@ -1929,6 +1929,11 @@ set(ESHKOL_VM_HOSTED_COMPONENT_SRC
   lib/backend/vm_model_io.c
   lib/backend/vm_parallel.c
   lib/backend/vm_native.c
+  # Stage-1 region evacuator (SW-14). HOSTED rather than CORE because its
+  # deep-walk reaches hosted payload types — VmFuture's thread primitives,
+  # VmPort's FILE* — and because it reads its policy through the hosted
+  # vm_host_env_* hooks, which CORE sources are forbidden from doing directly.
+  lib/backend/vm_region_evac.c
 )
 
 set(ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC

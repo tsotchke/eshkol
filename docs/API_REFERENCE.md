@@ -405,11 +405,12 @@ Advanced pattern matching with support for literals, variables, cons patterns, l
 #### `with-region`
 **Syntax**: `(with-region [name size-hint] body...)`
 
-Creates a lexical memory region. **On the native engine** (`eshkol-run`, JIT and
-AOT) the region's arena is automatically freed after body execution and the body
-result is deep-copied out so it survives. **On the bytecode VM** the form
-evaluates identically and returns the same value but frees nothing — the VM heap
-has no escape evacuator yet; it announces this at first use. See
+Creates a lexical memory region. The region's arena is automatically freed after
+body execution and the body result survives — on the native engine by being
+deep-copied out into the parent arena, on the bytecode VM by being found
+reachable and promoted out of the swept set. Both engines reclaim; the VM's
+Stage-1 evacuator sweeps at arena-block granularity, so an escaping value with an
+out-of-line payload retains a little more there. See
 [memory model: which engine reclaims](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Examples**:
@@ -2008,8 +2009,8 @@ Compile-time type annotations for gradual typing.
 
 **OALR** (Ownership-Aware Lexical Regions):
 - Arena allocation (bump pointer, O(1) allocation)
-- Lexical region lifetimes (deterministic deallocation — native engine; the
-  bytecode VM does not reclaim yet)
+- Lexical region lifetimes (deterministic deallocation on both engines; the
+  bytecode VM's `region-open`/`region-close` handles are the Stage-2 exception)
 - Zero-copy tensor views (reshape/slice without allocation)
 
 **Allocation Hierarchy**:
