@@ -280,6 +280,8 @@ jobs:
           python3 scripts/gate_no_silent_wrong.py --self-test
           python3 scripts/check_ledger_integrity.py --self-test
           python3 scripts/check_oracle_schema.py --self-test
+          python3 scripts/check_package_manifest.py --self-test
+          python3 scripts/check_diagnostic_corpus.py --self-test
 
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
@@ -759,6 +761,35 @@ jobs:
           set -euxo pipefail
           python3 scripts/check_wasm_size.py --build-dir "$BUILD_DIR"
 
+      # ADR-0010 gap A11: the diagnostic golden corpus (tests/diagnostics/)
+      # needs a real built compiler, so — unlike its --self-test, which runs
+      # in the lightweight assurance-gates job — the actual per-fixture run
+      # belongs in a lane that has one. Runs on the plain default build only
+      # (not GPU/XLA/sanitizer): span assertions read source text, which is
+      # OS/backend-independent, so one lane is enough evidence per PR.
+      - name: Diagnostic golden corpus matches its pinned text and span
+        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          python3 scripts/check_diagnostic_corpus.py --build-dir "$BUILD_DIR"
+
+      # ADR-0010 gap A12: prove the leak detector armed above is actually
+      # live BEFORE trusting the test run's silence. Runs only on the ASan
+      # lane, before "Run Tests", so a suppression file that quietly grew
+      # broad enough to swallow a real leak is reported as a gate failure
+      # here rather than as a suspiciously clean sanitizer run below.
+      - name: Leak detection is armed and can still see a real leak
+        if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          ./scripts/check_leak_detection_selftest.sh
+
       - name: Run Tests
         timeout-minutes: 120
         shell: bash
@@ -772,10 +803,22 @@ jobs:
           export ESHKOL_REPL_MACHINE_DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-180}"
           export ESHKOL_EDGE_FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-80}"
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
-            # The sanitizer lane is for address/UB regressions. Leak
-            # detection turns arena/JIT lifetime caches into false
-            # process-exit failures and hides the actionable signal.
-            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:allocator_may_return_null=1}"
+            # ADR-0010 gap A12. This step used to set detect_leaks=0 with the
+            # reasoning "leak detection turns arena/JIT lifetime caches into
+            # false process-exit failures and hides the actionable signal."
+            # The premise is true (the arena and JIT object cache ARE
+            # retained for process lifetime by design), but turning the
+            # instrument off entirely does not hide only the noise — it
+            # hides the signal too, silently: this lane read green whether
+            # or not a leak had been introduced, with nothing in the output
+            # distinguishing "no leaks" from "not looking". Leak detection
+            # is now ON, with every known-acceptable retention named
+            # one-by-one, with a reason, in .icc/lsan-suppressions.txt —
+            # never a blanket suppression. See
+            # scripts/check_leak_detection_selftest.sh for the proof that
+            # this configuration still catches a real leak.
+            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:allocator_may_return_null=1}"
+            export LSAN_OPTIONS="${LSAN_OPTIONS:-suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0}"
             export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
           fi
           ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
