@@ -24,7 +24,13 @@ on:
       - '.swarm/**'
       - 'LICENSE'
   pull_request:
-    branches: [master]
+    # TEMP-TEST-ONLY: 'ci/docs-only-contexts' added so throwaway proof PRs
+    # stacked on this branch (base=ci/docs-only-contexts) can exercise the
+    # `changes` job's docs_only gate in isolation from this PR's own
+    # ci.yml diff, without base=master forcing docs_only=false via this
+    # very file. Removed before this PR is finalized — see the proof-PR
+    # evidence recorded under .worktrees/v135/evidence/ci-wave/.
+    branches: [master, ci/docs-only-contexts]
     # NOTE: deliberately NO paths-ignore here (see the `changes` job below).
     # A trigger-level paths-ignore on `pull_request` means GitHub never
     # starts this workflow at all for a docs-only PR, so none of its jobs —
