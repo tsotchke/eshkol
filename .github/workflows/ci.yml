@@ -451,6 +451,78 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────
+  # bench-smoke: proves bench/run_public_benchmarks.sh still RUNS and
+  # produces valid JSON — a harness-correctness check, explicitly NOT the
+  # full timing suite (which is far too noisy on a shared hosted runner to
+  # gate anything on). The job name says "not a measurement" so nobody
+  # mistakes a green check here for a performance verdict, and this job is
+  # deliberately advisory (continue-on-error) so it can never become a
+  # branch-protection required context that a docs-only PR would need the
+  # stub-job trick (immediately below) to satisfy.
+  # ─────────────────────────────────────────────────────────────────────
+  bench-smoke:
+    name: "bench-smoke (not a measurement)"
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    runs-on: macos-14
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
+          export PATH="$LLVM_PREFIX/bin:$PATH"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config"
+
+      - name: Build eshkol-run (bench-smoke does not need the full test suite)
+        shell: bash
+        run: cmake --build build --target eshkol-run stdlib --parallel
+
+      - name: bench/run_public_benchmarks.sh --smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bench/run_public_benchmarks.sh --build-dir build --smoke \
+            --out-dir "${{ runner.temp }}/bench-smoke" \
+            --work-root "${{ runner.temp }}/bench-smoke-work"
+
+      - name: verify results.json is well-formed and marked smoke_mode
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -c "
+          import json
+          with open('${{ runner.temp }}/bench-smoke/results.json') as f:
+              d = json.load(f)
+          assert d['schema'] == 'eshkol-public-benchmarks-v1'
+          assert d['smoke_mode'] is True
+          for name, axis in d['axes'].items():
+              assert axis is not None, f'{name} produced no data'
+          print('bench-smoke: results.json is well-formed, smoke_mode=True, all 4 axes present')
+          "
+
+      - name: Upload bench-smoke results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-smoke-results
+          path: ${{ runner.temp }}/bench-smoke
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────
   # Stub job that exists ONLY to satisfy branch protection's literal
   # per-lane required context names on a docs-only PR. This is not
   # optional decoration: GitHub Actions does NOT expand a matrix job's
