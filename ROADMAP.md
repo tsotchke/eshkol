@@ -268,8 +268,12 @@ context; treat the AD line item in each as already delivered.
       (preserves newlines in stripped comments + cumulative file-line
       tracking across `parse_next_ast` calls; 5-case regression suite)
 - [x] Terminal plotting (`sparkline`, `bar-chart` in pure Eshkol stdlib)
-- [x] Codegen modularisation: `tensor_codegen.cpp` 19,940 → 1,280 lines
-      (94% reduction); 13 focused per-domain split files.  The
+- [x] Codegen modularisation: `tensor_codegen.cpp` 19,940 → 1,280 lines at
+      the time of the v1.2 split (94% reduction) across 13 focused
+      per-domain split files; re-measured for this documentation wave at
+      1,867 lines as of commit `694c3179` (still-active file, grown with
+      subsequent feature work — the 94% reduction was a point-in-time
+      measurement, not an invariant). The
       remaining `llvm_codegen.cpp` extractions
       (module_init_codegen.cpp, builtin_factory_codegen.cpp,
       repl_resolution_codegen.cpp) need the `EshkolLLVMCodeGen` class
