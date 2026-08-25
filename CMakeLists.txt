@@ -4597,6 +4597,43 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
+    # Every branch-protection required status context must be reportable on
+    # every PR shape (docs-only included) — see the module docstring for the
+    # PR #455 stub-drift incident this closes. --offline (no network/gh) so
+    # the ctest lane never depends on GitHub reachability or credentials;
+    # it grades the committed .icc/required-status-contexts.json snapshot,
+    # same as any contributor without a token would get.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py")
+        add_test(
+            NAME required_context_consistency_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py"
+                    --offline --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME required_context_consistency_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(required_context_consistency_gate required_context_consistency_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # scripts/ci_retry.sh is the single reusable definition of ci.yml's
+    # network-retry policy (apt-get/wget in the Linux/CUDA setup steps).
+    # Self-test proves it both retries a flaky command to success and gives
+    # up with the wrapped command's own exit status after exactly N tries —
+    # not a Windows shell script, so guarded the same way the other
+    # bash-script ctest entries in this file are.
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_retry.sh")
+        add_test(
+            NAME ci_retry_selftest
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_retry.sh" --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_retry_selftest PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")

@@ -1,0 +1,26 @@
+{
+  "schema": "eshkol.required_status_contexts.v1",
+  "repo": "tsotchke/eshkol",
+  "branch": "master",
+  "as_of": "2026-08-25",
+  "source": "gh api repos/tsotchke/eshkol/branches/master/protection --jq '.required_status_checks.contexts'",
+  "note": "Committed fallback snapshot for scripts/check_required_context_consistency.py, used only when no GitHub token and no authenticated `gh` CLI are available (FALLBACK mode). This is NOT auto-verified against live branch protection -- update it by hand whenever the `gh api` command above returns a different context list, or FALLBACK-mode runs check a stale required set. LIVE mode (token or authenticated `gh` present) always supersedes this file.",
+  "contexts": [
+    "guard",
+    "linux-x64-xla",
+    "linux-arm64-xla",
+    "linux-x64-cuda",
+    "linux-arm64-cuda",
+    "linux-x64-asan-ubsan",
+    "wasm-execute-diff",
+    "windows-arm64-xla",
+    "windows-x64-cuda",
+    "assurance-gates",
+    "surface-manifest",
+    "windows-arm64-lite",
+    "macos-arm64-xla",
+    "macos-x64-xla",
+    "macos-arm64-lite",
+    "macos-x64-lite"
+  ]
+}

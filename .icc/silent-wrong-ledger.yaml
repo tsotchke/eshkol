@@ -80,6 +80,16 @@ buckets:
     check has been demonstrated to FAIL under the condition it exists to detect
     — a recorded red run, not an argument that it would go red.
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+  VACUOUS-ASSURANCE: >-
+    A check that was green (or structurally could only ever be green) while
+    incapable of ever going red for the failure it exists to catch — the check
+    ran, reported success, and that success asserted nothing, because no input
+    reachable in practice would have made it fail. Distinct from SILENT-WRONG
+    (a wrong ANSWER with no diagnostic): here the diagnostic infrastructure
+    itself is the defect. Not tag-blocking by default, but every entry must
+    name the exact mechanism that made the check incapable of failing and the
+    fix that gave it a real failure mode, with that fix's own red-proof as
+    closure evidence — closing by assertion is forbidden, same as SILENT-WRONG.
 
 entries:
 
@@ -4115,3 +4125,67 @@ entries:
       Loud, so not tag-blocking, but it is what keeps op:CURL a gap now that the
       VM side is exact. Two separable defects: the crash, and the arity-convention
       divergence between the engines.
+  # ───────────────────────── VACUOUS-ASSURANCE ─────────────────────────
+
+  - id: VA-01
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_by: "branch ci/required-context-consistency"
+    title: "docs-only-required-context-stubs drifted out of sync with branch protection's required list, silently reopening a fixed permanent-block class"
+    mechanism: >-
+      PR #455 fixed a real permanent-block bug: GitHub Actions does not expand
+      a skipped matrix job's `${{ matrix.name }}` into per-leg check runs, so
+      `unix-matrix`/`windows-matrix` legs each collapse to one check run under
+      the literal unresolved template string on a docs-only PR, satisfying no
+      required context. PR #455's fix was a stub job
+      (`docs-only-required-context-stubs`) whose matrix names were exactly the
+      7 matrix-derived contexts required AT THAT TIME. Branch protection later
+      grew 5 more matrix-derived required contexts — windows-arm64-lite,
+      macos-arm64-xla, macos-x64-xla, macos-arm64-lite, macos-x64-lite — and
+      nothing re-checked the stub matrix against the new required list. The
+      2026-08-25 hardening to `enforce_admins: true` turned this from a
+      dormant defect (admins could bypass the resulting permanent block) into
+      an active one: with admin bypass gone, a docs-only PR touching only
+      those 5 names would be unmergeable by anyone, forever, with no timeout.
+
+      This is VACUOUS-ASSURANCE rather than a plain missing check: the
+      original brief for this fix additionally asserted `wasm-execute-diff`
+      as a sixth gap. Direct measurement (PR #455's own proof-PR evidence,
+      cited in its PR body and independently re-derived here from
+      `classify_workflow`'s job-condition parse of the live ci.yml) shows
+      that claim is FALSE — `wasm-execute-diff` is a static-named (non-
+      matrix) job, and PR #455 measured its skipped check reporting under
+      its own correct name and satisfying its required context with NO stub
+      needed. Asserting it as broken without re-deriving the mechanism would
+      have added stub coverage that either does nothing or introduces a
+      second, redundant check run under a name a real job already reports
+      correctly — the inverse assurance failure this bucket exists to name:
+      an added guard whose own presence would never have been exercised by
+      anything it could actually fail on.
+    evidence: >-
+      scripts/check_required_context_consistency.py parses ci.yml and
+      identity-guard.yml's job graph directly (no regex over job text) and
+      asserts required_contexts SUBSET-OF reportable_everywhere, where
+      reportable_everywhere = unconditional jobs UNION static-named skipped
+      jobs UNION (matrix-derived skipped names INTERSECT the stub matrix).
+      Self-test fixtures prove the gate goes RED on exactly the two shapes
+      this incident is made of: (a) a required, still-skippable matrix name
+      removed from the stub matrix, (b) a required context no workflow could
+      ever emit — plus a dedicated fixture proving a static skipped job
+      needs no stub (the wasm-execute-diff shape) to guard against
+      re-introducing the false claim in the other direction. Run against the
+      real, patched ci.yml with `--offline` (reads the fallback snapshot,
+      no network): PASS, 16/16 required contexts reportable. Wired into
+      ctest (required_context_consistency_gate /
+      required_context_consistency_gate_selftest) and the `assurance-gates`
+      CI job.
+    fixed_by: >-
+      branch ci/required-context-consistency — extended
+      docs-only-required-context-stubs' matrix with the 5 real gaps,
+      corrected the stale in-file comment that once explained only the
+      original 7, and added scripts/check_required_context_consistency.py
+      as a standing gate (wired into ctest, assurance-gates, and this
+      oracle's `required_context_consistency_clean` criterion) so this class
+      cannot silently reopen a third time.
+    caught_by: [direct-measurement, branch-protection-audit]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

@@ -177,6 +177,27 @@ oracles:
         label: 'Every oracle target has at least one severity:high criterion, so total absence of evidence forces `blocked` rather than `ready`/`incomplete` (scripts/audit_oracle_false_green.py)'
         action: python3 scripts/audit_oracle_false_green.py
 
+      # 2026-08-25 (VA-01): branch protection hardened to enforce_admins:
+      # true the same day PR #455's docs-only-required-context-stubs job
+      # was found to be missing 5 of its now-required matrix-derived
+      # contexts (windows-arm64-lite, macos-arm64-xla, macos-x64-xla,
+      # macos-arm64-lite, macos-x64-lite) — a docs-only PR would have been
+      # permanently unmergeable by ANYONE, not just non-admins, the moment
+      # that setting took effect. This criterion is the standing guard
+      # against the underlying class: the stub matrix and branch
+      # protection's required list are two lists kept in sync by hand, with
+      # nothing that failed a build when they drift. It fails on either
+      # direction of drift — a required context nothing in CI can report on
+      # some PR shape, or (equally) a required context nothing in CI could
+      # EVER report at all.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["required_context_consistency_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every branch-protection required status context is reportable on every PR shape CI can produce, including docs-only (scripts/check_required_context_consistency.py)'
+        action: python3 scripts/check_required_context_consistency.py
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["llvm_module_verifier_clean"]
