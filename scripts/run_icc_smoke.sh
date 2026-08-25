@@ -23,6 +23,7 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 if eshkol_durable_enabled; then
     ESHKOL_ICC_WORK="$(eshkol_durable_prepare_dir icc-smoke)" || exit $?
 fi
@@ -134,10 +135,11 @@ print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],
 
 PROBE_TOTAL=0
 PROBE_FAILURES=0
+PROBE_INFRA=0
 
 probe() {
     local probe_id="$1" label="$2" cmd="$3"
-    local out status snippet
+    local out status snippet class
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     # Capture combined stdout+stderr so the snippet is informative when
     # something fails. Bound the snippet so a multi-MB log doesn't blow
@@ -148,6 +150,26 @@ probe() {
         snippet="${label}: OK"
         emit_event "$probe_id" PASS "$snippet"
         printf '  ✓ %-40s %s\n' "$probe_id" "$label"
+        return
+    fi
+    # A probe body is an ad hoc `eval`'d shell snippet, most of which call
+    # eshkol-run/a compiled binary directly with no timeout wrapper at all —
+    # so today the ONLY exit codes this classifier can recognize as
+    # "harness could not run" rather than "the code is wrong" are the
+    # small, well-known set scripts/lib/harness_outcome.sh defines: a
+    # SIGKILL/SIGTERM/SIGINT the environment sent (137/143/130), or the 124/
+    # 125/142 shapes any probe that DOES wrap itself in
+    # eshkol_outcome_guarded (directly, or transitively through a script
+    # that sources this file) can now produce. Everything else stays FAIL,
+    # per eshkol_outcome_classify_exit's own principle: an unrecognized
+    # nonzero exit is a claim about the CODE until a harness explicitly
+    # says otherwise.
+    class=$(eshkol_outcome_classify_exit "$status")
+    if [ "$class" = INFRA ]; then
+        PROBE_INFRA=$((PROBE_INFRA + 1))
+        snippet=$(printf '%s' "$out" | tail -c 200)
+        emit_event "$probe_id" INFRA "$snippet"
+        printf '  ⚠ %-40s %s (infra, exit %d — no verdict obtained)\n' "$probe_id" "$label" "$status"
     else
         PROBE_FAILURES=$((PROBE_FAILURES + 1))
         snippet=$(printf '%s' "$out" | tail -c 200)
@@ -158,6 +180,22 @@ probe() {
 
 echo "Running ICC smoke probes → $TRACE_FILE"
 echo
+
+# ─────────────────────────────────────────────────────────────────
+# Harness-infra-vs-defect taxonomy (2026-08-25 architecture audit,
+# section 3). scripts/lib/harness_outcome.sh is what every probe() call
+# above/below relies on to keep "the harness could not run" from being
+# reported as "the code is wrong" — this is the regression test proving
+# that distinction is real: it forces a timeout, a missing binary, a
+# genuine wrong-answer exit, and a self-inflicted crash, and asserts each
+# lands in the taxonomy bucket it must. See
+# tests/harness/harness_outcome_taxonomy_test.sh for the full assertion
+# list (17 checks).
+# ─────────────────────────────────────────────────────────────────
+probe harness_outcome_taxonomy \
+    'scripts/lib/harness_outcome.sh distinguishes INFRA (timeout, missing binary — no test_result published, never retried past one attempt) from FAIL (a completed wrong answer or a self-raised crash — always published, never retried)' \
+    'out=$(bash "$REPO_ROOT/tests/harness/harness_outcome_taxonomy_test.sh" 2>&1) || { printf "%s\n" "$out"; exit 1; }
+     printf "%s" "$out" | grep -q "harness_outcome_taxonomy_test.sh: PASS"'
 
 # ─────────────────────────────────────────────────────────────────
 # Compiler-readiness probes
@@ -1017,10 +1055,22 @@ EOF
 
 echo
 echo "Trace written: $TRACE_FILE"
-echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
+echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES - PROBE_INFRA))/$PROBE_TOTAL passed, $PROBE_INFRA infra (no verdict), $PROBE_FAILURES failed"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
 echo "         completion-oracle --repo eshkol_lang \\"
 echo "         --target agent-ffi-ready --trace-dir scripts/icc_traces"
+
+if [ "$PROBE_INFRA" -ne 0 ]; then
+    # Never folded into PROBE_FAILURES (see probe() above / F13, 2026-08-25
+    # architecture audit section 3): a probe with no verdict is not evidence
+    # of a defect, so it must not sink this gate. It IS loud — printed above
+    # per-probe, counted here, and recorded as an explicit "INFRA" value in
+    # $TRACE_FILE (never "PASS"), so a completion-oracle criterion matching
+    # event_values:["PASS"] correctly stays unsatisfied rather than being
+    # spoofed green, and never reads as the false "FAIL" this gate used to
+    # be capable of producing.
+    echo "ICC smoke gate: $PROBE_INFRA probe(s) could not obtain a verdict (infra) — see above" >&2
+fi
 
 if [ "$PROBE_FAILURES" -ne 0 ]; then
     echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
