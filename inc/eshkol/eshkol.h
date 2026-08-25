@@ -2626,6 +2626,25 @@ typedef struct eshkol_ast {
      * garbage id simply falls outside the table and reads as "unknown"; a
      * garbage pointer would be dereferenced by the diagnostic printer. */
     uint32_t source_file_id;
+
+    /* Stable identity of this node in the frontend node-identity substrate
+     * (ADR-0000 Stage 1; see inc/eshkol/frontend/node_identity.h).
+     *
+     * This is the KEY only. The payload — today a SourceSpan, and by
+     * ADR-0000's end state also a BindingId (ADR-0006) and a TypedExprInfo
+     * (ADR-0004) — lives in side tables keyed on this value, because
+     * ADR-0008 §4.2 settles that the columns must not be fields on this
+     * struct during the v1.x migration, and because the whole point of the
+     * substrate is that five consumers share one table rather than each
+     * growing its own field.
+     *
+     * ESHKOL_NODE_ID_NONE (0) means "no identity", which is what a node
+     * synthesized outside the parser reads as. Like `source_file_id` this is
+     * deliberately an id and not a pointer: nodes are built in places that
+     * do not zero-initialize, so this field can hold garbage, and a garbage
+     * NodeId is rejected by its tag and its bound and reads as unknown —
+     * never as a confident wrong location. */
+    uint32_t node_id;
 } eshkol_ast_t;
 
 // ===== Unified AST Literal Builders =====
