@@ -197,6 +197,36 @@ oracles:
         severity: high
         label: 'Every branch-protection required status context is reportable on every PR shape CI can produce, including docs-only (scripts/check_required_context_consistency.py)'
         action: python3 scripts/check_required_context_consistency.py
+      # ── ADR-0010 v1.4-connection gate closures (2026-08-25) ──────────
+      # A10/A11/A12 were measured NOT IMPLEMENTED by the v1.4-connection
+      # oracle. Each criterion below is graded by a dedicated check_*.py
+      # gate that follows the check_oracle_schema.py / check_ledger_
+      # integrity.py convention exactly: --self-test fixtures prove the
+      # gate can go RED, --no-trace grades without writing evidence, and a
+      # missing/unusable input fails closed rather than passing silently.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["package_manifest_complete"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'A staged release package matches the declared package_surface manifest (ADR-0010 A10): every binary, static library, stdlib artifact, and lib/**/*.esk source-mirror entry in .icc/package-manifest.yaml is present in the package release.yml builds (scripts/check_package_manifest.py)'
+        action: python3 scripts/check_package_manifest.py --package-dir <staged-package-dir> --platform <linux|macos|windows>
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["diagnostic_corpus_clean"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Every case in the diagnostic golden corpus (tests/diagnostics/, ADR-0010 A11) still produces its pinned message and file:line:col span, and every diagnosed-fatal case still fails to build and run (scripts/check_diagnostic_corpus.py)'
+        action: python3 scripts/check_diagnostic_corpus.py --build-dir build
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["leak_detection_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ASan leak detection is armed (detect_leaks=1) in the linux-x64-asan-ubsan CI lane against a reasoned suppression file, and a deliberately-introduced leak is caught by LSan under the exact CI ASAN_OPTIONS (ADR-0010 A12) (scripts/check_leak_detection_selftest.sh)'
+        action: ./scripts/check_leak_detection_selftest.sh
 
       - runtime_event:
           event_kinds: [eshkol_smoke]

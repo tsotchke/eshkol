@@ -260,6 +260,56 @@ capabilities:
     dependency_constructor: "moonlab_qrng_bytes|moonlab-qrng"
     dependency_paths: [lib/quantum/quantum_rng_wrapper.c]
 
+  # ── ADR-0010 assurance-gap closures (A10/A11/A12) ─────────────────────
+  - id: package_surface_manifest
+    feature: >
+      Declared package_surface manifest (ADR-0010 gap A10) is the single
+      source of truth for what a release archive must contain, checked
+      against a staged package directory before it is tar'd/zipped.
+    entry_points:
+      - {path: scripts/check_package_manifest.py, symbol: evaluate}
+    arming:
+      kind: runtime_event
+      path: scripts/check_package_manifest.py
+    pattern: package_manifest_complete
+
+  - id: diagnostic_golden_corpus
+    feature: >
+      Diagnostic golden-corpus (ADR-0010 gap A11, type_diagnostic category):
+      input program -> expected diagnostic message/code/span, graded per
+      case with drift on either axis failing the gate.
+    entry_points:
+      - {path: scripts/check_diagnostic_corpus.py, symbol: evaluate_case}
+    arming:
+      kind: runtime_event
+      path: scripts/check_diagnostic_corpus.py
+    pattern: diagnostic_corpus_clean
+    dependencies: [frontend-reader]
+    dependency_constructor: "tests/diagnostics"
+    dependency_paths: [tests/diagnostics]
+
+  - id: leak_detection_armed
+    feature: >
+      ASan leak detection (ADR-0010 gap A12) is armed (detect_leaks=1) in
+      the linux-x64-asan-ubsan CI lane with a checked-in, reasoned
+      suppression file (.icc/lsan-suppressions.txt). ESHKOL_ARENA_POISON
+      coverage extends to the full VM route: the region-evacuator
+      (lib/backend/vm_region_evac.c, PR #461) already had it, and the
+      lower-level VM arena primitives underneath it — lib/backend/
+      vm_arena.h, which every non-evacuated VM path allocates through —
+      gained it here (vm_arena_reset's block-recycle aliasing case,
+      vm_arena_block_destroy, vm_region_pop/vm_region_stack_destroy).
+    entry_points:
+      - {path: lib/backend/vm_region_evac.c, symbol: vm_evac_poison}
+      - {path: lib/backend/vm_arena.h, symbol: vm_arena_poison_range}
+    arming:
+      kind: runtime_event
+      path: scripts/check_leak_detection_selftest.sh
+    pattern: leak_detection_gate
+    dependencies: [oalr-memory]
+    dependency_constructor: "ESHKOL_ARENA_POISON"
+    dependency_paths: [lib/backend/vm_region_evac.c, lib/core/runtime_arena_core.cpp]
+
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
 # --------------------------------------------------------------------------
@@ -530,3 +580,67 @@ invariants:
       - id: tail-position-analysis
         path: lib/backend/tail_call_codegen.cpp
         key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|SEQUENCE)_OP)'
+
+  # 9-11. ADR-0010 v1.4-connection gate: A10/A11/A12 were measured
+  #       NOT IMPLEMENTED by the v1.4-connection oracle. Each of these three
+  #       closes one gap with a real gate script (scripts/check_*.py) plus a
+  #       --self-test fixture proving the gate can go RED, per this
+  #       project's standing "a gate that cannot fail is not a gate" policy.
+  #       The actual PASS/FAIL enforcement each gate's trace feeds is a
+  #       runtime_event criterion in .icc/completion-oracles.yaml (the
+  #       established home for check_*.py gates — see check_ledger_
+  #       integrity.py / check_oracle_schema.py / gate_no_silent_wrong.py,
+  #       none of which have an architecture-model.yaml invariant either);
+  #       these three are dependency-presence invariants recording that each
+  #       capability's declared source of truth exists on disk.
+  - id: INV-package-manifest-enforced
+    kind: dependency-presence
+    incident: packaging-manifest-gap
+    severity: high
+    fidelity: grep
+    description: >
+      A release archive's staged contents (binaries, static libraries,
+      stdlib artifacts, the full lib/**/*.esk source mirror, docs) are
+      checked against a single declared manifest (.icc/package-manifest.yaml)
+      before the archive is tar'd/zipped, so a packaging-step refactor that
+      silently drops a required file fails CI instead of shipping. Actual
+      PASS/FAIL is graded by the `package_manifest_complete` runtime_event
+      criterion (.icc/completion-oracles.yaml).
+    capability: package_surface_manifest
+
+  - id: INV-diagnostic-corpus-no-drift
+    kind: dependency-presence
+    incident: diagnostic-quality-boolean-gap
+    severity: medium
+    fidelity: grep
+    description: >
+      Diagnostic quality is graded per-case against a golden corpus
+      (tests/diagnostics/), not as a single pass/fail boolean: each case
+      pins the diagnostic's message substring(s) and its reported
+      file:line:col span, seeded from named historical incidents (ESH-0364
+      wrong-file attribution, ESH-0365 closing-paren span, arity-fatal,
+      type-ascription, linearity, and the guard-catchable runtime type
+      errors from PRs #451/#452), so a diagnostic that silently changes
+      text or drifts to the wrong span is caught. Actual PASS/FAIL is
+      graded by the `diagnostic_corpus_clean` runtime_event criterion
+      (.icc/completion-oracles.yaml).
+    capability: diagnostic_golden_corpus
+
+  - id: INV-leak-detection-armed
+    kind: dependency-presence
+    incident: leak-detection-off-gap
+    severity: high
+    fidelity: grep
+    description: >
+      The linux-x64-asan-ubsan CI lane runs with LSan leak detection ON
+      (detect_leaks=1) against a checked-in, per-entry-reasoned suppression
+      file (.icc/lsan-suppressions.txt) rather than blanket detect_leaks=0,
+      and ESHKOL_ARENA_POISON validation now covers the full VM route —
+      both the region-evacuator (lib/backend/vm_region_evac.c) and the VM
+      arena primitives underneath it (lib/backend/vm_arena.h), tested by
+      tests/core/vm_arena_poison_test.cpp's armed/disarmed ctest pair — so
+      a real leak or a poisoned-block miss on either substrate is reported,
+      not silently discarded. Actual PASS/FAIL is graded by the
+      `leak_detection_gate` runtime_event criterion
+      (.icc/completion-oracles.yaml).
+    capability: leak_detection_armed
