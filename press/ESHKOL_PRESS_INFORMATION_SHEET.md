@@ -130,6 +130,28 @@ architectural root and pinned by an executable gate.
   / quantum natural gradient, smooth first-principles H2/LiH potential-energy
   surface), and complete hosted-VM tensor-matmul parity.
 
+### Independently re-verified for the v1.3.5 documentation wave (2026-08-24)
+
+Every number below was produced by an execution against this v1.3.4-evolve
+build (commit `694c3179`) during this documentation pass, not carried over
+from an earlier release note:
+
+| Claim | Command | Result |
+|---|---|---|
+| Exact rational derivative | `(derivative-n g 1/3 1)` for `g(x) = 8x²` | `16/3`, `exact?` `#t` |
+| Exact bignum derivative | `(derivative-n f 7 12)` for `f(x) = x^30` | `67465815595294257109436307840000`, `exact?` `#t` |
+| H2 vibrational frequency (arbitrary-order AD, exact 2nd derivative) | `eshkol-run -r examples/h2_vibrational.esk` | 5003.2038 cm⁻¹ (R* = 1.38869 bohr, E(R*) = -1.13731 Ha) |
+| Ozaki-II CRT exact GEMM (Metal, Apple M2 Ultra) | `eshkol-run -r tests/gpu/ozaki_certification_test.esk` | 25/25 samples, 0 mismatches, max 58 correct dot bits, PASS |
+| CHSH Bell-inequality gate | `eshkol-run -r tests/quantum/bell_chsh_test.esk` | S = 2.835 over 16,000 shots (gate: `2.4 < S <= 2.95`), PASS |
+| Gradient parity across engines | `(gradient f 3.0 4.0)` for `f(x,y)=x²y+y³`, native JIT / native AOT / bytecode VM | `#(24 57)` on all three, byte-identical |
+| Flat-RSS resident loop (ESH-0214b AOT gate) | `tests/memory/define_loop_flat_rss_aot_test.sh`, 1,000,000 iterations | 8 MB peak RSS (fix on) vs. 2,620 MB (fix compiled out) |
+| Linear `Qubit` no-cloning | `eshkol-run --strict-types -r tests/typesystem/qubit_no_cloning_test.esk` | compile-time type error: "linear variable 'q' was consumed more than once" |
+
+Not independently re-verified this cycle: CUDA-path Ozaki-II (no CUDA
+hardware in this environment — Metal path above stands in) and WASM-path
+gradient parity (no Emscripten toolchain in this environment; native
+JIT/AOT/VM three-way agreement above stands in for cross-engine parity).
+
 ---
 
 ## The language
