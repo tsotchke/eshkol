@@ -389,6 +389,11 @@ static const BuiltinDef BUILTINS[] = {
     /* Misc — IDs 236-238 */
     {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},
+    /* gensym — ID 2227. Was implemented in lib/core/introspection.cpp
+     * (eshkol_gensym) but never registered in this table, so `(gensym)`
+     * resolved as an undefined global (compiled as NIL) and calling it
+     * fataled the VM ("calling non-function"). See vm_native.c case 2227. */
+    {"gensym", 2227, 0},
     {"truncate", 190, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Complex numbers — IDs 300-317

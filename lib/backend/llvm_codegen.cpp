@@ -15282,6 +15282,7 @@ private:
         if (func_name == "string->number") return strio_->stringToNumber(op);
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
+        if (func_name == "gensym") return codegenGensym(op);
         if (func_name == "ptr->string") return codegenPtrToString(op);
         if (func_name == "ptr->string-n") return codegenPtrToStringN(op);
         if (func_name == "make-string") return strio_->makeString(op);
@@ -25097,6 +25098,33 @@ private:
         llvm::FunctionCallee fn = module->getOrInsertFunction(
             "eshkol_intern_symbol_lookup", fn_ty);
         Value* sym_ptr = builder->CreateCall(fn, {ptr}, "interned_sym");
+
+        return tagged_->packHeapPtr(sym_ptr);
+    }
+
+    // gensym: generate a fresh, uninterned symbol ("G<counter>", process-wide
+    // monotonically increasing counter). Was implemented in
+    // lib/core/introspection.cpp (eshkol_gensym / eshkol_gensym_prefix) but
+    // never wired into any dispatch table, so `(gensym)` failed with
+    // "Unknown function: gensym" on this backend. Wired the same way as the
+    // string->symbol sibling above: call the runtime helper for the raw
+    // symbol pointer and pack it as a HEAP_PTR tagged value (the header
+    // written by arena_allocate_symbol_with_header, inside
+    // eshkol_gensym_prefix, is what makes ESHKOL_GET_HEADER report
+    // HEAP_SUBTYPE_SYMBOL for it).
+    Value* codegenGensym(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 0) {
+            eshkol_warn("gensym requires exactly 0 arguments");
+            return nullptr;
+        }
+
+        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+
+        llvm::FunctionType* fn_ty = llvm::FunctionType::get(
+            builder->getPtrTy(), {builder->getPtrTy()}, false);
+        llvm::FunctionCallee fn = module->getOrInsertFunction(
+            "eshkol_gensym_ptr", fn_ty);
+        Value* sym_ptr = builder->CreateCall(fn, {arena_ptr}, "gensym_sym");
 
         return tagged_->packHeapPtr(sym_ptr);
     }

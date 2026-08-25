@@ -2210,6 +2210,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/prng.cpp
   lib/core/runtime_arena_cpp.cpp
   lib/core/runtime_frame_trace.cpp
+  lib/core/runtime_gensym.cpp
   lib/core/symbol_intern.cpp
   lib/core/threads.c
   lib/core/workspace.cpp
