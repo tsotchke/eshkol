@@ -1,0 +1,6 @@
+;; Diagnostic corpus case: a linear Qubit used twice is a no-cloning
+;; violation. Seed: "linearity rejections" (ADR-0010 A11), same shape as
+;; tests/typesystem/qubit_no_cloning_test.esk.
+
+(define (bad-clone (q : Qubit))
+  (cons q q))

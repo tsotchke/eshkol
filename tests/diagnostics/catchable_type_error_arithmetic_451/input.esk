@@ -1,0 +1,8 @@
+;; Diagnostic corpus case: PR #451 -- arithmetic on a non-numeric operand
+;; raises a guard-catchable runtime error instead of silently miscomputing
+;; or crashing outright. Same shape as
+;; tests/v1_2_edge_cases/type_safety_test.esk's
+;; `(guard (exn (#t #f)) (+ "x" 1))` regression pin.
+
+(display (guard (exn (#t "caught-451")) (+ "x" 1)))
+(newline)

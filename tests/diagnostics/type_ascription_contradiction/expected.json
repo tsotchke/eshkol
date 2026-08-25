@@ -1,0 +1,15 @@
+{
+  "description": "A provably false `(the string (+ 1 2))` ascription must be rejected under --strict-types (SW-11 regression shape). The HoTT type-checker's own diagnostic format has no filename field, only a (line L:C) suffix, so this entry's span omits `file`.",
+  "esh_ref": "SW-11",
+  "mode": "strict-types",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "contradicts",
+      "span": {"line": 7, "col": 11}
+    },
+    {
+      "contains": "no value can satisfy it"
+    }
+  ]
+}

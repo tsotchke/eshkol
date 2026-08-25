@@ -1,0 +1,11 @@
+;; The required module. It has a fatal arity error below.
+;;
+;; ESH-0364: a diagnostic for a form that came from a required module must
+;; name THIS file (module.esk) and THIS file's own line number -- never the
+;; entry file's name next to this file's line number, which is what the
+;; AOT (`-o`) compile path did before the fix (it inlines every required
+;; module's forms into one flat AST array compiled under the entry file's
+;; ambient source context).
+
+(define (g x y) (+ x y))
+(define oops (g 1 2 3 4))

@@ -1,0 +1,8 @@
+{
+  "description": "ESH-0365: `(import (lib name))` desugars to a require node whose position previously came from the CLOSING PAREN of the spec loop (line 2 in this fixture) instead of the `(import` operator token (line 1, col 2). The compiler has no user-visible diagnostic for a well-formed import, so this bug's real observable surface is the language-coverage tracker's dispatch/accept position correlation (scripts/language_coverage.py's TSV trace: `P <file> L C <category> <name>` / `A <file> L C <category>`) -- the tracker credits a construct covered only when its dispatch and accept events share an EXACT position, which is exactly what a regression here would break again. This case compiles successfully (no fatal diagnostic) and pins that position agreement directly via `coverage_position_pin`.",
+  "esh_ref": "ESH-0365",
+  "compile": "ok",
+  "coverage_position_pin": {
+    "construct": "import"
+  }
+}

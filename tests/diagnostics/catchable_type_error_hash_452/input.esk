@@ -1,0 +1,8 @@
+;; Diagnostic corpus case: PR #452 -- hash-keys on a non-hash-table operand
+;; raises a guard-catchable runtime error instead of unpackPtr-ing a
+;; non-pointer tagged value and SIGSEGVing. Same shape as
+;; tests/v1_2_edge_cases/type_safety_test.esk's
+;; `(guard (exn (#t #t)) (hash-keys 42) #f)` regression pin.
+
+(display (guard (exn (#t "caught-452")) (hash-keys 42)))
+(newline)
