@@ -1,4 +1,4 @@
-; CONTROL for LE-12 (not a defect): an INDIRECT tail call -- the callee arrives
+; CONTROL for LE-13 (not a defect): an INDIRECT tail call -- the callee arrives
 ; as a procedure PARAMETER, not a name -- is already O(1) on the VM, because the
 ; VM dispatches on a value and never needed the callee's identity. This is the
 ; one shape where the VM is ahead of native, which still lowers it to a bounded

@@ -1,4 +1,4 @@
-; FILED (LE-12): a tail call in a `let` body that allocated locals is not
+; FILED (LE-13): a tail call in a `let` body that allocated locals is not
 ; tail-call-optimized on the VM. vm_compiler.c drops `tail` to 0 for any
 ; let-family scope needing OP_POPN cleanup, so the call becomes OP_CALL:
 ; FRAME OVERFLOW at ~256 frames, stderr diagnostic, EXIT 0, no output (LE-07).

@@ -1,4 +1,4 @@
-; CONTROL for LE-12 (not a defect): mutual tail recursion between procedures of
+; CONTROL for LE-13 (not a defect): mutual tail recursion between procedures of
 ; DIFFERENT ARITY is already O(1) on the VM. OP_TAIL_CALL slides `argc` slots
 ; onto the current frame and jumps, with no arity comparison anywhere, so the
 ; shape LLVM `musttail` cannot express at all costs the VM nothing.

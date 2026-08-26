@@ -2997,10 +2997,20 @@ entries:
       qualify as SILENT-WRONG, which is why both engines are fixed together here rather
       than treating the VM half as out of scope.
 
-  - id: LE-12
+  - id: LE-13
     bucket: LOUD-ERROR
     subtag: structural
     status: open
+    renumbered_from: >-
+      LE-12 (collision). Filed as LE-12 on branch feat/tail-transfer-complete,
+      independently of master's own LE-12 ("native curl SIGSEGVs on a
+      list-returning vector field", from feat/ad-structural-gate / PR #487),
+      both allocating the same next-free id in parallel — a textual merge does
+      not conflict on this, only a duplicate-id count does. Moves to LE-13,
+      the next id free across the whole ledger (highest prior id in use was
+      LE-12): master's entry keeps LE-12, being the earlier-landed one, and
+      is referenced from CMakeLists.txt and tests/ad/ad_vm_exactness_gate.sh
+      comments this entry has none of.
     title: "VM: `when`/`unless`/`and`/`or` and local-allocating `let` bodies are not tail positions, so a tail call there dies at 256 frames"
     repro: >-
       Two mutually tail-recursive procedures whose tail call is spelled with
@@ -3064,10 +3074,9 @@ entries:
     caught_by: [esh-0102c-vm-assessment, parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
     notes: >-
-      Filed as LE-12 (next free LE id, verified with `grep -o 'id: LE-[0-9]*'
-      .icc/silent-wrong-ledger.yaml | sort -V | tail -3`). Bucket LOUD-ERROR
-      follows LE-07's classification of the same exit-0-with-stderr shape, and
-      LE-07's "Borderline SILENT-WRONG" note applies here unchanged.
+      Bucket LOUD-ERROR follows LE-07's classification of the same
+      exit-0-with-stderr shape, and LE-07's "Borderline SILENT-WRONG" note
+      applies here unchanged.
 
   - id: SW-43
     bucket: SILENT-WRONG
