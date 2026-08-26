@@ -223,7 +223,12 @@ python3 scripts/test_language_coverage_gate.py
 python3 scripts/test_runtime_language_coverage.py \
     --eshkol-run "$ESHKOL_RUN" \
     --eshkol-vm "$ESHKOL_VM"
+rc=0
 python3 scripts/language_coverage.py \
     "${RUNTIME_ARGS[@]}" \
     --trace "$TRACE_FILE" \
-    "$@"
+    "$@" || rc=$?
+
+eshkol_durable_mirror_trace "$TRACE_FILE" language_surface_coverage.jsonl
+
+exit "$rc"

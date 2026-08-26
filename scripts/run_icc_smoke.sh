@@ -1053,6 +1053,8 @@ EOF
        *) printf "%s" "$flat" | grep -o "CURL=.*FD=[0-9]*"; exit 1 ;;
      esac'
 
+eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES - PROBE_INFRA))/$PROBE_TOTAL passed, $PROBE_INFRA infra (no verdict), $PROBE_FAILURES failed"
