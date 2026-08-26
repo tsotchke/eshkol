@@ -3642,7 +3642,7 @@ entries:
       it makes the project look worse than it is and, more dangerously, trains readers to
       discount the 25 that are still real. Re-running found/ belongs in the parity gate.
 
-  - id: SW-46
+  - id: SW-53
     bucket: SILENT-WRONG
     status: closed
     closed_at: "feat/linearity-complete"
@@ -3708,6 +3708,16 @@ entries:
       that simply refuses every qubit program from passing.
     caught_by: [pr-471-vm-parity-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, run_typesystem_tests]
+    note: >-
+      Originally filed as SW-46, independently of the SW-47 entry's note below
+      recording that id as reserved for the in-flight AD carrier-wave lane
+      (feat/ad-structural-gate, PR #487). Both #471 and #487 landed on master
+      claiming SW-46, invisible to review since a textual merge does not
+      conflict on two branches picking the same next-free id. Renumbered to
+      SW-53 (next free after SW-52) on rebase, since #487's entry carries three
+      external cross-references (.icc/architecture-model.yaml,
+      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) and this
+      one has none.
     notes: >-
       Filed by PR #471 as build item BI-5 after measuring it on both VM entry
       points. It is the same class the project refuses elsewhere — a guarantee
