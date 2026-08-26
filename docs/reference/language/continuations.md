@@ -47,12 +47,21 @@ done
 Re-invoking `k` re-enters the `(+ 1 …)` context repeatedly with successive values,
 demonstrating multi-shot behaviour.
 
-### Known limitation — deep CPS chains (ESH-0080)
+### Known limitation — deep CPS chains (ESH-0080) — FIXED
 
-Very deep continuation-passing chains (e.g. the SICP ch4 `amb` nondeterministic
-search) can crash with SIGILL beyond a moderate depth (reported around n ≳ 16 for
-that workload). Ordinary escape and modest re-entrant use are fine; do not rely on
-extremely deep continuation chaining.
+Very deep continuation-passing chains (e.g. the SICP ch4 `amb`
+nondeterministic search) used to crash with SIGILL beyond a moderate depth
+(observed around n ≳ 16 for that workload) on native JIT/AOT. **This was
+fixed on 2026-06-29** (commit `47338adb`, "run native O0 cleanup for deep
+CPS"): native `-O0` codegen was skipping LLVM's function cleanup passes
+entirely, leaving oversized stack frames for deep closure chains. The fix
+runs a small cleanup pipeline (sroa, early-cse, instcombine, simplifycfg) at
+`-O0`. The regression test, `tests/sicp/ch4_amb_deep_cps_test.esk`, still
+passes on both native JIT and AOT as of this page's last measurement.
+**Note:** despite living under this "continuations" page, ESH-0080's own
+regression test does not use `call/cc` at all — it is a manual-CPS/closure-
+chain program, so this was never actually evidence about `call/cc`'s own
+single-shot/multi-shot behavior.
 
 ## `dynamic-wind`
 
