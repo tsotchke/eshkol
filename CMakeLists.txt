@@ -2120,6 +2120,7 @@ endif()
 # Runtime stratification starts here. `eshkol-runtime` is the archive linked
 # into generated programs; `eshkol-static` remains the compiler/tool aggregate.
 set(ESHKOL_RUNTIME_CORE_SRC
+  lib/core/abi_fingerprint.c
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
   lib/core/complex_math.cpp

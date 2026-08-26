@@ -7,6 +7,12 @@
  */
 
 #include <eshkol/backend/memory_codegen.h>
+#include <eshkol/abi_fingerprint.h>
+#include <eshkol/llvm_backend.h>
+
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/Transforms/Utils/ModuleUtils.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -28,6 +34,72 @@ MemoryCodegen::MemoryCodegen(llvm::Module& mod, TypeSystem& ts)
     createTapeFunctions();
     createAdNodeFunctions();
     createTypedAllocatorFunctions();  // NEW: Consolidated type allocators
+    emitObjectAbiGuard();
+}
+
+/**
+ * @brief Plant a reference to the runtime's object-ABI guard symbol in this module.
+ *
+ * Generated code and the runtime it calls must agree about where an object's
+ * header sits relative to the pointer they pass each other. Nothing in the
+ * symbol signatures says so: `arena_allocate_with_header` returns `ptr` under
+ * any layout, and a payload pointer carries no discriminator for the layout it
+ * was built with — `subtype`, the field that says what an object is, lives
+ * inside the header you need the layout to find. Two halves that disagree
+ * therefore link cleanly and read each other's objects at the wrong offsets.
+ *
+ * This makes the agreement explicit. The guard symbol's *name* encodes the
+ * layout (see inc/eshkol/abi_fingerprint.h), the runtime defines exactly one,
+ * and this reference requires it. An object file produced by a compiler built
+ * against a different layout names a symbol the runtime does not define, and
+ * the link fails, naming the layout it wanted. The wrong-answer failure becomes
+ * an error message.
+ *
+ * The reference is a data relocation held live by `llvm.used`, so it survives
+ * every optimization level, and costs one pointer per module.
+ *
+ * Two profiles are deliberately exempt, for the same reason in both cases:
+ * there is no second half for them to disagree with.
+ *
+ *   - **wasm32** resolves the runtime surface through JS-implemented imports
+ *     rather than by linking this archive, so an undefined data symbol would
+ *     simply fail the link with nothing gained.
+ *   - **freestanding** emits objects whose contract is that they carry no
+ *     external dependencies at all — `freestanding_object_smoke_test` asserts
+ *     exactly that, by checking the object has no undefined symbols. An object
+ *     that links against nothing cannot be mismatched against anything.
+ *
+ * Both lanes need an equivalent check by a different mechanism, tracked as
+ * Stage 2 in docs/design/adr/0012-object-abi-staged-migration.md.
+ */
+void MemoryCodegen::emitObjectAbiGuard() {
+    if (types.isWasm32() || eshkol_get_freestanding_codegen()) {
+        return;
+    }
+
+    const char* guard_name = ESHKOL_ABI_FINGERPRINT_NAME;
+    if (module.getNamedGlobal(guard_name) != nullptr) {
+        return;  // already planted (module reused)
+    }
+
+    auto& ctx = module.getContext();
+    llvm::Type* word = types.getSizeType();
+
+    // The runtime's definition, declared here without one.
+    auto* guard = new llvm::GlobalVariable(
+        module, word, /*isConstant=*/true,
+        llvm::GlobalValue::ExternalLinkage, /*Initializer=*/nullptr, guard_name);
+
+    // A module-local constant whose initializer is the guard's address. The
+    // initializer is what produces the relocation; a bare declaration would not.
+    auto* ref = new llvm::GlobalVariable(
+        module, llvm::PointerType::getUnqual(ctx), /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, guard, "__eshkol_object_abi_ref");
+    ref->setSection("");
+
+    // Keep it past every optimization pass, including at -O3, where an unused
+    // private constant is otherwise deleted and the check with it.
+    llvm::appendToUsed(module, {ref});
 }
 
 /** @brief Declare an external-linkage LLVM function with the given name and type in the module. */
