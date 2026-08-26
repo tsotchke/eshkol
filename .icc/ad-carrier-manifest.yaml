@@ -311,6 +311,15 @@ fd_scan:
     - lib/core/ad/taylor_models.esk
     - lib/core/ad/taylor_numerics.esk
     - lib/core/ad/tensor_tower.esk
+    # The AD-node producers for the external-tensor bridge and the Fréchet
+    # forward they share with the VM opcode. These carry gradient-bearing code
+    # (ad_tensor_embedding / ad_frechet_mean record tape nodes, and the Karcher
+    # iteration decides whether the implicit derivative is available at all), so
+    # a difference quotient appearing in them would be exactly the substitution
+    # this scan exists to catch.
+    - lib/bridge/qllm_bridge.cpp
+    - lib/bridge/tensor_backward.cpp
+    - inc/eshkol/backend/frechet_mean_core.h
 
 # Every difference-quotient site the scan finds must appear here. `symbol` is
 # the epsilon-valued name; `path` is where it is bound. An unledgered site is

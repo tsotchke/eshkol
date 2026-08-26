@@ -93,6 +93,50 @@ The work, in order:
   forward `VmDual` carrier and builds no tape.
 
 ---
+### Build item — `AD_NODE_TENSOR_*` producers on the compiled and VM paths
+
+The tensor node family (`AD_NODE_TENSOR_MATMUL` … `AD_NODE_FRECHET_MEAN`) is
+recorded today only by the C entry points of the external-tensor bridge,
+`lib/bridge/qllm_bridge.cpp`. Every one of those nodes now has a producer, so
+its backward rule is reachable and gradchecked *through* that producer rather
+than through a hand-built fixture. What remains is reachability from the two
+other paths, and neither is a wiring change.
+
+**Compiled Eshkol (JIT and AOT).** No compiled program can create one of these
+nodes at all. `AutodiffCodegen::recordADNodeTensor` exists and has exactly one
+call site, dead behind `kDenseTensorADNodesEnabled` in
+`lib/backend/llvm_codegen.cpp`; the block comment there records that flipping
+the flag SIGSEGVs rather than yielding a slower-but-correct gradient, for three
+independent reasons:
+
+1. `recordADNodeTensor` stores NULL into `tensor_gradient`, while the reverse
+   pass *selects* the tensor backward by testing that field non-null —
+   constructor and consumer each wait for the other;
+2. the node it builds is dropped: the function goes on to return a plain
+   tagged tensor, so nothing downstream can find it;
+3. under AD the scalarizing path leaves AD-node *pointers* in the result
+   tensor's elements, which is what `tensor-sum` and friends consume, so a
+   dense node would sever the chain at the next tensor op.
+
+That is ADR-0002 Position A (the dense resident tape), scheduled for v1.6. Until
+it lands, `(embedding …)` codegen emits a plain gather with no tape node, and
+`(gradient (lambda (W) … (embedding idx W)))` records nothing for the lookup.
+
+**The VM.** `lib/backend/vm_autodiff.c` has its own scalar `AdNode`
+representation; no `vm_*.c` file references `ad_node_t` or any `AD_NODE_*`
+constant. `frechet-mean` (native call id 817) therefore cannot record an
+`AD_NODE_FRECHET_MEAN`, and the same chunked-storage and shared-reverse-rule
+work listed for `AD_NODE_CUSTOM` above is the prerequisite. Its forward is
+nonetheless already shared with the bridge producer —
+`inc/eshkol/backend/frechet_mean_core.h` is included by both
+`lib/backend/vm_geometric.c` and `lib/bridge/qllm_bridge.cpp` — so the VM opcode
+and the differentiable path cannot drift apart on what the mean *is* while the
+tape work is pending. That matters more here than for most ops: the Fréchet
+backward is implicit differentiation of a stationarity condition and refuses
+above a residual bar, so a forward that drifted would hand the derivative means
+it rejects.
+
+---
 
 ## Forward mode — the 4-component jet
 

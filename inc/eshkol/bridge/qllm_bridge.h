@@ -180,6 +180,38 @@ ad_node_t* ad_tensor_cross_entropy(
     ad_node_t* targets
 );
 
+/**
+ * @brief Embedding-table lookup with AD recording.
+ *
+ * Forward:  y[i, :] = weights[indices[i], :]
+ * Backward: dL/dweights[indices[i], :] += dL/dy[i, :]   (indexed scatter-add)
+ *
+ * The lookup is a gather, so its adjoint is a scatter-add, and two properties
+ * of that adjoint are why it needs its own node type rather than a generic
+ * elementwise rule: rows never looked up receive EXACTLY zero (the gradient is
+ * genuinely sparse, not merely small), and a row looked up k times receives the
+ * SUM of all k upstream rows. See the node contract in
+ * lib/bridge/tensor_backward.cpp (ESH-0230).
+ *
+ * `indices` is an integer-valued operand and carries no gradient: y is
+ * piecewise constant in it, so d y / d indices does not exist. Its node is
+ * recorded as `input2` purely so the backward can read the lookup, and its
+ * `tensor_gradient` is deliberately never written.
+ *
+ * @param tape     AD tape (NULL for forward-only)
+ * @param weights  Weight matrix node [vocab_size, d_model]
+ * @param indices  Index node [num_indices]; every entry must be a whole number
+ *                 in [0, vocab_size). A fractional or out-of-range index is
+ *                 refused rather than rounded or clamped, because either would
+ *                 scatter the gradient into the wrong row.
+ * @return Output tensor node [num_indices, d_model], or NULL on error.
+ */
+ad_node_t* ad_tensor_embedding(
+    ad_tape_t* tape,
+    ad_node_t* weights,
+    ad_node_t* indices
+);
+
 /*******************************************************************************
  * Geometric AD Operations (Riemannian manifold)
  ******************************************************************************/
@@ -233,6 +265,45 @@ ad_node_t* ad_geodesic_attention(
     int num_heads,
     double curvature,
     bool causal
+);
+
+/**
+ * @brief Weighted Fréchet (Karcher) mean on the Poincaré ball, with AD
+ *        recording.
+ *
+ * Forward: mu* = argmin_mu sum_i w_i d(mu, x_i)^2, computed by the shared f64
+ * Karcher iteration in inc/eshkol/backend/frechet_mean_core.h — the same
+ * implementation the VM's `frechet-mean` opcode runs, so the two cannot drift.
+ *
+ * Backward: by IMPLICIT DIFFERENTIATION of the stationarity condition
+ * sum_i w_i log_mu(x_i) = 0 at the converged mean, not by unrolling the
+ * iteration. Those are different answers: unrolling differentiates the
+ * particular solver, implicit differentiation differentiates the mathematical
+ * map and is independent of the iteration count. The latter is what this node
+ * records, and the backward refuses outright at a non-stationary mu rather than
+ * returning the plausible wrong number the implicit formulas would give there.
+ *
+ * Because of that gate the forward must converge in f64: this entry point
+ * returns NULL (with a diagnostic) rather than recording a node whose
+ * derivative the backward would refuse.
+ *
+ * @param tape       AD tape (NULL for forward-only)
+ * @param points     Points node [n_points, dim]; every point must lie strictly
+ *                   inside the ball of radius 1/sqrt(-curvature)
+ * @param weights    Weight node [n_points], non-negative with positive sum.
+ *                   NULL means uniform weights, and then no dL/dw is produced.
+ * @param curvature  Sectional curvature K <= 0. K = 0 is the Euclidean case,
+ *                   where the weighted average IS the mean and is used exactly.
+ * @param tolerance  Relative stationarity tolerance for the backward's gate;
+ *                   <= 0 or non-finite selects the default (1e-9).
+ * @return Mean tensor node [dim], or NULL on error.
+ */
+ad_node_t* ad_frechet_mean(
+    ad_tape_t* tape,
+    ad_node_t* points,
+    ad_node_t* weights,
+    double curvature,
+    double tolerance
 );
 
 /*******************************************************************************

@@ -41,6 +41,7 @@
 #include "eshkol/eshkol.h"
 #include "eshkol/logger.h"
 #include "eshkol/bridge/qllm_bridge.h"
+#include "eshkol/backend/frechet_mean_core.h"
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -207,8 +208,21 @@ void mobius_add(const double* x, const double* y, double c, size_t n, double* ou
     double y2 = norm_sq(y, n);
     double num_x = 1.0 + 2.0 * c * xy + c * y2;
     double num_y = 1.0 - c * x2;
-    double den = 1.0 + 2.0 * c * xy + c * c * x2 * y2;
-    if (std::fabs(den) < 1e-15) den = (den < 0.0) ? -1e-15 : 1e-15;
+    /* Floor on the DENOMINATOR's magnitude, not a perturbation of anything:
+     * the Mobius quotient is undefined where den vanishes, and this keeps the
+     * value finite with the sign the expression had. The floor is a named
+     * constant reached through a comparison rather than a bare literal bound
+     * to `den`, which is what distinguishes a guard from a difference quotient
+     * both to a reader and to the structural no-finite-differences scan
+     * (scripts/gate_ad_shared_node_model.py, INV-ad-exact-no-finite-
+     * differences); this file is on that scan's path list because it records
+     * AD tape nodes. Same convention as the Poincare-ball divisor clamps in
+     * lib/backend/autodiff_codegen.cpp. */
+    static const double kMobiusDenFloor = 1e-15;
+    double den_raw = 1.0 + 2.0 * c * xy + c * c * x2 * y2;
+    double den = den_raw;
+    if (std::fabs(den_raw) < kMobiusDenFloor)
+        den = (den_raw < 0.0) ? -kMobiusDenFloor : kMobiusDenFloor;
     for (size_t i = 0; i < n; ++i) out[i] = (num_x * x[i] + num_y * y[i]) / den;
 }
 
@@ -493,6 +507,99 @@ extern "C" ad_node_t* ad_tensor_cross_entropy(ad_tape_t* tape,
     int64_t shape[1] = { 1 };
     return make_node(tape, AD_NODE_TENSOR_CROSS_ENTROPY, out, shape, 1,
                      logits, targets, nullptr);
+}
+
+/**
+ * @brief Embedding lookup, recorded as AD_NODE_TENSOR_EMBEDDING.
+ *
+ * Forward: y[i, :] = W[idx[i], :] for i in [0, num_indices).
+ *
+ * The node contract this fills is documented in full at the head of
+ * tensor_embedding_backward (lib/bridge/tensor_backward.cpp): input1 = the
+ * weight node, input2 = the INDEX node, params as int64[6] =
+ * [num_indices, d_model, vocab_size, 0, 0, 0]. Threading the index tensor onto
+ * the node is the piece ESH-0230 named as missing; without it the backward
+ * cannot know which rows to scatter into and refuses.
+ *
+ * VALIDATION IS DELIBERATELY STRICT AND HAPPENS HERE, in the forward. A
+ * fractional index, a negative one, or one past the vocabulary is not rounded,
+ * clamped or skipped — each is refused. The backward refuses on exactly the
+ * same conditions, but by then the forward has already returned a value the
+ * caller may have used; catching it at record time is what keeps a mis-wired
+ * producer from being discovered only at backward time, and it makes the two
+ * halves agree on what an index is.
+ */
+extern "C" ad_node_t* ad_tensor_embedding(ad_tape_t* tape,
+                                          ad_node_t* weights,
+                                          ad_node_t* indices) {
+    if (!has_tensor(weights) || !has_tensor(indices)) {
+        eshkol_error("qllm bridge: ad_tensor_embedding needs a weight matrix "
+                     "and an index tensor");
+        return nullptr;
+    }
+    if (weights->ndim != 2) {
+        eshkol_error("qllm bridge: ad_tensor_embedding expects rank-2 weights "
+                     "[vocab_size, d_model], got rank %zu", weights->ndim);
+        return nullptr;
+    }
+
+    const int64_t vocab_size = weights->shape[0];
+    const int64_t d_model    = weights->shape[1];
+    if (vocab_size <= 0 || d_model <= 0) {
+        eshkol_error("qllm bridge: ad_tensor_embedding got a degenerate weight "
+                     "shape [%lld, %lld]",
+                     (long long)vocab_size, (long long)d_model);
+        return nullptr;
+    }
+
+    const size_t num_indices = elem_count(indices->shape, indices->ndim);
+    if (num_indices == 0) {
+        eshkol_error("qllm bridge: ad_tensor_embedding got an empty index tensor");
+        return nullptr;
+    }
+
+    const double* W   = (const double*)weights->tensor_value;
+    const double* idx = (const double*)indices->tensor_value;
+
+    double* Y = alloc_doubles(num_indices * (size_t)d_model);
+    if (!Y) return nullptr;
+
+    for (size_t i = 0; i < num_indices; ++i) {
+        double v = idx[i];
+        /* Whole-number test, not a cast: (int64_t)2.7 is 2, and scattering
+         * row 2's gradient for a lookup that was never row 2 is silent
+         * corruption of the weight gradient. */
+        double r = (v < 0.0) ? -std::floor(-v + 0.5) : std::floor(v + 0.5);
+        if (!(v == v) || r != v) {
+            eshkol_error("qllm bridge: ad_tensor_embedding index %zu is %.17g, "
+                         "which is not a whole number; an embedding index must "
+                         "be integral", i, v);
+            return nullptr;
+        }
+        int64_t row = (int64_t)r;
+        if (row < 0 || row >= vocab_size) {
+            eshkol_error("qllm bridge: ad_tensor_embedding index %zu is %lld, "
+                         "outside the vocabulary [0, %lld)",
+                         i, (long long)row, (long long)vocab_size);
+            return nullptr;
+        }
+        std::memcpy(&Y[i * (size_t)d_model], &W[(size_t)row * (size_t)d_model],
+                    (size_t)d_model * sizeof(double));
+    }
+
+    int64_t shape[2] = { (int64_t)num_indices, d_model };
+    ad_node_t* node = make_node(tape, AD_NODE_TENSOR_EMBEDDING, Y, shape, 2,
+                                weights, indices, nullptr);
+    if (node) {
+        int64_t* p = (int64_t*)&node->params;
+        p[0] = (int64_t)num_indices;
+        p[1] = d_model;
+        p[2] = vocab_size;
+        p[3] = 0;
+        p[4] = 0;
+        p[5] = 0;
+    }
+    return node;
 }
 
 extern "C" ad_node_t* ad_tensor_attention(ad_tape_t* tape,
@@ -853,6 +960,124 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     if (node) {
         node->params.attention_params.num_heads = num_heads;
         node->params.attention_params.head_dim = (int64_t)head_dim;
+    }
+    return node;
+}
+
+/**
+ * @brief Weighted Fréchet (Karcher) mean, recorded as AD_NODE_FRECHET_MEAN.
+ *
+ * The forward is the shared f64 Karcher iteration from
+ * inc/eshkol/backend/frechet_mean_core.h — the same code the VM's `frechet-mean`
+ * opcode runs. Sharing it is not housekeeping. The backward
+ * (tensor_frechet_mean_backward) differentiates the stationarity condition
+ *
+ *     F(mu) = sum_i w_i log_mu(x_i) = 0
+ *
+ * implicitly, which is only valid AT the fixed point, so it RECOMPUTES the
+ * relative residual and refuses above tolerance. Forward and backward therefore
+ * have to agree on what "converged" means, down to the units the residual is
+ * measured in (Riemannian, not ambient — see the header). Two copies of this
+ * iteration would eventually disagree, and the failure mode is not a crash: it
+ * is a mean that one gate accepts and the other refuses, or worse, two means
+ * that both pass.
+ *
+ * WHY THIS REFUSES RATHER THAN RECORDS ON NON-CONVERGENCE. At a non-stationary
+ * mu the implicit formulas still evaluate — they just return the derivative of
+ * a condition that does not hold, which is a plausible wrong number. The
+ * backward refuses there. Recording a node the backward will refuse would move
+ * the failure from forward time (where the caller can still act) to backward
+ * time (where a training loop has already consumed the value), so the forward
+ * refuses first, on the same criterion.
+ *
+ * NODE CONTRACT (documented in full at tensor_frechet_mean_backward):
+ *   input1        points node [n_points, dim]
+ *   input2        weights node [n_points], or NULL for uniform
+ *   tensor_value  the converged mean mu*, dim doubles
+ *   params int64[6]  [n_points, dim, K bits, tol bits, 0, 0]
+ * K and the tolerance travel bit-cast from double, the same "scale_bits"
+ * convention ad_tensor_attention uses for its scale.
+ */
+extern "C" ad_node_t* ad_frechet_mean(ad_tape_t* tape,
+                                      ad_node_t* points,
+                                      ad_node_t* weights,
+                                      double curvature,
+                                      double tolerance) {
+    if (!has_tensor(points)) {
+        eshkol_error("qllm bridge: ad_frechet_mean needs a points tensor "
+                     "[n_points, dim]");
+        return nullptr;
+    }
+    if (points->ndim != 2) {
+        eshkol_error("qllm bridge: ad_frechet_mean expects rank-2 points "
+                     "[n_points, dim], got rank %zu", points->ndim);
+        return nullptr;
+    }
+    const int64_t n_points = points->shape[0];
+    const int64_t dim      = points->shape[1];
+    if (n_points <= 0 || dim <= 0) {
+        eshkol_error("qllm bridge: ad_frechet_mean got a degenerate points "
+                     "shape [%lld, %lld]", (long long)n_points, (long long)dim);
+        return nullptr;
+    }
+    if (!(curvature <= 0.0) || !(curvature == curvature)) {
+        eshkol_error("qllm bridge: ad_frechet_mean needs sectional curvature "
+                     "K <= 0 (got %.17g); the ball has radius 1/sqrt(-K)",
+                     curvature);
+        return nullptr;
+    }
+
+    /* Uniform weights are expressed by passing no weight node at all, which is
+     * also what the backward reads: with input2 NULL it uses w_i = 1 and
+     * produces no dL/dw. A node of ones would instead claim the weights were
+     * differentiated and came out with some gradient, which is a different
+     * statement. */
+    const double* W = nullptr;
+    int64_t n_w = 0;
+    if (weights) {
+        if (!has_tensor(weights)) {
+            eshkol_error("qllm bridge: ad_frechet_mean got a weights node with "
+                         "no tensor payload; pass NULL for uniform weights");
+            return nullptr;
+        }
+        n_w = (int64_t)elem_count(weights->shape, weights->ndim);
+        if (n_w < n_points) {
+            eshkol_error("qllm bridge: ad_frechet_mean got %lld weights for "
+                         "%lld points", (long long)n_w, (long long)n_points);
+            return nullptr;
+        }
+        W = (const double*)weights->tensor_value;
+    }
+
+    double* mu = alloc_doubles((size_t)dim);
+    double* scratch = alloc_doubles((size_t)dim * 4);
+    if (!mu || !scratch) return nullptr;
+
+    double resid = 0.0;
+    const char* why = eshkol_frechet_mean_compute(
+        (const double*)points->tensor_value, W, n_w,
+        (int)n_points, (int)dim, curvature, mu, scratch, &resid);
+    if (why) {
+        eshkol_error("qllm bridge: ad_frechet_mean did not converge (%s); "
+                     "n_points=%lld dim=%lld K=%.17g residual=%.3g bar=%.3g. "
+                     "Refusing to record a node whose implicit derivative is "
+                     "only defined at the fixed point.",
+                     why, (long long)n_points, (long long)dim, curvature,
+                     resid, ESHKOL_FRECHET_RESID_TOL);
+        return nullptr;
+    }
+
+    int64_t shape[1] = { dim };
+    ad_node_t* node = make_node(tape, AD_NODE_FRECHET_MEAN, mu, shape, 1,
+                                points, weights, nullptr);
+    if (node) {
+        int64_t* p = (int64_t*)&node->params;
+        p[0] = n_points;
+        p[1] = dim;
+        std::memcpy(&p[2], &curvature, sizeof curvature);
+        std::memcpy(&p[3], &tolerance, sizeof tolerance);
+        p[4] = 0;
+        p[5] = 0;
     }
     return node;
 }
