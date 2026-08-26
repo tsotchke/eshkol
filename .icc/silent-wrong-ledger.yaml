@@ -3829,9 +3829,18 @@ entries:
         first would be wasted work.
       expires: "2026-12-31"
 
-  - id: SW-54
+  - id: SW-59
     bucket: SILENT-WRONG
-    status: open
+    status: fixed
+    renumbered_from: >-
+      SW-54. Filed as SW-54 on branch feat/multishot-continuations before
+      rebase; by the time this entry closed, SW-54..56 had been claimed by
+      PR #466 (fix/v135-correctness-debt) and SW-57/SW-58 by #473
+      (fix/resident-rss-longrun) and #483 (feat/tail-transfer-complete)
+      respectively, all landing on master ahead of this branch. Verified
+      SW-59 free against master and all three of those branches at rebase
+      time (`git show <branch>:.icc/silent-wrong-ledger.yaml | grep 'id: SW-'`)
+      before assigning it here.
     title: "native: a continuation captured inside with-region dangles into the region's freed arena on resume (JIT and AOT)"
     repro: >-
       tests/continuations/region_capture_resume.esk, run with
@@ -3901,34 +3910,60 @@ entries:
       (doc_example_multishot, generator_coroutine, generator_multishot,
       amb_backtracking, reentry_after_function_return) all survive
       ESHKOL_ARENA_POISON=1 cleanly on native JIT and AOT and on the VM;
-      this is isolated to the one shape where a continuation both escapes
+      this was isolated to the one shape where a continuation both escapes
       its capturing frame AND was captured lexically inside a `with-region`
-      whose extent has since closed. The architecturally sound fix mirrors
-      what the VM already does: give native regions a real pin, e.g. a
-      `pinned` flag on `eshkol_region_t` set by
-      `eshkol_continuation_capture_stack()` (or a new
-      `eshkol_region_pin_all()` walking the native `__region_stack`) whenever
-      a captured continuation may outlive an open region, checked by
-      `region_destroy()` to skip `arena_destroy()` (leak, not dangle) —
-      the same failure direction the VM already commits to and the same
-      direction this ledger's CONTRACT prefers. That is a region-lifecycle
-      change beyond the two files under review and is not implemented here.
+      whose extent has since closed.
     caught_by: [direct-measurement, branch feat/multishot-continuations]
-    missed_by: [tests/continuations/region_capture_resume.esk (non-poisoned run), ctest, scripts/run_continuation_tests.sh]
-    waiver:
-      owner: tsotchke
-      reason: >-
-        FLAGGED FOR AN EXPLICIT RULING. The fixture's non-poisoned transcript
-        is byte-correct and ctest is green, so this does not regress anything
-        landed on master; it blocks treating
-        tests/continuations/region_capture_resume.esk as a sound gate on
-        native, and blocks the branch's blanket "multi-shot and re-entrant on
-        every engine" doc claim until either (a) native regions gain a real
-        pin analogous to heap_region_pin_all, or (b) the doc and the CI gate
-        are scoped to say the region-capture shape is VM-only pending that
-        fix. Not fixed in this pass because it is a region-lifecycle change
-        (eshkol_region_t, region_destroy, region_push) outside the two dirty
-        files this verification pass was scoped to finish, and touching
-        region teardown correctness right before a release push is exactly
-        the kind of change that needs its own review, not a rider on this one.
-      expires: "2026-09-15"
+    resolution: >-
+      FIXED by giving native regions the same pin the bytecode VM already had.
+      `struct eshkol_region` (lib/core/arena_memory.h) gained a `pinned` int,
+      and a new `eshkol_region_pin_all()` (lib/core/runtime_regions.cpp) walks
+      the thread-local `__region_stack` and sets it on every currently-open
+      region — the exact semantics of `heap_region_pin_all()`
+      (lib/backend/vm_core.c:594), called under the exact same guard the VM
+      uses: `eshkol_make_continuation_state()` (lib/core/runtime_continuations.cpp)
+      calls it whenever `eshkol_region_mark() > 0` at capture time, mirroring
+      `vm->heap.regions.depth > 0` at lib/backend/vm_run.c:170-171. `region_destroy()`
+      now checks the flag before its `arena_destroy()` call: a pinned region's
+      arena is deliberately leaked (never freed for the remainder of the
+      process) rather than freed out from under a continuation whose raw
+      C-stack snapshot may hold interior pointers into it that no evacuator
+      can see or walk — the identical "leak, never dangle" failure direction
+      `vm_region_evacuate_pop()`'s promote-wholesale path (lib/backend/vm_region_evac.c:1106-1117)
+      already commits to when the VM's own evacuator cannot prove a region
+      safe to reclaim. Like the VM's pin, this one is never lifted: neither
+      substrate has an unpin path, because continuations carry no refcount to
+      unpin against — a Stage-1 policy documented as such in both
+      `struct eshkol_region`'s comment and
+      docs/reference/language/continuations.md. `eshkol_region_unwind_to()`
+      (runtime_regions.cpp:1971), the single teardown path every region
+      exit funnels through (lexical `with-region` exit, `region-close`, a
+      `raise` crossing the region, and a `call/cc` escape — see ADR-0011
+      section 6.1), needed no changes itself: the pin check lives entirely
+      inside `region_destroy()`, so all four teardown callers get the fix
+      for free and none of the three non-capturing paths change behavior.
+      `ESHKOL_OBJ_FLAG_PINNED` (inc/eshkol/eshkol.h:482-483) was considered
+      and not used: it is a per-object flag reserved by ADR-0011 for a guest
+      collector's objects under a moving collector (see that ADR section 6.2),
+      a different granularity than the region-arena-lifetime problem here,
+      where the hazard is an opaque stack-snapshot blob with no per-object
+      addressability at all.
+    measured: >-
+      tests/continuations/region_capture_resume.esk: 3/3 clean under
+      ESHKOL_ARENA_POISON=1 on native JIT, native AOT and the VM (was SIGSEGV
+      at 0xcbcbcbcbcbcbcbcb on JIT/AOT on the very first re-invocation).
+      scripts/run_continuation_tests.sh: 18/18 (6 fixtures x 3 engines) PASSED
+      both with and without ESHKOL_ARENA_POISON=1, repeated 3x under poison
+      with identical results. Escape-only regressions unaffected: dynamic_wind_test,
+      callcc_dynamic_wind_test, guard_advanced_test, guard_edge_test and
+      rec_dynamic_wind_10k all pass under poison unchanged (no with-region
+      involved, so no region is ever pinned on these paths). Flat-RSS
+      non-regression proven with no continuation ever captured:
+      tests/memory/region_mutating_loop_flat_rss_test.sh PASS (peak 83MB,
+      ceiling 300MB), tests/memory/define_loop_flat_rss_aot_test.sh PASS
+      (peak 8MB, ceiling 200MB), tests/memory/vm_region_flat_rss_test.sh
+      PASS (6/6, peak 28MB, ceiling 120MB) — confirming pinning triggers
+      only on an actual capture and a program that never calls call/cc shows
+      zero behavior change. ctest: 191/191. scripts/run_vm_parity.sh: 188/188.
+    closed_at: "4ed8c6894ddd77c30a88cf360c9f8de65b821210"
+    closed_by: "branch feat/multishot-continuations"

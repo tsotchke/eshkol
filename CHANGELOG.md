@@ -216,6 +216,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
   version Eshkol advertises — so no doc text needed to change.
 
+### Added
+
+- **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
+  bytecode VM.** A captured continuation can now be invoked any number of
+  times, from any dynamic extent, including after the procedure that
+  captured it has already returned — the shape generators, coroutines and
+  `amb`-style backtracking search all need, and previously crashed
+  (SIGILL/SIGSEGV, native) or hung (bytecode VM) the moment a program tried
+  it. Native gives a capture that may outlive its frame a durable copy of
+  the live C stack, restored to the same addresses before `longjmp`ing, so
+  every interior pointer — frame pointers, spilled registers, addresses of
+  locals held by closures, the `jmp_buf` itself — stays valid with no
+  relocation; an escape-only capture (the common case: early return,
+  exception-style unwinding) is unaffected and keeps the original
+  zero-overhead `setjmp`/`longjmp` path. The VM snapshots its own operand
+  stack and call-frame array, excluding top-level bindings (the *store*)
+  from the *control* snapshot R7RS actually asks `call/cc` to capture, so
+  `set!`/`define` effects at top level survive re-entry. `dynamic-wind`
+  reroots on both engines: re-entering a continuation captured inside a
+  `dynamic-wind` whose extent has since been left re-runs that extent's
+  `before` thunk, per R7RS 6.10. Gated on all three engines by
+  `scripts/run_continuation_tests.sh` against six fixtures in
+  `tests/continuations/`. Two known limits remain, both tracked in
+  `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
+  the VM's operand-stack store (refused with a diagnostic, not silently
+  corrupted — SW-52), and a non-boxed `set!`-assigned local rolled back on
+  re-entry on both engines pending assignment conversion (SW-53). See
+  [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
+
+- **A continuation captured inside `with-region` pins the region on native,
+  matching the bytecode VM (SW-59).** The VM already gave a region a real
+  pin (`heap_region_pin_all()`) the moment a continuation was captured
+  inside one; native had no analogue, so a continuation captured inside a
+  `with-region` and resumed after that region exited read the region's
+  freed, poison-filled arena — a real use-after-free invisible to the
+  non-poisoned test oracle (SIGSEGV at `0xcbcbcbcbcbcbcbcb` under
+  `ESHKOL_ARENA_POISON=1`, 3/3, both native JIT and AOT). `eshkol_region_t`
+  now carries a `pinned` flag; capturing a continuation while any region is
+  open (`eshkol_make_continuation_state`) pins every currently-open region
+  (`eshkol_region_pin_all()`, mirroring `heap_region_pin_all()` exactly,
+  including its permanence — neither engine ever unpins, since a
+  continuation carries no refcount to unpin against); `region_destroy()`
+  leaks a pinned region's arena instead of freeing it, so the failure
+  direction is a leak, never a dangle, on both engines identically. The
+  fix is confined to `region_destroy()` — the single teardown path
+  (`eshkol_region_unwind_to()`, covering lexical `with-region` exit,
+  `region-close`, a `raise` crossing the region, and a `call/cc` escape)
+  needed no changes, so pinning triggers only on an actual capture: a
+  program that never calls `call/cc` shows zero behavior change, confirmed
+  by the unchanged flat-RSS gates
+  (`tests/memory/region_mutating_loop_flat_rss_test.sh`,
+  `tests/memory/define_loop_flat_rss_aot_test.sh`,
+  `tests/memory/vm_region_flat_rss_test.sh`). `tests/continuations/region_capture_resume.esk`
+  is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
+  crashing on two of them.
+
 ## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
