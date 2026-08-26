@@ -80,6 +80,16 @@ buckets:
     check has been demonstrated to FAIL under the condition it exists to detect
     — a recorded red run, not an argument that it would go red.
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+  VACUOUS-ASSURANCE: >-
+    A check that was green (or structurally could only ever be green) while
+    incapable of ever going red for the failure it exists to catch — the check
+    ran, reported success, and that success asserted nothing, because no input
+    reachable in practice would have made it fail. Distinct from SILENT-WRONG
+    (a wrong ANSWER with no diagnostic): here the diagnostic infrastructure
+    itself is the defect. Not tag-blocking by default, but every entry must
+    name the exact mechanism that made the check incapable of failing and the
+    fix that gave it a real failure mode, with that fix's own red-proof as
+    closure evidence — closing by assertion is forbidden, same as SILENT-WRONG.
 
 entries:
 
@@ -3632,7 +3642,7 @@ entries:
       it makes the project look worse than it is and, more dangerously, trains readers to
       discount the 25 that are still real. Re-running found/ belongs in the parity gate.
 
-  - id: SW-46
+  - id: SW-53
     bucket: SILENT-WRONG
     status: closed
     closed_at: "feat/linearity-complete"
@@ -3698,6 +3708,16 @@ entries:
       that simply refuses every qubit program from passing.
     caught_by: [pr-471-vm-parity-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, run_typesystem_tests]
+    note: >-
+      Originally filed as SW-46, independently of the SW-47 entry's note below
+      recording that id as reserved for the in-flight AD carrier-wave lane
+      (feat/ad-structural-gate, PR #487). Both #471 and #487 landed on master
+      claiming SW-46, invisible to review since a textual merge does not
+      conflict on two branches picking the same next-free id. Renumbered to
+      SW-53 (next free after SW-52) on rebase, since #487's entry carries three
+      external cross-references (.icc/architecture-model.yaml,
+      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) and this
+      one has none.
     notes: >-
       Filed by PR #471 as build item BI-5 after measuring it on both VM entry
       points. It is the same class the project refuses elsewhere — a guarantee
@@ -4115,3 +4135,93 @@ entries:
       Loud, so not tag-blocking, but it is what keeps op:CURL a gap now that the
       VM side is exact. Two separable defects: the crash, and the arity-convention
       divergence between the engines.
+  # ───────────────────────── VACUOUS-ASSURANCE ─────────────────────────
+
+  - id: VA-01
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_by: "branch ci/required-context-consistency"
+    title: "docs-only-required-context-stubs drifted out of sync with branch protection's required list, silently reopening a fixed permanent-block class"
+    mechanism: >-
+      PR #455 fixed a real permanent-block bug: a `unix-matrix`/`windows-
+      matrix` leg is `needs: changes` gated and its `if:` depends on
+      `docs_only`, so on a docs-only PR that job never instantiates at all —
+      its per-leg required-context names are ABSENT from the head SHA's
+      check-run set entirely, not reported under a wrong name, simply never
+      created, and branch protection cannot resolve a required context with
+      no check run at all. PR #455's fix was a stub job
+      (`docs-only-required-context-stubs`) whose matrix names were exactly the
+      7 matrix-derived contexts required AT THAT TIME. Branch protection later
+      grew 5 more matrix-derived required contexts — windows-arm64-lite,
+      macos-arm64-xla, macos-x64-xla, macos-arm64-lite, macos-x64-lite — and
+      nothing re-checked the stub matrix against the new required list. The
+      2026-08-25 hardening to `enforce_admins: true` turned this from a
+      dormant defect (admins could bypass the resulting permanent block) into
+      an active one. CONFIRMED DIRECTLY, not just derived: a real docs-only
+      PR (#484) was MERGEABLE/BLOCKED with those 5 contexts required, and
+      MERGEABLE/CLEAN the instant they were removed from branch protection —
+      no other change, no new CI run. Branch protection is (as of this entry)
+      temporarily narrowed to 11 required contexts while this fix ships; this
+      fix's job is to make the full 16 reportable so they can be restored.
+
+      This is VACUOUS-ASSURANCE rather than a plain missing check for TWO
+      independent reasons, both caught and corrected during this same fix
+      rather than shipped:
+
+      (1) The original brief for this fix additionally asserted
+      `wasm-execute-diff` as a sixth gap. Direct measurement — PR #455's own
+      proof-PR evidence, and independently, PR #484's live head SHA queried
+      directly — shows that claim is FALSE. `wasm-execute-diff` is a
+      static-named (non-matrix) job: a skipped STATIC job still reports one
+      check run under its own real name with conclusion `skipped`, and
+      branch protection treats `skipped` as SATISFYING a required context.
+      It stayed required throughout PR #484's test and never blocked
+      anything. Asserting it as broken without re-deriving the mechanism
+      would have added stub coverage that either does nothing or introduces
+      a second, redundant check run under a name a real job already reports
+      correctly — an added guard whose own presence would never have been
+      exercised by anything it could actually fail on.
+
+      (2) A first draft of the gate graded whichever required-context set
+      was CURRENTLY live. Live is, at the time of this fix, narrowed to 11
+      contexts specifically BECAUSE this fix has not landed — so a gate
+      that graded live alone would have read that narrowed set as complete
+      and said nothing about the 5 contexts it exists to protect, the exact
+      "checked nothing, reported success" shape one level up. Corrected
+      before merge: grading is always anchored on a committed TARGET file
+      (the intended full 16-context policy, independent of branch
+      protection's state at any moment), unioned with live when live is
+      reachable, with the live/target difference always reported rather
+      than silently resolved either way.
+    evidence: >-
+      scripts/check_required_context_consistency.py parses ci.yml and
+      identity-guard.yml's job graph directly (no regex over job text) and
+      asserts required_contexts SUBSET-OF reportable_everywhere, where
+      reportable_everywhere = unconditional jobs UNION static-named skipped
+      jobs UNION (matrix-derived skipped names INTERSECT the stub matrix).
+      Self-test fixtures prove the gate goes RED on exactly the two shapes
+      this incident is made of: (a) a required, still-skippable matrix name
+      removed from the stub matrix, (b) a required context no workflow could
+      ever emit — plus a dedicated fixture proving a static skipped job
+      needs no stub (the wasm-execute-diff shape), and a fourth fixture
+      proving reason (2) above: grading a narrowed "live" set alone reports
+      a false PASS on a still-missing matrix name, while grading target
+      UNION live correctly FAILS on it. Run against the real, patched
+      ci.yml: `--offline` (target file alone, no network) PASS 16/16;
+      against real LIVE branch protection (11 contexts, authenticated `gh`)
+      PASS 16/16 graded via target-union-live, with the 5 temporarily-
+      unrequired contexts reported by name as the expected live/target
+      difference. Wired into ctest (required_context_consistency_gate /
+      required_context_consistency_gate_selftest) and the `assurance-gates`
+      CI job.
+    fixed_by: >-
+      branch ci/required-context-consistency — extended
+      docs-only-required-context-stubs' matrix with the 5 real gaps,
+      corrected the stale in-file comment that once explained only the
+      original 7, and added scripts/check_required_context_consistency.py
+      as a standing gate (target-file-anchored grading, unioned with LIVE
+      branch protection when reachable; wired into ctest, assurance-gates,
+      and this oracle's `required_context_consistency_clean` criterion) so
+      this class cannot silently reopen a third time.
+    caught_by: [direct-measurement, branch-protection-audit]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

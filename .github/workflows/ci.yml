@@ -442,6 +442,7 @@ jobs:
           python3 scripts/audit_oracle_false_green.py --self-test
           python3 scripts/check_evidence_staleness.py --self-test
           python3 scripts/gate_ad_shared_node_model.py --self-test
+          python3 scripts/check_required_context_consistency.py --self-test
 
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
@@ -473,6 +474,24 @@ jobs:
       - name: Every AD op routes through a declared, exact, source-verified carrier
         shell: bash
         run: python3 scripts/gate_ad_shared_node_model.py --no-trace
+
+      # --offline deliberately: reading branch-protection settings needs
+      # administration:read, which the default workflow token does not
+      # carry, and this job's `permissions:` are not widened just to grant
+      # it. This step grades the committed INTENDED target file
+      # (.icc/required-status-contexts.json) alone — which is what this gate
+      # always grades regardless of LIVE availability, precisely so a live
+      # required-context set that is temporarily narrower than intended
+      # cannot read as "nothing to fix" — so this step's result is
+      # deterministic rather than depending on the runner's incidental `gh`
+      # auth state. Run `python3 scripts/check_required_context_consistency.py`
+      # locally with an authenticated `gh` (or GITHUB_TOKEN/GH_TOKEN with
+      # administration:read) to additionally fold in and diff against LIVE
+      # branch-protection contexts, and update the target file by hand when
+      # the INTENDED policy itself changes.
+      - name: Every required status context is reportable on every PR shape (docs-only included)
+        shell: bash
+        run: python3 scripts/check_required_context_consistency.py --offline --no-trace
 
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative
@@ -711,15 +730,37 @@ jobs:
   # job itself is skipped via a job-level `if:` — a skipped matrix job
   # instead produces exactly ONE check run, named with the literal,
   # unresolved string "${{ matrix.name }}" (verified empirically; see the
-  # proof-PR evidence under .worktrees/v135/evidence/ci-wave/). That
-  # unresolved name matches none of branch protection's required contexts,
-  # so without this stub, `linux-x64-xla`, `linux-arm64-xla`,
-  # `linux-x64-cuda`, `linux-arm64-cuda`, `linux-x64-asan-ubsan`,
-  # `windows-arm64-xla`, and `windows-x64-cuda` would each go right back to
-  # never reporting on a docs-only PR — the exact permanent-block failure
-  # this whole change exists to fix. `wasm-execute-diff` needs no such stub
-  # because it isn't matrix-based; its job-level skip already produces a
-  # correctly-named, SKIPPED check run.
+  # proof-PR evidence under .worktrees/v135/evidence/ci-wave/, cited in full
+  # in PR #455). That unresolved name matches none of branch protection's
+  # required contexts, so without this stub, every matrix-derived required
+  # context below would go right back to never reporting on a docs-only PR
+  # — the exact permanent-block failure this whole job exists to fix.
+  # `wasm-execute-diff` needs no such stub because it isn't matrix-based;
+  # its job-level skip already produces a correctly-named, SKIPPED check
+  # run, and PR #455's own proof PR measured this directly (`gh pr checks`
+  # and the check-runs API both showed `wasm-execute-diff` SKIPPED and
+  # counted among the satisfied required contexts on a real docs-only PR —
+  # do not re-add it here without new counter-evidence).
+  #
+  # 2026-08-25: branch protection grew 5 more matrix-derived required
+  # contexts after PR #455 landed with only the original 7 (windows-arm64-
+  # lite, macos-arm64-xla, macos-x64-xla, macos-arm64-lite, macos-x64-lite —
+  # all produced by unix-matrix/windows-matrix's `${{ matrix.name }}`, never
+  # this job's), and nobody extended this matrix to match. That reopened the
+  # identical failure PR #455 closed, for those 5 names — confirmed directly
+  # on a real docs-only PR (#484): MERGEABLE/BLOCKED with those 5 required,
+  # MERGEABLE/CLEAN the instant they were removed from branch protection, no
+  # other change. A required context and its stub coverage are two lists
+  # that must be kept in sync by hand, and this is the second time they
+  # drifted out of sync. scripts/check_required_context_consistency.py
+  # (assurance-gates) now fails the build the day they drift again, on
+  # EITHER side: a name required but missing here, or a name added here
+  # that no real job ever emits. It grades against the INTENDED full set
+  # committed in .icc/required-status-contexts.json, not just whatever
+  # branch protection currently requires — branch protection is temporarily
+  # narrowed to exclude these 5 while this fix ships, and grading live
+  # alone would have read that narrowed state as already-correct. See
+  # .icc/silent-wrong-ledger.yaml VA-01.
   #
   # This job's own matrix DOES expand correctly, because it only runs
   # (job-level `if` true) on docs-only PRs — the opposite condition from
@@ -742,6 +783,11 @@ jobs:
           - linux-x64-asan-ubsan
           - windows-arm64-xla
           - windows-x64-cuda
+          - windows-arm64-lite
+          - macos-arm64-xla
+          - macos-x64-xla
+          - macos-arm64-lite
+          - macos-x64-lite
     steps:
       - name: Docs-only PR — real lane skipped, this stub satisfies branch protection
         shell: bash
@@ -864,24 +910,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Every network fetch below goes through scripts/ci_retry.sh — the
+      # single definition of this repo's CI retry policy (bounded attempts,
+      # exponential backoff, explicit per-command timeouts) — rather than a
+      # hand-rolled loop per call site. linux-x64-cuda / linux-arm64-cuda /
+      # linux-arm64-lite have all failed a required PR check with apt's
+      # generic exit code 100 during a momentary apt.llvm.org or CUDA-repo
+      # outage, on commits that built cleanly on rerun; the base
+      # `apt-get install` in "Install Dependencies (Linux)" below had NO
+      # retry at all before this change.
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euxo pipefail
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          scripts/ci_retry.sh --attempts 3 --base-delay 10 -- \
+            wget --timeout=20 --tries=1 -qO "$RUNNER_TEMP/llvm-snapshot.gpg.key" \
+            https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc < "$RUNNER_TEMP/llvm-snapshot.gpg.key" >/dev/null
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          apt_update() {
-            for attempt in 1 2 3; do
-              if sudo apt-get update -o Acquire::Retries=5; then
-                return 0
-              fi
-              sudo rm -rf /var/lib/apt/lists/*
-              sleep $((attempt * 15))
-            done
-            sudo apt-get update -o Acquire::Retries=5
-          }
-          apt_update
+          scripts/ci_retry.sh --attempts 4 --base-delay 15 -- \
+            sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Add NVIDIA CUDA Repository (Linux CUDA)
         if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON'
@@ -894,17 +943,20 @@ jobs:
             *) echo "Unsupported native CUDA architecture: $(uname -m)" >&2; exit 1 ;;
           esac
           keyring="$RUNNER_TEMP/cuda-keyring.deb"
-          wget -O "$keyring" \
+          scripts/ci_retry.sh --attempts 3 --base-delay 10 -- \
+            wget --timeout=20 --tries=1 -O "$keyring" \
             "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/${cuda_repo_arch}/cuda-keyring_1.1-1_all.deb"
           sudo dpkg -i "$keyring"
-          sudo apt-get update -o Acquire::Retries=5
+          scripts/ci_retry.sh --attempts 4 --base-delay 15 -- \
+            sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get install -y \
+          scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config \
@@ -913,8 +965,9 @@ jobs:
             libpng-dev libjpeg-dev libwebp-dev \
             git python3
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              -o Acquire::Retries=5 \
+            scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
+              sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
               "cuda-nvcc-${CUDA_PACKAGE_SERIES}" \
               "cuda-cudart-dev-${CUDA_PACKAGE_SERIES}" \
               "libcublas-dev-${CUDA_PACKAGE_SERIES}"
@@ -1551,22 +1604,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # See the unix-matrix job's identical-in-spirit step for why every
+      # fetch here goes through scripts/ci_retry.sh. This block's prior
+      # `apt-get update` retry loop (`... && break` inside `for`, falling
+      # through silently after the last failed attempt with no non-zero
+      # exit) could never actually fail the step even after 3 real
+      # failures — replaced with the same wrapper used everywhere else so
+      # the retry policy has one definition and a real failure is still
+      # terminal.
       - name: Add LLVM Repository (Linux)
         shell: bash
         run: |
           set -euxo pipefail
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          scripts/ci_retry.sh --attempts 3 --base-delay 10 -- \
+            wget --timeout=20 --tries=1 -qO "$RUNNER_TEMP/llvm-snapshot.gpg.key" \
+            https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc < "$RUNNER_TEMP/llvm-snapshot.gpg.key" >/dev/null
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          for attempt in 1 2 3; do
-            sudo apt-get update -o Acquire::Retries=5 && break
-            sudo rm -rf /var/lib/apt/lists/*; sleep $((attempt * 15))
-          done
+          scripts/ci_retry.sh --attempts 4 --base-delay 15 -- \
+            sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Install Dependencies (Linux)
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get install -y \
+          scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config libssl-dev libncurses-dev \
