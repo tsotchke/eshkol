@@ -3828,3 +3828,107 @@ entries:
         needed to detect the defect IS the fix, so building the diagnostic
         first would be wasted work.
       expires: "2026-12-31"
+
+  - id: SW-54
+    bucket: SILENT-WRONG
+    status: open
+    title: "native: a continuation captured inside with-region dangles into the region's freed arena on resume (JIT and AOT)"
+    repro: >-
+      tests/continuations/region_capture_resume.esk, run with
+      ESHKOL_ARENA_POISON=1 set:
+        ./build/eshkol-run -r tests/continuations/region_capture_resume.esk
+        ./build/eshkol-run tests/continuations/region_capture_resume.esk -o /tmp-out && ESHKOL_ARENA_POISON=1 /tmp-out
+      (bytecode VM is unaffected: eshkol-vm-standalone-test on the same
+      fixture prints ALL PASS under the same env var, and emits its
+      pin-promotion note on stderr.)
+    observed: >-
+      Both native JIT and native AOT print the first "captured=(11 22 33 44
+      55)" line and then crash — SIGSEGV at address 0xcbcbcbcbcbcbcbcb, the
+      0xCB arena-poison fill byte repeated across a pointer-width read — on
+      the very first re-invocation of the continuation captured inside the
+      exited `with-region`. Reproduced 3/3 runs, both on the commit
+      aabc0b58 baseline and with the uncommitted lib/backend/llvm_codegen.cpp
+      + lib/repl/repl_jit.cpp change on branch feat/multishot-continuations
+      that redirects an escaping call/cc's own state+closure allocation to
+      get_global_arena_shared() (identical crash, same address, same line,
+      in both). WITHOUT ESHKOL_ARENA_POISON the fixture prints the fully
+      correct transcript and exits 0 on every engine — this is a real
+      use-after-free that the non-poisoned test oracle cannot see, not a
+      poisoning false positive: an escape-only control (with-region that
+      escapes a value via `set!` to a global, then 20000 iterations of
+      unrelated churn allocation, no call/cc at all) survives
+      ESHKOL_ARENA_POISON=1 cleanly on the same build.
+    correct: >-
+      captured=(11 22 33 44 55) printed three times, then
+      "final captured=(11 22 33 44 55)" / ALL PASS, matching
+      tests/continuations/expected/region_capture_resume.txt, with no crash
+      under any memory-diagnostic build.
+    root_cause: >-
+      `eshkol_continuation_capture_stack()` (lib/core/runtime_continuations.cpp)
+      copies the ENTIRE live C stack from the capturing frame up to the
+      thread's stack base into an arena-owned buffer, and
+      `resume_trampoline()` copies those bytes back to the SAME addresses
+      verbatim before longjmp'ing. That is sound for the bytes themselves,
+      but the snapshot is not sanitised: it includes whatever the
+      with-region body's own frame held on the C stack at capture time,
+      which is legitimately live at capture (the region's arena is still
+      open) but not evacuated the way ESH-0214c evacuates a `set!`-to-global
+      target. The dirty-file fix under review only re-homes the
+      continuation's OWN eshkol_continuation_state_t / closure / stack-image
+      buffer onto get_global_arena_shared() when the capture is classified
+      as escaping; it does not, and by construction cannot, walk the opaque
+      byte blob it captures for embedded pointers into the (about to be
+      freed) region arena. `region_destroy()` -> `arena_destroy()` runs
+      unconditionally at region_pop regardless of whether a continuation was
+      captured inside the region, so those interior pointers dangle the
+      moment the region's owning `with-region` form returns.
+      tests/continuations/region_capture_resume.esk's own header comment
+      ("native keeps the region alive for the same reason [as the VM]") is
+      not accurate for the code as it stands: grep confirms no
+      region_pin/pin_all analogue exists in lib/core/runtime_regions.cpp;
+      only the bytecode VM has one (heap_region_pin_all(), vm_run.c:171,
+      called from vm_capture_continuation_dynamic_state() whenever a
+      continuation is captured with vm->heap.regions.depth > 0). The
+      generic region-escape evacuator (runtime_regions.cpp evac_kind_for())
+      independently confirms it does not deep-walk continuation closures
+      either: CALLABLE_SUBTYPE_CONTINUATION is explicitly EVAC_LEAF,
+      documented as "their interior reference graph is not confidently
+      traversable here."
+    notes: >-
+      Found during verification of branch feat/multishot-continuations
+      (commits aabc0b58..7bd85799) prior to rebase/push — not previously
+      ledgered. The other 5 of 6 committed fixtures
+      (doc_example_multishot, generator_coroutine, generator_multishot,
+      amb_backtracking, reentry_after_function_return) all survive
+      ESHKOL_ARENA_POISON=1 cleanly on native JIT and AOT and on the VM;
+      this is isolated to the one shape where a continuation both escapes
+      its capturing frame AND was captured lexically inside a `with-region`
+      whose extent has since closed. The architecturally sound fix mirrors
+      what the VM already does: give native regions a real pin, e.g. a
+      `pinned` flag on `eshkol_region_t` set by
+      `eshkol_continuation_capture_stack()` (or a new
+      `eshkol_region_pin_all()` walking the native `__region_stack`) whenever
+      a captured continuation may outlive an open region, checked by
+      `region_destroy()` to skip `arena_destroy()` (leak, not dangle) —
+      the same failure direction the VM already commits to and the same
+      direction this ledger's CONTRACT prefers. That is a region-lifecycle
+      change beyond the two files under review and is not implemented here.
+    caught_by: [direct-measurement, branch feat/multishot-continuations]
+    missed_by: [tests/continuations/region_capture_resume.esk (non-poisoned run), ctest, scripts/run_continuation_tests.sh]
+    waiver:
+      owner: tsotchke
+      reason: >-
+        FLAGGED FOR AN EXPLICIT RULING. The fixture's non-poisoned transcript
+        is byte-correct and ctest is green, so this does not regress anything
+        landed on master; it blocks treating
+        tests/continuations/region_capture_resume.esk as a sound gate on
+        native, and blocks the branch's blanket "multi-shot and re-entrant on
+        every engine" doc claim until either (a) native regions gain a real
+        pin analogous to heap_region_pin_all, or (b) the doc and the CI gate
+        are scoped to say the region-capture shape is VM-only pending that
+        fix. Not fixed in this pass because it is a region-lifecycle change
+        (eshkol_region_t, region_destroy, region_push) outside the two dirty
+        files this verification pass was scoped to finish, and touching
+        region teardown correctness right before a release push is exactly
+        the kind of change that needs its own review, not a rider on this one.
+      expires: "2026-09-15"
