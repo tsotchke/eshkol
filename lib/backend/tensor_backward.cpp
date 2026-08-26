@@ -1389,7 +1389,18 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
      * point of the weighted variance, so its rule differentiates that condition
      * rather than the iteration that solves it. Lives with the other bridge
      * geometry in lib/bridge/tensor_backward.cpp. */
-    case AD_NODE_FRECHET_MEAN: {
+    case AD_NODE_FRECHET_MEAN:
+    /* Squared geodesic distance on a space form or a product of them. It is
+     * tensor-valued on the INPUT side — two point tensors in, one scalar out —
+     * so it needs an explicit arm here for the same reason the Frechet mean
+     * does: the default: below propagates nothing.
+     *
+     * It is deliberately NOT grouped with AD_NODE_HYPERBOLIC_DISTANCE. Distance
+     * has a cone point at coincidence and its rule refuses there; d^2 is smooth
+     * across the diagonal and its rule returns the exact zero. Routing them
+     * through one case would eventually route them through one implementation,
+     * and the refusal that is correct for one is a defect in the other. */
+    case AD_NODE_SQUARED_DISTANCE: {
         /* Use the bridge dispatch table to find the right backward fn */
         bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
         if (!fn) {
@@ -1405,8 +1416,9 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         /* Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
          * differentiated by their scalar backward emitted in codegen and
          * legitimately reach here with nothing to do. Every TENSOR op
-         * (19-32 and the qLLM bridge ops 67-80) has an explicit case above, so
-         * a tensor-op gradient can never silently fall through this default. */
+         * (19-32, the qLLM bridge ops 67-80, and AD_NODE_SQUARED_DISTANCE)
+         * has an explicit case above, so a tensor-op gradient can never
+         * silently fall through this default. */
         break;
     }
 

@@ -4977,3 +4977,151 @@ entries:
       this class cannot silently reopen a third time.
     caught_by: [direct-measurement, branch-protection-audit]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-68
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/ad-squared-distance"
+    closed_by: >-
+      branch feat/ad-squared-distance — AD_NODE_SQUARED_DISTANCE with an exact
+      log-map backward for H^n / S^n / R^n and their products, in
+      lib/bridge/space_form_ad.cpp, registered in both dispatch sites and
+      gated by ctest -R squared_distance_gradcheck.
+    renumbered_from: >-
+      SW-67 was left unallocated on purpose. It is held by the GPU-gate lane on
+      the LOCAL branch `fix/gpu-correctness-gate-vacuous`, which has not been
+      pushed: `SW-67` is reachable from no remote ref, so the enumeration a
+      reviewer would naturally run — grep the ledger at every
+      refs/remotes/* tip — reports it free and is wrong. That is precisely the
+      shape scripts/check_ledger_integrity.py's question 2 describes: two
+      branches independently pick the same next-free id, neither edit
+      conflicts, the file still parses, and the result is two entries answering
+      to one name. It records SW-33 allocated three times and SW-35 and SW-42
+      twice each, all on stacked branches that never conflicted. Skipping one
+      id is cheaper than being the fourth.
+    title: "Squared geodesic distance had no AD node, so every score built from it inherited the cone-point refusal that belongs to d and not to d^2"
+    repro: >-
+      Before this branch, the only geodesic primitive on the tape was
+      ad_hyperbolic_distance (AD_NODE_HYPERBOLIC_DISTANCE, type 33). Scoring
+      attention by d(q,k) and asking for a gradient at q == k — the diagonal
+      entry of every self-attention row, present in every row when Q and K are
+      the same tensor — reaches a point where d has no derivative. There was no
+      d^2 node in the tree or in either open PR (#497, #498), so a caller who
+      wanted the smooth score had no primitive to build it from and the
+      obvious substitute, squaring the distance node, carries the defect
+      through: d(d^2)/dx = 2 d grad d is 0 * (no limit) at coincidence.
+    observed: >-
+      The composite has no usable gradient at the diagonal by either route.
+      Routed through the raw distance the coordinate gradient converges to the
+      conformal factor lambda_x with its DIRECTION still pi apart between
+      opposite approaches at every radius down to 1e-10 — a finite, plausible
+      number that is not a derivative. Routed through arcosh-then-square it is
+      a NaN. tests/qllm_oracle/golden/squared_distance.json case
+      squared_distance.ball.coincident.d3.c1 records the second route running
+      in-tree: value exactly 0.0, gradient null / all_finite false.
+    correct: >-
+      grad_x d^2(x,y) = -2 log_x(y) on the whole injectivity ball, including at
+      x == y where log_x(x) = 0 and the gradient is exactly zero. d^2 is not
+      merely differentiable at the diagonal, it is the ONLY admissible form
+      there: on a two-point homogeneous space any isometry-invariant pairwise
+      score that is C^2 across the diagonal factors through d^2 (Wang 1952 on
+      the classification, Whitney 1943 on even functions). So this is not one
+      convenience primitive among several — every admissible score is built
+      from it.
+    root_cause: >-
+      The refusal was attached to the wrong object. `d` genuinely has a cone
+      point at coincidence and refusing there is right; the tree had only `d`,
+      so the refusal was the only behaviour available and it propagated into
+      everything built on top. What was missing is the observation that d^2
+      does not share the defect, and that it cannot be obtained from d by
+      squaring — the composition reintroduces the singularity that the log-map
+      form does not have. The primitive has to be evaluated in the log-map form
+      from the start.
+    fix: >-
+      lib/bridge/space_form_ad.cpp adds ad_squared_distance /
+      ad_product_squared_distance and tensor_squared_distance_backward, with
+      AD_NODE_SQUARED_DISTANCE appended in inc/eshkol/eshkol.h, an arm in
+      eshkol_tensor_backward_dispatch (lib/backend/tensor_backward.cpp) and a
+      row in get_tensor_backward_fn (lib/bridge/tensor_backward.cpp). Every
+      formula is written in the separation delta = y - x so that coincidence is
+      reached by delta becoming exactly zero rather than by two O(1) quantities
+      cancelling: on the ball via the identity |(-x) (+)_c y|^2 = |delta|^2/den
+      with den = (1-c|x|^2)(1-c|y|^2) + c|delta|^2, all terms positive; on the
+      sphere via 1 - cos(theta) = |delta|^2/(2R^2). d is never formed and
+      sqrt(d^2) is never differentiated. The cut locus is still refused, on the
+      sphere only, where the mathematics really does run out.
+    observed_after: >-
+      x == y bitwise gives d2 == 0.0 and every gradient component == 0.0, by
+      exact equality and with no epsilon guard producing it, on all three forms
+      and on the product. Walking in along a fixed geodesic direction on the
+      ball, |grad_x d^2| tracks the closed form 2 lambda_x r at relative
+      4.03e-15 (r = 1e-2), 1.50e-11 (1e-6), 1.17e-07 (1e-10) and 2.26e-05
+      (1e-12) — the ball chart's own distance resolution of ~eps/r, measured
+      independently as T10 of the 2026-08-26 universal-geometric-attention
+      study, and monotonically decreasing throughout rather than converging to
+      lambda_x the way grad d does.
+    evidence: >-
+      ctest -R squared_distance_gradcheck — 30 checks, pinned by count. Four
+      EXACT references are asserted before any finite difference is taken:
+
+      (1) The flat case bit for bit. On R^n, d^2 = |x-y|^2 and grad = 2(x-y)
+      are both exact in floating point, so the comparison is `==`, not a
+      tolerance, on the value and on both gradients.
+
+      (2) Coincidence bit for bit, on hyperbolic / spherical / euclidean and on
+      the product H^2 x S^2 x R^2.
+
+      (3) The log-map identity grad_x d^2 = -2 lambda_x^2 log_x(y) against a
+      log map written independently in the test from the Mobius/Ganea form
+      (max rel 3.10e-16), the Gauss lemma |grad|/lambda_x = 2 d with the
+      distance supplied by a third expression, the arcosh form (2.14e-16), the
+      spherical identity with zero radial component (2.84e-16 / 6.56e-16), and
+      x/y symmetry by exact equality.
+
+      (4) The committed golden vectors, tests/qllm_oracle/golden/
+      squared_distance.json, produced by tests/qllm_oracle/squared_distance.esk
+      — which computes d^2 the OTHER way, arcosh/arccos closed form squared and
+      differentiated by Eshkol's generic reverse-mode AD. Two routes, two
+      languages, no shared line: euclidean agrees exactly, ball 1.46e-16,
+      sphere 2.27e-16, product 2.73e-16.
+
+      Finite differences come last and agree at 1.06e-10 (hyperbolic),
+      1.25e-10 (spherical), 6.36e-11 (euclidean) and 2.89e-10 (product). The
+      refusals are gated too: outside the ball, the exact antipode, a
+      dimension list that does not cover the point, an unknown form and a
+      negative weight all refuse, while a pair just inside the cut locus still
+      answers — so the antipodal refusal is a boundary and not a blanket.
+    caught_by: [universal-geometric-attention-study-2026-08-26]
+    missed_by: [icc-invariants, icc-smoke, icc-readiness, ad_carrier_model_clean, qllm_oracle_gate]
+    notes: >-
+      WHAT IS DELIBERATELY NOT SHARED WITH ad_hyperbolic_distance. The two ops
+      are kept in separate translation units, given separate dispatch arms, and
+      given separate refusals, because the refusal that is correct for one is a
+      defect in the other and a shared implementation would eventually
+      propagate one to both. The d^2 node refuses only where the mathematics
+      does: a point off the manifold, or a separation at the cut locus, which
+      exists on S^n and not on H^n or R^n.
+
+      RELATION TO PR #500 (fix/exhaustive-dispatch), which was open when this
+      branch was cut. That branch generates ad_node_type_t, the tensor-dispatch
+      grouping and the bridge backward table from
+      inc/eshkol/ad_node_registry.def, so that a node type cannot be declared
+      without declaring what its reverse pass does — the general form of the
+      #498 defect. This op is the first node type added after that registry was
+      written and it lands on the registry's terms: appended (not inserted), a
+      tensor payload with a bridge rule, and a backward that exists rather than
+      a `default:` standing in for one. On merge it becomes one row,
+      ESHKOL_AD_NODE(SQUARED_DISTANCE, 83, TENSOR, BRIDGE,
+      tensor_squared_distance_backward), keeping the value it already has, and
+      the two hand-written registration sites this branch adds are then
+      generated and should be deleted rather than kept beside the generated
+      ones. Recorded here because the two branches touch the same three files
+      and a merge that keeps both copies would compile and be wrong.
+
+      WHAT THIS OP DOES NOT YET HAVE. No Scheme surface and no VM counterpart.
+      It is a C bridge entry point reachable from the native AD-node carrier
+      only, which is consistent with .icc/ad-carrier-manifest.yaml as written —
+      `native-ad-node` is declared `shared: false` there and no PARITY row
+      exists to promote. The absence is recorded as a build item in
+      docs/reference/ad/architecture.md rather than left to be inferred, so a
+      future VM implementation cannot appear without a carrier declaration.

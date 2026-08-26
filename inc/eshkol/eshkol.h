@@ -995,6 +995,38 @@ typedef enum {
     // composed inside Eshkol's reverse-mode AD tape.
     AD_NODE_CUSTOM,
 
+    // Squared geodesic distance on a space form or a product of them
+    // (lib/bridge/space_form_ad.cpp). Tensor-valued inputs, scalar output.
+    //
+    // APPENDED, like AD_NODE_CUSTOM above, because much of
+    // lib/backend/autodiff_codegen.cpp compares node types against hard-coded
+    // integer literals rather than against these enumerators: inserting into
+    // the middle renumbers a block and silently re-points those comparisons.
+    //
+    // This node is NOT AD_NODE_HYPERBOLIC_DISTANCE squared, and the difference
+    // is the point of it. Distance has a cone point at x == y and its backward
+    // correctly refuses there; d^2 is smooth on the whole injectivity ball,
+    // with grad_x d^2 = -2 log_x(y) vanishing exactly at coincidence. See
+    // inc/eshkol/bridge/space_form.h.
+    //
+    // WHEN THE EXHAUSTIVE-DISPATCH REGISTRY LANDS (open PR #500,
+    // fix/exhaustive-dispatch): that branch generates this whole enum from
+    // inc/eshkol/ad_node_registry.def and members may no longer be written
+    // here. This one becomes exactly one row, appended after CUSTOM, with the
+    // same numeric value it already has:
+    //
+    //   ESHKOL_AD_NODE(SQUARED_DISTANCE, 83, TENSOR, BRIDGE,
+    //                  tensor_squared_distance_backward)
+    //
+    // TENSOR because it carries a tensor payload on the input side and can
+    // reach eshkol_tensor_backward_dispatch with a live upstream gradient;
+    // BRIDGE because its rule is in lib/bridge/tensor_backward.cpp's table,
+    // which that branch generates from this column. The explicit arm added
+    // here to eshkol_tensor_backward_dispatch and the row added to
+    // get_tensor_backward_fn are then both generated, and should be deleted in
+    // the merge rather than kept alongside.
+    AD_NODE_SQUARED_DISTANCE,
+
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT
 } ad_node_type_t;

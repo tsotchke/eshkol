@@ -311,6 +311,15 @@ fd_scan:
     - lib/core/ad/taylor_models.esk
     - lib/core/ad/taylor_numerics.esk
     - lib/core/ad/tensor_tower.esk
+    # The squared-geodesic-distance primitive (SW-68). Both halves of it live
+    # in one file: the forward that records AD_NODE_SQUARED_DISTANCE and the
+    # backward that returns -2 log_x(y). It is the whole gradient path for that
+    # op, so a difference quotient appearing anywhere in it would be exactly
+    # the substitution this scan exists to catch — and this op is the one where
+    # such a substitution would be hardest to see by its numbers, because the
+    # answer it must produce at coincidence is zero and a difference quotient
+    # produces a small number there too.
+    - lib/bridge/space_form_ad.cpp
 
 # Every difference-quotient site the scan finds must appear here. `symbol` is
 # the epsilon-valued name; `path` is where it is bound. An unledgered site is

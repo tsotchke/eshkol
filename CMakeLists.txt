@@ -2214,6 +2214,11 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   # already knows how to differentiate; without it those backward rules are unreachable.
   lib/bridge/qllm_bridge.cpp
   lib/bridge/tensor_backward.cpp
+  # Squared geodesic distance on the space forms and their products
+  # (inc/eshkol/bridge/space_form.h). Both halves live in one translation unit
+  # on purpose: the backward is the forward's log-map form, and splitting them
+  # is how a forward and a backward come to be written against two formulas.
+  lib/bridge/space_form_ad.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
   lib/core/dnc_api.c
@@ -5684,6 +5689,40 @@ if(ESHKOL_BUILD_TESTS AND
         # + lifecycle. The count is pinned deliberately: "0 failed" would stay
         # green if a check silently stopped running.
         PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
+    )
+endif()
+
+# ===== Squared geodesic distance (SW-68) =====================================
+# d^2 on the space forms and their products. The gate exists because the
+# property under test is a NEGATIVE one — this node must NOT carry the
+# coincidence refusal that `ad_hyperbolic_distance` correctly does — and a
+# missing refusal is invisible to every check that only looks for wrong
+# numbers. The diagonal cases are therefore asserted by exact equality (value
+# 0.0, gradient 0.0, bit for bit), not by tolerance, and the closed-form
+# references (flat exactness, the log-map identity, the Gauss lemma, product
+# additivity, the committed golden vectors) all run before any finite
+# difference is taken.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/squared_distance_gradcheck_test.cpp")
+    add_executable(squared_distance_gradcheck_test
+        tests/bridge/squared_distance_gradcheck_test.cpp)
+    target_compile_features(squared_distance_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(squared_distance_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(squared_distance_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(squared_distance_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(squared_distance_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME squared_distance_gradcheck
+             COMMAND squared_distance_gradcheck_test)
+    set_tests_properties(squared_distance_gradcheck PROPERTIES
+        # 1 flat-exact + 4 coincidence + 4 identities + 3 exported-helper
+        # + 1 additivity + 5 golden + 1 diagonal sweep + 6 refusals
+        # + 5 finite-difference. Pinned by count: a bare "0 failed" would stay
+        # green if a check silently stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 30 passed, 0 failed"
     )
 endif()
 

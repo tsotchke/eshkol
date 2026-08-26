@@ -1548,6 +1548,10 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
 
 typedef void (*backward_fn_t)(ad_node_t*);
 
+/* Defined in lib/bridge/space_form_ad.cpp, alongside the forward that records
+ * the node and the manifold kernels both halves share. */
+extern "C" void tensor_squared_distance_backward(ad_node_t* node);
+
 /** @brief Looks up the backward-pass function for a given AD tensor node
  *  type. Returns NULL (after a one-time stderr warning) for node types with
  *  no registered backward, so the caller can skip gradient propagation for
@@ -1569,6 +1573,13 @@ extern "C" backward_fn_t get_tensor_backward_fn(int node_type) {
         case AD_NODE_TENSOR_EMBEDDING:       return tensor_embedding_backward;
         case AD_NODE_TENSOR_ATTENTION:       return tensor_attention_backward;
         case AD_NODE_FRECHET_MEAN:           return tensor_frechet_mean_backward;
+        /* Squared geodesic distance on the space forms and their products.
+         * Its rule lives in lib/bridge/space_form_ad.cpp rather than here
+         * because the whole file is the one primitive plus the manifold
+         * kernels it shares with its own forward — keeping the two in one
+         * translation unit is what stops the forward and the backward from
+         * being written against different formulas. */
+        case AD_NODE_SQUARED_DISTANCE:       return tensor_squared_distance_backward;
         default:
             /* Previously: return NULL → silent zero-gradient. That
              * meant any op whose forward codegen was emitted without a
