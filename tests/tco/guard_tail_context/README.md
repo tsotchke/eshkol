@@ -46,13 +46,13 @@ Measured on `feat/tail-transfer-complete`, JIT and AOT alike:
 | 01 | `(caught-by-a 0)` | yes |
 | 02 | `(gb 0)` | yes |
 | 03 | `inner` | yes |
-| 04 | `outer` | **no — SW-53** |
+| 04 | `outer` | **no — SW-58** |
 
 Rows 01-03 pass because the innermost activation's own guard is the one that
 fires either way. Row 04 is the one that can tell the difference, because a
 re-raise has to find the *enclosing* guard of the same recursive procedure — and
 ESH-0222's self-tail transform through `guard` collapses those activations into
-one loop iteration, so there is no enclosing guard left. See `SW-53` in
+one loop iteration, so there is no enclosing guard left. See `SW-58` in
 `.icc/silent-wrong-ledger.yaml`; the fix it needs is a heap-owned handler
 continuation (ADR-0006 §4), not a revert of ESH-0222.
 

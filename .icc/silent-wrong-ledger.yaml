@@ -3050,7 +3050,7 @@ entries:
       DIFFERENT-ARITY procedures, and an INDIRECT tail call through a procedure
       parameter, both correct at 200,000 hops. The VM's `guard` handling is also
       more conformant than native's: its guard BODY is deliberately non-tail,
-      which is what R7RS 7.3 requires (see SW-53). The gap is purely which
+      which is what R7RS 7.3 requires (see SW-58). The gap is purely which
       SPELLINGS reach OP_TAIL_CALL.
     fix_requires: >-
       Propagate `tail` through compile_form_when / compile_form_unless (direct),
@@ -3476,10 +3476,10 @@ entries:
       requirement for each recorded in docs/design/MUTUAL_TAIL_CALLS.md, and it
       REFUTES the `guard` item: a call in a guard body is not in a tail context
       under R7RS 7.3 at all, so optimizing it is not merely hard but wrong. See
-      SW-53, which is the conformance consequence of the sibling decision on the
+      SW-58, which is the conformance consequence of the sibling decision on the
       self-TCO side.
 
-  - id: SW-53
+  - id: SW-58
     bucket: SILENT-WRONG
     status: open
     title: "Self tail recursion through `guard` collapses the handler chain, so a re-raise reaches the wrong handler"
@@ -3545,7 +3545,7 @@ entries:
     caught_by: [esh-0102c-guard-soundness-differential, reference-differential]
     missed_by: [icc-correctness-chain, icc-smoke, ctest, recursion-depth-parametric, vm-parity]
     notes: >-
-      Filed as SW-53: SW-46..SW-50 are taken or reserved by #466 / #473 / #474
+      Filed as SW-58: SW-46..SW-50 are taken or reserved by #466 / #473 / #474
       and the S4 lane, and SW-51 / SW-52 are taken by in-flight #480. Verified
       next-free with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml |
       sort -V | tail -3` plus that PR's body.
@@ -4035,11 +4035,11 @@ entries:
       master claiming SW-46, invisible to review since a textual merge does
       not conflict on two branches picking the same next-free id. Moves to
       SW-53, the next id free across the whole ledger (highest prior id in
-      use was SW-52): #487's entry keeps SW-46, being the rightful holder
-      per SW-47's own reservation note and carrying three external
-      cross-references (.icc/architecture-model.yaml,
-      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) this
-      entry has none of.
+      use was SW-58, this branch's own guard/handler-chain entry): #487's
+      entry keeps SW-46, being the rightful holder per SW-47's own
+      reservation note and carrying three external cross-references
+      (.icc/architecture-model.yaml, .icc/completion-oracles.yaml,
+      tests/ad/ad_vm_exactness_gate.sh) this entry has none of.
     family: engine-parity/type-system
     title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
     repro: >-

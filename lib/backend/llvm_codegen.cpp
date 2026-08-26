@@ -27774,7 +27774,7 @@ private:
                 //
                 // isInTailPosition() still answers `true` for these positions —
                 // it is consulted by the self-TCO path as well, whose separate
-                // treatment of guard bodies (ESH-0222) is what SW-53 records.
+                // treatment of guard bodies (ESH-0222) is what SW-58 records.
                 // See docs/reference/language/tail-calls.md.
 
                 case ESHKOL_COND_OP:

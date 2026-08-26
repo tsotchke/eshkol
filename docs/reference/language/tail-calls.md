@@ -179,7 +179,7 @@ the stack:
   rather than a `setjmp` landing pad in the frame a transfer destroys
   (ADR-0006 §4). Until then this stays an ordinary call.
   (Self tail recursion through `guard` *is* transformed into a loop, ESH-0222 —
-  see SW-53 in `.icc/silent-wrong-ledger.yaml` for the conformance consequence
+  see SW-58 in `.icc/silent-wrong-ledger.yaml` for the conformance consequence
   of that, which is a separate, pre-existing finding.)
 
 **Workaround for any of the above:** fold the state machine into a single
