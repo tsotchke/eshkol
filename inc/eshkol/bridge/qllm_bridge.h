@@ -220,6 +220,13 @@ ad_node_t* ad_tensor_embedding(
  * @brief Hyperbolic distance in the Poincare ball model.
  *
  * d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
+ *
+ * NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian
+ * distance has a cone point at coincidence: the one-sided slopes disagree in
+ * every direction, so only a subgradient set exists there. The backward refuses
+ * at coincident points rather than returning a plausible member of that set.
+ * Away from coincidence the gradient is exact, and its Euclidean magnitude is
+ * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
 ad_node_t* ad_hyperbolic_distance(
     ad_tape_t* tape,
@@ -255,7 +262,18 @@ ad_node_t* ad_poincare_log_map(
 /**
  * @brief Geodesic attention with curvature-adaptive scaling.
  *
- * Replaces dot-product with geodesic distance in attention scores.
+ * Replaces dot-product with geodesic distance in attention scores:
+ * s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a
+ * value-weighted sum. The forward retains the softmax weights on the node so
+ * the backward reads the same numbers the forward produced rather than
+ * recomputing the max-shift and the mask.
+ *
+ * CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because
+ * the geodesic distance has no derivative at coincident points, this op is not
+ * differentiable whenever a query row equals a key row exactly — which is the
+ * ordinary case when Q and K are the same tensor. The backward refuses there
+ * and names the (batch, head, i, j) it refused on. Dot-product attention
+ * (ad_tensor_attention) has no such point and is differentiable everywhere.
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,

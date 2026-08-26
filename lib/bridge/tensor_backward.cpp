@@ -1542,6 +1542,432 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
     }
 }
 
+
+/*******************************************************************************
+ * Geometric bridge backwards (SW-65)
+ *
+ * ad_hyperbolic_distance, ad_poincare_exp_map, ad_poincare_log_map and
+ * ad_geodesic_attention (lib/bridge/qllm_bridge.cpp) all record TENSOR-VALUED
+ * nodes — types 33, 34, 35 and 37 — and none of them had a backward. They were
+ * not refused and they did not warn: the node types sit in the 33-66 band that
+ * eshkol_tensor_backward_dispatch treats as "scalar ops differentiated by
+ * codegen", so they fell into its default: and the reverse sweep completed
+ * having propagated exactly nothing. Every input gradient came back 0.0 with no
+ * diagnostic, which a caller cannot tell from a genuine zero.
+ *
+ * The rules below are exact. Two of them are compositions the file already
+ * differentiates for the Frechet mean, and they reuse that machinery rather
+ * than re-deriving it — deriving the same Mobius Jacobian twice is how a sign
+ * error survives a gradient check on the other copy.
+ *
+ * WHERE THESE REFUSE, AND WHY IT IS NOT CONSERVATISM. The Riemannian distance
+ * d(x, y) behaves like |x - y| near coincidence: it has no derivative at x = y,
+ * only a subgradient set. Any number returned there is invented. Both
+ * distance-based rules therefore refuse at exact coincidence instead of picking
+ * a plausible member of that set. For geodesic attention this has a consequence
+ * worth stating outright: scoring by distance makes the op non-differentiable
+ * whenever a query row coincides exactly with a key row, which is the ordinary
+ * case when Q and K are the same tensor. That is a property of distance
+ * scoring, not of this implementation, and it is precisely the kind of fact a
+ * silent zero would have hidden.
+ ******************************************************************************/
+
+namespace {
+
+/** @brief Upstream cotangent of a tensor-valued node.
+ *
+ *  `tensor_gradient` is the canonical channel — every rule in this file
+ *  accumulates into it — so it is what a downstream op will have written. The
+ *  scalar `gradient` mirror is the fallback for the loss-node convention used
+ *  by tensor_cross_entropy_backward, which seeds only the scalar. */
+double scalar_upstream(const ad_node_t* node) {
+    if (node->tensor_gradient) return ((const double*)node->tensor_gradient)[0];
+    return node->gradient;
+}
+
+/** @brief Gradient of the Poincare-ball distance d(x, y) with respect to both
+ *         arguments, for the ball of curvature -c.
+ *
+ *      d      = acosh(arg)/sqrt(c),   arg = 1 + 2c|x-y|^2/(dx dy)
+ *      dx     = 1 - c|x|^2,           dy  = 1 - c|y|^2
+ *
+ *  d(acosh)/d(arg) = 1/sqrt(arg^2 - 1), and arg depends on x both through the
+ *  numerator |x-y|^2 and through dx in the denominator; both terms are kept.
+ *
+ *  @param gx  out, n doubles: d d / d x (may be NULL)
+ *  @param gy  out, n doubles: d d / d y (may be NULL)
+ *  @return false when the two points coincide (arg <= 1), where the distance
+ *          has no derivative, or when either point is outside the ball.
+ */
+bool hyperbolic_distance_grad(const double* x, const double* y, double c,
+                              int64_t n, double* gx, double* gy,
+                              double* dist_out) {
+    double diff2 = 0.0, xx = 0.0, yy = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double dd = x[i] - y[i];
+        diff2 += dd * dd;
+        xx += x[i] * x[i];
+        yy += y[i] * y[i];
+    }
+    double dx = 1.0 - c * xx;
+    double dy = 1.0 - c * yy;
+    if (!(dx > 0.0) || !(dy > 0.0)) return false;
+
+    double arg = 1.0 + 2.0 * c * diff2 / (dx * dy);
+    if (dist_out) *dist_out = (arg > 1.0) ? (std::acosh(arg) / std::sqrt(c)) : 0.0;
+
+    /* arg == 1 is exactly x == y. sqrt(arg^2 - 1) = 0 there and the distance is
+     * a cone point: the one-sided slopes disagree in every direction, so no
+     * derivative exists to return. */
+    if (!(arg > 1.0)) return false;
+
+    double dacosh = 1.0 / (std::sqrt(c) * std::sqrt(arg * arg - 1.0));
+    if (!std::isfinite(dacosh)) return false;
+
+    for (int64_t i = 0; i < n; i++) {
+        double num = 4.0 * c * (x[i] - y[i]) / (dx * dy);
+        if (gx) gx[i] = dacosh * (num + 4.0 * c * c * diff2 * x[i] / (dx * dx * dy));
+        if (gy) gy[i] = dacosh * (-num + 4.0 * c * c * diff2 * y[i] / (dx * dy * dy));
+    }
+    return true;
+}
+
+}  // namespace
+
+/** @brief Backward for the Poincare-ball distance. Scalar output, two point
+ *  inputs; refuses at coincident points, where no derivative exists. */
+extern "C" void tensor_hyperbolic_distance_backward(ad_node_t* node) {
+    if (!node) return;
+    ad_node_t* xn = node->input1;
+    ad_node_t* yn = node->input2;
+    if (!xn || !yn || !xn->tensor_value || !yn->tensor_value) {
+        eshkol_fatal("hyperbolic-distance backward: node->input1 and input2 must "
+                     "carry the two points; refusing to differentiate a distance "
+                     "whose operands were not retained.");
+        return;
+    }
+    const double g = scalar_upstream(node);
+    if (g == 0.0) return;
+
+    const int64_t n = (int64_t)tensor_size(xn->shape, xn->ndim);
+    const double c = node->params.curvature;
+    if (!(c > 0.0)) {
+        eshkol_fatal("hyperbolic-distance backward: curvature parameter is %.17g; "
+                     "the forward stores |curvature| and it must be positive.", c);
+        return;
+    }
+
+    std::vector<double> gx((size_t)n), gy((size_t)n);
+    if (!hyperbolic_distance_grad((const double*)xn->tensor_value,
+                                  (const double*)yn->tensor_value,
+                                  c, n, gx.data(), gy.data(), nullptr)) {
+        eshkol_fatal("hyperbolic-distance backward: the two points coincide (or "
+                     "one is outside the Poincare ball), where the distance has "
+                     "no derivative — it is a cone point, and every value a rule "
+                     "could return there is invented. Refusing.");
+        return;
+    }
+
+    if (!xn->tensor_gradient) xn->tensor_gradient = alloc_grad((size_t)n);
+    if (!yn->tensor_gradient) yn->tensor_gradient = alloc_grad((size_t)n);
+    double* dX = (double*)xn->tensor_gradient;
+    double* dY = (double*)yn->tensor_gradient;
+    if (!dX || !dY) return;
+    for (int64_t i = 0; i < n; i++) { dX[i] += g * gx[(size_t)i]; dY[i] += g * gy[(size_t)i]; }
+}
+
+/** @brief Backward for the Poincare exponential map exp_x(v).
+ *
+ *  The forward is out = x (+)_c (coef * v) with
+ *      coef = tanh(sqrt(c) * lambda_x * |v| / 2) / (sqrt(c) * |v|),
+ *      lambda_x = 2 / (1 - c|x|^2).
+ *  So the differential is the Mobius addition's two Jacobians composed with the
+ *  differential of the radial factor. The Mobius Jacobians come from the same
+ *  routine the Frechet rule uses, so the two cannot disagree about them.
+ *
+ *  coef has a removable singularity at |v| = 0: it tends to lambda_x/2, and its
+ *  v-derivative tends to 0. Below a threshold the series
+ *      coef       = 1/dx - c|v|^2/(3 dx^3) + O(|v|^4)
+ *      dcoef/dv_j = v_j * (-2c/(3 dx^3)) + O(|v|^2)
+ *  is used instead of the quotient, which would be 0/0 there. Note this is the
+ *  derivative of the MATHEMATICAL map, which is smooth at v = 0 — not the
+ *  derivative of the forward's `|v| < 1e-15 -> return x` shortcut branch, whose
+ *  v-derivative would be a (wrong) zero. Same distinction the sphere_retract
+ *  finding in tests/qllm_oracle/README.md draws between a guard and the map. */
+extern "C" void tensor_poincare_exp_map_backward(ad_node_t* node) {
+    if (!node || !node->tensor_gradient) return;
+    ad_node_t* xn = node->input1;
+    ad_node_t* vn_node = node->input2;
+    if (!xn || !vn_node || !xn->tensor_value || !vn_node->tensor_value) {
+        eshkol_fatal("poincare-exp-map backward: node->input1 (base point) and "
+                     "input2 (tangent) must both be retained.");
+        return;
+    }
+    const int64_t n = (int64_t)tensor_size(xn->shape, xn->ndim);
+    const double c = node->params.curvature;
+    if (n <= 0 || !(c > 0.0)) {
+        eshkol_fatal("poincare-exp-map backward: degenerate dimension %lld or "
+                     "curvature %.17g.", (long long)n, c);
+        return;
+    }
+    const double* X = (const double*)xn->tensor_value;
+    const double* V = (const double*)vn_node->tensor_value;
+    const double* g = (const double*)node->tensor_gradient;
+    const double sc = std::sqrt(c);
+
+    double xx = 0.0, vv = 0.0;
+    for (int64_t i = 0; i < n; i++) { xx += X[i] * X[i]; vv += V[i] * V[i]; }
+    const double dx = 1.0 - c * xx;
+    if (!(dx > 0.0)) {
+        eshkol_fatal("poincare-exp-map backward: the base point is on or outside "
+                     "the Poincare ball (1 - c|x|^2 = %.17g).", dx);
+        return;
+    }
+    const double vnorm = std::sqrt(vv);
+
+    /* coef and its two derivative factors. `dcoef_dv_over_v` is the scalar k
+     * with dcoef/dv_j = k * v_j; splitting it out is what lets the |v| -> 0
+     * limit be taken exactly instead of as 0/0. */
+    double coef, dcoef_dv_over_v;
+    const double kSmallTangent = 1e-6;      /* below this the series is more accurate */
+    if (vnorm < kSmallTangent) {
+        coef = 1.0 / dx - c * vv / (3.0 * dx * dx * dx);
+        dcoef_dv_over_v = -2.0 * c / (3.0 * dx * dx * dx);
+    } else {
+        const double u = sc * vnorm / dx;               /* = sc * lambda * |v| / 2 */
+        const double th = std::tanh(u);
+        const double sech2 = 1.0 - th * th;
+        coef = th / (sc * vnorm);
+        dcoef_dv_over_v = (sech2 / dx - th / (sc * vnorm)) / vv;
+    }
+    /* dcoef/dx_j = 2 c x_j sech^2(u) / dx^2 (through lambda_x only). */
+    const double u2 = (vnorm < kSmallTangent) ? 0.0 : (sc * vnorm / dx);
+    const double th2 = std::tanh(u2);
+    const double sech2x = 1.0 - th2 * th2;
+    const double dcoef_dx_scale = 2.0 * c * sech2x / (dx * dx);
+
+    std::vector<double> s((size_t)n);
+    for (int64_t i = 0; i < n; i++) s[(size_t)i] = coef * V[i];
+
+    FrechetGeometry geo(-c, n);
+    std::vector<double> Ja((size_t)(n * n)), Jx((size_t)(n * n)), outv((size_t)n);
+    geo.mobius_add_with_jacobians(X, s.data(), outv.data(), Ja.data(), Jx.data());
+
+    /* w = Jx^T g, the cotangent pulled back to the Mobius second argument. */
+    std::vector<double> w((size_t)n, 0.0);
+    for (int64_t j = 0; j < n; j++) {
+        double acc = 0.0;
+        for (int64_t i = 0; i < n; i++) acc += g[i] * Jx[(size_t)(i * n + j)];
+        w[(size_t)j] = acc;
+    }
+    /* wV = <w, V>, the only way V enters dcoef's contraction. */
+    double wV = 0.0;
+    for (int64_t i = 0; i < n; i++) wV += w[(size_t)i] * V[i];
+
+    if (!xn->tensor_gradient) xn->tensor_gradient = alloc_grad((size_t)n);
+    if (!vn_node->tensor_gradient) vn_node->tensor_gradient = alloc_grad((size_t)n);
+    double* dX = (double*)xn->tensor_gradient;
+    double* dV = (double*)vn_node->tensor_gradient;
+    if (!dX || !dV) return;
+
+    for (int64_t j = 0; j < n; j++) {
+        /* d out/d x = Ja + Jx * (ds/dx),  ds_m/dx_j = V_m * dcoef/dx_j */
+        double direct = 0.0;
+        for (int64_t i = 0; i < n; i++) direct += g[i] * Ja[(size_t)(i * n + j)];
+        dX[j] += direct + wV * dcoef_dx_scale * X[j];
+        /* ds_m/dv_j = coef * delta_mj + V_m * dcoef/dv_j */
+        dV[j] += coef * w[(size_t)j] + wV * dcoef_dv_over_v * V[j];
+    }
+}
+
+/** @brief Backward for the Poincare logarithmic map log_x(y).
+ *
+ *  log_x(y) = k(x) * phi(|u|) * u with u = (-x) (+)_c y, k = (1 - c|x|^2)/sqrt(c)
+ *  and phi(r) = artanh(sqrt(c) r)/r — which is exactly the map
+ *  FrechetGeometry::log_map_with_jacobians already differentiates for the
+ *  Frechet rule, including the r -> 0 limit. Reusing it is the point: this is
+ *  the same function, and a second derivation of it could only introduce a
+ *  disagreement.
+ *
+ *  It returns false when sqrt(c)|u| >= 1, i.e. no finite log exists. The
+ *  forward clamps there (`t >= 1 -> t = 1 - 1e-12`) and returns a value, but
+ *  that value is fabricated — beyond the boundary the log map has no value to
+ *  differentiate — so the rule refuses rather than differentiate the clamp. */
+extern "C" void tensor_poincare_log_map_backward(ad_node_t* node) {
+    if (!node || !node->tensor_gradient) return;
+    ad_node_t* xn = node->input1;
+    ad_node_t* yn = node->input2;
+    if (!xn || !yn || !xn->tensor_value || !yn->tensor_value) {
+        eshkol_fatal("poincare-log-map backward: node->input1 and input2 must "
+                     "both be retained.");
+        return;
+    }
+    const int64_t n = (int64_t)tensor_size(xn->shape, xn->ndim);
+    const double c = node->params.curvature;
+    if (n <= 0 || !(c > 0.0)) {
+        eshkol_fatal("poincare-log-map backward: degenerate dimension %lld or "
+                     "curvature %.17g.", (long long)n, c);
+        return;
+    }
+    const double* X = (const double*)xn->tensor_value;
+    const double* Y = (const double*)yn->tensor_value;
+    const double* g = (const double*)node->tensor_gradient;
+
+    FrechetGeometry geo(-c, n);
+    if (!geo.log_map_with_jacobians(X, Y)) {
+        eshkol_fatal("poincare-log-map backward: sqrt(c)|(-x) (+) y| >= 1, so no "
+                     "finite log_x(y) exists at these operands. The forward "
+                     "clamps artanh's argument and returns a value anyway; that "
+                     "value is fabricated, and differentiating it would launder "
+                     "the fabrication into a gradient. Refusing.");
+        return;
+    }
+
+    if (!xn->tensor_gradient) xn->tensor_gradient = alloc_grad((size_t)n);
+    if (!yn->tensor_gradient) yn->tensor_gradient = alloc_grad((size_t)n);
+    double* dX = (double*)xn->tensor_gradient;
+    double* dY = (double*)yn->tensor_gradient;
+    if (!dX || !dY) return;
+
+    for (int64_t j = 0; j < n; j++) {
+        double ax = 0.0, ay = 0.0;
+        for (int64_t i = 0; i < n; i++) {
+            ax += g[i] * geo.dlog_dmu[(size_t)(i * n + j)];
+            ay += g[i] * geo.dlog_dx[(size_t)(i * n + j)];
+        }
+        dX[j] += ax;
+        dY[j] += ay;
+    }
+}
+
+/** @brief Backward for geodesic attention: softmax over negated geodesic
+ *  distances, composed with the value-weighted sum.
+ *
+ *      s_ij = -scale * d(Q_i, K_j),  p = softmax_j(s),  O_i = sum_j p_ij V_j
+ *
+ *  The chain is the standard attention one with the dot-product score replaced
+ *  by the distance score, so only ds/dQ and ds/dK differ; those come from
+ *  hyperbolic_distance_grad, the same routine the distance rule uses.
+ *
+ *  The softmax weights are read from node->saved_tensors[0], retained by the
+ *  forward. Recomputing them here was the alternative and is rejected for the
+ *  reason SW-12 records for ad_tensor_attention: it would have to re-derive the
+ *  max-shift and the causal mask, and any drift between the two copies is
+ *  exactly the silently-wrong-gradient class this rule exists to close. */
+extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
+    if (!node || !node->tensor_gradient) return;
+    ad_node_t* qn = node->input1;
+    ad_node_t* kn = node->input2;
+    ad_node_t* vn_node = node->input3;
+    if (!qn || !kn || !vn_node || !qn->tensor_value || !kn->tensor_value
+        || !vn_node->tensor_value) {
+        eshkol_fatal("geodesic-attention backward: Q, K and V must all be "
+                     "retained on the node (input1/input2/input3).");
+        return;
+    }
+    if (!node->saved_tensors || node->num_saved < 1 || !node->saved_tensors[0]) {
+        eshkol_fatal("geodesic-attention backward: the forward did not retain the "
+                     "softmax weights (saved_tensors[0]). Recomputing them here "
+                     "would duplicate the forward's max-shift and mask, and any "
+                     "drift between the copies is the silently-wrong-gradient "
+                     "class this rule exists to close. Refusing.");
+        return;
+    }
+    if (qn->ndim != 3) {
+        eshkol_fatal("geodesic-attention backward: expected [batch, seq, dim] "
+                     "operands, got rank %zu.", qn->ndim);
+        return;
+    }
+
+    const size_t batch = (size_t)qn->shape[0];
+    const size_t seq   = (size_t)qn->shape[1];
+    const size_t dim   = (size_t)qn->shape[2];
+    const int64_t* p6  = (const int64_t*)&node->params;
+    const int     heads    = (int)p6[0];
+    const size_t  head_dim = (size_t)p6[1];
+    const bool    causal   = (p6[2] != 0);
+    const double  c        = double_from_bits(p6[3]);
+    if (heads <= 0 || head_dim == 0 || dim != (size_t)heads * head_dim || !(c > 0.0)) {
+        eshkol_fatal("geodesic-attention backward: inconsistent params "
+                     "(heads=%d head_dim=%zu dim=%zu curvature=%.17g).",
+                     heads, head_dim, dim, c);
+        return;
+    }
+    const double scale = 1.0 / (std::sqrt(c) * std::sqrt((double)head_dim));
+
+    const double* Q = (const double*)qn->tensor_value;
+    const double* K = (const double*)kn->tensor_value;
+    const double* V = (const double*)vn_node->tensor_value;
+    const double* A = (const double*)node->saved_tensors[0];   /* [b][h][i][j] */
+    const double* G = (const double*)node->tensor_gradient;
+
+    const size_t total = batch * seq * dim;
+    if (!qn->tensor_gradient) qn->tensor_gradient = alloc_grad(total);
+    if (!kn->tensor_gradient) kn->tensor_gradient = alloc_grad(total);
+    if (!vn_node->tensor_gradient) vn_node->tensor_gradient = alloc_grad(total);
+    double* dQ = (double*)qn->tensor_gradient;
+    double* dK = (double*)kn->tensor_gradient;
+    double* dV = (double*)vn_node->tensor_gradient;
+    if (!dQ || !dK || !dV) return;
+
+    std::vector<double> dp(seq), ds(seq), gq(head_dim), gk(head_dim);
+
+    for (size_t b = 0; b < batch; ++b) {
+        for (int h = 0; h < heads; ++h) {
+            const size_t off = (size_t)h * head_dim;
+            for (size_t i = 0; i < seq; ++i) {
+                const size_t qi = (b * seq + i) * dim + off;
+                const size_t limit = causal ? (i + 1) : seq;
+                const double* arow =
+                    &A[((b * (size_t)heads + (size_t)h) * seq + i) * seq];
+                const double* grow = &G[(b * seq + i) * dim + off];
+
+                /* dL/dV and dL/dp. */
+                double pdot = 0.0;
+                for (size_t j = 0; j < limit; ++j) {
+                    const size_t vj = (b * seq + j) * dim + off;
+                    double acc = 0.0;
+                    for (size_t d = 0; d < head_dim; ++d) {
+                        dV[vj + d] += arow[j] * grow[d];
+                        acc += grow[d] * V[vj + d];
+                    }
+                    dp[j] = acc;
+                    pdot += arow[j] * acc;
+                }
+                /* Softmax Jacobian: ds_j = p_j (dp_j - sum_m p_m dp_m). */
+                for (size_t j = 0; j < limit; ++j)
+                    ds[j] = arow[j] * (dp[j] - pdot);
+
+                /* s_j = -scale * d(Q_i, K_j): push through the distance. */
+                for (size_t j = 0; j < limit; ++j) {
+                    if (ds[j] == 0.0) continue;
+                    const size_t kj = (b * seq + j) * dim + off;
+                    if (!hyperbolic_distance_grad(&Q[qi], &K[kj], c,
+                                                  (int64_t)head_dim,
+                                                  gq.data(), gk.data(), nullptr)) {
+                        eshkol_fatal(
+                            "geodesic-attention backward: query row %zu and key "
+                            "row %zu (batch %zu, head %d) coincide exactly, or "
+                            "one lies outside the Poincare ball. The geodesic "
+                            "distance has no derivative at coincident points — "
+                            "it is a cone point — so scoring attention by "
+                            "distance makes this op non-differentiable there. "
+                            "This is the ordinary case when Q and K are the same "
+                            "tensor. Refusing rather than inventing a "
+                            "subgradient.", i, j, b, h);
+                        return;
+                    }
+                    const double f = -scale * ds[j];
+                    for (size_t d = 0; d < head_dim; ++d) {
+                        dQ[qi + d] += f * gq[d];
+                        dK[kj + d] += f * gk[d];
+                    }
+                }
+            }
+        }
+    }
+}
+
 /*******************************************************************************
  * Backward Dispatch Table
  ******************************************************************************/

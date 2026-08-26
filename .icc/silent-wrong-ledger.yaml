@@ -5519,3 +5519,145 @@ entries:
       default tree-sitter AST backend. Full ctest: 203/203 passed.
     caught_by: [icc-architecture-verify-libclang-admission-20260826]
     missed_by: [icc-architecture-verify-grep-fidelity, icc-smoke, icc-readiness, ctest]
+
+  - id: SW-65
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/geometric-bridge-backwards"
+    closed_by: >-
+      branch fix/geometric-bridge-backwards (rebased onto the #500 registry) —
+      four exact backward rules in lib/bridge/tensor_backward.cpp, declared as
+      BRIDGE rows in inc/eshkol/ad_node_registry.def so the dispatch arms in
+      eshkol_tensor_backward_dispatch and the backward table are generated from
+      the same declaration; their four UNREGISTERED abort rows are deleted, and
+      every remaining backward-less tensor node type stays an UNREGISTERED row
+      that aborts naming itself.
+    title: "Four geometric bridge ops record tensor AD nodes with no backward — the gradient is silently zero, with no diagnostic"
+    repro: >-
+      Build any of ad_hyperbolic_distance / ad_poincare_exp_map /
+      ad_poincare_log_map / ad_geodesic_attention (lib/bridge/qllm_bridge.cpp)
+      onto a tape, seed the output node's tensor_gradient, and run
+      eshkol_tensor_backward_dispatch over the tape in reverse. Every input
+      gradient comes back exactly 0.0. Standalone repro and captured output:
+      ~/.tsotchke/state/geometric-backwards/repro.cpp and repro-before.txt.
+    observed: >-
+      max |grad| over both inputs = 0 for all four ops, and NOTHING is printed —
+      no warning, no error, no counter. The reverse sweep completes normally and
+      a caller cannot distinguish "this op has no backward" from "the gradient at
+      this point really is zero".
+    correct: >-
+      All four forwards create TENSOR-VALUED nodes (tensor_value + shape/ndim,
+      and make_node pre-allocates tensor_gradient) of ad_node_type_t 33
+      (HYPERBOLIC_DISTANCE), 34 (POINCARE_EXP_MAP), 35 (POINCARE_LOG_MAP) and 37
+      (GEODESIC_ATTENTION). Each has a well-defined exact differential: the
+      Poincare exp/log maps are compositions of Mobius addition with a scalar
+      radial factor, both with closed-form Jacobians; hyperbolic distance is
+      acosh(1 + 2c|x-y|^2/(dx dy))/sqrt(c) with an elementary gradient; geodesic
+      attention is a softmax over negated geodesic distances composed with a
+      value-weighted sum. None of these is approximated or unavailable — they
+      were simply never written.
+    notes: >-
+      TWO layers failed, and the second is what made it silent rather than merely
+      missing.
+
+      (1) lib/bridge/tensor_backward.cpp's get_tensor_backward_fn does not
+      register types 33/34/35/37. Its default: returns NULL after a one-time
+      stderr warning — which would at least have been audible.
+
+      (2) That warning never fires, because these nodes never reach it. The
+      native dispatcher eshkol_tensor_backward_dispatch
+      (lib/backend/tensor_backward.cpp) routes only the explicitly enumerated
+      tensor cases to the bridge table; 33/34/35/37 have no case and fall into
+      its default:, which does nothing at all.
+
+      The default: carries a comment asserting that this cannot happen —
+      "Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
+      differentiated by their scalar backward emitted in codegen and legitimately
+      reach here with nothing to do. Every TENSOR op (19-32 and the qLLM bridge
+      ops 67-80) has an explicit case above, so a tensor-op gradient can never
+      silently fall through this default."
+
+      Every clause of that guarantee is false for these four. They are in the
+      33-66 range but are tensor-valued, not scalar; they are bridge-created, so
+      no codegen scalar backward exists for them; and a tensor-op gradient
+      therefore does fall through this default, silently. The comment is the
+      reason the gap survived review: it states the invariant that the enum range
+      is a reliable proxy for scalar-ness, and that proxy is what broke.
+
+      The range test is the root defect. The property that matters is not which
+      enum bucket a node is in but whether it CARRIES A TENSOR PAYLOAD nobody
+      will propagate, and that is testable directly on the node.
+    observed_after: >-
+      The same repro, unchanged, on the fixed tree: hyperbolic-distance
+      1.9136747677590749, poincare-exp-map 1.0081654858019475, poincare-log-map
+      1.0393847046977158, geodesic-attention Q/K 2.6867707457830869,
+      geodesic-attention V 1.1159604744030989. Before/after captures are
+      ~/.tsotchke/state/geometric-backwards/repro-before.txt and
+      repro-after.txt.
+    evidence: >-
+      ctest -R qllm_bridge_geometric_gradcheck — 13 checks, pinned by count so a
+      check that stopped running goes red. Three independent EXACT references
+      are asserted before finite differences are consulted at all:
+
+      (1) The committed golden vectors. tests/qllm_oracle/golden/ holds full
+      Jacobians for exp_0 and log_0 produced by Eshkol's reverse-mode AD over an
+      independently written Eshkol transcription of the same formulas. Case
+      poincare_log_map_origin.d2.c1.u0p5 agrees to 3.7e-16 and
+      poincare_exp_map_origin.d2.c1.tv0p1 to 1.1e-14 — two implementations, two
+      languages, written from different sources.
+
+      (2) The conformal-factor identity |grad_x d| = lambda_x = 2/(1-c|x|^2),
+      which holds at every interior pair because the Riemannian gradient of a
+      distance function is a unit vector: max relative deviation 5.0e-16 over
+      three pairs.
+
+      (3) The inverse-Jacobian identity J_log * J_exp = I, which couples the
+      exp and log rules to each other with no appeal to either derivation:
+      max |J_log J_exp - I| = 6.7e-16.
+
+      Finite differences then agree at 3.5e-11 (distance), 3.5e-11 / 5.7e-11
+      (exp / log) and 1.5e-10 / 8.8e-11 (geodesic attention, unmasked and
+      causal). The registered refusal is red-proofed with a fake tensor-valued
+      node of a still-UNREGISTERED type (AD_NODE_MOBIUS_MATMUL), and its
+      companion check proves a leaf variable carrying tensor_value is still a
+      legitimate no-op.
+    fixed_by: >-
+      lib/bridge/tensor_backward.cpp gains tensor_hyperbolic_distance_backward,
+      tensor_poincare_exp_map_backward, tensor_poincare_log_map_backward and
+      tensor_geodesic_attention_backward, each named by its node type's BRIDGE
+      row in inc/eshkol/ad_node_registry.def — the generated table behind
+      get_tensor_backward_fn, where a row naming a function that does not exist
+      is a compile error. The exp and log rules reuse
+      FrechetGeometry::mobius_add_with_jacobians and log_map_with_jacobians
+      rather than re-deriving them — the log map IS the function that routine
+      already differentiates for the Frechet rule, and a second derivation could
+      only introduce a disagreement. lib/bridge/qllm_bridge.cpp's
+      ad_geodesic_attention now retains the softmax weights and records
+      causal + curvature in params (it recorded neither before, so no backward
+      could have reconstructed the mask or the metric).
+
+      The structural fix is the registry (#500 / SW-70), which this change is
+      the first UNREGISTERED-to-BRIDGE promotion through: no default: infers
+      scalar-ness from a numeric band any more, because there is no default: at
+      all — eshkol_tensor_backward_dispatch is generated from
+      ad_node_registry.def under -Werror=switch-enum, every node type must
+      declare its backward disposition, and a tensor node type with no rule is
+      an UNREGISTERED row that aborts naming itself (TANGENT_PROJECT /
+      MOBIUS_ADD / MOBIUS_MATMUL / GYROVECTOR_SPACE remain so). LEAF rows keep
+      AD_NODE_VARIABLE / AD_NODE_CONSTANT, which legitimately carry
+      tensor_value, out of the refusal.
+    caught_by: [architectural-audit-2026-08-26, pr-497-review]
+    missed_by: [icc-invariants, icc-smoke, icc-readiness, ad_carrier_model_clean, qllm_bridge_gradcheck]
+    notes_after: >-
+      Two facts the rules make explicit that a silent zero had hidden. First,
+      the Riemannian distance behaves like |x - y| near coincidence: it has no
+      derivative at x = y, only a subgradient set, so both distance-based rules
+      refuse there instead of choosing a plausible member of that set. For
+      geodesic attention this means the op is non-differentiable whenever a
+      query row equals a key row exactly — the ordinary case when Q and K are
+      the same tensor. That is a property of scoring by distance rather than by
+      inner product, and callers need to know it. Second,
+      ad_poincare_log_map's forward clamps artanh's argument at t >= 1 and
+      returns a value where no finite log exists; the backward refuses there
+      rather than differentiate the clamp, matching what the Frechet machinery
+      already does on the same condition.
