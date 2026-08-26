@@ -441,6 +441,7 @@ jobs:
           python3 scripts/check_oracle_schema.py --self-test
           python3 scripts/audit_oracle_false_green.py --self-test
           python3 scripts/check_evidence_staleness.py --self-test
+          python3 scripts/gate_ad_shared_node_model.py --self-test
 
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
@@ -461,6 +462,17 @@ jobs:
       - name: No high-severity criterion's evidence is stale (ADR-0010 A13)
         shell: bash
         run: python3 scripts/check_evidence_staleness.py --no-trace
+
+      # Structural, not comparative. The VM-parity differential compares
+      # program output between engines, so two independent AD implementations
+      # agree and it stays green (SW-52); INV-ad-exact-no-finite-differences
+      # checks that an exact constructor is present on the native engine, never
+      # that a finite difference is absent on either (SW-51). This step asks
+      # the question neither could: which carrier actually answers each AD op,
+      # re-derived from the source rather than declared.
+      - name: Every AD op routes through a declared, exact, source-verified carrier
+        shell: bash
+        run: python3 scripts/gate_ad_shared_node_model.py --no-trace
 
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative

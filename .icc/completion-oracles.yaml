@@ -99,6 +99,36 @@ oracles:
         label: 'Silent-wrong ledger has no duplicate ids across the whole file and every entry has id/bucket/status/title plus closure evidence when not open (scripts/check_ledger_integrity.py)'
         action: python3 scripts/check_ledger_integrity.py
 
+      # ── AD carrier wave (2026-08-25) ──────────────────────────────────
+      # Eshkol differentiates on two substrates. Until now the only check
+      # that compared them compared PROGRAM OUTPUT, and two independently
+      # correct implementations agree on output — so the differential could
+      # not report that op:GRADIENT had been promoted to vm-supported on a
+      # VM-private forward-dual carrier sharing no code with the native node
+      # model (SW-52). The invariant whose NAME asserts exactness,
+      # INV-ad-exact-no-finite-differences, is a dependency-presence check
+      # over native symbols only: it read PASS for the entire lifetime of a
+      # central difference at h = 1e-7 inside the VM's curl (SW-51, SW-46).
+      # This criterion grades the structural property directly — which
+      # carrier answers each AD op, re-derived from source — and the one
+      # below it grades the behaviour, because a structural check reads text
+      # and a derivative is a number.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_carrier_model_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every AD operator declares its differentiation carrier in .icc/ad-carrier-manifest.yaml, the declaration is re-derived from source rather than believed, a vm-supported AD op is backed by an exact carrier and never a finite difference, the carrier fork does not grow past its shrink-only budget, and every difference-quotient site on either engine is ledgered with an owner and a justification (scripts/gate_ad_shared_node_model.py)'
+        action: python3 scripts/gate_ad_shared_node_model.py
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_vm_curl_divergence_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'VM curl of a gradient field returns exactly #(0 0 0) — not the 1.1102230246251565e-09 a central difference at h=1e-7 returned — and (ad-finite-difference-evals) reads 0 rather than 6'
+        action: ./scripts/run_icc_smoke.sh
+
       # This oracle's own definition lives in a YAML file merged the same
       # way the ledger is. PR #429 dropped a list-item opener while adding a
       # criterion and broke the parse outright (icc readiness blocked, score

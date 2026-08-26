@@ -5568,6 +5568,75 @@ static double vm_dual_tangent_of(VM* vm, Value v) {
     return 0.0;
 }
 
+/* ── Vector-field output components, exactly ──
+ *
+ * div(F) and curl(F) are built from the SAME quantity: the tangent of output
+ * component i after F has been called with component j of the point seeded.
+ * Both used to reach that quantity through a central difference at h = 1e-7
+ * — measurably, `curl` returned
+ * #(1.1102230246251565e-09 -3.3306690738754696e-09 0) for a gradient field
+ * whose curl is exactly zero. That is the cancellation noise of the step, not
+ * a derivative.
+ *
+ * The forward dual already carries the answer when F returns a list or a
+ * vector: each element is a VmDual and its tangent IS the partial. A plain
+ * numeric element is equally exact — a component that does not depend on the
+ * seeded variable has partial 0, which is precisely what a non-dual result
+ * means here.
+ *
+ * The one shape the carrier cannot express is a TENSOR-returning field:
+ * VmTensor::data is a bare double*, so packing dual components into a tensor
+ * drops every tangent at construction. That is reported, not approximated —
+ * the same ruling ESH-0369 applied to nested derivatives, for the same
+ * reason: a named limitation is honest and a fabricated number is not.
+ *
+ * @return 1 when @p out_tangent holds the exact partial, 0 when the result
+ *         shape cannot carry a tangent at all.
+ */
+static int vm_ad_field_component_tangent(VM* vm, Value result, int i,
+                                         double* out_tangent) {
+    if (!out_tangent) return 0;
+    *out_tangent = 0.0;
+
+    if (result.type == VAL_PAIR) {
+        Value cur = result;
+        for (int k = 0; k < i && cur.type == VAL_PAIR; k++) {
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (cur.type != VAL_PAIR) return 1;   /* short field: absent component is 0 */
+        *out_tangent = vm_dual_tangent_of(vm, vm->heap.objects[cur.as.ptr]->cons.car);
+        return 1;
+    }
+
+    if (result.type == VAL_VECTOR && result.as.ptr >= 0) {
+        VmVector* vv = (VmVector*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        if (!vv || !vv->items || i >= vv->len) return 1;
+        *out_tangent = vm_dual_tangent_of(vm, vv->items[i]);
+        return 1;
+    }
+
+    if (result.type == VAL_TENSOR) return 0;  /* tangents lost at construction */
+
+    /* Scalar-valued field: only component 0 exists; the rest are 0. */
+    if (i == 0) *out_tangent = vm_dual_tangent_of(vm, result);
+    return 1;
+}
+
+/** @brief The one diagnostic both div and curl raise when the field's result
+ *         shape cannot carry a tangent. Named in one place so the two
+ *         operators cannot drift apart in what they tell a caller. */
+static void vm_ad_raise_tensor_field_unsupported(VM* vm, const char* op) {
+    (void)op;
+    vm_raise_error_msg(vm,
+        "divergence/curl: a vector field that returns a TENSOR cannot be "
+        "differentiated exactly on the VM — the VM's forward dual is a scalar "
+        "carrier and VmTensor holds bare doubles, so every tangent is dropped "
+        "when the components are packed. Return the field's components as a "
+        "list or a vector, or use the native backend. (This used to fall back "
+        "to a finite difference and return an approximation with no "
+        "diagnostic.)");
+}
+
 /* ── AD point extraction: sized by the data, never by a fixed buffer ──
  *
  * Every AD entry point (gradient, jacobian, hessian, divergence, laplacian,
@@ -13533,76 +13602,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
-        /* Sum of ∂Fi/∂xi: for each i, seed variable i, extract component i.
-         * Every per-pass buffer is allocated once at the point's arity. */
+        /* Sum of ∂Fi/∂xi: for each i, seed variable i, read the tangent of
+         * output component i. EXACT — one forward dual pass per variable, no
+         * step size anywhere. Every per-pass buffer is allocated once at the
+         * point's arity. */
         double div = 0;
         Value* args = vm_ad_arg_slots(vm, n);
-        double* pt_plus = vm_ad_double_buf(vm, n);
-        double* pt_minus = vm_ad_double_buf(vm, n);
-        Value* ap = vm_ad_arg_slots(vm, n);
-        Value* am = vm_ad_arg_slots(vm, n);
-        if (!args || !pt_plus || !pt_minus || !ap || !am) { vm_push(vm, FLOAT_VAL(0)); break; }
+        if (!args) { vm_push(vm, FLOAT_VAL(0)); break; }
+        int div_ok = 1;
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
             }
             Value result = vm_ad_call_closure(vm, f_val, args, n);
-
-            /* Extract the i-th component's tangent */
-            if (result.type == VAL_TENSOR && result.as.ptr >= 0) {
-                /* F returns a tensor — we need the tangent of element i.
-                 * Since the tensor contains primals (doubles), the tangent
-                 * information is lost. We need to use a different approach:
-                 * call F component-wise. But if F returns a tensor of duals,
-                 * we can extract directly. For tensor-returning functions,
-                 * use finite differences as fallback. */
-                VmTensor* rt = (VmTensor*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                if (rt && rt->data && i < (int)rt->total) {
-                    /* Tensor element — use finite difference for this component */
-                    double fplus, fminus;
-                    double h = 1e-7;
-                    for (int k = 0; k < n; k++) {
-                        pt_plus[k] = point[k] + ((k == i) ? h : 0);
-                        pt_minus[k] = point[k] - ((k == i) ? h : 0);
-                    }
-                    /* F(x + h*ei)[i] */
-                    for (int k = 0; k < n; k++) ap[k] = FLOAT_VAL(pt_plus[k]);
-                    Value rp = vm_ad_call_closure(vm, f_val, ap, n);
-                    fplus = 0;
-                    if (rp.type == VAL_TENSOR && rp.as.ptr >= 0) {
-                        VmTensor* tp = (VmTensor*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
-                        if (tp && tp->data && i < (int)tp->total) fplus = tp->data[i];
-                    }
-                    /* F(x - h*ei)[i] */
-                    for (int k = 0; k < n; k++) am[k] = FLOAT_VAL(pt_minus[k]);
-                    Value rm = vm_ad_call_closure(vm, f_val, am, n);
-                    vm->ad_finite_difference_evals += 2;
-                    fminus = 0;
-                    if (rm.type == VAL_TENSOR && rm.as.ptr >= 0) {
-                        VmTensor* tm = (VmTensor*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
-                        if (tm && tm->data && i < (int)tm->total) fminus = tm->data[i];
-                    }
-                    div += (fplus - fminus) / (2.0 * h);
-                }
-            } else if (result.type == VAL_PAIR) {
-                /* F returns a list — walk to i-th element, extract tangent */
-                Value cur = result;
-                for (int k = 0; k < i && cur.type == VAL_PAIR; k++) {
-                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                }
-                if (cur.type == VAL_PAIR) {
-                    Value elem = vm->heap.objects[cur.as.ptr]->cons.car;
-                    if (elem.type == VAL_DUAL && elem.as.ptr >= 0) {
-                        VmDual* rd = (VmDual*)vm->heap.objects[elem.as.ptr]->opaque.ptr;
-                        if (rd) div += rd->tangent;
-                    }
-                }
-            } else if (n == 1 && result.type == VAL_DUAL && result.as.ptr >= 0) {
-                /* Scalar function */
-                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                if (rd) div += rd->tangent;
+            double partial = 0.0;
+            if (!vm_ad_field_component_tangent(vm, result, i, &partial)) {
+                vm_ad_raise_tensor_field_unsupported(vm, "divergence");
+                div_ok = 0;
+                break;
             }
+            div += partial;
         }
+        if (!div_ok) break;
         vm_push(vm, FLOAT_VAL(div));
         break;
     }
@@ -13634,50 +13655,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
 
-        /* Compute the 3×3 Jacobian via central differences:
-         * J[i][j] = ∂Fi/∂xj
-         * curl = (J[2][1] - J[1][2], J[0][2] - J[2][0], J[1][0] - J[0][1]) */
+        /* Compute the 3×3 Jacobian by EXACT forward-mode AD:
+         *   J[i][j] = ∂Fi/∂xj
+         *   curl    = (J[2][1] - J[1][2], J[0][2] - J[2][0], J[1][0] - J[0][1])
+         *
+         * One dual pass per input variable j, seeding xj with tangent 1 and
+         * the other two with 0; the tangent of output component i is J[i][j].
+         * Three closure calls total, against the six a central difference
+         * needed — and every entry is the derivative rather than a quotient
+         * of nearby values. On a gradient field this now returns exactly
+         * #(0 0 0) where the difference quotient returned
+         * #(1.1102230246251565e-09 -3.3306690738754696e-09 0). */
         double jac[3][3];
-        double h = 1e-7;
+        int curl_ok = 1;
 
-        for (int j = 0; j < 3; j++) {
-            /* ∂F/∂xj via central difference */
-            Value ap[3], am[3];
+        for (int j = 0; j < 3 && curl_ok; j++) {
+            Value args[3];
             for (int k = 0; k < 3; k++) {
-                ap[k] = FLOAT_VAL(point[k] + ((k == j) ? h : 0));
-                am[k] = FLOAT_VAL(point[k] - ((k == j) ? h : 0));
+                VM_AD_MAKE_DUAL(vm, point[k], (k == j) ? 1.0 : 0.0, args[k]);
             }
-            Value rp = vm_ad_call_closure(vm, f_val, ap, 3);
-            Value rm = vm_ad_call_closure(vm, f_val, am, 3);
-            vm->ad_finite_difference_evals += 2;
-
-            /* Extract 3 components from each result */
-            double fp[3] = {0,0,0}, fm[3] = {0,0,0};
-            if (rp.type == VAL_TENSOR && rp.as.ptr >= 0) {
-                VmTensor* tp = (VmTensor*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
-                if (tp && tp->data) for (int i = 0; i < 3 && i < (int)tp->total; i++) fp[i] = tp->data[i];
-            } else if (rp.type == VAL_PAIR) {
-                Value cur = rp; int idx = 0;
-                while (cur.type == VAL_PAIR && idx < 3) {
-                    fp[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
-                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                }
-            }
-            if (rm.type == VAL_TENSOR && rm.as.ptr >= 0) {
-                VmTensor* tm = (VmTensor*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
-                if (tm && tm->data) for (int i = 0; i < 3 && i < (int)tm->total; i++) fm[i] = tm->data[i];
-            } else if (rm.type == VAL_PAIR) {
-                Value cur = rm; int idx = 0;
-                while (cur.type == VAL_PAIR && idx < 3) {
-                    fm[idx++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
-                    cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-                }
-            }
+            Value result = vm_ad_call_closure(vm, f_val, args, 3);
 
             for (int i = 0; i < 3; i++) {
-                jac[i][j] = (fp[i] - fm[i]) / (2.0 * h);
+                double partial = 0.0;
+                if (!vm_ad_field_component_tangent(vm, result, i, &partial)) {
+                    vm_ad_raise_tensor_field_unsupported(vm, "curl");
+                    curl_ok = 0;
+                    break;
+                }
+                jac[i][j] = partial;
             }
         }
+        if (!curl_ok) break;
 
         /* curl = (∂F3/∂y - ∂F2/∂z, ∂F1/∂z - ∂F3/∂x, ∂F2/∂x - ∂F1/∂y) */
         double curl_data[3] = {

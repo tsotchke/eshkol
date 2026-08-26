@@ -980,6 +980,41 @@ probe no_open_silent_wrong \
     'No open, unwaived SILENT-WRONG flaw in .icc/silent-wrong-ledger.yaml (wrong value / wrong derivative / wrong memory outcome with no diagnostic and exit 0 is tag-blocking)' \
     'cd "$REPO_ROOT"; python3 scripts/gate_no_silent_wrong.py --no-trace'
 
+# ───────────────────────────────────────────────────────────────────
+# AD carrier gates. The first is structural: every AD operator's
+# differentiation carrier is declared in .icc/ad-carrier-manifest.yaml
+# and re-derived from source, so an op cannot claim VM parity on an
+# undeclared carrier and cannot claim it at all on a finite difference.
+# The second is behavioural, and exists because a structural check
+# grades text: it runs a gradient field through the VM and demands both
+# the exact answer and a zero finite-difference counter. Structure
+# without behaviour is how SW-51 stayed green; behaviour without
+# structure is how SW-52 did.
+# ───────────────────────────────────────────────────────────────────
+probe ad_carrier_model_clean \
+    'Every AD op declared vm-supported routes through a declared, source-verified, exact carrier and no unledgered finite difference exists on either engine' \
+    'cd "$REPO_ROOT"; python3 scripts/gate_ad_shared_node_model.py --no-trace'
+
+probe ad_vm_curl_divergence_exact \
+    'VM curl of a gradient field is exactly #(0 0 0) and costs zero finite-difference evaluations' \
+    'vmbin="$BUILD_DIR/eshkol-vm-standalone-test";
+     if [ ! -x "$vmbin" ]; then echo "VM standalone binary not built: $vmbin"; exit 1; fi;
+     tmp=$(mktemp).esk;
+     cat > "$tmp" <<EOF
+(ad-reset-counters!)
+(define (F x y z) (list (* y z) (* x z) (* x y)))
+(display "CURL=") (display (curl F (list 1.0 2.0 3.0)))
+(display "|DIV=") (display (divergence F (list 1.0 2.0 3.0)))
+(display "|FD=") (display (ad-finite-difference-evals))
+EOF
+     out=$("$vmbin" "$tmp" 2>&1); rc=$?; rm -f "$tmp";
+     if [ $rc -ne 0 ]; then printf "%s" "$out" | tail -c 300; exit 1; fi;
+     flat=$(printf "%s" "$out" | tr -d "\n");
+     case "$flat" in
+       *"CURL=#(0 0 0)|DIV=0|FD=0"*) exit 0 ;;
+       *) printf "%s" "$flat" | grep -o "CURL=.*FD=[0-9]*"; exit 1 ;;
+     esac'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"

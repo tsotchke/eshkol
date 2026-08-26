@@ -470,7 +470,44 @@ invariants:
       default path must construct an exact dual/jet tangent
       (createDualNumber/makeDual8/makeDual4/seedForwardAndPush) — a finite-
       difference fallback would silently degrade every default gradient.
+      SCOPE: this is a presence check over the NATIVE codegen's exact-jet
+      constructors. It answers "is the native default gradient still built on
+      an exact jet", which it answers correctly. It does NOT observe the
+      bytecode VM, and presence of an exact constructor does not exclude a
+      finite difference elsewhere — both held at once while VM curl shipped a
+      central difference at h = 1e-7 (ledger SW-46 / SW-51). Absence of a
+      difference quotient on either engine is enforced by
+      scripts/gate_ad_shared_node_model.py and the criterion below.
     capability: exact_ad_default_gradient
+
+  # 7b. AD carrier declaration, encoded as key-space-equality. Every AD
+  #     operator that carries a VM parity row must also carry a carrier
+  #     declaration, so an op cannot be promoted to vm-supported without
+  #     stating which differentiation carrier answers it on each substrate.
+  #     The declaration itself is re-derived from source by the gate; this
+  #     invariant guards the weaker but cheaper property that the two key
+  #     spaces cannot drift apart. Expected PASS; adding an AD op to
+  #     PARITY.tsv without a manifest row FAILs it.
+  - id: INV-ad-carrier-declared-for-every-vm-op
+    kind: key-space-equality
+    incident: ad-carrier-fork-undeclared
+    severity: high
+    fidelity: grep
+    description: >-
+      Eshkol differentiates on two substrates with carriers that share no node
+      vocabulary. Every AD operator named in the VM parity manifest must have a
+      row in the AD carrier manifest naming its native carrier, its VM carrier
+      and whether each is exact. op:GRADIENT was promoted from gap to
+      vm-supported on an undeclared VM-private forward-dual carrier and no gate
+      could see it, because the only cross-engine check compared program output
+      and two independently correct implementations agree on output.
+    sites:
+      - id: vm-parity-ad-ops
+        path: tests/vm_parity/PARITY.tsv
+        key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
+      - id: ad-carrier-manifest-ops
+        path: .icc/ad-carrier-manifest.yaml
+        key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
 
   # 8. TCO tail-position coverage, encoded as key-space-equality.  The core
   #    tail-transparent forms (if / let* family / sequence) must each be handled

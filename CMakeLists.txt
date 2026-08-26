@@ -4842,6 +4842,29 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
+    # finite-difference evaluations. Both used to compute a central difference at
+    # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
+    # returned #(1.1102230246251565e-09 -3.3306690738754696e-09 0) with no
+    # diagnostic and exit 0. The parity differential could not see it (op:CURL is
+    # a `gap` row, so the two engines are never compared) and native curl crashes
+    # on the same field (LE-12), so this gate compares against MATHEMATICS: every
+    # field it uses has an exactly representable curl and divergence, and the
+    # assertions are equality rather than tolerance. A tolerance is what let the
+    # defect live.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_vm_exactness_gate.sh")
+        add_test(NAME ad_vm_exactness_gate
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_vm_exactness_gate.sh"
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_BINARY_DIR}/ad-vm-exactness-gate")
+        set_tests_properties(ad_vm_exactness_gate PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: VM divergence and curl are exact"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
