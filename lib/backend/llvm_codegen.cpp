@@ -34270,6 +34270,42 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
+            case ESHKOL_TENSOR_OP: {
+                // Quoted vector literal '#(…). The reader emits a 1-D
+                // TENSOR_OP whose elements are quoted data. Materialise the
+                // elements as a list — reusing the same cons machinery every
+                // other quoted-data path uses, so symbols/chars/nested vectors
+                // all render identically — then vectorise it via
+                // eshkol_list_to_vector_sret, exactly as codegenQuasiquote's
+                // vector-template arm does. The result is a heterogeneous
+                // Scheme vector, per R7RS 6.8.
+                //
+                // Without this arm the default case returned null, so a quoted
+                // vector would silently become () — the same wrong-answer shape
+                // the reader fix removed one layer up.
+                uint64_t n = op->tensor_op.total_elements;
+                const eshkol_ast_t* elems = op->tensor_op.elements;
+                Value* acc = packNullToTaggedValue();
+                for (int64_t i = (int64_t)n - 1; i >= 0; --i) {
+                    Value* elem_val = codegenQuotedAST(&elems[i]);
+                    Value* cons_int = codegenTaggedArenaConsCellFromTaggedValue(
+                        ensureTaggedValue(elem_val), ensureTaggedValue(acc));
+                    acc = packPtrToTaggedValue(
+                        builder->CreateIntToPtr(cons_int, builder->getPtrTy()),
+                        ESHKOL_VALUE_HEAP_PTR);
+                }
+                Value* list_slot = builder->CreateAlloca(tagged_value_type);
+                Value* vec_slot = builder->CreateAlloca(tagged_value_type);
+                builder->CreateStore(ensureTaggedValue(acc), list_slot);
+                llvm::FunctionCallee l2v_fn =
+                    module->getOrInsertFunction("eshkol_list_to_vector_sret",
+                        FunctionType::get(Type::getVoidTy(*context),
+                            {PointerType::getUnqual(*context),
+                             PointerType::getUnqual(*context)}, false));
+                builder->CreateCall(l2v_fn, {vec_slot, list_slot});
+                return builder->CreateLoad(tagged_value_type, vec_slot);
+            }
+
             case ESHKOL_QUASIQUOTE_OP:
             case ESHKOL_UNQUOTE_OP:
             case ESHKOL_UNQUOTE_SPLICING_OP: {

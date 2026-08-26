@@ -3386,6 +3386,208 @@ entries:
       on non-AArch64 targets where LLVM 21 refuses aggregate-return musttail
       (ESH-0171). Each of those was measured on this branch at 5,000,000 hops
       and each fails LOUDLY with the same fatal-signal diagnostic.
+  - id: SW-54
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "ced761fd"
+    closed_by: "branch fix/v135-correctness-debt (PR: v1.3.5 correctness debt)"
+    family: reader/quoted-data
+    renumbered_from: >-
+      SW-46 (collision). Filed as SW-46 on branch fix/v135-correctness-debt,
+      independently of two OTHER branches that each also claimed SW-46 in
+      parallel (feat/linearity-complete, renumbered to SW-53, and
+      feat/ad-structural-gate, which keeps SW-46 as the rightful holder per
+      SW-47's own reservation note and its external cross-references). Moves
+      to SW-54, the next id free across the whole ledger after SW-53. The two
+      sibling entries below (originally filed as SW-47, SW-48 in the same
+      commit) move to SW-55 and SW-56 for the same reason and are renumbered
+      together so this family's internal cross-references stay consistent.
+    title: "native: a quoted vector literal is dropped by the reader, so a function body containing (or X '#()) answers () for every input"
+    repro: >-
+      (define (g x) (or x '#()))
+      (display (g 7))
+      — build/eshkol-run -r, and the same file compiled AOT with -o. Also
+      tests/v1_3_edge_cases/quoted_datum_kinds_test.esk, whose first block is exactly
+      this shape.
+    observed: >-
+      `()`. Exit 0, empty stderr, no diagnostic. (vector? (g 7)) is #f and
+      (null? (g 7)) is #t on both native axes — the argument is gone, not merely
+      mis-printed. This is the residue of #229 that ICC's capability roadmap ranks
+      first (.icc/assistant-goals.yaml::or-null-miscompile-root-cause, "the codegen
+      path that replaces a function body containing (or X null-literal) with return
+      null"); the earlier #229 fix repaired the and/or ARGUMENT loops, one layer above
+      the surviving hole. The blast radius is wider than `or`: any quoted vector
+      literal anywhere is affected, and where its abandoned tokens do NOT balance the
+      failure flips from silent to loud — '#(1 2) at top level swallowed the rest of
+      the file and died with "source parsing failed; refusing to compile a truncated
+      program", which is why the defect read as two unrelated bugs.
+    correct: >-
+      7 — `or` returns its first non-#f operand. And, per R7RS 7.1.2 (<vector> is a
+      <datum>), (vector? '#(1 2)) is #t, (vector-length '#()) is 0, and
+      (vector-ref '#(9 8) 1) is 8. chibi-scheme 0.12.0 agrees on every row.
+    root_cause: >-
+      lib/frontend/parser.cpp parse_quoted_data_with_token() dispatched on exactly two
+      token kinds — TOKEN_LPAREN and TOKEN_QUOTE — and sent every other token to
+      parse_atom(). parse_atom() has no case for TOKEN_VECTOR_START, TOKEN_BACKQUOTE,
+      TOKEN_COMMA or TOKEN_COMMA_AT: it returns an empty node AND leaves the datum's
+      own tokens unconsumed in the stream. Whether that is silent or loud is decided
+      by whether the abandoned tokens happen to balance. `'#()` leaves exactly one,
+      the `)` the enclosing form wanted anyway, so the program compiles clean and the
+      quoted datum has silently become `()`. `'#(1 2)` leaves `1 2 )`, which
+      desynchronises the reader and truncates the program. This is the identical
+      partial-dispatch shape #229 fixed in the `and` / `or` argument loops
+      (`if LPAREN parse_list else parse_atom`), surviving one layer deeper in the
+      quoted-data reader.
+    fix: >-
+      lib/frontend/parser.cpp: parse_quoted_data_with_token() now gives every legal
+      datum token a branch. TOKEN_VECTOR_START reads a quoted vector into the same 1-D
+      ESHKOL_TENSOR_OP the quasiquote reader already builds, recursing through
+      parse_quoted_data_with_token so elements stay DATA (symbols stay symbols).
+      TOKEN_BACKQUOTE / TOKEN_COMMA / TOKEN_COMMA_AT join TOKEN_QUOTE in wrapping
+      their datum in the matching homoiconic op, so '(a ,b) reads as the list
+      (a (unquote b)) per R7RS 4.1.2 — exactly as ''a already read as (quote a), and
+      codegenQuotedOperation already had the arms to render all three.
+      lib/backend/llvm_codegen.cpp: codegenQuotedOperation() gains an ESHKOL_TENSOR_OP
+      arm that materialises the elements as a list and vectorises it through
+      eshkol_list_to_vector_sret — the same machinery codegenQuasiquote's vector
+      template uses. Without that arm the op would have hit `default` and returned
+      null, reproducing the wrong answer one layer lower.
+    evidence: >-
+      tests/v1_3_edge_cases/quoted_datum_kinds_test.esk — 41 checks, 41 passed on
+      native JIT, native AOT and the VM at ced761fd; registered in ctest as
+      v1_3_quoted_datum_kinds_runtime_smoke. Negative controls in the same file pin
+      that '(vector 1 2) is still the three-element LIST it reads as and that an
+      unquoted #(...) still evaluates its elements, so the fix cannot be satisfied by
+      guessing from the head symbol. External ground truth:
+      tests/reference-diff/corpus/0035_quote_datum_kinds.scm — 36/36 AGREE with
+      chibi-scheme 0.12.0 through scripts/run_reference_differential.sh.
+      Cross-engine: tests/vm_parity/corpus/71_quoted_datum_kinds.esk passes both
+      native-vs-vm-src and native-vs-vm-eskb (190 passed, 0 failed).
+      Full gate table in the PR body; ctest 193/193 at this SHA.
+    caught_by: [direct-measurement, reference-diff]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, reference-diff-corpus-pre-0035]
+    notes: >-
+      Filed as one of three defects re-hunted for v1.3.5; the other two (#244 REPL
+      no-return IR, #197 srem-vs-modulo) did NOT reproduce and are recorded as fences
+      rather than fixes in d1080ce7. The lesson worth keeping is that #229 was closed
+      on the symptom's location rather than on the bug CLASS: the same
+      "dispatch on a few token kinds, fall through to parse_atom" pattern was still
+      live in the quoted-data reader, and the memory note from the original hunt even
+      lists `(or x '#())` as a known-failing shape that was never chased. Three
+      further copies of the pattern are flagged in the #229 memory note at
+      parser.cpp ~3199 and ~7343; they were not touched here and remain unaudited.
+
+  - id: SW-55
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "ced761fd"
+    closed_by: "branch fix/v135-correctness-debt (PR: v1.3.5 correctness debt)"
+    family: reader/quoted-data
+    renumbered_from: >-
+      SW-47 (collision). Filed as SW-47 on branch fix/v135-correctness-debt,
+      independently of master's own SW-47 (fix/ad-guarantees-real, PR #474,
+      which keeps that id). Moves to SW-55 — see the sibling SW-54 entry
+      above for the full renumbering rationale for this family of three.
+    title: "VM: a quoted vector literal compiles to the LIST (vector …) instead of a vector"
+    repro: >-
+      (display (vector? '#(1 2))) (newline)
+      (display (vector-ref '#(9 8) 1)) (newline)
+      (display '#(1 2)) (newline)
+      — build/eshkol-vm-standalone-test on the source, and on an --emit-eskb of it.
+    observed: >-
+      #f, (), (vector 1 2). Exit 0, no diagnostic. Native (post-SW-54) and
+      chibi-scheme both say #t, 8, #(1 2). The `()` is the worst of the three: a
+      vector-ref of a valid index answering the empty list looks like a missing entry
+      rather than a type error.
+    correct: "#t, 8, #(1 2) — R7RS 7.1.2 makes <vector> a <datum>, so '#(…) is a vector literal."
+    root_cause: >-
+      lib/backend/vm_parser.c's reader desugars `#(1 2)` into the call node
+      `(vector 1 2)`. That is correct for an evaluated position — vm_compiler.c lowers
+      the head symbol `vector` to OP_VEC_CREATE — but under `quote` the node reached
+      compile_quote()'s generic N_LIST arm, which built a cons chain from its
+      children, tag symbol included. Nothing in the tree recorded that the list had
+      come from the READER's `#(` rather than from a hand-written parenthesised form,
+      so compile_quote had no way to tell the vector literal apart from the ordinary
+      list '(vector 1 2) — which must keep quoting as a list.
+    fix: >-
+      lib/backend/vm_parser.c: Node gains an `is_vector` reader-origin marker, set only
+      by the `#(` branch of the reader — the same discipline `is_verbatim` already uses
+      to keep the vertical-bar symbol `|.|` apart from the dotted-pair delimiter. The
+      field is safe to add: every Node is calloc'd, and the macro expander's
+      macro_node_deep_copy() copies the whole struct, so it survives expansion.
+      compile_quote() gains a preceding arm that, for a marked node, allocates the
+      vector once via make-vector(n, 0) (native 218) and fills it slot by slot with
+      compile_quote'd elements. That shape keeps the operand stack at CONSTANT depth,
+      so a literal's member count is bounded by the code/constant arrays rather than by
+      ESHKOL_VM_STACK_SIZE; vm_compiler.c's evaluated path switches to the same shape
+      past VM_VEC_LITERAL_STACK_CHUNK elements, and the quoted path simply always takes
+      it rather than carrying a second threshold that could drift out of sync.
+    evidence: >-
+      tests/vm_parity/corpus/71_quoted_datum_kinds.esk — PASSED
+      native-vs-vm-src and native-vs-vm-eskb at ced761fd (scripts/run_vm_parity.sh:
+      190 passed, 0 failed). tests/v1_3_edge_cases/quoted_datum_kinds_test.esk runs
+      41/41 on eshkol-vm-standalone-test as well as on both native axes.
+      scripts/run_vm_tests.sh 73/73 source tests at this SHA.
+    caught_by: [direct-measurement, vm-parity]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity-corpus-pre-71]
+    notes: >-
+      Found while proving SW-54: the native side could not read '#(…) at all, so no
+      differential harness had ever compared the two engines on a quoted vector, and
+      the VM's independent wrong answer sat behind the native one. Fixing native alone
+      would have converted a shared blind spot into a live native-vs-VM divergence.
+
+  - id: SW-56
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "ced761fd"
+    closed_by: "branch fix/v135-correctness-debt (PR: v1.3.5 correctness debt)"
+    family: reader/quoted-data
+    renumbered_from: >-
+      SW-48 (collision). Filed as SW-48 on branch fix/v135-correctness-debt,
+      independently of master's own SW-48 (DOC-DEBT, ad/architecture family,
+      which keeps that id). Moves to SW-56 — see the sibling SW-54 entry
+      above for the full renumbering rationale for this family of three.
+    title: "VM: quoting a character or an inexact literal silently converts it — '(#\\a) becomes (97), '(2.0) becomes the exact 2"
+    repro: >-
+      (display '(#\a #\b)) (newline)
+      (display (char? (car '(#\a)))) (newline)
+      (display (exact? (car '(2.0)))) (newline)
+      — build/eshkol-vm-standalone-test.
+    observed: >-
+      (97 98), #f, #t. Exit 0, no diagnostic. Native and chibi-scheme both say
+      (a b), #t, #f. The exactness row is the more dangerous of the two: a quoted
+      table of inexact constants silently becomes a table of exact integers, and every
+      downstream exactness-contagion decision is then made on the wrong premise.
+    correct: "(a b), #t, #f — quote SELECTS a value; R7RS gives it no conversion role, and 6.2.1 exactness is a property of the literal."
+    root_cause: >-
+      lib/backend/vm_parser.c compile_quote()'s N_NUMBER arm tested only the `is_int`
+      reader flag and then fell back on a value-shape heuristic
+      (`v == (int64_t)v && fabs(v) < 1e15` -> emit an exact int). It read neither
+      `is_char` nor `is_inexact`, both of which the reader had faithfully recorded and
+      which compile_expr()'s numeric arm — the EVALUATED path for the identical
+      literal — does consult. So the same token compiled to two different values
+      depending only on whether a `quote` stood in front of it.
+    fix: >-
+      lib/backend/vm_parser.c: compile_quote()'s numeric arm now mirrors
+      compile_expr()'s discrimination exactly — is_char emits the codepoint plus
+      native 228 (the VAL_CHAR tagger, keeping the ESKB constant-pool format
+      unchanged), is_int emits the exact int64 from `ival`, and the integral-value
+      heuristic is gated behind `!is_inexact` so a literal written 2.0 stays a
+      flonum.
+    evidence: >-
+      tests/v1_3_edge_cases/quoted_datum_kinds_test.esk rows "quoted char stays a
+      char", "quoted char value", "quoted char in a vector", "quoted inexact stays
+      inexact", "quoted inexact value", "quoted exact stays exact" — 41/41 on the VM
+      and on both native axes at ced761fd. tests/vm_parity/corpus/71_quoted_datum_kinds.esk
+      carries the same predicates as a native-vs-VM differential (PASSED both routes).
+    caught_by: [direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity]
+    notes: >-
+      Third member of the same family as SW-54 and SW-55 and found the same way: a
+      datum's KIND being dropped at the quote boundary. Worth noting that the reader
+      was never at fault in any of the three — it recorded is_char, is_inexact and the
+      vector origin correctly every time. The loss was always downstream, in a
+      consumer that read a subset of what the reader had written down.
 
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
@@ -3647,6 +3849,19 @@ entries:
     status: closed
     closed_at: "feat/linearity-complete"
     closed_by: "branch feat/linearity-complete"
+    renumbered_from: >-
+      SW-46 (collision). Filed as SW-46 on branch feat/linearity-complete
+      (PR #471), independently of the SW-47 entry's note recording that id
+      as reserved for the in-flight AD carrier-wave lane
+      (feat/ad-structural-gate, PR #487). Both #471 and #487 landed on
+      master claiming SW-46, invisible to review since a textual merge does
+      not conflict on two branches picking the same next-free id. Moves to
+      SW-53, the next id free across the whole ledger (highest prior id in
+      use was SW-52): #487's entry keeps SW-46, being the rightful holder
+      per SW-47's own reservation note and carrying three external
+      cross-references (.icc/architecture-model.yaml,
+      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) this
+      entry has none of.
     family: engine-parity/type-system
     title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
     repro: >-

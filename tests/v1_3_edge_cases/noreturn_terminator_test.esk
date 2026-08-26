@@ -1,0 +1,85 @@
+;; noreturn_terminator_test.esk — #244 regression fence.
+;;
+;; A no-return form (`raise`, `error`) lowers to a call plus `unreachable`,
+;; which TERMINATES the current LLVM basic block. Any caller that keeps
+;; emitting into that block afterwards produces IR the verifier rejects with
+;; "Terminator found in the middle of a basic block!". #244 was exactly that:
+;; codegenRaise left the IRBuilder's insert point inside the block it had just
+;; terminated, so every naive caller — a `display` whose argument raises, an
+;; argument slot mid-call, a `let` initialiser — appended dead IR after the
+;; terminator. Commit 89e51ff7 fixed the contract (switch to a fresh
+;; `post_raise_dead` block immediately after CreateUnreachable, the pattern
+;; codegenError already used).
+;;
+;; The fix is a CONTRACT, not a case, so this test is a matrix rather than a
+;; single probe: it drives a no-return form through every emission context a
+;; naive caller can create. It is intentionally structured so a verifier
+;; failure is loud — the run aborts before the trailing PASS line, and the
+;; ctest FAIL_REGULAR_EXPRESSION matches "LLVM module verification failed".
+;;
+;; Every raise is caught by `guard`, so a clean run reaches the end and prints
+;; the summary. Any NEW no-return codegen helper (abort, longjmp, ...) that
+;; forgets to switch blocks should get a row here.
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; caught? — #t when the thunk raises and the guard catches it.
+(define (caught? thunk)
+  (guard (e (#t #t))
+    (thunk)
+    #f))
+
+;; --- raise in every argument / operand position a naive caller can emit ---
+(check "raise as display argument"   (caught? (lambda () (display (raise "x")))))
+(check "raise as arithmetic operand" (caught? (lambda () (+ 1 (raise "x")))))
+(check "raise as car argument"       (caught? (lambda () (car (raise "x")))))
+(check "raise mid list constructor"  (caught? (lambda () (list 1 (raise "x") 3))))
+(check "raise mid vector literal"    (caught? (lambda () (vector 1 (raise "x")))))
+(check "raise as string-append arg"  (caught? (lambda () (string-append "a" (raise "x")))))
+(check "raise inside apply args"     (caught? (lambda () (apply + (list 1 (raise "x"))))))
+(check "raise as let initialiser"    (caught? (lambda () (let ((y (raise "x"))) y))))
+(check "raise as if test"            (caught? (lambda () (if (raise "x") 1 2))))
+(check "raise as cond test"          (caught? (lambda () (cond ((raise "x") 1) (else 2)))))
+(check "raise as and operand"        (caught? (lambda () (and 1 (raise "x")))))
+(check "raise as or operand"         (caught? (lambda () (or #f (raise "x")))))
+(check "raise mid begin"             (caught? (lambda () (begin (raise "x") 5))))
+(check "raise in immediate lambda"   (caught? (lambda () ((lambda () (raise "x"))))))
+(check "raise inside call/cc"        (caught? (lambda () (call/cc (lambda (k) (raise "x"))))))
+(check "raise inside dynamic-wind"   (caught? (lambda ()
+                                                (dynamic-wind (lambda () 1)
+                                                              (lambda () (raise "x"))
+                                                              (lambda () 2)))))
+(check "raise inside a named let"    (caught? (lambda ()
+                                                (let loop ((i 0))
+                                                  (if (> i 2) (raise "x") (loop (+ i 1)))))))
+
+;; --- error takes the same no-return path; same matrix, abbreviated ---
+(check "error as arithmetic operand" (caught? (lambda () (+ 1 (error "bad")))))
+(check "error mid begin"             (caught? (lambda () (begin (error "bad") 5))))
+(check "error with irritants"        (caught? (lambda () (error "bad" 1 2))))
+
+;; --- a procedure whose body raises unconditionally ---
+;; The tail position gets `unreachable` as the function's own terminator; the
+;; caller must still be able to emit its own continuation.
+(define (always-raises) (raise "x"))
+(define (always-errors) (error "x"))
+(check "unconditional raise body"    (caught? (lambda () (always-raises))))
+(check "unconditional error body"    (caught? (lambda () (always-errors))))
+(check "raise body value is used"    (caught? (lambda () (+ 1 (always-raises)))))
+
+;; --- reaching this point at all is the structural half of the test ---
+(check "module survived verification" #t)
+
+;; --- Summary ---
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: noreturn_terminator_test") (newline) (exit 0))
+    (begin (display "FAIL: noreturn_terminator_test") (newline) (exit 1)))

@@ -1,0 +1,33 @@
+;; quote / datum_kinds  (R7RS-small portable; reference-differential corpus)
+;;
+;; SW-54/55/56. R7RS 7.1.2 makes <vector> a <datum>, so '#(...) is a vector
+;; literal, and 4.1.2 makes ' , ` inside quoted data ordinary list structure.
+;; Predicates rather than printed datums, so a divergence is a value mismatch
+;; and not a printing convention.
+(display (vector? '#(1 2)))(newline)
+(display (vector-length '#(1 2)))(newline)
+(display (vector-ref '#(9 8) 1))(newline)
+(display (vector? '#()))(newline)
+(display (vector-length '#()))(newline)
+(display (null? '#()))(newline)
+(display (equal? '#(1 2) (vector 1 2)))(newline)
+(display (symbol? (vector-ref '#(a b) 0)))(newline)
+(display (eq? (vector-ref '#(a b) 1) 'b))(newline)
+(display (string? (vector-ref '#("x") 0)))(newline)
+(display (vector? (vector-ref '#(#(1) #(2)) 0)))(newline)
+(display (vector-ref (vector-ref '#(#(1) #(2)) 1) 0))(newline)
+(display (vector? (car (cdr '(a #(1 2) b)))))(newline)
+(display (length '(a #(1 2) b)))(newline)
+(display (char? (car '(#\a))))(newline)
+(display (char? (vector-ref '#(#\a #\b) 1)))(newline)
+(display (exact? (car '(2.0))))(newline)
+(display (exact? (car '(2))))(newline)
+(display (list? ''a))(newline)
+(display (eq? (car ''a) 'quote))(newline)
+(display (length '(a ,b)))(newline)
+(display (eq? (car (car (cdr '(a ,b)))) 'unquote))(newline)
+(display (eq? (car (car (cdr '(a `b)))) 'quasiquote))(newline)
+(display (list? '(vector 1 2)))(newline)
+(display (vector? '(vector 1 2)))(newline)
+(display (eq? (car '(vector 1 2)) 'vector))(newline)
+(display (length '(vector 1 2)))(newline)

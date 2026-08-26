@@ -27,6 +27,16 @@ typedef struct Node {
                        * other post-parse dot check) tell them apart -- the native
                        * parser makes the same distinction via Token::verbatim /
                        * token_is_dot_delimiter(). */
+    int is_vector;    /* N_LIST node that the reader built from a `#(...)` VECTOR
+                       * literal rather than from a parenthesised form. The reader
+                       * desugars `#(1 2)` to the call node `(vector 1 2)`, which is
+                       * right for an evaluated position but wrong under `quote`:
+                       * R7RS 7.1.2 makes `<vector>` a `<datum>`, so `'#(1 2)` is the
+                       * VECTOR #(1 2), not the three-element list `(vector 1 2)`.
+                       * Only the reader sets this flag, so a hand-written
+                       * `'(vector 1 2)` still quotes as the list it reads as — the
+                       * same discipline `is_verbatim` uses to keep `|.|` apart from
+                       * the dotted-pair delimiter. */
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
@@ -499,6 +509,7 @@ static Node* parse_sexp(void) {
             Node* vec = make_node(N_LIST); if (!vec) return NULL;
             Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(vec); return NULL; }
             strncpy(tag->symbol, "vector", 127); tag->symbol[127] = 0;
+            vec->is_vector = 1;   /* reader-origin marker; see the Node field note */
             add_child(vec, tag);
             while (1) { skip_ws(); if (!*src_ptr || *src_ptr == ')') break; Node* el = parse_sexp(); if (!el) break; add_child(vec, el); }
             if (*src_ptr == ')') src_ptr++;
@@ -1082,10 +1093,26 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
+        /* Same three-way discrimination compile_expr() applies to an evaluated
+         * numeric literal — quoting a datum must not change WHAT the datum is.
+         * This branch used to test only `is_int`, dropping both of the other
+         * reader flags with exit 0 and no diagnostic:
+         *   - `is_char`:    '(#\a #\b) answered the integer list (97 98), so
+         *                   (char? (car '(#\a))) was #f where native and chibi
+         *                   say #t;
+         *   - `is_inexact`: '(2.0) answered the EXACT 2, so
+         *                   (exact? (car '(2.0))) was #t where native and chibi
+         *                   say #f — R7RS 6.2.1 exactness is a property of the
+         *                   literal, and quote is not an exactness conversion. */
         double v = datum->numval;
-        if (datum->is_int)
+        if (datum->is_char) {
+            /* Codepoint + native 228 tags it VAL_CHAR at runtime, exactly as
+             * the evaluated path does; keeps the ESKB constant pool unchanged. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
+            chunk_emit(c, OP_NATIVE_CALL, 228);
+        } else if (datum->is_int)
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(datum->ival)));
-        else if (v == (int64_t)v && fabs(v) < 1e15)
+        else if (!datum->is_inexact && v == (int64_t)v && fabs(v) < 1e15)
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
         else
             chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(v)));
@@ -1111,6 +1138,42 @@ static void compile_quote(FuncChunk* c, Node* datum) {
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
         chunk_emit(c, OP_NATIVE_CALL, 101);
+        return;
+    }
+    if (datum->type == N_LIST && datum->is_vector) {
+        /* Quoted vector literal '#(…). R7RS 7.1.2: a vector IS a datum, so the
+         * quoted form must produce a VECTOR whose elements are themselves
+         * quoted data — not the `(vector …)` list the reader's desugaring
+         * spells. Before this arm, `'#(1 2)` fell through to the N_LIST case
+         * and answered the list `(vector 1 2)` with exit 0: `(vector? '#(1 2))`
+         * was #f and `(vector-ref '#(9 8) 1)` was () where native and chibi
+         * both say #t and 8.
+         *
+         * Built at CONSTANT operand-stack depth — allocate once via
+         * make-vector(n, 0) (native 218), then fill slot by slot — so a
+         * literal's member count is bounded by the code/constant arrays rather
+         * than by ESHKOL_VM_STACK_SIZE. That is the same reason vm_compiler.c's
+         * evaluated `(vector …)` path switches to this shape past
+         * VM_VEC_LITERAL_STACK_CHUNK elements; a quoted literal is compiled
+         * once, so it simply always takes the safe shape instead of carrying a
+         * second threshold that could drift. */
+        int n_elems = datum->n_children - 1;   /* children[0] is the "vector" tag */
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+        chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+        int saved_locals = c->n_locals;
+        add_local(c, "__quoted_vec_literal__");
+        for (int i = 1; i < datum->n_children; i++) {
+            chunk_emit(c, OP_DUP, 0);                                    /* vec */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1))); /* idx */
+            int elem_locals = c->n_locals;
+            add_local(c, "__quoted_vec_idx__");
+            compile_quote(c, datum->children[i]);                        /* val */
+            c->n_locals = elem_locals;
+            chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+            chunk_emit(c, OP_POP, 0);       /* drop the nil */
+        }
+        c->n_locals = saved_locals;
         return;
     }
     if (datum->type == N_LIST) {
