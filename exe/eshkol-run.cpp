@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/eshkol.h>
+#include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
@@ -601,6 +602,16 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
                transitiveSourceDigest(source_path, include_paths));
     hashUpdate(hash, "eshkol-version", ESHKOL_VER);
     hashUpdate(hash, "llvm-version", LLVM_VERSION_STRING);
+    // The object ABI, spelled from the same four numbers as the link guard
+    // (inc/eshkol/abi_fingerprint.h). A cached `-r` binary is *reused*, not
+    // relinked, so the link-time guard that catches a mixed link cannot fire
+    // here: without this field a binary compiled against one header layout is
+    // handed back and run under a runtime using the other, and the program
+    // returns wrong answers rather than failing. This is the one field whose
+    // absence produces no diagnostic at all, which is why it is mixed in
+    // explicitly rather than left to be implied by `self` or `eshkol-version`
+    // — neither of which moves when only the ABI flag is flipped.
+    hashUpdate(hash, "object-abi", ESHKOL_ABI_FINGERPRINT_NAME);
     hashUpdate(hash, "self", fileMetadataFingerprint(self_path));
     hashUpdate(hash, "no-stdlib", std::to_string(no_stdlib));
     hashUpdate(hash, "strict-types", std::to_string(strict_types));
