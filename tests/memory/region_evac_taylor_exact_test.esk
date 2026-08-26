@@ -1,6 +1,6 @@
 ;;; tests/memory/region_evac_taylor_exact_test.esk — region evacuator
 ;;; HEAP_SUBTYPE_TAYLOR (exact/COEFF_RATIONAL) subtype-coverage correctness
-;;; fixture (SW-65).
+;;; fixture (SW-66).
 ;;;
 ;;; evac_kind_for (lib/core/runtime_regions.cpp) classified HEAP_SUBTYPE_TAYLOR
 ;;; as EVAC_LEAF (a shallow header+payload copy) unconditionally. That is

@@ -3744,7 +3744,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    # SW-65: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
+    # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
     # copy on region escape -- the same defect class ESH-0214d closed for the

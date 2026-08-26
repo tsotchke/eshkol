@@ -4441,7 +4441,7 @@ entries:
     caught_by: [direct-measurement, branch-protection-audit]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
-  - id: SW-65
+  - id: SW-66
     bucket: SILENT-WRONG
     subtag: structural
     family: region-evacuator/interior-pointer-deepwalk

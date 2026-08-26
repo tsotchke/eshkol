@@ -926,7 +926,7 @@ enum EvacKind : uint8_t {
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
     EVAC_PROMISE,        // [forced:i64][thunk:tagged @8][cached:tagged @24] (delay/force)
     EVAC_RATIONAL,       // eshkol_rational_t: big_num/big_den raw bignum pointers (is_big==1 only)
-    // SW-65: an EXACT-COEFFICIENT (COEFF_RATIONAL) Taylor tower's c[] is an
+    // SW-66: an EXACT-COEFFICIENT (COEFF_RATIONAL) Taylor tower's c[] is an
     // array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-
     // resident bignum/rational coefficients (see runtime_taylor.c). A
     // COEFF_F64 tower's c[] is raw doubles -- nothing to walk, same shape as
@@ -1102,7 +1102,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // logic/workspace subtypes. Always dispatched through EVAC_RATIONAL;
         // the is_big==0 case is a cheap no-op there (nothing to walk).
         case HEAP_SUBTYPE_RATIONAL:       return EVAC_RATIONAL;
-        // SW-65 (2026-08-26 libclang architecture-verify admission): only the
+        // SW-66 (2026-08-26 libclang architecture-verify admission): only the
         // EXACT-COEFFICIENT (COEFF_RATIONAL) representation of a Taylor tower
         // carries interior region pointers -- its c[] is reinterpreted as an
         // eshkol_tagged_value_t array, and any entry can be a HEAP_PTR to a
@@ -1123,7 +1123,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // are not observed to escape a region by mutation):
         //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
         //   PRNG      - self-contained state words, no interior pointers.
-        //   DNC/SDNC  - VERIFIED SW-65 by reading both handle layouts:
+        //   DNC/SDNC  - VERIFIED SW-66 by reading both handle layouts:
         //               DncHandle.{mem,usage} (lib/core/dnc_api.c) and
         //               SdncHandle.w (lib/core/sdnc_api.c) are calloc'd on
         //               the plain C heap, never arena-allocated
@@ -1192,7 +1192,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
 
     EvacKind k = evac_kind_for(v, old_data);
 #ifndef NDEBUG
-    // SW-65 (formerly the ESH-0214d watchlist): DNC/SDNC are VERIFIED leaf --
+    // SW-66 (formerly the ESH-0214d watchlist): DNC/SDNC are VERIFIED leaf --
     // their only pointer-shaped fields are calloc'd C-heap buffers, never
     // arena-resident (see the case-arm comment in evac_kind_for above) -- but
     // that verification is a property of TODAY's handle layout, not a law.
@@ -1209,7 +1209,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
             case HEAP_SUBTYPE_DNC:
             case HEAP_SUBTYPE_SDNC:
                 eshkol_warn("region evacuate: subtype %u escaped a region as a "
-                            "SHALLOW leaf copy (SW-65 verified-leaf guard); if "
+                            "SHALLOW leaf copy (SW-66 verified-leaf guard); if "
                             "this fires, the handle's layout changed and this "
                             "subtype needs a real evac_kind_for case.",
                             (unsigned)dh->subtype);
@@ -1522,7 +1522,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 break;
             }
             case EVAC_TAYLOR: {
-                // SW-65: only a COEFF_RATIONAL (exact) tower's c[] holds
+                // SW-66: only a COEFF_RATIONAL (exact) tower's c[] holds
                 // interior tagged values -- reinterpret it exactly the way
                 // runtime_taylor.c's taylor_exact_c()/taylor_exact_c_const()
                 // do, and evac_value() each of the order_k+1 entries (most

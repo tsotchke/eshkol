@@ -525,7 +525,7 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
  * neuro-symbolic/AD structures added for the consciousness engine and
  * Taylor-tower AD) that share the single consolidated HEAP_PTR type tag.
  */
-// Interior-pointer classification tags (SW-65, 2026-08-26 libclance
+// Interior-pointer classification tags (SW-66, 2026-08-26 libclance
 // architecture-verify admission).  Every member below carries a trailing
 // [DEEPWALK] or [LEAF] marker: DEEPWALK means the region evacuator
 // (lib/core/runtime_regions.cpp, evac_kind_for) MUST walk this subtype's
@@ -566,9 +566,9 @@ typedef enum {
     HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization) [DEEPWALK]
     HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator) [DEEPWALK] -- the bignum-backed path carries raw bignum pointers
     HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state [LEAF] -- self-contained state words, no interior pointers
-    HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head) [LEAF] -- VERIFIED SW-65: DncHandle.{mem,usage} (lib/core/dnc_api.c) are calloc'd on the C heap, never arena-allocated; a shallow copy preserves both pointers exactly, so they cannot dangle when the region's arena is freed
-    HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ) [LEAF] -- VERIFIED SW-65: SdncHandle.w (lib/core/sdnc_api.c) is calloc'd on the C heap (not arena-allocated) and .pe[][] is inline scalar data; same reasoning as DNC
-    HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186) [DEEPWALK] -- SW-65: a COEFF_RATIONAL (exact) tower's c[] is an array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-resident HEAP_SUBTYPE_BIGNUM/HEAP_SUBTYPE_RATIONAL coefficients (lib/core/runtime_taylor.c); a COEFF_F64 tower's c[] is raw doubles (nothing to walk, the walk is a cheap no-op)
+    HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head) [LEAF] -- VERIFIED SW-66: DncHandle.{mem,usage} (lib/core/dnc_api.c) are calloc'd on the C heap, never arena-allocated; a shallow copy preserves both pointers exactly, so they cannot dangle when the region's arena is freed
+    HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ) [LEAF] -- VERIFIED SW-66: SdncHandle.w (lib/core/sdnc_api.c) is calloc'd on the C heap (not arena-allocated) and .pe[][] is inline scalar data; same reasoning as DNC
+    HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186) [DEEPWALK] -- SW-66: a COEFF_RATIONAL (exact) tower's c[] is an array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-resident HEAP_SUBTYPE_BIGNUM/HEAP_SUBTYPE_RATIONAL coefficients (lib/core/runtime_taylor.c); a COEFF_F64 tower's c[] is raw doubles (nothing to walk, the walk is a cheap no-op)
     HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize) [LEAF] -- current native evac_kind_for treatment; UNLIKE the other LEAF members above, this one is NOT a reviewed, documented exemption in runtime_regions.cpp, and the bytecode VM's own region evacuator (lib/backend/vm_region_evac.c) already deep-walks its parameter row (current_value/converter/save_stack) -- tracked as ledger IF-08 pending a native-side decision, not silently matched to today's code by coincidence
     HEAP_SUBTYPE_I128            = 25,  // Native fixed-width 128-bit integer (wraps; OFF the numeric tower) [LEAF] -- flat {lo,hi} POD, no interior pointers
     // Reserved: 26-255 for future heap types
