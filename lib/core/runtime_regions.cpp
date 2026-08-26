@@ -926,6 +926,12 @@ enum EvacKind : uint8_t {
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
     EVAC_PROMISE,        // [forced:i64][thunk:tagged @8][cached:tagged @24] (delay/force)
     EVAC_RATIONAL,       // eshkol_rational_t: big_num/big_den raw bignum pointers (is_big==1 only)
+    // SW-65: an EXACT-COEFFICIENT (COEFF_RATIONAL) Taylor tower's c[] is an
+    // array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-
+    // resident bignum/rational coefficients (see runtime_taylor.c). A
+    // COEFF_F64 tower's c[] is raw doubles -- nothing to walk, same shape as
+    // EVAC_RATIONAL's is_big==0 fast path being a cheap no-op.
+    EVAC_TAYLOR,         // esh_taylor_t: c[] tagged-value array (COEFF_RATIONAL only)
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -1096,6 +1102,16 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // logic/workspace subtypes. Always dispatched through EVAC_RATIONAL;
         // the is_big==0 case is a cheap no-op there (nothing to walk).
         case HEAP_SUBTYPE_RATIONAL:       return EVAC_RATIONAL;
+        // SW-65 (2026-08-26 libclang architecture-verify admission): only the
+        // EXACT-COEFFICIENT (COEFF_RATIONAL) representation of a Taylor tower
+        // carries interior region pointers -- its c[] is reinterpreted as an
+        // eshkol_tagged_value_t array, and any entry can be a HEAP_PTR to a
+        // bignum/rational coefficient allocated in the same (possibly dying)
+        // region (see the exact-tower path in runtime_taylor.c). A COEFF_F64
+        // tower's c[] is raw doubles. Always dispatched through EVAC_TAYLOR;
+        // the F64 case is a cheap no-op there, mirroring EVAC_RATIONAL's
+        // is_big==0 fast path just above.
+        case HEAP_SUBTYPE_TAYLOR:         return EVAC_TAYLOR;
         // STRING / SYMBOL / BIGNUM / BYTEVECTOR / I128: self-contained payloads
         // -> a contiguous leaf copy fully preserves them. I128 in particular is
         // a flat 16-byte {lo,hi} POD with no interior pointers, so the default
@@ -1107,12 +1123,21 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // are not observed to escape a region by mutation):
         //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
         //   PRNG      - self-contained state words, no interior pointers.
-        //   DNC/SDNC  - large differentiable weight/program buffers; escaping a
-        //               region by mutation is not a supported pattern.
-        //   TAYLOR    - truncated-Taylor tower; rational-coeff interior not traversed.
+        //   DNC/SDNC  - VERIFIED SW-65 by reading both handle layouts:
+        //               DncHandle.{mem,usage} (lib/core/dnc_api.c) and
+        //               SdncHandle.w (lib/core/sdnc_api.c) are calloc'd on
+        //               the plain C heap, never arena-allocated
+        //               (SdncHandle.pe[][] is inline scalar data with no
+        //               pointer at all). A shallow copy preserves those raw
+        //               pointer VALUES exactly; they cannot dangle when the
+        //               region's arena is freed, because they never pointed
+        //               into it in the first place. This is a confirmed
+        //               property of the current handle layouts, not an
+        //               assumption -- see the debug guard just below.
         // A guarded assert below (region_evacuate leaf handler) fires under a debug
-        // build if any such subtype is actually seen escaping, so a real escape is
-        // discovered instead of silently corrupting.
+        // build if either subtype's handle layout ever changes to hold a real
+        // arena pointer without this switch being updated to match, so a real
+        // regression is discovered instead of silently corrupting.
         default:                       return EVAC_LEAF;
     }
 }
@@ -1167,20 +1192,26 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
 
     EvacKind k = evac_kind_for(v, old_data);
 #ifndef NDEBUG
-    // ESH-0214d: a subtype that carries interior region pointers must NOT be
-    // leaf-copied. These are the ones we deliberately left leaf but expect to
-    // never actually escape a region by mutation; warn loudly if one does, so a
-    // real escape is discovered instead of silently corrupting interior state.
+    // SW-65 (formerly the ESH-0214d watchlist): DNC/SDNC are VERIFIED leaf --
+    // their only pointer-shaped fields are calloc'd C-heap buffers, never
+    // arena-resident (see the case-arm comment in evac_kind_for above) -- but
+    // that verification is a property of TODAY's handle layout, not a law.
+    // If a future change ever makes DncHandle/SdncHandle hold a real arena
+    // pointer without updating evac_kind_for to match, this guard is what
+    // catches it: warn loudly instead of silently corrupting interior state.
+    // TAYLOR is NOT listed here any more -- it is no longer ever classified
+    // EVAC_LEAF (see EVAC_TAYLOR above), so this branch is structurally
+    // unreachable for it now.
     if (k == EVAC_LEAF) {
         const auto* dh = (const eshkol_object_header_t*)
             ((const uint8_t*)new_data - sizeof(eshkol_object_header_t));
         switch (dh->subtype) {
             case HEAP_SUBTYPE_DNC:
             case HEAP_SUBTYPE_SDNC:
-            case HEAP_SUBTYPE_TAYLOR:
                 eshkol_warn("region evacuate: subtype %u escaped a region as a "
-                            "SHALLOW leaf copy (ESH-0214d watchlist); interior "
-                            "pointers may dangle -- deep coverage needed.",
+                            "SHALLOW leaf copy (SW-65 verified-leaf guard); if "
+                            "this fires, the handle's layout changed and this "
+                            "subtype needs a real evac_kind_for case.",
                             (unsigned)dh->subtype);
                 break;
             default: break;
@@ -1487,6 +1518,32 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 if (r->is_big) {
                     if (r->big_num) r->big_num = (eshkol_bignum_t*)evac_object_ptr(st, r->big_num);
                     if (r->big_den) r->big_den = (eshkol_bignum_t*)evac_object_ptr(st, r->big_den);
+                }
+                break;
+            }
+            case EVAC_TAYLOR: {
+                // SW-65: only a COEFF_RATIONAL (exact) tower's c[] holds
+                // interior tagged values -- reinterpret it exactly the way
+                // runtime_taylor.c's taylor_exact_c()/taylor_exact_c_const()
+                // do, and evac_value() each of the order_k+1 entries (most
+                // are plain int64 scalars needing no work; any that are
+                // HEAP_PTRs to a bignum/rational allocated in this same
+                // region get walked and repointed, exactly like a vector's
+                // element array). A COEFF_F64 tower's c[] is raw doubles,
+                // already fully preserved by the contiguous header+payload
+                // copy above -- nothing to do.
+                //
+                // The seed-tangent half (ESH_TAYLOR_TANGENT_FLAG) is never
+                // combined with COEFF_RATIONAL by any producer in
+                // runtime_taylor.c (the tangent series is only ever built
+                // alongside COEFF_F64 towers), so it is deliberately not
+                // considered here; if that combination is ever introduced,
+                // its storage doubling would need its own case.
+                auto* t = (esh_taylor_t*)nd;
+                if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
+                    auto* c = (eshkol_tagged_value_t*)(void*)t->c;
+                    const size_t ncoeff = (size_t)t->order_k + 1;
+                    for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
                 }
                 break;
             }

@@ -409,6 +409,23 @@ invariants:
   #    in the region evacuator; the pattern enumerates exactly the deep-walk set
   #    (leaf subtypes like STRING/SYMBOL/BIGNUM are intentionally excluded).
   #    Expected PASS (the ESH-0214d fix added the consciousness/logic cases).
+  #
+  #    2026-08-26 (SW-65): both sites used to be the SAME hand-typed 16-name
+  #    alternation, so the comparison always matched itself regardless of the
+  #    real source -- it silently included DNC/SDNC/TAYLOR (which had neither
+  #    a case in evac_kind_for's switch nor any classification at all) and
+  #    would have stayed green even after TAYLOR's real fix (a `case
+  #    HEAP_SUBTYPE_TAYLOR: return EVAC_TAYLOR;` arm) without anyone updating
+  #    this file by hand. `icc architecture-verify --cxx-backend libclang`
+  #    caught the gap because it resolves each site's identifier set from the
+  #    real source, not the hand-typed pattern. Both sites are now GENERIC,
+  #    self-updating patterns over real source: the enum side reads the
+  #    [DEEPWALK]/[LEAF] classification tag inc/eshkol/eshkol.h's
+  #    HEAP_SUBTYPE_* enum carries on every member, and the evacuator side
+  #    reads every `case HEAP_SUBTYPE_X: return EVAC_...;` arm evac_kind_for
+  #    actually has -- neither side is a maintained list any more. Retagging
+  #    a member without also giving it a real case in that switch (or vice
+  #    versa) is exactly the class of regression this invariant now catches.
   - id: INV-oalr-interior-pointer-deepwalk
     kind: key-space-equality
     incident: region-evac-leaf-copy
@@ -418,15 +435,17 @@ invariants:
       evac_kind_for must map every interior-pointer heap subtype to a deep-walk
       EvacKind; dropping a subtype to a shallow leaf copy leaves dangling
       interior pointers after region evacuation (KB/FACT/SUBSTITUTION/WORKSPACE
-      were the ESH-0214d regression).  The subtype enum and the evacuator switch
-      must resolve the identical deep-walk subtype set.
+      were the ESH-0214d regression; DNC/SDNC/TAYLOR were the SW-65
+      regression class -- never classified at all).  The subtype enum's own
+      [DEEPWALK] tags and the evacuator switch's actual deep-walk case arms
+      must resolve the identical subtype set.
     sites:
       - id: heap-subtype-enum
         path: inc/eshkol/eshkol.h
-        key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
+        key_pattern: 'HEAP_SUBTYPE_([A-Z0-9_]+)\s*=\s*\d+,\s*//.*\[DEEPWALK\]'
       - id: region-evacuator-switch
         path: lib/core/runtime_regions.cpp
-        key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
+        key_pattern: 'case\s+HEAP_SUBTYPE_(\w+)\s*:\s*return\s+EVAC_'
 
   # 6b. The SAME invariant for the bytecode VM's Stage-1 evacuator (SW-14).
   #     It matters MORE here than natively: a VM `Value` addresses the heap by a

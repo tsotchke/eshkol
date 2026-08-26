@@ -1,0 +1,81 @@
+;;; tests/memory/region_evac_taylor_exact_test.esk — region evacuator
+;;; HEAP_SUBTYPE_TAYLOR (exact/COEFF_RATIONAL) subtype-coverage correctness
+;;; fixture (SW-65).
+;;;
+;;; evac_kind_for (lib/core/runtime_regions.cpp) classified HEAP_SUBTYPE_TAYLOR
+;;; as EVAC_LEAF (a shallow header+payload copy) unconditionally. That is
+;;; correct for the ordinary COEFF_F64 representation (c[] is raw doubles,
+;;; nothing to walk), but WRONG for the EXACT (COEFF_RATIONAL) representation
+;;; introduced by ESH-0191/P6: there, c[] is reinterpreted as an array of
+;;; eshkol_tagged_value_t, and any coefficient that overflows int64 is a
+;;; HEAP_PTR to an independently arena-allocated HEAP_SUBTYPE_BIGNUM object
+;;; (see the exact-pow recurrence in lib/core/runtime_taylor.c) — exactly the
+;;; same "raw pointer to another arena-resident header-prefixed object" shape
+;;; ESH-0214d closed for KB/FACT/SUBSTITUTION/WORKSPACE and the RATIONAL
+;;; bignum-path fix closed for HEAP_SUBTYPE_RATIONAL.
+;;;
+;;; This fixture differentiates a bignum-scale power function (x^30 at an
+;;; exact integer point) with the entire tower-producing arithmetic wrapped in
+;;; a `(with-region ...)` body, so the exact tower `expt` allocates is built
+;;; entirely inside the region's arena and then escapes it via with-region's
+;;; own return-value evacuation. `derivative-n`'s driver then reads the
+;;; escaped tower's coefficient directly. A shallow leaf copy leaves any
+;;; bignum-valued coefficient's pointer aimed into the region arena that
+;;; `with-region` is about to free: under ESHKOL_ARENA_POISON=1, the
+;;; subsequent exact arithmetic needed to convert that coefficient into the
+;;; returned derivative value reads 0xCB-poisoned memory and produces a
+;;; corrupted result (observed on the pre-fix runtime: a spurious "arena
+;;; allocation exceeds UINT32_MAX" diagnostic followed by a wrong answer of
+;;; 0, in place of the true bignum value) instead of the exact answer.
+;;; Without poison the same defect is genuinely SILENT: the freed bytes have
+;;; not yet been overwritten, so the stale-but-still-valid bignum reads back
+;;; correct by luck.
+
+(define npass 0)
+(define nfail 0)
+
+(define (check-exact-eq name got expect)
+  (if (and (exact? got) (= got expect))
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got) (display " exact?=") (display (exact? got))
+             (display " expect=") (display expect) (newline))))
+
+;; f(x) = x^30. Wrapping the WHOLE differentiated body in a with-region forces
+;; every intermediate exact tower `expt`'s recurrence builds — including the
+;; final result tower whose coefficients are bignum-scale for x0=7 — to live
+;; in the region's arena, then escape it as the with-region body's return
+;; value (region_escape_tagged_value_impl -> region_evacuate_value ->
+;; evac_object -> evac_kind_for).
+(define (x30-region x) (with-region 'x30r (expt x 30)))
+(define (x30-plain x) (expt x 30))
+
+;; f^(0)(7) = 7^30 (~2.25e25, genuinely bignum-scale: exceeds int64 at n=0).
+(check-exact-eq "x^30 region n=0" (derivative-n x30-region 7 0) (derivative-n x30-plain 7 0))
+;; f^(1)(7) = 30 * 7^29 (also bignum-scale).
+(check-exact-eq "x^30 region n=1" (derivative-n x30-region 7 1) (derivative-n x30-plain 7 1))
+;; f^(5)(7) = P(30,5) * 7^25 (bignum-scale; exercises a higher tower order so
+;; more than one coefficient of the escaped tower is a bignum HEAP_PTR).
+(check-exact-eq "x^30 region n=5" (derivative-n x30-region 7 5) (derivative-n x30-plain 7 5))
+
+;; A second base/exponent pair (x0=11), so the fixture is not tied to one
+;; specific bignum bit pattern.
+(define (x22-region x) (with-region 'x22r (expt x 22)))
+(define (x22-plain x) (expt x 22))
+(check-exact-eq "x^22 region n=0" (derivative-n x22-region 11 0) (derivative-n x22-plain 11 0))
+(check-exact-eq "x^22 region n=3" (derivative-n x22-region 11 3) (derivative-n x22-plain 11 3))
+
+;; A tower built from PRODUCT (not expt's dedicated exact-pow recurrence) also
+;; exercises the ordinary Cauchy-convolution exact multiply path.
+(define (mul10-region x) (with-region 'mulr (* x x x x x x x x x x)))
+(define (mul10-plain x) (* x x x x x x x x x x))
+(check-exact-eq "x^10(mul) region n=0" (derivative-n mul10-region 9 0) (derivative-n mul10-plain 9 0))
+(check-exact-eq "x^10(mul) region n=2" (derivative-n mul10-region 9 2) (derivative-n mul10-plain 9 2))
+
+(display "----") (newline)
+(display "region-evac-taylor-exact tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: region-evac exact-Taylor deep-walk") (newline))
+    (begin (display "FAIL: region-evac exact-Taylor deep-walk") (newline)))

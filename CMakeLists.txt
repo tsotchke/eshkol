@@ -3744,6 +3744,38 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-65: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
+    # carries interior bignum/rational HEAP_PTRs in its coefficient array that
+    # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
+    # copy on region escape -- the same defect class ESH-0214d closed for the
+    # logic/workspace subtypes and the rational-bignum fix closed for
+    # HEAP_SUBTYPE_RATIONAL. Run under ESHKOL_ARENA_POISON=1 so the freed
+    # region arena is 0xCB-stamped and a missed interior pointer cannot pass
+    # by luck (without poison the same defect is genuinely silent: the freed
+    # bytes have not yet been overwritten).
+    add_test(
+        NAME region_evac_taylor_exact_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_taylor_exact_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(region_evac_taylor_exact_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME region_evac_taylor_exact_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/region_evac_taylor_exact_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/region_evac_taylor_exact_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/region_evac_taylor_exact_aot'"
+    )
+    set_tests_properties(region_evac_taylor_exact_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # `hessian` over a lambda that CAPTURES free variables. A capturing lambda
     # is lowered with one extra pointer parameter per capture; the scalar
     # Hessian arm called it with the seeded jet ALONE, so
