@@ -5,7 +5,7 @@
 ;; every Eshkol program leans on.
 
 (require core.list.transform)
-(require core.list.fold)
+(require core.list.higher_order)
 
 ;; Build a list [1..n] without relying on iota (keep it self-contained).
 (define (range n)
