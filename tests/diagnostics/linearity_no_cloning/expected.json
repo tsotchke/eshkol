@@ -4,10 +4,6 @@
   "compile": "fail",
   "diagnostics": [
     {
-      "contains": "linear variable 'q' used more than once",
-      "span": {"line": 6, "col": 11}
-    },
-    {
       "contains": "linear variable 'q' was consumed more than once",
       "span": {"line": 5, "col": 2}
     }
