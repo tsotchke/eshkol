@@ -3647,6 +3647,19 @@ entries:
     status: closed
     closed_at: "feat/linearity-complete"
     closed_by: "branch feat/linearity-complete"
+    renumbered_from: >-
+      SW-46 (collision). Filed as SW-46 on branch feat/linearity-complete
+      (PR #471), independently of the SW-47 entry's note recording that id
+      as reserved for the in-flight AD carrier-wave lane
+      (feat/ad-structural-gate, PR #487). Both #471 and #487 landed on
+      master claiming SW-46, invisible to review since a textual merge does
+      not conflict on two branches picking the same next-free id. Moves to
+      SW-53, the next id free across the whole ledger (highest prior id in
+      use was SW-52): #487's entry keeps SW-46, being the rightful holder
+      per SW-47's own reservation note and carrying three external
+      cross-references (.icc/architecture-model.yaml,
+      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) this
+      entry has none of.
     family: engine-parity/type-system
     title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
     repro: >-
