@@ -285,6 +285,300 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
   version Eshkol advertises — so no doc text needed to change.
 
+### Fixed
+
+- **The no-finite-differences AD guarantee is now enforced, and the
+  dense-node divergence is measurable (#474, SW-47).** `eshkol_ad_count_fd()`,
+  the only writer of the finite-difference counter, had zero callers
+  anywhere, so every shipped `(= (ad-finite-difference-evals) 0)` assertion
+  was true by construction — it would have stayed green had a real
+  finite-difference fallback been added the next day. `record-fd-op!`'s
+  central-difference backward (`lib/core/ad/tape.esk`) now reports through a
+  new zero-arity builtin `(ad-note-finite-difference!)` (native fid 2088;
+  VM `case 2088`), and `scripts/run_ad_exactness_gate.sh` runs a positive
+  case and a negative control (a difference quotient deliberately planted in
+  the gradient path) on JIT, AOT and the VM, wiring the previously-orphaned
+  `scripts/run_one_pass_gradient_gate.sh`.
+- **AD exactness gains a structural gate a differential cannot provide
+  (#487).** An output differential can only compare what two carriers
+  compute, never which carrier computed it — the gap that let `op:CURL` go
+  uncompared entirely. `.icc/ad-carrier-manifest.yaml` declares, per operator
+  and per engine, which differentiation carrier answers it and whether it is
+  exact; `scripts/gate_ad_shared_node_model.py` re-derives each declaration
+  by extracting and classifying the actual `case <id>:` body in
+  `vm_native.c`/`autodiff_codegen.cpp`, so a declaration cannot be laundered
+  through a helper. Seven checks, including that a `vm-supported` row in
+  `tests/vm_parity/PARITY.tsv` must declare its carrier and that the
+  declared carrier equals the one the source is observed to use.
+- **Linear `Qubit` violations are compile-time errors, not warnings
+  (#471).** Cloning a qubit previously printed `[WARN] Type warning`, exited
+  0, and wrote a runnable binary — a documented "type error" that was really
+  a convention with a diagnostic attached. Measured against 24 shapes (four
+  clones the checker previously missed entirely, five correct programs it
+  wrongly rejected), a linearity violation in the default compilation mode
+  now stops before code generation, exits nonzero, and writes no artifact —
+  the same discipline `--strict-types` already has.
+- **`xla_runtime.cpp` no longer violates `eshkol_tensor`'s one-definition
+  rule (#481).** A second, divergent definition of the same struct compiled
+  into the XLA backend risked UB the moment both translation units'
+  optimizations disagreed about layout; the backend now includes the single
+  canonical header instead of redeclaring the type.
+- **Oracle severities no longer let absent evidence read as ready (#472,
+  ADR-0010 A13).** `icc readiness --target gpu-execution` read `ready/94` on
+  a host that had executed zero GPU kernels: the target's one criterion was
+  `severity: medium`, and ICC's grader degrades a zero-evidence miss on
+  anything below `severity: high` to a cheap `WARN`. `gpu-execution` was the
+  only one of 35 oracle targets with no `severity: high` criterion; every
+  target that asserts a correctness/capability claim is now raised to
+  `high`, four targets keep an explicit, commented advisory exception, and
+  a new `scripts/audit_oracle_false_green.py` gate fails if another target
+  regresses into the same shape. Also arms the staleness half of A13 — no
+  evidence in N days now fails as a repo-side gate, since ICC's own grading
+  has no `max_age_days` support yet.
+- **The bytecode VM's closure upvalue capacity matches its compiler again
+  (#463, SW-45).** The VM compiler capped a scope's upvalue count at 32
+  (`MAX_UPVALUES`, `lib/backend/vm_parser.c`) while the runtime closure
+  representation was hardcoded at 16 (`lib/backend/vm_core.c`), with nothing
+  keeping the two in sync. A procedure referencing 17-32 distinct top-level
+  procedures compiled cleanly, then `OP_CLOSURE` silently clamped the count
+  to 16 and stranded the rest on the operand stack with no diagnostic and
+  exit 0 — every later stack-slot offset was off by the leaked count, so the
+  *next* top-level `define` read back a stray value and failed with "calling
+  non-function" on an unrelated line. The runtime constant now matches the
+  compiler's.
+
+### Added
+
+- **Mutual tail recursion in every tail-position spelling; OALR ABI v2
+  Phase A (#478, ADR-0000 Stage 4).** A mutual tail call written with
+  `cond`, `case`, `when`, `unless`, or as the last operand of `and`/`or`
+  previously grew one native frame per hop and exhausted the stack (SIGBUS)
+  between 500,000 and 5,000,000 hops, while the byte-identical program
+  written with `if` ran flat past 5,000,000 — `collectMutualTailCallSites()`
+  (the walker offering candidate sites) recognized only `if`/`begin`/`let`
+  forms, while `isInTailPosition()` (the oracle confirming them) already
+  handled all six; the walker is now as wide as the oracle. Also lands OALR
+  ABI v2 Phase A groundwork (tracked separately from the tail-call fix).
+- **A real v1.4-connection completion oracle, replacing the placeholder
+  (#467).** `.icc/completion-oracles.yaml`'s `v1.4-connection` target
+  carried exactly one criterion — an event nothing in the repo ever emitted
+  — so `icc readiness` graded it a permanent, uninformative FAIL that could
+  not distinguish "not started" from "half done" from "shipped". Replaced
+  with one criterion per named v1.4 deliverable (sourced from `ROADMAP.md`,
+  `docs/COMPILER_ROADMAP.md`, ADR-0004 and ADR-0000 Stages 3/4, and
+  ADR-0010's assurance gaps), each bound to a real harness
+  (`scripts/run_v14_connection_gate.sh`, new) instead of a fabricated PASS.
+- **A public, reproducible benchmark suite on the exactness axes (#469,
+  `bench/run_public_benchmarks.sh`).** One command from a clean checkout
+  measures the four axes where Eshkol claims something distinctive — exact-AD
+  cost curves, region-reclamation flat RSS, exact-vs-reduced-precision GEMM,
+  and JIT/AOT/VM parity — and emits machine-readable JSON plus a
+  human-readable table, with the noise-control methodology and the explicit
+  not-benchmarked list documented in `bench/README.md`. This is not a
+  competition entry against XLA/PyTorch/JAX.
+
+### Changed
+
+- **CI: end duplicate matrix runs; harden the `changes` gate; add opt-in
+  self-hosted lanes (#477).** `feat/**` branches ran the full matrix twice
+  (once on push, once on the PR event that already covers them) until the
+  push trigger was narrowed to `master`/`develop`. The docs-only `changes`
+  gate now fails safe — a diff it cannot compute (a force-pushed PR branch
+  orphaning its comparison SHA) sets `docs_only=false` and runs everything,
+  instead of exiting nonzero and blocking the run outright. New `ci-mesh.yml`
+  adds self-hosted runner support behind a repository variable, restricted
+  to non-fork PRs; no currently-required hosted lane is removed, weakened,
+  or made conditional.
+- **CI: advisory mesh-gate placeholder added; every required hosted lane
+  kept (#391).** With the physical compute mesh's telemetry dark since at
+  least 2026-08-17, the hosted required lanes (`unix-matrix`,
+  `windows-matrix`, `wasm-execute-diff`, `prefetch-windows-llvm-archives`,
+  `quantum-macos`) stay required and unchanged. `mesh-gate-advisory` is a
+  `continue-on-error` job that emits an honest `::warning::` that mesh
+  telemetry is unavailable, rather than fabricating a verdict — flipping the
+  mesh into an actual merge gate is a separate, explicit maintainer decision
+  gated on the telemetry coming back live.
+
+### Documentation
+
+- **ADR-0011: host guest garbage collectors over OALR regions.** Rejects the
+  standing claim that "no-GC closes doors permanently" (Common Lisp, Python,
+  or any other GC-hosted language could never run on Eshkol). ADR-0001's
+  no-GC theorem quantifies over Eshkol's own object graph; it says nothing
+  about a guest heap living inside a region. Specifies
+  `eshkol_guest_vtable_t` (`collect`/`relocate`/`on_teardown`/
+  `enumerate_outbound`) over a bounded arena, a `{index, generation}` pin
+  table reusing the existing region-handle staleness discipline, and an
+  asymmetric Eshkol<->guest boundary. Commitment sharpens rather than
+  weakens: no GC for Eshkol, permanently; guest collectors welcome inside
+  their own regions.
+- **2026-08-25 conformity audit resolved (#468).** Fifty documentation
+  divergences against `ROADMAP.md`, `docs/COMPILER_ROADMAP.md`, the ADRs,
+  `docs/FEATURE_MATRIX.md`, `docs/KNOWN_ISSUES.md`, `README.md`, and
+  `docs/VM_PARITY.md` are triaged in
+  `docs/design/AUDIT_2026_08_25_RESOLUTION.md`: every claim describing a
+  real, intended capability the code doesn't have yet is kept and filed as
+  tracked work, never softened or deleted; only claims factually wrong about
+  the past, or contradicting another doc, are corrected.
+- **Flaw-detection capability roadmap (`docs/design/FLAW_DETECTION_ROADMAP.md`,
+  #444).** The v1.3.4 campaign found 81 ledgered defects; the automated
+  correctness chain (completion oracles, the smoke harness, the readiness
+  gate) found none of them — almost every one was found by a human reading
+  code or running a program by hand. States the trust thesis (five
+  falsifiable operational claims a dual-engine compiler with AD must keep)
+  and catalogs sixteen detection gaps with evidence; the wave-1 and wave-2
+  assurance items landed this cycle (#454, #465) close the first several.
+
+### Added
+
+- **`gensym` reachable on every engine (#480).** Implemented in
+  `lib/core/introspection.cpp` but registered in no dispatch table anywhere,
+  so `(gensym)` failed loudly on native JIT/AOT (`Unknown function: gensym`)
+  and compiled to an undefined global on the VM (fatal `calling
+  non-function`). Root cause went one level deeper than dispatch wiring:
+  `introspection.cpp` compiles only into the compiler/tool aggregate, never
+  into the slim runtime archive AOT/JIT user binaries link against.
+  Extracted into a new `lib/core/runtime_gensym.cpp` (the same split
+  `symbol_intern.cpp` already uses, for the same reason) and wired on both
+  engines: `codegenGensym` on native, VM builtin id 2227. 9/9 on all three
+  engines (`tests/control_flow/gensym_test.esk`); the stale "gensym is
+  VM-only" note in `symbol_consistency_test.esk` is removed (that claim was
+  wrong too — nothing called it successfully on the VM either).
+- **Object ABI migration, stage 0: machine inventory, layout pin, mixed-link
+  guard (#488, ADR-0012).** `scripts/abi_header_inventory.py` runs seventeen
+  detectors across three layers (lexical token matching, libclang semantic
+  resolution, emitted-LLVM-IR ground truth) and finds 1,273 sites across 98
+  files depending on the current object-header layout, ratcheted against
+  `.icc/abi-header-baseline.json` so new sites fail the build. A link-time
+  guard (`inc/eshkol/abi_fingerprint.h`, `lib/core/abi_fingerprint.c`,
+  `MemoryCodegen::emitObjectAbiGuard`) whose symbol name is derived from the
+  four numbers that determine object-exchange compatibility means a stale
+  object file, JIT cache entry, installed runtime, or `--shared-lib`
+  artifact now fails to *link* with an undefined-symbol error naming the
+  layout it wanted, instead of silently producing wrong answers. A
+  layout-pin test (`tests/core/abi_layout_pin_test.cpp`) pins the header's
+  size and every field's offset both through the accessor and as raw bytes
+  at the negative offsets generated code actually uses. ADR-0012 (renumbered
+  from a collision with the already-merged ADR-0011) sequences the seven
+  remaining migration stages, each with a named falsifier.
+- **Tail-transfer dispatcher: differing call signatures and non-AArch64
+  targets are no longer bounded (#483, extends #478/ADR-0006 §3).** A
+  transferring procedure no longer calls its target; it copies its evaluated
+  arguments into a per-thread `eshkol_tail_transfer_t` record, records the
+  callee's uniform entry, and returns — a driver loop compiled into the
+  public entry point runs the transfer in its place, so one native frame is
+  live per hop and reused regardless of arity or target. Differing-signature
+  mutual tail calls, previously SIGBUS at ~5,000,000 hops, now run
+  100,000,000 hops at 9.1 MB peak RSS; non-AArch64 targets no longer need an
+  aggregate-return `musttail` to get the same bound. Tail calls through
+  `guard` stay bounded deliberately — R7RS does not make that a tail
+  context, and optimizing it would be wrong, not merely unfinished; that
+  differential surfaced a pre-existing silent wrong answer, filed as SW-53.
+- **`bench/pgo_corpus/` gets a Stage-1 smoke consumer (#490, ADR 0007).**
+  The five-program PGO training corpus had zero callers anywhere — nothing
+  compiled it, nothing ran it — and had already rotted:
+  `lists.esk` required a module (`core.list.fold`) that doesn't exist.
+  `scripts/run_pgo_corpus_smoke.sh` runs every corpus program under the JIT
+  and AOT and asserts both exit 0 with byte-identical, non-empty stdout,
+  doubling as a real differential check rather than a liveness smoke test;
+  wired as a macOS nightly job, kept out of the PR-blocking path since no
+  PGO instrumentation is involved. This is Stage 1 only — the
+  `eshkol-pgo-train`/`-merge`/`-verify` CMake orchestration that actually
+  drives profile-guided compilation over this corpus is unbuilt and tracked
+  separately against ADR 0007, targeted v1.5.0.
+
+### Fixed
+
+- **The leak-detection lane could not fail; four JIT/driver leaks fixed
+  (#486).** `exe/eshkol-run.cpp` supplied `__lsan_default_options()`
+  returning `"exitcode=0"`, so LeakSanitizer ran, found leaks, printed them,
+  and exited 0 anyway — measured directly: 248,387 bytes leaked in 28,748
+  allocations on `hello.esk -o hello`, `EXIT = 0`. The REPL was worse than
+  unfailable: `repl_clean_exit()` ends the process with `std::_Exit()` to
+  avoid running static/TLS destructors while JIT workers may hold libsystem
+  locks, which also skips LSan's `atexit` whole-process check, so the one
+  long-lived process this project ships produced identical output whether
+  it leaked or not; it now calls `__lsan_do_leak_check()` explicitly before
+  `_Exit`. `report_objects=1` (which expanded one hello-world report to
+  148,231 lines) is also gone. Every real leak the now-live lane found is
+  fixed, workload by workload (AOT compile, the compiled program, `-r`,
+  `-e`, the standalone VM).
+- **Trace-emitting harnesses now distinguish infrastructure failure from
+  code failure (#475).** `run_vm_parity.sh` reported "2 of 188" FAIL for two
+  runs that were actually SIGALRM from a 140-second cold-start JIT compile
+  under load, not a code defect — direct re-runs were 140.49s once, then
+  0.07s/0.06s exit 0, byte-identical. That spurious FAIL had propagated
+  through `icc architecture-verify` and turned a HIGH invariant red. New
+  `scripts/lib/harness_outcome.sh` gives every harness a shared
+  PASS/FAIL/INFRA/SKIP vocabulary, a real fork-based timeout wrapper, and a
+  retry-once helper for a transient INFRA condition; INFRA never publishes a
+  `test_result` record (ICC's evaluator has no UNCHECKABLE state, so
+  publishing "no verdict" through that channel would read as a defect) but
+  does get an explicit value in the richer domain-specific event streams.
+  `run_vm_parity.sh` adds a one-time untimed JIT-cache warm-up (the actual
+  root cause of the 140s outlier); `run_language_coverage.sh` no longer lets
+  an unrelated flaky prerequisite's `set -e` discard coverage evidence that
+  had already been computed.
+- **Reader: quoted-datum kinds beyond `(` and `'`; fences for #229 and #244
+  residue (#466).** `parse_quoted_data_with_token()` dispatched on exactly
+  two token kinds and sent everything else — vectors, quasiquote, unquote —
+  to `parse_atom()`, which has no case for them and returns an empty node
+  while leaving the datum's own tokens in the stream. `(or x '#())` silently
+  returned `()` instead of `x` (exit 0, no diagnostic) because the leftover
+  `)` happened to balance; `'#(1 2)` anywhere else desynchronized the reader
+  entirely. The same hole meant `'#(1 2)` compiled to the list `(vector 1
+  2)` on the VM (never compared against native, since native couldn't read
+  a quoted vector at all), and `compile_quote`'s numeric arm dropped the
+  `is_char`/`is_inexact` reader flags, turning `'(#\a)` into the integer
+  list `(97)`. All three fixed together so closing one blind spot couldn't
+  open a native-vs-VM divergence.
+
+### Changed
+
+- **Pillar harnesses armed; `icc readiness` is machine-reachable, not only
+  runnable by hand (#470, ADR-0010 §2.5).** Six gates were redirecting their
+  trace file under `ESHKOL_DURABLE_WORK_ROOT` when set and never touching
+  `scripts/icc_traces/`, which is what `icc readiness` reads by default —
+  the 2026-08-25 audit's own proof: regenerating the `vm-parity` and
+  `depth-coverage` traces by hand flipped both oracles from `blocked/0` to
+  `ready/97`. `eshkol_durable_mirror_trace()` mirrors the finished trace
+  into `scripts/icc_traces/` unconditionally. New `pillars-fast` CI job runs
+  the cheap gates (`check_depth_coverage.py`, `run_dbsp_gate.sh` — ADR-0009's
+  own acceptance gate, previously wired nowhere — `run_mono_equiv_ad_taylor_gate.sh`,
+  `run_ad_validated_bounds_gate.sh`, `run_vm_parity.sh`) on every PR;
+  `pillars-nightly.yml` runs the expensive sweeps (depth-parametric P6a-f,
+  differential/edge-matrix/metamorphic/sanitizer-fuzz, the full 66-probe
+  smoke, SICP) on a cron. Full inventory in
+  `docs/design/PILLAR_CI_INVENTORY.md`.
+- **Assurance wave 2: self-verdict scanner, build fingerprints, a
+  readiness artifact probe, and adversarial gate scenarios (#465,
+  `docs/design/FLAW_DETECTION_ROADMAP.md` D-05/D-11).**
+  `scripts/check_self_verdicts.py` fails a PASS-graded artifact whose text
+  still contains a self-reported failure marker (`FAIL`/`MISMATCH`/
+  `DIVERGENCE`, filtered against known decorative false positives) — the
+  exact shape that let a VM `FAIL: Expected 12` line print on a green
+  baseline for months (SW-24). `scripts/lib/build_fingerprint.sh` /
+  `check_build_fingerprint.py` record and check the compiler binary's
+  size/mtime/sha256 and the checkout's git SHA, failing when a built binary
+  predates the most recent build-relevant source change — the literal "ran
+  after a rebase, never rebuilt" incident from #418, caught live on its own
+  first real use while landing. Both gates are wired into
+  `run_icc_smoke.sh`, `run_vm_parity.sh` (which also runs the self-verdict
+  scanner in manifest mode over every corpus output graded PASS by
+  native/VM agreement — `cmp -s` cannot see two engines print the identical
+  self-reported failure line and call that equal) and `run_ctest_gate.sh`
+  (against the same JUnit file CTest already produces).
+  `scripts/doc_audit/check_results_schema.py` closes the one open
+  low-severity gap the v1.3.4 readiness battery left
+  (`artifact_without_test_or_trace` on `run_examples.py`'s own output),
+  schema-checking every doc-example result record and giving ICC real
+  execution evidence for that artifact. `scripts/run_adversarial_gate_scenarios.sh`
+  proves the assurance gates themselves behave correctly under ICC's own
+  #1-ranked weakness-map scenarios — a dirty worktree, a stale/rebuilt
+  binary, a model-server outage, disk pressure, an actually failing gate,
+  and every gate's `--self-test` contract being wired into `ctest` or CI
+  somewhere real.
+
 ### Added
 
 - **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
@@ -343,6 +637,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AD-node producers for tensor embedding and the Fréchet mean (#497).**
+  The external-tensor bridge already had gated, gradchecked backward rules
+  for `AD_NODE_TENSOR_EMBEDDING` and `AD_NODE_FRECHET_MEAN`, but no forward
+  anywhere in the tree ever recorded either node, so both rules had only
+  ever been validated against hand-assembled `ad_node_t` fixtures written
+  from the same contract the rule reads — the one defect class that
+  construction cannot catch is a producer that fills the contract wrongly,
+  because there was no producer at all. `ad_tensor_embedding` and
+  `ad_frechet_mean` are now real producers in `lib/bridge/qllm_bridge.cpp`;
+  fractional, negative and out-of-range embedding indices are refused at
+  record time rather than rounded or clamped into a wrong row, and the
+  Fréchet forward shares its Karcher iteration with the VM's own opcode
+  (extracted into `inc/eshkol/backend/frechet_mean_core.h`) so forward and
+  backward cannot disagree about what "converged" means.
+  `tests/bridge/qllm_bridge_producer_gradcheck_test.cpp` gradchecks both
+  through the real producers and real dispatch against exact analytic
+  references alongside finite differences (embedding: exact scatter-add,
+  0 mismatches; Fréchet: exact Euclidean closed form, 0.0; hyperbolic
+  finite difference 8.3e-10 over 48 partials). 202/202 ctest, 77/77
+  `qllm_oracle`, golden vectors regenerating byte-identically.
+
+- **A synthetic large-single-file AOT compile-time benchmark, gated
+  continuously (#495).** A 2026-08-26 downstream-consumer audit found that
+  a single hand-written file with many top-level defines took
+  disproportionately (4x+) longer to `--emit-object` than an equivalent
+  multi-file bundle, and never finished inside the audit's time window.
+  `bench/generate_large_single_file.py` generates a deterministic,
+  self-contained fixture reproducing the same shape (default 208
+  top-level defines referencing earlier-numbered functions, calibrated
+  against a measured super-linear growth curve — 208/416/832/1600 defines
+  at roughly 4s/11s/41s/154s locally); `bench/large_single_file_compile_bench.sh`
+  compiles a 1600-define fixture against a 900-second ceiling, killed with
+  `SIGKILL` rather than `SIGTERM` (measured directly: `eshkol-run` does not
+  exit promptly on `SIGTERM` mid-codegen), and captures an
+  `ESHKOL_PHASE_TIME=1` breakdown showing ~98% of wall-clock cost is in
+  LLVM's own backend, not Eshkol's frontend. Wired as a real (non-advisory)
+  nightly gate in `adversarial-nightly.yml`. Measurement only — no fix;
+  addressing the underlying cost is a v1.3.6+ item.
+
 - **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
   against BOM-less non-ASCII bytes.** Verified on a real Windows PowerShell
   5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
@@ -358,6 +691,272 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
   reporting; wired into the `assurance-gates` CI job and the
   `eshkol-compiler-readiness` oracle (`ps1_encoding_clean`).
+
+### Fixed
+
+- **Four release-machinery gaps from the 2026-08-25 audit closed (#493).**
+  A v1.3.5-evolve completion-oracle target (22 criteria bound to real
+  gates/`ctest` names) gives "all of v1.3.5" a machine-checkable
+  representation instead of only `v1.3-evolve`. `release.yml`'s readiness
+  job now configures and builds a quantum-enabled tree before running
+  `run_language_coverage.sh`, which hard-requires one — previously the
+  probe always exited 2 and cascaded every oracle target to `blocked`.
+  `check_evidence_staleness.py` gains a real `NO_DATA` verdict distinct
+  from `PASS`, and `ci.yml`'s `assurance-gates` job stops passing
+  `--no-trace` to the five gates that run before it, so the staleness
+  check grades real evidence instead of an always-empty directory. Four
+  key-space-equality invariants in `architecture-model.yaml` moved off
+  hand-copied enumerations (which could never detect drift) onto
+  source-derived patterns; the one real gap this surfaced (native
+  `HEAP_SUBTYPE_PARAMETER`'s undocumented leaf treatment vs. the VM's own
+  deep-walk of the same row) is filed as `IF-08` in the silent-wrong
+  ledger. `scripts/check_doc_claims_residual.py` and a regenerated
+  `doc-claims-allowlist.yaml` restore the identity
+  `current_wrong_count == allowlist entries + open build items` exactly
+  (74 == 74 + 0).
+
+- **`evac_kind_for` never classified the DNC/SDNC/Taylor heap subtypes at
+  all; the exact Taylor tower genuinely dangles a bignum pointer into a
+  freed region arena (SW-66, #499).** Found by `icc architecture-verify`'s
+  new libclang C/C++ semantic-index backend resolving the switch's real
+  case arms, rather than the prior grep-fidelity invariant matching the
+  whole file's token set (all three names also appear in an unrelated
+  debug watchlist). Reading each subtype's actual allocation gave a
+  three-way split: `DncHandle`/`SdncHandle` are calloc'd on the plain C
+  heap and are genuinely safe as a shallow leaf copy (undertagged but not
+  buggy); `HEAP_SUBTYPE_TAYLOR`'s exact (`COEFF_RATIONAL`) representation
+  reinterprets its coefficient array as tagged values, and any coefficient
+  overflowing `int64` is a heap pointer to an independently arena-allocated
+  bignum — a tower built and escaped from inside a `with-region` body left
+  that pointer aimed at memory `region_pop` was about to free, silently
+  correct until the freed bytes were reused and reading garbage under
+  `ESHKOL_ARENA_POISON=1`. Adds an explicit `EVAC_TAYLOR` deep-walk arm
+  that walks the coefficient array only for `COEFF_RATIONAL` towers; every
+  `HEAP_SUBTYPE_*` member now carries an explicit `[DEEPWALK]`/`[LEAF]` tag
+  with its reasoning, and the architecture-model invariant is rewritten as
+  a generic, source-derived pattern instead of a hand-typed 16-name list.
+  `tests/memory/region_evac_taylor_exact_test.esk` reproduces the defect
+  (5/7 checks fail pre-fix, 7/7 post-fix, JIT and AOT) under
+  `ESHKOL_ARENA_POISON=1`. 203/203 ctest.
+
+- **`memory-fold-lww`'s accumulator mixed `#f` and a real `lww-register`
+  Vector across the same named-let loop parameter (SW-63, #494).** HoTT
+  unifies a tail-recursive loop parameter's type across every call site,
+  so the seeded-then-reassigned accumulator was a genuine Boolean/Vector
+  conflict — `--strict-types` was right to refuse it; the source's shape
+  was the defect, not the checker. Split into two functions so each
+  named-let's accumulator has one fixed shape for its whole lifetime:
+  `memory-lww-key-present?` stays Boolean-only, and
+  `memory-fold-lww-vector` (called only once a match is known to exist)
+  seeds its accumulator with a real `lww-register`. Verified across native
+  AOT, native JIT and VM bytecode emission under `--strict-types`, plus
+  unchanged gradual-mode behavior.
+
+- **A `default:` may not stand in for an invariant — closed-enum dispatch
+  is compiler-enforced (#500).** PR #498 found four tensor-valued AD node
+  types falling into an early `default:` in `eshkol_tensor_backward_dispatch`
+  that silently returned a zero gradient; the comment guarding that default
+  reasoned from a numeric band of enum values rather than the enum's actual
+  closure, and four newer node types had already stepped outside the band
+  it assumed. An inventory of 180 switches with three or more case labels
+  found 120 more `default:` arms that *produce* a plausible answer for a
+  member nobody considered; `ad_node_type_t`, `callable_subtype_t` and
+  `EvacKind` are now generated from a single-declaration registry
+  (`inc/eshkol/ad_node_registry.def`) with no `default:` and
+  `-Werror=switch -Werror=switch-enum` enforcing exhaustiveness at compile
+  time, plus a new ICC invariant re-deriving each enum's members from its
+  own definition so a re-added `default:` is caught even where the compiler
+  flag alone cannot (MSVC). Open sets stay loud on purpose: a subtype byte
+  read out of an object header is untrusted input, so
+  `eshkol_heap_subtype_is_declared`/`eshkol_callable_subtype_is_declared`
+  split the open half off with a value-naming fallback, and the VM's
+  `OpCode`/`ValType` switches — which dispatch on bytecode, an open set
+  whatever the enum declares — are left as loud backstops deliberately.
+  Filed as **SW-70** (renumbered from SW-66 during the release-train
+  rebase to avoid colliding with the already-landed Taylor-tower entry of
+  that id); status stays `guarded` — the four qLLM geometric node types
+  this PR's own audit found move from silently returning zero to loudly
+  aborting, named, until #498 promotes them to real `BRIDGE` rows, and
+  four further node types (`TANGENT_PROJECT`/`MOBIUS_ADD`/`MOBIUS_MATMUL`/
+  `GYROVECTOR_SPACE`) remain `UNREGISTERED` with no producer yet. 204/204
+  ctest.
+
+- **Exact backwards for the four geometric bridge ops (SW-65, #498).**
+  `ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`
+  and `ad_geodesic_attention` recorded tensor-valued AD nodes with no
+  backward rule; their type numbers fell into
+  `eshkol_tensor_backward_dispatch`'s `default:` (SW-70), so the reverse
+  sweep propagated nothing and every gradient through them was silently
+  exactly zero, with no diagnostic and exit 0. The four exact rules in
+  `lib/bridge/tensor_backward.cpp` are each declared as a `BRIDGE` row in
+  the `ad_node_registry.def` registry #500 shipped — a row naming a
+  function that does not exist is a compile error, which is what makes a
+  row's claim to be registered mean registered — deleting their prior
+  `UNREGISTERED` abort rows; the four node types nothing produces today
+  (`TANGENT_PROJECT`/`MOBIUS_ADD`/`MOBIUS_MATMUL`/`GYROVECTOR_SPACE`) stay
+  `UNREGISTERED`. The exp and log rules reuse
+  `FrechetGeometry::mobius_add_with_jacobians` and `log_map_with_jacobians`
+  rather than re-deriving them, since the log map *is* the function the
+  Fréchet rule already differentiates — a second derivation could only
+  introduce a disagreement. Validated against golden Jacobians from an
+  independently-written Eshkol transcription of the same formulas
+  (agreement to 3.7e-16 / 1.1e-14) and two derivation-independent
+  identities (the conformal gradient-norm identity and the
+  inverse-Jacobian identity, both to ~6e-16) before finite differences are
+  consulted at all. Two points made explicit rather than hidden: the
+  distance is not differentiable at coincident points, and geodesic
+  attention is therefore not differentiable when a query row equals a key
+  row exactly (the ordinary case when `Q` and `K` are the same tensor) —
+  both refuse loudly, naming the offending index, rather than picking a
+  plausible subgradient. 212/212 ctest on the registry base, 13/13
+  gradcheck (count pinned), 11/11 `exhaustive_dispatch` (18 bridged, 4
+  unregistered), `qllm_oracle` 10/10 files with golden vectors
+  regenerating byte-identically.
+
+- **`FindEshkol.cmake` ships as the one canonical discovery module; the
+  packaged link contract is complete (SW-64, #496).** A downstream-consumer
+  audit found `find_package(Eshkol)` referenced but undocumented — no
+  `Find`/`Config` module shipped anywhere, so a plausible `find_library`
+  guess resolves `libeshkol-static.a` (the ~30k-symbol compiler/tool
+  aggregate) instead of the ~8.8k-symbol `libeshkol-runtime.a` a compiled
+  program actually needs, and every compiled Eshkol program's synthesized
+  entry point calls `__eshkol_lib_init__` (defined only in `stdlib.o`) with
+  nothing documenting that link requirement. `cmake/FindEshkol.cmake`
+  resolves the compiler, the correct runtime archive, and the stdlib
+  object/module dir, producing an `Eshkol::eshkol` imported target whose
+  link interface unconditionally includes `stdlib.o` plus, on Apple, the
+  system frameworks the runtime needs — verified end to end against a
+  homebrew-shaped staged prefix with no hand-written library search in the
+  consumer at all. Packaging (the homebrew formula, both release-asset
+  steps) installs the module and `EshkolCompile.cmake`;
+  `tests/integration/system_package/` is a from-scratch consumer CMake
+  project exercising the requirement, driven by
+  `scripts/run_system_package_integration_test.sh`. `.icc/package-manifest.yaml`
+  gains an `integration_contract` entry that actually runs that script
+  against a staged package — presence of the cmake files is necessary but
+  not sufficient; this is what proves the discovery contract works, not
+  merely that its files landed. Scoped to macOS/Linux; the Windows/MSVC
+  link recipe is not yet established. Closes SW-64.
+
+- **A resident daemon loop leaked 48 bytes per tick through its exception
+  guard (SW-57, #473).** The public benchmark suite's flat-RSS axis (#469)
+  extended the published 100k-tick point to 400k and measured 119 MB
+  rather than flat; an independent reproduction found the growth perfectly
+  linear to ±3% across a 160x span (10k-1.6M ticks) with no plateau. Two
+  unrelated causes: `eshkol_push_exception_handler` bump-allocated each
+  frame from the process-global arena (never reclaimed by design,
+  "exception handlers should be short-lived" — untrue for a `guard`
+  entered once per tick, forever), and every published cons costs a real,
+  correctly-attributed 48 bytes. Handler frames now come from a
+  `thread_local` LIFO free list (malloc-backed, never arena-backed, since
+  an arena address can be retracted by a region or iter-scope rewind and
+  handing it back would alias a fresh object) — steady-state cost per
+  guard entry is zero, total frame memory bounded by peak nesting depth
+  rather than entry count. New `ESHKOL_ARENA_REPORT=1` prints the global
+  arena's own byte-exact allocation total at exit, since peak RSS is a
+  high-water mark of instantaneous residency that reads low under memory
+  pressure (the same binary measured 97 MB and 193 MB on consecutive runs
+  of a loaded host). `docs/reference/runtime/memory-model.md` gains a
+  measured matrix of which workload classes are exactly flat and which
+  are not, rather than walking back the existing 34 MB claim. New
+  `tests/memory/resident_longrun_flat_gate.sh` measures at two horizons
+  8x apart and gates on the slope, not a ceiling, verified to catch the
+  defect when reverted (40.024 bytes/tick). Ledger id moved from SW-49 to
+  SW-57 during the release-train rebase to avoid colliding with the
+  linearity no-cloning entry.
+
+- **The GPU correctness gate could not fail, and the Windows test judge
+  could not see most of its own failure markers (SW-67, SW-71, #501).**
+  `tests/gpu/gpu_correctness_gate.esk` and three sibling files printed only
+  unlabelled `RESULT` lines and exited 0 unconditionally, and the other 17
+  files that did print well-formed `FAIL:` markers never called `exit`
+  with a nonzero status — a failed check produced text, never a
+  process-level signal, so an exit-code-primary judge saw green regardless
+  of what a GPU kernel actually computed. Every `tests/gpu/*.esk` file now
+  aggregates a failure counter and calls `(exit 0)`/`(exit 1)` on a final
+  `PASS:`/`FAIL:` verdict line; `scripts/lib/test_isolation.sh` gains an
+  opt-in verdict-grammar check that fails a test which exits 0 but never
+  printed a recognized marker; and a permanent, deliberately-failing
+  `*_must_fail.esk` canary (`tests/gpu/gate_canary_must_fail.esk`) that
+  `scripts/run_gpu_tests.sh` now runs on every invocation and requires to
+  fail, forcing the whole run red if it is ever not RED. `GPU_GATE_TOL`
+  tightens from `1e-4` to `1e-9` on the strength of a corrected claim
+  about `display`'s precision (it round-trips exactly; it does not print
+  only ~6 significant digits) plus a measured Metal-vs-CPU divergence of
+  exactly 0 across ten probes.
+
+  The Windows judge needed two further fixes to honor the same contract.
+  `scripts/run_all_tests.ps1`'s shared verdict function never implemented
+  the `*_must_fail.esk` canary inversion the macOS/Linux judge now applies,
+  so it graded the canary's expected exit 1 as a runtime failure — exactly
+  backwards for a file whose only job is proving the pipeline can still go
+  red. Fixing that surfaced a second, wider defect (SW-71): every marker
+  check in the Windows judge matched its `FAIL:`/`PASS`/`error:` regexes
+  against the whole captured stdout+stderr string without multiline mode,
+  so a `^`-anchored pattern only ever matched a marker printed on the
+  output's very first line. The canary's own banner line pushed its
+  `FAIL:` marker to line 2, making it invisible to the judge — and the
+  identical check also gates every ordinary test's assertion-failure path,
+  so a real regression whose marker printed after any banner or header
+  line would have been silently graded PASS on every Windows suite using a
+  `^`-anchored pattern. Fixed once, at the one place these checks are
+  made — a helper that evaluates the same regexes in multiline mode, with
+  no change to any suite's regex literal — rather than in each call site.
+  Verified end to end on a Windows PowerShell 5.1 host (no `pwsh`
+  installed) against a stub compiler and fixture executables driving the
+  real `scripts/run_all_tests.ps1 -Mode gpu`: the real canary shape
+  passes, an ordinary test passes, a canary forced to exit 0 fails with
+  the intended "verdict pipeline is broken" message, and — new — an
+  ordinary fixture whose `FAIL:` marker prints on line 2 rather than line
+  1 is now correctly graded a failure. Both SW-67 and SW-71 (bucket
+  VACUOUS-ASSURANCE) are filed and closed in
+  `.icc/silent-wrong-ledger.yaml`; `check_ledger_integrity.py` and
+  `scripts/gate_no_silent_wrong.py` both pass. 18/18 `run_gpu_tests.sh`,
+  full CPU-vs-GPU differential PASS at the new tolerance.
+
+### Changed
+
+- **The release-readiness gate now runs on the self-hosted runner (#502).**
+  `release-readiness-gate` needs ICC, which only exists on the
+  maintainer's self-hosted node (the `ICC_BIN` repository variable); a
+  GitHub-hosted runner can never certify this gate, only report it
+  unavailable. Moves the job to the self-hosted `eshkol`-labelled runner
+  and adapts it to the mesh provisioning contract `ci-mesh.yml` already
+  established: drops the `apt-get` toolchain install (self-hosted runners
+  are provisioned once by hand, never mutated by CI) in favor of a
+  preflight step that resolves `llvm-config`/`cmake`/`ninja`/`python3`/`jq`
+  and shims `ld.lld` from whatever the node already has, failing loud and
+  specific if anything is missing, and reclaims the two build trees the
+  job leaves behind so a persistent node doesn't fill up across releases.
+  `ESHKOL_REQUIRE_READINESS_GATE` stays unset until this merges and the
+  runner is confirmed online, so the gate keeps warning rather than
+  blocking in the interim.
+
+### Documentation
+
+- **README/CONTRIBUTING/FEATURE_MATRIX reconciled with machine sources;
+  a surface-count drift checker added (B6/B7/N4, #492).** Three
+  documentation-truth findings from the 2026-08-26 audit, re-verified
+  fresh at commit `afbaaf5b`: README's CTest/language-surface/VM-parity
+  counts (183/183, 1,091/1,091, 184/184) were stale against remeasured
+  198/198, 1,107/1,107, 188/188; CONTRIBUTING's branch-protection section
+  was false in 5 of 8 statements against the live GitHub rule (wrong
+  required-context list, two lanes called advisory when required, a
+  nonexistent context name, and false claims about "up to date before
+  merging" and "dismiss stale approvals" that don't match `strict: false`
+  and the absence of any PR-review requirement); and a surface-count
+  citation pointed at an ADR-0011 section that doesn't exist (ADR-0011 is
+  the guest-collector adapter). New `scripts/check_surface_counts.py`
+  reads the canonical surface/builtin totals from the coverage policy
+  files and fails on mismatch against every registered doc, red-proofed
+  by planting a stale claim and confirming the gate catches it; wired
+  into `ci.yml`'s `assurance-gates` job. A follow-up commit in the same PR
+  caught its own drift: rebasing onto `origin/master` (13 commits ahead)
+  had already moved the canonical language-surface baseline to 1,108
+  constructs / 1,042 builtins, which `check_surface_counts.py` correctly
+  flagged as stale in the commit that had just landed it; README,
+  `FEATURE_MATRIX.md` and `architecture-model.yaml` were bumped again to
+  match.
 
 ## [1.3.4-evolve] - 2026-07-31
 
