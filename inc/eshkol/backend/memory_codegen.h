@@ -143,6 +143,17 @@ public:
     llvm::Function* getMakeExceptionWithHeader() const { return eshkol_make_exception_with_header; }
 
 private:
+    /**
+     * @brief Plant a reference to the runtime's object-ABI guard symbol.
+     *
+     * Turns a mixed link — generated code built against one object-header
+     * layout, runtime built against another — from a silent wrong-data failure
+     * into an undefined-symbol error that names the layout the code expected.
+     * Called once per module from the constructor. See the implementation and
+     * inc/eshkol/abi_fingerprint.h for the mechanism.
+     */
+    void emitObjectAbiGuard();
+
     llvm::Module& module;
     TypeSystem& types;
 
