@@ -446,6 +446,7 @@ jobs:
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
+          python3 scripts/check_surface_counts.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -741,6 +742,19 @@ jobs:
             readiness-report.md
             readiness-report.json
           if-no-files-found: ignore
+
+      # Motivating incident (2026-08-26 doc-truth audit, finding N4): the
+      # doc set unified on 1,106 constructs the SAME DAY the coverage gate's
+      # own floor moved to 1,107 — a hand reconciliation pass that was
+      # correct for under 24 hours. This job does not build the compiler, so
+      # it grades the two counts that have a committed machine source
+      # (surface total, builtin total) against the closed set of docs
+      # registered in the script; CTest/VM-parity N/N claims are graded
+      # separately, only where a build produces the evidence to check them
+      # against (see the release workflow), via --ctest-log/--parity-log.
+      - name: Doc set agrees with the language-surface gate's own numbers (N4)
+        shell: bash
+        run: python3 scripts/check_surface_counts.py --no-trace
 
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative

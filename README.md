@@ -293,7 +293,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,040 built-in functions** (1,106-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — corrected 2026-08-25 from "550+"
+- **1,041 built-in functions** (1,107-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled 2026-08-26 against commit `afbaaf5b` (doc-truth audit finding N4)
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -694,16 +694,18 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
   cache links, image-codec dependencies, generic ARM64 stdlib code,
   architecture-matched compiler-rt, and CUDA consumer paths are verified by
   the release workflow rather than inferred from builder-local success.
-- **Execution-backed evidence**, all measured on the release commit: the
-  aggregate suite 45/45 suites and 770 individual tests, CTest 183/183, the
-  SICP full-book gate 88/88 probes across all five chapters under both `-r` and
-  AOT, and the reference-Scheme differential oracle 34/34 AGREE against
-  chibi-scheme 0.12.0. The language-surface gate enforces a monotonic floor of
-  1,091 declared constructs at 100% execution-backed coverage: a construct
-  earns its row by dispatching or executing in a passing run, and lexical
-  name-presence is a diagnostic only, earning no release credit. CTest results
-  are now completion-oracle evidence in their own right, so a red suite turns
-  the release gate red.
+- **Execution-backed evidence**: the aggregate suite 45/45 suites and 770
+  individual tests, the SICP full-book gate 88/88 probes across all five
+  chapters under both `-r` and AOT, and the reference-Scheme differential
+  oracle 34/34 AGREE against chibi-scheme 0.12.0. CTest is **198/198** and
+  the language-surface gate enforces a monotonic floor of **1,107** declared
+  constructs at 100% execution-backed coverage (both remeasured fresh at
+  commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede
+  the prior 183/183 and 1,091/1,091 figures, which were correct on an
+  earlier commit but had drifted): a construct earns its row by dispatching
+  or executing in a passing run, and lexical name-presence is a diagnostic
+  only, earning no release credit. CTest results are now completion-oracle
+  evidence in their own right, so a red suite turns the release gate red.
 - **Explicit VM scope**: this is not a claim of complete backend parity. The
   956-row ratchet classifies 581 VM-supported entries, 44 justified
   native-only entries, and 331 explicit gaps in
@@ -993,7 +995,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 45/45 suites and 770 individual tests; CTest 183/183; executable language coverage 1,091/1,091 (100.0%, floor PASS); VM parity differential 184/184
+- **Testing**: 45/45 suites and 770 individual tests; CTest 198/198; executable language coverage 1,107/1,107 (100.0%, floor PASS); VM parity differential 188/188 (all remeasured at commit `afbaaf5b` on 2026-08-26, doc-truth audit findings B6/N4; supersede the prior 183/183, 1,091/1,091, and 184/184 figures)
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---
