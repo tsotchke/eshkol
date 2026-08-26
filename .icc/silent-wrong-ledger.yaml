@@ -4241,6 +4241,73 @@ entries:
       structural split, verified against current master and re-tested
       end-to-end rather than rebase-inherited.
 
+  - id: SW-64
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: packaging/build-integration
+    status: closed
+    closed_at: "feat/noesis-packaging"
+    closed_by: "branch feat/noesis-packaging"
+    title: "Eshkol shipped no find_package(Eshkol) discovery contract: a consumer's own Find module had to guess library names and could resolve the compiler/tool aggregate instead of the runtime, and every compiled program silently needs stdlib.o that nothing said to link"
+    repro: >-
+      Stage a homebrew-shaped install (bin/eshkol-run, lib/eshkol/{libeshkol-runtime.a,
+      libeshkol-static.a,stdlib.o}, share/eshkol/lib/*.esk — packaging/homebrew/eshkol.rb's
+      real install list) from a fresh default build. Compile a bare-top-level-expression
+      program (no explicit `(define (main) ...)`) with `eshkol-run --emit-object`, then link
+      the resulting .o against ONLY the runtime archive with the platform C++ compiler
+      directly (the operation a downstream find_package(Eshkol)-based CMake project performs).
+    observed: >-
+      A find_library(NAMES eshkol eshkol-static libeshkol libeshkol-static) style guess (the
+      shape a downstream Find module reasonably writes with no shipped contract to read)
+      resolves libeshkol-static.a — the ~30k-symbol compiler/tool aggregate, not
+      libeshkol-runtime.a (~8.8k symbols) that a compiled PROGRAM needs — on a build where
+      both archives are staged. Independently, linking the compiled program's .o against
+      ONLY the (correct) runtime archive fails with `Undefined symbols ... "___eshkol_lib_init__"`:
+      codegen calls that symbol from a program's synthesized entry point whenever the source
+      has no explicit `(define (main) ...)`, and only ever DEFINES it inside stdlib.o — nothing
+      in the packaged install or its documentation said a downstream link line needed stdlib.o
+      at all, so the failure was loud but only ever surfaced once a consumer's program happened
+      to take that shape.
+    correct: >-
+      A packaged install ships one canonical, unambiguous discovery contract; a downstream
+      project can call find_package(Eshkol) and get a complete, working link line without
+      writing its own library-name guesses or knowing about __eshkol_lib_init__/stdlib.o at all.
+    root_cause: >-
+      cmake/EshkolCompile.cmake (the documented "canonical CMake integration",
+      docs/BUILD_INTEGRATION.md) referenced find_package(Eshkol) as one way to resolve
+      Eshkol_COMPILER, but this repo never shipped the Find/Config module that call requires —
+      neither in the source tree nor in either packaging pipeline (homebrew formula, GitHub
+      release tarball). Every downstream consumer was necessarily writing its own guess against
+      an undocumented, ambiguous install surface (two similarly-named static archives; a
+      link-time symbol dependency that is conditional on codegen shape and undocumented).
+    fix: >-
+      cmake/FindEshkol.cmake ships as this repo's ONE canonical Find module, resolving
+      Eshkol_COMPILER/Eshkol_LIBRARY (eshkol-runtime, specifically, never eshkol-static)/
+      Eshkol_STDLIB_OBJECT/Eshkol_STDLIB_MODULE_DIR against the real installed layout, and
+      producing an Eshkol::eshkol imported target whose INTERFACE_LINK_LIBRARIES
+      unconditionally includes stdlib.o (harmless for programs that do not need it, verified) plus,
+      on Apple, the system frameworks the runtime needs. packaging/homebrew/eshkol.rb and both
+      of release.yml's "Package Release Asset" steps install this module and
+      cmake/EshkolCompile.cmake to share/eshkol/cmake/.
+    evidence: >-
+      tests/integration/system_package/ (a from-scratch consumer CMake project, deliberately in
+      the bare-top-level-expression style so it exercises the stdlib.o requirement) driven by
+      scripts/run_system_package_integration_test.sh — verified end to end (find_package(Eshkol)
+      -> include(EshkolCompile) -> eshkol_compile_executable() -> link -> run) against a
+      homebrew-shaped staged prefix. Wired as .icc/package-manifest.yaml's `cmake_integration`
+      (file presence) and `integration_contract` (executes the script, requires exit 0) entries,
+      checked by scripts/check_package_manifest.py --verify-integration-contract; and as a new
+      step in the packaging-homebrew job of .github/workflows/adversarial-nightly.yml, run
+      against a real `brew install --build-from-source` result.
+    caught_by: [downstream-consumer-audit-2026-08-26]
+    missed_by: [icc-smoke, icc-readiness, ctest, packaging-homebrew-nightly-lane-pre-fix]
+    notes: >-
+      Scoped to macOS/Linux: the verified link recipe (system frameworks, stdlib.o placement)
+      has not been established for the Windows/MSVC toolchain, so
+      cmake/FindEshkol.cmake's INTERFACE_LINK_LIBRARIES on Windows carries only bcrypt/ws2_32
+      (mirroring the runtime's own known Windows link deps) without the same end-to-end
+      verification this entry's evidence covers for macOS/Linux.
+
   - id: DD-11
     bucket: DOC-DEBT
     status: open

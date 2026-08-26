@@ -83,6 +83,50 @@ automatically from an in-tree `eshkol-run`/`eshkol::eshkol-run` CMake
 target (as happens when this module is used from within the Eshkol build
 itself — see `tests/build_integration/`).
 
+## Discovering an INSTALLED Eshkol: `find_package(Eshkol)`
+
+A consumer building against a packaged Eshkol (homebrew, or a GitHub release
+tarball) rather than an in-tree checkout has no `eshkol-run`/`eshkol-runtime`
+CMake targets to pick up automatically. Both packaging pipelines install
+this repo's own `cmake/FindEshkol.cmake` and `cmake/EshkolCompile.cmake` to
+`<prefix>/share/eshkol/cmake/`:
+
+```cmake
+list(APPEND CMAKE_MODULE_PATH "<prefix>/share/eshkol/cmake")
+find_package(Eshkol REQUIRED)
+include(EshkolCompile)
+
+eshkol_compile_executable(my_program
+  SOURCES my_program.esk
+)
+```
+
+`find_package(Eshkol)` resolves `Eshkol_COMPILER` (the `eshkol-run` driver)
+and produces the `Eshkol::eshkol` imported target, which
+`eshkol_compile_executable()`/`eshkol_compile_library()` link into every
+target they create automatically. Do not hand-roll a `find_library()` for
+"the Eshkol library": the package carries TWO static archives that are easy
+to confuse — `eshkol-runtime` (the lean hosted runtime a COMPILED PROGRAM
+needs) and `eshkol-static` (the compiler/tool aggregate, for embedding the
+compiler itself) — and every compiled Eshkol program also needs `stdlib.o`
+linked in unconditionally (codegen calls `__eshkol_lib_init__` from a
+program's synthesized entry point whenever the source has no explicit
+`(define (main) ...)`, and only ever DEFINES that symbol inside `stdlib.o`).
+`Eshkol::eshkol`'s `INTERFACE_LINK_LIBRARIES` already carries both the
+correct archive and `stdlib.o` (plus, on Apple, the system frameworks the
+runtime needs) as one complete link line — see `cmake/FindEshkol.cmake`'s
+header comment for the full contract, and
+`tests/integration/system_package/` for a working from-scratch consumer
+project exercising it end to end (driven by
+`scripts/run_system_package_integration_test.sh`; wired into the
+`packaging-homebrew` job of `.github/workflows/adversarial-nightly.yml`
+against a real `brew install --build-from-source` result, and gated by
+`.icc/package-manifest.yaml`'s `integration_contract` entry when
+`scripts/check_package_manifest.py` runs with `--verify-integration-contract`).
+
+This module is scoped to macOS/Linux today; the link recipe has not yet
+been established for the Windows/MSVC toolchain.
+
 ### Generator support for DEPFILE
 
 `add_custom_command(... DEPFILE ...)` is a Ninja-only feature prior to
