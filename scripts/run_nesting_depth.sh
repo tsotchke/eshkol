@@ -40,6 +40,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 # Keep the Perl timeout wrapper independent of host locale availability.
 export LC_ALL=C
@@ -109,11 +110,11 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-90}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-150}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-90}"
 
-# macOS has no timeout(1); emulate with perl alarm (exit 142 on SIGALRM).
-run_guarded() {
-    perl -e 'my $s = shift; alarm $s; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh) — see
+# run_recursion_depth.sh for why the local exec-then-alarm one-liner this
+# replaced could report 142 for a plain timeout instead of a controlled
+# code. axis_outcome() below checks 124 first (142 kept for back-compat).
+run_guarded() { eshkol_outcome_guarded "$@"; }
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -131,7 +132,7 @@ DIAG_RE="fatal signal|terminating|recursion depth|stack overflow|[Ee]rror:|Unhan
 # axis_outcome rc out  ->  "VAL <n>" | "LIMIT" | "SILENT" | "HANG"
 axis_outcome() {
     local rc="$1" out="$2" numline
-    if [ "$rc" -eq 142 ]; then echo HANG; return; fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo HANG; return; fi
     numline=$(printf '%s' "$out" | grep -E '^-?[0-9]+$' | tail -1)
     if [ "$rc" -eq 0 ]; then
         if [ -n "$numline" ]; then echo "VAL $numline"; return; fi

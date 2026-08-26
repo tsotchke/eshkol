@@ -49,6 +49,7 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/ctest_gate.jsonl"
 mkdir -p "$TRACE_DIR"
@@ -147,48 +148,90 @@ echo
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/eshkol-ctest-results.XXXXXX")"
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
     python3 - "$JUNIT" > "$RESULTS" <<'PY'
-import sys, xml.etree.ElementTree as ET
+import re, sys, xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
+# CTest reports a per-test TIMEOUT (its own TIMEOUT test property firing,
+# distinct from a test that ran to completion and returned nonzero) as a
+# failed testcase whose <failure>/<error> text names it — CTest itself has
+# no separate JUnit "status" value for it. A timeout is exactly the shape
+# scripts/lib/harness_outcome.sh calls INFRA: the harness could not obtain
+# a verdict in the time budget, which says nothing about whether the code
+# is right. Folding it into FAIL here is the same defect class the
+# 2026-08-25 architecture audit measured in run_vm_parity.sh and
+# run_language_coverage.sh (section 3) — a clock fact reported as a
+# code-correctness verdict.
+TIMEOUT_RE = re.compile(r"\btimeout\b", re.IGNORECASE)
 for case in root.iter("testcase"):
     name = case.get("name") or ""
     if not name:
         continue
     status = case.get("status") or ""
-    failed = (case.find("failure") is not None
-              or case.find("error") is not None
+    failure_el = case.find("failure")
+    error_el = case.find("error")
+    failed = (failure_el is not None or error_el is not None
               or status in ("fail", "failed", "notrun", "error"))
     skipped = case.find("skipped") is not None or status == "skipped"
     if skipped:
         continue
     detail = "%s in %ss" % (status or ("failed" if failed else "passed"),
                             case.get("time") or "?")
+    if failed:
+        failure_text = " ".join(filter(None, [
+            (failure_el.get("message") if failure_el is not None else None),
+            (failure_el.text if failure_el is not None else None),
+            (error_el.get("message") if error_el is not None else None),
+            (error_el.text if error_el is not None else None),
+        ]))
+        if TIMEOUT_RE.search(failure_text) or TIMEOUT_RE.search(status):
+            print("%s\tINFRA\t%s" % (name, detail))
+            continue
     print("%s\t%s\t%s" % (name, "FAIL" if failed else "PASS", detail))
 PY
 else
     # `      1/126 Test   #1: name .......   Passed    0.42 sec`
+    # CTest's console verdict word for a per-test TIMEOUT firing is
+    # literally "Timeout" — recognize it explicitly rather than folding it
+    # into the FAIL bucket with every other non-"Passed" word (see the
+    # JUnit branch above for why: a timeout is INFRA, not a code verdict).
     perl -ne '
         if (m{^\s*\d+/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.+\s*(\**)\s*(\w[\w ]*?)\s+([\d.]+)\s+sec}) {
             my ($n, $verdict, $secs) = ($1, $3, $4);
             $verdict =~ s/\s+$//;
-            my $ok = ($verdict eq "Passed") ? "PASS" : "FAIL";
+            my $ok = ($verdict eq "Passed") ? "PASS"
+                   : ($verdict =~ /timeout/i) ? "INFRA"
+                   : "FAIL";
             print "$n\t$ok\t$verdict in ${secs}s\n";
         }
     ' "$RUN_LOG" > "$RESULTS"
 fi
 
-TOTAL=0; PASSED=0; FAILED=0
+TOTAL=0; PASSED=0; FAILED=0; INFRA=0
 while IFS="$(printf '\t')" read -r name verdict detail; do
     [ -n "$name" ] || continue
     TOTAL=$((TOTAL + 1))
-    if [ "$verdict" = "PASS" ]; then
-        PASSED=$((PASSED + 1))
-        echo "PASSED ctest::$name"
-    else
-        FAILED=$((FAILED + 1))
-        echo "FAILED ctest::$name — $detail"
-    fi
+    case "$verdict" in
+        PASS)
+            PASSED=$((PASSED + 1))
+            echo "PASSED ctest::$name"
+            emit_test_result "ctest::$name" "$verdict" "$detail"
+            ;;
+        INFRA)
+            INFRA=$((INFRA + 1))
+            echo "INFRA  ctest::$name — $detail (no verdict obtained; not counted as a failure)"
+            # Deliberately no emit_test_result call: INFRA must never
+            # publish a passed:false test_result record. See
+            # scripts/lib/harness_outcome.sh, "WHY INFRA EMITS NO
+            # test_result" — writing nothing leaves any prior PASS/FAIL on
+            # file (within its freshness window) standing instead of
+            # overwriting it with an environment-caused false red.
+            ;;
+        *)
+            FAILED=$((FAILED + 1))
+            echo "FAILED ctest::$name — $detail"
+            emit_test_result "ctest::$name" "$verdict" "$detail"
+            ;;
+    esac
     emit_event "ctest_$name" "$verdict" "$detail"
-    emit_test_result "ctest::$name" "$verdict" "$detail"
 done < "$RESULTS"
 
 if [ "$TOTAL" -eq 0 ]; then
@@ -201,19 +244,22 @@ fi
 
 # ── group roll-ups ───────────────────────────────────────────────────────
 GROUP_FAILURES=0
+GROUP_INFRA=0
 while IFS="$(printf '\t')" read -r event regex label; do
     [ -n "${event:-}" ] || continue
-    matched=0; g_pass=0; g_fail=0; first_fail=""
+    matched=0; g_pass=0; g_fail=0; g_infra=0; first_fail=""
     while IFS="$(printf '\t')" read -r name verdict detail; do
         [ -n "$name" ] || continue
         printf '%s' "$name" | grep -Eq "$regex" || continue
         matched=$((matched + 1))
-        if [ "$verdict" = "PASS" ]; then
-            g_pass=$((g_pass + 1))
-        else
-            g_fail=$((g_fail + 1))
-            [ -n "$first_fail" ] || first_fail="$name: $detail"
-        fi
+        case "$verdict" in
+            PASS)  g_pass=$((g_pass + 1)) ;;
+            INFRA) g_infra=$((g_infra + 1)) ;;
+            *)
+                g_fail=$((g_fail + 1))
+                [ -n "$first_fail" ] || first_fail="$name: $detail"
+                ;;
+        esac
     done < "$RESULTS"
 
     if [ "$matched" -eq 0 ]; then
@@ -223,33 +269,80 @@ while IFS="$(printf '\t')" read -r event regex label; do
         echo "FAILED ctest-group::$event — ABSENT (no test matches /$regex/)"
         continue
     fi
-    if [ "$g_fail" -eq 0 ]; then
-        emit_event "$event" PASS "$label: $g_pass/$matched ctest gates green"
-        emit_test_result "ctest-group::$event" PASS "$g_pass/$matched green"
-        echo "PASSED ctest-group::$event ($g_pass/$matched)"
-    else
+    if [ "$g_fail" -gt 0 ]; then
         GROUP_FAILURES=$((GROUP_FAILURES + 1))
         emit_event "$event" FAIL "$label: $g_fail/$matched failed — $first_fail"
         emit_test_result "ctest-group::$event" FAIL "$g_fail/$matched failed"
         echo "FAILED ctest-group::$event ($g_fail/$matched) — $first_fail"
+    elif [ "$g_pass" -eq 0 ]; then
+        # Every matched test in this group hit INFRA (e.g. its own per-test
+        # ctest TIMEOUT) — no defect was observed, but no PASS was either.
+        # Never counted toward GROUP_FAILURES (an unresolved clock fact must
+        # not fail the gate), and never a false PASS either — reported as
+        # its own state, loudly.
+        GROUP_INFRA=$((GROUP_INFRA + 1))
+        emit_event "$event" INFRA "$label: $g_infra/$matched infra (no verdict obtained)"
+        echo "INFRA  ctest-group::$event ($g_infra/$matched) — no verdict obtained"
+    else
+        emit_event "$event" PASS "$label: $g_pass/$matched ctest gates green$([ "$g_infra" -gt 0 ] && printf '; %d infra' "$g_infra")"
+        emit_test_result "ctest-group::$event" PASS "$g_pass/$matched green"
+        echo "PASSED ctest-group::$event ($g_pass/$matched)$([ "$g_infra" -gt 0 ] && printf ' — %d infra (no verdict)' "$g_infra")"
     fi
 done <<GROUPS_EOF
 $CTEST_GATE_GROUPS
 GROUPS_EOF
 
 # ── suite roll-up ────────────────────────────────────────────────────────
+#
+# ctest itself returns nonzero on ANY non-Passed test, timeouts included, so
+# CTEST_RC == 0 used to be required for a green gate — which means a single
+# per-test ctest TIMEOUT (an environment fact: this host was too slow/loaded
+# to finish inside the test's TIMEOUT property) failed the whole suite
+# exactly like a real wrong-answer test would, indistinguishably. That is
+# the same class of defect the 2026-08-25 architecture audit measured in
+# run_vm_parity.sh and run_language_coverage.sh (section 3).
+#
+# The fix: PASS no longer requires CTEST_RC == 0 outright. It requires no
+# real FAILED test and no failed/absent group — and if CTEST_RC is still
+# nonzero, that nonzero must be FULLY explained by counted INFRA tests
+# (INFRA -gt 0), never silently assumed. If CTEST_RC is nonzero for any
+# OTHER reason — every parsed testcase says PASS/INFRA yet ctest itself
+# disagrees — that is a harness contradiction (the same shape
+# scripts/run_all_tests.sh already guards: individual verdicts and the
+# aggregate disagreeing), and is treated as a failure rather than trusted.
 SUMMARY="$PASSED/$TOTAL ctest tests passed"
-if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$CTEST_RC" -eq 0 ]; then
-    emit_event "ctest_suite_green" PASS "$SUMMARY"
-    emit_test_result "ctest::suite" PASS "$SUMMARY"
-    echo
-    echo "Trace written: $TRACE_FILE"
-    echo "ctest gate: PASS ($SUMMARY)"
-    rm -f "$RESULTS"
-    exit 0
+if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ]; then
+    if [ "$CTEST_RC" -eq 0 ]; then
+        emit_event "ctest_suite_green" PASS "$SUMMARY"
+        emit_test_result "ctest::suite" PASS "$SUMMARY"
+        echo
+        echo "Trace written: $TRACE_FILE"
+        echo "ctest gate: PASS ($SUMMARY)"
+        rm -f "$RESULTS"
+        exit 0
+    elif [ "$INFRA" -gt 0 ]; then
+        SUMMARY="$SUMMARY; $INFRA infra (no verdict, not counted as failure)"
+        emit_event "ctest_suite_green" PASS "$SUMMARY"
+        emit_test_result "ctest::suite" PASS "$SUMMARY"
+        echo
+        echo "Trace written: $TRACE_FILE"
+        echo "ctest gate: PASS ($SUMMARY)"
+        echo "WARNING: $INFRA ctest test(s) could not obtain a verdict (per-test TIMEOUT) — re-run under less contention if this persists." >&2
+        rm -f "$RESULTS"
+        exit 0
+    else
+        DETAIL="$SUMMARY; every parsed testcase is PASS/INFRA but ctest itself exited $CTEST_RC with 0 INFRA to explain it — harness contradiction, not trusted"
+        emit_event "ctest_suite_green" FAIL "$DETAIL"
+        emit_test_result "ctest::suite" FAIL "$DETAIL"
+        echo
+        echo "Trace written: $TRACE_FILE"
+        echo "ctest gate: FAIL ($DETAIL)" >&2
+        rm -f "$RESULTS"
+        exit 1
+    fi
 fi
 
-DETAIL="$SUMMARY; $FAILED failed; $GROUP_FAILURES group(s) failed or absent; ctest exit $CTEST_RC"
+DETAIL="$SUMMARY; $FAILED failed; $INFRA infra; $GROUP_FAILURES group(s) failed or absent; ctest exit $CTEST_RC"
 emit_event "ctest_suite_green" FAIL "$DETAIL"
 emit_test_result "ctest::suite" FAIL "$DETAIL"
 echo

@@ -39,6 +39,7 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 if eshkol_durable_enabled; then
     ADV_WORK="$(eshkol_durable_prepare_dir ad-adversarial)" || exit $?
 fi
@@ -114,11 +115,12 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-240}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-300}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
 
-# macOS has no timeout(1); emulate with perl alarm (exit 142 on SIGALRM).
-run_guarded() {
-    perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh) — see
+# run_recursion_depth.sh for why the local exec-then-alarm one-liner this
+# replaced reported a self-inflicted timeout as 142 instead of a
+# controlled 124. verdict() below checks 124 first (142 kept for
+# back-compat with any evidence already captured under the old code).
+run_guarded() { eshkol_outcome_guarded "$@"; }
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -135,7 +137,7 @@ emit_event() {
 # classify a completed run: args rc out xc -> PASS|FAIL|XKNOWN|CRASH|HANG
 verdict() {
     local rc="$1" out="$2" xc="$3"
-    if [ "$rc" -eq 142 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then
         [ "$xc" -eq 1 ] && { echo XKNOWN; return; }
         echo HANG; return
     fi

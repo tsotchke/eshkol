@@ -24,6 +24,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 # macOS runner images do not consistently provide C.UTF-8. The Perl alarm
 # wrapper below must not fail before Eshkol is even invoked.
@@ -71,11 +72,15 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-240}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-360}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-90}"
 
-# macOS has no timeout(1); emulate with perl alarm (exit 142 on SIGALRM).
-run_guarded() {
-    perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh) — see
+# run_recursion_depth.sh for why the local exec-then-alarm one-liner this
+# replaced reported a self-inflicted timeout as 142 (indistinguishable from
+# a real SIGALRM the program raised itself) instead of a controlled 124.
+# is_crash() below only treats rc >= 128 as a crash, so this fix also
+# retires a latent over-classification: a plain timeout used to read as
+# "crash" (142 >= 128) and now correctly reads as a clean (LIMIT-bucketed)
+# nonzero exit instead.
+run_guarded() { eshkol_outcome_guarded "$@"; }
 
 # record RESULT/FDCHK lines from a run into the raw log, tagged by mode+file.
 record() {

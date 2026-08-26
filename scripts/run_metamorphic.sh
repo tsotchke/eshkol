@@ -9,6 +9,7 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/metamorphic.jsonl"
@@ -69,11 +70,15 @@ JIT_TIMEOUT="${METAMORPHIC_JIT_TIMEOUT:-180}"
 AOT_COMPILE_TIMEOUT="${METAMORPHIC_AOT_COMPILE_TIMEOUT:-300}"
 AOT_RUN_TIMEOUT="${METAMORPHIC_AOT_RUN_TIMEOUT:-90}"
 
-# macOS has no timeout(1); emulate with perl alarm (exit 142 on expiry).
-run_guarded() {
-    LC_ALL=C LANG=C LC_CTYPE=C perl -e 'my $seconds = shift; $SIG{ALRM}=sub{ exit 142 }; alarm $seconds; exec @ARGV; exit 127' \
-        "$1" "${@:2}"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh). This
+# used to be a local exec-then-perl-alarm one-liner: `exec` replaces perl's
+# own process image, so the `$SIG{ALRM}` handler set just before it does
+# not survive into the child, and a still-running child at expiry was
+# killed by SIGALRM under ITS default disposition (128+14=142) rather than
+# a controlled code. eshkol_outcome_guarded forks instead, so its alarm
+# handler stays alive in the parent and reports a stable 124 — verdict()
+# below now checks 124 first (with 142 kept recognized for back-compat).
+run_guarded() { eshkol_outcome_guarded "$@"; }
 
 json_escape() {
     printf '%s' "$1" | LC_ALL=C LANG=C LC_CTYPE=C perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -87,7 +92,7 @@ emit_event() {
 
 verdict() {
     local rc="$1" out="$2"
-    if [ "$rc" -eq 142 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then
         echo HANG; return
     fi
     if [ "$rc" -ge 128 ] || printf '%s' "$out" | grep -q "fatal signal"; then

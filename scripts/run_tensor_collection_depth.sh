@@ -37,6 +37,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in /*) : ;; *) BUILD_DIR="$REPO_ROOT/$BUILD_DIR" ;; esac
@@ -101,12 +102,15 @@ check_disk_cap() {
     fi
 }
 
-# macOS has no timeout(1); emulate with perl alarm (exit 124 on expiry).
-run_to() {
-    local secs="$1"; shift
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$secs" "$@"
-}
+# Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh). This
+# used to be a local exec-then-`local $SIG{ALRM}` one-liner that could
+# never actually deliver the 124 the classifier below expects: `exec`
+# replaces the perl process whose handler was just installed, so a
+# still-running child at expiry died from SIGALRM under its own default
+# disposition (128+14=142) instead. eshkol_outcome_guarded forks instead of
+# exec'ing, so the alarm fires in the still-alive parent and the classifier
+# now actually sees the 124 it was already written to expect.
+run_to() { eshkol_outcome_guarded "$@"; }
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
 }
