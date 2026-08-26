@@ -228,6 +228,13 @@ bench/
     04_quantum_kernels.sh / _reduce.py
   reference-run/               this repo's own measured reference numbers (committed)
   results/                     default --out-dir for ad-hoc runs (gitignored)
+  generate_large_single_file.py     synthetic large-single-file .esk generator
+  large_single_file_compile_bench.sh  continuous AOT compile-time ceiling gate
+                                       for that shape — see its header comment;
+                                       NOT part of the wave-1 axis suite above
+                                       (it measures a compile-time cost, not a
+                                       runtime performance claim), wired into
+                                       .github/workflows/adversarial-nightly.yml
 ```
 
 See `docs/reference/benchmarks/INDEX.md` for the doc-site version of this page, and each
