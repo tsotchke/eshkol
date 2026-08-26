@@ -99,6 +99,33 @@ oracles:
         label: 'Silent-wrong ledger has no duplicate ids across the whole file and every entry has id/bucket/status/title plus closure evidence when not open (scripts/check_ledger_integrity.py)'
         action: python3 scripts/check_ledger_integrity.py
 
+      # ── Closed-enum dispatch (2026-08-26, SW-70) ──────────────────────
+      # The two gates above grade a LEDGER: they answer "is every flaw we
+      # already know about closed", which is a question about bookkeeping.
+      # This one grades the SOURCE, and it exists because the defect it
+      # guards was invisible to every ledger-shaped question. PR #498 found
+      # four tensor AD node types falling into a `default:` that did nothing —
+      # gradients exactly 0.0, no diagnostic, exit 0 — behind a comment
+      # asserting the case was impossible. Auditing the class found four MORE
+      # still live, measured directly on master. Nothing could have reported
+      # them: every AD probe asserts the ops it knows about, and the whole
+      # failure mode is an op nobody thought to name.
+      #
+      # The primary enforcement is the compiler (-Werror=switch
+      # -Werror=switch-enum, or ESHKOL_EXHAUSTIVE_SWITCH_BEGIN per switch),
+      # which cannot appear in a readiness score at all: a build that fails
+      # produces no evidence, only an absence. This criterion is the
+      # source-derived half — it re-derives each enum's members from its own
+      # DEFINITION, so it also catches the case the compiler by construction
+      # cannot, which is the enforcement being REMOVED.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["closed_enum_dispatch_exhaustive"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No dispatch switch over a closed enum carries a `default:`: every registered site names every member of its enum (re-derived from the enum definition, not from a hand-typed list) and is armed by -Werror=switch-enum or ESHKOL_EXHAUSTIVE_SWITCH_BEGIN; every ad_node_registry.def row declaring BRIDGE names a backward that is actually defined (scripts/gate_exhaustive_dispatch.py)'
+        action: python3 scripts/gate_exhaustive_dispatch.py
+
       # ── AD carrier wave (2026-08-25) ──────────────────────────────────
       # Eshkol differentiates on two substrates. Until now the only check
       # that compared them compared PROGRAM OUTPUT, and two independently

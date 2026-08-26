@@ -20,6 +20,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -356,6 +357,30 @@ void eshkol_seed_tensor_gradient(void* ad_node_ptr);
  * @param ad_node_ptr AD node whose backward pass should be dispatched (as eshkol_ad_node_t*, opaque here)
  */
 void eshkol_tensor_backward_dispatch(void* ad_node_ptr);
+
+/**
+ * @brief Spell an AD node type for diagnostics, e.g. "AD_NODE_TENSOR_MATMUL".
+ *
+ * Generated from inc/eshkol/ad_node_registry.def, so every node type has a
+ * name and no node type can be added without one.  Returns a static string;
+ * never NULL.  Out-of-range values return "<out-of-range AD node type>".
+ *
+ * @param node_type An ad_node_type_t value, passed as int for C ABI stability.
+ */
+const char* eshkol_ad_node_type_name(int node_type);
+
+/**
+ * @brief Does this AD node type carry a TENSOR payload (rather than a scalar)?
+ *
+ * Generated from the same registry rows.  This is the declared property, not
+ * an observation of a particular node: it answers whether a value of this type
+ * is ever expected to reach eshkol_tensor_backward_dispatch with a live
+ * gradient, which is what separates a normal tensor reverse pass from a node
+ * that should never have been tensor-valued in the first place.
+ *
+ * @param node_type An ad_node_type_t value, passed as int for C ABI stability.
+ */
+bool eshkol_ad_node_type_is_tensor(int node_type);
 
 #ifdef __cplusplus
 }

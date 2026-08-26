@@ -1034,6 +1034,44 @@ static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
     return total;
 }
 
+/** @brief Spell an AD node type, for diagnostics.
+ *
+ *  GENERATED from inc/eshkol/ad_node_registry.def, so a node type cannot exist
+ *  without a name here.  This matters more than it looks: the abort messages
+ *  below are the entire user-visible surface of a missing backward, and
+ *  "node type 37" is a number a reader has to go decode, while
+ *  "AD_NODE_GEODESIC_ATTENTION" is an answer. */
+extern "C" const char* eshkol_ad_node_type_name(int node_type) {
+    switch ((ad_node_type_t)node_type) {
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    case AD_NODE_##NAME: return "AD_NODE_" #NAME;
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+    case AD_NODE_TYPE_COUNT: return "AD_NODE_TYPE_COUNT (sentinel, not a node type)";
+    }
+    return "<out-of-range AD node type>";
+}
+
+/** @brief Is this node type declared TENSOR-payload in the registry?
+ *
+ *  GENERATED.  Answers "should a value of this type ever carry a
+ *  tensor_gradient", which is the question that decides whether reaching the
+ *  tensor dispatcher is normal or is itself the bug. */
+extern "C" bool eshkol_ad_node_type_is_tensor(int node_type) {
+#define ESHKOL_AD_PAYLOAD_IS_TENSOR_SCALAR false
+#define ESHKOL_AD_PAYLOAD_IS_TENSOR_TENSOR true
+    switch ((ad_node_type_t)node_type) {
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    case AD_NODE_##NAME: return ESHKOL_AD_PAYLOAD_IS_TENSOR_##PAYLOAD;
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+    case AD_NODE_TYPE_COUNT: return false;
+    }
+    return false;
+#undef ESHKOL_AD_PAYLOAD_IS_TENSOR_SCALAR
+#undef ESHKOL_AD_PAYLOAD_IS_TENSOR_TENSOR
+}
+
 /** @brief Central reverse-mode AD dispatcher for tensor operation nodes:
  *         switches on @p ad_node_ptr's node type (conv2d, pooling, norm
  *         layers, matmul, transpose, reshape, reductions, attention,
@@ -1043,8 +1081,16 @@ static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
  *         AD_NODE_TENSOR_* ops), and accumulates the resulting input
  *         gradients via eshkol_accumulate_tensor_grad(). All temporary
  *         gradient buffers are allocated from an arena scope that is popped
- *         before returning; node types without a backward implementation
- *         silently drop the gradient. */
+ *         before returning.
+ *
+ *         THE SWITCH BELOW HAS NO `default:`, DELIBERATELY, and this
+ *         translation unit is compiled with -Werror=switch -Werror=switch-enum
+ *         (see CMakeLists.txt, eshkol_require_exhaustive_dispatch).  Adding a
+ *         member to ad_node_type_t without deciding what its reverse pass does
+ *         is a COMPILE ERROR here, not a runtime silence.  The arms that are the
+ *         same for a whole class of node types (bridge-table, no-adjoint-here,
+ *         explicit refusal) are generated from inc/eshkol/ad_node_registry.def
+ *         so they cannot drift from the declarations they implement. */
 extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     if (!ad_node_ptr) return;
 
@@ -1360,53 +1406,133 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         break;
     }
 
-    /* ===== qLLM Bridge Tensor Ops (67-79) =====
-     * These delegate to the self-contained backward functions in
-     * lib/bridge/tensor_backward.cpp. Each function reads the node's
-     * tensor_value, tensor_gradient, input1/input2 and propagates
-     * gradients internally — no manual buffer management needed.  */
-
-    case AD_NODE_TENSOR_MATMUL:
-    case AD_NODE_TENSOR_SOFTMAX:
-    case AD_NODE_TENSOR_LAYERNORM:
-    case AD_NODE_TENSOR_RMSNORM:
-    case AD_NODE_TENSOR_GELU:
-    case AD_NODE_TENSOR_SILU:
-    case AD_NODE_TENSOR_CROSS_ENTROPY:
-    /* Previously these fell into a "gradient passthrough" case that silently
-     * dropped the gradient even though get_tensor_backward_fn HAS a registered
-     * backward for each. Route them through the dispatch table like the ops
-     * above. attention/embedding backends now raise an explicit unsupported-op
-     * error instead of returning a plausible-but-wrong gradient (hard
-     * constraint: exact AD or an explicit error, never a silent zero). */
-    case AD_NODE_TENSOR_ATTENTION:
-    case AD_NODE_TENSOR_TRANSPOSE:
-    case AD_NODE_TENSOR_SUM:
-    case AD_NODE_TENSOR_BROADCAST_ADD:
-    case AD_NODE_TENSOR_BROADCAST_MUL:
-    case AD_NODE_TENSOR_EMBEDDING:
-    /* The Riemannian center of mass is defined implicitly, as the stationary
-     * point of the weighted variance, so its rule differentiates that condition
-     * rather than the iteration that solves it. Lives with the other bridge
-     * geometry in lib/bridge/tensor_backward.cpp. */
-    case AD_NODE_FRECHET_MEAN: {
-        /* Use the bridge dispatch table to find the right backward fn */
+    /* ── Rows the registry declares BRIDGE ─────────────────────────────────
+     * GENERATED from inc/eshkol/ad_node_registry.def.  Each of these delegates
+     * to the self-contained backward function that row names, in
+     * lib/bridge/tensor_backward.cpp: it reads the node's tensor_value,
+     * tensor_gradient and input1..input3 and propagates gradients internally,
+     * so there is no manual buffer management here.
+     *
+     * The case labels are generated rather than typed, so this arm and the
+     * table it calls into cannot disagree about which node types are bridged.
+     * They previously could, and did: seven of these were once listed in a
+     * "gradient passthrough" case that silently dropped the gradient even
+     * though the table HAD a backward registered for every one of them. */
+#define ESHKOL_AD_DISPATCH_CASE_BRIDGE(NAME)         case AD_NODE_##NAME:
+#define ESHKOL_AD_DISPATCH_CASE_LEAF(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_INLINE(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_UNREGISTERED(NAME)
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_DISPATCH_CASE_##TENSOR_BACKWARD(NAME)
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+#undef ESHKOL_AD_DISPATCH_CASE_BRIDGE
+#undef ESHKOL_AD_DISPATCH_CASE_LEAF
+#undef ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT
+#undef ESHKOL_AD_DISPATCH_CASE_INLINE
+#undef ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP
+#undef ESHKOL_AD_DISPATCH_CASE_UNREGISTERED
+    {
         bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
         if (!fn) {
-            eshkol_fatal("unsupported AD op: no backward registered for tensor "
-                         "bridge node type %d; refusing to drop the gradient "
-                         "silently", (int)node->type);
+            /* Unreachable by construction — a BRIDGE row names its function and
+             * the table is generated from the same rows — so if it ever fires,
+             * the generation itself is broken and a zero would be a lie. */
+            eshkol_fatal("AD backward dispatch: node type %d (%s) is declared "
+                         "BRIDGE in ad_node_registry.def but the generated "
+                         "backward table has no entry; refusing to drop the "
+                         "gradient silently",
+                         (int)node->type, eshkol_ad_node_type_name(node->type));
         }
         fn(node);
         break;
     }
 
-    default:
-        /* Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
-         * differentiated by their scalar backward emitted in codegen and
-         * legitimately reach here with nothing to do. Every TENSOR op
-         * (19-32 and the qLLM bridge ops 67-80) has an explicit case above, so
-         * a tensor-op gradient can never silently fall through this default. */
+    /* ── Rows the registry declares UNREGISTERED ───────────────────────────
+     * GENERATED.  An explicit, written-down refusal: these node types are
+     * tensor-valued and have NO exact backward in this dispatcher, so they
+     * abort naming themselves instead of returning a gradient of zero.
+     *
+     * This is the arm that carries the whole point of the change.  These eight
+     * geometric node types (33-40) are exactly what the old `default:` claimed
+     * could not reach it — its comment reasoned from a numeric band, "every
+     * TENSOR op is 19-32 or 67-80", which was simply not true of 33-40 — and
+     * four of them (HYPERBOLIC_DISTANCE, POINCARE_EXP_MAP, POINCARE_LOG_MAP,
+     * GEODESIC_ATTENTION) are produced as tensor nodes by
+     * lib/bridge/qllm_bridge.cpp today.  Every gradient through one of them
+     * came back exactly 0.0, with no output and exit 0.
+     *
+     * The right end state is exact Riemannian adjoints, which is AD work with
+     * its own correctness bar and belongs to the lane writing them, not to a
+     * dispatch fix.  Until then the honest answer is a loud one. */
+#define ESHKOL_AD_DISPATCH_CASE_UNREGISTERED(NAME)   case AD_NODE_##NAME:
+#define ESHKOL_AD_DISPATCH_CASE_BRIDGE(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_LEAF(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_INLINE(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP(NAME)
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_DISPATCH_CASE_##TENSOR_BACKWARD(NAME)
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+#undef ESHKOL_AD_DISPATCH_CASE_BRIDGE
+#undef ESHKOL_AD_DISPATCH_CASE_LEAF
+#undef ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT
+#undef ESHKOL_AD_DISPATCH_CASE_INLINE
+#undef ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP
+#undef ESHKOL_AD_DISPATCH_CASE_UNREGISTERED
+        backward_scope_end(bwd_arena);
+        eshkol_fatal("AD backward dispatch: no exact backward is registered for "
+                     "tensor node type %d (%s). ad_node_registry.def declares it "
+                     "UNREGISTERED, which means this gap is known and stated, not "
+                     "discovered here. Refusing to return a gradient of zero for "
+                     "an operation that has one.",
+                     (int)node->type, eshkol_ad_node_type_name(node->type));
+        break;
+
+    /* ── Rows whose reverse pass is not this dispatcher's job ──────────────
+     * GENERATED: LEAF ends the sweep (constants and variables have no parents),
+     * SCALAR_ADJOINT is differentiated by the scalar backward that
+     * autodiff_codegen.cpp emits as LLVM IR, and CUSTOM_VJP is answered by the
+     * caller-supplied adjoint on that same scalar path.  All three are scalar
+     * payloads, and a scalar node normally cannot reach this switch at all: we
+     * returned early above on a NULL tensor_gradient.
+     *
+     * THIS IS NOT A `default:`.  A default here would accept any future enum
+     * member into "nothing to do", which is precisely how four tensor ops came
+     * to return zero gradients in silence.  This arm accepts only node types
+     * whose registry row SAYS their adjoint lives elsewhere; -Werror=switch-enum
+     * on this translation unit turns any member that says nothing into a
+     * compile error rather than a wrong number. */
+#define ESHKOL_AD_DISPATCH_CASE_LEAF(NAME)           case AD_NODE_##NAME:
+#define ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT(NAME) case AD_NODE_##NAME:
+#define ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP(NAME)     case AD_NODE_##NAME:
+#define ESHKOL_AD_DISPATCH_CASE_BRIDGE(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_INLINE(NAME)
+#define ESHKOL_AD_DISPATCH_CASE_UNREGISTERED(NAME)
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_DISPATCH_CASE_##TENSOR_BACKWARD(NAME)
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+#undef ESHKOL_AD_DISPATCH_CASE_BRIDGE
+#undef ESHKOL_AD_DISPATCH_CASE_LEAF
+#undef ESHKOL_AD_DISPATCH_CASE_SCALAR_ADJOINT
+#undef ESHKOL_AD_DISPATCH_CASE_INLINE
+#undef ESHKOL_AD_DISPATCH_CASE_CUSTOM_VJP
+#undef ESHKOL_AD_DISPATCH_CASE_UNREGISTERED
+        break;
+
+    case AD_NODE_TYPE_COUNT:
+        /* The sentinel is not a node type. It is listed only so that this
+         * switch names every member of ad_node_type_t and needs no default;
+         * reaching it means node->type was never initialised or the tape was
+         * corrupted, and a wrong gradient built on that is worse than a stop. */
+        backward_scope_end(bwd_arena);
+        eshkol_fatal("AD backward dispatch: node->type is the AD_NODE_TYPE_COUNT "
+                     "sentinel (%d), not a node type; the tape is corrupt",
+                     (int)node->type);
         break;
     }
 

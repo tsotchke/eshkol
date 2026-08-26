@@ -2273,6 +2273,71 @@ if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     )
 endif()
 
+# ───────────────────────────────────────────────────────────────────────────
+# EXHAUSTIVE CLOSED-ENUM DISPATCH  (see inc/eshkol/exhaustive_dispatch.h)
+#
+# PR #498 found four tensor-valued AD node types falling into an early
+# `default:` in eshkol_tensor_backward_dispatch that did nothing: gradients
+# exactly 0.0, no diagnostic, exit 0. The default's comment asserted the case
+# was impossible, reasoning from a numeric band of enum values that the four
+# new node types had already left. The same shape produced ESH-0214d, where
+# heap subtypes dropped to a shallow-leaf `default:` in the region evacuator.
+#
+# The files below own dispatch over CLOSED enums — enums the program itself
+# produces every value of — and their switches carry no `default:`. Compiling
+# them with -Werror=switch -Werror=switch-enum turns "someone added an enum
+# member and did not handle it here" from a runtime silence into a build
+# failure. Both flags are needed: -Wswitch is the one that fires for an
+# unhandled member in a default-less switch, and -Wswitch-enum is the one that
+# still fires once someone re-adds a `default:` — which is precisely the move
+# that reopens this class, and precisely where -Wswitch goes quiet.
+#
+# SCOPE IS DELIBERATELY NARROW. This is set per source file, not globally:
+# switches over values that arrive from OUTSIDE the program (bytecode opcodes,
+# serialized subtype bytes, FFI integers) are dispatching over an open set and
+# must keep a default — a LOUD, value-naming abort. Arming those files would
+# force a dishonest exhaustiveness onto genuinely open dispatch. Individual
+# switches inside otherwise-unarmed files use ESHKOL_EXHAUSTIVE_SWITCH_BEGIN /
+# _END from inc/eshkol/exhaustive_dispatch.h instead.
+#
+# MSVC has no equivalent diagnostic; on that toolchain the property is carried
+# by the other compilers in the matrix, and the ICC invariant
+# INV-closed-enum-dispatch-exhaustive re-derives it from source on every lane.
+function(eshkol_require_exhaustive_dispatch)
+    if(ESHKOL_USING_MSVC)
+        return()
+    endif()
+    foreach(_src ${ARGN})
+        get_source_file_property(_existing "${_src}" COMPILE_OPTIONS)
+        if(_existing STREQUAL "NOTFOUND")
+            set(_existing "")
+        endif()
+        # BOTH diagnostics, because they are not redundant and each covers a
+        # hole the other leaves. -Wswitch is what actually fires for a member
+        # unhandled in a switch that has no default (measured: adding an AD
+        # node type with no arm reports under -Wswitch, so escalating only
+        # -Wswitch-enum would have shipped a red-proof that produced a warning
+        # and a green build). -Wswitch-enum is what still fires when someone
+        # re-adds a `default:` — the exact move that reopens this class, and
+        # the one -Wswitch goes silent for.
+        list(APPEND _existing "-Werror=switch" "-Werror=switch-enum")
+        set_source_files_properties("${_src}" PROPERTIES COMPILE_OPTIONS "${_existing}")
+    endforeach()
+endfunction()
+
+eshkol_require_exhaustive_dispatch(
+  # Reverse-mode AD dispatch over ad_node_type_t. The #498 site itself: the
+  # switch is generated-plus-hand-written from inc/eshkol/ad_node_registry.def
+  # and names all 83 node types with no default.
+  lib/backend/tensor_backward.cpp
+  # The bridge backward table, generated from the same registry rows.
+  lib/bridge/tensor_backward.cpp
+  # Region evacuation: heap_subtype_t -> EvacKind classification and the
+  # EvacKind interior-walk switch. The ESH-0214d class — a subtype that falls
+  # to a shallow leaf copy leaves interior pointers in a reclaimed arena.
+  lib/core/runtime_regions.cpp
+)
+
 function(eshkol_apply_common_compile_settings target_name)
     target_include_directories(${target_name} PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/inc/"
@@ -4415,6 +4480,45 @@ endif()
 # layernorm, transpose, sum and attention on identical inputs, plus central
 # finite differences as the tie-breaking oracle. Embedding's bridge-vs-native
 # comparison lives in tensor_embedding_backward_gradcheck_test.cpp above.
+# SW-70: the AD node registry is total and an UNREGISTERED node type refuses
+# rather than returning a plausible zero. The compile-time half of this fix
+# (-Werror=switch -Werror=switch-enum, see eshkol_require_exhaustive_dispatch
+# above) cannot be observed from a test — a build that fails produces no test
+# run at all — so this covers what remains: registry density, name and payload
+# totality, table/disposition agreement, and the four qLLM geometric node
+# types actually refusing under a live upstream gradient.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/exhaustive_dispatch_test.cpp")
+    add_executable(exhaustive_dispatch_test tests/backend/exhaustive_dispatch_test.cpp)
+    target_compile_features(exhaustive_dispatch_test PRIVATE cxx_std_17)
+    target_include_directories(exhaustive_dispatch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(exhaustive_dispatch_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(exhaustive_dispatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(exhaustive_dispatch_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME exhaustive_dispatch COMMAND exhaustive_dispatch_test)
+    set_tests_properties(exhaustive_dispatch PROPERTIES
+        PASS_REGULAR_EXPRESSION "0 failed")
+endif()
+
+# The source-derived half of the same invariant: no registered dispatch site
+# may carry a `default:`, every enum member must be named, and the arming
+# (CMake flag or ESHKOL_EXHAUSTIVE_SWITCH_BEGIN) must still be in place. This
+# is what catches the enforcement being REMOVED, which the compiler by
+# definition cannot.
+find_program(ESHKOL_PYTHON3_EXECUTABLE NAMES python3 python)
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py")
+    add_test(NAME exhaustive_dispatch_gate
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
+                     --trace-dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/icc_traces")
+    add_test(NAME exhaustive_dispatch_gate_selftest
+             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
+                     --self-test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")
     add_executable(tensor_backward_dual_impl_gradcheck_test
         tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp)

@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "eshkol/exhaustive_dispatch.h"
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CROSS-PLATFORM STATIC ASSERTION MACRO
 // _Static_assert is C11, static_assert is C++11. GCC in C++ mode doesn't
@@ -575,6 +577,63 @@ typedef enum {
     // Reserved: 26-255 for future heap types
 } heap_subtype_t;
 
+/**
+ * @brief Is @p sub a DECLARED member of heap_subtype_t?
+ *
+ * The one predicate that separates the two halves of every heap-subtype
+ * dispatch.  A subtype byte read out of an object header is untrusted input —
+ * a corrupt pointer, a foreign object, a headerless allocation — so a switch
+ * over it is dispatching on an OPEN set no matter how closed the enum is.
+ * Ask this first: false means "not one of ours", which every caller answers
+ * with a loud, value-naming fallback; true means the value IS a declared
+ * member, and the switch that follows can then be exhaustive with no
+ * `default:` at all, so the compiler catches a subtype nobody handled.
+ *
+ * Splitting the question this way is what lets both halves be honest at once.
+ * The single `default:` those switches used to carry answered "corrupt byte"
+ * and "enum member added last week" with the same shrug — which is how
+ * KB / FACT / SUBSTITUTION / WORKSPACE were shallow-copied by the region
+ * evacuator (ESH-0214d) and how four tensor AD node types came back with
+ * gradients of exactly zero (PR #498).
+ *
+ * This switch is itself exhaustive and has no default, so adding a member to
+ * heap_subtype_t without listing it here is a compile error.
+ */
+static inline bool eshkol_heap_subtype_is_declared(uint8_t sub) {
+    ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+    switch ((heap_subtype_t)sub) {
+        case HEAP_SUBTYPE_CONS:
+        case HEAP_SUBTYPE_STRING:
+        case HEAP_SUBTYPE_VECTOR:
+        case HEAP_SUBTYPE_TENSOR:
+        case HEAP_SUBTYPE_MULTI_VALUE:
+        case HEAP_SUBTYPE_HASH:
+        case HEAP_SUBTYPE_EXCEPTION:
+        case HEAP_SUBTYPE_RECORD:
+        case HEAP_SUBTYPE_BYTEVECTOR:
+        case HEAP_SUBTYPE_PORT:
+        case HEAP_SUBTYPE_SYMBOL:
+        case HEAP_SUBTYPE_BIGNUM:
+        case HEAP_SUBTYPE_SUBSTITUTION:
+        case HEAP_SUBTYPE_FACT:
+        case HEAP_SUBTYPE_KNOWLEDGE_BASE:
+        case HEAP_SUBTYPE_FACTOR_GRAPH:
+        case HEAP_SUBTYPE_WORKSPACE:
+        case HEAP_SUBTYPE_PROMISE:
+        case HEAP_SUBTYPE_RATIONAL:
+        case HEAP_SUBTYPE_PRNG:
+        case HEAP_SUBTYPE_DNC:
+        case HEAP_SUBTYPE_SDNC:
+        case HEAP_SUBTYPE_TAYLOR:
+        case HEAP_SUBTYPE_PARAMETER:
+        case HEAP_SUBTYPE_I128:
+            return true;
+    }
+    ESHKOL_EXHAUSTIVE_SWITCH_END
+    return false;  /* value 14 (reserved for RULE) and 26-255 */
+}
+
+
 // ───────────────────────────────────────────────────────────────────────────
 // CALLABLE SUBTYPES (type = ESHKOL_VALUE_CALLABLE = 9)
 // Function-like objects that can be invoked
@@ -595,6 +654,24 @@ typedef enum {
     CALLABLE_SUBTYPE_CONTINUATION = 4,  // First-class continuation (future)
     // Reserved: 5-255 for future callable types
 } callable_subtype_t;
+
+/**
+ * @brief Is @p sub a DECLARED member of callable_subtype_t?  See
+ *        eshkol_heap_subtype_is_declared for why this predicate exists.
+ */
+static inline bool eshkol_callable_subtype_is_declared(uint8_t sub) {
+    ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+    switch ((callable_subtype_t)sub) {
+        case CALLABLE_SUBTYPE_CLOSURE:
+        case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
+        case CALLABLE_SUBTYPE_AD_NODE:
+        case CALLABLE_SUBTYPE_PRIMITIVE:
+        case CALLABLE_SUBTYPE_CONTINUATION:
+            return true;
+    }
+    ESHKOL_EXHAUSTIVE_SWITCH_END
+    return false;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // HANDLE SUBTYPES (type = ESHKOL_VALUE_HANDLE = 16, future multimedia)
@@ -905,118 +982,52 @@ static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) {
  * AD_NODE_TYPE_COUNT is a sentinel for bounds-checked dispatch tables and is
  * not itself a valid node type.
  */
+/*
+ * GENERATED FROM inc/eshkol/ad_node_registry.def — do not add members here.
+ *
+ * Every member below is one ESHKOL_AD_NODE row in that file, which also states
+ * the node's payload kind (scalar or tensor) and what its reverse pass does in
+ * eshkol_tensor_backward_dispatch.  Declaring the node type and declaring its
+ * backward disposition are the same act, so a node type cannot enter this enum
+ * without saying what happens when a gradient reaches it.  This is the fix for
+ * the #498 class: a dispatch switch whose `default:` asserted, in a comment,
+ * that no tensor node could reach it, while four already did — and returned
+ * gradients of exactly 0.0 with no diagnostic and exit 0.  See the header of
+ * ad_node_registry.def for the full argument and for how to add a node type.
+ *
+ * The numeric values are an ABI (emitted LLVM IR compares node->type against
+ * integer literals), so each row states its value explicitly and the assertion
+ * below proves the set stays dense — dense is what the node-type-indexed
+ * dispatch tables rely on.
+ */
 typedef enum {
-    // Core operations (0-11)
-    AD_NODE_CONSTANT,
-    AD_NODE_VARIABLE,
-    AD_NODE_ADD,
-    AD_NODE_SUB,
-    AD_NODE_MUL,
-    AD_NODE_DIV,
-    AD_NODE_SIN,
-    AD_NODE_COS,
-    AD_NODE_EXP,
-    AD_NODE_LOG,
-    AD_NODE_POW,
-    AD_NODE_NEG,
-
-    // Activation gradients (12-18)
-    AD_NODE_RELU,
-    AD_NODE_SIGMOID,
-    AD_NODE_SOFTMAX,
-    AD_NODE_TANH,
-    AD_NODE_GELU,
-    AD_NODE_LEAKY_RELU,
-    AD_NODE_SILU,
-
-    // Tensor operation gradients (19-28)
-    AD_NODE_CONV2D,
-    AD_NODE_MAXPOOL2D,
-    AD_NODE_AVGPOOL2D,
-    AD_NODE_BATCHNORM,
-    AD_NODE_LAYERNORM,
-    AD_NODE_MATMUL,
-    AD_NODE_TRANSPOSE,
-    AD_NODE_RESHAPE,
-    AD_NODE_SUM,
-    AD_NODE_MEAN,
-
-    // Transformer gradients (29-32)
-    AD_NODE_ATTENTION,
-    AD_NODE_MULTIHEAD_ATTENTION,
-    AD_NODE_POSITIONAL_ENCODING,
-    AD_NODE_EMBEDDING,
-
-    // qLLM Geometric gradients (33-40)
-    AD_NODE_HYPERBOLIC_DISTANCE,
-    AD_NODE_POINCARE_EXP_MAP,
-    AD_NODE_POINCARE_LOG_MAP,
-    AD_NODE_TANGENT_PROJECT,
-    AD_NODE_GEODESIC_ATTENTION,
-    AD_NODE_MOBIUS_ADD,
-    AD_NODE_MOBIUS_MATMUL,
-    AD_NODE_GYROVECTOR_SPACE,
-
-    // Additional math operations (41-44)
-    AD_NODE_SQRT,
-    AD_NODE_ABS,
-    AD_NODE_SQUARE,
-    AD_NODE_MAX,
-    AD_NODE_MIN,
-
-    // Phase 4 activation gradients (46-53)
-    AD_NODE_ELU = 46,
-    AD_NODE_SELU,
-    AD_NODE_MISH,
-    AD_NODE_HARDSWISH,
-    AD_NODE_HARDSIGMOID,
-    AD_NODE_SOFTPLUS,
-    AD_NODE_DROPOUT,
-    AD_NODE_CELU,
-
-    // Complete math function gradients (54-66)
-    AD_NODE_TAN = 54,
-    AD_NODE_ASIN,
-    AD_NODE_ACOS,
-    AD_NODE_ATAN,
-    AD_NODE_SINH,
-    AD_NODE_COSH,
-    AD_NODE_ASINH,
-    AD_NODE_ACOSH,
-    AD_NODE_ATANH,
-    AD_NODE_LOG10,
-    AD_NODE_LOG2,
-    AD_NODE_EXP2,
-    AD_NODE_CBRT,
-
-    // Tensor AD nodes for qLLM bridge (67-79)
-    AD_NODE_TENSOR_MATMUL = 67,       // dL/dA = dL/dC @ B^T, dL/dB = A^T @ dL/dC
-    AD_NODE_TENSOR_SOFTMAX,            // Jacobian-vector product
-    AD_NODE_TENSOR_LAYERNORM,          // Chain rule through mean/variance
-    AD_NODE_TENSOR_RMSNORM,            // Chain rule through RMS
-    AD_NODE_TENSOR_ATTENTION,          // 5-step chain rule through scaled dot-product
-    AD_NODE_TENSOR_GELU,               // GELU backward
-    AD_NODE_TENSOR_SILU,               // SiLU/Swish backward
-    AD_NODE_TENSOR_TRANSPOSE,          // Permutation backward
-    AD_NODE_TENSOR_SUM,                // Broadcast backward
-    AD_NODE_TENSOR_BROADCAST_ADD,      // Sum-reduce backward
-    AD_NODE_TENSOR_BROADCAST_MUL,      // Product-rule backward
-    AD_NODE_TENSOR_EMBEDDING,          // Sparse update backward
-    AD_NODE_TENSOR_CROSS_ENTROPY,      // Numerically stable backward
-    AD_NODE_FRECHET_MEAN,              // Riemannian center of mass backward
-    AD_NODE_ATAN2,                     // Binary atan2(y, x) backward
-
-    // Custom vector-Jacobian-product node (external adjoint). The reverse pass
-    // invokes a user-supplied backward callback stored in saved_tensors[0] as an
-    // eshkol_custom_vjp_t; it accumulates the callback's per-input gradients into
-    // this node's input variable nodes. Used to differentiate through opaque
-    // primitives that supply their own exact adjoint (e.g. a Moonlab VQE circuit),
-    // composed inside Eshkol's reverse-mode AD tape.
-    AD_NODE_CUSTOM,
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    AD_NODE_##NAME = (VALUE),
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
 
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT
 } ad_node_type_t;
+
+/** @brief Number of rows in ad_node_registry.def. */
+enum {
+    ESHKOL_AD_NODE_REGISTRY_ROWS = 0
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) + 1
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+};
+
+/* Row count == AD_NODE_TYPE_COUNT proves the registry's declared values are
+ * dense with no gaps and no duplicates: AD_NODE_TYPE_COUNT is one past the
+ * LAST row's value, so a gap makes rows fewer and a duplicate makes them more.
+ * Density is not cosmetic — the backward dispatch table in lib/bridge is a
+ * flat array indexed by node type, and a gap would make it index a hole. */
+/* Cast to int on both sides: these are two DIFFERENT enum types (the row
+ * counter is its own anonymous enum), and C++20 deprecates comparing them. */
+ESHKOL_STATIC_ASSERT((int)ESHKOL_AD_NODE_REGISTRY_ROWS == (int)AD_NODE_TYPE_COUNT,
+    "ad_node_registry.def values must be dense: one row per value, "
+    "0..AD_NODE_TYPE_COUNT-1, no gaps and no duplicates");
 
 /**
  * Custom vector-Jacobian-product descriptor for AD_NODE_CUSTOM.

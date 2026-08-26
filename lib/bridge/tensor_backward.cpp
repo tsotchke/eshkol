@@ -1548,46 +1548,52 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
 
 typedef void (*backward_fn_t)(ad_node_t*);
 
-/** @brief Looks up the backward-pass function for a given AD tensor node
- *  type. Returns NULL (after a one-time stderr warning) for node types with
- *  no registered backward, so the caller can skip gradient propagation for
- *  genuinely non-AD node types (CONSTANT / VARIABLE) as well as any
- *  op whose forward codegen has no matching backward implementation. */
+/* The backward-function table, GENERATED from inc/eshkol/ad_node_registry.def.
+ *
+ * This replaces a hand-written switch with a `default:` that returned NULL and
+ * warned once.  A default cannot tell "this node has no adjoint by design" from
+ * "someone added a node type and forgot this table", so it answered both with
+ * the same shrug; the caller's NULL handling then turned the second case into a
+ * silently dropped gradient.  Now every row of the registry contributes exactly
+ * one entry, and the disposition it declared decides what that entry is:
+ *
+ *   BRIDGE   -> the function the row names.  If that symbol does not exist,
+ *               THIS FILE DOES NOT COMPILE.  That is what makes "registered"
+ *               a fact rather than an intention: a registry row cannot claim a
+ *               backward it does not have.
+ *   anything -> nullptr, because the row said so — LEAF and SCALAR_ADJOINT
+ *   else        genuinely have nothing here, CUSTOM_VJP is answered elsewhere,
+ *               and UNREGISTERED is an explicit refusal the dispatcher turns
+ *               into an abort rather than a zero.
+ *
+ * The array is sized AD_NODE_TYPE_COUNT and indexed by node type, which is
+ * sound because eshkol.h statically asserts the registry's values are dense.
+ */
+#define ESHKOL_AD_NO_BRIDGE nullptr
+#define ESHKOL_AD_BRIDGE_ENTRY_BRIDGE(FN)         FN
+#define ESHKOL_AD_BRIDGE_ENTRY_LEAF(FN)           nullptr
+#define ESHKOL_AD_BRIDGE_ENTRY_SCALAR_ADJOINT(FN) nullptr
+#define ESHKOL_AD_BRIDGE_ENTRY_INLINE(FN)         nullptr
+#define ESHKOL_AD_BRIDGE_ENTRY_CUSTOM_VJP(FN)     nullptr
+#define ESHKOL_AD_BRIDGE_ENTRY_UNREGISTERED(FN)   nullptr
+
+static backward_fn_t const kTensorBackwardTable[AD_NODE_TYPE_COUNT] = {
+#define ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN) \
+    ESHKOL_AD_BRIDGE_ENTRY_##TENSOR_BACKWARD(BRIDGE_FN),
+#include "eshkol/ad_node_registry.def"
+#undef ESHKOL_AD_NODE
+};
+
+/** @brief Look up the backward-pass function for an AD tensor node type.
+ *
+ *  Returns the registered function, or nullptr when the node's registry row
+ *  declared no bridge backward.  nullptr is NOT a judgement about whether a
+ *  gradient may be dropped — the caller decides that from the row's declared
+ *  disposition — it only says this table does not answer this node type.
+ *  Out-of-range values (a corrupt or foreign tape) return nullptr; the caller
+ *  reports them.
+ */
 extern "C" backward_fn_t get_tensor_backward_fn(int node_type) {
-    switch ((ad_node_type_t)node_type) {
-        case AD_NODE_TENSOR_MATMUL:          return tensor_matmul_backward;
-        case AD_NODE_TENSOR_SOFTMAX:         return tensor_softmax_backward;
-        case AD_NODE_TENSOR_LAYERNORM:       return tensor_layernorm_backward;
-        case AD_NODE_TENSOR_RMSNORM:         return tensor_rmsnorm_backward;
-        case AD_NODE_TENSOR_GELU:            return tensor_gelu_backward;
-        case AD_NODE_TENSOR_SILU:            return tensor_silu_backward;
-        case AD_NODE_TENSOR_CROSS_ENTROPY:   return tensor_cross_entropy_backward;
-        case AD_NODE_TENSOR_TRANSPOSE:       return tensor_transpose_backward;
-        case AD_NODE_TENSOR_SUM:             return tensor_sum_backward;
-        case AD_NODE_TENSOR_BROADCAST_ADD:   return tensor_broadcast_add_backward;
-        case AD_NODE_TENSOR_BROADCAST_MUL:   return tensor_broadcast_mul_backward;
-        case AD_NODE_TENSOR_EMBEDDING:       return tensor_embedding_backward;
-        case AD_NODE_TENSOR_ATTENTION:       return tensor_attention_backward;
-        case AD_NODE_FRECHET_MEAN:           return tensor_frechet_mean_backward;
-        default:
-            /* Previously: return NULL → silent zero-gradient. That
-             * meant any op whose forward codegen was emitted without a
-             * matching backward silently corrupted the tape. Now we
-             * log once per process so developers see the mismatch
-             * immediately. The caller still handles NULL by skipping
-             * the node, so existing behaviour is preserved for
-             * genuinely non-AD node types (CONSTANT / VARIABLE). */
-            {
-                static int warned[AD_NODE_TYPE_COUNT] = {0};
-                if (node_type >= 0 && node_type < AD_NODE_TYPE_COUNT
-                    && !warned[node_type]) {
-                    warned[node_type] = 1;
-                    fprintf(stderr,
-                        "tensor_backward: no backward for AD_NODE type %d — "
-                        "gradient signal lost on this op\n",
-                        node_type);
-                }
-            }
-            return NULL;
-    }
+    if (node_type < 0 || node_type >= AD_NODE_TYPE_COUNT) return nullptr;
+    return kTensorBackwardTable[node_type];
 }
