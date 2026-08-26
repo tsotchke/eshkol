@@ -1,0 +1,77 @@
+;; integer_division_sign_test.esk — R7RS 6.2.6 integer-division SIGN pinning.
+;;
+;; PR #197 flagged as latent the possibility that `ArithmeticCodegen::mod` and
+;; the `modulo` lowering emit a bare LLVM `srem`. `srem` is C remainder: the
+;; sign of the result follows the DIVIDEND. R7RS `modulo` / `floor-remainder`
+;; require the sign to follow the DIVISOR, and only `remainder` /
+;; `truncate-remainder` follow the dividend. A bare `srem` would therefore
+;; answer -1 for (modulo -7 3) where the spec says 2 — a wrong value with exit
+;; zero and no diagnostic.
+;;
+;; Measurement at the head of this branch says both native paths and the VM
+;; already apply the floor-mod sign correction, so this file is a FENCE, not a
+;; fix: it pins the exact spec cases so a future "simplification" back to a
+;; bare srem cannot land silently. The negative-DIVISOR rows are the ones that
+;; matter — every engine gets (modulo -7 3) right by accident when the sign
+;; correction is missing but the divisor is positive and the dividend is not.
+;;
+;; Ground truth is R7RS 6.2.6 plus chibi-scheme 0.12.0; the same assertions
+;; ride the reference-differential corpus as
+;; tests/reference-diff/corpus/0036_numeric_division_signs.scm.
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; --- modulo: sign follows the DIVISOR (R7RS 6.2.6) ---
+(check "(modulo 7 3) = 1"     (= (modulo 7 3) 1))
+(check "(modulo -7 3) = 2"    (= (modulo -7 3) 2))
+(check "(modulo 7 -3) = -2"   (= (modulo 7 -3) -2))
+(check "(modulo -7 -3) = -1"  (= (modulo -7 -3) -1))
+(check "(modulo 6 3) = 0"     (= (modulo 6 3) 0))
+(check "(modulo -6 3) = 0"    (= (modulo -6 3) 0))
+(check "(modulo 6 -3) = 0"    (= (modulo 6 -3) 0))
+(check "(modulo 0 3) = 0"     (= (modulo 0 3) 0))
+(check "(modulo 1 -3) = -2"   (= (modulo 1 -3) -2))
+(check "(modulo -1 3) = 2"    (= (modulo -1 3) 2))
+
+;; --- remainder: sign follows the DIVIDEND ---
+(check "(remainder 7 3) = 1"     (= (remainder 7 3) 1))
+(check "(remainder -7 3) = -1"   (= (remainder -7 3) -1))
+(check "(remainder 7 -3) = 1"    (= (remainder 7 -3) 1))
+(check "(remainder -7 -3) = -1"  (= (remainder -7 -3) -1))
+(check "(remainder 0 3) = 0"     (= (remainder 0 3) 0))
+
+;; The two disagree exactly when the operands' signs differ. If a future
+;; refactor collapses them onto one lowering, these four rows break.
+(check "modulo /= remainder (-7 3)" (not (= (modulo -7 3) (remainder -7 3))))
+(check "modulo /= remainder (7 -3)" (not (= (modulo 7 -3) (remainder 7 -3))))
+(check "modulo = remainder (7 3)"   (= (modulo 7 3) (remainder 7 3)))
+(check "modulo = remainder (-7 -3)" (= (modulo -7 -3) (remainder -7 -3)))
+
+;; --- quotient: TRUNCATES toward zero ---
+(check "(quotient 7 3) = 2"     (= (quotient 7 3) 2))
+(check "(quotient -7 3) = -2"   (= (quotient -7 3) -2))
+(check "(quotient 7 -3) = -2"   (= (quotient 7 -3) -2))
+(check "(quotient -7 -3) = 2"   (= (quotient -7 -3) 2))
+
+;; --- the division identities the two families must satisfy ---
+(check "n = d*q + r (-7 3)"  (= -7 (+ (* 3 (quotient -7 3)) (remainder -7 3))))
+(check "n = d*q + r (7 -3)"  (= 7 (+ (* -3 (quotient 7 -3)) (remainder 7 -3))))
+
+;; --- bignum operands take the runtime dispatcher, not the int64 fast path ---
+(check "bignum modulo neg dividend" (= (modulo (- (expt 10 20)) 3) 2))
+(check "bignum modulo neg divisor"  (= (modulo (expt 10 20) -3) -2))
+(check "bignum remainder neg"       (= (remainder (- (expt 10 20)) 3) -1))
+
+;; --- Summary ---
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: integer_division_sign_test") (newline) (exit 0))
+    (begin (display "FAIL: integer_division_sign_test") (newline) (exit 1)))

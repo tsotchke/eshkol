@@ -3825,6 +3825,55 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # SW-54/55/56: a quoted datum must keep its KIND. Guards the #229 residue
+    # ((or x '#()) answering () for every input), quoted vectors on both
+    # engines, and quoted char/inexact literals on the VM.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/quoted_datum_kinds_test.esk")
+        add_test(
+            NAME v1_3_quoted_datum_kinds_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/quoted_datum_kinds_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_quoted_datum_kinds_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: quoted_datum_kinds_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # #244 fence: a no-return form terminates its basic block, so no caller may
+    # keep emitting into it. Driven through every argument/operand position a
+    # naive caller can create; a regression shows up as a verifier failure,
+    # which the FAIL_REGULAR_EXPRESSION below catches directly.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/noreturn_terminator_test.esk")
+        add_test(
+            NAME v1_3_noreturn_terminator_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/noreturn_terminator_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_noreturn_terminator_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: noreturn_terminator_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|Terminator found|fatal signal")
+    endif()
+    # R7RS 6.2.6 integer-division SIGN pinning (PR #197's latent srem-vs-modulo
+    # concern). The negative-DIVISOR rows are the load-bearing ones: a bare
+    # `srem` passes every positive-divisor case.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/integer_division_sign_test.esk")
+        add_test(
+            NAME numeric_integer_division_sign_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/integer_division_sign_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(numeric_integer_division_sign_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: integer_division_sign_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # ESH-0011 portable event loop. Registered on EVERY platform, Windows
     # included: the IOCP backend must be exercised, not merely compiled, and
     # `make-pipe` now works there so the pipe round-trip is genuinely runnable.
