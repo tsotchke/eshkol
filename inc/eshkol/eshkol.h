@@ -16,8 +16,8 @@
  */
 #define ESHKOL_VERSION_MAJOR 1
 #define ESHKOL_VERSION_MINOR 3
-#define ESHKOL_VERSION_PATCH 4
-#define ESHKOL_VERSION_STRING "1.3.4-evolve"
+#define ESHKOL_VERSION_PATCH 5
+#define ESHKOL_VERSION_STRING "1.3.5-evolve"
 
 #include <stdint.h>
 #include <stdbool.h>

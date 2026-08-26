@@ -1,6 +1,6 @@
-# Eshkol v1.3.4 API Reference
+# Eshkol v1.3.5 API Reference
 
-**Version**: 1.3.4
+**Version**: 1.3.5
 **Last Updated**: 2026-07-08
 **Audience**: Scientific Computing & AI Systems Programming
 

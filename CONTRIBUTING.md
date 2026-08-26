@@ -413,11 +413,12 @@ eshkol/
 
 v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve (arbitrary-order
 AD, full R7RS conformance, closure/TCO/memory hardening) are **complete**, and
-v1.3.1 through v1.3.4-evolve have landed further robustness for long-running,
-resident programs, an opt-in differentiable quantum stack, and a
+v1.3.1 through v1.3.5-evolve have landed further robustness for long-running,
+resident programs, an opt-in differentiable quantum stack, a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
-exactness contagion on both engines). We welcome contributions for upcoming
+exactness contagion on both engines), and re-entrant continuations with a
+region evacuator on every engine. We welcome contributions for upcoming
 releases:
 
 ### Immediate Priorities (v1.4-connection)
@@ -429,8 +430,9 @@ releases:
 
 Already delivered ahead of this list: the portable event loop (kqueue / epoll /
 IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
-linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
-extending it to handles is what remains.
+linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type and
+became a compile-time-fatal check in v1.3.5-evolve (cloning a qubit is a
+rejected compile, not a warning) — extending it to handles is what remains.
 
 ### Near-Term (v1.5-intelligence - August 2026)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
