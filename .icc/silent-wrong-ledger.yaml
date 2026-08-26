@@ -3632,7 +3632,7 @@ entries:
       it makes the project look worse than it is and, more dangerously, trains readers to
       discount the 25 that are still real. Re-running found/ belongs in the parity gate.
 
-  - id: SW-46
+  - id: SW-53
     bucket: SILENT-WRONG
     status: closed
     closed_at: "feat/linearity-complete"
