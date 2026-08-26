@@ -162,6 +162,15 @@ set(CMAKE_CXX_STANDARD 20)
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
+# OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
+# default: turning it on changes the heap object representation, and the whole
+# toolchain -- runtime archive, precompiled stdlib bitcode, JIT modules and AOT
+# objects -- has to be rebuilt together or the mismatch is a silent miscompile
+# rather than a link error. Phase A only defines and pins the layouts; no
+# allocation site is migrated yet, so ON and OFF currently produce identical
+# object code apart from the reported ABI version. See
+# docs/design/ABI_V2_MIGRATION_INVENTORY.md.
+option(ESHKOL_MEMORY_ABI_V2 "Select the 32-byte OALR object header (ABI v2)" OFF)
 option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer"            OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_TSAN "Enable Thread Sanitizer"              OFF)
@@ -2085,6 +2094,16 @@ add_compile_definitions(
   ESHKOL_VER="${ESHKOL_VERSION}-evolve"
 )
 
+# ADR-0001 SS3 / ADR-0000 Stage 4. Whole-project, not per-target: the object
+# header is a prefix every translation unit computes independently, so a
+# per-target definition would let half the build disagree with the other half.
+if(ESHKOL_MEMORY_ABI_V2)
+    add_compile_definitions(ESHKOL_MEMORY_ABI_V2_ENABLED=1)
+    message(STATUS "Eshkol object ABI: v2 (32-byte header) -- EXPERIMENTAL, ADR-0001 Phase A")
+else()
+    message(STATUS "Eshkol object ABI: v1 (8-byte header)")
+endif()
+
 if(ESHKOL_USING_MSVC)
     set(ESHKOL_WARNING_FLAGS /W4 /wd4100 /wd4018)
     set(ESHKOL_HARDENING_FLAGS /GS)
@@ -2117,6 +2136,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
+  lib/core/memory_abi_v2.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
   lib/core/runtime_shared_memory.cpp
@@ -2913,6 +2933,21 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_
     target_compile_features(content_length_parse_test PRIVATE cxx_std_17)
     target_include_directories(content_length_parse_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
+endif()
+
+# ===== ADR-0000 Stage 1: frontend node-identity substrate =====
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/node_identity_test.cpp")
+    add_executable(node_identity_test tests/frontend/node_identity_test.cpp)
+    target_compile_features(node_identity_test PRIVATE cxx_std_20)
+    target_include_directories(node_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(node_identity_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(node_identity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(node_identity_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME node_identity_test COMMAND node_identity_test)
+    set_tests_properties(node_identity_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_io_test.cpp")
@@ -4074,6 +4109,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The
+# bytecode VM used to enforce nothing — it ran a qubit clone to completion with
+# exit 0 and `--emit-eskb` wrote the bytecode for it — while the LLVM engine
+# refused to compile the same program. That is an engine-parity defect on a
+# type-system GUARANTEE, so it gets a gate rather than a note: the script pins
+# rejection AND acceptance on both VM entry points, because a "fix" that
+# refused every qubit program would otherwise pass.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh")
+    if(TARGET eshkol-vm-standalone-test)
+        set(ESHKOL_LINEAR_PARITY_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_LINEAR_PARITY_VM "none")
+    endif()
+    add_test(NAME qubit_linearity_engine_parity_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_linearity_engine_parity_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LINEAR_PARITY_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/qubit-linearity-engine-parity")
+    set_tests_properties(qubit_linearity_engine_parity_gate PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: qubit linearity engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)
@@ -4304,6 +4365,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_object_alloc_test COMMAND runtime_object_alloc_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_abi_v2_test.cpp")
+    add_executable(memory_abi_v2_test tests/core/memory_abi_v2_test.cpp)
+    target_compile_features(memory_abi_v2_test PRIVATE cxx_std_17)
+    target_include_directories(memory_abi_v2_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(memory_abi_v2_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(memory_abi_v2_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(memory_abi_v2_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME memory_abi_v2_test COMMAND memory_abi_v2_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_tagged_cons_test.cpp")
     add_executable(runtime_tagged_cons_test tests/core/runtime_tagged_cons_test.cpp)
     target_compile_features(runtime_tagged_cons_test PRIVATE cxx_std_17)
@@ -4524,6 +4597,43 @@ if(ESHKOL_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
         set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # Every branch-protection required status context must be reportable on
+    # every PR shape (docs-only included) — see the module docstring for the
+    # PR #455 stub-drift incident this closes. --offline (no network/gh) so
+    # the ctest lane never depends on GitHub reachability or credentials;
+    # it grades the committed .icc/required-status-contexts.json snapshot,
+    # same as any contributor without a token would get.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py")
+        add_test(
+            NAME required_context_consistency_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py"
+                    --offline --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME required_context_consistency_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_required_context_consistency.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(required_context_consistency_gate required_context_consistency_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # scripts/ci_retry.sh is the single reusable definition of ci.yml's
+    # network-retry policy (apt-get/wget in the Linux/CUDA setup steps).
+    # Self-test proves it both retries a flaky command to success and gives
+    # up with the wrapped command's own exit status after exactly N tries —
+    # not a Windows shell script, so guarded the same way the other
+    # bash-script ctest entries in this file are.
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_retry.sh")
+        add_test(
+            NAME ci_retry_selftest
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci_retry.sh" --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ci_retry_selftest PROPERTIES TIMEOUT 60)
     endif()
 endif()
 
@@ -4769,6 +4879,29 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+
+    # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
+    # finite-difference evaluations. Both used to compute a central difference at
+    # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
+    # returned #(1.1102230246251565e-09 -3.3306690738754696e-09 0) with no
+    # diagnostic and exit 0. The parity differential could not see it (op:CURL is
+    # a `gap` row, so the two engines are never compared) and native curl crashes
+    # on the same field (LE-12), so this gate compares against MATHEMATICS: every
+    # field it uses has an exactly representable curl and divergence, and the
+    # assertions are equality rather than tolerance. A tolerance is what let the
+    # defect live.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_vm_exactness_gate.sh")
+        add_test(NAME ad_vm_exactness_gate
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_vm_exactness_gate.sh"
+                "$<TARGET_FILE:eshkol-run>"
+                "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_BINARY_DIR}/ad-vm-exactness-gate")
+        set_tests_properties(ad_vm_exactness_gate PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: VM divergence and curl are exact"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
 
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native

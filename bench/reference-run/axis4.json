@@ -1,0 +1,57 @@
+{
+  "axis": "differentiable_quantum_kernels",
+  "claims_tested": [
+    "H2 vibrational frequency from an EXACT 2nd-order derivative (derivative-n) of a hand-written STO-3G Born-Oppenheimer energy surface, no finite differences",
+    "VQE H2 ground-state energy + native adjoint gradient recovers Moonlab's exact ground-energy oracle within tolerance"
+  ],
+  "h2_vibrational_hessian": {
+    "source": "examples/h2_vibrational.esk",
+    "requires_quantum_build": false,
+    "ok": true,
+    "values": {
+      "r_star_bohr": 1.3886947151919542,
+      "force_constant_ha_per_bohr2": 0.47709682545822807,
+      "frequency_cm1": 5003.203812553002,
+      "energy_ha": -1.1373059586804861
+    },
+    "wall_clock": {
+      "raw_ns_samples": [
+        1147746000,
+        1065114000,
+        1062920000,
+        1217673000,
+        1289655000
+      ],
+      "median_ns": 1147746000,
+      "min_ns": 1062920000,
+      "mean_ns": 1156621600
+    },
+    "wall_clock_includes_compile": false,
+    "note": "wall_clock is the compiled AOT binary's run time; compile time is excluded (see h2.compile.log per run in the work dir)"
+  },
+  "vqe_h2_energy_and_gradient": {
+    "source": "tests/quantum/vqe_test.esk",
+    "requires_quantum_build": true,
+    "quantum_build_available": true,
+    "ok": true,
+    "values": {
+      "exact_ground_energy_ha": -1.142200155381327,
+      "vqe_optimized_energy_ha": -1.1422001553813284,
+      "abs_vqe_minus_exact_ha": 1.3322676295501878e-15,
+      "gradient_entries": 4
+    },
+    "wall_clock": {
+      "raw_ns_samples": [
+        482161000,
+        167101000,
+        210576000,
+        154016000,
+        146457000
+      ],
+      "median_ns": 167101000,
+      "min_ns": 146457000,
+      "mean_ns": 232062200
+    },
+    "wall_clock_includes_compile": false
+  }
+}

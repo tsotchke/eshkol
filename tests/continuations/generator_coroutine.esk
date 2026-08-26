@@ -7,7 +7,7 @@
 ;; generator, which re-captures its return continuation on every next! and
 ;; yields gen1:1 / gen2:2 / gen3:3 / gen4:done.
 ;;
-;; This is a REGRESSION TEST for ledger SW-51. Native JIT and AOT used to
+;; This is a REGRESSION TEST for ledger SW-60. Native JIT and AOT used to
 ;; SIGSEGV on the second yield, because a continuation was only a jmp_buf and
 ;; the frame it named had already returned. An earlier version of this header
 ;; asserted the correct output was gen1:1 / gen2:2 / gen3:3 / gen4:done; that

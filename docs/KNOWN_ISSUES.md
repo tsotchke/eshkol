@@ -194,6 +194,10 @@ right one. The change that made the rest findable is listed first.
 **Arena memory (OALR) instead of garbage collection**
 Deterministic O(1) allocation with zero GC pauses. Arena regions are lexically scoped and freed automatically on scope exit. This is a deliberate architectural choice for real-time, financial, and embedded workloads where latency predictability matters. Eshkol will never have a garbage collector.
 
+The commitment is scoped to Eshkol's own semantics: Eshkol values are never traced and no Eshkol program pauses for a collection. It does not exclude *hosting* a garbage-collected guest language — a Python or Common Lisp heap can live in a region with its own collector running inside it, on a declared byte budget, with Eshkol tracing nothing. That is a Planned capability; see [ADR-0011](design/adr/0011-guest-collector-adapter.md) and the [memory model](reference/runtime/memory-model.md#scope-of-the-no-gc-commitment).
+
+One consequence within Eshkol's own semantics: an unreachable **cycle** allocated inside a region is not reclaimed until that region exits. This follows from the same theorem rather than from an implementation gap — aliasing, mutation, and automatic cycle reclamation cannot all be had without tracing, reference accounting, or an ownership restriction. Scope cyclic garbage with `with-region` or a `region-open`/`region-close` handle.
+
 **Gradual typing (warnings, not errors)**
 Type annotations are optional and informational. This preserves Scheme's exploratory programming model. Programs compile and run regardless of type warnings. This is the intended behavior — Eshkol is a dynamically-typed language with optional static analysis, not a statically-typed language with escape hatches.
 
@@ -434,8 +438,12 @@ block ordinary use.
   `(derivative (lambda (x) (df x)) x0)`. This was the closure-side view of the
   one carrier-boundary defect described under the correctness-wave section
   above, not a separate limitation.
-- Vector-param AD op combined with a captured local parameter fails LLVM
-  verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
+- **Vector-param AD op combined with a captured local parameter (fixed,
+  ESH-0072, ESH-0097).** Was: fails LLVM verification (`PtrToInt source must
+  be pointer`). Fixed at `autodiff_codegen.cpp:6975-6990` and `:11381-11400`;
+  regression `tests/ad/sweep_c_regressions_test.esk:57-69` asserts exact
+  values for gradient/jacobian/hessian/divergence/laplacian over a lambda
+  capturing a local parameter (conformity audit 2026-08-25, item e1).
 - **Resident training loops accumulate RSS unless each step is scoped.** The
   automatic per-iteration nursery (ESH-0214e) reclaims *structural* mutation, not
   the reverse-mode AD tape, so a long-running gradient/training loop is excluded
@@ -458,8 +466,19 @@ block ordinary use.
   does not, and instead runs much deeper before failing loudly on a signal
   (ESH-0101, see above). Mutual tail calls ARE now proper R7RS
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
-  resolved (2026-07-04). The remaining exception is a higher-order tail call that
-  forwards a stack-allocated closure argument, which falls back to a bounded call.
+  resolved (2026-07-04) — and as of ESH-0102b that holds for **every** tail
+  spelling, not only `if`: a mutual tail call written with `cond`, `case`,
+  `when`, `unless` or as the last operand of `and`/`or` used to lower to an
+  ordinary call and exhaust the stack (SIGBUS with the fatal-signal diagnostic)
+  between 500,000 and 5,000,000 hops, while the identical program written with
+  `if` ran flat. All six now run flat to 100,000,000 hops under both the JIT and
+  AOT, pinned by the `mutual_tail_cond` / `mutual_tail_forms` depth-parametric
+  probes. Remaining bounded exceptions, all loud rather than silent: mutually
+  recursive procedures with **differing signatures**, **indirect** tail calls
+  through a procedure value, higher-order tail calls that forward a
+  stack-allocated closure argument, tail calls through `guard`, and non-AArch64
+  targets (aggregate-return `musttail`, ESH-0171). See
+  [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body
   (e.g. `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))`). **Status: fixed**
@@ -509,31 +528,68 @@ block ordinary use.
   catchable "Type error in sleep-ms: expected number" on any non-number. Fixed
   in `lib/core/system_builtins.c` and `lib/backend/vm_native.c`; regression
   test `tests/system/sleep_ms_test.esk`.
-- Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
-  are not fully wired (ESH-0104, ESH-0107).
+- **Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote, level >= 2
+  (fixed, ESH-0104, ESH-0107).** Was: not fully wired. Both have green
+  assertions at `tests/parser/quote_dispatch_family_test.esk:94-102` and
+  `:104-113` (conformity audit 2026-08-25, item e2).
 - JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
   unaffected (ESH-0103).
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`, of which 17 are
-  verified behavioral divergences with reproducible programs under
-  `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
+  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
-  `define-library` fix (#402) — with no new waivers. The differential gate is
-  140/140 on the release cut.
+  `define-library` fix (#402) — with no new waivers. The differential gate
+  (`scripts/run_vm_parity.sh`) is **188/188** on the release cut, remeasured
+  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; corrects
+  an earlier "140/140" figure — the corpus has grown, conformity audit item
+  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **328**
+  further names that native resolves and the VM does not, entirely outside
+  the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
+  see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
+  item e6/g6).
+- Of the 331 `gap` rows, 14 reference a reproducer file under
+  `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
+  -l`). The `found/` corpus itself holds 38 filed reproducers; per the
+  project's own ledger (DD-12, `.icc/silent-wrong-ledger.yaml`, open,
+  re-run at `9f2da2ab`), **25 still diverge and 13 now agree** (the doc
+  previously said "17 verified behavioral divergences," a stale figure —
+  conformity audit item e4). DD-12 is the tracked item for re-verifying and
+  pruning the stale 13; not duplicated here.
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
-  `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
-  (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`
-  passes clean end to end (stage 1 surface audit: 920 codegen symbols, all
-  VM-supported or waived; stages 2-3 corpus differential + OOS probes: 56/56).
-  No reproducible surface-audit failure currently exists on this branch — the
-  earlier report is presumed to have referred to a transient state before a
-  since-landed fix, or to a CI lane not exercised by this verification (e.g.
-  ASAN/XLA). Not filing a ticket for a failure that doesn't currently
-  reproduce; re-open if a specific lane is found to still fail.
+  `scripts/run_vm_parity.sh`. Re-verified 2026-08-25 against current master
+  (`4bf871a0`) with a full rebuild: `scripts/run_vm_parity.sh` passes clean
+  end to end, now a **4-stage** gate (AUDIT / CORPUS on 3 axes / OOS / FATAL,
+  not the 3-stage description this doc previously carried — conformity audit
+  item e5) at 188/188 (see above). No reproducible surface-audit failure
+  currently exists on this branch.
+- **The VM occurs-check does not descend into facts** — `lib/backend/vm_logic.c:350-356`
+  states "Fact-internal recursion is not yet implemented," which is a
+  soundness hole (circular bindings admissible) in a surface documented as
+  `vm-supported`. Filed as a BUILD ITEM (target v1.4.0, tracked alongside the
+  ADR-0003 parity-gate hardening in `docs/design/adr/0003-codegen-vm-parity.md`)
+  — conformity audit item e6.
+- **`TypeChecker::checkLambda` is a documented placeholder** —
+  `lib/types/type_checker.cpp:3295-3304` ignores its `expected` parameter, so
+  bidirectional *checking* does not exist for lambdas (only inference does).
+  See ADR-0004's attainment note and README's corrected bidirectional-inference
+  claim — conformity audit item e6/c7/f5.
+- **~170 lines of dead `#if 0` codegen ship in `llvm_codegen.cpp:41140-41310`**,
+  self-labelled "kept #if 0 stub bodies for now" (superseded by
+  `LogicWorkspaceCodegen`). Cheap, unambiguous cleanup; filed as a BUILD ITEM,
+  no target version (mechanical debt, any release) — conformity audit item e6.
+- **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
+  configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
+  shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity
+  audit item e6.
+- **89.86% of the language surface has never been differentially compared**
+  between engines, per the project's own ledger (PR-10,
+  `.icc/silent-wrong-ledger.yaml`, open: 113 of 1,114 constructs carry
+  differential evidence) even though the engine-parity gate reports PASS.
+  Not a new finding — cross-referenced here because it was previously absent
+  from this document — conformity audit item e6.
 
 ---
 

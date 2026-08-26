@@ -6,6 +6,38 @@ Date: 2026-07-09
 
 Audience: Eshkol compiler, runtime, release, and performance maintainers.
 
+**Attainment reviewed:** 2026-08-25, against `4bf871a0` (conformity audit
+item c10; `docs/design/AUDIT_2026_08_25_RESOLUTION.md`) — status below,
+kept as tracked work, nothing deleted.
+
+### Attainment as of `4bf871a0` (2026-08-25)
+
+The `ESHKOL_PGO` scaffold exists, but every strictness requirement this ADR
+specifies is currently **inverted** rather than simply unimplemented:
+
+- Non-Clang toolchains **warn and silently degrade** (`CMakeLists.txt:362`)
+  where this ADR requires a hard configure error.
+- `CMakeLists.txt:379-381` adds `-Wno-profile-instr-out-of-date
+  -Wno-profile-instr-unprofiled` — suppressing the two diagnostics this ADR
+  designates must-be-fatal.
+- Orchestration targets (`eshkol-pgo-train/-merge/-verify`, `eshkol-perf-gate`)
+  are absent; `bench/pgo_corpus/` (5 programs) has zero callers.
+- Phase 0's JSON measurement runner is absent; the "assert generated code is
+  O3" check landed as **O2** (`scripts/run_codegen_optlevel_tests.sh:154-161`),
+  and only for artifact builds — `-r`/`-e`/REPL still emit O0.
+- Phases 2 (WPO), 3, 4 are entirely absent.
+- `run_icc_smoke.sh:513-518` "probes" PGO by grepping `CMakeLists.txt` for
+  the string `ESHKOL_PGO` — exactly the name-presence check ADR-0010 §2.2
+  retires elsewhere.
+
+**BUILD ITEM:** flip the four inversions above to match this ADR's stated
+strictness (configure-error on non-Clang, remove the `-Wno-profile-*`
+suppressions, wire the orchestration targets, land the O3-assertion Phase
+0 runner across all build modes), target v1.5.0 (ADR-0000 Stage 5, one of
+the six DAG roots — currently ~20% done). ROADMAP.md's PGO row (`[~]`) and
+FEATURE_MATRIX.md's corrected v1.3-evolve row (d2) both point here for the
+completion work.
+
 ## Decision
 
 Eshkol will treat performance as three connected but separately measurable

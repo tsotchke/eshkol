@@ -6,6 +6,56 @@
 - **Cluster:** OALR / concurrency / residence
 - **Applies to:** LLVM AOT/JIT runtime first; the VM must implement the same semantic contract
 - **Memory premise:** no autonomous garbage collector
+- **Attainment reviewed:** 2026-08-25, against `4bf871a0` (conformity audit
+  items c1, c2; `docs/design/AUDIT_2026_08_25_RESOLUTION.md`) — status
+  below, kept as tracked work, nothing deleted.
+
+### Attainment as of `4bf871a0` (2026-08-25)
+
+- **Phase A (memctx accessor) — PARTIAL.** `eshkol_memctx_current`
+  (`lib/core/runtime_regions.cpp:149`) and `eshkol_current_arena` (`:176`)
+  exist, but `eshkol_region_enter` (`:587`) still writes
+  `__global_arena = region->arena;`, and `eshkol_current_arena`
+  short-circuits to `return __global_arena;` whenever
+  `s_parallel_depth != 0` (`:178-180`) — exactly the concurrent case this
+  ADR exists to fix. 133 call sites still use `get_global_arena()` vs. 6
+  using `eshkol_current_arena()`; 8 codegen sites still emit a direct
+  `__global_arena` load. **BUILD ITEM** (conformity audit item c1): move
+  the 8 remaining direct-global codegen loads and stop
+  `eshkol_region_enter` writing the global. Target: completes Stage 1 of
+  ADR-0000.
+- **Phase A (thread attach/detach diagnostics, owner assertions) — ABSENT.**
+  No `eshkol_mem_thread_attach`/`_detach`, no `owner_thread` field, no owner
+  assertion on any allocate/rewind path.
+- **Phase B (tokenized scopes) — ABSENT.** `arena_t::current_scope` is still
+  present and mutated directly; no `arena_mark_t`/`arena_mark()`/
+  `arena_rewind()`. A workaround (`arena_scope_ops_are_commit_only()`)
+  degrades scope ops to no-ops on pool workers instead.
+- **Phase C (header/layout ABI v2) — ABSENT.** `ESHKOL_MEMORY_ABI_V2`,
+  `eshkol_object_header_v2`, `eshkol_layout_desc`: zero hits tree-wide.
+- **Phase D (escape ledgers / transfer capsules) — ABSENT.** Zero hits for
+  `escape_ledger`, `eshkol_transfer`, `transfer_capsule`. The barrier is
+  still the eager evacuate-and-return form.
+- **Phase E (resident sessions) — ABSENT.** Zero hits for
+  `eshkol_resident*`, `eshkol_read_lease`, `root_table`.
+- **§7 "advisory bits must become enforced capabilities" — ABSENT.**
+  (Conformity audit item c2, cross-referenced from FEATURE_MATRIX.md d6.)
+  `lib/types/type_checker.cpp:1400-1406` types all five OALR ops as
+  identity returning `Value`. `BorrowChecker` (`lib/types/type_checker.cpp:407-729`)
+  is a complete, unit-tested flow checker with **zero production callers** —
+  `declareOwned`/`move`/`drop`/`borrowShared`/`borrowMut` are driven only
+  from `tests/types/type_checker_test.cpp`. The only negative tests
+  (`tests/memory/use_after_move.esk`, `double_move.esk`) run on exactly one
+  runner: `scripts/run_all_tests.ps1`, a Windows-only PowerShell script with
+  no Unix equivalent — so on the CI lanes that actually gate merges, those
+  tests cannot fail. **BUILD ITEM** (conformity audit item c2): wire
+  `BorrowChecker` into the production type-checker walk and add a
+  Unix-runnable negative-test runner. Target: v1.4.0 (ADR-0000 Stage 3).
+- **Evacuation (ESH-0214d) — PARTIAL.** Native `evac_kind_for`
+  (`runtime_regions.cpp:1024`) deep-walks 15 subtypes but leaf-copies
+  `AD_NODE` with a warning ("only the derivative is corrupted"). The VM
+  evacuator (`lib/backend/vm_region_evac.c`, #461) is stronger: a per-tag
+  table with compile-time and runtime totality asserts.
 
 ## Decision
 

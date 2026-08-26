@@ -1,0 +1,11 @@
+;; Type System Test: rebinding a qubit under a new name does not launder the clone
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: was consumed more than once
+
+;; `(let ((a q)) ...)` binds the SAME resource to a second name. Tracking that
+;; alias is what stops the one-line bypass: without it, any qubit could be
+;; cloned by first copying its name.
+(define (bad-alias (q : Qubit))
+  (let ((a q))
+    (cons a a)))

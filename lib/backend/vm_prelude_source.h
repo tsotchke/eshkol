@@ -25,11 +25,35 @@
  *    require `apply`, which the bytecode VM does not yet implement, so the
  *    fall-through arm raises a clear error rather than silently dropping
  *    arguments.
- *  • After editing this file, the bytecode cache (`vm_prelude_cache.h`)
- *    must be regenerated:
- *        gcc -O2 -DGENERATE_PRELUDE_CACHE -Iinc -Ilib \
- *            lib/backend/vm_prelude_cache.c -o /tmp/gen_prelude -lm
- *        /tmp/gen_prelude > lib/backend/vm_prelude_cache.h
+ *  • After editing this file — OR after adding, removing or reordering an
+ *    entry in eshkol_vm.c's BUILTINS[] table, which emit_builtin_preamble()
+ *    turns into one prelude local apiece — the bytecode cache
+ *    (`vm_prelude_cache.h`) must be regenerated. The recipe recorded here
+ *    previously (`gcc ... vm_prelude_cache.c -o gen_prelude -lm`) no longer
+ *    links: the generator pulls in the whole VM, which now needs the runtime
+ *    and the platform frameworks. What works on macOS/arm64, from the repo
+ *    root with an existing build/ tree:
+ *
+ *        cc -O2 -DGENERATE_PRELUDE_CACHE -Iinc -Ilib \
+ *           lib/backend/vm_prelude_cache.c -o /path/outside/repo/gen_prelude \
+ *           build/libeshkol-runtime.a -lm -lc++ \
+ *           -framework CoreFoundation -framework CoreGraphics \
+ *           -framework ImageIO -framework Foundation -framework IOKit \
+ *           -framework Metal -framework Accelerate
+ *        /path/outside/repo/gen_prelude > lib/backend/vm_prelude_cache.h
+ *
+ *    On Linux drop the -framework flags and keep -lm -lstdc++.
+ *
+ *    NOTE (measured 2026-08-25, master 4bf871a0): the committed cache is
+ *    ALREADY STALE by 28 builtins — regenerating from the source tables yields
+ *    768 prelude locals against the committed 740, and the missing names
+ *    include `string-length`, `string-ref`, `integer?` and the whole
+ *    c[ad]{3,4}r family. Its only consumer is the WASM REPL
+ *    (vm_wasm_repl.c, the one place that defines ESHKOL_VM_NO_DISASM as a
+ *    macro), so nothing in the native or standalone-VM lanes notices. Do NOT
+ *    fold that catch-up regeneration into an unrelated change: it rewrites the
+ *    whole prelude bytecode and needs the WASM lane to verify it. Ledgered as
+ *    SW-49.
  */
 
 #ifndef ESHKOL_VM_PRELUDE_SOURCE_H

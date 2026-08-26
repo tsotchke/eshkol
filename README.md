@@ -63,13 +63,13 @@ The full release-gate record and exact platform matrix are in
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
-- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²)
-- **Zero-overhead abstractions** - Type-level proofs erase at compile time. Arena allocation is O(1). No runtime penalties for safety
+- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on the LLVM backend. The bytecode VM's `divergence`/`curl` are still central-difference approximations (`h=1e-7`) — see [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — corrected 2026-08-25, conformity audit item f1
+- **Zero-overhead abstractions** - Arena allocation is O(1), no runtime penalties for safety. Ownership annotations (`owned`/`move`/`borrow`) and `(the <type> expr)` ascription are erased at compile time today, but this is *not yet* backed by discharged type-level proofs — no proof obligation is checked before erasure (`BorrowChecker` has zero production callers; `(the ...)` is a trusted no-op). Proof-carrying erasure is a build item under ADR-0004 (target v1.9.0/v2.0) — corrected 2026-08-25, conformity audit item f3
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
-- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 64-opcode core bytecode VM
+- **Web platform** - Compiles to WebAssembly with 59 DOM bindings. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through a 66-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
-- **Mathematical rigor** - HoTT type foundations ensure correctness properties are mathematically provable, not just tested
+- **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
 
 ---
 
@@ -222,8 +222,8 @@ The gradual type system, grounded in Homotopy Type Theory, enables compile-time 
 Eshkol is implemented as a **production compiler** written in C17/C++20, utilizing LLVM for native code generation. The implementation comprises:
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
-- **HoTT type checker** with bidirectional inference and dependent type support
-- **Modular LLVM backend** with 21 specialized code generation components
+- **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
+- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 42,993 lines — corrected 2026-08-25 from "21 specialized … components", conformity audit item f6
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 
@@ -292,8 +292,8 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
-- **39 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`
-- **550+ built-in functions**: Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins
+- **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
+- **1,040 built-in functions** (1,106-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — corrected 2026-08-25 from "550+"
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion

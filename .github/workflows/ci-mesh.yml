@@ -1,0 +1,376 @@
+name: CI (mesh, self-hosted)
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
+#
+# This workflow runs a subset of the ci.yml lane batteries on the
+# maintainer's own hardware (the "mesh") instead of GitHub-hosted runners.
+# Its purpose is capacity and honesty:
+#
+#   - CAPACITY. The hosted matrix in ci.yml is 14 lanes plus Windows SDK
+#     downloads. Moving the Linux/macOS lite lanes onto owned hardware frees
+#     hosted minutes for the lanes that genuinely need a clean, disposable
+#     hosted image.
+#   - HONESTY. ci.yml's `linux-x64-cuda` / `linux-arm64-cuda` /
+#     `windows-x64-cuda` lanes run on hosted runners, which have NO GPU:
+#     nvcc compiles the kernels, `eshkol_gpu_init()` reports zero devices,
+#     and every GPU tensor op silently falls back to the CPU path. They are
+#     COMPILATION gates. `mesh-linux-x64-cuda-exec` below runs the same
+#     `scripts/run_gpu_tests.sh` on a machine with a real CUDA device, so it
+#     is an EXECUTION gate. (The narrower GPU-vs-CPU numeric diff lives in
+#     gpu-execution-gate.yml and shares this workflow's `gpu` label — see
+#     the runbook.)
+#
+# IT IS NOT A MERGE GATE, AND MUST NOT BECOME ONE BY ACCIDENT.
+#
+# Nothing in this file appears in branch protection's required-contexts
+# list, and nothing in this file may be added to it without the maintainer
+# deciding to. That is not caution for its own sake — it is the concrete
+# lesson of PR #444: a required context that stops reporting blocks merges
+# permanently, because branch protection has no timeout, only "hasn't
+# reported yet". A required context backed by a self-hosted runner inherits
+# the availability of that one machine. The reachability survey in
+# docs/platform/SELF_HOSTED_RUNNERS.md measured this fleet directly: the
+# majority of it is powered off or preempted at any given moment, and every
+# datacenter-GPU node in it is a GCP spot instance. Hardware like that is a
+# fine place to EARN extra signal and a catastrophic place to REQUIRE it.
+#
+# WHY A SEPARATE WORKFLOW RATHER THAN A `runs-on` FALLBACK INSIDE ci.yml
+#
+# Because the fallback everyone reaches for does not exist. `runs-on` is
+# resolved when the job is scheduled; GitHub Actions has no "use the
+# self-hosted runner if one is online, otherwise use a hosted one"
+# construct. A job whose labels match no online runner does not fail over —
+# it queues. Making a REQUIRED lane's `runs-on` depend on fleet state
+# therefore converts every mesh outage into a permanently pending required
+# check, which is precisely the #444 trap. Keeping the mesh lanes in their
+# own file with their own job names makes that mistake structurally
+# impossible: these names are not in the required set and cannot displace a
+# lane that is.
+#
+# HOW IT DEGRADES
+#
+# Three independent guards, any one of which is sufficient:
+#   1. Repository variable `ESHKOL_MESH_CI` must equal `on`. Unset (the
+#      default, and the state this file ships in) means every job here is
+#      SKIPPED — it never queues, never occupies a runner, never reports.
+#   2. `mesh-preflight` runs on a HOSTED runner and refuses to fan out when
+#      no runner carrying the `eshkol` label is registered, so switching the
+#      variable on before registering a runner still cannot leave jobs
+#      queued against absent labels.
+#   3. Every mesh job carries `timeout-minutes`, so even a runner that
+#      registers and then wedges releases the run.
+#
+# SECURITY: self-hosted runners on a public repository
+#
+# A self-hosted runner executes whatever the workflow tells it to on a
+# machine the maintainer owns, on their home network, with a persistent
+# filesystem between runs. A pull request from a FORK can edit the workflow
+# it is tested by. Every job below therefore refuses to run for a fork PR
+# (`github.event.pull_request.head.repo.full_name == github.repository`).
+# This is the load-bearing control; the repository's "require approval for
+# all outside collaborators" setting is the second layer. See
+# docs/platform/SELF_HOSTED_RUNNERS.md § Security.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Mirrors ci.yml: one group per PR, one per branch for push runs. Mesh
+  # runners are single-machine and serialise anyway, so a superseded run
+  # holding one is strictly worse than cancelling it.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/master' }}
+
+env:
+  LLVM_MAJOR: '21'
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # Guard job. Runs on a HOSTED runner on purpose: its entire job is to
+  # decide whether the self-hosted fleet can be dispatched to, so it must
+  # not itself depend on that fleet.
+  # ───────────────────────────────────────────────────────────────────
+  mesh-preflight:
+    name: mesh-preflight (hosted — decides whether the mesh lanes fan out)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    # Fork PRs never reach the mesh at all — not even this hosted probe, so
+    # that the skip is visible at the top of the run rather than N times over.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      dispatch: ${{ steps.decide.outputs.dispatch }}
+    steps:
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MESH_CI: ${{ vars.ESHKOL_MESH_CI }}
+        run: |
+          set -u
+
+          if [ "${MESH_CI:-}" != "on" ]; then
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "Repository variable ESHKOL_MESH_CI is '${MESH_CI:-<unset>}', not 'on'. Mesh lanes stay off." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Best-effort. Listing runners needs `administration:read`, which the
+          # default GITHUB_TOKEN does not carry, so an unreadable answer is
+          # reported as unknown and treated as "go ahead" — the per-job
+          # timeout-minutes is the backstop in that case, not a guess here.
+          online=$(gh api "repos/$REPO/actions/runners" \
+                     --jq '[.runners[] | select(.status == "online") | select([.labels[].name] | index("eshkol"))] | length' \
+                   2>/dev/null || echo unknown)
+
+          if [ "$online" = "0" ]; then
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Mesh CI enabled but no runner registered::ESHKOL_MESH_CI is 'on' but no ONLINE self-hosted runner carries the 'eshkol' label. Mesh lanes skipped rather than left queued. See docs/platform/SELF_HOSTED_RUNNERS.md."
+            echo "ESHKOL_MESH_CI is on, but 0 online runners carry the \`eshkol\` label — mesh lanes skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "dispatch=true" >> "$GITHUB_OUTPUT"
+          echo "Mesh lanes dispatching. Online runners carrying \`eshkol\`: $online." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────
+  # The mesh lanes themselves.
+  #
+  # Labels, not hostnames. A lane says what it NEEDS (`linux`, `x64`,
+  # `cuda`); which physical box answers is the runbook's business, so a
+  # node can be swapped without editing this file. `self-hosted`, the OS
+  # label and the arch label are applied by GitHub automatically at
+  # registration; `eshkol`, `cuda` and `metal` are custom and are assigned
+  # per docs/platform/SELF_HOSTED_RUNNERS.md § Label taxonomy.
+  #
+  # These lanes deliberately do NOT apt-get/brew install a toolchain the
+  # way ci.yml's hosted lanes do. A hosted runner is a fresh disposable
+  # image and must provision itself; a self-hosted runner is a real machine
+  # that CI has no business mutating, and doing so would require handing
+  # the runner passwordless sudo. The toolchain is provisioned once, by
+  # hand, per the runbook; `mesh-toolchain-preflight` below verifies it and
+  # fails with an actionable message if it is missing.
+  # ───────────────────────────────────────────────────────────────────
+  mesh-matrix:
+    name: ${{ matrix.name }}
+    needs: mesh-preflight
+    if: needs.mesh-preflight.outputs.dispatch == 'true'
+    runs-on: ${{ fromJSON(matrix.labels) }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      # One runner per node; don't let two lanes fight over the same box's
+      # cores and disk.
+      max-parallel: 3
+      matrix:
+        include:
+          - name: mesh-linux-x64-lite
+            labels: '["self-hosted", "linux", "x64", "eshkol"]'
+            build_dir: build-mesh
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            min_free_gb: 25
+            timeout: 90
+
+          - name: mesh-linux-arm64-lite
+            labels: '["self-hosted", "linux", "arm64", "eshkol"]'
+            build_dir: build-mesh
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            min_free_gb: 25
+            timeout: 150   # the arm64 mesh candidates are 4-8 core SBCs
+
+          - name: mesh-macos-arm64-lite
+            labels: '["self-hosted", "macos", "arm64", "eshkol"]'
+            build_dir: build-mesh
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            test_command: ./scripts/run_all_tests.sh
+            min_free_gb: 25
+            timeout: 90
+
+          # The lane that hosted CI structurally cannot provide: GPU tests
+          # against a real CUDA device rather than a zero-device fallback.
+          - name: mesh-linux-x64-cuda-exec
+            labels: '["self-hosted", "linux", "x64", "eshkol", "cuda"]'
+            build_dir: build-mesh-cuda
+            xla_enabled: 'OFF'
+            gpu_enabled: 'ON'
+            test_command: ./scripts/run_gpu_tests.sh
+            min_free_gb: 30
+            timeout: 120
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Self-hosted runners keep their workspace between runs, so a lane that
+      # fills the disk stays filled and every later run on that node fails
+      # somewhere confusing. Fail here instead, naming the number.
+      - name: Disk budget
+        shell: bash
+        env:
+          MIN_FREE_GB: ${{ matrix.min_free_gb }}
+          LANE: ${{ matrix.name }}
+        run: |
+          set -u
+          free_gb=$(df -Pk . | awk 'NR==2 {print int($4/1048576)}')
+          echo "free on runner workspace volume: ${free_gb} GiB (lane needs ${MIN_FREE_GB} GiB)"
+          if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
+            echo "::error title=Mesh runner out of disk::${LANE} needs ${MIN_FREE_GB} GiB free on this node; ${free_gb} GiB available. Clear old build-mesh*/ trees and _work/_temp on the runner host."
+            exit 1
+          fi
+
+      - name: Toolchain preflight
+        id: toolchain
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          note() { echo "::error title=Mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."; fail=1; }
+
+          # Resolve llvm-config for the pinned major, wherever this host keeps it.
+          llvm_config=""
+          for c in \
+            "$(command -v "llvm-config-${LLVM_MAJOR}" 2>/dev/null || true)" \
+            "/usr/lib/llvm-${LLVM_MAJOR}/bin/llvm-config" \
+            "/usr/local/opt/llvm@${LLVM_MAJOR}/bin/llvm-config" \
+            "/opt/homebrew/opt/llvm@${LLVM_MAJOR}/bin/llvm-config" \
+            "$(command -v llvm-config 2>/dev/null || true)"
+          do
+            [ -n "$c" ] && [ -x "$c" ] || continue
+            if [ "$("$c" --version | cut -d. -f1)" = "${LLVM_MAJOR}" ]; then
+              llvm_config="$c"; break
+            fi
+          done
+          if [ -z "$llvm_config" ]; then
+            note "No LLVM ${LLVM_MAJOR} toolchain found on this runner."
+          else
+            echo "llvm-config: $llvm_config ($("$llvm_config" --version))"
+            echo "LLVM_CONFIG=$llvm_config" >> "$GITHUB_ENV"
+            dirname "$llvm_config" >> "$GITHUB_PATH"
+          fi
+
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed on this runner."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed on this runner."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
+
+          # `-fuse-ld=lld` (AArch64 Linux codegen) wants an unversioned ld.lld
+          # in PATH. ci.yml symlinks it with sudo; a self-hosted runner must
+          # not, so shim it into the runner's own PATH instead.
+          if [ "$RUNNER_OS" = "Linux" ] && ! command -v ld.lld >/dev/null 2>&1; then
+            versioned="$(command -v "ld.lld-${LLVM_MAJOR}" 2>/dev/null || echo "/usr/lib/llvm-${LLVM_MAJOR}/bin/ld.lld")"
+            if [ -x "$versioned" ]; then
+              mkdir -p "$RUNNER_TEMP/bin"
+              ln -sf "$versioned" "$RUNNER_TEMP/bin/ld.lld"
+              echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+              echo "shimmed ld.lld -> $versioned"
+            else
+              note "ld.lld (or ld.lld-${LLVM_MAJOR}) is not installed on this runner."
+            fi
+          fi
+
+          if [ "${{ matrix.gpu_enabled }}" = "ON" ]; then
+            command -v nvcc >/dev/null 2>&1 || note "nvcc is not on PATH, but this lane is the CUDA EXECUTION lane."
+            if command -v nvidia-smi >/dev/null 2>&1; then
+              nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+            else
+              note "nvidia-smi is absent: this runner carries the 'cuda' label but exposes no CUDA device, which would silently degrade this lane back into the compile-only gate it exists to replace."
+            fi
+          fi
+
+          exit $fail
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B "${{ matrix.build_dir }}" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}
+
+      # Same guard ci.yml applies to its CUDA lanes: reject a build graph that
+      # quietly picked up gpu_memory_stub.cpp instead of the real kernels.
+      - name: Verify real CUDA build graph
+        if: matrix.gpu_enabled == 'ON'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/verify_gpu_backend.py \
+            --build-dir "${{ matrix.build_dir }}" \
+            --expected CUDA
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Run tests
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          export ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-600}"
+          export ESHKOL_REPL_MACHINE_READY_TIMEOUT="${ESHKOL_REPL_MACHINE_READY_TIMEOUT:-600}"
+          export ESHKOL_REPL_MACHINE_DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-180}"
+          ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+
+      - name: Upload test log
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}-test-log
+          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          if-no-files-found: ignore
+
+      # Same rationale as ci.yml's copy of this step (ADR-0010 §2.2, gap A5):
+      # oracle traces live in git-ignored trees and are otherwise lost with the
+      # workspace. On a self-hosted runner they would instead accumulate
+      # forever, which is why the next step removes them.
+      - name: Upload ICC evidence traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-${{ matrix.name }}
+          path: |
+            scripts/icc_traces/
+            .icc/runtime-traces/
+            .icc/runtime-traces-oracle-view/
+          if-no-files-found: ignore
+
+      # Hosted runners are destroyed after every job; self-hosted runners are
+      # not. Without this, each lane leaves a multi-GB build tree behind and
+      # the node fails the disk-budget step a few runs later.
+      - name: Reclaim build tree
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          rm -rf "${{ matrix.build_dir }}" || true
+          df -Pk . | awk 'NR==2 {printf "free after reclaim: %d GiB\n", int($4/1048576)}'

@@ -502,6 +502,16 @@ typedef struct eshkol_object_header {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
                      "Object header must be 8 bytes for alignment");
 
+/* OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4).
+ *
+ * Defines the 32-byte successor header, the layout-descriptor record, and
+ * static assertions pinning BOTH layouts. Selecting v2 is off by default; with
+ * the flag off nothing below changes the live object ABI. Included here rather
+ * than standalone because it pins the v1 layout above alongside the v2 one, and
+ * because ESHKOL_STATIC_ASSERT and eshkol_object_header_t must already exist.
+ * See docs/design/ABI_V2_MIGRATION_INVENTORY.md. */
+#include "eshkol/memory_abi_v2.h"
+
 // ───────────────────────────────────────────────────────────────────────────
 // HEAP_PTR SUBTYPES (type = ESHKOL_VALUE_HEAP_PTR = 8)
 // Data structures allocated on the arena
@@ -1500,7 +1510,7 @@ typedef struct eshkol_continuation_state {
     // re-invocable after the frame that captured it has returned and its
     // memory been reused. `jmp_buf_ptr` alone only survives while that frame
     // is still live, which is why re-entry into a returned frame previously
-    // SIGILL'd/SIGSEGV'd (ledger SW-51).
+    // SIGILL'd/SIGSEGV'd (ledger SW-60).
     //
     // stack_lo/stack_hi bound the captured region [lo, hi) in the ORIGINAL
     // address range; the bytes are restored to exactly those addresses on
@@ -2694,6 +2704,25 @@ typedef struct eshkol_ast {
      * garbage id simply falls outside the table and reads as "unknown"; a
      * garbage pointer would be dereferenced by the diagnostic printer. */
     uint32_t source_file_id;
+
+    /* Stable identity of this node in the frontend node-identity substrate
+     * (ADR-0000 Stage 1; see inc/eshkol/frontend/node_identity.h).
+     *
+     * This is the KEY only. The payload — today a SourceSpan, and by
+     * ADR-0000's end state also a BindingId (ADR-0006) and a TypedExprInfo
+     * (ADR-0004) — lives in side tables keyed on this value, because
+     * ADR-0008 §4.2 settles that the columns must not be fields on this
+     * struct during the v1.x migration, and because the whole point of the
+     * substrate is that five consumers share one table rather than each
+     * growing its own field.
+     *
+     * ESHKOL_NODE_ID_NONE (0) means "no identity", which is what a node
+     * synthesized outside the parser reads as. Like `source_file_id` this is
+     * deliberately an id and not a pointer: nodes are built in places that
+     * do not zero-initialize, so this field can hold garbage, and a garbage
+     * NodeId is rejected by its tag and its bound and reads as unknown —
+     * never as a confident wrong location. */
+    uint32_t node_id;
 } eshkol_ast_t;
 
 // ===== Unified AST Literal Builders =====

@@ -1,0 +1,106 @@
+{
+  "axis": "flat_rss_under_resident_load",
+  "claims_tested": [
+    "a 100k-tick resident daemon loop (native, ESH-0214e shape) holds flat peak RSS as tick count grows",
+    "the bytecode-VM with-region evacuator (PR #461 / SW-14) holds flat peak RSS as with-region iteration count grows, and materially less RSS than the evacuator disabled"
+  ],
+  "methodology_note": "Each sweep point is peak RSS of one fresh process at that tick count (/usr/bin/time -l|-v) \u2014 Eshkol has no in-process RSS sampler, so an intra-run curve is not available; the sweep across tick counts is the curve. A leak shows up as RSS growing with ticks; flat allocation does not, regardless of per-point noise.",
+  "native": {
+    "sweep": [
+      {
+        "ticks": 10000,
+        "peak_rss_mb": 11,
+        "run_rc": 0,
+        "ok": true
+      },
+      {
+        "ticks": 25000,
+        "peak_rss_mb": 15,
+        "run_rc": 0,
+        "ok": true
+      },
+      {
+        "ticks": 50000,
+        "peak_rss_mb": 23,
+        "run_rc": 0,
+        "ok": true
+      },
+      {
+        "ticks": 100000,
+        "peak_rss_mb": 36,
+        "run_rc": 0,
+        "ok": true
+      },
+      {
+        "ticks": 200000,
+        "peak_rss_mb": 64,
+        "run_rc": 0,
+        "ok": true
+      },
+      {
+        "ticks": 400000,
+        "peak_rss_mb": 119,
+        "run_rc": 0,
+        "ok": true
+      }
+    ],
+    "flatness": {
+      "first_x": 10000,
+      "first_rss_mb": 11,
+      "last_x": 400000,
+      "last_rss_mb": 119,
+      "x_ratio": 40.0,
+      "rss_ratio": 10.818181818181818,
+      "flat_within_allowance": false,
+      "allowance": 1.5
+    }
+  },
+  "vm": {
+    "available": true,
+    "sweep": [
+      {
+        "n": 1000,
+        "peak_rss_mb": 26,
+        "run_rc": 0,
+        "ok": true,
+        "evac_off_peak_rss_mb": null
+      },
+      {
+        "n": 4000,
+        "peak_rss_mb": 26,
+        "run_rc": 0,
+        "ok": true,
+        "evac_off_peak_rss_mb": null
+      },
+      {
+        "n": 16000,
+        "peak_rss_mb": 27,
+        "run_rc": 0,
+        "ok": true,
+        "evac_off_peak_rss_mb": null
+      },
+      {
+        "n": 64000,
+        "peak_rss_mb": 28,
+        "run_rc": 0,
+        "ok": true,
+        "evac_off_peak_rss_mb": 3093
+      }
+    ],
+    "flatness": {
+      "first_x": 1000,
+      "first_rss_mb": 26,
+      "last_x": 64000,
+      "last_rss_mb": 28,
+      "x_ratio": 64.0,
+      "rss_ratio": 1.0769230769230769,
+      "flat_within_allowance": true,
+      "allowance": 1.5
+    },
+    "evacuator_on_vs_off_at_largest_point": {
+      "n": 64000,
+      "evac_on_peak_rss_mb": 28,
+      "evac_off_peak_rss_mb": 3093
+    }
+  }
+}

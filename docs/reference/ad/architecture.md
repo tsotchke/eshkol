@@ -26,6 +26,74 @@ Eshkol runs **forward mode** for `derivative` and **reverse mode** for
 
 ---
 
+## Substrates and carriers
+
+The table above describes the **native** engine. Eshkol also differentiates on
+the bytecode VM, and the two substrates reach the same numbers through
+different carriers. Which carrier answers which operator is declared, per
+operator and per substrate, in
+[`.icc/ad-carrier-manifest.yaml`](../../../.icc/ad-carrier-manifest.yaml) and
+enforced by
+[`scripts/gate_ad_shared_node_model.py`](../../../scripts/gate_ad_shared_node_model.py),
+which re-derives every declaration from the source rather than believing it.
+
+| Carrier | Where | Vocabulary | Substrates |
+|---------|-------|------------|------------|
+| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | ~80 typed nodes incl. `AD_NODE_CUSTOM` | native |
+| forward jet | `autodiff_codegen.cpp` (`seedForwardAndPush`) | e1/e2/ep slots + Taylor tower | native |
+| `VmDual {primal, tangent}` | `vm_dual.c` | 16 flat forward-dual ops | VM |
+| `VmHyperDual {f, f1, f2, f12}` | `vm_hyperdual.c` | second-order forward | VM |
+| `AdTape`/`AdNode` Wengert tape | `vm_autodiff.c` | 17 ops, int-indexed | **both** — the Scheme-visible `ad-*` primitives |
+
+Every carrier in that table is **exact**: each propagates derivatives by the
+chain rule. No default AD path on either substrate uses a finite difference.
+The one deliberate difference quotient in the tree is `record-fd-op!` in
+[`lib/core/ad/tape.esk`](../../../lib/core/ad/tape.esk) — the pure-Scheme
+escape hatch for an opaque forward function that supplies no analytic adjoint,
+named at its call site and ledgered in the carrier manifest's `fd_allowlist`.
+
+The forward carriers are scalar. A vector field whose components are packed
+into a `VmTensor` loses its tangents at construction, because `VmTensor::data`
+is a bare `double*`. `divergence` and `curl` therefore accept a field that
+returns a **list or a vector** and raise a named diagnostic for one that
+returns a tensor, rather than approximating it.
+
+### Build item — `AD_NODE_CUSTOM` on the VM
+
+`AD_NODE_CUSTOM` carries an externally supplied vector-Jacobian product (see
+below) and is reachable only from the native `ad_node_t` tape. Four things
+stand between it and the VM's shared Wengert tape:
+
+1. **Vocabulary.** `AdOpType` (`lib/backend/vm_autodiff.c`) has 17 members and
+   no `CUSTOM`.
+2. **Node shape.** `eshkol_custom_vjp_t` lives in `ad_node_t::saved_tensors[0]`.
+   `AdNode` has a single `double saved` slot — no `saved_tensors`, no
+   `num_saved`.
+3. **Input handles.** `eshkol_custom_vjp_t::inputs` is `ad_node**`. `AdNode`
+   addresses parents by index into an array that is relocated on growth, so a
+   stored node pointer would dangle.
+4. **Reverse driver.** `eshkol_ad_node_custom_backward`
+   (`lib/core/runtime_autodiff.cpp`) is hard-typed to `ad_node_t*`, and the
+   VM's `ad_backward` switches on `AdOpType` with no default hook.
+
+The work, in order:
+
+- Make the VM tape's node storage **chunked and never relocated**, so an
+  `AdNode*` stays valid for the tape's lifetime. This also removes a latent
+  hazard for any future pointer-holding node type.
+- Add `AD_CUSTOM` to `AdOpType` and `void** saved; int num_saved;` to `AdNode`.
+- Factor the universal reverse rule
+  (`input_i->gradient += upstream * dy/dx_i`) out of
+  `eshkol_ad_node_custom_backward` into one function parameterised over the
+  accumulate step, and call it from both `ad_backward`'s new `case AD_CUSTOM:`
+  and the native driver — so the two substrates cannot disagree about what a
+  custom VJP means.
+- Route the VM's `(gradient f x)` to the tape when `f` is reverse-mode-marked,
+  so a custom node is reachable at all: today the VM's `gradient` is the
+  forward `VmDual` carrier and builds no tape.
+
+---
+
 ## Forward mode — the 4-component jet
 
 A "dual number" in Eshkol is **not** the classic 2-component `{value,

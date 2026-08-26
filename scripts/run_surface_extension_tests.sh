@@ -22,6 +22,13 @@ TESTS=(
     # under ctest earns no coverage credit.
     tests/v1_3_edge_cases/event_loop_test.esk
     tests/ad/one_pass_gradient_test.esk
+    # The negative control for the finite-difference counter and the matmul
+    # tape-node ratchet. Listed here as well as in the AD exactness gate so the
+    # language-coverage harness, which takes its evidence from run_all_tests.sh,
+    # sees (ad-note-finite-difference!) actually execute — a construct that runs
+    # only under a standalone gate earns no coverage credit.
+    tests/ad/fd_counter_negative_test.esk
+    tests/ad/matmul_tape_node_count_test.esk
     tests/ad/sparse_tensors_test.esk
     tests/ad/taylor_tower_test.esk
 )

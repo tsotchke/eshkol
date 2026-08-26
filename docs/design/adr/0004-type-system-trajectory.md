@@ -4,6 +4,36 @@
 - Date: 2026-07-09
 - Decision owners: language, frontend, runtime, and LLVM backend
 - Scope: v1.3.2 through v2.0
+- **Attainment reviewed:** 2026-08-25, against `4bf871a0` (conformity audit
+  item c7; `docs/design/AUDIT_2026_08_25_RESOLUTION.md`) — status below,
+  kept as tracked work targeting ADR-0000 Stage 2 (identity substrate) and
+  Stage 12 (proof features), nothing deleted.
+
+### Attainment as of `4bf871a0` (2026-08-25)
+
+**NOT STARTED (ADR-0000 Stage 2/12).** Every named artifact is absent:
+`NominalTypeId`, `TypeRef`, `IndexRef`, `EffectRowRef`, `PredicateRef`,
+`PlaceId`, `FlowEnv`, `NodeId` — zero hits across `lib/ inc/ exe/ tools/`.
+The type system is still a packed `TypeId` flag written back into the AST
+(`lib/types/type_checker.cpp:1309`); sum types are collapsed to `Pair`
+before storing. `Dyn` does not exist; `BuiltinTypes::Value` is the single
+conflated dynamic root.
+
+**Bidirectional inference — checking direction absent for lambdas**
+(cross-referenced from README.md f5 and FEATURE_MATRIX.md :72, which the
+audit found to describe this accurately already): `TypeChecker::checkLambda`
+is a documented placeholder that ignores its `expected` parameter
+(`lib/types/type_checker.cpp:3295-3304`); `isFunctionType` never populates
+domain/codomain (`:3315-3319`); `TypeEnvironment::areEquivalent` is
+identity-only (`lib/types/hott_types.cpp:721-728`). `(the <type> expr)` is
+PARTIAL: `ascriptionIsBelievable` (`:3502-3532`) returns true for either
+subtyping direction and for anything touching `Value` or the numeric
+tower; the emitted IR is byte-identical to the bare expression.
+
+**BUILD ITEM:** land `checkLambda`'s checking direction and a real
+`areEquivalent`, target v1.9.0 alongside the refinement/effect/higher-rank/
+row-polymorphism work FEATURE_MATRIX.md previously (incorrectly) listed as
+already shipped (conformity audit item d2).
 
 ## Decision
 

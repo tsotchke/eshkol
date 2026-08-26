@@ -1,0 +1,17 @@
+;; Type System Test: a single use inside a when body is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_when_test.esk, and the S14 shape #471
+;; measured as legal. A one-armed conditional charges its body once, exactly as
+;; a one-armed `if` does; treating the not-taken path as a discard would reject
+;; every guarded gate application in a correct quantum program.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (maybe-h (b : Bool) (q : Qubit))
+  (when b (h q)))
+(display "when body charged once")
+(newline)

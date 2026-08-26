@@ -10,8 +10,62 @@
   `lib/backend/llvm_codegen.cpp`, `lib/backend/tensor_arith_codegen.cpp`,
   `lib/backend/tensor_reduce_codegen.cpp`, `lib/core/runtime_autodiff.cpp`,
   `inc/eshkol/eshkol.h`, `inc/eshkol/backend/tensor_backward.h`
+- **Attainment reviewed:** 2026-08-25, against `4bf871a0` (conformity audit
+  items c3, c4; `docs/design/AUDIT_2026_08_25_RESOLUTION.md`) — two
+  CRITICAL findings below, kept as the #1 and #2 build items blocking
+  ADR-0000 Stages 5/7/8, nothing deleted.
 
 ---
+
+## 0. Attainment as of `4bf871a0` (2026-08-25)
+
+**CRITICAL — the dense tensor AD node path is unreachable dead code**
+(conformity audit item c4). In `lib/backend/llvm_codegen.cpp`:
+
+```cpp
+:32059  BasicBlock* after_matmul_compute = nullptr;
+:32060  if (autodiff_) {
+:32061      GlobalVariable* ad_mode = ctx_->adModeActive();
+:32062      if (ad_mode) {
+:32066          after_matmul_compute = BasicBlock::Create(...);
+...
+:32225  GlobalVariable* ad_mode = ctx_->adModeActive();
+:32226  if (autodiff_ && ad_mode && !after_matmul_compute) {   // unsatisfiable
+:32267      Value* ad_node = autodiff_->recordADNodeTensor(24 /* AD_NODE_MATMUL */, ...);
+```
+
+`after_matmul_compute` is non-null exactly when `autodiff_ && ad_mode`, so
+the guard at `:32226` can never be true. `recordADNodeTensor`
+(`autodiff_codegen.cpp:2615`) has **zero live callers** anywhere in the
+compiler. What runs instead is the `M×N×K` scalarizing loop at
+`:32100-32190`, emitting `2·M·N·K` `recordADNodeBinary` calls per matmul.
+`conv2d`, elementwise tensor arithmetic (which additionally reuses
+**scalar** op IDs for tensor ops, in violation of §3.1 below), and
+reductions scalarize identically. This is the single thing both AD
+proposals (this document and `0002-ad-alt-architect.md`) agree is the
+whole point — unchanged seven weeks after being identified in ADR-0000
+§5. **BUILD ITEM, #1 priority:** restructure `llvm_codegen.cpp:32226` so
+the dense `recordADNodeTensor` path is the AD path and the scalarizing
+loop is the fallback. This blocks ADR-0000 Stages 7-8's gate
+(`scalar_ad_nodes_from_matmul == 0`) and any tensor-training performance
+claim.
+
+**CRITICAL — `finite_difference_evals == 0` is a vacuous gate on the LLVM
+backend** (conformity audit item c3). `eshkol_ad_count_fd()`
+(`lib/core/runtime_autodiff.cpp:51`) has **zero callers** anywhere in
+`lib/`, `inc/`, or emitted IR. The Stage-1 acceptance assertion
+`(= (ad-finite-difference-evals) 0)` (`tests/ad/one_pass_gradient_test.esk:89`)
+is therefore true by construction and proves nothing — the counter is
+structurally incapable of being nonzero. The VM's separate counter *is*
+wired (`vm_native.c:13574`, `:13647`), which is how the VM's own FD paths
+(`divergence`/`curl`) were found in the first place. **BUILD ITEM, #2
+priority:** call `eshkol_ad_count_fd()` from every remaining FD site so
+the assertion becomes real; expect it to then *fail* until the VM's
+`divergence`/`curl` are converted off central differences. Blocks
+ADR-0000 Stage 1's gate and Stage 5's exit criterion.
+
+Both items are cited from `ROADMAP.md`'s "ADR-0000 stage attainment"
+section and from `docs/design/adr/0000-unified-trajectory.md` §0.
 
 ## 1. Context
 

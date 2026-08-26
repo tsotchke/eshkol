@@ -2,11 +2,51 @@
 
 - Status: Proposed
 - Date: 2026-07-09
+- Attainment reviewed: 2026-08-25 (see "0. Attainment" below)
 - Decision owners: Eshkol maintainers
 - Supersedes: none (this document sequences, it does not replace, ADRs 0001-0009)
 - Related: ADRs 0001 (OALR), 0002 (AD, two competing proposals), 0003 (codegen/VM
   parity), 0004 (types), 0005 (lambda foundations / programs-as-weights), 0006
   (language/modules), 0007 (performance), 0008 (tooling), 0009 (DBSP/incremental)
+
+---
+
+## 0. Attainment as of `4bf871a0` (2026-08-25)
+
+Added by the 2026-08-25 conformity-audit resolution pass
+(`docs/design/AUDIT_2026_08_25_RESOLUTION.md`). This is a statement about
+**present attainment, not a retraction of the plan below** — every stage
+stays as tracked, targeted work; nothing here is deleted or softened.
+
+**Tally: 0 of 14 stages SATISFIED, 2 PARTIAL (Stage 1 ~30%, Stage 5 ~35%),
+12 NOT STARTED.**
+
+| Stage | Release | Theme | Attainment | Key missing/present artifacts |
+|---|---|---|---|---|
+| 1 | v1.3.3a | Instrumentation + identity substrate | PARTIAL (~30%) | Present: `eshkol_memctx_current`/`eshkol_current_arena`, `EshkolADCounters` (5/6 fields). Missing: `arena_tape_zero_gradients`, `ESHKOL_AD_STRICT`, wired LLVM FD counter (see 0002-ad-staged-dense-kernels.md's attainment note), `scalar_ad_nodes`/`tensor_ad_nodes` split, `SourceSpan`/`Diagnostic v1`. Gate not meetable: `eshkol_current_arena` still returns `__global_arena` under `s_parallel_depth != 0`. |
+| 2 | v1.3.3b | Binding resolution + interned type terms | NOT STARTED | `BindingId`, `NodeId`, `NominalTypeId`/`TypeRef`, `Dyn`, `value_and_grad`: zero hits. Imports still lower to value-copying `define` aliases (see 0006-language-conformance-modules.md's attainment note). |
+| 3 | v1.4.0 | Resource-sound systems profile | NOT STARTED | No `Region`/`Cap`/`Own`/`Borrow` type constructors, no `FlowEnv`. No `ProperTailVerifier`. |
+| 4 | v1.4.1 | OALR ABI v2 + portable tail transfer | NOT STARTED | `ESHKOL_MEMORY_ABI_V2`: zero hits. Caps still 8 args/8 captures. |
+| 5 | v1.5.0 | DBSP library + exact AD complete + native PGO | PARTIAL (~35%) | Present: `lib/core/dbsp.esk`, the one fully-delivered ADR slice. Missing: dense elementwise/broadcast backward, `value_and_grad`, PGO Phase 1. Gate not enforced: `scripts/run_dbsp_gate.sh` has zero callers; `finite_difference_evals == 0` is vacuous on LLVM (see 0002-ad-staged-dense-kernels.md's attainment note) and false on the VM. |
+| 6 | v1.5.1 | DBSP circuits + resident sessions | NOT STARTED | No circuit builder, `dbsp-step!`, resident sessions, root tables. |
+| 7 | v1.6.0 | DBSP aggregates + staged AD ABI | NOT STARTED | `eshkol_compile_staged_value_grad`, `EshkolKernelStatus`: absent. Gate `scalar_ad_nodes_from_matmul == 0` unmeetable while the dense-AD-node guard (see 0002-ad-staged-dense-kernels.md's attainment note) is unreachable. |
+| 8 | v1.6.1 | DBSP traces + staged scratch plan | NOT STARTED | No sorted batches, no scratch/kernel memory plan. |
+| 9 | v1.7.0 | Recursive IVM + staged optimizer + capsule foundations | NOT STARTED | No nested-clock fixed points; program embeddings still name-hashed random. |
+| 10 | v1.8.0 | `core.memory` as Z-set + resident recurrent AD | NOT STARTED | `grep -n "zset\|dbsp\|delta" lib/core/memory.esk` is empty; `dL_dstate` exists but nothing chains it through time. |
+| 11 | v1.8.1 | Resident-agent circuit pilot + closed-world WPO | NOT STARTED | WPO does not exist in any form; no LTO/ThinLTO. |
+| 12 | v1.9.0 | `IncrementalizePass` + language-complete proof features | NOT STARTED | `differentiate` is a plain symbolic-`diff` alias. No refinements/effects/rows/higher-rank (see 0004-type-system-trajectory.md's attainment note). |
+| 13 | v1.9.1 | Checkpoint/restart + session protocol + debugger | NOT STARTED | No tick-barrier checkpoint, no DAP. |
+| 14a | v1.9.2 | Spill tier + reflective self-modification | NOT STARTED | No file-backed spill, no plastic adapters. |
+| 14b | v2.0 | Unified `differentiate` + quantum + training-grade | NOT STARTED for ADR content | Quantum *capabilities* shipped v1.3.3/v1.3.4 (Moonlab gates, VQE, CHSH) are real value, but `QRegion`, `QReg<n>`, Lean kernel export, and unified `differentiate` with `numeric`/`incremental` interpretations are all absent. |
+
+The DAG roots matter more than the raw count: ADR-0000 §3 lists six roots
+that "may proceed in parallel," and everything downstream waits on them.
+One (`core.dbsp`) is done; one (0007 Phase 0) is ~20% done; the remaining
+four (0002 Phase A, 0001 Phase A, 0006 slices 1-2, 0008 M0) are
+partial-to-absent. Every one of the twelve NOT STARTED stages is blocked
+behind a root that has not landed. Two CRITICAL implementation defects
+(both in AD) block Stages 5, 7, and 8 specifically — detailed in
+`docs/design/adr/0002-ad-staged-dense-kernels.md`'s own attainment section.
 
 ---
 
@@ -227,6 +267,52 @@ is the gate, not the label.
   `__global_arena` race under TSAN; the compiler and a test client resolve an
   identical module graph; Z-set reference fixtures (insert / delete / duplicate /
   cancellation / canonical serialization) are byte-stable across regeneration.
+
+#### Stage 1 attainment — phase A of the identity substrate has landed
+
+This subsection records what is in the tree against the stage above. It adds
+evidence; it does not narrow the stage. Everything the stage asks for that is
+not listed as landed is still owed.
+
+**Landed** (`inc/eshkol/frontend/node_identity.h`,
+`lib/frontend/node_identity.cpp`):
+
+- `NodeId` — a stable, dense, tagged identity minted by the parser for every
+  node it gives a location to, carried on `eshkol_ast_t::node_id` as a 4-byte
+  key only, with the payload out of line exactly as §4.2 of ADR-0008 requires
+  during the v1.x migration.
+- `SourceSpan` — the first of the three columns, as a real side table.
+  Top-level forms carry a measured *extent*; inner nodes are points.
+- One consumer moved off its ad-hoc mechanism: the LLVM codegen dispatcher
+  resolves the file, line and column of its diagnostics through
+  `NodeId -> SourceSpan`, falling back to the node's own fields for nodes the
+  substrate does not know. Emitted locations are unchanged — the substrate is
+  additive — but a node's file no longer depends on the traversal that
+  reached it.
+- A number: `scripts/run_node_identity_gate.py` reports substrate coverage at
+  that consumer as an ICC `runtime_event` trace on a monotonic floor, graded by
+  the `adr0000-s1-identity` oracle. First reading 99.49%, floor 99.48%.
+
+**Still owed by Stage 1**, each in its own slice and none of them half-built:
+
+- The `BindingId` column — ADR-0006 slices 1-2 (sequenced into Stage 2).
+- The `TypedExprInfo` column — ADR-0004 spine part 1 (sequenced into Stage 2).
+  Both must key on the *same* `NodeId`; that constraint is now expressible,
+  because the key exists.
+- ADR-0008 M0 proper: `Diagnostic v1`, the semantic-catalog seed, the module
+  resolver extracted from `eshkol-run` behind a shared API, the LLVM-free
+  analysis target, byte-offset canonical spans (the current reader strips line
+  comments before tokenizing, so a token offset is not a file offset and byte
+  spans recorded today would be wrong rather than merely absent), and the
+  expansion-origin table — whose absence is exactly what the coverage gate's
+  ~0.5% of unresolved nodes is made of.
+- The 0002 Phase A, 0001 Phase A, 0007 Phase 0 and 0009 contract-freeze
+  tranches, and the stage gate's counter, region and Z-set clauses.
+
+The risk-1 falsifier — the cross-consumer fixture in which compiler, LSP, docs
+and REPL report an identical identity and span for the same source — is still
+not green, and cannot be until `SymbolId`/`ModuleId` exist. It is, however, now
+*expressible* for the span half, which it was not before.
 
 ### Stage 2 — v1.3.3b: "Binding resolution and interned type terms"
 

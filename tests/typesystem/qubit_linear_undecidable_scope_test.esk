@@ -1,0 +1,38 @@
+;; Type System Test: the UNENFORCED boundary is announced, not silently assumed
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: is not statically decidable here
+;; EXPECT-STDERR: use-exactly-once is NOT enforced for it
+;; EXPECT-STDERR: a named let loop body that may run any number of times
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: was consumed more than once
+
+;; This fixture pins BOTH halves of the honest claim: a program the analysis
+;; cannot rule on must still COMPILE (no false rejection), AND the compiler must
+;; SAY that no-cloning is not enforced for that binding, so the boundary shows
+;; up in the build log and cannot quietly widen or vanish.
+;;
+;; It used to carry a `cond`, because `cond` was outside the decidable fragment.
+;; It is inside it now -- `cond`, `case`, `when`, `unless`, `do`, `guard`,
+;; `match` and `set!` are all walked, and the legal single-use `cond` that used
+;; to live here has moved to qubit_linear_cond_branches_ok_test.esk, where it is
+;; asserted to compile with NO diagnostic at all.
+;;
+;; What remains undecidable, and is the shape below: a LOOP. A named `let`'s
+;; body runs an unknown number of times, so "how many times is `q` used along a
+;; single path" is not a question with an answer -- one use in the body is one
+;; use per iteration, and the trip count is a runtime fact. Charging it as one
+;; would miss a clone; charging it as two would reject a loop that runs once.
+;; Refusing to rule is the only honest verdict, and it is BI-2 (loop-carried
+;; linear accounting) that will replace it. Note the loop is only undecidable
+;; because it MENTIONS `q`: a loop that does not is charged zero uses whatever
+;; its trip count, which is what qubit_linear_do_loop_ok_test.esk pins.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (loop-over (n : Int) (q : Qubit))
+  (let repeat ((i 0))
+    (if (< i n)
+        (begin (h q) (repeat (+ i 1)))
+        i)))
+(display "a loop body is outside the enforced fragment")
+(newline)

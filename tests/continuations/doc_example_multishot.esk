@@ -1,7 +1,7 @@
 ;; Exact example from docs/reference/language/continuations.md: a continuation
 ;; captured at top level, saved, and re-invoked until a counter runs out.
 ;;
-;; This is a REGRESSION TEST for ledger SW-52. The bytecode VM used to print
+;; This is a REGRESSION TEST for ledger SW-61. The bytecode VM used to print
 ;; "1" and then an unbounded stream of "2", never terminating: a continuation
 ;; snapshotted and restored the whole operand stack, and because the VM binds
 ;; every top-level define to an operand-stack slot, re-entry rolled `n` back to

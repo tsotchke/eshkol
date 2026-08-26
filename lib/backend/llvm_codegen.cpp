@@ -6,6 +6,7 @@
  */
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
+#include <eshkol/frontend/node_identity.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
@@ -659,16 +660,36 @@ static const std::string& sourceTextForFile(const std::string& path) {
     return g_source_text_by_file.emplace(path, std::move(text)).first->second;
 }
 
-/* Make a top-level form's originating file the ambient source context for the
- * duration of its codegen, restoring the previous one on the way out. Nodes with
- * no provenance (every inner node) and forms from the ambient file itself are a
- * no-op, so the cost on the hot path is one integer compare. */
+/* Id of the file `g_source_filepath` currently names, or 0 when the ambient
+ * context did not come from an interned file. Exists so ScopedAstProvenance
+ * can answer "same file?" without resolving the id to a string.
+ *
+ * This became load-bearing when the node-identity substrate started supplying
+ * a file for EVERY node rather than only for top-level forms: the string
+ * resolution it replaces takes a process-wide mutex, and running that once per
+ * AST node instead of once per top-level form would have made a correctness
+ * improvement pay for itself in contention. Now the common case really is the
+ * one integer compare the class always claimed. */
+static uint32_t g_source_file_id_active = 0;
+
+/* Make a form's originating file the ambient source context for the duration
+ * of its codegen, restoring the previous one on the way out. Nodes with no
+ * provenance and nodes from the ambient file itself are a no-op, so the cost
+ * on the hot path is one integer compare. */
 class ScopedAstProvenance {
 public:
     explicit ScopedAstProvenance(uint32_t source_file_id) {
         if (source_file_id == 0) return;
+        if (source_file_id == g_source_file_id_active) return;
         const char* name = eshkol_source_file_name(source_file_id);
-        if (!name || !*name || g_source_filepath == name) return;
+        if (!name || !*name) return;
+        if (g_source_filepath == name) {
+            // Same file under a different route in. Record the id so the next
+            // node from this file settles on the integer compare above instead
+            // of resolving the name again.
+            g_source_file_id_active = source_file_id;
+            return;
+        }
         // Resolve the text BEFORE rebinding g_source_filepath: sourceTextForFile
         // short-circuits on `path == g_source_filepath` to reuse the ambient
         // text, so assigning the new path first made that test trivially true
@@ -678,20 +699,24 @@ public:
         std::string text = sourceTextForFile(std::string(name));
         saved_path_ = std::move(g_source_filepath);
         saved_text_ = std::move(g_source_text);
+        saved_file_id_ = g_source_file_id_active;
         active_ = true;
         g_source_filepath = name;
         g_source_text = std::move(text);
+        g_source_file_id_active = source_file_id;
     }
     ~ScopedAstProvenance() {
         if (!active_) return;
         g_source_filepath = std::move(saved_path_);
         g_source_text = std::move(saved_text_);
+        g_source_file_id_active = saved_file_id_;
     }
     ScopedAstProvenance(const ScopedAstProvenance&) = delete;
     ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
 private:
     std::string saved_path_;
     std::string saved_text_;
+    uint32_t saved_file_id_ = 0;
     bool active_ = false;
 };
 
@@ -2215,6 +2240,7 @@ public:
         function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
         function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
         function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
+        function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
         function_return_types["ad-counters"] = BuiltinTypes::List;
         function_return_types["temp-directory"] = BuiltinTypes::String;
         function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
@@ -3025,6 +3051,29 @@ public:
                         // Non-op top-level forms (literals, variables, etc.)
                         type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                     }
+                }
+
+                // A linearity violation is fatal in EVERY mode but --unsafe.
+                // Checked before the --strict-types branch below because it is
+                // a different kind of finding: not "the checker could not
+                // convince itself this is well-typed" (which gradual typing
+                // downgrades to a warning by design) but "the checker proved
+                // this program violates a guarantee the type advertises". The
+                // language guide, the specification, RELEASE_NOTES and the
+                // public announcement all state that a linear `Qubit` makes
+                // no-cloning a compile-time TYPE ERROR; that is only true if
+                // the compile stops and no artifact is written. Same discipline
+                // v1.3.4 established for --strict-types just below: refuse
+                // codegen outright rather than emit a binary for a program
+                // already rejected, so nothing downstream can trust $? or the
+                // existence of the output and certify a clone.
+                if (type_checker.hasLinearityViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu linearity violation(s) detected "
+                                 "(linear types are use-exactly-once)",
+                                 type_checker.linearityViolations());
+                    eshkol_error("Refusing to generate code for a program that "
+                                 "violates linear (no-cloning) typing");
+                    return std::make_pair(nullptr, nullptr);
                 }
 
                 // Report accumulated type error summary
@@ -10803,25 +10852,60 @@ private:
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
 
+        // ADR-0000 Stage 1: resolve this node's location through the
+        // NodeId -> SourceSpan substrate rather than by reading location
+        // fields off the node.
+        //
+        // This is the first consumer moved onto the substrate, and it is the
+        // diagnostics path on purpose: it is where a location is either right
+        // or actively misleading, and it is the path ESH-0364 and ESH-0365
+        // both landed on. What changes is WHERE the answer comes from. What
+        // does not change is the answer: the span was recorded by the parser
+        // from the same token that set `line`/`column`, so every location this
+        // emits is identical to the one it emitted before — the substrate is
+        // additive, and this consumer proves it is real by depending on it.
+        //
+        // The difference the substrate makes is structural. Today a node's
+        // FILE is knowable only for top-level forms (`source_file_id` is
+        // stamped there and nowhere else) and every inner node borrows the
+        // ambient context of whatever traversal reached it. In the span table
+        // every node the parser stamped carries its own file, so the answer
+        // stops depending on the traversal. The fallback below keeps the
+        // ambient-inheritance behaviour exactly for nodes the substrate does
+        // not know — a node synthesized after parsing, or one carrying a
+        // garbage id the tag check rejected.
+        eshkol_source_span_t span;
+        const bool span_ok = eshkol_node_span_lookup(ast->node_id, &span);
+        if (eshkol_node_identity_stats_enabled()) {
+            eshkol_node_identity_record_lookup(
+                span_ok,
+                span_ok && span.start_line > 0,
+                span_ok && span.has_extent);
+        }
+
         // ESH-0364: adopt this form's originating file as the source context, so
         // `line`/`column` are reported against the file they were measured in.
         // Placed here rather than in the callers because generateLLVMIR walks the
         // top-level array from several loops (externs, function defines, global
         // defines) and createMainWrapper/createLibraryInitFunction walk it again
         // — one scope at the single entry point covers every one of them, and
-        // any future walk, for free. Only top-level forms carry provenance;
-        // inner nodes are 0 and correctly inherit the enclosing form's file.
-        ScopedAstProvenance provenance(ast->source_file_id);
+        // any future walk, for free.
+        ScopedAstProvenance provenance(
+            (span_ok && span.file_id != 0) ? span.file_id : ast->source_file_id);
 
         // Update source location for error context
-        if (ast->line > 0) {
-            current_source_line = ast->line;
-            current_source_column = ast->column;
+        const uint32_t src_line =
+            (span_ok && span.start_line > 0) ? span.start_line : ast->line;
+        const uint32_t src_column =
+            (span_ok && span.start_line > 0) ? span.start_column : ast->column;
+        if (src_line > 0) {
+            current_source_line = src_line;
+            current_source_column = src_column;
             // Mirror into CodegenContext so sub-codegens (e.g. ArithmeticCodegen)
             // can emit a "file:line:col:" prefix on runtime type errors.
             if (ctx_) {
                 ctx_->setCurrentSourceLocation(g_source_filepath,
-                                               ast->line, ast->column);
+                                               src_line, src_column);
             }
         }
 
@@ -16251,6 +16335,7 @@ private:
         if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
         if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
         if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
+        if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
         if (func_name == "ad-counters") return system_->adCounters(op);
         if (func_name == "temp-directory") return system_->tempDirectory(op);
         if (func_name == "prevent-sleep") return system_->preventSleep(op);
@@ -27265,6 +27350,94 @@ private:
                     collectMutualTailCallSites(op->let_op.body, body, self_name);
                     break;
 
+                // ESH-0102b: the six non-`if` conditional forms.
+                //
+                // This walker decides which call sites are OFFERED to the
+                // mutual-TCO lowering in codegenCall; isInTailPosition() then
+                // confirms each offer. Until this fix the walker only descended
+                // through `if` / `begin` / `let`, while isInTailPosition already
+                // understood cond, case, when, unless, and, or — so the ORACLE
+                // was strictly wider than the TRAVERSAL and a mutual tail call
+                // spelled with any of those six forms was never even considered.
+                // It lowered to an ordinary call, grew the native stack one frame
+                // per hop, and died of stack exhaustion (SIGBUS with the fatal-
+                // signal diagnostic) a few million hops in, while the identical
+                // program spelled with `if` ran flat. R7RS section 3.5 makes all
+                // of these tail positions, so this was a conformance defect, not
+                // a missing optimization. The traversal below mirrors, form for
+                // form, the tail rules already encoded in isInTailPosition().
+                //
+                // GUARD_OP is deliberately NOT descended into even though
+                // isInTailPosition() treats its body and handler tails as tail
+                // positions: `musttail` discards the caller frame outright, which
+                // would skip the handler-stack pop that leaving a `guard` owes.
+                // Self-TCO can treat guard bodies as tail because it branches to
+                // a loop header with the handler bookkeeping intact (ESH-0222);
+                // a mutual musttail cannot. See docs/reference/language/tail-calls.md.
+
+                case ESHKOL_COND_OP:
+                    // COND_OP uses call_op: each variables[i] is a clause, itself
+                    // a CALL_OP whose func is the test (NOT tail) and whose vars
+                    // are the clause body (implicit begin). Only the LAST body
+                    // expression of each clause inherits cond's tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_OP ||
+                            clause->operation.op != ESHKOL_CALL_OP ||
+                            clause->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = clause->operation.call_op.num_vars - 1;
+                        collectMutualTailCallSites(
+                            &clause->operation.call_op.variables[last], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_CASE_OP:
+                    // CASE_OP uses call_op: func = key (NOT tail), variables[i] =
+                    // clause CONS(car=datums, cdr=body). The body is a CALL_OP
+                    // whose LAST expression inherits case's tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) {
+                            continue;
+                        }
+                        const eshkol_ast_t* clause_body = clause->cons_cell.cdr;
+                        if (clause_body->type != ESHKOL_OP ||
+                            clause_body->operation.op != ESHKOL_CALL_OP ||
+                            clause_body->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = clause_body->operation.call_op.num_vars - 1;
+                        collectMutualTailCallSites(
+                            &clause_body->operation.call_op.variables[last], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    // when/unless use call_op: variables[0] = test (NOT tail),
+                    // variables[1..] = body (implicit begin). Only the LAST body
+                    // expression is in tail position.
+                    if (op->call_op.num_vars > 1) {
+                        collectMutualTailCallSites(
+                            &op->call_op.variables[op->call_op.num_vars - 1], body, self_name);
+                    }
+                    break;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    // and/or use sequence_op: every operand but the last is a
+                    // (non-tail) short-circuit test; only the LAST operand
+                    // supplies the result and inherits the form's tail position.
+                    if (op->sequence_op.num_expressions > 0) {
+                        collectMutualTailCallSites(
+                            &op->sequence_op.expressions[
+                                op->sequence_op.num_expressions - 1],
+                            body, self_name);
+                    }
+                    break;
+
                 case ESHKOL_LAMBDA_OP:
                     // Don't recurse into nested lambdas
                     break;
@@ -32407,9 +32580,68 @@ private:
             builder->SetInsertPoint(after_matmul_compute);
         }
 
-        // Record on AD tape if autodiff mode is active
+        // ── ADR-0002b dense tensor AD node: PRESENT BUT NOT ENABLED ──────────
+        //
+        // What follows is the dense-node sketch ADR-0002 specifies: ONE
+        // AD_NODE_MATMUL tape node carrying A, B, the result and {M,K,N},
+        // instead of the 2*M*N*K scalar nodes the loop above emits. It has
+        // never executed in a compiled Eshkol program, and the guard that kept
+        // it out said so only by accident.
+        //
+        // The guard used to read `autodiff_ && ad_mode && !after_matmul_compute`.
+        // `after_matmul_compute` is assigned non-null at the top of this block
+        // under exactly `autodiff_ && ad_mode`, so the conjunction was
+        // unsatisfiable and this code was unreachable — while reading like a
+        // live fallback for "the scalarizing path did not install". Reviewers,
+        // ADR readers and the roadmap's Stage-7 gate all took it for a switch
+        // waiting to be flipped. It is not. Measured on this branch, flipping
+        // it does not produce a slower-but-correct gradient or a different
+        // gradient; it SIGSEGVs on the first `(gradient (lambda (x) (tensor-sum
+        // (matmul x c))) ...)`, identically under -r and AOT.
+        //
+        // Three independent things are unfinished, and the crash is only the
+        // first one to fire:
+        //
+        //   1. recordADNodeTensor (autodiff_codegen.cpp) stores NULL into
+        //      field 7 (`tensor_gradient`), commented "allocated during
+        //      backward" — but the reverse pass SELECTS the tensor backward by
+        //      testing field 7 non-null (autodiff_codegen.cpp, "TENSOR GRADIENT
+        //      FAST PATH"). A node this function builds therefore falls through
+        //      to the SCALAR dispatch for op 24 and dereferences its null
+        //      input1/input2. Constructor and consumer each wait for the other.
+        //   2. The dense node produced here is dropped: this block computes
+        //      `ad_node`, sets its params, and then the function returns a
+        //      plain HEAP_PTR tensor. Nothing downstream can find it. The
+        //      input side of that representation does exist
+        //      (extractTensorAndADNode reads an AD-node-tagged tensor operand),
+        //      so only the producing half is missing.
+        //   3. Under AD the scalarizing path leaves AD-node POINTERS in the
+        //      result tensor's elements, which is what tensor-sum and friends
+        //      consume. A dense matmul writes plain doubles there, so even a
+        //      working dense node would sever the chain at the next tensor op
+        //      until those ops learn the dense representation.
+        //
+        // Nothing on the compiled path ever sets `tensor_gradient`; the only
+        // writers are the qLLM bridge C entry points (lib/bridge/qllm_bridge.cpp)
+        // and the backward rules themselves. So eshkol_tensor_backward_dispatch
+        // is likewise unreachable from compiled Eshkol today.
+        //
+        // Finishing this is ADR-0002 Position A ("dense resident tape"),
+        // scheduled for v1.6 and unstarted. Until then the deadness is
+        // DECLARED rather than accidental: the block stays compiled and
+        // type-checked so it cannot bit-rot, gated on a named constant that
+        // states the truth instead of a guard that hid it. The scalar node
+        // counts this costs are measured and ratcheted by
+        // tests/ad/matmul_tape_node_count_test.esk, so the day the dense path
+        // lands the drop is provable rather than asserted.
+        //
+        // See docs/design/adr/0002-ad-staged-dense-kernels.md,
+        // docs/design/adr/0000-unified-trajectory.md Stages 7-8, and
+        // .icc/silent-wrong-ledger.yaml SW-48.
+        constexpr bool kDenseTensorADNodesEnabled = false;
+
         GlobalVariable* ad_mode = ctx_->adModeActive();
-        if (autodiff_ && ad_mode && !after_matmul_compute) {
+        if (kDenseTensorADNodesEnabled && autodiff_ && ad_mode) {
             Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
 
             Function* current_func = builder->GetInsertBlock()->getParent();
@@ -41933,6 +42165,11 @@ void eshkol_disable_debug_info(void) {
 void eshkol_set_source_context(const char* filepath, const char* source_text) {
     g_source_filepath = filepath ? filepath : "";
     g_source_text = source_text ? source_text : "";
+    /* The ambient path moved without going through ScopedAstProvenance, so its
+     * memoised id no longer describes it. 0 never equals a real interned id
+     * (they are 1-based), so the next provenance scope re-resolves and
+     * re-memoises rather than trusting a stale match. */
+    g_source_file_id_active = 0;
     eshkol_set_parse_source_context(filepath);
 }
 
@@ -42020,6 +42257,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
         ~RestoreSourceContext() {
             g_source_filepath = path;
             g_source_text = text;
+            g_source_file_id_active = 0;  // see eshkol_set_source_context
             eshkol_set_parse_source_context(parse_path.c_str());
         }
     } restore;
@@ -42029,6 +42267,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
 
     g_source_filepath = source_path ? source_path : "";
     g_source_text = source_text ? source_text : "";
+    g_source_file_id_active = 0;  // see eshkol_set_source_context
     eshkol_set_parse_source_context(source_path);
 
     try {

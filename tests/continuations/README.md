@@ -25,8 +25,8 @@ BUILD_DIR=build scripts/run_continuation_tests.sh
 
 | fixture | what it pins |
 | --- | --- |
-| `doc_example_multishot.esk` | the documented top-level multi-shot example; regression test for SW-52 |
-| `reentry_after_function_return.esk` | re-entry after the capturing frame returned; regression test for SW-51 |
+| `doc_example_multishot.esk` | the documented top-level multi-shot example; regression test for SW-61 |
+| `reentry_after_function_return.esk` | re-entry after the capturing frame returned; regression test for SW-60 |
 | `generator_coroutine.esk` | a generator that captures its return continuation once, inside the producer |
 | `generator_multishot.esk` | a correctly structured generator, re-capturing per request |
 | `amb_backtracking.esk` | McCarthy `amb`: each choice point re-entered once per alternative |
@@ -36,7 +36,7 @@ BUILD_DIR=build scripts/run_continuation_tests.sh
 
 These fixtures were written to settle a documentation dispute, and originally
 sat outside CI because every one of them either crashed (native SIGILL/SIGSEGV,
-ledger SW-51) or hung / produced a wrong transcript (bytecode VM, SW-52) by
+ledger SW-60) or hung / produced a wrong transcript (bytecode VM, SW-61) by
 design — that was the finding. Both defects are fixed, so they are gates now.
 
 Two expectations recorded during that investigation were themselves wrong and
@@ -57,4 +57,4 @@ have been corrected here:
 See `docs/reference/language/continuations.md` for the per-engine account of
 how re-entry is implemented, the ownership rule for regions, and the two
 remaining limits (a VM-only representation limit that fails loudly, and
-SW-53).
+SW-62).

@@ -36,7 +36,7 @@ eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
  * `call/cc` records a setjmp point, but a jmp_buf only names a stack address:
  * once the capturing frame returns and its memory is reused, longjmp'ing back
  * to it resumes on top of whatever now occupies those bytes. That is what made
- * every generator / `amb` / coroutine shape crash on native (SW-51).
+ * every generator / `amb` / coroutine shape crash on native (SW-60).
  *
  * The fix is to give the continuation a durable copy of the frames it needs.
  * At capture we memcpy the live stack — from just below the capture point up

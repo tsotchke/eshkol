@@ -10,7 +10,7 @@
 # produce plausible output in the wrong order or from the wrong extent.
 #
 # These fixtures used to live outside CI because they crashed (native SIGILL /
-# SIGSEGV, ledger SW-51) or hung (bytecode VM, SW-52) by design. Both defects
+# SIGSEGV, ledger SW-60) or hung (bytecode VM, SW-61) by design. Both defects
 # are fixed, so they are gates now.
 #
 # Output is normalised exactly as scripts/run_vm_parity.sh does: strip banner

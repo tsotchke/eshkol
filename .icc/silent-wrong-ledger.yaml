@@ -69,7 +69,27 @@ buckets:
     whenever an accurate guard is buildable.
   PARITY-RATCHET: "Engine divergence already tracked by a shrink-only ratchet gate."
   DOC-DEBT: "Documentation claim versus measured reality; allowlisted or ledgered."
+  VACUOUS-ASSURANCE: >-
+    A gate, assertion, counter or ratchet that is STRUCTURALLY INCAPABLE of
+    failing, so a green result proves nothing about the property it names. Not
+    tag-blocking on its own — the underlying property may well hold — but
+    distinct from DOC-DEBT in the way that matters: DOC-DEBT is a claim nobody
+    checked, whereas this is a claim that WAS checked, greenly, by a check that
+    could not have gone red. The second is worse, because the green result is
+    consumed as evidence and stops anyone looking. An entry closes only when the
+    check has been demonstrated to FAIL under the condition it exists to detect
+    — a recorded red run, not an argument that it would go red.
   IN-FLIGHT: "Has an open PR or an active fix lane at the time of this cut."
+  VACUOUS-ASSURANCE: >-
+    A check that was green (or structurally could only ever be green) while
+    incapable of ever going red for the failure it exists to catch — the check
+    ran, reported success, and that success asserted nothing, because no input
+    reachable in practice would have made it fail. Distinct from SILENT-WRONG
+    (a wrong ANSWER with no diagnostic): here the diagnostic infrastructure
+    itself is the defect. Not tag-blocking by default, but every entry must
+    name the exact mechanism that made the check incapable of failing and the
+    fix that gave it a real failure mode, with that fix's own red-proof as
+    closure evidence — closing by assertion is forbidden, same as SILENT-WRONG.
 
 entries:
 
@@ -3262,6 +3282,111 @@ entries:
       in place of `with-region`, confirming it has nothing to do with
       regions — it is purely a function-body-size-driven upvalue count.
 
+  - id: SW-50
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: fixed
+    closed_at: "73cc7cbb"
+    closed_by: "branch feat/s4-abi-tail (ADR-0000 Stage 4)"
+    note: >-
+      Filed as SW-50, not SW-46: ids SW-46 through SW-49 are taken or reserved
+      by the in-flight PRs #466 / #473 / #474 at the time of filing, and this
+      branch is cut from origin/master 73cc7cbb where the highest id present is
+      SW-45. Verified next-free with `grep -o 'id: SW-[0-9]*b*'
+      .icc/silent-wrong-ledger.yaml | sort -V | tail -3`.
+      Bucket is LOUD-ERROR, not SILENT-WRONG: the defect crashes with the
+      runtime's fatal-signal diagnostic and a non-zero exit, so it never
+      returned a wrong value. It is filed anyway because it is an R7RS section
+      3.5 conformance defect (proper tail calls MUST run in constant space),
+      and because its shape — an analysis whose ORACLE was wider than its
+      TRAVERSAL — is the reusable lesson.
+    title: "Mutual tail recursion spelled with cond/case/when/unless/and/or was not tail-call optimized and exhausted the stack"
+    repro: >-
+      Two mutually tail-recursive procedures, written with `cond` instead of
+      `if`, driven past a few million hops:
+      `(define (ping n acc) (cond ((= n 0) acc) (else (pong (- n 1) (+ acc n)))))`
+      `(define (pong n acc) (cond ((= n 0) acc) (else (ping (- n 1) (+ acc n)))))`
+      `(display (ping 5000000 0))`.
+      The byte-identical program with `if` in place of `cond` is the control and
+      runs flat. Same result for `when`, for `(or #f …)`, and for a 3-cycle
+      written with `cond`. Committed as the depth-parametric probes
+      tests/recursion_depth/generated/rec_mutual_tail_cond_d*.esk and
+      rec_mutual_tail_forms_d*.esk (generator: scripts/gen_recursion_depth.py).
+    observed: >-
+      exit 138 (SIGBUS, 128+10) on arm64-apple-darwin24.1.0, with the runtime's
+      fatal-signal handler printing "[Eshkol] fatal signal: SIGBUS (bus error)
+      … this is most likely a stack overflow (recursion too deep)". Measured
+      ceiling: the cond/when/or/3-cycle spellings passed at 500,000 hops and
+      died between 500,000 and 5,000,000, while `if` passed 5,000,000. The
+      difference is visible directly in the emitted IR for the same program
+      (`eshkol-run --dump-ir -O0`): `musttail call %eshkol_tagged_value @pong`
+      for the `if` spelling versus a plain `call %eshkol_tagged_value @pong`
+      — not even a `tail` hint — for the `cond` spelling.
+    correct: >-
+      R7RS section 3.5 makes the selected `cond`/`case` clause, the `when`/
+      `unless` body and the last operand of `and`/`or` tail positions exactly as
+      much as the branches of `if`. A mutual tail call must therefore run in
+      constant stack in all six spellings, not only in `if`.
+    root_cause: >-
+      Two collaborating functions in lib/backend/llvm_codegen.cpp disagreed
+      about which forms have tail positions, and nothing made them agree.
+      collectMutualTailCallSites() is the WALKER that offers candidate call
+      sites to the mutual-TCO lowering in codegenCall; isInTailPosition() is the
+      ORACLE that confirms each offer. The oracle already handled COND_OP,
+      CASE_OP, WHEN_OP, UNLESS_OP, AND_OP, OR_OP and GUARD_OP (and had
+      handled cond and guard since ESH-0211 / ESH-0222 respectively), but the
+      walker's switch descended only into CALL_OP("if"), CALL_OP("begin"),
+      IF_OP, SEQUENCE_OP and the four LET forms, with `default: break` swallowing
+      everything else. A tail call sitting in a cond clause was therefore never
+      inserted into mutual_tail_call_sites_ at all, so codegenCall's
+      `mutual_tail_call_sites_.count(op)` guard failed and the site fell through
+      to the ordinary-call path — one native frame per hop. The self-tail path
+      was unaffected because it uses a different walker
+      (TailCallCodegen::allSelfCallsInTailPosition), which DOES handle all six;
+      that asymmetry is why the same six spellings TCO'd fine for self recursion
+      (documented as fixed in v1.3.3-evolve) and silently did not for mutual
+      recursion.
+    fix: >-
+      collectMutualTailCallSites() now descends into COND_OP, CASE_OP, WHEN_OP,
+      UNLESS_OP, AND_OP and OR_OP, mirroring form for form the tail rules
+      isInTailPosition() already encodes. GUARD_OP is deliberately still not
+      descended into, and the reason is recorded at the site: `musttail`
+      discards the caller frame outright, which would skip the handler-stack pop
+      that leaving a `guard` owes. Self-TCO can treat a guard body as tail
+      because it branches to a loop header with that bookkeeping intact
+      (ESH-0222); a mutual musttail cannot.
+    evidence: >-
+      Two new depth-parametric kinds in scripts/gen_recursion_depth.py, run by
+      scripts/run_recursion_depth.sh (pillar P6b) on BOTH the JIT and AOT lanes:
+      `mutual_tail_cond` (2-cycle spelled with cond) and `mutual_tail_forms`
+      (4-cycle that routes its tail call through a DIFFERENT form at each hop —
+      cond, then when, then or, then case — so a regression in any single form
+      fails the gate). Both ladders are 500,000 / 5,000,000 / 100,000,000 and
+      all cells are EXPECT pass, because a proper tail call is required to be
+      unbounded: a CLEAN-LIMIT in these cells is the regression, which is the
+      deliberate calibration difference from the `non_tail` kind. Measured after
+      the fix: 100,000,000 hops, correct triangular-number value, exit 0, ~3-5 s,
+      on JIT and AOT alike.
+    caught_by: [adr-0000-stage-4-review, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, recursion-depth-parametric]
+    notes: >-
+      recursion-depth-parametric is in missed_by even though it is the harness
+      that now catches this: its mutual_tail2 / mutual_tail3 kinds were both
+      written with `if`, so the pillar had a 5,000,000-hop cell for the one
+      spelling that worked and no cell at all for the five that did not. A
+      depth sweep that only exercises the canonical spelling of a construct
+      measures the spelling, not the construct.
+      NOT fixed by this entry, and now documented in
+      docs/reference/language/tail-calls.md rather than left to be discovered:
+      mutual tail calls still fall back to a bounded ordinary call when the two
+      procedures have DIFFERING SIGNATURES (musttail requires identical
+      parameter counts and types), when the call is INDIRECT (through a
+      procedure value rather than a name), when an argument points into the
+      caller's frame (a forwarded stack-allocated closure), through `guard`, and
+      on non-AArch64 targets where LLVM 21 refuses aggregate-return musttail
+      (ESH-0171). Each of those was measured on this branch at 5,000,000 hops
+      and each fails LOUDLY with the same fatal-signal diagnostic.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01
@@ -3517,6 +3642,88 @@ entries:
       it makes the project look worse than it is and, more dangerously, trains readers to
       discount the 25 that are still real. Re-running found/ belongs in the parity gate.
 
+  - id: SW-53
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/linearity-complete"
+    closed_by: "branch feat/linearity-complete"
+    family: engine-parity/type-system
+    title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
+    repro: >-
+      Any program with a linear annotation that clones the value, e.g.
+      tests/typesystem/qubit_no_cloning_default_test.esk —
+      `(define (bad-clone (q : Qubit)) (cons q q))`. Run it two ways:
+      `build/eshkol-vm-standalone-test <file>` (VM source execution) and
+      `build/eshkol-run <file> --profile hosted-vm --emit-eskb <out.eskb>`.
+      The SAME binary refuses the SAME program on the LLVM path (exit 1, no
+      artifact).
+    observed: >-
+      pre-fix (measured at 15f9b42a, the head of PR #471): the VM standalone
+      compiled the program, executed it, printed its output and exited 0, with
+      no linearity diagnostic of any kind on stdout or stderr; --emit-eskb
+      wrote a complete .eskb and exited 0. Meanwhile the native path exited 1
+      and wrote nothing for the identical source. So the answer to "does this
+      program type-check" depended on which engine you asked, and the VM's
+      answer was silent.
+    correct: >-
+      A linear (no-cloning) violation is a compile-time type error, and a type
+      error is a property of the PROGRAM, not of the engine that happens to be
+      compiling it. Both engines must refuse the program, neither may write an
+      artifact for it, and both must say why.
+    root_cause: >-
+      The linear judgment lives in the HoTT type checker
+      (lib/types/type_checker.cpp), which is constructed only inside
+      llvm_codegen.cpp's generation path. The VM reaches its compiler through
+      lib/backend/eshkol_vm.c -> lib/backend/vm_compiler.c, which has its own
+      independent S-expression reader producing `Node*` — a different AST from
+      `eshkol_ast_t` entirely — and never constructs a TypeChecker at all.
+      There was no place on the VM route where the rule could have been
+      consulted, so it was not a check that failed; it was a check that did not
+      exist on that engine.
+    fix: >-
+      The rule was NOT reimplemented over `Node*`, which would have produced
+      two judgments that drift. lib/types/linear_check_bridge.cpp exposes
+      eshkol_linear_check_source(), which drives the REAL front end — the same
+      parser, the same macro expander, the same TypeChecker — over the same
+      source text and returns the real verdict. eshkol_vm.c calls it before
+      compiling, at both chokepoints (compile_and_run and
+      emit_eskb_with_options), and refuses the program when it reports a
+      violation. It is reached through an installable hook
+      (eshkol_vm_install_linear_check, inc/eshkol/backend/vm.h) rather than a
+      direct call because eshkol_vm.c ships inside libeshkol-runtime.a, which
+      is linked into every program the compiler emits and must not drag in the
+      C++ type checker; the drivers that have the front end linked install it.
+      A build with nothing installed REFUSES any source carrying a linear
+      annotation rather than accepting it unchecked. The probe is gated on the
+      source actually carrying a linear annotation, so programs that do not opt
+      into linear types are untouched.
+    evidence: >-
+      tests/typesystem/qubit_linearity_engine_parity_gate.sh, wired into ctest
+      as `qubit_linearity_engine_parity_gate`. It pins all four corners, not
+      just the rejection: VM source execution rejects a clone (nonzero exit, a
+      linearity diagnostic, and the program body never runs) AND accepts a
+      correct linear program (exit 0, its output present); --emit-eskb rejects
+      a clone (nonzero exit AND no .eskb written) AND accepts a correct program
+      (exit 0 AND a .eskb written). Pinning acceptance is what stops a "fix"
+      that simply refuses every qubit program from passing.
+    caught_by: [pr-471-vm-parity-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, run_typesystem_tests]
+    note: >-
+      Originally filed as SW-46, independently of the SW-47 entry's note below
+      recording that id as reserved for the in-flight AD carrier-wave lane
+      (feat/ad-structural-gate, PR #487). Both #471 and #487 landed on master
+      claiming SW-46, invisible to review since a textual merge does not
+      conflict on two branches picking the same next-free id. Renumbered to
+      SW-53 (next free after SW-52) on rebase, since #487's entry carries three
+      external cross-references (.icc/architecture-model.yaml,
+      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) and this
+      one has none.
+    notes: >-
+      Filed by PR #471 as build item BI-5 after measuring it on both VM entry
+      points. It is the same class the project refuses elsewhere — a guarantee
+      that holds on one engine and silently does not on the other — so it was
+      fixed rather than documented.
+
   - id: DD-11
     bucket: DOC-DEBT
     status: open
@@ -3550,13 +3757,13 @@ entries:
       regression test still passes on native JIT and AOT (`ALL PASS`,
       exit 0) — the fix holds, the doc's framing of it as unresolved is
       stale; (2) call/cc re-entry is genuinely single-shot on native
-      (SW-51) and differently, non-conformantly broken on the VM (SW-52) —
+      (SW-60) and differently, non-conformantly broken on the VM (SW-61) —
       neither engine delivers what continuations.md claimed.
     resolution: >-
       All five docs corrected to state the measured per-engine behavior
       precisely (native: escape-only via setjmp/longjmp, single-shot;
       bytecode VM: attempts a stack-snapshot re-entry mechanism but does not
-      correctly deliver multi-shot semantics either, see SW-52) rather than
+      correctly deliver multi-shot semantics either, see SW-61) rather than
       the doc claiming more than either engine delivers. The ESH-0080 note
       is corrected to state it was fixed (commit 47338adb), with a citation,
       instead of describing it as ongoing. The ambition of full multi-shot
@@ -3573,7 +3780,16 @@ entries:
   # the time this branch was cut from origin/master (73cc7cbb); none of those
   # ids exist on this branch's copy of the ledger, so numbering resumes at
   # the next id genuinely free here, per `grep -o 'id: SW-[0-9]*b*' | sort -V`.
-  - id: SW-51
+  - id: SW-60
+    renumbered_from: >-
+      SW-51. Filed as SW-51 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+      SW-51 ("INV-ad-exact-no-finite-differences was green while a central
+      difference shipped in the VM") on master first. Verified
+      SW-60 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
     bucket: LOUD-ERROR
     subtag: structural
     status: fixed
@@ -3619,7 +3835,7 @@ entries:
       because it is the concrete evidence behind the continuations.md
       documentation fix and the BUILD ITEM. `call/cc` remaining escape-only
       is NOT itself the defect — the defect was continuations.md claiming
-      more than native delivers. See SW-52 for the bytecode VM's own,
+      more than native delivers. See SW-61 for the bytecode VM's own,
       differently-shaped defect in the same area.
     resolution: >-
       FIXED by implementing the BUILD ITEM's heap-allocated-stack option. A
@@ -3647,7 +3863,15 @@ entries:
     closed_by: "branch feat/multishot-continuations"
 
   # ───────────────────────── SILENT-WRONG ─────────────────────────
-  - id: SW-52
+  - id: SW-61
+    renumbered_from: >-
+      SW-52. Filed as SW-52 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+      SW-52 on master first. Verified
+      SW-61 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
     bucket: SILENT-WRONG
     status: fixed
     title: "bytecode VM continuation re-invocation replays completed top-level forms — hangs or produces wrong values, no diagnostic, exit 0 (when it exits)"
@@ -3682,12 +3906,12 @@ entries:
     correct: >-
       doc_example_multishot.esk should print "1" "2" "3" "done" and exit 0
       (matches native JIT/AOT, which get this specific shape right — see
-      SW-51's notes on why). generator_coroutine.esk should print
+      SW-60's notes on why). generator_coroutine.esk should print
       "gen1: 1", "gen2: 2", "gen3: 3", "gen4: done".
     cross_engine: >-
       Native JIT/AOT get doc_example_multishot.esk's exact shape right
       (same top-level frame, jmp_buf never invalidated) but SIGILL/SIGSEGV
-      on the other two fixtures (SW-51) — the two engines fail on
+      on the other two fixtures (SW-60) — the two engines fail on
       overlapping but non-identical re-entry shapes; neither delivers
       general multi-shot re-entrant continuations.
     root_cause: >-
@@ -3699,7 +3923,7 @@ entries:
       rest of the top-level program from here" — every top-level form
       after the resume point re-runs, including forms whose side effects
       (mutating resume-k/return-k, printing labels) were already correct
-      the first time. Fixing this is part of the same BUILD ITEM as SW-51
+      the first time. Fixing this is part of the same BUILD ITEM as SW-60
       (a real multi-shot design needs a coherent model of "the rest of the
       program" that both engines implement the same way), not a
       standalone bug in the VM's snapshot/restore mechanics.
@@ -3752,7 +3976,15 @@ entries:
     closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
     closed_by: "branch feat/multishot-continuations"
 
-  - id: SW-53
+  - id: SW-62
+    renumbered_from: >-
+      SW-53. Filed as SW-53 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. feat/linearity-complete landed its own, unrelated SW-53 ("linear
+      Qubit violations") on master first. Verified
+      SW-62 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
     bucket: SILENT-WRONG
     status: open
     title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
@@ -3785,15 +4017,15 @@ entries:
       Closure-captured mutable variables are already boxed on both engines and
       are therefore correct; top-level bindings are correct on both engines
       too (native keeps them outside the stack, and the VM excludes them from
-      the snapshot via the STORE/CONTROL boundary added in SW-52's fix).
+      the snapshot via the STORE/CONTROL boundary added in SW-61's fix).
       The sound fix is assignment conversion: box every `set!`-assigned local
       so the frame holds only immutable values and restoring it cannot roll a
       location back.
     notes: >-
       Pre-existing in the sense that no engine ever handled it, but only
       reachable now that re-entry into a returned frame works at all — on
-      native it previously crashed (SW-51) and on the VM this exact program
-      looped forever (SW-52), so this is a strictly narrower residual of two
+      native it previously crashed (SW-60) and on the VM this exact program
+      looped forever (SW-61), so this is a strictly narrower residual of two
       defects that were both worse. Documented under "Limits" in
       docs/reference/language/continuations.md rather than left implicit.
       Not made LOUD because detecting it needs the same whole-function
@@ -3808,7 +4040,7 @@ entries:
         FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
         where making re-entry work moved behaviour from a loud failure to a
         silently wrong value: on the pre-change build this exact program
-        SIGSEGV'd on native (SW-51) and looped forever on the VM (SW-52); it
+        SIGSEGV'd on native (SW-60) and looped forever on the VM (SW-61); it
         now returns 1 three times where R7RS says 1, 2, 3. Every other shape
         the change touches moved from crash/hang to correct.
         It is waived rather than made loud because neither available way of
@@ -3837,8 +4069,11 @@ entries:
       rebase; by the time this entry closed, SW-54..56 had been claimed by
       PR #466 (fix/v135-correctness-debt) and SW-57/SW-58 by #473
       (fix/resident-rss-longrun) and #483 (feat/tail-transfer-complete)
-      respectively, all landing on master ahead of this branch. Verified
-      SW-59 free against master and all three of those branches at rebase
+      respectively, all landing on master ahead of this branch (merged into it
+      via `git merge origin/master` rather than a linear rebase, once a
+      SW-51/52/53 id collision with master surfaced independently — see
+      SW-60..62 below). Verified
+      SW-59 free against master and all three of those branches at merge
       time (`git show <branch>:.icc/silent-wrong-ledger.yaml | grep 'id: SW-'`)
       before assigning it here.
     title: "native: a continuation captured inside with-region dangles into the region's freed arena on resume (JIT and AOT)"
@@ -3967,3 +4202,498 @@ entries:
       zero behavior change. ctest: 191/191. scripts/run_vm_parity.sh: 188/188.
     closed_at: "4ed8c6894ddd77c30a88cf360c9f8de65b821210"
     closed_by: "branch feat/multishot-continuations"
+
+  # ───────────────────── VACUOUS-ASSURANCE ─────────────────────
+
+  - id: SW-47
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "fix/ad-guarantees-real"
+    closed_by: "branch fix/ad-guarantees-real"
+    family: ad/instrumentation
+    note: >-
+      SW-46 is deliberately NOT used here: it is reserved for the in-flight
+      correctness lane that was open when this entry was filed. SW-45 was
+      already taken by #463 (merged as 8f1ce3e4). Next free id at filing time
+      was verified with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml
+      | sort -V | tail -3`, which returned SW-43/SW-44/SW-45.
+    title: "The no-finite-differences guarantee was enforced by a counter nothing could increment, so `finite_difference_evals == 0` was true by construction"
+    repro: >-
+      On the pre-fix tree: `grep -rn eshkol_ad_count_fd lib/ inc/ exe/ tests/
+      scripts/` returns exactly two lines — the definition at
+      lib/core/runtime_autodiff.cpp:51 and the declaration at
+      lib/core/arena_memory.h:396. Zero call sites. Then run
+      tests/ad/one_pass_gradient_test.esk, whose line 89 asserts
+      `(= (ad-finite-difference-evals) 0)`, and it passes.
+    observed: >-
+      The assertion passed, and could not have done otherwise.
+      __eshkol_ad_counters.finite_difference_evals has exactly one writer,
+      eshkol_ad_count_fd(), and that function had no callers anywhere in the
+      native compiler, its runtime, or emitted IR — so on the native back end
+      the field was pinned at 0 for the lifetime of every process. The
+      executable form of the public claim "exact gradients … no
+      finite-difference fallback anywhere in the gradient path" was therefore a
+      tautology: it would have stayed green if a finite-difference fallback had
+      been added to the gradient path the next day. Demonstrated directly on
+      this branch: with the counter deliberately unwired again, the pre-existing
+      positive gate (scripts/run_one_pass_gradient_gate.sh) still reports
+      "JIT PASS (26 checks) … PASS", while the new negative control fails —
+      evidence at
+      .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+      Compounding it, the ONE real finite-difference site reachable from a
+      compiled Eshkol program — `record-fd-op!` in lib/core/ad/tape.esk, central
+      differences at eps=1e-6, named by ADR-0002 as a site that must increment
+      the counter — reported nothing on either engine, so a program that
+      genuinely did finite differences still read `(ad-finite-difference-evals)`
+      as 0. The counter under-reported real FD work AND could not over-report.
+    correct: >-
+      The counter must be a live instrument: capable of reading nonzero, reading
+      nonzero exactly when finite differences actually run, and returning 0 when
+      they do not. `(= (ad-finite-difference-evals) 0)` must be a measurement of
+      the run, not a property of the build.
+    root_cause: >-
+      The read end shipped without the write end. ADR-0002's migration plan
+      ("add a finite_difference_evals counter incremented at every FD site")
+      was implemented as far as the reader builtins
+      ((ad-finite-difference-evals), (ad-counters)) and the reset, and stopped
+      before any site called eshkol_ad_count_fd(). The three native FD sites the
+      ADR named (autodiff_codegen.cpp gradientHigherOrder / vector-tensor
+      Hessian) were subsequently converted to exact forward-over-forward AD —
+      genuinely good work — which removed the callers-to-be and left the counter
+      looking finished. The fourth named site, tape.esk's `record-fd-op!`, was
+      never wired at all. Nothing failed, because nothing could.
+    fix: >-
+      Added `(ad-note-finite-difference!)` (native fid 2088, arity 0) as the
+      write end of the counter, implemented on BOTH engines — native via
+      eshkol_builtin_ad_note_finite_difference -> eshkol_ad_count_fd()
+      (lib/core/system_builtins.c, lib/backend/system_codegen.cpp,
+      lib/backend/llvm_codegen.cpp), bytecode VM via case 2088 incrementing
+      vm->ad_finite_difference_evals (lib/backend/vm_native.c,
+      lib/backend/eshkol_vm.c). `record-fd-op!` (lib/core/ad/tape.esk) now
+      reports one evaluation per perturbation, so its count equals the extra
+      primal evaluations the backward actually paid for. eshkol_ad_count_fd()
+      thereby acquires its first caller. A stale comment in
+      lib/core/runtime_list_helpers.cpp that described the (now exact)
+      multi-parameter hessian/laplacian/directional-derivative paths as
+      "finite-difference" was corrected in the same pass, so no reader is left
+      believing an FD fallback still exists there.
+    evidence: >-
+      tests/ad/fd_counter_negative_test.esk — 12 checks, the negative control:
+      the counter moves 0 -> 1 -> 3 on explicit reports; a real central-
+      difference backward through `record-fd-op!` over 2 inputs reads back
+      exactly 4 (2 inputs x 2 perturbations) while the gradients it produces are
+      right (d/dx = 3x^2 = 12, d/dy = 2); the shipped assertion form
+      `(= (ad-finite-difference-evals) 0)` evaluates #f in that state; and an
+      exact tape gradient over the same function leaves the counter at 0, so the
+      instrument is not merely always-nonzero. Green on native JIT (12/12),
+      native AOT (12/12) and the bytecode VM. Run by
+      scripts/run_ad_exactness_gate.sh, which pairs it with the positive gate.
+    close_condition_met: >-
+      The check has been demonstrated to go RED under the condition it exists to
+      detect. Removing the two `(ad-note-finite-difference!)` calls from
+      `record-fd-op!` and rebuilding stdlib turns
+      scripts/run_ad_exactness_gate.sh from PASS to FAIL on both engines
+      ("fd-counter JIT FAIL", "fd-counter VM FAIL", "AD exactness gate: FAIL"),
+      while the pre-existing positive-only gate stays green — which is precisely
+      the vacuity this entry records. Log:
+      .worktrees/v135/evidence/ad-real/logs/gate-with-counter-unwired.log.
+    caught_by: [architecture-audit-2026-08-25, icc-find-dead-code]
+    missed_by: [icc-readiness, icc-smoke, ad-adversarial, vm-parity, ctest]
+    notes: >-
+      The bytecode VM's separate counter (vm->ad_finite_difference_evals) WAS
+      wired before this change, at the two VM finite-difference operators
+      (vm_native.c `divergence` on a tensor-returning field, and `curl`, both
+      central differences at h=1e-7). That asymmetry is why the defect survived:
+      the same Scheme name reads two different backing stores, one live and one
+      dead, and no gate compared them. The gate added here runs the negative
+      control on BOTH engines for exactly that reason. The VM's two FD operators
+      are a separate, still-open divergence from the documented "reverse mode"
+      status of divergence/curl and are NOT closed by this entry.
+
+  # ───────────────────── DOC-DEBT (AD architecture) ─────────────────────
+
+  - id: SW-48
+    bucket: DOC-DEBT
+    status: open
+    family: ad/architecture
+    title: "ADR-0002's dense tensor AD node has never executed: the guard admitting it is unsatisfiable, and the node it would build is routed to the scalar backward and crashes"
+    bucket_justification: >-
+      Not SILENT-WRONG: measured on this branch, every matmul gradient is exact
+      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal call,
+      one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE: there
+      was no green check here proving nothing, because ADR-0000's Stage-7 gate
+      (`scalar_ad_nodes_from_matmul == 0`) was never implemented at all — nothing
+      counted the nodes. What diverges is the ARCHITECTURE from the ADRs that
+      schedule it, which is what DOC-DEBT declares ("documentation claim versus
+      measured reality"), read the direction the maintainer requires: the
+      documents are the blueprint and the code has to rise to them.
+    repro: >-
+      Read lib/backend/llvm_codegen.cpp in the matmul lowering. On the pre-fix
+      tree the AD-record block is guarded by
+      `if (autodiff_ && ad_mode && !after_matmul_compute)`, while
+      `after_matmul_compute` is assigned non-null a few lines above under
+      exactly `if (autodiff_) { if (ad_mode) {`. The conjunction is
+      unsatisfiable, so `recordADNodeTensor` — the only producer of a dense
+      AD_NODE_MATMUL — has zero live callers in the compiler. To see what
+      happens if it is reached, change the guard to `if (autodiff_ && ad_mode)`,
+      rebuild, and run
+      `(gradient (lambda (x) (tensor-sum (matmul x c))) (tensor 2 2 ...))`.
+    observed: >-
+      Unreachable in the shipped compiler. When the guard is flipped so it IS
+      reached, the program SIGSEGVs at address 0x8 on the first matmul gradient,
+      identically under `-r` and AOT (backtrace: fault in generated code,
+      `ldp d0, d1, [x19, #0x8]` with x19 = 0 — loading `value` out of a null AD
+      input node). It does not produce a different gradient or a slower correct
+      one; it does not run. Meanwhile every matmul under autodiff records a tape
+      node per scalar multiply-accumulate: measured 33 nodes for 2x2, 100 for
+      3x3, 225 for 4x4, i.e. growth with M*N*K, which is exactly what ADR-0002
+      exists to remove.
+    correct: >-
+      One dense AD node per tensor operation (ADR-0002 §3.1), so tape size
+      scales with the number of tensor ops rather than with scalar element
+      count, and the dense backward kernels in lib/backend/tensor_backward.cpp
+      carry the work.
+    root_cause: >-
+      Three unfinished things, of which the guard is only the most visible.
+      (1) The guard: `!after_matmul_compute` reads as a fallback for "the
+      scalarizing path did not install" but is never true, so the deadness was
+      accidental rather than declared and every reviewer read it as a switch
+      awaiting a flip. (2) recordADNodeTensor stores NULL into AD-node field 7
+      (`tensor_gradient`), commented "allocated during backward" — but the
+      reverse pass SELECTS the tensor backward by testing that same field
+      non-null (autodiff_codegen.cpp, "TENSOR GRADIENT FAST PATH"). Constructor
+      and consumer each wait for the other, so a node this function builds falls
+      through to the SCALAR dispatch for op 24 and dereferences its null
+      input1/input2. That is the crash. Nothing on the compiled path ever sets
+      tensor_gradient; the only writers are the qLLM bridge C entry points
+      (lib/bridge/qllm_bridge.cpp) and the backward rules themselves, so
+      eshkol_tensor_backward_dispatch is likewise unreachable from compiled
+      Eshkol. (3) Even with those fixed, the dense node produced is dropped —
+      the block computes it, sets its params, and then returns a plain HEAP_PTR
+      tensor — and under AD the scalarizing path leaves AD-node POINTERS in the
+      result tensor's elements, which is what tensor-sum and friends consume, so
+      a dense matmul writing plain doubles there would sever the chain at the
+      next tensor op.
+    interim: >-
+      The deadness is now DECLARED rather than accidental: the block is gated on
+      a named `constexpr bool kDenseTensorADNodesEnabled = false` with the three
+      blockers and the crash evidence recorded beside it, and stays compiled and
+      type-checked so it cannot bit-rot. The divergence is now MEASURED:
+      tests/ad/matmul_tape_node_count_test.esk records today's scalar node
+      counts as a shrink-only ratchet (33 / 100 / 225 for 2x2 / 3x3 / 4x4)
+      alongside exactness of the gradients, so the day the dense path lands the
+      drop is provable and a regression that inflates the tape is caught. Run by
+      scripts/run_ad_exactness_gate.sh.
+    close_condition: >-
+      recordADNodeTensor allocates tensor_gradient so its nodes reach the tensor
+      backward; the dense node is returned as an AD-node-tagged tensor value and
+      consumed by the downstream tensor ops; matmul under AD records ONE node;
+      the ratchet ceilings in tests/ad/matmul_tape_node_count_test.esk drop to
+      O(1) per matmul with the gradients unchanged. That is ADR-0002 Position A
+      ("dense resident tape"), scheduled for v1.6 and unstarted.
+    caught_by: [architecture-audit-2026-08-25]
+    missed_by: [icc-readiness, icc-smoke, ad-adversarial, ctest, vm-parity]
+    notes: >-
+      Checked for the same dead-guard SHAPE elsewhere: `!after_*_compute`
+      appears exactly once in the tree. conv2d, batch-norm, layer-norm,
+      attention, elementwise tensor arithmetic and the reductions do not carry a
+      dead dense block — they have no dense block at all, scalarizing through
+      recordADNodeBinary/recordADNodeUnary in live loops. So the count of this
+      bug shape is ONE; the count of tensor ops still scalarizing is all of them.
+
+  - id: SW-49
+    bucket: LOUD-ERROR
+    status: open
+    family: vm/prelude-cache
+    title: "The committed VM prelude bytecode cache is 28 builtins stale, so the WASM REPL cannot see string-length, string-ref, integer? or any c[ad]{3,4}r"
+    repro: >-
+      Build the generator and compare its output's local-name table with the
+      committed one. From the repo root with an existing build/ tree (the
+      recipe in lib/backend/vm_prelude_source.h; the recipe recorded there
+      BEFORE this branch no longer links, which is part of why the drift went
+      unnoticed):
+        cc -O2 -DGENERATE_PRELUDE_CACHE -Iinc -Ilib \
+           lib/backend/vm_prelude_cache.c -o <outside-repo>/gen_prelude \
+           build/libeshkol-runtime.a -lm -lc++ -framework CoreFoundation \
+           -framework CoreGraphics -framework ImageIO -framework Foundation \
+           -framework IOKit -framework Metal -framework Accelerate
+        <outside-repo>/gen_prelude | grep '^static const int prelude_'
+      Then diff the `prelude_local_names[]` arrays.
+    observed: >-
+      Measured at master 4bf871a0. Regenerating from the source tables yields
+      prelude_n_locals = 768; the committed lib/backend/vm_prelude_cache.h says
+      740. Every one of the 28 names the source registers and the cache lacks is
+      a real builtin: cdar, caaar, caadr, cadar, cdaar, cdadr, cddar, cdddr and
+      the sixteen four-letter c[ad]{4}r forms, plus vref, string-length,
+      string-ref and integer?. Zero names go the other way, so this is pure lag,
+      not divergence. emit_builtin_preamble() turns every BUILTINS[] entry into
+      one prelude local, so any addition to that table invalidates the cache;
+      the cache has simply not been regenerated for 28 additions.
+    correct: >-
+      The committed cache must equal the generator's output for the committed
+      sources, so the precompiled prelude exposes exactly the builtins the
+      engine registers.
+    impact: >-
+      Bounded, and NOT tag-blocking: `vm_prelude_cache.h` is only compiled in
+      when ESHKOL_VM_NO_DISASM is defined as a MACRO, which happens in exactly
+      one place — lib/backend/vm_wasm_repl.c. No native lane, no
+      eshkol-vm-standalone-test run and no ctest target loads it (the many
+      ESHKOL_VM_NO_DISASM=1 uses across scripts/ are the ENVIRONMENT variable,
+      which only suppresses disassembly). So the blast radius is the browser
+      REPL, where these names should be expected to fail to resolve. Filed
+      LOUD-ERROR rather than SILENT-WRONG on that basis: an unbound name fails
+      visibly. The runtime symptom has NOT been observed here — this branch has
+      no emscripten toolchain — so the entry claims only what was measured: the
+      name-set difference, which is exact and engine-independent.
+    close_condition: >-
+      Regenerate lib/backend/vm_prelude_cache.h from the committed sources and
+      verify the WASM REPL lane green (scripts/run_wasm_differential.sh /
+      the wasm-execute-diff job), in a change of its own — it rewrites the whole
+      prelude bytecode array and must not ride along with unrelated work. Then
+      add a build-free guard that regenerates and diffs, the same shape as
+      surface-manifest's "manifest matches the source-extracted surface" step,
+      so the cache cannot silently lag again.
+    caught_by: [branch fix/ad-guarantees-real]
+    missed_by: [ci, ctest, vm-parity, wasm-execute-diff, icc-readiness]
+    notes: >-
+      Found while checking whether adding one builtin
+      ((ad-note-finite-difference!), SW-47) required regenerating the cache. It
+      does — and the regeneration surfaced the pre-existing 28-entry lag. This
+      branch deliberately does NOT regenerate: it would bury a one-line AD
+      instrumentation change under a full prelude-bytecode rewrite that no lane
+      here can verify, so the new builtin is simply the 29th name the cache does
+      not carry, consistent with the 28 before it.
+
+  # ──────────────── AD carrier wave (2026-08-25) ────────────────
+  #
+  # One architectural audit, four entries: the defect, the two checks that
+  # were green while it shipped, and the crash found beside it.
+
+  - id: SW-46
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — exact forward-dual curl/divergence in lib/backend/vm_native.c"
+    title: "VM curl is a central difference at h = 1e-7 and returns 1.1e-09 where the curl is exactly zero"
+    repro: "(define (F x y z) (list (* y z) (* x z) (* x y))) (display (curl F (list 1.0 2.0 3.0)))"
+    observed: "#(1.1102230246251565e-09 -3.3306690738754696e-09 0) on build/eshkol-vm-standalone-test"
+    correct: "#(0 0 0) — F is a gradient field, so its curl vanishes identically at every point"
+    cross_engine: >-
+      Not comparable. tests/vm_parity/PARITY.tsv records op:CURL as a gap, so the
+      corpus differential never attempts the comparison, and the native curl
+      operator SIGSEGVs on the same field (booked as LE-12). The defect was
+      therefore invisible to every engine-vs-engine check by construction.
+    observed_after: >-
+      #(0 0 0) exactly, and (ad-finite-difference-evals) reads 0 where it read 6.
+      Measured on the same binary and the same program before and after. Three
+      further fields at the same point: rigid rotation (-y, x, 0) went
+      1.9999999995023998 -> 2; (y^2 z, x z^2, x^2 y) went
+      #(-4.999999990706883 -6.661338147750939e-09 -2.9999999906493713) -> #(-5 0 -3);
+      a transcendental field's divergence was already exact and is byte-identical.
+    fixed_by: >-
+      lib/backend/vm_native.c — case 754 now seeds one forward dual per input
+      variable and reads the tangent of each output component (three closure
+      calls, against the six the difference quotient needed); case 753 drops its
+      finite-difference branch. Both route through the new shared reader
+      vm_ad_field_component_tangent(), so the two operators cannot drift apart
+      in exactness again.
+    evidence: >-
+      Structural: scripts/gate_ad_shared_node_model.py classifies case 753 and
+      754 as `finite-difference` on origin/master and as `vm-dual-forward` after
+      the fix. Behavioural: the ad_vm_curl_divergence_exact ICC smoke probe
+      pins #(0 0 0) and a zero finite-difference counter.
+    caught_by: [architectural-audit-2026-08-25, direct-measurement]
+    missed_by: [vm-parity-differential, icc-smoke, icc-readiness, INV-ad-exact-no-finite-differences]
+    notes: >-
+      A tensor-returning vector field still cannot carry tangents through
+      VmTensor. That shape now raises a named diagnostic instead of falling back
+      to a difference quotient — the ESH-0369 ruling applied to the same class of
+      problem. Closing it needs a tangent-carrying VmTensor; it is recorded as
+      fork_debt.blocked_on in .icc/ad-carrier-manifest.yaml.
+
+  - id: SW-51
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+    title: "INV-ad-exact-no-finite-differences was green while a central difference shipped in the VM"
+    repro: "icc invariants --repo eshkol (INV-ad-exact-no-finite-differences reads PASS at every SHA that contained SW-46)"
+    observed: "PASS, throughout the entire lifetime of the defect"
+    correct: >-
+      The invariant's name asserts that no finite difference backs a derivative.
+      Its mechanism is `kind: dependency-presence`: armed by ESHKOL_DERIVATIVE_OP,
+      it asks only whether one of createDualNumber / makeDual8 / makeDual4 /
+      seedForwardAndPush is PRESENT. All four are native symbols in
+      lib/backend/autodiff_codegen.cpp. Presence of an exact constructor on one
+      engine and presence of a difference quotient on the other are not mutually
+      exclusive, and on this repo both held at once. No VM file was in its site
+      set, so lib/backend/vm_native.c's `double h = 1e-7` was outside its field of
+      view by construction — the check could not have gone red.
+    observed_after: >-
+      The replacement was demonstrated red on unmodified origin/master before the
+      fix landed: it reported case 753 and case 754 as `finite-difference`, named
+      both epsilon sites at lib/backend/vm_native.c:13558 and :13636, and exited
+      1. It goes green only after the operators became exact. Its own --self-test
+      pairs nine red/green fixtures, including a clamp and an equality tolerance
+      at the same magnitude that must NOT be flagged.
+    fixed_by: >-
+      scripts/gate_ad_shared_node_model.py, graded by the ad_carrier_model_clean
+      oracle criterion, run in the assurance-gates CI job, plus the new
+      INV-ad-carrier-declared-for-every-vm-op key-space-equality in
+      .icc/architecture-model.yaml.
+    evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt and gate-green-after-fix.txt"
+    caught_by: [architectural-audit-2026-08-25]
+    missed_by: [icc-invariants, icc-readiness]
+    notes: >-
+      The original invariant is kept. It answers a real and narrower question —
+      is the native default gradient path still built on an exact jet — and it
+      answers it correctly. What changed is that it is no longer the only thing
+      standing behind the sentence "Eshkol's AD is exact".
+
+  - id: SW-52
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "feat/ad-structural-gate"
+    closed_by: "branch feat/ad-structural-gate — scripts/gate_ad_shared_node_model.py"
+    title: "The VM-parity output differential cannot detect that the two engines run two independent AD implementations"
+    repro: "scripts/run_vm_parity.sh (corpus stage) over tests/vm_parity/corpus/32_gradient_reverse.esk"
+    observed: >-
+      PASS. op:GRADIENT was promoted from gap to vm-supported in v1.3.4 on the
+      strength of it, on a VM-only VmDual carrier that shares no code and no node
+      vocabulary with lib/backend/autodiff_codegen.cpp.
+    correct: >-
+      The differential compares PROGRAM OUTPUT between engines. Two independently
+      correct implementations produce identical output, so agreement is evidence
+      of agreement and nothing else — it is structurally incapable of reporting
+      that the answers came from two implementations. It is also silent on any op
+      whose parity row is `gap`, because a gap row excludes the op from
+      comparison; that is precisely how SW-46 shipped.
+    observed_after: >-
+      The carrier fork is now enumerated, declared per operator and capped:
+      .icc/ad-carrier-manifest.yaml records 9 forked carriers against a
+      shrink-only budget of 9, every declaration is re-derived from source rather
+      than believed, and an op cannot be promoted to vm-supported without a
+      carrier row. The self-test proves the undeclared-promotion case red.
+    fixed_by: "scripts/gate_ad_shared_node_model.py checks C2 (coverage), C3 (source verification) and C5 (shrink-only fork ratchet)"
+    evidence: "~/.tsotchke/state/ad-unification/gate-red-on-master.txt"
+    caught_by: [architectural-audit-2026-08-25]
+    missed_by: [vm-parity-differential]
+    notes: >-
+      The differential is not being replaced. Output agreement remains the right
+      check for whether two engines answer the same; it was simply being read as
+      an answer to a question it never asked.
+
+  - id: LE-12
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    title: "native curl SIGSEGVs on a list-returning vector field"
+    repro: >-
+      (define (F v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))
+      (display (curl F (vector 1.0 2.0 3.0)))
+    observed: >-
+      build/eshkol-run -r prints the field's own value correctly, then
+      "[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+      0x0000000000002002" at the curl call. With the components spread across
+      three parameters instead, the LLVM verifier rejects the module with
+      "Incorrect number of arguments passed to called function" — native curl
+      passes the whole point as ONE argument where the VM spreads it into N.
+    correct: "#(0 0 0) for that field, and a diagnostic rather than a crash for an arity it cannot accept"
+    caught_by: [architectural-audit-2026-08-25, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, vm-parity-differential]
+    notes: >-
+      Found while establishing a cross-engine baseline for SW-46, and the reason
+      no such baseline exists: op:CURL cannot be measured on native at all today.
+      Loud, so not tag-blocking, but it is what keeps op:CURL a gap now that the
+      VM side is exact. Two separable defects: the crash, and the arity-convention
+      divergence between the engines.
+  # ───────────────────────── VACUOUS-ASSURANCE ─────────────────────────
+
+  - id: VA-01
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_by: "branch ci/required-context-consistency"
+    title: "docs-only-required-context-stubs drifted out of sync with branch protection's required list, silently reopening a fixed permanent-block class"
+    mechanism: >-
+      PR #455 fixed a real permanent-block bug: a `unix-matrix`/`windows-
+      matrix` leg is `needs: changes` gated and its `if:` depends on
+      `docs_only`, so on a docs-only PR that job never instantiates at all —
+      its per-leg required-context names are ABSENT from the head SHA's
+      check-run set entirely, not reported under a wrong name, simply never
+      created, and branch protection cannot resolve a required context with
+      no check run at all. PR #455's fix was a stub job
+      (`docs-only-required-context-stubs`) whose matrix names were exactly the
+      7 matrix-derived contexts required AT THAT TIME. Branch protection later
+      grew 5 more matrix-derived required contexts — windows-arm64-lite,
+      macos-arm64-xla, macos-x64-xla, macos-arm64-lite, macos-x64-lite — and
+      nothing re-checked the stub matrix against the new required list. The
+      2026-08-25 hardening to `enforce_admins: true` turned this from a
+      dormant defect (admins could bypass the resulting permanent block) into
+      an active one. CONFIRMED DIRECTLY, not just derived: a real docs-only
+      PR (#484) was MERGEABLE/BLOCKED with those 5 contexts required, and
+      MERGEABLE/CLEAN the instant they were removed from branch protection —
+      no other change, no new CI run. Branch protection is (as of this entry)
+      temporarily narrowed to 11 required contexts while this fix ships; this
+      fix's job is to make the full 16 reportable so they can be restored.
+
+      This is VACUOUS-ASSURANCE rather than a plain missing check for TWO
+      independent reasons, both caught and corrected during this same fix
+      rather than shipped:
+
+      (1) The original brief for this fix additionally asserted
+      `wasm-execute-diff` as a sixth gap. Direct measurement — PR #455's own
+      proof-PR evidence, and independently, PR #484's live head SHA queried
+      directly — shows that claim is FALSE. `wasm-execute-diff` is a
+      static-named (non-matrix) job: a skipped STATIC job still reports one
+      check run under its own real name with conclusion `skipped`, and
+      branch protection treats `skipped` as SATISFYING a required context.
+      It stayed required throughout PR #484's test and never blocked
+      anything. Asserting it as broken without re-deriving the mechanism
+      would have added stub coverage that either does nothing or introduces
+      a second, redundant check run under a name a real job already reports
+      correctly — an added guard whose own presence would never have been
+      exercised by anything it could actually fail on.
+
+      (2) A first draft of the gate graded whichever required-context set
+      was CURRENTLY live. Live is, at the time of this fix, narrowed to 11
+      contexts specifically BECAUSE this fix has not landed — so a gate
+      that graded live alone would have read that narrowed set as complete
+      and said nothing about the 5 contexts it exists to protect, the exact
+      "checked nothing, reported success" shape one level up. Corrected
+      before merge: grading is always anchored on a committed TARGET file
+      (the intended full 16-context policy, independent of branch
+      protection's state at any moment), unioned with live when live is
+      reachable, with the live/target difference always reported rather
+      than silently resolved either way.
+    evidence: >-
+      scripts/check_required_context_consistency.py parses ci.yml and
+      identity-guard.yml's job graph directly (no regex over job text) and
+      asserts required_contexts SUBSET-OF reportable_everywhere, where
+      reportable_everywhere = unconditional jobs UNION static-named skipped
+      jobs UNION (matrix-derived skipped names INTERSECT the stub matrix).
+      Self-test fixtures prove the gate goes RED on exactly the two shapes
+      this incident is made of: (a) a required, still-skippable matrix name
+      removed from the stub matrix, (b) a required context no workflow could
+      ever emit — plus a dedicated fixture proving a static skipped job
+      needs no stub (the wasm-execute-diff shape), and a fourth fixture
+      proving reason (2) above: grading a narrowed "live" set alone reports
+      a false PASS on a still-missing matrix name, while grading target
+      UNION live correctly FAILS on it. Run against the real, patched
+      ci.yml: `--offline` (target file alone, no network) PASS 16/16;
+      against real LIVE branch protection (11 contexts, authenticated `gh`)
+      PASS 16/16 graded via target-union-live, with the 5 temporarily-
+      unrequired contexts reported by name as the expected live/target
+      difference. Wired into ctest (required_context_consistency_gate /
+      required_context_consistency_gate_selftest) and the `assurance-gates`
+      CI job.
+    fixed_by: >-
+      branch ci/required-context-consistency — extended
+      docs-only-required-context-stubs' matrix with the 5 real gaps,
+      corrected the stale in-file comment that once explained only the
+      original 7, and added scripts/check_required_context_consistency.py
+      as a standing gate (target-file-anchored grading, unioned with LIVE
+      branch protection when reachable; wired into ctest, assurance-gates,
+      and this oracle's `required_context_consistency_clean` criterion) so
+      this class cannot silently reopen a third time.
+    caught_by: [direct-measurement, branch-protection-audit]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]

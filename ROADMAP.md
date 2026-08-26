@@ -16,11 +16,43 @@
 > - [`docs/NOESIS_TRAJECTORY.md`](docs/NOESIS_TRAJECTORY.md) — the
 >   Noesis-readiness view, tracked separately because Noesis has a
 >   distinct downstream cadence.
+> - [`docs/design/adr/0000-unified-trajectory.md`](docs/design/adr/0000-unified-trajectory.md) —
+>   the 14-stage architectural ladder (v1.3.3a through v2.0) that sequences
+>   the load-bearing rewrites (binding/type identity, OALR ABI v2, staged AD
+>   kernels, DBSP, resident sessions) underneath the release-line features
+>   tracked here. This roadmap's release lines and that ladder's stages are
+>   two views of the same plan and must not diverge; see "ADR-0000 stage
+>   attainment" below for the honest current-attainment reconciliation
+>   between them.
 >
 > When any of those docs disagrees with this one, this one is correct
 > and the others should be updated.
 
 This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation release** through upcoming versions that will establish Eshkol as the definitive platform for gradient-based computing and integrated AI.
+
+### ADR-0000 stage attainment (added 2026-08-25, conformity audit item a1)
+
+The release lines below describe *what ships*; [ADR-0000](docs/design/adr/0000-unified-trajectory.md)
+describes the *architectural substrate that has to land first* for the back
+half of this roadmap (v1.4 onward) to be buildable rather than aspirational.
+As of `4bf871a0` (2026-08-25), remeasured directly against the tree:
+
+**0 of 14 ADR-0000 stages SATISFIED, 2 PARTIAL (Stage 1 ~30%, Stage 5
+~35%), 12 NOT STARTED.** Every load-bearing artifact the ADR names as the
+gate for v1.4+ — `BindingId`, `NodeId`/`SourceSpan`, `FlowEnv`,
+`ESHKOL_MEMORY_ABI_V2`, `eshkol_compile_staged_value_grad` — is absent from
+the tree. Full stage-by-stage detail (what exists, what's missing, why the
+gate isn't meetable yet) is in ADR-0000's own "Attainment" section and in
+`docs/design/AUDIT_2026_08_25_RESOLUTION.md`.
+
+This is a statement about **present attainment, not a retraction of the
+plan**: every one of the 14 stages stays on the ladder below, each mapped to
+the release line it targets. The two CRITICAL implementation defects behind
+most of the AD-related stalls — the dense tensor AD node path being
+unreachable dead code, and the LLVM finite-difference counter having zero
+callers — are called out explicitly under **v1.5-intelligence** and in
+`docs/design/adr/0002-ad-staged-dense-kernels.md`, because they block
+Stages 5, 7, and 8 until fixed.
 
 > **Parallel platform program**: The internal freestanding / kernel / embedded architecture work begins during `v1.2-scale` as a mergeable infrastructure program and converges publicly at `v1.8-platform`. See [docs/platform/README.md](docs/platform/README.md) and [docs/platform/ROADMAP_ALIGNMENT.md](docs/platform/ROADMAP_ALIGNMENT.md).
 
@@ -240,10 +272,19 @@ campaign was originally planned to be threaded through the version themes
 above as enabling substrate spread from v1.3.1 through v2.0 (P1 in v1.3.1,
 P2/P3 in v1.3.2, P4/P6/P11 in v1.4, P5/P7/P9 in v1.5, P10 bridging v1.5-v1.7,
 P12 in v1.6, P8 in v2.0). Instead, **all 13 phases (P0-P12) shipped complete
-in v1.3.0-evolve** — see [CHANGELOG.md](CHANGELOG.md) and
+on the LLVM backend in v1.3.0-evolve** — see [CHANGELOG.md](CHANGELOG.md) and
 [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md) for the as-shipped detail. The
 version rows below still show the original staging plan for historical
-context; treat the AD line item in each as already delivered.
+context; treat the AD line item in each as already delivered on LLVM.
+**Engine qualifier added 2026-08-25 (conformity audit item a5):** of the ten
+named operators, only two (`taylor`, `derivative-n`) are compiler builtins;
+the other eight (`mixed-partial`, `gradient-n`, `taylor-model`, `tm-range`,
+`tm-eval`, `taylor-ode-solve`, `taylor-root`, `sparse-hessian`) are Eshkol
+library code in `lib/core/ad/*.esk` bottoming out in `derivative-n` — real,
+but not compiler-level. The bytecode VM has none of the Taylor-tower
+surface (`grep -i taylor lib/backend/vm_*.c` is empty; `op:DERIVATIVE_N` is
+a `gap` row). **BUILD ITEM:** VM Taylor-tower builtins, target v1.4.1
+(ADR-0000 Stage 3/4).
 
 ---
 
@@ -319,10 +360,14 @@ context; treat the AD line item in each as already delivered.
 **Focus:** Make the language a joy to use day-to-day — and it grew into
 much more: a full arbitrary-order automatic-differentiation system.
 
-- [~] Full R7RS library system: `define-library` exports work end-to-end;
-      `(rename (m) (a b))` import works.  `(prefix (m) p-)` currently
-      requires an explicit `only` or `rename` clause — bare prefix
-      over the module's whole export list is the remaining gap.
+- [x] Full R7RS library system: `define-library` exports work end-to-end;
+      `(rename (m) (a b))` import works. `(prefix (m) p-)` also works as
+      bare prefix over the module's whole export list, via a deferred
+      alias-emission path (`lib/frontend/parser.cpp:3973-3985` +
+      `exe/eshkol-run.cpp:3157-3163`) — corrected 2026-08-25 from "requires
+      an explicit `only`/`rename` clause" (conformity audit item a4; the
+      doc was stale in the safe direction — the capability had already
+      shipped).
 - [x] String interpolation (`~{expr}` within strings)
 - [x] Named keyword arguments (`(f #:key value)`)
 - [x] Pattern matching in `let` bindings (destructuring `let-match`)
@@ -709,7 +754,35 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       resident tape (#214) has a public training win
 
 ### Quantum Type System
-- [x] Qubit type with linear resource tracking (no-cloning enforced at compile time) - SHIPPED in v1.3.4-evolve
+- [x] Qubit type with linear resource tracking - SHIPPED in v1.3.4-evolve.
+      Shipped as a **warning-level type annotation** (conformity audit item a7,
+      corrected 2026-08-25 from "no-cloning enforced at compile time": a clone
+      printed `[WARN]`, exited 0 and wrote a runnable binary). **Made a real
+      compile-time error in v1.3.5:** a linearity violation now stops code
+      generation, exits nonzero and writes no artifact in the DEFAULT mode, not
+      only under `--strict-types`; `--unsafe` remains the documented bypass.
+      Enforcement is a worst-case-path analysis of the binder's own body
+      (`TypeChecker::analyzeLinearUses`), covering `define`/`lambda` parameters
+      and `let` bindings, `if` branch-exclusivity, sequences and short-circuit
+      forms, and `let` alias chains. **Extended in the same release** to the
+      remaining control-flow forms — `cond`, `case`, `when`, `unless`, `do`,
+      `guard`, `match` and `set!` are all walked, clause ladders by their exact
+      worst path — to alias laundering through an immediately applied `lambda`
+      and through a `set!` move, and to rejecting a bare linear reference stored
+      into an untyped container. **VM engine parity closed**: the bytecode VM
+      runs the same judgment (not a second implementation), so source execution
+      and `--emit-eskb` both refuse a violating program and write no bytecode.
+      **Remaining BUILD ITEMS**, each announced per binding on stderr rather
+      than silently assumed, and specified in
+      `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` 3.6.8: loop-carried accounting,
+      so a named `let` or `do` whose body names the qubit can be ruled on rather
+      than reported undecidable; a `guard` whose handler names the binding;
+      `call/cc` re-entry; once-closures / affine closure typing for dynamic
+      duplication; and the last name-keyed residue — a qubit returned from a
+      function with an unannotated return type, which needs interprocedural
+      inference and is what ADR-0004's **place-keyed** PlaceId/FlowEnv closes,
+      for linear types and ownership `move` alike (ADR-0004, ADR-0000
+      Stage 12).
 - [ ] Quantum register types `qreg<n>` with compile-time dimension
 - [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 - [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9
@@ -757,7 +830,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.1.13** | Apr 2026 | Accelerate | Windows ARM64, 16-lane release matrix, VM closure fixes, mobile site |
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
 | **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
-| **v1.3.1 → v1.3.4-evolve** | Jul-Aug 2026 | Evolve | **SHIPPED 2026-08-19** (tag `v1.3.4-evolve`, commit `694c3179`). v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form, shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes. **Release gates** (RELEASE_NOTES.md, measured on the release cut): aggregate suite 45/45 suites / 770 tests; CTest 183/183; executable language coverage 1,091/1,091 (100.0%); SICP full-book gate 88/88; reference-Scheme differential 34/34 AGREE vs. chibi-scheme 0.12.0; VM parity differential 184/184 over a 956-row manifest; qLLM oracle gate 10/10; ICC readiness 100, verdict `ready` |
+| **v1.3.1 → v1.3.4-evolve** | Jul-Aug 2026 | Evolve | **SHIPPED 2026-08-19** (tag `v1.3.4-evolve`, commit `694c3179`). v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form on the LLVM backend (the bytecode VM's `divergence`/`curl` are still central-difference FD — corrected 2026-08-25, conformity audit item a13, BUILD ITEM to remove them targets v1.5.0), shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes. **Release gates** (RELEASE_NOTES.md, measured on the release cut): aggregate suite 45/45 suites / 770 tests; CTest 190/190 (remeasured 2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the stale 183/183 figure); executable language coverage 1,106/1,106 (100.0%, canonical count — corrects the stale 1,091/1,091 figure, conformity audit item d3); SICP full-book gate 88/88; reference-Scheme differential 34/34 AGREE vs. chibi-scheme 0.12.0; VM parity differential 188/188 (remeasured 2026-08-25, `evidence/audit/06_vm_parity.log`; corrects "184/184", the corpus-differential count, not the full manifest) over a 956-row manifest (581/331/44) plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger; qLLM oracle gate 10/10; ICC readiness 100, verdict `ready` |
 | **v1.3.5** | late Sep 2026 | Consolidation | VM OALR Stage-1 evacuator, **SHIPPED (#461)**; H1 Python-bindings capsule-lifetime fix, **SHIPPED (#458)**; assurance wave 1 (ledger-integrity/oracle-schema gates), **SHIPPED (#454)**; docs-only CI fix, **SHIPPED (#455)**; AD re-verification wave; correctness debt (#229/#244/mod-srem); W3 benchmarks wave 1; W4 `vm_run.c` decomposition — see "Development workstreams" above |
 | **v1.4.0-connection** | Nov 2026 | Systems profile | TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; W5 interop wave 2; W6 PJRT spike *(AD substrate P4/P6/P11 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.4.1** | Dec 2026 | ABI | OALR ABI v2, portable tail transfer, PGO training workload, `bignum.cpp` decomposition |
@@ -797,7 +870,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 ### Core Compiler
 - [x] Parser - Complete
 - [x] Type Checker - Complete
-- [x] LLVM Backend - Complete (34,928 lines)
+- [x] LLVM Backend - Complete (42,993 lines, `wc -l lib/backend/llvm_codegen.cpp` — corrected 2026-08-25 from "34,928", conformity audit item a8)
 - [x] Module System - Complete
 - [x] Macro System - Complete
 
@@ -949,8 +1022,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: August 2026 (v1.3.5 documentation wave — re-dated ladder,
-six standing workstreams, distributed computing promoted to W6)*
+*Last Updated: 2026-08-25 (v1.3.5 documentation wave — re-dated ladder,
+six standing workstreams, distributed computing promoted to W6; plus the
+2026-08-25 conformity-audit resolution pass layered on top — ADR-0000
+cross-reference, engine-qualified AD/parity claims, remeasured gate
+numbers)*
 
 *The arbitrary-order automatic-differentiation (Taylor-tower) campaign — phases
 P0–P12, spanning core high-order AD, exact-coefficient and tensor-valued towers,

@@ -26,7 +26,7 @@
   },
   "builtins_by_category": {
     "ffi_system": 299,
-    "tensor_ad": 221,
+    "tensor_ad": 222,
     "numeric": 90,
     "predicate": 76,
     "geometry": 61,
@@ -769,6 +769,18 @@
         1842
       ],
       "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "tensor_ad"
+    },
+    {
+      "name": "ad-note-finite-difference!",
+      "ids": [
+        2088
+      ],
+      "arity": 0,
       "backends": [
         "vm",
         "native_llvm"

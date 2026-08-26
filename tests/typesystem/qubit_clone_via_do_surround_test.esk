@@ -1,0 +1,17 @@
+;; Type System Test: a clone AROUND a do loop is still a violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; The reject counterpart to qubit_linear_do_loop_ok_test.esk, and the reason
+;; making a qubit-free loop decidable is worth doing rather than a nicety: this
+;; clone used to be invisible, because the `do` alone was enough to make the
+;; enclosing body undecidable and no verdict of any severity was drawn from it.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (loop-then-clone (q : Qubit))
+  (begin
+    (do ((i 0 (+ i 1))) ((= i 2)) (display i))
+    (cons (h q) (z q))))

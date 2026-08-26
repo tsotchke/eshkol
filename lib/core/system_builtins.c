@@ -671,6 +671,7 @@ extern uint64_t eshkol_ad_counter_reverse_passes(void);
 extern uint64_t eshkol_ad_counter_tape_allocations(void);
 extern uint64_t eshkol_ad_counter_tape_nodes(void);
 extern uint64_t eshkol_ad_counter_finite_difference_evals(void);
+extern void eshkol_ad_count_fd(void);
 
 /** Implements `(ad-reset-counters!)`: zero all AD instrumentation counters. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_reset_counters_v(void) {
@@ -692,6 +693,22 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tape_allocations_v(void) {
 /** Implements `(ad-finite-difference-evals)`: finite-difference evaluations since reset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_finite_difference_evals_v(void) {
     return sys_make_int64((int64_t)eshkol_ad_counter_finite_difference_evals());
+}
+/** Implements `(ad-note-finite-difference!)`: report ONE finite-difference
+ *  perturbation evaluation on an AD path.
+ *
+ *  This is the write end of `finite_difference_evals`, and it exists because
+ *  the read end alone is not an instrument. `eshkol_ad_count_fd()` shipped with
+ *  ZERO callers on the native back end, so `(= (ad-finite-difference-evals) 0)`
+ *  — the executable form of the "no finite-difference fallback anywhere in the
+ *  gradient path" guarantee — was true by construction and would have stayed
+ *  green if an FD fallback were introduced tomorrow. Every FD site now reports
+ *  through here (see lib/core/ad/tape.esk `record-fd-op!`), so the assertion is
+ *  a measurement rather than a tautology. ADR-0002 §"Non-breaking migration
+ *  path" item 1 specifies exactly this: increment the counter at every FD site. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_note_finite_difference_v(void) {
+    eshkol_ad_count_fd();
+    return sys_make_null();
 }
 /** Implements `(ad-counters)`: an assoc list of every AD counter, e.g.
  *  ((primal-calls . 1) (reverse-passes . 1) (tape-allocations . 1)
@@ -5202,6 +5219,7 @@ void eshkol_builtin_ad_primal_calls(sv_t* out) { *out = eshkol_builtin_ad_primal
 void eshkol_builtin_ad_reverse_passes(sv_t* out) { *out = eshkol_builtin_ad_reverse_passes_v(); }
 void eshkol_builtin_ad_tape_allocations(sv_t* out) { *out = eshkol_builtin_ad_tape_allocations_v(); }
 void eshkol_builtin_ad_finite_difference_evals(sv_t* out) { *out = eshkol_builtin_ad_finite_difference_evals_v(); }
+void eshkol_builtin_ad_note_finite_difference(sv_t* out) { *out = eshkol_builtin_ad_note_finite_difference_v(); }
 void eshkol_builtin_ad_counters(sv_t* out) { *out = eshkol_builtin_ad_counters_v(); }
 void eshkol_builtin_monotonic_time_ms(sv_t* out) { *out = eshkol_builtin_monotonic_time_ms_v(); }
 void eshkol_builtin_temp_directory(sv_t* out) { *out = eshkol_builtin_temp_directory_v(); }

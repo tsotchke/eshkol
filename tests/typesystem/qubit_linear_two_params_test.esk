@@ -1,0 +1,15 @@
+;; Type System Test: two distinct qubits, each consumed once, compiles clean
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The enforcement is per binding, not per linear TYPE: a function taking two
+;; qubits and consuming each exactly once is linearly valid.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (pair-up (a : Qubit) (b : Qubit))
+  (cons (h a) (h b)))
+(display "two qubits, one use each")
+(newline)

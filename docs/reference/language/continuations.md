@@ -113,7 +113,7 @@ Two shapes do not behave as R7RS specifies, both tracked in
   image restores its capture-time value; R7RS says the location persists and
   only the control state is captured. Making this sound needs assignment
   conversion — boxing `set!`-assigned locals — which is not yet implemented.
-  See ledger SW-53.
+  See ledger SW-62.
 
 ### Resolved history — deep CPS chains (ESH-0080)
 

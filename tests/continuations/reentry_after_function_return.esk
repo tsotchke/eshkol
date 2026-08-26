@@ -3,7 +3,7 @@
 ;; jmp_buf alone cannot survive: by the second invocation the capturing frame
 ;; has been popped and its memory reused.
 ;;
-;; This is a REGRESSION TEST for ledger SW-51. Native JIT and AOT used to SIGILL
+;; This is a REGRESSION TEST for ledger SW-60. Native JIT and AOT used to SIGILL
 ;; the instant the popped frame was re-entered.
 ;;
 ;; Note the second "about to re-invoke" line is correct, not a replay bug:

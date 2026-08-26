@@ -1,0 +1,20 @@
+;; Type System Test: a clone inside a guard BODY is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; A `guard` whose handlers do not mention the binding is charged as its body
+;; alone: the handler cannot consume what it never names, so the body's own
+;; worst path is the form's worst path. That makes the ordinary
+;; "wrap this in an exception handler" idiom enforceable rather than surrendered
+;; (BI-1), and a clone inside the body stays the clone it is.
+;;
+;; The case where a handler DOES mention the binding is deliberately left
+;; undecidable -- see qubit_linear_guard_handler_undecidable_test.esk.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-guard (q : Qubit))
+  (guard (e (#t 0))
+    (cons (h q) (z q))))

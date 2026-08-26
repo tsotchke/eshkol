@@ -903,10 +903,129 @@ the numeric types that flow into it (so an integer accumulator that later takes 
 rational or real value is accepted rather than rejected).
 
 #### 3.6.8 Linear Types — `Qubit`
-`Qubit` is a first-class **linear** type: its values must be used exactly once. A
-`define`d function may declare linear parameters, and the checker enforces the
-use-exactly-once discipline (both double-use and drop are rejected), giving
-quantum-register operations a no-cloning guarantee at the type level.
+`Qubit` is a first-class **linear** type: its values must be used exactly once.
+A `define` or `lambda` parameter, or a `let`-family binding, may declare a
+linear type, and the checker enforces the use-exactly-once discipline. Both
+double-use (a clone) and drop are **compile-time type errors**: the compile
+exits nonzero and no artifact is written — in the default compilation mode, not
+only under `--strict-types`. This is what gives quantum-register operations a
+no-cloning guarantee at the type level rather than by convention.
+
+```scheme
+(define (bad-clone (q : Qubit)) (cons q q))   ; error: consumed more than once
+(define (bad-drop  (q : Qubit)) 42)           ; error: was not consumed
+(define (ok-thread (q : Qubit)) : Qubit (h (h q)))   ; fine: used exactly once
+```
+
+`--unsafe` is the one documented escape hatch and suppresses linear checking
+entirely: linear values may be duplicated there, silently, for FFI and
+low-level work.
+
+##### What is enforced
+
+The judgment is a static, worst-case-path analysis of the binder's own body,
+asking one question: how many times can this binding be used along a single
+worst-case execution path. It charges the condition plus the **larger** of the
+two branches of an `if` (the branches are mutually exclusive, so
+`(if b (X q) (Z q))` consumes `q` exactly once and is accepted), the **sum**
+across `begin` sequences and across `and`/`or` (short-circuiting only ever
+evaluates fewer operands, and a linear binding any path can duplicate is
+ill-typed), and the **exact worst path through a clause ladder** for `cond`,
+`case` and `match` — reaching clause *k* runs the tests of clauses 0..*k* and
+then exactly one body, so one use per clause is accepted while two uses in one
+clause is the clone it is. It follows aliases through `let`, through a chain of
+them, through an immediately applied `lambda`, and through a `set!` that moves
+the value to another name, so rebinding a qubit does not launder a clone. A
+closure capturing a linear value counts as a use of it.
+
+Enforced shapes — a violation in any of these is fatal:
+
+| Shape | Verdict |
+|---|---|
+| Direct double use of a linear parameter or `let` binding | error |
+| Two uses across a `begin`, an `and`/`or`, or the arguments of one call | error |
+| A use inside a closure plus a use outside it, or two uses inside one closure | error |
+| A use rebound through a `let` alias — or a chain of them — then used twice | error |
+| Two uses inside one `cond`, `case`, `when`, `unless` or `match` clause body | error |
+| Two uses inside a `guard` body whose handlers do not name the binding | error |
+| Two uses around a `do` loop that does not itself name the binding | error |
+| A qubit laundered through an immediately applied `lambda`, then used twice | error |
+| A qubit moved by `set!` to another name, then used twice through it | error |
+| A bare linear reference stored into an untyped container (`cons`, `vector`, …) | error |
+| A linear binding never used at all | error |
+| One use in each branch of an `if` | accepted |
+| One use in each `cond`, `case` or `match` clause | accepted |
+| One use in a `when`/`unless` body, or in a `guard` body | accepted |
+| One use beside a loop that does not name the binding | accepted |
+| A `set!` move followed by exactly one use | accepted |
+| An alias chain ending in exactly one use | accepted |
+| A container built from gate **results** rather than the binding itself | accepted |
+| Distinct linear bindings each used once | accepted |
+
+The rule holds on **both engines**. The LLVM path enforces it before code
+generation, for AOT (`-o`) and JIT (`-r`) alike, and `-r` publishes no cached
+run binary for a rejected program. The bytecode VM enforces the same rule, by
+running the same judgment rather than a second implementation of it: source
+execution and `--profile hosted-vm --emit-eskb` both refuse a violating program,
+and no `.eskb` is written.
+
+##### What is not enforced yet
+
+The analysis reports **no verdict at all** — neither acceptance nor rejection —
+for a body it cannot account for, and says so on stderr rather than guessing:
+
+```
+[WARN] Linearity not enforced: linear variable 'q' is not statically decidable
+here (body contains a named let loop body that may run any number of times);
+use-exactly-once is NOT enforced for it
+```
+
+Refusing to rule is deliberate. Under-approximating misses a clone; over-
+approximating rejects a correct quantum program, and that is the failure this
+must not have. The note names the form that stopped the analysis, so the
+boundary is visible in the build log and not only here. The shapes outside the
+enforced set today:
+
+- **Loops that use the binding.** A named `let` or a `do` whose loop-carried
+  region names the qubit runs an unknown number of times, so a single-path use
+  count says nothing about it: one use in the body is one use *per iteration*.
+  A loop that does not name the binding contributes zero uses whatever its trip
+  count, and stays enforced. Closing the rest needs loop-carried linear
+  accounting.
+- **A `guard` whose handler names the binding.** An exception can be raised at
+  any point in the body, including after the body already consumed the
+  resource, so the handler's use is a second use on some paths and the first on
+  others. Charging both would reject a correct program; charging the maximum
+  would miss a double consumption.
+- **`call/cc` and `dynamic-wind`.** A captured continuation can re-enter the
+  body, which is dynamic duplication a static count cannot see.
+- **Laundering through a separately defined unannotated function.** Tracking is
+  keyed by NAME, and a name is tracked only where the checker can see a linear
+  type on it. Direct `let` aliases, alias chains, immediately applied lambdas,
+  and `set!` moves are all followed now, and a bare reference handed to a
+  container is rejected outright. What remains is a qubit returned from a
+  function whose return type is unannotated:
+
+  ```scheme
+  (define (id x) x)
+  (let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed
+  ```
+
+  Deciding that requires the return type inferred interprocedurally. It is the
+  same shape that defeats the ownership analyzer's name-keyed move tracking
+  (`(define alias x)` after a `move` compiles clean), and it is what ADR-0004's
+  **PlaceId/FlowEnv** design exists to close: tracking keyed by *place* rather
+  than by name, so an alias is the same place whatever binder it passed
+  through.
+- **Dynamic duplication.** A closure that captures a qubit once and is then
+  invoked many times is one static use; the analysis is static, not a use-count
+  at runtime.
+
+Closing these is tracked work (conformity-audit item a7, ADR-0004): loop-carried
+linear accounting, once-closures / affine closure typing, and replacing the
+remaining name-keyed inference with ADR-0004's place-keyed PlaceId/FlowEnv
+(which closes the laundering residue for linear types and for ownership `move`
+alike, since both are defeated by the same aliasing shape).
 
 ### 3.7 Module System
 

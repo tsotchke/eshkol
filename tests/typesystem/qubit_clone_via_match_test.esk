@@ -1,0 +1,17 @@
+;; Type System Test: a clone inside a match clause is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `match` is walked as a clause ladder like `cond`: the scrutinee is charged
+;; once, patterns are tried in order, and exactly one body runs. Names the
+;; pattern BINDS shadow the tracked binding inside that clause's body, the same
+;; way a `let` binding does (BI-1).
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-match (k : Int) (q : Qubit))
+  (match k
+    (0 (cons (h q) (z q)))
+    (_ 0)))

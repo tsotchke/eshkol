@@ -129,13 +129,16 @@ public:
 
     // Linear type binding (Phase 6)
     //
-    // Enforcement scope — what "use exactly once" actually covers today (#320):
-    //  * Enforced: `define` and `lambda` PARAMETERS typed TYPE_FLAG_LINEAR. Such
-    //    a parameter must be referenced exactly once in the body; over/under-use
-    //    is reported at scope exit via checkLinearConstraints().
-    //  * NOT enforced: `let`/`let*`/`letrec` bindings — they are bound via the
-    //    plain bind() path (synthesizeLet), never bindLinear(), so a linear-typed
-    //    let binding is not use-once checked. (A known gap, not a guarantee.)
+    // Enforcement scope — what "use exactly once" actually covers today (#320).
+    // The AUTHORITATIVE judgment is no longer the incidental usage counting
+    // below: it is TypeChecker::analyzeLinearUses(), a dedicated worst-case-path
+    // walk of the binder's body (see its documentation for the decidable
+    // fragment and for why a body outside that fragment yields no verdict at
+    // all rather than a wrong one). The counters here remain for the use-site
+    // bookkeeping that checkLinearVariable() and the narrowing paths rely on.
+    //  * Enforced (fatal): `define`/`lambda` PARAMETERS and `let`-family
+    //    BINDINGS typed TYPE_FLAG_LINEAR, when the body lies inside the
+    //    decidable fragment.
     //  * Static, not dynamic: a use is counted where a linear variable NAME
     //    appears. A closure that captures a linear variable counts as ONE static
     //    use regardless of how many times the closure is later invoked (0 or many
@@ -580,9 +583,95 @@ public:
      */
     void reportTypeIssue(const std::string& msg, const eshkol_ast_t* node = nullptr);
 
+    /**
+     * Linearity enforcement point: a no-cloning / no-discard violation.
+     *
+     * Unlike reportTypeIssue(), this is FATAL in every mode except `--unsafe`.
+     * Gradual typing is a statement about how much the checker can INFER; it is
+     * not a licence to compile a program the checker has PROVEN ill-formed.
+     * `Qubit` is documented — in the language guide, the specification, the
+     * v1.3.4 release notes and the public announcement — as making the
+     * no-cloning theorem a compile-time type error, and a diagnostic that lets
+     * the compile exit 0 and write a runnable binary is not a type error. Only
+     * `--unsafe`, whose whole documented purpose is "linear types can be
+     * duplicated (no-cloning bypassed)", still suppresses it.
+     */
+    void reportLinearViolation(const std::string& msg, const eshkol_ast_t* node = nullptr);
+
+    /** True if any linearity violation was reported (fatal regardless of --strict-types). */
+    bool hasLinearityViolations() const { return linearity_violations_ > 0; }
+    /** Number of linearity violations reported. */
+    size_t linearityViolations() const { return linearity_violations_; }
+
+    /**
+     * @brief Verdict of the static linear-use analysis over one binder body.
+     *
+     * `decidable` is the load-bearing field: it is false when the body contains
+     * a form the analysis cannot account for, in which case `uses` is
+     * meaningless and NO linearity verdict may be drawn from it.
+     */
+    struct LinearUseAnalysis {
+        bool decidable = true;      // false: body left the decidable fragment
+        int  uses = 0;              // worst-case uses along any single path
+        const char* blocker = "";   // name of the form that ended decidability
+        // Non-null when a bare reference to the binding was stored into an
+        // untyped container (`cons`, `vector`, …). The container's type carries
+        // no linearity, so every later read of it is an unchecked use — the
+        // laundering route BI-3 named. Reported only after the use count, so a
+        // genuine double use is still described as the clone it is.
+        const char* escaped_into = nullptr;
+    };
+
+    /**
+     * @brief Count worst-case uses of the linear binding @p name within @p body.
+     *
+     * See the implementation for the decidable fragment and the accounting
+     * rules (max across mutually-exclusive `if` branches, sum across sequenced
+     * and short-circuit forms, alias propagation through `let`, shadowing).
+     */
+    LinearUseAnalysis analyzeLinearUses(const eshkol_ast_t* body,
+                                        const std::string& name) const;
+
+    /**
+     * @brief As analyzeLinearUses(), over a REGION of expressions evaluated in
+     *        sequence rather than a single body.
+     *
+     * A `let` binding's scope is not just the body: the values of every LATER
+     * binding are evaluated in it too, and that is where a chained alias
+     * (`(let* ((a q) (b a)) …)`) consumes the earlier one.
+     */
+    LinearUseAnalysis analyzeLinearUses(const std::vector<const eshkol_ast_t*>& region,
+                                        const std::string& name) const;
+
+    /**
+     * @brief Enforce use-exactly-once for each name in @p linear_names over
+     *        @p body, reporting violations at @p site.
+     *
+     * Fatal (reportLinearViolation) when analyzeLinearUses() reaches a verdict;
+     * a warning naming the undecidable form otherwise, so the boundary of what
+     * is enforced is visible in the build log rather than only in the docs.
+     */
+    void enforceLinearBindings(const std::vector<std::string>& linear_names,
+                               const eshkol_ast_t* body,
+                               const eshkol_ast_t* site);
+
+    /** As enforceLinearBindings(), but each name carries its own scope region. */
+    void enforceLinearRegions(
+        const std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>>& regions,
+        const eshkol_ast_t* site);
+
+    /** Turn one analysis verdict into the right diagnostic (or none). */
+    void reportLinearVerdict(const std::string& name,
+                             const LinearUseAnalysis& verdict,
+                             const eshkol_ast_t* site);
+
+    /** Append " (line L:C)" for @p node when it carries a plausible position. */
+    static void appendLocation(std::string& msg, const eshkol_ast_t* node);
+
 private:
     bool strict_types_ = false;
     bool unsafe_mode_ = false;
+    size_t linearity_violations_ = 0;
     TypeEnvironment& env_;
     Context ctx_;
     BorrowChecker borrow_;

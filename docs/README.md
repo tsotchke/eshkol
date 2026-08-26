@@ -135,6 +135,7 @@ pages and lets them fan out to their siblings.
 - [Build-system integration](BUILD_INTEGRATION.md) — compiling `.esk` sources from a CMake project (e.g. embedding Eshkol in a larger C/C++ project)
 - [Build notes](platform/BUILD_NOTES.md)
 - [CI lanes](platform/CI_LANES.md) — required vs. non-required CI lanes and what each covers
+- [Self-hosted runners](platform/SELF_HOSTED_RUNNERS.md) — attaching the maintainer's own machines as GitHub Actions runners: label taxonomy, provisioning, registration, why no mesh lane is a required check
 - [ICC contract surface](platform/ICC_CONTRACT_SURFACE.md)
 - [Windows x86 under KVM](platform/WINDOWS_X86_KVM.md)
 - [Target Support Matrix](platform/TARGET_SUPPORT_MATRIX.md)
@@ -178,9 +179,11 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md)
 - [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
 - [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
+- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
 
 ## Testing and Quality Gates
 
+- [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
 - [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 183/183
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)

@@ -1,0 +1,21 @@
+;; Type System Test: a clone inside ONE cond clause is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `cond` used to synthesize nothing at all, so the use analysis refused to rule
+;; on any body containing one and this clone compiled and ran with only a
+;; "not enforced" note (BI-1). The clause ladder is now walked: reaching clause
+;; k runs the tests of clauses 0..k and exactly ONE body, so the worst path is
+;; the largest such prefix-plus-body -- and the body here uses `q` twice.
+;;
+;; Its legal counterpart is qubit_linear_cond_branches_ok_test.esk, which must
+;; compile clean. Both are required: a reject fixture alone would still pass
+;; while the analysis silently rejected correct programs.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-cond (b : Bool) (q : Qubit))
+  (cond (b (cons (h q) (z q)))
+        (else 0)))

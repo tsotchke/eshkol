@@ -49,4 +49,28 @@ at `WINDOWS_LLVM_SDK_VERSION=21.1.8`.
   first-class: a green "required" set can still hide a regression that only one
   of these lanes catches.
 
-Other workflows: `pages.yml` (docs site) and `release.yml` (release packaging).
+## Trigger surface
+
+`ci.yml` fires on `push` to **`master` and `develop` only**, and on `pull_request`
+against `master`. Topic branches are covered by the `pull_request` trigger alone —
+listing them under `push` as well makes GitHub start two full runs of the same
+14-lane matrix for one commit, and leaves `cancelled` check-runs behind when a
+follow-up push cancels the superseded push run. Concurrency cancels in-progress runs
+for pull requests and for non-`master` branches; `master` is never cancelled.
+
+## Self-hosted (mesh) lanes
+
+`ci-mesh.yml` adds four **advisory, non-required** lanes that run on the
+maintainer's own hardware: `mesh-linux-x64-lite`, `mesh-linux-arm64-lite`,
+`mesh-macos-arm64-lite`, and `mesh-linux-x64-cuda-exec`. The last of these is the
+only lane in the repository that runs `run_gpu_tests.sh` against a **real** CUDA
+device — lanes 5, 6 and 14 above are compile-only, because hosted runners have no
+GPU. The whole workflow is off unless the repository variable `ESHKOL_MESH_CI` is
+`on` *and* a runner carrying the `eshkol` label is online, and none of its jobs is
+(or may become) a required status check. See
+[Self-hosted runners](SELF_HOSTED_RUNNERS.md).
+
+Other workflows: `pages.yml` (docs site), `release.yml` (release packaging),
+`gpu-execution-gate.yml` (real-GPU numeric diff, `[self-hosted, gpu]`),
+`adversarial-nightly.yml` (nightly P8 / TSan / packaging) and
+`identity-guard.yml` (commit-identity denylist).

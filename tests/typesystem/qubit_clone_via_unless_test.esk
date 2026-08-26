@@ -1,0 +1,14 @@
+;; Type System Test: a clone inside an unless body is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `unless` is `when` with the test negated; the accounting is identical, and it
+;; is pinned separately because the two are distinct AST ops and a fix that
+;; reached only one of them would leave a live hole (BI-1).
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-unless (b : Bool) (q : Qubit))
+  (unless b (cons (h q) (z q))))

@@ -446,6 +446,11 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-reset-counters!", 2082, 0}, {"ad-primal-calls", 2083, 0},
     {"ad-reverse-passes", 2084, 0}, {"ad-tape-allocations", 2085, 0},
     {"ad-finite-difference-evals", 2086, 0}, {"ad-counters", 2087, 0},
+    /* Write end of the finite-difference counter: every FD site — compiler,
+     * runtime or stdlib Scheme — reports one perturbation evaluation through
+     * this, so `(= (ad-finite-difference-evals) 0)` is a measurement and not a
+     * tautology. See lib/core/ad/tape.esk `record-fd-op!`. */
+    {"ad-note-finite-difference!", 2088, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
@@ -924,6 +929,110 @@ static void emit_builtin_preamble(FuncChunk* c) {
     }
 }
 
+/*******************************************************************************
+ * Linear (no-cloning) parity with the native engine
+ *
+ * The linear-type rule is a GUARANTEE the language advertises: cloning a
+ * `Qubit` is a compile-time type error, the compile stops, and no artifact is
+ * written. Until this hook existed that was true of the LLVM engine only. The
+ * VM reaches its compiler through this file, whose reader produces `Node*` — a
+ * different AST from `eshkol_ast_t` entirely — and no TypeChecker was ever
+ * constructed, so `eshkol-vm-standalone-test` ran a qubit clone to completion
+ * with exit 0 and no diagnostic, and `--emit-eskb` wrote the bytecode for it.
+ * A type-system guarantee that holds on one engine and not the other is an
+ * engine-parity defect, which is the class this project refuses to ship.
+ *
+ * The fix runs the SAME judgment, not a second one: eshkol_linear_check_source()
+ * drives the real front end (parser, macro expander, TypeChecker) over the same
+ * source text and returns the real verdict. See lib/types/linear_check_bridge.cpp
+ * for why reimplementing the rule over `Node*` was rejected.
+ *
+ * The probe is gated on the source actually carrying a linear annotation, so a
+ * program that opts out of linear types pays nothing and cannot be affected by
+ * the front end's opinion of it. When the source DOES carry one and the front
+ * end cannot read it, the compile fails LOUDLY rather than proceeding: "I
+ * cannot verify this" is not "this is fine", and silent acceptance is precisely
+ * the defect being closed.
+ ******************************************************************************/
+/**
+ * @brief True when @p source contains a linear TYPE ANNOTATION.
+ *
+ * Matches the annotation syntax — a `:` followed by one of the linear builtin
+ * type names as a whole word — rather than the bare name, so a variable or
+ * string that merely happens to contain "Stream" does not arm the check. The
+ * linear builtins are Handle, Stream and Qubit (hott_types.h,
+ * TYPE_FLAG_LINEAR); keep this list in step with them.
+ */
+static int vm_source_carries_linear_annotation(const char* source) {
+    static const char* const kLinearTypeNames[] = { "Qubit", "Handle", "Stream" };
+    if (!source) return 0;
+    for (const char* p = source; *p; ++p) {
+        if (*p != ':') continue;
+        const char* q = p + 1;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        for (size_t i = 0; i < sizeof(kLinearTypeNames) / sizeof(kLinearTypeNames[0]); ++i) {
+            const char* name = kLinearTypeNames[i];
+            size_t len = strlen(name);
+            if (strncmp(q, name, len) != 0) continue;
+            char after = q[len];
+            /* Whole word: the annotation ends at a delimiter, never mid-identifier. */
+            if (!(isalnum((unsigned char)after) || after == '-' || after == '_' ||
+                  after == '?' || after == '!')) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The installed implementation, or NULL. See inc/eshkol/backend/vm.h for why
+ * this is a hook and not a direct call: this translation unit ships inside
+ * libeshkol-runtime.a, which is linked into every program the compiler emits,
+ * and those must not pull in the C++ type checker. */
+static EshkolLinearCheckFn g_vm_linear_check = NULL;
+
+void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn) {
+    g_vm_linear_check = fn;
+}
+
+/**
+ * @brief Run the native engine's linear check over @p source before compiling.
+ * @return 0 to proceed, nonzero when the VM must refuse this program.
+ */
+static int vm_reject_linear_violations(const char* source, const char* source_name) {
+    if (!source || !vm_source_carries_linear_annotation(source)) return 0;
+
+    if (!g_vm_linear_check) {
+        /* No front end installed — a freestanding or embedded build. Refuse
+         * rather than accept unchecked: silent acceptance is the defect. */
+        vm_compile_error("this build cannot verify linear (no-cloning) typing",
+                         "no linear checker is installed; link a driver that "
+                         "calls eshkol_vm_install_linear_check(), or remove the "
+                         "linear type annotations");
+        return 1;
+    }
+
+    int violations = g_vm_linear_check(source, source_name);
+    if (violations > 0) {
+        /* The bridge has already printed each violation, with the same wording
+         * the native engine uses — one rule, one diagnostic. */
+        vm_compile_error("refusing to compile a program that violates linear "
+                         "(no-cloning) typing",
+                         "linear types are use-exactly-once; run with --unsafe "
+                         "to bypass (no-cloning is then NOT enforced)");
+        return 1;
+    }
+    if (violations < 0) {
+        vm_compile_error("refusing to compile a program carrying a linear type "
+                         "annotation that the front end could not analyse",
+                         "the no-cloning guarantee cannot be verified for this "
+                         "source, and an unverified linear program must not run");
+        return 1;
+    }
+    return 0;
+}
+
+
 /* Global ESKB output path — aliased through CompilerContext */
 #define g_eskb_output_path g_compiler_ctx.eskb_output
 #define g_source_file_path g_compiler_ctx.source_path
@@ -932,6 +1041,12 @@ static void emit_builtin_preamble(FuncChunk* c) {
  *         the VM stopped on a fatal runtime error — propagated to main()'s
  *         exit status so a fatal VM error can never look like success. */
 static int compile_and_run(const char* source) {
+    /* Engine parity: the linear (no-cloning) rule is decided before a single
+     * instruction is emitted, exactly as the native engine decides it before
+     * code generation. A violating program must not run on ANY engine. */
+    vm_clear_compile_failure();
+    if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
+
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
 
     /* Emit builtin function definitions as first-class closures */
@@ -1483,6 +1598,13 @@ static int emit_eskb_with_options(const char* source,
                                   const char* output_path,
                                   const VmEskbEmitOptions* options) {
     if (!source || !output_path || !options) return -1;
+    /* Engine parity, emit side: bytecode for a program that clones a qubit is
+     * an artifact for a program the type system rejected — the same thing the
+     * native engine refuses to write. Decided before compilation so nothing
+     * downstream can trust the file's existence. */
+    vm_clear_compile_failure();
+    if (vm_reject_linear_violations(source, output_path)) return -1;
+
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     compile_source_to_chunk_with_options(source, &main_chunk, options);
     /* Never write bytecode for a program that failed to compile: an emitted
@@ -2146,6 +2268,13 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
 int main(int argc, char** argv) {
+    /* Engine parity: this binary links the front end, so it installs the REAL
+     * linear (no-cloning) judgment — the same TypeChecker the LLVM engine uses,
+     * not a second implementation of the rule. Installed before anything is
+     * read, so no compilation path can run ahead of it. Without this the VM
+     * enforced nothing at all and ran a qubit clone to completion, exit 0. */
+    eshkol_vm_install_linear_check(eshkol_linear_check_source);
+
     /* SW-10: resolve the documented resource-limit environment variables before
      * anything runs. The VM sources themselves are freestanding-safe and never
      * touch the environment; this hosted entry point is where ESHKOL_VM_MAX_INSN
@@ -2229,7 +2358,13 @@ int main(int argc, char** argv) {
                 g_source_file_path = input;
                 run_failed = compile_and_run(source);
                 free(source);
-                printf("\n=== Execution complete ===\n");
+                /* A program the compiler REFUSED never executed, so saying it
+                 * completed would contradict the nonzero exit right above it
+                 * and read, to anything scraping this output, as a success.
+                 * A program that ran and then died is a different outcome and
+                 * keeps the completion banner it always had. */
+                printf(vm_compile_failed() ? "\n=== Compilation refused ===\n"
+                                           : "\n=== Execution complete ===\n");
             }
             if (run_failed) return 1;
         }

@@ -1,0 +1,336 @@
+# AD carrier manifest — the structural gate's input.
+#
+# CONTRACT
+#   Eshkol differentiates on more than one substrate. This file is the single
+#   place that says, for every high-level AD operator, WHICH DIFFERENTIATION
+#   CARRIER each substrate uses and whether that carrier is exact. It exists
+#   because the property "the VM and the native backend agree" was previously
+#   asserted only by comparing PROGRAM OUTPUT between the two engines, and an
+#   output comparison is structurally incapable of noticing that the two
+#   answers were produced by two independent implementations — or that one of
+#   them reached its answer by perturbing the input.
+#
+#   `scripts/gate_ad_shared_node_model.py` grades this file. It does NOT
+#   trust a single declaration in it: every `carrier:` claim is re-derived
+#   from the named source by extracting the operator's implementation block
+#   and classifying which carrier symbols it actually touches. A row that
+#   says `vm-dual-forward` over a body that performs a difference quotient is
+#   a FAIL, not a description. You cannot fix the gate by editing the
+#   manifest.
+#
+# INVARIANTS
+#   1. Every AD operator row in tests/vm_parity/PARITY.tsv is covered here,
+#      and every parity row named here exists there. Promoting an AD op to
+#      `vm-supported` without declaring its carrier fails the gate.
+#   2. A `vm-supported` parity row requires an EXACT carrier. Finite
+#      differences may never back a vm-supported AD op.
+#   3. `forked_carrier_budget` is a SHRINK-ONLY ratchet on the number of
+#      operators whose VM carrier is not the shared node model. It records
+#      the size of the fork, caps it, and is lowered — never raised — as the
+#      unification lands. Raising it requires a maintainer ruling in the PR
+#      body.
+#   4. Every finite-difference difference-quotient site inside `fd_scan.paths`
+#      must appear in `fd_allowlist` with an owner, the op it serves, and a
+#      justification. An FD site that is not ledgered is a FAIL.
+#   5. `fd_scan.paths` may not shrink below the union of every file named by
+#      an operator row. Deleting a file from the scan set to silence a finding
+#      fails the coverage check.
+
+schema: eshkol.ad_carrier_manifest.v1
+generated_at: "2026-08-25"
+measured_at_sha: "e65cb5b5"
+measured_with: "build/eshkol-run + build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
+
+# ── Carrier vocabulary ────────────────────────────────────────────────────
+#
+# `exact: true` means the carrier propagates a derivative by the chain rule
+# and returns the derivative the mathematics defines, to within floating-point
+# rounding of the elementary operations. `exact: false` means the carrier
+# approximates the derivative by evaluating the function at perturbed points,
+# so its answer carries a truncation error that depends on a step size.
+#
+# `shared: true` means one implementation serves both substrates.
+
+carriers:
+  shared-node-model:
+    exact: true
+    shared: true
+    description: >-
+      The Wengert reverse tape in lib/backend/vm_autodiff.c (AdTape / AdNode /
+      AdOpType), exported for LLVM codegen at lib/backend/vm_autodiff.c and
+      reached from native Scheme through lib/core/ad_tape_builtins.c's
+      ad_tape_new_owned(). One implementation, both substrates.
+    witnesses: ['\bad_(?:tape_new|const|var|add|sub|mul|div|sin|cos|exp|log|sqrt|neg|abs|relu|sigmoid|tanh|backward|get_value|gradient)\s*\(']
+
+  native-ad-node:
+    exact: true
+    shared: false
+    description: >-
+      The typed reverse-mode graph declared in inc/eshkol/eshkol.h
+      (ad_node_t / ad_tape_t / ad_node_type_t, ~80 node types including
+      AD_NODE_CUSTOM), emitted by lib/backend/autodiff_codegen.cpp and run by
+      lib/core/runtime_autodiff.cpp. NATIVE ONLY — see fork_debt below.
+    witnesses: ['\bAD_NODE_[A-Z0-9_]+', '\barena_allocate_ad_node\w*\s*\(']
+
+  native-jet:
+    exact: true
+    shared: false
+    description: >-
+      The native forward-mode jet with e1/e2/ep perturbation slots and a
+      Taylor tower (createDualNumber / makeDual8 / makeDual4 /
+      seedForwardAndPush in lib/backend/autodiff_codegen.cpp). NATIVE ONLY.
+    witnesses: ['\bseedForwardAndPush\w*\s*\(', '\bcreateDualNumber\s*\(', '\bmakeDual[48]\s*\(']
+
+  vm-dual-forward:
+    exact: true
+    shared: false
+    description: >-
+      The VM's flat forward dual VmDual {primal, tangent}
+      (lib/backend/vm_numeric.h, ops in lib/backend/vm_dual.c). One
+      perturbation, no nesting level, scalar only. VM ONLY — see fork_debt.
+    witnesses:
+      - '\bVM_AD_MAKE_DUAL\s*\('
+      - '\bvm_make_dual_val\s*\('
+      - '\bvm_dual_tangent_of\s*\('
+      - '\bvm_dual_(?:new|make|add|sub|mul|div|sin|cos|exp|log|sqrt|pow|abs|neg|relu|sigmoid|tanh|scale|from_double)\s*\('
+
+  vm-hyperdual-forward:
+    exact: true
+    shared: false
+    description: >-
+      The VM's second-order forward carrier VmHyperDual {f, f1, f2, f12}
+      (lib/backend/vm_hyperdual.c). VM ONLY — see fork_debt.
+    witnesses: ['\bVM_HD_MAKE\w*\s*\(', '\bvm_hd_make\s*\(']
+
+  finite-difference:
+    exact: false
+    shared: false
+    description: >-
+      Not a differentiation carrier at all: the derivative is approximated by
+      re-evaluating the function at perturbed points. Never permitted to back
+      an operator whose parity row reads vm-supported.
+    witnesses: []
+
+# ── Fork debt ─────────────────────────────────────────────────────────────
+#
+# The number of operator rows below whose `vm.carrier` is not
+# `shared-node-model`. SHRINK-ONLY. This is the honest size of the AD
+# implementation fork: each one is an operator the VM answers with its own
+# private carrier rather than the shared node model.
+#
+# Lowering it is the unification work. The blocking item is recorded in
+# fork_debt.blocked_on.
+
+fork_debt:
+  forked_carrier_budget: 9
+  blocked_on: >-
+    The VM has no dual-carrying tensor. VmTensor::data is a bare double*, so a
+    vector field that packs its components into a tensor drops every tangent at
+    construction. That single gap is why the VM's jacobian writes primals into
+    the derivative matrix for tensor-returning fields, and why divergence and
+    curl reached for a difference quotient in the first place. Closing it is a
+    tangent-carrying VmTensor plus the AD_CUSTOM tape extension sketched in
+    docs/reference/ad/architecture.md; until then the budget caps the fork at
+    its current size and this gate refuses to let it grow.
+
+# ── Operators ─────────────────────────────────────────────────────────────
+#
+# `vm.native_call_id` names the `case <id>:` block in `vm.file` that the gate
+# extracts and classifies. `vm.carrier` is CHECKED against that extraction,
+# not believed.
+
+operators:
+  - op: derivative
+    parity_rows: ["op:DERIVATIVE"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 393
+      carrier: vm-dual-forward
+    notes: >-
+      First order only. A dual-valued point raises rather than fabricating a
+      zero (ESH-0369); exact points are native-only (ESH-0394). Both are
+      recorded on the PARITY row.
+
+  - op: diff
+    parity_rows: ["op:DIFF"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 393
+      carrier: vm-dual-forward
+    notes: >-
+      Aliased to native call 393. Symbolic differentiation of a quoted
+      s-expression is unimplemented on the VM and raises (SW-06).
+
+  - op: gradient
+    parity_rows: ["op:GRADIENT", "gradient"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 750
+      helpers: [vm_gradient_compute, vm_ad_arg_slots]
+      carrier: vm-dual-forward
+    notes: >-
+      N forward passes, one seeded variable each. Byte-identical to native
+      across native / vm-src / vm-eskb on the gradient corpus. Exact, and
+      forked: the two engines reach the same numbers through two carriers that
+      share no code.
+
+  - op: jacobian
+    parity_rows: ["op:JACOBIAN", "jacobian"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 751
+      carrier: vm-dual-forward
+    notes: >-
+      Exact for scalar-valued f. For a tensor-returning vector field the VM
+      writes F_k(x) where dF_k/dx_i belongs, because VmTensor cannot carry a
+      tangent — booked as a gap on the PARITY row and as fork_debt.blocked_on.
+
+  - op: hessian
+    parity_rows: ["op:HESSIAN"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 752
+      carrier: vm-hyperdual-forward
+    notes: Exact second derivative via hyper-dual seeding; no finite differences.
+
+  - op: divergence
+    parity_rows: ["op:DIVERGENCE"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 753
+      carrier: vm-dual-forward
+    notes: >-
+      Exact forward-dual trace of the Jacobian. A tensor-returning field cannot
+      carry tangents through VmTensor and now raises a named error instead of
+      falling back to a difference quotient.
+
+  - op: curl
+    parity_rows: ["op:CURL"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 754
+      carrier: vm-dual-forward
+    notes: >-
+      Exact forward-dual off-diagonal Jacobian partials. A tensor-returning
+      field raises for the same reason divergence does.
+
+  - op: laplacian
+    parity_rows: ["op:LAPLACIAN"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 755
+      carrier: vm-hyperdual-forward
+    notes: Exact trace of the Hessian via hyper-dual seeding.
+
+  - op: directional-derivative
+    parity_rows: ["op:DIRECTIONAL_DERIV"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 756
+      carrier: vm-dual-forward
+    notes: One forward pass with the tangent seeded to the direction vector.
+
+  - op: ad-tape
+    parity_rows: ["ad-tape-new", "ad-var", "ad-const", "ad-backward", "ad-gradient"]
+    native:
+      file: lib/backend/vm_autodiff.c
+      carrier: shared-node-model
+    vm:
+      file: lib/backend/vm_native.c
+      native_call_id: 408
+      carrier: shared-node-model
+    notes: >-
+      The Scheme-visible Wengert tape. THE ONE UNFORKED AD SURFACE: both
+      substrates run lib/backend/vm_autodiff.c. This row is the shape every
+      other operator row is being moved toward.
+
+  - op: derivative-n
+    parity_rows: ["op:DERIVATIVE_N"]
+    native:
+      file: lib/backend/autodiff_codegen.cpp
+      carrier: native-jet
+    vm: null
+    notes: >-
+      Arbitrary-order Taylor-tower AD. No VM surface at all; the PARITY row
+      records it as a gap. A null `vm` block asserts the absence, so a future
+      VM implementation cannot appear without a carrier declaration.
+
+# ── Finite-difference scan ────────────────────────────────────────────────
+#
+# The gate reads every path below, strips comments and string literals, and
+# looks for the DIFFERENCE-QUOTIENT SHAPE: an epsilon-valued name that is both
+# added to and subtracted from a base expression, and divided into a
+# difference. That shape — not the magnitude of the constant — is what makes a
+# site a finite difference. Domain-guard clamps
+# (`select(denom < eps, eps, denom)`) and equality tolerances
+# (`fabs(a-b) < eps`) use their epsilon in a comparison only and are correctly
+# not flagged.
+
+fd_scan:
+  paths:
+    - lib/backend/vm_native.c
+    - lib/backend/vm_dual.c
+    - lib/backend/vm_hyperdual.c
+    - lib/backend/vm_autodiff.c
+    - lib/backend/vm_symbolic_ad.c
+    - lib/backend/autodiff_codegen.cpp
+    - lib/core/runtime_autodiff.cpp
+    - lib/core/ad_tape_builtins.c
+    - lib/core/ad/tape.esk
+    - lib/core/ad/checkpoint.esk
+    - lib/core/ad/guw.esk
+    - lib/core/ad/sparse_guw.esk
+    - lib/core/ad/interval.esk
+    - lib/core/ad/taylor_models.esk
+    - lib/core/ad/taylor_numerics.esk
+    - lib/core/ad/tensor_tower.esk
+
+# Every difference-quotient site the scan finds must appear here. `symbol` is
+# the epsilon-valued name; `path` is where it is bound. An unledgered site is
+# a FAIL — that is the whole point of the check.
+
+fd_allowlist:
+  - path: lib/core/ad/tape.esk
+    symbol: tape-fd-eps
+    owner: tsotchke
+    op: record-fd-op!
+    step: "1.0e-6"
+    justification: >-
+      DELIBERATE AND DECLARED. record-fd-op! is the pure-Scheme escape hatch
+      for an opaque forward function that supplies no analytic adjoint — the
+      Scheme-layer analogue of AD_NODE_CUSTOM, which is what a caller reaches
+      for when the adjoint genuinely does not exist in closed form. It is
+      named `record-fd-op!` at the call site, so a program that uses it says
+      so, and it is the only way to get a gradient through such an op at all.
+      It is NOT a fallback on any default gradient path: nothing in
+      lib/core/ad/tape.esk routes an ordinary op through it, and no
+      high-level operator (gradient / jacobian / hessian / divergence / curl /
+      laplacian / directional-derivative) can reach it implicitly. Central,
+      not forward, so the truncation error is O(h^2).

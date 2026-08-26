@@ -1,0 +1,25 @@
+;; Type System Test: a guard HANDLER that touches the binding is undecidable
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: is not statically decidable here
+;; EXPECT-STDERR: a guard handler that may run after a partial body
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: was consumed more than once
+
+;; An exception can be raised at ANY point in the body, including after the body
+;; has already consumed the qubit. So the handler's use of `q` is a second use
+;; on some paths and the first use on others, and neither answer is knowable
+;; here. Charging body-plus-handler would reject this program; charging the max
+;; would miss the double consumption. The analysis refuses to rule and SAYS so,
+;; which is the same discipline the rest of the boundary is held to.
+;;
+;; Compare qubit_linear_guard_body_ok_test.esk, where the handler names nothing
+;; linear and the body alone gives the verdict.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (guard-touches (q : Qubit))
+  (guard (e (#t (z q)))
+    (h q)))
+(display "a handler that touches the qubit is not decidable")
+(newline)
