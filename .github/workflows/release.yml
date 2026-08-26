@@ -339,6 +339,15 @@ jobs:
             cp "lib/math.esk" "$pkg_dir/share/eshkol/"
           fi
 
+          # CMake downstream-integration modules (ADR-0010 gap A10 follow-on):
+          # the canonical FindEshkol.cmake/EshkolCompile.cmake this repo ships,
+          # so a consumer's find_package(Eshkol) has a real discovery contract
+          # instead of guessing library names against whatever this step
+          # happens to produce this release.
+          mkdir -p "$pkg_dir/share/eshkol/cmake"
+          cp "cmake/FindEshkol.cmake" "$pkg_dir/share/eshkol/cmake/"
+          cp "cmake/EshkolCompile.cmake" "$pkg_dir/share/eshkol/cmake/"
+
           while IFS= read -r -d '' source_file; do
             rel_path="${source_file#lib/}"
             dest_path="$pkg_dir/share/eshkol/lib/$rel_path"
@@ -958,6 +967,13 @@ jobs:
           if (Test-Path 'lib\math.esk') {
             Copy-Item -LiteralPath 'lib\math.esk' -Destination $shareDir
           }
+
+          # CMake downstream-integration modules (ADR-0010 gap A10 follow-on) —
+          # see the matching macOS/Linux step's comment.
+          $shareCmakeDir = Join-Path $shareDir 'cmake'
+          New-Item -ItemType Directory -Force -Path $shareCmakeDir | Out-Null
+          Copy-Item -LiteralPath 'cmake\FindEshkol.cmake' -Destination $shareCmakeDir
+          Copy-Item -LiteralPath 'cmake\EshkolCompile.cmake' -Destination $shareCmakeDir
 
           $libRoot = (Resolve-Path 'lib').Path
           Get-ChildItem -Path 'lib' -Recurse -File -Filter '*.esk' | ForEach-Object {
