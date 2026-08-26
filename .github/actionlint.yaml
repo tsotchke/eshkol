@@ -1,0 +1,16 @@
+# Custom self-hosted runner labels used by this repository.
+#
+# actionlint validates every `runs-on` label against GitHub's hosted-runner
+# list and flags anything it does not recognise. The labels below are the
+# ones this repo assigns to its own runners; declaring them here is what
+# tells actionlint they are intentional rather than typos.
+#
+# Keep this list in sync with the label taxonomy table in
+# docs/platform/SELF_HOSTED_RUNNERS.md § Label taxonomy — that document is
+# the authority on what each label MEANS and when it may be assigned.
+self-hosted-runner:
+  labels:
+    - eshkol   # provisioned for this repo's build (LLVM 21, cmake, ninja, python3)
+    - gpu      # has a real, addressable GPU device — not merely a GPU toolchain
+    - cuda     # CUDA device plus nvcc on PATH; implies gpu
+    - metal    # Apple Silicon with a working Metal device; implies gpu

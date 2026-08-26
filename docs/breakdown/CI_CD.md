@@ -7,11 +7,15 @@
 
 ## Overview
 
-Eshkol uses three GitHub Actions workflows for continuous integration, release publishing, and website deployment. All workflows are defined in `.github/workflows/`.
+Eshkol's GitHub Actions workflows all live in `.github/workflows/`.
 
 | Workflow | File | Purpose |
 |----------|------|---------|
-| CI | `ci.yml` | Build and test on every push and pull request |
+| CI | `ci.yml` | Build and test on every pull request, and on pushes to the integration branches |
+| CI (mesh, self-hosted) | `ci-mesh.yml` | Advisory lanes on the maintainer's own hardware, including the only real-GPU execution lane. Off unless `ESHKOL_MESH_CI=on`; never a required check. See [Self-hosted runners](../platform/SELF_HOSTED_RUNNERS.md) |
+| GPU Execution Gate | `gpu-execution-gate.yml` | GPU-vs-CPU numeric diff on a `[self-hosted, gpu]` runner |
+| Adversarial Nightly | `adversarial-nightly.yml` | Nightly P8 escape-closure, TSan, packaging |
+| identity-guard | `identity-guard.yml` | Rejects commits carrying a denylisted author/committer identity |
 | Release | `release.yml` | Build artifacts and publish on version tags |
 | Deploy Site | `pages.yml` | Deploy project website to GitHub Pages |
 
@@ -21,8 +25,13 @@ Eshkol uses three GitHub Actions workflows for continuous integration, release p
 
 ### Triggers
 
-- **Push** to `master`, `develop`, or any `feat/**` branch
+- **Push** to `master` or `develop` — integration branches only
 - **Pull request** targeting `master`
+
+Topic branches are covered by the pull-request trigger alone. They are deliberately
+absent from the push trigger: a branch listed in both makes GitHub run the full
+matrix twice for one commit, and the superseded push run's `cancelled` check-runs
+then sit on the branch head looking like failed required checks.
 
 ### Build Matrix
 
