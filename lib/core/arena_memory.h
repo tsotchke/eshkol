@@ -461,7 +461,26 @@ struct eshkol_region {
     // makes the allocation-slot restore recoverable from the region stack alone,
     // which is what lets eshkol_region_unwind_to() close regions it did not open.
     arena_t* entry_saved_arena;
+    // SW-59: set by eshkol_region_pin_all() when a first-class continuation is
+    // captured while this region is open. Mirrors the bytecode VM's
+    // heap_region_pin_all() (lib/backend/vm_core.c) — a pinned region's arena
+    // is never freed (region_destroy() skips arena_destroy() and leaks the
+    // block chain instead), because a captured continuation's raw stack
+    // snapshot (eshkol_continuation_capture_stack(), runtime_continuations.cpp)
+    // may hold interior pointers into this region's arena that are not walkable
+    // the way a with-region result value is. Never cleared: the VM's own
+    // pin is likewise permanent for the life of the process (no unpin path
+    // exists there either) — see docs/reference/language/continuations.md
+    // "Limits" for the tradeoff this accepts (leak, never dangle).
+    int pinned;
 };
+
+// SW-59: pin every region currently on the calling thread's region stack.
+// Called once per continuation capture (see eshkol_make_continuation_state(),
+// runtime_continuations.cpp) whenever the stack is non-empty at capture time —
+// exactly the condition the VM checks (`vm->heap.regions.depth > 0`) before its
+// own heap_region_pin_all(). Idempotent and safe to call with no regions open.
+void eshkol_region_pin_all(void);
 
 // Thread-local region stack (safe for parallel-map + with-region)
 #define MAX_REGION_DEPTH 64

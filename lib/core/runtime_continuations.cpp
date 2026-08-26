@@ -187,6 +187,17 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     state->wind_mark = (void*)g_dynamic_wind_stack;
     state->promise_mark = eshkol_promise_eval_mark();
     state->region_mark = eshkol_region_mark();  // #341
+    // SW-59: a captured continuation's stack snapshot
+    // (eshkol_continuation_capture_stack(), below) may hold interior pointers
+    // into any region open right now — a with-region body that calls call/cc
+    // is exactly the case region_capture_resume.esk exercises. Pin every open
+    // region so a later with-region exit (which tears regions down through
+    // the single eshkol_region_unwind_to() path) leaks the arena instead of
+    // freeing it out from under the resumed continuation. Mirrors the VM's
+    // own guard (`vm->heap.regions.depth > 0`) before heap_region_pin_all().
+    if (state->region_mark > 0) {
+        eshkol_region_pin_all();
+    }
     // Filled in by eshkol_continuation_capture_stack() once setjmp has run.
     state->stack_lo = nullptr;
     state->stack_hi = nullptr;
