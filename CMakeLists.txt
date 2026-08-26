@@ -4425,6 +4425,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_
     add_test(NAME memory_abi_v2_test COMMAND memory_abi_v2_test)
 endif()
 
+# The layout-dependence ratchet. Regenerable machine inventory of every site
+# that depends on the current object header, baselined at .icc/abi-header-baseline.json;
+# fails when a commit introduces a new one outside the accessor.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME abi_header_inventory_ratchet
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
+                         check --repo ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_tagged_cons_test.cpp")
     add_executable(runtime_tagged_cons_test tests/core/runtime_tagged_cons_test.cpp)
     target_compile_features(runtime_tagged_cons_test PRIVATE cxx_std_17)
