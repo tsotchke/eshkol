@@ -4426,6 +4426,22 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_
     add_test(NAME memory_abi_v2_test COMMAND memory_abi_v2_test)
 endif()
 
+# Pins the heap object ABI — header size, every field offset and width, payload
+# alignment, and the link-time guard symbol. A change to the object layout has
+# no runtime discriminator (see inc/eshkol/abi_fingerprint.h), so an accidental
+# one produces wrong data rather than an error. This test is the tripwire.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/abi_layout_pin_test.cpp")
+    add_executable(abi_layout_pin_test tests/core/abi_layout_pin_test.cpp)
+    target_compile_features(abi_layout_pin_test PRIVATE cxx_std_17)
+    target_include_directories(abi_layout_pin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(abi_layout_pin_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(abi_layout_pin_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(abi_layout_pin_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME abi_layout_pin_test COMMAND abi_layout_pin_test)
+endif()
+
 # The layout-dependence ratchet. Regenerable machine inventory of every site
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.
