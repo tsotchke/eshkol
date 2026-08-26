@@ -1,0 +1,30 @@
+;; A continuation captured inside a function call which then RETURNS normally,
+;; re-invoked afterwards from a different dynamic extent. This is the shape a
+;; jmp_buf alone cannot survive: by the second invocation the capturing frame
+;; has been popped and its memory reused.
+;;
+;; This is a REGRESSION TEST for ledger SW-60. Native JIT and AOT used to SIGILL
+;; the instant the popped frame was re-entered.
+;;
+;; Note the second "about to re-invoke" line is correct, not a replay bug:
+;; re-entering k returns 11 into the `(display (f))` of the first line, and
+;; execution then continues forward through the remaining top-level forms with
+;; k now #f.
+;;
+;; EXPECTED on native JIT, native AOT and the bytecode VM:
+;;   f returned: 2 / about to re-invoke k after f's extent exited /
+;;   re-invoke result: 11 / about to re-invoke k after f's extent exited / done
+(define k #f)
+(define (f)
+  (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(display "f returned: ") (display (f)) (newline)
+;; f has now returned. Invoke the saved continuation from a completely
+;; different dynamic extent (top level, after several intervening calls).
+(display "about to re-invoke k after f's extent exited") (newline)
+(if k
+    (let ((k2 k))
+      (set! k #f)
+      (display "re-invoke result: ")
+      (display (k2 10))
+      (newline)))
+(display "done") (newline)

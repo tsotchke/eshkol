@@ -8347,12 +8347,17 @@ private:
                     offsetof(eshkol_continuation_state_t, wind_mark)));
             Value* wind_mark = builder->CreateLoad(PointerType::getUnqual(*context), wind_mark_ptr);
 
-            Function* unwind_func = module->getFunction("eshkol_unwind_dynamic_wind");
+            // Reroot rather than merely unwind: a continuation captured
+            // inside a `dynamic-wind` whose extent has since been left must
+            // re-run that extent's `before` thunk on the way back in, not just
+            // the `after` thunks of extents being left. Unwinding alone is
+            // only correct for escapes, where the target is an ancestor.
+            Function* unwind_func = module->getFunction("eshkol_reroot_dynamic_wind");
             if (!unwind_func) {
                 FunctionType* unwind_type = FunctionType::get(builder->getVoidTy(),
                     {builder->getPtrTy()}, false);
                 unwind_func = Function::Create(unwind_type, Function::ExternalLinkage,
-                    "eshkol_unwind_dynamic_wind", module.get());
+                    "eshkol_reroot_dynamic_wind", module.get());
             }
             builder->CreateCall(unwind_func, {wind_mark});
 
@@ -8396,17 +8401,21 @@ private:
             }
             builder->CreateCall(region_unwind_func, {state_ptr});
 
-            // Load jmp_buf_ptr and longjmp
-            Value* jmp_buf_ptr = builder->CreateLoad(PointerType::getUnqual(*context), state_ptr);
-
-            Function* longjmp_func = module->getFunction("longjmp");
-            if (!longjmp_func) {
-                FunctionType* longjmp_type = FunctionType::get(builder->getVoidTy(),
-                    {builder->getPtrTy(), builder->getInt32Ty()}, false);
-                longjmp_func = Function::Create(longjmp_type, Function::ExternalLinkage, "longjmp", module.get());
-                longjmp_func->addFnAttr(Attribute::NoReturn);
+            // Hand off to the runtime, which restores the continuation's saved
+            // stack image to its original addresses and then longjmps. Doing
+            // the longjmp here instead would resume on whatever now occupies
+            // the capturing frame's memory — the SW-51 crash. Continuations
+            // captured without a usable image fall back to a plain longjmp
+            // inside the helper, preserving escape-only behaviour exactly.
+            Function* resume_func = module->getFunction("eshkol_continuation_resume");
+            if (!resume_func) {
+                FunctionType* resume_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy()}, false);
+                resume_func = Function::Create(resume_type, Function::ExternalLinkage,
+                    "eshkol_continuation_resume", module.get());
+                resume_func->addFnAttr(Attribute::NoReturn);
             }
-            builder->CreateCall(longjmp_func, {jmp_buf_ptr, ConstantInt::get(builder->getInt32Ty(), 1)});
+            builder->CreateCall(resume_func, {state_ptr});
             builder->CreateUnreachable();
 
             // Normal closure dispatch continues here
@@ -15366,6 +15375,7 @@ private:
         if (func_name == "string->number") return strio_->stringToNumber(op);
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
+        if (func_name == "gensym") return codegenGensym(op);
         if (func_name == "ptr->string") return codegenPtrToString(op);
         if (func_name == "ptr->string-n") return codegenPtrToStringN(op);
         if (func_name == "make-string") return strio_->makeString(op);
@@ -22972,6 +22982,22 @@ private:
     // ===== CALL/CC — First-class continuations =====
     // Syntax: (call/cc proc) or (call-with-current-continuation proc)
     // Uses setjmp/longjmp: setjmp captures the return point, longjmp invokes the continuation
+    // True when this call/cc's continuation provably cannot outlive the
+    // capturing frame, so no stack image is needed. Requires proc to be a
+    // literal 1-parameter lambda whose body only ever calls the parameter;
+    // any other shape (a named procedure, a variadic lambda, a stored or
+    // returned reference) is treated as escaping.
+    bool callCCContinuationStaysLocal(const eshkol_operations_t* op) {
+        const eshkol_ast_t* proc = op->call_cc_op.proc;
+        if (!proc || proc->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* pop = &proc->operation;
+        if (pop->op != ESHKOL_LAMBDA_OP) return false;
+        if (pop->lambda_op.is_variadic || pop->lambda_op.num_params != 1) return false;
+        const eshkol_ast_t* params = pop->lambda_op.parameters;
+        if (!params || params[0].type != ESHKOL_VAR || !params[0].variable.id) return false;
+        return continuationUseStaysLocal(pop->lambda_op.body, params[0].variable.id);
+    }
+
     Value* codegenCallCC(const eshkol_operations_t* op) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -23006,14 +23032,42 @@ private:
 
         Value* jmp_buf_alloc = allocaJmpBuf("callcc_jmpbuf");
 
+        const bool stays_local = callCCContinuationStaysLocal(op);
+
         // Get arena pointer
         Value* arena_ptr = getArenaPtr();
 
+        // A continuation that may outlive its frame may also outlive the
+        // region it was captured in. `with-region` redirects
+        // eshkol_current_arena(), and region exit FREES that arena — native
+        // regions reclaim by escape-promoting values that leave, not by
+        // pinning. Putting the continuation's state, closure or stack image
+        // there would leave the resume path reading freed memory; it happens
+        // to survive only while the freed blocks are not yet reused, which is
+        // the dangling-reference failure in its purest form. Allocate from the
+        // process-wide shared arena instead, which outlives every region: the
+        // failure direction becomes a leak, never a dangle, matching the
+        // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
+        // does by pinning the region. Escape-only captures keep the current
+        // arena — such a continuation cannot outlive the region body that
+        // created it, so its state is correctly reclaimed with the region.
+        Value* cont_arena = arena_ptr;
+        if (!stays_local) {
+            Function* shared_arena_func = module->getFunction("get_global_arena_shared");
+            if (!shared_arena_func) {
+                FunctionType* shared_arena_type =
+                    FunctionType::get(builder->getPtrTy(), {}, false);
+                shared_arena_func = Function::Create(shared_arena_type,
+                    Function::ExternalLinkage, "get_global_arena_shared", module.get());
+            }
+            cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
+        }
+
         // Create continuation state on arena
-        Value* state_ptr = builder->CreateCall(make_state_func, {arena_ptr, jmp_buf_alloc}, "cont_state");
+        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
 
         // Create continuation closure
-        Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {arena_ptr, state_ptr}, "cont_closure");
+        Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");
 
         // Package continuation as tagged value (CALLABLE type)
         Value* cont_tagged = packPtrToTaggedValue(cont_closure_ptr, ESHKOL_VALUE_CALLABLE);
@@ -23026,6 +23080,28 @@ private:
 
         // Normal path: call proc with the continuation
         builder->SetInsertPoint(normal_bb);
+
+        // Snapshot the live stack so this continuation stays invocable after
+        // the frame capturing it has returned (SW-51). This must run here, on
+        // the normal path, rather than in setup_bb: the image has to contain
+        // the jmp_buf *after* setjmp wrote it, or resuming would jump through
+        // a stale buffer. Failure inside the helper is non-fatal and leaves
+        // the continuation escape-only, exactly as before.
+        //
+        // Skipped entirely when the continuation provably cannot outlive this
+        // frame — the escape/early-return idiom — so that overwhelmingly
+        // common use keeps the zero-overhead setjmp/longjmp path it has
+        // always had. See continuationUseStaysLocal().
+        if (!stays_local) {
+            Function* capture_stack_func = module->getFunction("eshkol_continuation_capture_stack");
+            if (!capture_stack_func) {
+                FunctionType* capture_stack_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy()}, false);
+                capture_stack_func = Function::Create(capture_stack_type, Function::ExternalLinkage,
+                    "eshkol_continuation_capture_stack", module.get());
+            }
+            builder->CreateCall(capture_stack_func, {cont_arena, state_ptr});
+        }
 
         // Evaluate the procedure argument
         Value* proc_val = codegenAST(op->call_cc_op.proc);
@@ -25182,6 +25258,33 @@ private:
         llvm::FunctionCallee fn = module->getOrInsertFunction(
             "eshkol_intern_symbol_lookup", fn_ty);
         Value* sym_ptr = builder->CreateCall(fn, {ptr}, "interned_sym");
+
+        return tagged_->packHeapPtr(sym_ptr);
+    }
+
+    // gensym: generate a fresh, uninterned symbol ("G<counter>", process-wide
+    // monotonically increasing counter). Was implemented in
+    // lib/core/introspection.cpp (eshkol_gensym / eshkol_gensym_prefix) but
+    // never wired into any dispatch table, so `(gensym)` failed with
+    // "Unknown function: gensym" on this backend. Wired the same way as the
+    // string->symbol sibling above: call the runtime helper for the raw
+    // symbol pointer and pack it as a HEAP_PTR tagged value (the header
+    // written by arena_allocate_symbol_with_header, inside
+    // eshkol_gensym_prefix, is what makes ESHKOL_GET_HEADER report
+    // HEAP_SUBTYPE_SYMBOL for it).
+    Value* codegenGensym(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 0) {
+            eshkol_warn("gensym requires exactly 0 arguments");
+            return nullptr;
+        }
+
+        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+
+        llvm::FunctionType* fn_ty = llvm::FunctionType::get(
+            builder->getPtrTy(), {builder->getPtrTy()}, false);
+        llvm::FunctionCallee fn = module->getOrInsertFunction(
+            "eshkol_gensym_ptr", fn_ty);
+        Value* sym_ptr = builder->CreateCall(fn, {arena_ptr}, "gensym_sym");
 
         return tagged_->packHeapPtr(sym_ptr);
     }
@@ -28738,6 +28841,89 @@ private:
     // bindings. Drives codegenDo's storage-class decision.
     bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ClosureCapture);
+    }
+
+    // ── Escape analysis for a captured continuation ───────────────────────
+    //
+    // Snapshotting the C stack is what makes a continuation survive its
+    // frame's return, but it costs an arena copy proportional to the live
+    // stack at every capture. The overwhelmingly common use of call/cc —
+    // early return / exception-style unwinding, `(call/cc (lambda (k) … (k v)
+    // …))` — never needs it: such a continuation can only be invoked while
+    // proc is running, hence while the capturing frame is still live, so the
+    // plain setjmp/longjmp path is already correct and free. Measured before
+    // this analysis: an escape-only call/cc at depth 200 burned ~270KB of
+    // arena per capture and drove a 3000-iteration loop into the 1GB heap
+    // limit, where it had previously used none.
+    //
+    // Returns true only when EVERY use of `name` is the operator of a direct
+    // call and none appears inside a nested lambda or named let (which could
+    // outlive the frame). Anything this does not model falls through to
+    // astReferencesVar(), so an unrecognised form is treated as escaping. The
+    // safe direction of error is `false`: a spurious false only pays for a
+    // stack copy that was not needed, whereas a spurious true would drop the
+    // image a later re-entry depends on.
+    bool continuationUseStaysLocal(const eshkol_ast_t* ast, const std::string& name) {
+        if (!ast) return true;
+        if (ast->type == ESHKOL_CONS) {
+            return continuationUseStaysLocal(ast->cons_cell.car, name) &&
+                   continuationUseStaysLocal(ast->cons_cell.cdr, name);
+        }
+        // A bare reference hands the continuation to something else.
+        if (ast->type == ESHKOL_VAR) {
+            return !(ast->variable.id && name == ast->variable.id);
+        }
+        if (ast->type != ESHKOL_OP) return true;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                const eshkol_ast_t* f = op->call_op.func;
+                const bool calls_it = f && f->type == ESHKOL_VAR && f->variable.id &&
+                                      name == f->variable.id;
+                if (!calls_it && !continuationUseStaysLocal(f, name)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!continuationUseStaysLocal(&op->call_op.variables[i], name))
+                        return false;
+                }
+                return true;
+            }
+            // Same func + variables[] layout, but no operator exemption: the
+            // head of an `if` is a value, not a callee.
+            case ESHKOL_IF_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP: {
+                if (!continuationUseStaysLocal(op->call_op.func, name)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!continuationUseStaysLocal(&op->call_op.variables[i], name))
+                        return false;
+                }
+                return true;
+            }
+            // A multi-expression lambda body is a sequence, so this is the
+            // shape the common `(lambda (k) … (k v) …)` idiom actually takes.
+            case ESHKOL_SEQUENCE_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (!continuationUseStaysLocal(&op->sequence_op.expressions[i], name))
+                        return false;
+                }
+                return true;
+            case ESHKOL_SET_OP:
+                // (set! g k) reaches the VAR case through the value and fails.
+                return continuationUseStaysLocal(op->set_op.value, name);
+            case ESHKOL_LAMBDA_OP:
+                // Any reference from inside a nested lambda may outlive us.
+                if (paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                     op->lambda_op.is_variadic ? op->lambda_op.rest_param
+                                                               : nullptr,
+                                     name)) {
+                    return true;
+                }
+                return !astReferencesVar(op->lambda_op.body, name);
+            default:
+                return !astReferencesVar(ast, name);
+        }
     }
 
     bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {

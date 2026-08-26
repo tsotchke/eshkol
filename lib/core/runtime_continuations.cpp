@@ -12,9 +12,152 @@
 
 #include <cstdint>
 #include <cstring>
+#include <csetjmp>
+#include <cstdlib>
+
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define ESHKOL_CONT_ASAN 1
+#  endif
+#endif
+#if !defined(ESHKOL_CONT_ASAN) && defined(__SANITIZE_ADDRESS__)
+#  define ESHKOL_CONT_ASAN 1
+#endif
+#if defined(ESHKOL_CONT_ASAN)
+extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t size);
+extern "C" void __asan_handle_no_return(void);
+#endif
 
 // Global dynamic-wind handler stack
 eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
+
+/* ── Stack-copying re-entrant continuations ──────────────────────────────────
+ *
+ * `call/cc` records a setjmp point, but a jmp_buf only names a stack address:
+ * once the capturing frame returns and its memory is reused, longjmp'ing back
+ * to it resumes on top of whatever now occupies those bytes. That is what made
+ * every generator / `amb` / coroutine shape crash on native (SW-60).
+ *
+ * The fix is to give the continuation a durable copy of the frames it needs.
+ * At capture we memcpy the live stack — from just below the capture point up
+ * to the thread's stack base — into the arena. At resume we copy those bytes
+ * back to the SAME addresses and then longjmp. Restoring in place is what
+ * makes this safe without any pointer relocation: frame pointers, saved
+ * registers spilled to the stack, addresses of locals that closures captured,
+ * and the jmp_buf itself all point where they always did.
+ *
+ * The one ordering constraint is that the restoring helper must not be running
+ * inside the region it is about to overwrite. resume_trampoline() recurses to
+ * push its own frame below stack_lo before copying.
+ *
+ * Multi-shot falls out for free: saved_stack is written once and never
+ * mutated, so each invocation restores the same pristine image.
+ */
+
+/* Slack kept between the restoring frame and the region being restored. */
+#define ESHKOL_RESUME_MARGIN 4096u
+/* Per-recursion stack consumed while pushing the trampoline frame down. */
+#define ESHKOL_RESUME_PAD 2048u
+
+/* Stack geometry is a platform question, and this file is freestanding core
+ * (see tests/toolchain/runtime_core_boundary_test.cpp — no pthread/OS calls
+ * here). The hosted runtime installs a probe at startup via
+ * eshkol_set_stack_base_hook(); a freestanding target that never installs one
+ * simply keeps escape-only continuations, which is the right answer for a
+ * target with no thread-stack notion to interrogate. */
+static eshkol_stack_base_fn g_stack_base_hook = nullptr;
+
+extern "C" void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn) {
+    g_stack_base_hook = fn;
+}
+
+/** @brief Highest address of the current thread's stack, or 0 if unknown. */
+static uintptr_t eshkol_stack_base(void) {
+    return g_stack_base_hook ? (uintptr_t)g_stack_base_hook() : (uintptr_t)0;
+}
+
+/**
+ * @brief Snapshot the live C stack above the capturing `call/cc` frame.
+ *
+ * Called from the call/cc normal path *after* setjmp has written the jmp_buf,
+ * so the captured image contains a jmp_buf that is valid to jump through.
+ * Failure is non-fatal and simply leaves saved_stack null, in which case
+ * resume falls back to the historical escape-only longjmp.
+ */
+extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    state->stack_lo = nullptr;
+    state->stack_hi = nullptr;
+    state->saved_stack = nullptr;
+    state->saved_len = 0;
+
+    uintptr_t base = eshkol_stack_base();
+    if (!base) return;                     /* unknown stack geometry: escape-only */
+
+    /* Our own frame is the deepest thing that must survive the copy. */
+    volatile char here = 0;
+    uintptr_t lo = (uintptr_t)&here;
+    if (lo >= base) return;                /* not the stack we think it is */
+
+    size_t len = (size_t)(base - lo);
+    void* copy = arena_allocate_aligned((arena_t*)arena_void, len, 16);
+    if (!copy) return;                     /* escape-only rather than half-captured */
+
+    memcpy(copy, (const void*)lo, len);
+    state->stack_lo = (void*)lo;
+    state->stack_hi = (void*)base;
+    state->saved_stack = copy;
+    state->saved_len = (uint64_t)len;
+}
+
+/**
+ * @brief Push this frame below the region about to be restored, then restore.
+ *
+ * Recurses (never tail-calls: the volatile pad and the asm barrier keep the
+ * frame real) until its own locals sit below stack_lo, so the memcpy cannot
+ * overwrite the frame performing it.
+ */
+static void resume_trampoline(eshkol_continuation_state_t* state) {
+    volatile char pad[ESHKOL_RESUME_PAD];
+    pad[0] = 0;
+
+    if ((uintptr_t)&pad[0] >= (uintptr_t)state->stack_lo - ESHKOL_RESUME_MARGIN) {
+        resume_trampoline(state);
+        __asm__ __volatile__("" :: "r"(&pad[0]) : "memory");
+        return;                            /* unreachable: the callee longjmps */
+    }
+
+#if defined(ESHKOL_CONT_ASAN)
+    /* The restored bytes are ordinary stack the sanitizer has poisoned as dead
+     * frames; writing them is intentional, and the longjmp leaves the shadow
+     * for the abandoned chain behind. */
+    __asan_unpoison_memory_region(state->stack_lo, (size_t)state->saved_len);
+    __asan_handle_no_return();
+#endif
+
+    memcpy(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
+    longjmp(*(jmp_buf*)state->jmp_buf_ptr, 1);
+}
+
+/**
+ * @brief Resume a captured continuation. Does not return.
+ *
+ * Restores the continuation's stack image when it has one, then longjmps to
+ * the capture point. Continuations captured where the stack geometry was
+ * unknown keep the historical escape-only behaviour.
+ */
+extern "C" void eshkol_continuation_resume(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state || !state->jmp_buf_ptr) {
+        eshkol_error("Invoked a continuation with no capture point");
+        abort();
+    }
+    if (state->saved_stack && state->saved_len) {
+        resume_trampoline(state);
+    }
+    longjmp(*(jmp_buf*)state->jmp_buf_ptr, 1);
+}
 
 /**
  * @brief Allocate and initialize the state captured by a `call/cc` invocation.
@@ -44,6 +187,22 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     state->wind_mark = (void*)g_dynamic_wind_stack;
     state->promise_mark = eshkol_promise_eval_mark();
     state->region_mark = eshkol_region_mark();  // #341
+    // SW-59: a captured continuation's stack snapshot
+    // (eshkol_continuation_capture_stack(), below) may hold interior pointers
+    // into any region open right now — a with-region body that calls call/cc
+    // is exactly the case region_capture_resume.esk exercises. Pin every open
+    // region so a later with-region exit (which tears regions down through
+    // the single eshkol_region_unwind_to() path) leaks the arena instead of
+    // freeing it out from under the resumed continuation. Mirrors the VM's
+    // own guard (`vm->heap.regions.depth > 0`) before heap_region_pin_all().
+    if (state->region_mark > 0) {
+        eshkol_region_pin_all();
+    }
+    // Filled in by eshkol_continuation_capture_stack() once setjmp has run.
+    state->stack_lo = nullptr;
+    state->stack_hi = nullptr;
+    state->saved_stack = nullptr;
+    state->saved_len = 0;
     return state;
 }
 
@@ -230,4 +389,64 @@ extern "C" void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
         g_dynamic_wind_stack = entry->prev;
         call_thunk_from_tagged(&entry->after);
     }
+}
+
+/** @brief Number of entries from @p e down to the root. */
+static int eshkol_wind_depth(const eshkol_dynamic_wind_entry_t* e) {
+    int d = 0;
+    while (e) { d++; e = e->prev; }
+    return d;
+}
+
+/**
+ * @brief Run `before` thunks from @p common outward to @p target, in order.
+ *
+ * Recurses first so the OUTERMOST extent being entered runs its `before`
+ * first, which is the order R7RS requires.
+ */
+static void eshkol_wind_enter(eshkol_dynamic_wind_entry_t* target,
+                              eshkol_dynamic_wind_entry_t* common) {
+    if (!target || target == common) return;
+    eshkol_wind_enter(target->prev, common);
+    call_thunk_from_tagged(&target->before);
+    g_dynamic_wind_stack = target;
+}
+
+/**
+ * @brief Move the dynamic-wind stack to @p target_void, running the thunks
+ *        the transfer crosses (R7RS 6.10 "rerooting").
+ *
+ * Unwinding alone is only correct when the target is an ancestor of the
+ * current extent — the escape case. Re-entering a continuation captured
+ * *inside* a `dynamic-wind` whose extent has since been left has to run that
+ * extent's `before` thunk again on the way back in, or the body resumes with
+ * its setup undone: exactly the silent state corruption naive implementations
+ * exhibit. Splitting at the common ancestor handles both directions and the
+ * general case where the jump leaves some extents and enters others.
+ *
+ * @param target_void The wind-stack mark saved at capture time.
+ */
+extern "C" void eshkol_reroot_dynamic_wind(void* target_void) {
+    auto* target = (eshkol_dynamic_wind_entry_t*)target_void;
+    if (g_dynamic_wind_stack == target) return;
+
+    /* Find the deepest entry common to both chains. */
+    const eshkol_dynamic_wind_entry_t* c = g_dynamic_wind_stack;
+    const eshkol_dynamic_wind_entry_t* t = target;
+    int dc = eshkol_wind_depth(c);
+    int dt = eshkol_wind_depth(t);
+    while (dc > dt) { c = c->prev; dc--; }
+    while (dt > dc) { t = t->prev; dt--; }
+    while (c != t) { c = c->prev; t = t->prev; }
+    auto* common = (eshkol_dynamic_wind_entry_t*)(uintptr_t)c;
+
+    /* Leave: innermost `after` first. */
+    while (g_dynamic_wind_stack != common) {
+        eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
+        g_dynamic_wind_stack = entry->prev;
+        call_thunk_from_tagged(&entry->after);
+    }
+    /* Enter: outermost `before` first. */
+    eshkol_wind_enter(target, common);
+    g_dynamic_wind_stack = target;
 }

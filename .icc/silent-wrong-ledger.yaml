@@ -3946,6 +3946,478 @@ entries:
     evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
     caught_by: [pr-record-416]
 
+  - id: DD-13
+    bucket: DOC-DEBT
+    status: closed
+    title: "continuations.md claims full multi-shot re-entrant continuations; four other docs say single-shot; the ESH-0080 note describes an already-fixed, unrelated bug as an ongoing limitation"
+    evidence: >-
+      docs/reference/language/continuations.md:27-48 ("A captured
+      continuation can be stored and invoked more than once — it is a full
+      re-entrant continuation, not merely a one-shot escape") directly
+      contradicts docs/breakdown/CONTINUATIONS.md:25-34+510-524,
+      docs/COMPLETE_LANGUAGE_SPECIFICATION.md:3303,
+      docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md:2929+2960, and
+      docs/breakdown/SCHEME_COMPATIBILITY.md:456-465+974, all of which state
+      continuations are single-shot via setjmp/longjmp. Separately,
+      continuations.md's own "Known limitation — deep CPS chains (ESH-0080)"
+      section describes SIGILL past depth ~16 as an ONGOING limitation, but
+      ESH-0080 was fixed on 2026-06-29 (commit 47338adb, "run native O0
+      cleanup for deep CPS") and its regression test
+      (tests/sicp/ch4_amb_deep_cps_test.esk) does not even use call/cc — it
+      is a pure manual-CPS/closure-chain test; the SIGILL it fixed was
+      missing LLVM cleanup passes at -O0 for deep non-call/cc closure
+      chains, unrelated to call/cc's setjmp/longjmp mechanics.
+    measured: >-
+      Direct execution at this branch's head confirms: (1) ESH-0080's
+      regression test still passes on native JIT and AOT (`ALL PASS`,
+      exit 0) — the fix holds, the doc's framing of it as unresolved is
+      stale; (2) call/cc re-entry is genuinely single-shot on native
+      (SW-60) and differently, non-conformantly broken on the VM (SW-61) —
+      neither engine delivers what continuations.md claimed.
+    resolution: >-
+      All five docs corrected to state the measured per-engine behavior
+      precisely (native: escape-only via setjmp/longjmp, single-shot;
+      bytecode VM: attempts a stack-snapshot re-entry mechanism but does not
+      correctly deliver multi-shot semantics either, see SW-61) rather than
+      the doc claiming more than either engine delivers. The ESH-0080 note
+      is corrected to state it was fixed (commit 47338adb), with a citation,
+      instead of describing it as ongoing. The ambition of full multi-shot
+      re-entrant continuations is KEPT, not deleted, and filed as a tracked
+      BUILD ITEM in continuations.md's own "Build item" section, per the
+      docs-are-the-blueprint convention established in
+      docs/design/AUDIT_2026_08_25_RESOLUTION.md (PR #468).
+    closed_at: "fix/continuations-and-gensym"
+    closed_by: "branch fix/continuations-and-gensym (PR pending)"
+    caught_by: [direct-measurement, cl-feasibility-study-2026-08-25]
+
+  # ───────────────────────── LOUD-ERROR ─────────────────────────
+  # SW-46..SW-50 reserved by in-flight PRs #466/#473/#474 and the S4 lane at
+  # the time this branch was cut from origin/master (73cc7cbb); none of those
+  # ids exist on this branch's copy of the ledger, so numbering resumes at
+  # the next id genuinely free here, per `grep -o 'id: SW-[0-9]*b*' | sort -V`.
+  - id: SW-60
+    renumbered_from: >-
+      SW-51. Filed as SW-51 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+      SW-51 ("INV-ad-exact-no-finite-differences was green while a central
+      difference shipped in the VM") on master first. Verified
+      SW-60 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: fixed
+    title: "call/cc re-entry into a returned native stack frame SIGILLs/SIGSEGVs (native JIT and AOT)"
+    repro: >-
+      tests/continuations/reentry_after_function_return.esk — a continuation
+      captured inside `(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))`
+      is invoked a second time, from top level, after `f` has already
+      returned normally and several intervening `display`/`newline` calls
+      have run. Also tests/continuations/generator_coroutine.esk, a
+      call/cc-based generator whose second `yield` re-entry crashes the same
+      way.
+    observed: >-
+      native JIT (-r): SIGILL ("illegal instruction") on
+      reentry_after_function_return.esk immediately on the re-invoke, after
+      correctly printing "f returned: 2" and "about to re-invoke k after
+      f's extent exited". native AOT: identical SIGILL at the identical
+      point. generator_coroutine.esk SIGSEGVs on native JIT/AOT on the
+      SECOND yield (after correctly printing "gen1: 1"). Eshkol's own
+      fatal-signal handler catches both and prints "this is most likely a
+      stack overflow" — a reasonable generic guess, but the actual
+      mechanism is `longjmp` (lib/backend/llvm_codegen.cpp's continuation-
+      invoke codegen, ~line 8350) restoring a jmp_buf whose target stack
+      frame (`inc/eshkol/eshkol.h`'s `eshkol_continuation_state_t::jmp_buf_ptr`,
+      set once at capture and never invalidated) has already been popped
+      and its memory reused by intervening calls.
+    root_cause: >-
+      Native call/cc is implemented as a single setjmp/longjmp pair per
+      capture (lib/core/runtime_continuations.cpp
+      eshkol_make_continuation_state; codegen at llvm_codegen.cpp ~8230-8360).
+      This is correct and efficient for escape-only use (early return,
+      exception-style unwind) but is undefined behavior the moment the
+      capturing C stack frame has returned before re-invocation — exactly
+      the shape every real generator/`amb`/coroutine pattern needs. Fixing
+      this requires a fundamentally different continuation representation
+      (segmented/heap-allocated stack or a CPS transform), not a local
+      patch — see the "Build item: full multi-shot re-entrant
+      continuations" section of docs/reference/language/continuations.md.
+    caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+    notes: >-
+      Not tag-blocking under this ledger's own bucket rules (LOUD-ERROR is a
+      crash with a diagnostic, not a silent wrong answer), but tracked here
+      because it is the concrete evidence behind the continuations.md
+      documentation fix and the BUILD ITEM. `call/cc` remaining escape-only
+      is NOT itself the defect — the defect was continuations.md claiming
+      more than native delivers. See SW-61 for the bytecode VM's own,
+      differently-shaped defect in the same area.
+    resolution: >-
+      FIXED by implementing the BUILD ITEM's heap-allocated-stack option. A
+      capture that may outlive its frame now copies the live C stack into the
+      arena (eshkol_continuation_capture_stack, lib/core/runtime_continuations.cpp);
+      invoking restores those bytes to the SAME addresses and then longjmps
+      (eshkol_continuation_resume + resume_trampoline), so every interior
+      pointer — frame pointers, spilled registers, addresses of locals held by
+      closures, the jmp_buf itself — stays valid with no relocation. The image
+      is never mutated, so re-invocation is unbounded. Escape-only captures are
+      unaffected: codegenCallCC omits the copy when the continuation provably
+      cannot outlive the frame, so early-return/unwind `call/cc` keeps the
+      original zero-overhead setjmp/longjmp path (measured within noise of the
+      pre-change build). The CPS-transform alternative was rejected; the
+      reasoning is recorded in continuations.md's "Delivered" section.
+    measured: >-
+      Re-measured at closure SHA on native JIT and native AOT:
+      tests/continuations/reentry_after_function_return.esk exits 0 (was
+      SIGILL/exit 132 on both) and tests/continuations/generator_coroutine.esk
+      exits 0 (was SIGSEGV/exit 139 on both). Both now produce output
+      byte-identical to the bytecode VM. New fixtures
+      tests/continuations/generator_multishot.esk and amb_backtracking.esk
+      report ALL PASS on JIT, AOT and VM. ctest 191/191.
+    closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+    closed_by: "branch feat/multishot-continuations"
+
+  # ───────────────────────── SILENT-WRONG ─────────────────────────
+  - id: SW-61
+    renumbered_from: >-
+      SW-52. Filed as SW-52 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. PR #487's feat/ad-structural-gate lane landed its own, unrelated
+      SW-52 on master first. Verified
+      SW-61 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
+    bucket: SILENT-WRONG
+    status: fixed
+    title: "bytecode VM continuation re-invocation replays completed top-level forms — hangs or produces wrong values, no diagnostic, exit 0 (when it exits)"
+    repro: >-
+      tests/continuations/doc_example_multishot.esk — the exact "Re-invocable
+      (multi-shot) continuations" example from
+      docs/reference/language/continuations.md, run on the bytecode VM.
+      Also tests/continuations/generator_coroutine.esk on the VM (a
+      call/cc-based generator/coroutine).
+    observed: >-
+      doc_example_multishot.esk on the VM: prints "1" once, then an
+      unbounded stream of "2" — never reaches "3" or "done". Left running
+      60s (~8.8 million lines of "2" printed) without the VM's own runaway-
+      instruction guard (ESHKOL_VM_MAX_INSN, default 10,000,000,
+      lib/backend/vm_run.c vm_limits_checkpoint) ever firing, because the
+      guard's instruction counter is a local variable
+      (`vm_insns_executed`) reinitialised to 0 every time control re-enters
+      the dispatch loop via a continuation invoke's
+      vm_escape_native_control()/longjmp, so it never accumulates far
+      enough to trip — an unconditional, silent hang with no built-in
+      escape valve. generator_coroutine.esk on the VM: does not hang, exits
+      0, prints no diagnostic, but the transcript is wrong — instead of
+      "gen1: 1 / gen2: 2 / gen3: 3 / gen4: done" it prints a garbled
+      replay (gen1:1, gen2:2, gen2:3, gen2:done, gen2:1, gen3:2, gen3:3,
+      gen3:done, gen3:1, gen4:2, gen4:3, gen4:done, gen4:1, done) —
+      OP_INVOKE_CC's full operand-stack/call-frame restore
+      (lib/backend/vm_run.c lbl_INVOKE_CC, ~line 1133) rewinds execution to
+      a point that then falls through the outer top-level-form driver and
+      re-executes later top-level forms a second (and third, and fourth)
+      time instead of resuming exactly at the consumer's `(next!)` call
+      site.
+    correct: >-
+      doc_example_multishot.esk should print "1" "2" "3" "done" and exit 0
+      (matches native JIT/AOT, which get this specific shape right — see
+      SW-60's notes on why). generator_coroutine.esk should print
+      "gen1: 1", "gen2: 2", "gen3: 3", "gen4: done".
+    cross_engine: >-
+      Native JIT/AOT get doc_example_multishot.esk's exact shape right
+      (same top-level frame, jmp_buf never invalidated) but SIGILL/SIGSEGV
+      on the other two fixtures (SW-60) — the two engines fail on
+      overlapping but non-identical re-entry shapes; neither delivers
+      general multi-shot re-entrant continuations.
+    root_cause: >-
+      The VM captures a continuation by snapshotting its own operand stack
+      and call-frame array (lib/backend/vm_run.c lbl_CALLCC, ~line 1069),
+      which is architecturally capable of real re-entry (unlike native's
+      setjmp/longjmp), but nothing in the restore path distinguishes "the
+      point the *consumer* is conceptually resuming at" from "replay the
+      rest of the top-level program from here" — every top-level form
+      after the resume point re-runs, including forms whose side effects
+      (mutating resume-k/return-k, printing labels) were already correct
+      the first time. Fixing this is part of the same BUILD ITEM as SW-60
+      (a real multi-shot design needs a coherent model of "the rest of the
+      program" that both engines implement the same way), not a
+      standalone bug in the VM's snapshot/restore mechanics.
+    caught_by: [direct-measurement, docs/reference/language/continuations.md audit]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, tests/control_flow/*, tests/vm_parity/*]
+    resolution: >-
+      FIXED. The root cause was not "replays later top-level forms" but a
+      store/control confusion: the VM binds every top-level definition to an
+      operand-stack slot, and a continuation snapshotted and restored
+      stack[0..sp) wholesale, so re-entry rolled the STORE back along with the
+      control state. R7RS `call/cc` captures control state only. A continuation
+      now snapshots and restores only the control region above an explicit
+      STORE/CONTROL boundary (OP_GLOBAL_MARK raises vm->global_top; see
+      vm_capture_continuation_stack / vm_restore_continuation_stack in
+      lib/backend/vm_run.c), so `set!` and `define` effects survive re-entry.
+      The one shape this single-array representation cannot express — a
+      top-level binding slot above a continuation's saved stack top — now fails
+      LOUDLY with a diagnostic naming the cause and the workaround, rather than
+      resuming onto a corrupted store.
+      Two further defects found while measuring this and fixed with it: a
+      one-armed `(if test conseq)` left nothing on its false path while every
+      consumer emits an unconditional OP_POP, silently overwriting the
+      top-level binding just above sp (reproducible with no call/cc at all);
+      and the runaway-instruction budget was a vm_run() local, so it reset to
+      zero on every continuation invoke and never tripped — it now lives on the
+      VM and accumulates, so an unbounded continuation loop fails loudly
+      instead of hanging silently.
+      `dynamic-wind` was additionally only ever unwound, never rerooted, on
+      BOTH engines: re-entering a continuation captured inside a
+      `dynamic-wind` whose extent had been left did not re-run that extent's
+      `before` thunk, so the body resumed with its setup undone. Both engines
+      now split at the common ancestor and run `after` outward then `before`
+      inward; the VM's wind entries record the before-closure, which
+      OP_WIND_PUSH previously discarded as NIL.
+    measured: >-
+      Re-measured at closure SHA on the bytecode VM:
+      tests/continuations/doc_example_multishot.esk now terminates with the
+      documented 1/2/3/done (was an unbounded stream of "2"). A store-mutation
+      probe that previously reported x=0 forever now matches the native JIT and
+      AOT oracles exactly (x=0,1,2,3 then final=4).
+      tests/continuations/generator_coroutine.esk exits 0 with output
+      byte-identical to native JIT and AOT — and that cross-engine agreement
+      also corrects this entry's own "correct" expectation: the transcript
+      gen1:1/gen2:2/gen3:3/gen4:done is NOT right for that program, which
+      captures return-k once inside the producer so every yield returns into
+      the first consumer's extent. tests/continuations/generator_multishot.esk
+      is the correctly structured generator and reports ALL PASS on all three
+      engines. scripts/run_vm_tests.sh 73/73, scripts/run_vm_parity.sh 188/188,
+      ctest 191/191.
+    closed_at: "dc28d1208a07d3995f695c8fef35b559886c4d6a"
+    closed_by: "branch feat/multishot-continuations"
+
+  - id: SW-62
+    renumbered_from: >-
+      SW-53. Filed as SW-53 on branch feat/multishot-continuations before
+      rebase/merge with origin/master. feat/linearity-complete landed its own, unrelated SW-53 ("linear
+      Qubit violations") on master first. Verified
+      SW-62 free against master and the other three in-flight branches
+      claiming ids in this range (fix/v135-correctness-debt: SW-54..56,
+      fix/resident-rss-longrun: SW-57, feat/tail-transfer-complete: SW-58)
+      before assigning it here.
+    bucket: SILENT-WRONG
+    status: open
+    title: "re-entering a continuation rolls back a mutated local that is neither a top-level binding nor closure-captured (native and bytecode VM)"
+    repro: >-
+      (define k #f)
+      (define n 0)
+      (define (f)
+        (let ((x 0))
+          (call/cc (lambda (c) (set! k c)))
+          (set! x (+ x 1))
+          x))
+      (display "f=") (display (f)) (newline)
+      (set! n (+ n 1))
+      (if (< n 3) (k 'again))
+      (display "done") (newline)
+    observed: >-
+      native JIT, native AOT and the bytecode VM all print f=1 then 1 then 1
+      then done, exit 0, no diagnostic. `x` is restored to its capture-time
+      value on every re-entry.
+    correct: >-
+      f=1 then 2 then 3 then done. `let` creates one location for `x` per
+      invocation of `f`; R7RS `call/cc` captures the control state, not the
+      store, so re-entering the continuation resumes with that location
+      holding whatever the last `set!` put there.
+    root_cause: >-
+      Neither engine performs assignment conversion. A `set!`-assigned local
+      that no closure captures lives directly in the frame — an LLVM alloca on
+      native, an operand-stack slot on the VM — rather than in a heap cell, so
+      it is inside the region a continuation snapshots and is restored with it.
+      Closure-captured mutable variables are already boxed on both engines and
+      are therefore correct; top-level bindings are correct on both engines
+      too (native keeps them outside the stack, and the VM excludes them from
+      the snapshot via the STORE/CONTROL boundary added in SW-61's fix).
+      The sound fix is assignment conversion: box every `set!`-assigned local
+      so the frame holds only immutable values and restoring it cannot roll a
+      location back.
+    notes: >-
+      Pre-existing in the sense that no engine ever handled it, but only
+      reachable now that re-entry into a returned frame works at all — on
+      native it previously crashed (SW-60) and on the VM this exact program
+      looped forever (SW-61), so this is a strictly narrower residual of two
+      defects that were both worse. Documented under "Limits" in
+      docs/reference/language/continuations.md rather than left implicit.
+      Not made LOUD because detecting it needs the same whole-function
+      assignment analysis that would fix it outright; the analysis is the fix,
+      so the next step on this entry is to implement it rather than to add a
+      diagnostic.
+    caught_by: [direct-measurement, branch feat/multishot-continuations]
+    missed_by: [tests/continuations/*, tests/vm_parity/*, ctest]
+    waiver:
+      owner: tsotchke
+      reason: >-
+        FLAGGED FOR AN EXPLICIT RULING, not routine. This is the one shape
+        where making re-entry work moved behaviour from a loud failure to a
+        silently wrong value: on the pre-change build this exact program
+        SIGSEGV'd on native (SW-60) and looped forever on the VM (SW-61); it
+        now returns 1 three times where R7RS says 1, 2, 3. Every other shape
+        the change touches moved from crash/hang to correct.
+        It is waived rather than made loud because neither available way of
+        making it loud is honest. A compile-time rule precise enough to catch
+        it — "an escaping call/cc anywhere plus a set! to a non-boxed local
+        anywhere" — is sound only within one compilation unit and would reject
+        correct programs that never re-enter a frame holding a mutated local,
+        including ordinary uses of the separately compiled stdlib. A narrower
+        rule covering only the capturing function would miss the caller-frame
+        case (a mutated local in a frame BELOW the capture is restored too),
+        which is precisely the partial-detector-presented-as-a-gate pattern
+        this project is eliminating.
+        The sound fix is assignment conversion — box every `set!`-assigned
+        local so a frame holds only immutable values and restoring it cannot
+        roll a location back. That is a self-contained follow-up on both
+        engines and is the recommended next step on this entry; the analysis
+        needed to detect the defect IS the fix, so building the diagnostic
+        first would be wasted work.
+      expires: "2026-12-31"
+
+  - id: SW-59
+    bucket: SILENT-WRONG
+    status: fixed
+    renumbered_from: >-
+      SW-54. Filed as SW-54 on branch feat/multishot-continuations before
+      rebase; by the time this entry closed, SW-54..56 had been claimed by
+      PR #466 (fix/v135-correctness-debt) and SW-57/SW-58 by #473
+      (fix/resident-rss-longrun) and #483 (feat/tail-transfer-complete)
+      respectively, all landing on master ahead of this branch (merged into it
+      via `git merge origin/master` rather than a linear rebase, once a
+      SW-51/52/53 id collision with master surfaced independently — see
+      SW-60..62 below). Verified
+      SW-59 free against master and all three of those branches at merge
+      time (`git show <branch>:.icc/silent-wrong-ledger.yaml | grep 'id: SW-'`)
+      before assigning it here.
+    title: "native: a continuation captured inside with-region dangles into the region's freed arena on resume (JIT and AOT)"
+    repro: >-
+      tests/continuations/region_capture_resume.esk, run with
+      ESHKOL_ARENA_POISON=1 set:
+        ./build/eshkol-run -r tests/continuations/region_capture_resume.esk
+        ./build/eshkol-run tests/continuations/region_capture_resume.esk -o /tmp-out && ESHKOL_ARENA_POISON=1 /tmp-out
+      (bytecode VM is unaffected: eshkol-vm-standalone-test on the same
+      fixture prints ALL PASS under the same env var, and emits its
+      pin-promotion note on stderr.)
+    observed: >-
+      Both native JIT and native AOT print the first "captured=(11 22 33 44
+      55)" line and then crash — SIGSEGV at address 0xcbcbcbcbcbcbcbcb, the
+      0xCB arena-poison fill byte repeated across a pointer-width read — on
+      the very first re-invocation of the continuation captured inside the
+      exited `with-region`. Reproduced 3/3 runs, both on the commit
+      aabc0b58 baseline and with the uncommitted lib/backend/llvm_codegen.cpp
+      + lib/repl/repl_jit.cpp change on branch feat/multishot-continuations
+      that redirects an escaping call/cc's own state+closure allocation to
+      get_global_arena_shared() (identical crash, same address, same line,
+      in both). WITHOUT ESHKOL_ARENA_POISON the fixture prints the fully
+      correct transcript and exits 0 on every engine — this is a real
+      use-after-free that the non-poisoned test oracle cannot see, not a
+      poisoning false positive: an escape-only control (with-region that
+      escapes a value via `set!` to a global, then 20000 iterations of
+      unrelated churn allocation, no call/cc at all) survives
+      ESHKOL_ARENA_POISON=1 cleanly on the same build.
+    correct: >-
+      captured=(11 22 33 44 55) printed three times, then
+      "final captured=(11 22 33 44 55)" / ALL PASS, matching
+      tests/continuations/expected/region_capture_resume.txt, with no crash
+      under any memory-diagnostic build.
+    root_cause: >-
+      `eshkol_continuation_capture_stack()` (lib/core/runtime_continuations.cpp)
+      copies the ENTIRE live C stack from the capturing frame up to the
+      thread's stack base into an arena-owned buffer, and
+      `resume_trampoline()` copies those bytes back to the SAME addresses
+      verbatim before longjmp'ing. That is sound for the bytes themselves,
+      but the snapshot is not sanitised: it includes whatever the
+      with-region body's own frame held on the C stack at capture time,
+      which is legitimately live at capture (the region's arena is still
+      open) but not evacuated the way ESH-0214c evacuates a `set!`-to-global
+      target. The dirty-file fix under review only re-homes the
+      continuation's OWN eshkol_continuation_state_t / closure / stack-image
+      buffer onto get_global_arena_shared() when the capture is classified
+      as escaping; it does not, and by construction cannot, walk the opaque
+      byte blob it captures for embedded pointers into the (about to be
+      freed) region arena. `region_destroy()` -> `arena_destroy()` runs
+      unconditionally at region_pop regardless of whether a continuation was
+      captured inside the region, so those interior pointers dangle the
+      moment the region's owning `with-region` form returns.
+      tests/continuations/region_capture_resume.esk's own header comment
+      ("native keeps the region alive for the same reason [as the VM]") is
+      not accurate for the code as it stands: grep confirms no
+      region_pin/pin_all analogue exists in lib/core/runtime_regions.cpp;
+      only the bytecode VM has one (heap_region_pin_all(), vm_run.c:171,
+      called from vm_capture_continuation_dynamic_state() whenever a
+      continuation is captured with vm->heap.regions.depth > 0). The
+      generic region-escape evacuator (runtime_regions.cpp evac_kind_for())
+      independently confirms it does not deep-walk continuation closures
+      either: CALLABLE_SUBTYPE_CONTINUATION is explicitly EVAC_LEAF,
+      documented as "their interior reference graph is not confidently
+      traversable here."
+    notes: >-
+      Found during verification of branch feat/multishot-continuations
+      (commits aabc0b58..7bd85799) prior to rebase/push — not previously
+      ledgered. The other 5 of 6 committed fixtures
+      (doc_example_multishot, generator_coroutine, generator_multishot,
+      amb_backtracking, reentry_after_function_return) all survive
+      ESHKOL_ARENA_POISON=1 cleanly on native JIT and AOT and on the VM;
+      this was isolated to the one shape where a continuation both escapes
+      its capturing frame AND was captured lexically inside a `with-region`
+      whose extent has since closed.
+    caught_by: [direct-measurement, branch feat/multishot-continuations]
+    resolution: >-
+      FIXED by giving native regions the same pin the bytecode VM already had.
+      `struct eshkol_region` (lib/core/arena_memory.h) gained a `pinned` int,
+      and a new `eshkol_region_pin_all()` (lib/core/runtime_regions.cpp) walks
+      the thread-local `__region_stack` and sets it on every currently-open
+      region — the exact semantics of `heap_region_pin_all()`
+      (lib/backend/vm_core.c:594), called under the exact same guard the VM
+      uses: `eshkol_make_continuation_state()` (lib/core/runtime_continuations.cpp)
+      calls it whenever `eshkol_region_mark() > 0` at capture time, mirroring
+      `vm->heap.regions.depth > 0` at lib/backend/vm_run.c:170-171. `region_destroy()`
+      now checks the flag before its `arena_destroy()` call: a pinned region's
+      arena is deliberately leaked (never freed for the remainder of the
+      process) rather than freed out from under a continuation whose raw
+      C-stack snapshot may hold interior pointers into it that no evacuator
+      can see or walk — the identical "leak, never dangle" failure direction
+      `vm_region_evacuate_pop()`'s promote-wholesale path (lib/backend/vm_region_evac.c:1106-1117)
+      already commits to when the VM's own evacuator cannot prove a region
+      safe to reclaim. Like the VM's pin, this one is never lifted: neither
+      substrate has an unpin path, because continuations carry no refcount to
+      unpin against — a Stage-1 policy documented as such in both
+      `struct eshkol_region`'s comment and
+      docs/reference/language/continuations.md. `eshkol_region_unwind_to()`
+      (runtime_regions.cpp:1971), the single teardown path every region
+      exit funnels through (lexical `with-region` exit, `region-close`, a
+      `raise` crossing the region, and a `call/cc` escape — see ADR-0011
+      section 6.1), needed no changes itself: the pin check lives entirely
+      inside `region_destroy()`, so all four teardown callers get the fix
+      for free and none of the three non-capturing paths change behavior.
+      `ESHKOL_OBJ_FLAG_PINNED` (inc/eshkol/eshkol.h:482-483) was considered
+      and not used: it is a per-object flag reserved by ADR-0011 for a guest
+      collector's objects under a moving collector (see that ADR section 6.2),
+      a different granularity than the region-arena-lifetime problem here,
+      where the hazard is an opaque stack-snapshot blob with no per-object
+      addressability at all.
+    measured: >-
+      tests/continuations/region_capture_resume.esk: 3/3 clean under
+      ESHKOL_ARENA_POISON=1 on native JIT, native AOT and the VM (was SIGSEGV
+      at 0xcbcbcbcbcbcbcbcb on JIT/AOT on the very first re-invocation).
+      scripts/run_continuation_tests.sh: 18/18 (6 fixtures x 3 engines) PASSED
+      both with and without ESHKOL_ARENA_POISON=1, repeated 3x under poison
+      with identical results. Escape-only regressions unaffected: dynamic_wind_test,
+      callcc_dynamic_wind_test, guard_advanced_test, guard_edge_test and
+      rec_dynamic_wind_10k all pass under poison unchanged (no with-region
+      involved, so no region is ever pinned on these paths). Flat-RSS
+      non-regression proven with no continuation ever captured:
+      tests/memory/region_mutating_loop_flat_rss_test.sh PASS (peak 83MB,
+      ceiling 300MB), tests/memory/define_loop_flat_rss_aot_test.sh PASS
+      (peak 8MB, ceiling 200MB), tests/memory/vm_region_flat_rss_test.sh
+      PASS (6/6, peak 28MB, ceiling 120MB) — confirming pinning triggers
+      only on an actual capture and a program that never calls call/cc shows
+      zero behavior change. ctest: 191/191. scripts/run_vm_parity.sh: 188/188.
+    closed_at: "4ed8c6894ddd77c30a88cf360c9f8de65b821210"
+    closed_by: "branch feat/multishot-continuations"
+
   # ───────────────────── VACUOUS-ASSURANCE ─────────────────────
 
   - id: SW-47

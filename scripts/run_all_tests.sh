@@ -127,6 +127,7 @@ TEST_SCRIPTS=(
     "run_surface_extension_tests.sh"
     "run_parser_tests.sh"
     "run_control_flow_tests.sh"
+    "run_continuation_tests.sh"
     "run_logic_tests.sh"
     "run_bignum_tests.sh"
     "run_rational_tests.sh"

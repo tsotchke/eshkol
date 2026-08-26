@@ -410,6 +410,7 @@ eshkol_region_t* region_create(const char* name, size_t size_hint) {
     // than nullptr) so a teardown that runs before eshkol_region_enter treats
     // the slot as untouched instead of restoring a null arena.
     region->entry_saved_arena = REGION_NO_HIJACK;
+    region->pinned = 0;  // SW-59: set only by eshkol_region_pin_all()
 
     eshkol_debug("Created region '%s' with size hint %zu",
                  name ? name : "(anonymous)", size_hint);
@@ -445,12 +446,30 @@ void region_destroy(eshkol_region_t* region) {
 
     const char* name = region->name ? region->name : "(anonymous)";
     const size_t used = region->arena ? arena_get_used_memory(region->arena) : 0;
-    eshkol_debug("Destroying region '%s', freeing %zu bytes", name, used);
 
-    if (region->arena) {
-        arena_destroy(region->arena);
-        region->arena = nullptr;
+    // SW-59: a pinned region — one a continuation was captured inside, see
+    // eshkol_region_pin_all() — must NOT have its arena freed here. The
+    // continuation's raw C-stack snapshot (eshkol_continuation_capture_stack(),
+    // runtime_continuations.cpp) may hold interior pointers into this arena
+    // that this call site cannot see and therefore cannot promote, unlike the
+    // with-region result value, which IS deep-promoted before this runs (see
+    // eshkol_region_unwind_to()). Freeing region->arena here means the
+    // resumed continuation dereferences 0xCB (or worse, silently reused
+    // memory) the instant it touches anything the with-region body built.
+    // The deliberate failure direction — matching the VM's own
+    // heap_region_pin_all()/vm_region_evac.c promote-wholesale path exactly —
+    // is to leak the arena instead: it is never freed for the rest of the
+    // process, but nothing captured inside it can ever dangle.
+    if (region->pinned) {
+        eshkol_debug("Region '%s' is pinned (continuation captured inside it); "
+                     "leaking %zu bytes of arena instead of freeing", name, used);
+    } else {
+        eshkol_debug("Destroying region '%s', freeing %zu bytes", name, used);
+        if (region->arena) {
+            arena_destroy(region->arena);
+        }
     }
+    region->arena = nullptr;
 
     // ESH-0214c: the deep-escape forwarding map's keys reference this region's
     // (now freed) arena; drop it with the region.
@@ -540,6 +559,36 @@ void region_pop(void) {
 eshkol_region_t* region_current(void) {
     if (__region_stack_depth == 0) return nullptr;
     return __region_stack[__region_stack_depth - 1];
+}
+
+/**
+ * @brief Pin every region currently open on the calling thread's region stack
+ *        (SW-59 — the native analogue of the bytecode VM's
+ *        heap_region_pin_all(), lib/backend/vm_core.c).
+ *
+ * Called from eshkol_make_continuation_state() (runtime_continuations.cpp)
+ * whenever a first-class continuation is captured with __region_stack_depth
+ * > 0 — exactly the guard the VM applies (`vm->heap.regions.depth > 0`)
+ * before its own pin_all. A pinned region's region_destroy() leaks its arena
+ * instead of freeing it (see region_destroy() above), because the
+ * continuation's stack snapshot may hold interior pointers into ANY
+ * currently-open region's arena, not only the innermost one — a `call/cc`
+ * nested two `with-region`s deep can be re-entered after both have exited,
+ * and either frame's locals may need either arena.
+ *
+ * Deliberately never unpinned (matching the VM, which has no unpin path
+ * either: a pin is a Stage-1 policy that trades "this region's memory is
+ * never reclaimed" for "no continuation can ever observe a freed region",
+ * for the remainder of the process). See
+ * docs/reference/language/continuations.md for the tradeoff as documented
+ * for users, and .icc/silent-wrong-ledger.yaml SW-59 for the defect this
+ * closes.
+ */
+void eshkol_region_pin_all(void) {
+    for (uint64_t i = 0; i < __region_stack_depth; ++i) {
+        eshkol_region_t* r = __region_stack[i];
+        if (r) r->pinned = 1;
+    }
 }
 
 /**

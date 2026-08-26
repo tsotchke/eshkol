@@ -599,6 +599,13 @@ class EshkolRepl {
                 eshkol_error_object_message:   (_obj, _out) => {},
                 eshkol_error_object_irritants: (_obj, _out) => {},
                 eshkol_unwind_dynamic_wind: () => {},
+                // Multi-shot re-entry (eshkol_continuation_resume) and its
+                // rerooting companion depend on the same native longjmp this
+                // build already can't provide, so they degrade the same way:
+                // reroot is a no-op (there is nothing to re-enter) and resume
+                // throws like the longjmp stub above it does.
+                eshkol_reroot_dynamic_wind: () => {},
+                eshkol_continuation_resume: () => { throw new Error('eshkol_continuation_resume (WASM stub) — not supported'); },
                 // Promise evaluation rollback accompanies hosted setjmp/
                 // longjmp.  Browser continuations are deliberately degraded,
                 // so these opaque markers are inert like the handler stubs.

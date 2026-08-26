@@ -1,0 +1,5 @@
+f returned: 2
+about to re-invoke k after f's extent exited
+re-invoke result: 11
+about to re-invoke k after f's extent exited
+done

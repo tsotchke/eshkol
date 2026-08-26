@@ -3419,7 +3419,19 @@ Invoking a captured continuation `k` with value `v`:
 2. Restores the captured continuation's dynamic extent.
 3. Returns `v` as the result of the original `call/cc` expression.
 
-**Constraint:** Continuations in Eshkol are single-shot; invoking a continuation more than once results in undefined behavior. This is a deliberate implementation restriction for performance (full `setjmp`/`longjmp` restores stack state, which is invalidated after first use).
+**Multi-shot:** A captured continuation may be invoked any number of times,
+from any dynamic extent, including after the procedure that captured it has
+returned. This holds on the native LLVM backend (both the `-r` JIT and the
+AOT compiler) and on the bytecode VM. Native gives a continuation that may
+outlive its frame a durable copy of the C stack it needs and restores those
+bytes to their original addresses before jumping; the VM snapshots its own
+operand stack and call frames, excluding the top-level binding slots, which
+are the store rather than the control state. Escape-only continuations —
+early return and exception-style unwinding — are recognised at compile time
+and keep the original zero-overhead `setjmp`/`longjmp` path, so the common
+case costs nothing. See `docs/reference/language/continuations.md` for the
+per-engine account, the ownership rule for continuations captured inside a
+region, and the two remaining limits.
 
 #### 16.1.3 Interaction with Dynamic Wind
 

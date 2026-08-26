@@ -505,7 +505,7 @@ All arithmetic operations (`+`, `-`, `*`, `/`, comparison, `abs`, `min`, `max`, 
 
 **Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,107 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 
-- `call/cc` -- single-shot continuations via setjmp/longjmp
+- `call/cc` -- multi-shot re-entrant continuations; escape-only captures keep the zero-overhead setjmp/longjmp path
 - `dynamic-wind` -- before/after thunks with proper unwinding on non-local exit
 - `guard`/`raise` -- R7RS exception handling with cond-style clauses
 - `with-exception-handler` -- low-level exception handler installation

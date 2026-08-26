@@ -37,10 +37,20 @@
        (equal? (symbol->string (string->symbol "bar"))
                (symbol->string (string->symbol "bar"))))
 
-;; NOTE: gensym is VM-only in v1.2; JIT/LLVM codegen path lacks a codegen
-;; builtin for it, so we skip gensym-round-trip tests here. The internal
-;; eshkol_gensym_prefix fix is covered by the symbol? / type-of tests
-;; which exercise the shared symbol-interning code path.
+;; gensym round-trip. Previously gensym was unreachable on EVERY engine (no
+;; codegen dispatch on native, no BUILTINS[] entry on the VM — the note that
+;; used to sit here claiming "VM-only" was itself wrong, since the VM had no
+;; wiring either; see tests/control_flow/gensym_test.esk for the full
+;; reachability/distinctness regression). Now wired on native (JIT/AOT) and
+;; the bytecode VM alike, so this round-trips identically to string->symbol
+;; above rather than being skipped.
+(define g1 (gensym))
+(check "gensym produces a symbol" (symbol? g1))
+(check "gensym twice yields distinct (eq?) symbols"
+       (not (eq? g1 (gensym))))
+(check "gensym round-trips through symbol->string / string->symbol"
+       (equal? (symbol->string (string->symbol (symbol->string g1)))
+               (symbol->string g1)))
 
 ;; NOTE: in v1.2 JIT mode, (type-of x) is shortcut to return the raw type
 ;; tag as an integer rather than routing through the introspection

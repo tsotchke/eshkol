@@ -1,0 +1,19 @@
+;; Exact example from docs/reference/language/continuations.md: a continuation
+;; captured at top level, saved, and re-invoked until a counter runs out.
+;;
+;; This is a REGRESSION TEST for ledger SW-61. The bytecode VM used to print
+;; "1" and then an unbounded stream of "2", never terminating: a continuation
+;; snapshotted and restored the whole operand stack, and because the VM binds
+;; every top-level define to an operand-stack slot, re-entry rolled `n` back to
+;; its capture-time value along with the control state. The loop guard could
+;; therefore never advance. R7RS call/cc captures the control state, not the
+;; store, so `set!` must survive re-entry.
+;;
+;; EXPECTED on native JIT, native AOT and the bytecode VM: 1 / 2 / 3 / done.
+(define k #f)
+(define n 0)
+(display (+ 1 (call/cc (lambda (c) (set! k c) 0))))
+(newline)
+(set! n (+ n 1))
+(if (< n 3) (k n))
+(display "done") (newline)

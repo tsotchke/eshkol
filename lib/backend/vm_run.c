@@ -120,12 +120,38 @@ static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
     return 1;
 }
 
+/* Slots [0, vm->global_top) are top-level bindings — the store. R7RS
+ * `call/cc` captures the control state, not the store, so a continuation
+ * snapshots only [global_top, sp) and a re-entry leaves the bindings below
+ * holding whatever the program has since `set!` into them. Capturing them
+ * too is what made every mutation between capture and re-entry silently
+ * revert (SW-52). */
+static int vm_continuation_stack_span(const VM* vm) {
+    int span = vm->sp - vm->global_top;
+    return span > 0 ? span : 0;
+}
+
 static size_t vm_continuation_allocation_size(const VM* vm) {
     return sizeof(VmContinuation) +
-        (size_t)vm->sp * sizeof(Value) +
+        (size_t)vm_continuation_stack_span(vm) * sizeof(Value) +
         (size_t)vm->frame_count * sizeof(CallFrame) +
         (size_t)vm->n_winds * 2 * sizeof(Value) +
         (size_t)vm->n_parameter_bindings * 2 * sizeof(Value);
+}
+
+/* Snapshot the control stack (operands above the store boundary) and the call
+ * frames. Must run before vm_capture_continuation_dynamic_state(), which lays
+ * its own arrays out after saved_frames. */
+static void vm_capture_continuation_stack(VM* vm, VmContinuation* cont) {
+    int span = vm_continuation_stack_span(vm);
+    cont->stack_base = vm->global_top;
+    cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
+    cont->saved_frames =
+        (CallFrame*)((char*)cont->saved_stack + (size_t)span * sizeof(Value));
+    memcpy(cont->saved_stack, vm->stack + cont->stack_base,
+           (size_t)span * sizeof(Value));
+    memcpy(cont->saved_frames, vm->frames,
+           (size_t)vm->frame_count * sizeof(CallFrame));
 }
 
 static void vm_capture_continuation_dynamic_state(VM* vm,
@@ -162,6 +188,94 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
         if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
         else cont->saved_parameter_values[i] = NIL_VAL;
     }
+}
+
+/* Restore the control half of a captured continuation: the operand slots at
+ * or above the *current* store boundary, plus the call frames.
+ *
+ * The store boundary can only have risen since capture (OP_GLOBAL_MARK is
+ * monotonic), so bindings established after the capture keep their current
+ * values rather than being rolled back to the snapshot — top-level `define`
+ * and `set!` are store effects and R7RS re-entry does not undo them.
+ *
+ * The one shape this representation cannot express is a top-level binding
+ * whose slot sits *above* the resumed stack top: restoring the snapshot would
+ * have to put operands where a live binding now lives. The VM keeps the store
+ * and the operand stack in one array, so there is no correct answer here —
+ * it fails LOUDLY rather than resuming onto a corrupted store.
+ *
+ * Returns 1 on success, 0 with vm->error set on failure.
+ */
+static int vm_restore_continuation_stack(VM* vm, const VmContinuation* cont) {
+    int base = vm->global_top;
+    if (base < cont->stack_base) base = cont->stack_base;   /* defensive */
+    if (base > cont->sp) {
+        fprintf(stderr,
+                "ERROR: cannot resume this continuation — %d top-level "
+                "binding slot(s) were established after it was captured, "
+                "above its saved stack top (%d). Resuming would overwrite "
+                "live bindings with stale operands.\n"
+                "  This is a representation limit of the bytecode VM, which "
+                "stores top-level bindings in operand-stack slots. Move the "
+                "affected top-level define(s) above the call/cc, or run this "
+                "program on the native backend.\n",
+                base - cont->sp, cont->sp);
+        vm->error = 1;
+        return 0;
+    }
+    memcpy(vm->stack + base,
+           cont->saved_stack + (base - cont->stack_base),
+           (size_t)(cont->sp - base) * sizeof(Value));
+    memcpy(vm->frames, cont->saved_frames,
+           (size_t)cont->frame_count * sizeof(CallFrame));
+    return 1;
+}
+
+/** @brief Identity of two wind-stack thunk values (same type, same payload). */
+static int vm_wind_value_same(Value a, Value b) {
+    if (a.type != b.type) return 0;
+    return a.as.i == b.as.i;
+}
+
+/**
+ * @brief Move the wind stack to the continuation's saved extent, running the
+ *        thunks the transfer crosses (R7RS 6.10 rerooting).
+ *
+ * Unwinding alone is only correct for an escape, where the target extent is an
+ * ancestor of the current one. Re-entering a continuation captured inside a
+ * `dynamic-wind` whose extent has since been left has to run that extent's
+ * `before` thunk again on the way back in, or the body resumes with its setup
+ * undone. Wind entries are pushed in dynamic order, so a shared prefix of the
+ * two stacks is a shared dynamic extent and nothing there needs to run.
+ */
+static void vm_reroot_winds(VM* vm, const VmContinuation* cont) {
+    int limit = vm->n_winds < cont->n_winds ? vm->n_winds : cont->n_winds;
+    int common = 0;
+    while (common < limit
+           && vm_wind_value_same(vm->wind_stack[common].before,
+                                 cont->saved_wind_befores[common])
+           && vm_wind_value_same(vm->wind_stack[common].after,
+                                 cont->saved_wind_afters[common])) {
+        common++;
+    }
+
+    /* Leave: innermost `after` first. */
+    while (vm->n_winds > common) {
+        vm->n_winds--;
+        vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after);
+    }
+    /* Enter: outermost `before` first. Publish each entry before running its
+     * thunk so a continuation captured inside a `before` sees a coherent
+     * stack. Parameter objects are re-established by the parameter-binding
+     * replay in vm_restore_continuation_dynamic_state(), not here. */
+    for (int i = common; i < cont->n_winds; i++) {
+        vm->wind_stack[i].before = cont->saved_wind_befores[i];
+        vm->wind_stack[i].after  = cont->saved_wind_afters[i];
+        vm->n_winds = i + 1;
+        if (cont->saved_wind_befores[i].type == VAL_CLOSURE)
+            vm_run_wind_after(vm, cont->saved_wind_befores[i]);
+    }
+    vm->n_winds = cont->n_winds;
 }
 
 static void vm_restore_continuation_dynamic_state(VM* vm,
@@ -289,13 +403,14 @@ void vm_run(VM* vm) {
         [OP_VOID]          = &&lbl_VOID,
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
+        [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
     };
 
     #define DISPATCH() do { \
         if (vm->halted || vm->error || vm->pc >= vm->code_len) goto vm_exit; \
         if (--vm_check_budget == 0) { \
             vm_check_budget = VM_CHECK_INTERVAL; \
-            if (!vm_limits_checkpoint(vm, &vm_insns_executed, vm_max_insn)) \
+            if (!vm_limits_checkpoint(vm, &vm->insns_executed, vm_max_insn)) \
                 goto vm_exit; \
         } \
         instr = vm->code[vm->pc++]; \
@@ -303,7 +418,9 @@ void vm_run(VM* vm) {
     } while(0)
 
     Instr instr;
-    uint64_t vm_insns_executed = 0;
+    /* budget lives on the VM (vm->insns_executed) so it survives the
+     * native-escape longjmp a continuation invoke performs; as a local it
+     * reset to 0 on every re-entry and the runaway guard never tripped. */
     const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
     unsigned vm_check_budget = VM_CHECK_INTERVAL;
     DISPATCH();
@@ -727,17 +844,12 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                while (vm->n_winds > cont->n_winds) {
-                    vm->n_winds--;
-                    Value after = vm->wind_stack[vm->n_winds].after;
-                    vm_run_wind_after(vm, after);
-                }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
                 if (vm->error) goto vm_exit;
-                memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
-                memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
+                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                 vm->sp = cont->sp; vm->fp = cont->fp;
                 vm->frame_count = cont->frame_count;
                 vm->n_handlers = cont->n_handlers;
@@ -798,12 +910,12 @@ void vm_run(VM* vm) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
                 if (vm->error) goto vm_exit;
-                memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
+                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                 vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                 vm_push(vm, val);
                 vm_escape_native_control(vm);
@@ -1082,10 +1194,7 @@ void vm_run(VM* vm) {
         cont->frame_count = vm->frame_count;
         cont->n_handlers = vm->n_handlers;
         cont->promise_mark = vm->promise_eval_head;
-        cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
-        cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
-        memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
-        memcpy(cont->saved_frames, vm->frames, vm->frame_count * sizeof(CallFrame));
+        vm_capture_continuation_stack(vm, cont);
         vm_capture_continuation_dynamic_state(vm, cont);
         vm->heap.objects[cont_ptr]->opaque.ptr = cont;
         /* Create continuation closure: a special closure that invokes OP_INVOKE_CC */
@@ -1138,18 +1247,13 @@ void vm_run(VM* vm) {
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
             if (cont) {
                 /* Unwind dynamic-wind after-thunks */
-                while (vm->n_winds > cont->n_winds) {
-                    vm->n_winds--;
-                    Value after = vm->wind_stack[vm->n_winds].after;
-                    vm_run_wind_after(vm, after);
-                }
+                vm_reroot_winds(vm, cont);
                 vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 /* Restore saved state (with bounds validation) */
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
                 if (vm->error) goto vm_exit;
-                memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
-                memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
+                if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                 vm->sp = cont->sp; vm->fp = cont->fp;
                 vm->frame_count = cont->frame_count;
                 vm->n_handlers = cont->n_handlers;
@@ -1180,13 +1284,14 @@ void vm_run(VM* vm) {
     }
 
     lbl_WIND_PUSH: {
+        /* The compiler has already called `before`; it leaves the before
+         * closure below the after closure so the entry can record BOTH.
+         * `before` is what a continuation re-entering this extent must run
+         * again (see vm_reroot_winds). */
         Value after = vm_pop(vm);
+        Value before = vm_pop(vm);
         if (vm->n_winds >= 32) { fprintf(stderr, "WIND STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        /* The compiler has already called before and leaves only the after
-         * thunk on the operand stack.  Keep before as metadata for future
-         * continuation re-entry support; consuming a second stack value here
-         * previously corrupted the surrounding dynamic extent. */
-        vm->wind_stack[vm->n_winds].before = NIL_VAL;
+        vm->wind_stack[vm->n_winds].before = before;
         vm->wind_stack[vm->n_winds].after = after;
         vm->n_winds++;
         DISPATCH();
@@ -1196,6 +1301,14 @@ void vm_run(VM* vm) {
         /* Normal-path after invocation is emitted explicitly by the
          * compiler.  This opcode only removes the exceptional-exit guard. */
         if (vm->n_winds > 0) vm->n_winds--;
+        DISPATCH();
+    }
+
+    lbl_GLOBAL_MARK: {
+        /* Raise the STORE/CONTROL boundary. Monotonic: a top-level binding,
+         * once established, stays established even if a continuation
+         * re-entry rewinds the instruction pointer past its define. */
+        if (instr.operand > vm->global_top) vm->global_top = instr.operand;
         DISPATCH();
     }
 
@@ -1211,13 +1324,15 @@ vm_exit:
     /* Same guard and the same configurable ceiling as the computed-goto path
      * above, so the two dispatch implementations of this one interpreter agree
      * about when a program has run away. */
-    uint64_t vm_insns_executed = 0;
+    /* budget lives on the VM (vm->insns_executed) so it survives the
+     * native-escape longjmp a continuation invoke performs; as a local it
+     * reset to 0 on every re-entry and the runaway guard never tripped. */
     const uint64_t vm_max_insn = g_eshkol_vm_max_insn;
     unsigned vm_check_budget = VM_CHECK_INTERVAL;
     while (!vm->halted && !vm->error && vm->pc < vm->code_len) {
         if (--vm_check_budget == 0) {
             vm_check_budget = VM_CHECK_INTERVAL;
-            if (!vm_limits_checkpoint(vm, &vm_insns_executed, vm_max_insn)) break;
+            if (!vm_limits_checkpoint(vm, &vm->insns_executed, vm_max_insn)) break;
         }
         Instr instr = vm->code[vm->pc++];
 
@@ -1556,12 +1671,12 @@ vm_exit:
                 Value val = vm->stack[vm->sp - 1];
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
                     if (vm->error) break;
-                    memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
+                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
                     vm_escape_native_control(vm);
@@ -1622,11 +1737,7 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)
                     vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) {
-                        vm->n_winds--;
-                        vm_run_wind_after(
-                            vm, vm->wind_stack[vm->n_winds].after);
-                    }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE ||
                         cont->frame_count > MAX_FRAMES) {
@@ -1635,10 +1746,7 @@ vm_exit:
                     }
                     vm_restore_continuation_dynamic_state(vm, cont);
                     if (vm->error) break;
-                    memcpy(vm->stack, cont->saved_stack,
-                           cont->sp * sizeof(Value));
-                    memcpy(vm->frames, cont->saved_frames,
-                           cont->frame_count * sizeof(CallFrame));
+                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                     vm->sp = cont->sp;
                     vm->fp = cont->fp;
                     vm->frame_count = cont->frame_count;
@@ -1912,10 +2020,7 @@ vm_exit:
             cont->frame_count = vm->frame_count;
             cont->n_handlers = vm->n_handlers;
             cont->promise_mark = vm->promise_eval_head;
-            cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
-            cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
-            memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
-            memcpy(cont->saved_frames, vm->frames, vm->frame_count * sizeof(CallFrame));
+            vm_capture_continuation_stack(vm, cont);
             vm_capture_continuation_dynamic_state(vm, cont);
             vm->heap.objects[cont_ptr]->opaque.ptr = cont;
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
@@ -1934,12 +2039,12 @@ vm_exit:
             if (cont_val.type == VAL_CONTINUATION) {
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_reroot_winds(vm, cont);
                     vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
                     if (vm->error) break;
-                    memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
+                    if (!vm_restore_continuation_stack(vm, cont)) goto vm_exit;
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
                     vm_escape_native_control(vm);
@@ -1983,11 +2088,16 @@ vm_exit:
         }
         case OP_WIND_PUSH: {
             Value after = vm_pop(vm);
-            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = NIL_VAL; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
+            Value before = vm_pop(vm);
+            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = before; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
             break;
         }
         case OP_WIND_POP: {
             if (vm->n_winds > 0) vm->n_winds--;
+            break;
+        }
+        case OP_GLOBAL_MARK: {
+            if (instr.operand > vm->global_top) vm->global_top = instr.operand;
             break;
         }
         /* OP_CLOSE_UPVALUE handled at line 720 — no duplicate */

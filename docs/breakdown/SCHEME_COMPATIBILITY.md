@@ -453,16 +453,36 @@ Eshkol implements `call-with-current-continuation` (aliased as `call/cc`) using 
 ```
 
 **Semantics:**
-- Continuations are **single-shot**: invoking a captured continuation more than once is not supported. This is a deliberate design choice — single-shot continuations via `setjmp`/`longjmp` have zero overhead on the normal (non-escape) path, whereas multi-shot continuations require copying the entire call stack.
+- Continuations are **multi-shot and re-entrant** on every engine — the `-r`
+  JIT, the AOT compiler, and the bytecode VM. A captured continuation may be
+  invoked any number of times, from any dynamic extent, including after the
+  procedure that captured it has returned. This is what generators,
+  coroutines and `amb`-style backtracking need.
 - The continuation object is a CALLABLE heap value with `HEAP_SUBTYPE_CONTINUATION`.
-- Continuation invocation triggers `longjmp` back to the capture point, unwinding the stack.
+- Escape-only continuations keep the zero-overhead `setjmp`/`longjmp` path.
+  The compiler recognises a capture whose continuation cannot outlive its
+  frame and omits the stack copy entirely, so early return and
+  exception-style unwinding cost exactly what they always did.
+- A continuation that may outlive its frame carries a durable copy of the C
+  stack it needs, restored to the original addresses before the jump. On the
+  bytecode VM the equivalent snapshot covers the operand stack and call
+  frames but deliberately excludes top-level binding slots, which are the
+  store: `set!` and `define` effects survive re-entry rather than being
+  rolled back with the control state.
+- `dynamic-wind` is rerooted, not merely unwound: re-entering a continuation
+  captured inside a `dynamic-wind` whose extent was left re-runs that
+  extent's `before` thunk on the way back in.
 
 **Comparison with other Scheme implementations:**
 - Racket/Chez Scheme: Full multi-shot continuations (can invoke the same continuation multiple times)
 - Gambit/Chicken: Full multi-shot via stack copying
-- Eshkol: Single-shot via setjmp/longjmp (matching the common use case of non-local exit)
+- Eshkol: Full multi-shot on every engine — stack copying on native, operand-stack/call-frame snapshotting on the bytecode VM — with escape-only captures kept on the zero-overhead setjmp/longjmp path
 
-For most practical Scheme patterns (early return, exception handling, coroutine-like constructs), single-shot continuations are sufficient. Programs requiring true coroutines or backtracking should use explicit state machines or the consciousness engine's logic programming facilities.
+Coroutines, generators and backtracking search are supported directly. Worked
+examples live in `tests/continuations/`: a producer/consumer generator, a
+McCarthy `amb` search that re-enters each choice point once per alternative,
+and a continuation captured inside `with-region` and resumed after the region
+exits. All are gated in CI on all three engines.
 
 ### dynamic-wind (R7RS 6.10)
 
@@ -971,7 +991,7 @@ Compile to WebAssembly with 73 DOM/Canvas/Event API bindings:
 | `error-object-irritants` | 6.11 | Missing | |
 | `exact-integer-sqrt` | 6.2.6 | Missing | Use `(inexact->exact (floor (sqrt n)))` as workaround |
 | Full R7RS library isolation | 5.6 | Limited | `define-library`, `import`, `export`, `only`, `except`, `rename`, explicit-prefix imports, and bare-prefix imports over provided exports lower to the existing `require`/`provide` module graph; strict hiding remains future module-privacy work |
-| Multi-shot continuations | 6.10 | Limited | `call/cc` is single-shot (setjmp/longjmp) |
+| Multi-shot continuations | 6.10 | Complete | Re-entrant on native JIT, native AOT and the bytecode VM; escape-only captures keep the zero-overhead setjmp/longjmp path — see `docs/reference/language/continuations.md` |
 | `syntax-case` | — | Missing | Only `syntax-rules` supported (sufficient for most macros) |
 | `char-ci=?` etc. | 6.6 | Missing | Case-insensitive character comparison |
 

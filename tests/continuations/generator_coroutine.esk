@@ -1,0 +1,47 @@
+;; A call/cc generator whose producer captures its return continuation ONCE,
+;; inside `producer`, rather than per request. Kept exactly as written because
+;; the transcript that follows from it is worth pinning: every `yield` returns
+;; into the extent of the FIRST consumer that entered the producer, so the
+;; genN labels and the values deliberately do not line up. See
+;; generator_multishot.esk in this directory for the correctly structured
+;; generator, which re-captures its return continuation on every next! and
+;; yields gen1:1 / gen2:2 / gen3:3 / gen4:done.
+;;
+;; This is a REGRESSION TEST for ledger SW-60. Native JIT and AOT used to
+;; SIGSEGV on the second yield, because a continuation was only a jmp_buf and
+;; the frame it named had already returned. An earlier version of this header
+;; asserted the correct output was gen1:1 / gen2:2 / gen3:3 / gen4:done; that
+;; is not what this program means, and native and the VM — two independent
+;; implementations — now agree byte for byte on the transcript below.
+;;
+;; EXPECTED on native JIT, native AOT and the bytecode VM:
+;;   gen1: 1 / gen2: 2 / gen2: 3 / gen2: done / gen2: 1 / gen3: 2 / gen3: 3 /
+;;   gen3: done / gen3: 1 / gen4: 2 / gen4: 3 / gen4: done / gen4: 1 / done
+(define return-k #f)
+(define resume-k #f)
+
+(define (yield v)
+  (call/cc (lambda (k)
+    (set! resume-k k)
+    (return-k v))))
+
+(define (producer)
+  (call/cc (lambda (ret)
+    (set! return-k ret)
+    (yield 1)
+    (yield 2)
+    (yield 3)
+    (return-k 'done))))
+
+(define (next!)
+  (if resume-k
+      (let ((k resume-k))
+        (set! resume-k #f)
+        (k 'go))
+      (producer)))
+
+(display "gen1: ") (display (next!)) (newline)
+(display "gen2: ") (display (next!)) (newline)
+(display "gen3: ") (display (next!)) (newline)
+(display "gen4: ") (display (next!)) (newline)
+(display "done") (newline)

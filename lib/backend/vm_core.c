@@ -102,7 +102,16 @@ typedef enum {
     /* Stable-hash marker immediately preceding a direct Scheme CALL/TCALL. */
     OP_LANGUAGE_COVERAGE_CALL = 65,
 
-    OP_COUNT = 66
+    /* operand = number of top-level binding slots established so far.
+     * Emitted once after each top-level form by compile_and_run(). Raises
+     * vm->global_top, the STORE/CONTROL boundary a continuation restore must
+     * not roll back across (see vm_restore_continuation() in vm_run.c). The
+     * VM binds every top-level define to a stack slot, so without this marker
+     * a continuation's stack snapshot restores the *store* along with the
+     * control state and `set!` mutations are silently undone (SW-52). */
+    OP_GLOBAL_MARK = 66,
+
+    OP_COUNT = 67
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -692,6 +701,20 @@ typedef struct VM {
     /* Dynamic-wind stack */
     struct { Value before; Value after; } wind_stack[32];
     int n_winds;
+
+    /* STORE/CONTROL boundary: stack slots [0, global_top) hold top-level
+     * bindings (the store), everything at or above is operand/frame state
+     * (the control stack). Raised monotonically by OP_GLOBAL_MARK. A
+     * continuation captures and restores only the control side. */
+    int global_top;
+
+    /* Runaway-instruction budget. This lives on the VM, not in a vm_run()
+     * local, so it accumulates across nested vm_run() calls (native->closure
+     * callbacks) and across the native-escape longjmp a continuation invoke
+     * performs. As a vm_run() local it was reset to zero on every
+     * continuation invocation, so an infinite continuation loop never tripped
+     * the guard and hung silently instead of failing loudly. */
+    uint64_t insns_executed;
 
     /* Dynamic parameter bindings parallel dynamic-wind for VM exception
      * unwinding.  Each entry names a VmParameter whose stack received an
@@ -1384,6 +1407,11 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
 
 /* Continuation: saved VM state for call/cc */
 typedef struct {
+    /* stack_base: the STORE/CONTROL boundary at capture time (vm->global_top).
+     * saved_stack holds slots [stack_base, sp) only. Slots below it are
+     * top-level bindings — the store — which R7RS `call/cc` does not capture
+     * and a re-entry must therefore never roll back (SW-52). */
+    int stack_base;
     int pc, fp, sp, frame_count, n_handlers, n_winds, n_parameter_bindings;
     /* `with-region` brackets open at capture. Invoking the continuation closes
      * every bracket entered since, exactly as native's

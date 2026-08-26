@@ -1624,12 +1624,16 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
 static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
-    /* Call before() */
+    /* Evaluate `before` once and keep the closure: the wind entry has to
+     * record it so a continuation re-entering this extent can run it again
+     * (R7RS rerooting). Recording only `after` made re-entry resume the body
+     * with its setup undone. */
     compile_expr(c, node->children[1], 0);
-    chunk_emit(c, OP_CALL, 0);
-    chunk_emit(c, OP_POP, 0);
+    chunk_emit(c, OP_DUP, 0);
+    chunk_emit(c, OP_CALL, 0);        /* call before() ... */
+    chunk_emit(c, OP_POP, 0);         /* ... and discard its result */
 
-    /* Push after thunk onto wind stack */
+    /* Push [before, after] onto the wind stack */
     compile_expr(c, node->children[3], 0);
     chunk_emit(c, OP_WIND_PUSH, 0);
 
@@ -4021,7 +4025,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             compile_expr(c, node->children[3], tail);
             patch(c, jend, OP_JUMP, c->code_len);
         } else {
+            /* One-armed `if`: the false path must still leave a value. Every
+             * consumer of an expression's result assumes exactly one — the
+             * `begin` sequencer, the operand-tracking helpers, and the
+             * top-level driver, all of which emit an unconditional OP_POP.
+             * Falling straight through to the merge point pushed nothing, so
+             * that POP removed a slot the expression never pushed, leaving sp
+             * one below the live top. Nothing faulted: reads go by absolute
+             * slot index, so the damage only surfaced when the next push
+             * overwrote the top-level binding sitting just above sp, silently
+             * replacing a live variable with an unrelated value. */
+            int jend = placeholder(c);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+            chunk_emit(c, OP_VOID, 0);
+            patch(c, jend, OP_JUMP, c->code_len);
         }
         return;
     }
