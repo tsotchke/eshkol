@@ -690,3 +690,70 @@ invariants:
       `leak_detection_gate` runtime_event criterion
       (.icc/completion-oracles.yaml).
     capability: leak_detection_armed
+
+  # 12. Object-header layout dependence is ratcheted, not surveyed.  A heap
+  #    object carries no discriminator for its own layout — `subtype` lives
+  #    inside the header you need the layout to find — so a site missed by an
+  #    ABI migration produces wrong data rather than an error.  The set of
+  #    layout-dependent sites is therefore established by machine and
+  #    re-established on every commit, and new sites are refused.
+  #    Expected PASS; introducing a raw header offset outside the accessor FAILs.
+  - id: INV-object-abi-site-ratchet
+    kind: intended-invariant
+    incident: object-abi-migration-blast-radius
+    severity: critical
+    description: >
+      Every site that depends on the current object-header layout is enumerated
+      by scripts/abi_header_inventory.py across fourteen detectors in three
+      layers (lexical token matching, libclang semantic resolution, and the
+      compiler's own emitted IR), baselined per class and file at
+      .icc/abi-header-baseline.json, and refused when a commit adds one.  The
+      classes a hand survey misses are the reason this is machined:  intra-header
+      field offsets (-7/-6/-4) that a search for -8 cannot see, raw byte
+      arithmetic that names neither the header type nor the accessor macro, and
+      persistent cache keys that omit the object ABI — a detector for an absence.
+      The tool also pins the layout it scans for against the declared struct, so
+      a header change that outruns the tool is a hard failure rather than a
+      silently narrowed scan.
+    invariant_name: object-header-layout-dependence-ratchet
+    impl: {path: scripts/abi_header_inventory.py, symbol: do_check}
+    reference: {path: scripts/abi_header_inventory.py, symbol: verify_layout_pin}
+    guard:
+      path: scripts/abi_header_inventory.py
+      symbol: do_check
+      pattern: 'violations\.append'
+    evidence:
+      trace_name_pattern: '^abi_object_header_ratchet$'
+      max_age_days: 45
+
+  # 13. A mixed-ABI link must be impossible, not merely unlikely.  The object
+  #     header's absence of a discriminator means a compiler and a runtime built
+  #     against different layouts link cleanly and read each other's objects at
+  #     the wrong offsets — silently.  The guard symbol's NAME encodes the
+  #     layout, so disagreement becomes an undefined symbol at link time.
+  #     Expected PASS; dropping either half of the pairing FAILs it.
+  - id: INV-object-abi-mixed-link-refused
+    kind: intended-invariant
+    incident: object-abi-silent-mixed-link
+    severity: critical
+    description: >
+      The runtime archive defines exactly one object-ABI guard symbol whose name
+      is derived by token pasting from the layout numbers, and the code generator
+      plants a reference to it in every emitted LLVM module as a data relocation
+      held live by llvm.used.  Halves built against different layouts therefore
+      name different symbols and the link fails, naming the layout the code
+      expected, instead of producing a binary that returns wrong answers.  Both
+      ends are required: a definition nothing references, or a reference nothing
+      defines, restores the silent failure.  Deliberately not emitted for wasm32,
+      which resolves the runtime surface through JS imports rather than this
+      archive — see ADR-0012 Stage 2.
+    invariant_name: object-abi-guard-symbol-pairing
+    impl: {path: lib/backend/memory_codegen.cpp, symbol: emitObjectAbiGuard}
+    reference: {path: lib/core/abi_fingerprint.c, symbol: eshkol_abi_fingerprint_name}
+    guard:
+      path: lib/backend/memory_codegen.cpp
+      symbol: emitObjectAbiGuard
+      pattern: 'appendToUsed'
+    evidence:
+      trace_name_pattern: '^abi_layout_pin$'
+      max_age_days: 45
