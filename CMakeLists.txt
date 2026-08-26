@@ -3825,7 +3825,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
-    # SW-46/47/48: a quoted datum must keep its KIND. Guards the #229 residue
+    # SW-54/55/56: a quoted datum must keep its KIND. Guards the #229 residue
     # ((or x '#()) answering () for every input), quoted vectors on both
     # engines, and quoted char/inexact literals on the VM.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/quoted_datum_kinds_test.esk")
