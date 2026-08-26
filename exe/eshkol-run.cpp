@@ -44,6 +44,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
+#include <deque>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -3984,18 +3985,28 @@ extern "C" {
  * IRs, since walking and freeing a multi-hundred-thousand-node AST at
  * exit is pure busywork on the way to _exit().
  *
- * exitcode=0 tells LSan to PRINT exit-time leaks (so we still see them
- * in CI logs and can drive the long-tail cleanup tracked under the
- * resource-management hardening epic) but not fail the build on them.
- * ASan's other checks — heap-buffer-overflow, use-after-free, invalid
- * free, double-free, stack-use-after-scope — remain hard failures.
- * UBSan is unaffected. Long-running leaks during execution can still
- * be caught by calling __lsan_do_recoverable_leak_check() at well-
- * defined recovery points if needed.
+ * This hook USED TO return "exitcode=0", which made LeakSanitizer print
+ * exit-time leaks without failing on them. The intent was to keep the
+ * known AST retention above from turning the ASan lane red. The effect
+ * was that NO leak could ever turn it red: measured on this branch, a
+ * hello-world `eshkol-run hello.esk -o hello` reported 248 387 bytes
+ * leaked in 28 748 allocations and still exited 0. Arming detect_leaks=1
+ * in CI (ADR-0010 gap A12) did not change that by itself — the detector
+ * ran, printed, and was overruled here, inside the binary, where no CI
+ * configuration could see it. A gate that cannot fail is not a gate.
  *
- * When the AST gains a proper destructor (epic #182, or the v1.3
- * arena-backed AST refactor), this override should be removed so that
- * any regression — a new alloc that *isn't* exit-time-only — fails CI. */
+ * exitcode is therefore no longer overridden: a leak now fails the
+ * process, and the known-acceptable retention is named site-by-site,
+ * with a reason per entry, in .icc/lsan-suppressions.txt. Adding a new
+ * unfreed allocation outside those named sites now turns the lane red,
+ * which is the whole purpose of running the detector.
+ *
+ * report_objects is likewise no longer forced on: it expanded a single
+ * hello-world report from ~2 800 lines to 148 231, which is what a CI
+ * log has to carry before anyone can read the one stack that matters.
+ *
+ * The remaining suppression entries retire when the AST gains a proper
+ * destructor (epic #182 / the arena-backed AST refactor). */
 /* clang exposes __has_feature; gcc does not (and using it as
  * `defined(__has_feature)` works on clang but mis-parses on gcc).
  * Detect each compiler's sanitizer macro independently. */
@@ -4014,13 +4025,54 @@ extern "C" {
 #ifdef ESHKOL_HAS_ASAN
 /**
  * LeakSanitizer options hook, picked up automatically by the LSan runtime.
- * Disables the nonzero exit code on leaks and suppression-list printing so
- * CI/sanitizer runs of eshkol-run don't fail on informational leak reports.
+ *
+ * Quiets suppression-list echoing only. It deliberately does NOT set
+ * `exitcode` (a leak must fail the process) and does NOT set
+ * `report_objects` (the per-object address dump is unreadable in CI logs);
+ * see the block comment above for the measurements behind both. Anything
+ * set here is still overridable by LSAN_OPTIONS in the environment.
  */
 extern "C" const char* __lsan_default_options(void) {
-    return "exitcode=0:print_suppressions=0:report_objects=1";
+    return "print_suppressions=0";
 }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * Driver-lifetime string storage.
+ *
+ * `compiled_files` and `output` hold `char*` of MIXED ownership: some entries
+ * are `argv[]`/`optarg` slices the driver must not free, others were
+ * `strdup()`ed here. That mix is why nothing ever freed them — you cannot free
+ * a vector half of whose elements belong to the C runtime — so every
+ * driver-synthesised path string leaked, unreachable, for the process lifetime.
+ *
+ * These strings genuinely ARE needed until the driver exits (they name the
+ * objects handed to the linker at the very end of main). The fix is therefore
+ * not to free them earlier but to give them a real owner: a function-local
+ * static deque. `std::deque` is required rather than `std::vector` because
+ * push_back on a vector may reallocate and move its elements, and a short
+ * std::string keeps its bytes INSIDE the string object (SSO) — so a vector
+ * regrow would dangle every `c_str()` already handed out. deque::push_back
+ * never invalidates references to existing elements.
+ *
+ * The store is reachable from a static root, so this retention is visible to
+ * LeakSanitizer as live memory rather than as a leak. That is the point: the
+ * memory is intentionally process-lifetime, and it should be *rooted*, not
+ * *suppressed*. No suppression entry is needed for any of these sites.
+ * ------------------------------------------------------------------------- */
+static const char* intern_driver_string(const std::string& s) {
+    static std::deque<std::string> storage;
+    storage.push_back(s);
+    return storage.back().c_str();
+}
+
+/* Same idea for the one `char**` the driver synthesises: the implicit
+ * `(require stdlib)` AST node needs a stable array-of-one module name. */
+static char** intern_driver_module_name_array(const std::string& name) {
+    static std::deque<std::vector<char*>> storage;
+    storage.push_back({const_cast<char*>(intern_driver_string(name))});
+    return storage.back().data();
+}
 
 int main(int argc, char **argv)
 {
@@ -4497,7 +4549,13 @@ int main(int argc, char **argv)
             // -e looked to the shell like a crash of the compiler rather than a
             // rejection of the program.
             try {
-                jit_ctx.execute(&ast);
+                /* execute() returns the form's result as a heap-allocated
+                 * int64_t and the contract is caller-owns (every eshkol-repl
+                 * call site deletes it). These two driver call sites dropped
+                 * it on the floor instead, leaking 8 bytes per top-level form
+                 * evaluated -- measured at exactly n+1 allocations for n
+                 * definitions under `-e`, so it grew with program length. */
+                delete static_cast<int64_t*>(jit_ctx.execute(&ast));
             } catch (const std::exception& e) {
                 eshkol_error("Evaluation failed: %s", e.what());
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
@@ -4681,7 +4739,8 @@ int main(int argc, char **argv)
 
                 if (is_load) {
                     try {
-                        jit_ctx.execute(&ast);
+                        /* Caller-owns; see the -e call site above. */
+                        delete static_cast<int64_t*>(jit_ctx.execute(&ast));
                     } catch (const std::exception& e) {
                         eshkol_error("JIT dependency load failed: %s", e.what());
                         file.close();
@@ -4699,7 +4758,9 @@ int main(int argc, char **argv)
 
             if (!batch.empty()) {
                 try {
-                    jit_ctx.executeBatch(batch, /*silent=*/false);
+                    /* Caller-owns; see the -e call site above. */
+                    delete static_cast<int64_t*>(
+                        jit_ctx.executeBatch(batch, /*silent=*/false));
                 } catch (const std::exception& e) {
                     eshkol_error("JIT batch execution failed: %s", e.what());
                     // Quirk #6 (2026-04-23): surface the failure in the
@@ -4936,8 +4997,8 @@ int main(int argc, char **argv)
         req_ast.type = ESHKOL_OP;
         req_ast.operation.op = ESHKOL_REQUIRE_OP;
         req_ast.operation.require_op.num_modules = 1;
-        req_ast.operation.require_op.module_names = (char**)malloc(sizeof(char*));
-        req_ast.operation.require_op.module_names[0] = strdup("stdlib");
+        req_ast.operation.require_op.module_names =
+            intern_driver_module_name_array("stdlib");
         req_ast.operation.require_op.import_prefixes = nullptr;
         req_ast.operation.require_op.import_except_names = nullptr;
         req_ast.operation.require_op.num_import_except_names = nullptr;
@@ -4971,7 +5032,8 @@ int main(int argc, char **argv)
             std::string stdlib_path = find_stdlib_object(lib_paths);
             if (!stdlib_path.empty()) {
                 eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
-                compiled_files.push_back(strdup(stdlib_path.c_str()));
+                compiled_files.push_back(
+                    const_cast<char*>(intern_driver_string(stdlib_path)));
             }
         }
     }
@@ -5383,8 +5445,9 @@ int main(int argc, char **argv)
             }
             esh0103_report("emit-object", esh0103_t_shared0, esh0103_now());
             shared_library_temp_object = temp_obj;
-            compiled_files.push_back(strdup(temp_obj.c_str()));
-            output = strdup(library_path.c_str());
+            compiled_files.push_back(
+                const_cast<char*>(intern_driver_string(temp_obj)));
+            output = const_cast<char*>(intern_driver_string(library_path));
 
             // ESH-0215 parity with the object path: a build system driving
             // `--shared-lib --emit-depfile` needs the same prerequisite list.
@@ -5418,10 +5481,11 @@ int main(int argc, char **argv)
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
-                compiled_files.push_back(strdup(temp_obj.c_str()));
+                compiled_files.push_back(
+                    const_cast<char*>(intern_driver_string(temp_obj)));
                 // Normalize the final output path now so the later link step
                 // uses the platform executable suffix on Windows as well.
-                output = strdup(exe_name.c_str());
+                output = const_cast<char*>(intern_driver_string(exe_name));
             } else {
                 // No object files to link, compile directly to executable
                 eshkol_info("Compiling to executable: %s", exe_name.c_str());

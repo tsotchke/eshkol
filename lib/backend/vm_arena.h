@@ -26,6 +26,46 @@
 #define VM_ARENA_MAX_REGIONS         64    /* Max region nesting depth */
 #define VM_ARENA_ALIGNMENT           8     /* 8-byte alignment */
 
+/* ── Poison (ADR-0010 gap A12) ──
+ *
+ * The native engine stamps 0xCB over arena bytes it is about to free or reuse
+ * whenever ESHKOL_ARENA_POISON is set (lib/core/runtime_arena_core.cpp's
+ * arena_destroy / arena_pop_scope, lib/core/runtime_regions.cpp's nursery
+ * recycle), so a stale pointer into reclaimed storage reads an obviously wrong
+ * value instead of whatever happened to land there next. The VM's *evacuator*
+ * grew the same treatment in lib/backend/vm_region_evac.c, but the arena
+ * primitives underneath it — the ones every non-evacuated VM path goes through
+ * — did not, so the coverage stopped at the one route that had a ledger entry.
+ *
+ * vm_arena_reset() is the sharp case. It keeps the first block and rewinds
+ * `used` to 0 without touching the bytes, so the very next bump allocation
+ * hands the same addresses to a new object: a missed reference does not read
+ * garbage, it silently aliases live data. That is the shape the poison byte
+ * exists to make loud.
+ *
+ * Same environment variable as the native engine and the VM evacuator, so one
+ * switch arms every route. The lookup is cached per translation unit; the
+ * value cannot change during a run.
+ */
+#define VM_ARENA_POISON_BYTE 0xCB
+
+static inline int vm_arena_poison_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("ESHKOL_ARENA_POISON");
+        cached = (v && *v && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+/** @brief Stamp the poison byte over @p len bytes of dead storage.
+ *
+ * A no-op unless poisoning is armed, so the release path pays one
+ * perfectly-predicted branch. */
+static inline void vm_arena_poison_range(void* p, size_t len) {
+    if (p && len && vm_arena_poison_enabled()) memset(p, VM_ARENA_POISON_BYTE, len);
+}
+
 /* ── Object Header (8 bytes, matches Eshkol's eshkol_object_header) ── */
 typedef struct {
     uint8_t  subtype;     /* Type identifier (0=cons, 1=closure, 2=string, 3=vector, etc.) */
@@ -100,6 +140,8 @@ static inline VmArenaBlock* vm_arena_block_create(size_t size) {
 
 static inline void vm_arena_block_destroy(VmArenaBlock* b) {
     if (!b) return;
+    /* Poison the live prefix before the allocator can hand it back out. */
+    vm_arena_poison_range(b->data, b->used);
     free(b->data);
     free(b);
 }
@@ -173,6 +215,10 @@ static inline void vm_arena_reset(VmArena* a) {
         VmArenaBlock* next = b->next;
         if (!keep) {
             keep = b;
+            /* The retained block's bytes are about to be re-handed out by the
+             * bump pointer, so they must be poisoned BEFORE `used` is rewound
+             * — this is the aliasing case, not the use-after-free case. */
+            vm_arena_poison_range(keep->data, keep->used);
             keep->used = 0;
             keep->next = NULL;
         } else {
@@ -201,7 +247,9 @@ static inline void vm_region_stack_destroy(VmRegionStack* rs) {
         rs->depth--;
         VmRegion* r = rs->stack[rs->depth];
         vm_arena_destroy(&r->arena);
+        vm_arena_poison_range(r, sizeof(*r));
         free(r);
+        rs->stack[rs->depth] = NULL;
     }
     vm_arena_destroy(&rs->global_arena);
 }
@@ -242,7 +290,9 @@ static inline void vm_region_pop(VmRegionStack* rs) {
     rs->depth--;
     VmRegion* r = rs->stack[rs->depth];
     vm_arena_destroy(&r->arena);
+    vm_arena_poison_range(r, sizeof(*r));
     free(r);
+    rs->stack[rs->depth] = NULL;
 }
 
 /* Allocate in the active region (or global arena) */

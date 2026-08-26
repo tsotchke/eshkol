@@ -1,0 +1,8 @@
+{
+  "description": "PR #451: arithmetic on a non-numeric operand raises a guard-catchable runtime condition rather than silently miscomputing or crashing. The compile itself succeeds (this is a runtime contract, not a compile-time diagnostic); guard must catch it and the program must complete normally.",
+  "esh_ref": "#451",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 0,
+  "stdout_contains": ["caught-451"]
+}

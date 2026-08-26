@@ -1,0 +1,8 @@
+{
+  "description": "PR #452: hash-keys on a non-hash-table operand raises a guard-catchable runtime condition instead of unpackPtr-ing a non-pointer tagged value and crashing the native process. The compile itself succeeds; guard must catch it and the program must complete normally.",
+  "esh_ref": "#452",
+  "compile": "ok",
+  "run": true,
+  "exit_code": 0,
+  "stdout_contains": ["caught-452"]
+}

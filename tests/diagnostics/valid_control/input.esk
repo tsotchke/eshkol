@@ -1,0 +1,8 @@
+;; Diagnostic corpus positive control: a program with NO diagnosable defect
+;; must compile and run cleanly. This is the counterpart to the "diagnosed
+;; program must not build and run" contract -- a fixture that is not
+;; diagnosed must be allowed to build AND run, so the corpus runner cannot
+;; pass by rejecting everything indiscriminately.
+
+(display "diagnostic-corpus-control-ok")
+(newline)

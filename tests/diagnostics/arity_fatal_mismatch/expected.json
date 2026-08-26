@@ -1,0 +1,10 @@
+{
+  "description": "Fatal arity mismatch: f takes 2 parameters, called with 4. Must be a fatal compile-time diagnostic naming the call site, and the program must not build.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "Arity mismatch: f expects 2 arguments but got 4",
+      "span": {"file": "input.esk", "line": 8, "col": 17}
+    }
+  ]
+}

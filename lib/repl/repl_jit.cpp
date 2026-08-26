@@ -771,13 +771,49 @@ ReplJITContext::ReplJITContext()
  * compiled modules and JIT dylibs.
  */
 ReplJITContext::~ReplJITContext() {
+    // NOTE: do NOT reset jit_ here. Tearing the LLJIT down inside this body
+    // (rather than leaving it to the member destruction that runs after it)
+    // looks safer — both maps below hold addresses ORC was given as absolute
+    // symbols — but it aborts the process: `-e` and `-r` end with
+    // "libc++abi: terminating due to uncaught exception of type
+    // std::__1::system_error: recursive_mutex lock failed: Invalid argument",
+    // AFTER printing the program's correct answer, because the driver has
+    // already run eshkol_runtime_shutdown() by the time this destructor is
+    // reached and ORC's session teardown then locks a mutex that is gone.
+    // Freeing the raw storage below without touching jit_ is what the
+    // pre-existing forward_ref_slots_ cleanup already did, and is safe for
+    // the same reason: no JIT-compiled code runs during teardown, so nothing
+    // dereferences these addresses after this point.
+
     // Free all forward-reference pointer slots allocated with 'new void*'
     for (auto& [name, ptr_slot] : forward_ref_slots_) {
         delete ptr_slot;
     }
     forward_ref_slots_.clear();
 
-    // LLJIT destructor handles remaining cleanup
+    // Free the per-variable REPL storage slots. addModule() allocates one
+    // 16-byte aligned tagged_value slot the first time a top-level variable
+    // is defined (posix_memalign / _aligned_malloc) and registers its address
+    // as an absolute JIT symbol so every later module's loads and stores hit
+    // the same address. The map holds them as raw `void*`, so destroying the
+    // map dropped the pointers without freeing them: one 16-byte leak per
+    // distinct top-level variable, for the lifetime of the process. Its
+    // sibling map above was already freed here; this one was simply missed.
+    // Measured before the fix: 352 bytes in 22 objects on the v1.2 edge-case
+    // suite alone, and it grows with the number of distinct variables a
+    // session defines, so a long REPL session never gave any of it back.
+    //
+    // The free MUST match the allocator: _aligned_malloc memory is invalid to
+    // pass to free() on Windows.
+    for (auto& [var_name, storage] : repl_var_storage_) {
+        if (!storage) continue;
+#ifdef _WIN32
+        _aligned_free(storage);
+#else
+        std::free(storage);
+#endif
+    }
+    repl_var_storage_.clear();
 }
 
 /**
@@ -2008,11 +2044,38 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
                 if (!symbol) {
                     consumeError(symbol.takeError());
 
-                    // Allocate actual memory for the function pointer
-                    // This allows us to update it when the real function is defined
-                    void** ptr_slot = new void*;
-                    *ptr_slot = reinterpret_cast<void*>(&__repl_forward_ref_stub);
-                    forward_ref_slots_[name] = ptr_slot;
+                    // Reuse this name's existing slot if we already made one.
+                    //
+                    // The jit_->lookup() above is the wrong question to ask on
+                    // its own: it reports whether the JIT can currently
+                    // RESOLVE the symbol, which is false both when the slot
+                    // has never existed and when it exists but the defining
+                    // module's ResourceTracker was evicted by the hot-reload
+                    // path below. In the second case this used to allocate a
+                    // second slot and overwrite the map entry, dropping the
+                    // first pointer with nothing left holding it: one leaked
+                    // 8-byte slot per top-level variable definition, measured
+                    // at exactly n+1 allocations for n definitions.
+                    //
+                    // Reusing the slot is also the semantically correct
+                    // answer, independent of the leak. The address of a
+                    // __repl_fwd_ slot is baked into every module already
+                    // linked against it, and the entire mechanism depends on
+                    // that address staying put so a later redefinition is
+                    // seen by earlier code. Handing out a NEW address for a
+                    // name that older modules still read through would point
+                    // updates at a slot nobody reads.
+                    void** ptr_slot = nullptr;
+                    auto existing = forward_ref_slots_.find(name);
+                    if (existing != forward_ref_slots_.end()) {
+                        ptr_slot = existing->second;
+                    } else {
+                        // Allocate actual memory for the function pointer
+                        // This allows us to update it when the real function is defined
+                        ptr_slot = new void*;
+                        *ptr_slot = reinterpret_cast<void*>(&__repl_forward_ref_stub);
+                        forward_ref_slots_[name] = ptr_slot;
+                    }
 
                     // Register the pointer slot address as the symbol
                     // When the module loads __repl_fwd_X, it gets this address,
@@ -2944,7 +3007,9 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     // Batch-compile all definitions together (allows forward references)
     if (!batch_asts.empty()) {
         try {
-            executeBatch(batch_asts, true, module_path, content);
+            // Caller-owned heap result; this load path has no use for it.
+            delete static_cast<int64_t*>(
+                executeBatch(batch_asts, true, module_path, content));
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
@@ -3553,10 +3618,15 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // first-class top-level binding. Returns the result of the last
     // sub-expression (sequence-of-expressions semantics).
     if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_SEQUENCE_OP) {
+        // execute() returns a caller-owned heap int64_t per sub-expression.
+        // Only the LAST one is returned to our caller, so every earlier one
+        // must be freed here — assigning over last_result used to drop it,
+        // leaking 8 bytes per sub-expression of every top-level sequence.
         void* last_result = nullptr;
         for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
             eshkol_ast_t* sub = &ast->operation.sequence_op.expressions[i];
             if (sub->type == ESHKOL_INVALID) continue;
+            delete static_cast<int64_t*>(last_result);
             last_result = execute(sub);
         }
         return last_result;
@@ -3704,7 +3774,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 }
             }
             if (!alias_asts.empty()) {
-                executeBatch(alias_asts, true);
+                // Caller-owned heap result; the alias batch has no value.
+                delete static_cast<int64_t*>(executeBatch(alias_asts, true));
             }
             return nullptr;
         }
