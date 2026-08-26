@@ -328,7 +328,7 @@ variable is bound to — user-reachable, so it cannot be recycled on the way out
 of the handler without the same liveness proof. A resident loop whose error
 boundary *fires* every tick therefore grows at 72 bytes/tick even though a loop
 whose boundary merely *stands* every tick is exactly flat. Note the asymmetry:
-entering a `guard` costs nothing (that was SW-53, fixed); raising through one
+entering a `guard` costs nothing (that was SW-57, fixed); raising through one
 costs a condition object.
 
 The gate fixture for this section (`tests/memory/iter_scope_partial_reclaim_test.esk`)
@@ -355,7 +355,7 @@ three: the previous occupant of a persistent slot) or has just gone out of scope
 (row four: a condition object the handler did not keep). The natural home is a
 store barrier driven by an ownership/uniqueness proof from the OALR ownership
 layer; a compacting pass over persistent slots is the alternative. Tracked as
-ledger entry SW-53's build item in
+ledger entry SW-57's build item in
 [`.icc/silent-wrong-ledger.yaml`](../../../.icc/silent-wrong-ledger.yaml).
 
 ## User-reachable region handles (#341)

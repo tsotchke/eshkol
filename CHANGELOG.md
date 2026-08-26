@@ -801,7 +801,7 @@ and a release gate that finally reads CTest results as oracle evidence.
 
 - **A resident daemon loop leaked 48 bytes per tick for as long as it ran,
   because every `guard` entry took a handler frame that was never given back
-  (SW-53).** The catch-all `guard` error boundary is *the* resident-loop idiom
+  (SW-57).** The catch-all `guard` error boundary is *the* resident-loop idiom
   this project documents, and `eshkol_push_exception_handler` bump-allocated
   each frame out of the process-global arena while `eshkol_pop_exception_handler`
   returned nothing — by design ("we leak here, but exception handlers should be

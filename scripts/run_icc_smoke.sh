@@ -655,9 +655,9 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
 
-probe resident_longrun_flat 'SW-53: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
+probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
     'cd "$REPO_ROOT";
-     ## SW-53. Every other flat-memory gate here stops at 100k ticks and asserts
+     ## SW-57. Every other flat-memory gate here stops at 100k ticks and asserts
      ## a peak-RSS CEILING. One point cannot tell "flat" from "linear with a
      ## small slope" (48 bytes/tick is 4.6MB over 100k — invisible under a 150MB
      ## ceiling, 3.1GB over a week-long daemon run), and peak RSS reads LOW on a

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/memory/resident_longrun_flat_gate.sh — SW-53 long-horizon residency gate.
+# tests/memory/resident_longrun_flat_gate.sh — SW-57 long-horizon residency gate.
 #
 # WHY THIS EXISTS, GIVEN THE FOUR FLAT-RSS GATES THAT ALREADY DO
 #
@@ -9,7 +9,7 @@
 # vm_region_flat_rss_test.sh). Both of those choices hide a linear leak:
 #
 #   1. ONE POINT IS NOT A CURVE. A ceiling at a single tick count cannot tell
-#      "flat" from "linear with a small slope". SW-53 leaked 48 bytes/tick — 4.6
+#      "flat" from "linear with a small slope". SW-57 leaked 48 bytes/tick — 4.6
 #      MB over 100k ticks, invisible under a 150 MB ceiling, but 3.1 GB over a
 #      week-long daemon run. The public benchmark suite found it only by sweeping
 #      to 400k. This gate therefore measures at TWO horizons and gates on the
@@ -18,7 +18,7 @@
 #   2. PEAK RSS IS THE WRONG INSTRUMENT TO GATE ON. `maximum resident set size`
 #      is a high-water mark of INSTANTANEOUS residency, so on a loaded host the
 #      memory compressor evicts pages and the recorded maximum comes back LOWER
-#      than what the process actually retains. Measuring the SW-53 repro on a
+#      than what the process actually retains. Measuring the SW-57 repro on a
 #      24-core box at load average ~200 produced 97 MB and 193 MB for the same
 #      binary on consecutive runs. A leak gate built on that number is quietest
 #      exactly when CI is busiest. This gate reads the arena's own byte counter
@@ -36,7 +36,7 @@
 #      "within a factor", byte-identical. One row per barriered mutation channel
 #      (vector-set! / hash-table-set! / set-cdr! / set! of a global), each inside
 #      the catch-all `guard` error boundary that makes a daemon loop resident,
-#      because SW-53's leak was one 48-byte handler frame per guard ENTRY and so
+#      because SW-57's leak was one 48-byte handler frame per guard ENTRY and so
 #      appeared only in the guarded shape.
 #
 #   B. PUBLISHED-BYTES RATE (hard gate, ceiling on the SLOPE). A loop that
@@ -206,7 +206,7 @@ measure() {
 }
 
 echo "=========================================================="
-echo "  SW-53 long-horizon residency gate"
+echo "  SW-57 long-horizon residency gate"
 echo "  short=${SHORT_TICKS} ticks   long=${LONG_TICKS} ticks"
 echo "  signal=global arena bytes (exact)   rss=${TIME_MODE:-unavailable} (advisory)"
 echo "=========================================================="

@@ -40,13 +40,13 @@ extern "C" int eshkol_arena_poison_enabled(void) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// SW-53: exact, load-independent retention probe for the process-global arena.
+// SW-57: exact, load-independent retention probe for the process-global arena.
 //
 // Peak RSS was the only flat-memory signal this repo's gates had, and it is a
 // poor one to gate on. `maximum resident set size` is a high-water mark of
 // INSTANTANEOUS residency, so on a loaded host the memory compressor evicts
 // pages and the recorded maximum comes back LOWER than what the process
-// actually retains — measuring the SW-53 repro on a 24-core box at load average
+// actually retains — measuring the SW-57 repro on a 24-core box at load average
 // ~200 gave 97 MB and 193 MB for the same binary on consecutive runs. A leak
 // gate built on that number is quietest exactly when CI is busiest.
 //

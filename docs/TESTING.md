@@ -13,7 +13,7 @@ Eshkol's correctness is defended by two layers of automated tests:
 Every root-cause fix ships with a dedicated regression gate wired into the
 readiness oracle. The v1.3.4-evolve cycle adds, among others:
 `iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
-`resident_longrun_flat` (SW-53: the same claim measured at two tick horizons and
+`resident_longrun_flat` (SW-57: the same claim measured at two tick horizons and
 gated on the *slope*, on the arena's exact byte counter rather than peak RSS —
 see `tests/memory/resident_longrun_flat_gate.sh`),
 `parallel_map_scope_reclaim_race` (deterministic + ThreadSanitizer-clean

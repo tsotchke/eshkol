@@ -3614,7 +3614,7 @@ entries:
       expires: "2027-12-31"
       owner: tsotchke
 
-  - id: SW-53
+  - id: SW-57
     bucket: SILENT-WRONG
     status: closed
     closed_at: "fix/resident-rss-longrun"
@@ -3626,7 +3626,7 @@ entries:
       at the time with the usual duplicate-id scan returning empty. Master's
       own vm/prelude-cache entry (28 builtins stale) independently landed
       under the SAME id SW-49 in the meantime (a textual merge does not
-      conflict on this), so on rebase this entry moves to SW-53, the next id
+      conflict on this), so on rebase this entry moves to SW-57, the next id
       free across the whole ledger (highest prior id in use was SW-52);
       master's entry keeps SW-49, being the earlier-landed one.
     title: "A resident daemon loop leaks 48 bytes per tick forever: every `guard` entry takes a handler frame that is never given back"

@@ -839,7 +839,7 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// SW-53: HANDLER-FRAME STORAGE IS LIFO, SO ITS ALLOCATOR MUST BE.
+// SW-57: HANDLER-FRAME STORAGE IS LIFO, SO ITS ALLOCATOR MUST BE.
 //
 // A `guard` frame's lifetime is exactly the dynamic extent of the guard: it is
 // pushed at `guard` entry and popped at every exit (normal completion, caught
@@ -914,7 +914,7 @@ extern "C" void eshkol_pop_exception_handler(void) {
     if (g_exception_handler_stack) {
         eshkol_exception_handler_t* popped = g_exception_handler_stack;
         g_exception_handler_stack = popped->prev;
-        // SW-53: recycle rather than abandon. The frame is dead the instant it
+        // SW-57: recycle rather than abandon. The frame is dead the instant it
         // leaves the chain (see the block above: nothing else can hold it), so
         // returning it to the free list makes a re-entered guard — a resident
         // tick loop's error boundary — cost no allocation at all.
