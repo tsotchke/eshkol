@@ -10,6 +10,23 @@ description: 'Allowlist for icc doc-typed-claims ''wrong'' findings that are not
 generated_at: '2026-08-14T15:43:58Z'
 generated_from: 'icc doc-typed-claims --repo eshkol-pr416-reconcile --format json, final integrated worktree
   based on HEAD eec11a1c with current source measurements (llvm_codegen.cpp 42,974; CMakeLists.txt 6,484)'
+regenerated_at: '2026-08-26'
+regenerated_from: >-
+  B5/N5 (2026-08-26 audit): icc doc-typed-claims --repo eshkol-release-gate-fixes --claim-limit 20000
+  --finding-limit 1000 --format json at afbaaf5b + this fix's own doc corrections, measured
+  final_wrong_count=101 (74 entries as of 2026-08-14 had drifted to only 66 still matching by claim_id --
+  claim_id is a hash over path+line+value, and CHANGELOG.md/ROADMAP.md/the press sheet all grew new content
+  ABOVE these dated entries between 2026-08-14 and 2026-08-26, shifting their line numbers and therefore
+  their hashes with no change in the underlying reasoning). Of the 35 "unexplained" wrong findings measured
+  against the 2026-08-14 allowlist: 8 were exactly those drifted entries, re-hashed here in place (same
+  disposition and reasoning, updated path:line:claim_id, cross-referencing the superseded id); the other 27
+  were plain current-size claims in reference/architecture docs (README.md, docs/API_REFERENCE.md,
+  docs/DESIGN.md, docs/ESHKOL_V1_ARCHITECTURE.md, docs/breakdown/{COMPILER_ARCHITECTURE,OVERVIEW,REPL_JIT,
+  SCHEME_COMPATIBILITY,XLA_BACKEND}.md) that the codebase had simply grown past -- corrected IN THE DOC TEXT
+  to today's measured line counts rather than allowlisted, since an allowlist entry excuses a claim the
+  detector cannot correctly ground, not a claim that is simply stale and trivially fixable. This is why
+  entries here (74) plus doc corrections (27) plus zero remaining open build items reconciles exactly
+  against the freshly measured 101.
 detector_fix_references:
 - gap: family-sum misattribution
   detail: When a sentence states an aggregate line count across a list of files (e.g. 'totalling roughly
@@ -56,42 +73,49 @@ detector_fix_references:
     claim, even when the same document''s explicit LOC column states the correct total two words later.'
   affected_count: 1
 entries:
-- claim_id: 113a2c2fe899ec0a
+- claim_id: 83e3d96767009590
   path: CHANGELOG.md
-  line: 730
+  line: 1010
   claim_type: file_path
   subject: entry.esk
   value: 6
   disposition: DETECTOR-MISATTRIBUTION
   reason: illustrative/hypothetical example filename used to explain a diagnostic-location bug ("a 3-line
-    entry file... entry.esk:6:13") -- not a real file citation; no such file exists anywhere in the tree
-- claim_id: a40eeb1f4131fca1
+    entry file... entry.esk:6:13") -- not a real file citation; no such file exists anywhere in the tree.
+    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 730 to 1010 as
+    newer CHANGELOG entries were prepended above it; old claim_id 113a2c2fe899ec0a
+- claim_id: 52bdbeafc5f0dae0
   path: CHANGELOG.md
-  line: 2494
+  line: 2774
   claim_type: numeric
   subject: lib/backend/weight_matrices.c
   value: 3998
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size at the historical "Restored weight_matrices.c"
-    commit, not a claim about current size
-- claim_id: 0b957d56adc324fb
+    commit, not a claim about current size. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same
+    claim, line shifted from 2494 to 2774 as newer entries were prepended above it; old claim_id a40eeb1f4131fca1
+- claim_id: 4e87c5b0975ac7f9
   path: CHANGELOG.md
-  line: 2552
+  line: 2832
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 1280
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size immediately after a specific historical extraction
-    commit ("now ~1,280 lines, down from 19,940")
-- claim_id: bae9969294758239
+    commit ("now ~1,280 lines, down from 19,940"). Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) --
+    same claim, line shifted from 2552 to 2832 as newer entries were prepended above it; old claim_id
+    0b957d56adc324fb
+- claim_id: c8a520fb5c6b3af7
   path: CHANGELOG.md
-  line: 3351
+  line: 3631
   claim_type: numeric
   subject: lib/backend/eshkol_vm.c
   value: 8457
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the monolithic VM file size at the historical "Dual Backend
-    Architecture (NEW)" entry, before the later vm_*.c module split
+    Architecture (NEW)" entry, before the later vm_*.c module split. Re-hashed 2026-08-26 (N5
+    doc-typed-claims-residual fix) -- same claim, line shifted from 3351 to 3631 as newer entries were
+    prepended above it; old claim_id bae9969294758239
 - claim_id: 57387765719ed7b5
   path: RELEASE_NOTES.md
   line: 1145
@@ -101,25 +125,33 @@ entries:
   disposition: EXEMPT-HISTORICAL
   reason: sits inside the dated "What's New in v1.1.12-accelerate" section of RELEASE_NOTES.md -- a per-release
     historical record; arena_memory.cpp was later removed/renamed in a subsequent refactor
-- claim_id: d27b81581fe23998
+- claim_id: b5a63e3fc8a18dd4
   path: ROADMAP.md
-  line: 271
+  line: 312
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 1280
   disposition: EXEMPT-HISTORICAL
   reason: a completed [x] checklist row recording the before/after size of a specific historical refactor
-    commit ("19,940 -> 1,280 lines, 94% reduction"), identical historical fact to the CHANGELOG:2464 entry
-- claim_id: 19c390f38b1e1bd1
+    commit ("19,940 -> 1,280 lines, 94% reduction"), identical historical fact to the CHANGELOG:2464 entry.
+    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 271 to 312 as
+    newer roadmap content was added above it; old claim_id d27b81581fe23998
+- claim_id: 43c73baba4c6e949
   path: docs/API_REFERENCE.md
-  line: 7122
+  line: 7123
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 22400
   disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum sentence ("1,867-line dispatcher plus ~22,300 lines across thirteen per-domain tensor_*_codegen.cpp
-    modules") -- detector bound the aggregate 22,300 to the dispatcher file alone; true family total today
-    is 22,320, so the prose figure is still accurate
+  reason: family-sum sentence ("1,867-line dispatcher plus ~22,400 lines across thirteen per-domain tensor_*_codegen.cpp
+    modules") -- detector bound the aggregate 22,400 to the dispatcher file alone, the same family-sum
+    misattribution gap this file's header documents (affected_count 7). Re-verified 2026-08-26 -- the true
+    thirteen-file family total (twelve tensor_*_codegen.cpp modules plus tensorcore_codegen.cpp, which the
+    naming pattern misses) is 22,355 lines, so the "~22,400" prose figure is still accurate. Re-hashed
+    2026-08-26 (N5 doc-typed-claims-residual fix) -- the adjacent llvm_codegen.cpp claim on the prior line
+    (docs/API_REFERENCE.md:7122) was a plain current-size claim and was corrected in the doc text instead
+    of allowlisted, which shifted this family-sum sentence's own claim line from 7122 to 7123; old claim_id
+    19c390f38b1e1bd1
 - claim_id: 833412e8afc88a38
   path: docs/DESIGN.md
   line: 79
@@ -759,19 +791,27 @@ entries:
   reason: prose "Newton's root finder in 10 lines using derivative" is a rhetorical description of the
     core solver's conciseness, not a file-size claim; the table's explicit LOC column already states the
     correct total (70), and is grounded
-- claim_id: 76a6e7fc4c80ce09
+- claim_id: 087d62425e080072
   path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
-  line: 189
+  line: 211
   claim_type: numeric
   subject: inc/eshkol/
   value: 4650
   disposition: DETECTOR-MISATTRIBUTION
-  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:224
-- claim_id: 22ed7a44c534f409
+  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:224 --
+    the prose names a SUBSET ("50 of the 64 public headers"), the detector checks the claimed ~4,650
+    against the FULL inc/eshkol/ directory sum (28,040 across 79 files today), which was never the claim.
+    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 189 to 211 as
+    newer press-sheet content was added above it; old claim_id 76a6e7fc4c80ce09
+- claim_id: 17ba9efe46713c32
   path: press/ESHKOL_PRESS_INFORMATION_SHEET.md
-  line: 190
+  line: 212
   claim_type: numeric
   subject: lib/
   value: 7478
   disposition: DETECTOR-MISATTRIBUTION
-  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:225
+  reason: same v1.3.1-evolve per-release documentation-delta mismatch as ESHKOL_DESCRIPTION_COPY.md:225 --
+    the prose names a SUBSET ("previously-undocumented implementation files"), the detector checks the
+    claimed ~7,478 against the FULL lib/ directory sum (316,093 across 346 files today), which was never
+    the claim. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 190
+    to 212 as newer press-sheet content was added above it; old claim_id 22ed7a44c534f409

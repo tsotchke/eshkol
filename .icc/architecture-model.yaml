@@ -491,18 +491,21 @@ invariants:
   #    alternation, so the comparison always matched itself regardless of the
   #    real source -- it silently included DNC/SDNC/TAYLOR (which had neither
   #    a case in evac_kind_for's switch nor any classification at all) and
-  #    would have stayed green even after TAYLOR's real fix (a `case
-  #    HEAP_SUBTYPE_TAYLOR: return EVAC_TAYLOR;` arm) without anyone updating
-  #    this file by hand. `icc architecture-verify --cxx-backend libclang`
-  #    caught the gap because it resolves each site's identifier set from the
-  #    real source, not the hand-typed pattern. Both sites are now GENERIC,
-  #    self-updating patterns over real source: the enum side reads the
-  #    [DEEPWALK]/[LEAF] classification tag inc/eshkol/eshkol.h's
-  #    HEAP_SUBTYPE_* enum carries on every member, and the evacuator side
-  #    reads every `case HEAP_SUBTYPE_X: return EVAC_...;` arm evac_kind_for
-  #    actually has -- neither side is a maintained list any more. Retagging
-  #    a member without also giving it a real case in that switch (or vice
-  #    versa) is exactly the class of regression this invariant now catches.
+  #    never encoded RATIONAL at all (added to evac_kind_for's real deep-walk
+  #    switch, but invisible to this invariant because RATIONAL was never in
+  #    either copy of the list), and would have stayed green even after
+  #    TAYLOR's real fix (a `case HEAP_SUBTYPE_TAYLOR: return EVAC_TAYLOR;`
+  #    arm) without anyone updating this file by hand. `icc architecture-verify
+  #    --cxx-backend libclang` caught the gap because it resolves each site's
+  #    identifier set from the real source, not the hand-typed pattern. Both
+  #    sites are now GENERIC, self-updating patterns over real source: the
+  #    enum side reads the [DEEPWALK]/[LEAF] classification tag
+  #    inc/eshkol/eshkol.h's HEAP_SUBTYPE_* enum carries on every member, and
+  #    the evacuator side reads every `case HEAP_SUBTYPE_X: return EVAC_...;`
+  #    arm evac_kind_for actually has -- neither side is a maintained list any
+  #    more. Retagging a member without also giving it a real case in that
+  #    switch (or vice versa) is exactly the class of regression this
+  #    invariant now catches.
   - id: INV-oalr-interior-pointer-deepwalk
     kind: key-space-equality
     incident: region-evac-leaf-copy
@@ -533,6 +536,17 @@ invariants:
   #     whole tag space with a row per subtype and a startup assertion; this
   #     invariant is the machine-checked half, requiring the HeapType enum and
   #     the coverage table to resolve the identical subtype set.
+  # 2026-08-26 audit (B5/N3): both sites used to be the SAME 28-name
+  # hand-typed alternation copied to both files, so this always matched
+  # itself no matter what either file actually contained — a subtype that
+  # exists in the real enum but was never added to either copy of the list
+  # would be invisible on BOTH sides. Both patterns are now fully generic
+  # over `HEAP_<name> = <n>,` declarations and `[HEAP_<name>] =` designated-
+  # initializer rows respectively (a negative lookbehind excludes unrelated
+  # `HEAP_BUDGET_*` env-var name mentions in nearby comments/strings, which
+  # share the `HEAP_` prefix but never appear inside an enum declaration or a
+  # table row) — neither side is a maintained list anymore; this currently
+  # verifies at the real 28/28.
   - id: INV-vm-region-evac-subtype-total
     kind: key-space-equality
     incident: vm-region-evac-uncovered-subtype
@@ -547,10 +561,10 @@ invariants:
     sites:
       - id: vm-heap-type-enum
         path: lib/backend/vm_core.c
-        key_pattern: '(HEAP_(?:CONS|CLOSURE|STRING|VECTOR|MULTI_VALUE|COMPLEX|RATIONAL|BIGNUM|DUAL|TENSOR|LOGIC_VAR|SUBST|FACT|KB|FACTOR_GRAPH|WORKSPACE|PORT|AD_TAPE|PROMISE|CONTINUATION|HASH|ERROR|BYTEVECTOR|PARAMETER|HYPER_DUAL|RIEMANNIAN_ADAM_STATE|FUTURE|I128))\b'
+        key_pattern: '(?<![A-Za-z0-9_])HEAP_([A-Z0-9_]+)\s*=\s*\d+,'
       - id: vm-region-evac-coverage-table
         path: lib/backend/vm_region_evac.c
-        key_pattern: '(HEAP_(?:CONS|CLOSURE|STRING|VECTOR|MULTI_VALUE|COMPLEX|RATIONAL|BIGNUM|DUAL|TENSOR|LOGIC_VAR|SUBST|FACT|KB|FACTOR_GRAPH|WORKSPACE|PORT|AD_TAPE|PROMISE|CONTINUATION|HASH|ERROR|BYTEVECTOR|PARAMETER|HYPER_DUAL|RIEMANNIAN_ADAM_STATE|FUTURE|I128))\b'
+        key_pattern: '(?<![A-Za-z0-9_])\[HEAP_(\w+)\]\s*='
 
   # 7. AD-exactness, encoded as dependency-presence.  The default derivative path
   #    must construct the exact dual/jet tangent, never a finite-difference
@@ -584,6 +598,26 @@ invariants:
   #     invariant guards the weaker but cheaper property that the two key
   #     spaces cannot drift apart. Expected PASS; adding an AD op to
   #     PARITY.tsv without a manifest row FAILs it.
+  # 2026-08-26 audit (B5/N3): both sites used to be the SAME 10-name
+  # hand-typed alternation, so a new AD op added to the manifest without
+  # also editing this YAML (or vice versa) was invisible to both patterns.
+  # The manifest side is now GENERIC: it reads every `"op:X"` string
+  # literally appearing inside the manifest's own `parity_rows:` cross-
+  # references (.icc/ad-carrier-manifest.yaml's own contract already
+  # requires those to name real PARITY.tsv rows — see the file's header
+  # comment), so adding a new `- op: foo` entry with `parity_rows:
+  # ["op:FOO"]` is picked up automatically. tests/vm_parity/PARITY.tsv has
+  # no equivalent structural marker distinguishing its ~10 AD-family rows
+  # from its ~100 non-AD rows (arithmetic, special forms, etc.), so the
+  # PARITY.tsv side remains the curated AD-operator category (mirroring
+  # inc/eshkol/eshkol.h's own "Automatic differentiation operators" enum
+  # block) rather than a full generic derivation — currently 10/10 against
+  # the manifest's real content. scripts/gate_ad_shared_node_model.py (a
+  # separate, fully source-derived Python gate already wired into
+  # assurance-gates and this repo's completion oracles as
+  # `ad_carrier_model_clean`) remains the authoritative, no-manual-list
+  # check for this exact property; this invariant is a lighter parity-
+  # availability cross-check, not a replacement for it.
   - id: INV-ad-carrier-declared-for-every-vm-op
     kind: key-space-equality
     incident: ad-carrier-fork-undeclared
@@ -603,29 +637,53 @@ invariants:
         key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
       - id: ad-carrier-manifest-ops
         path: .icc/ad-carrier-manifest.yaml
-        key_pattern: '(op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE_N|DERIVATIVE|DIRECTIONAL_DERIV|DIFF))\b'
+        key_pattern: '"(op:[A-Z_]+)"'
 
   # 8. TCO tail-position coverage, encoded as key-space-equality.  The core
   #    tail-transparent forms (if / let* family / sequence) must each be handled
   #    by isTailPosition; cond/case/when reach it desugared to these forms.
   #    Expected PASS; removing a case (a TCO regression) FAILs it.
+  # 2026-08-26 audit (B5/N3): the 2026-08-26 audit's key-space gap census
+  # measured this invariant grading only 6 of the 113 ESHKOL_*_OP members —
+  # not itself a bug (most of the 113 are arithmetic/data ops that never
+  # belong in a tail-position classifier, so comparing against the full op
+  # registry would be the wrong comparison, not a stricter one), but it did
+  # surface a real, previously-untracked gap while re-deriving this list
+  # against TailCallCodegen::isOperationInTailPosition's actual case list
+  # (lib/backend/tail_call_codegen.cpp): that switch also has an explicit
+  # `case ESHKOL_LAMBDA_OP:` arm (a lambda body is in tail position) which
+  # neither copy of the old 6-name list ever named, so a regression dropping
+  # LAMBDA_OP handling could not have been caught. Both sites now name the
+  # same 7 forms isOperationInTailPosition actually classifies. This remains
+  # a curated list, not a fully generic derivation (unlike
+  # INV-oalr-interior-pointer-deepwalk / INV-vm-region-evac-subtype-total
+  # above): isOperationInTailPosition shares this file with a second,
+  # unrelated switch (the mutual-tail-call-site walker, which legitimately
+  # has its own direct cases for cond/when/unless/and/or/case/guard — see
+  # #478's ADR-0000 Stage 4 mutual-tail-recursion fix) and a single grep
+  # pattern cannot reliably scope to one function's case arms without also
+  # picking up the other's, so an occurrence-based regression check (a case
+  # removed from EITHER function is still caught, since its token then
+  # disappears from that site's real match set) is the honest limit of this
+  # invariant's fidelity here.
   - id: INV-tco-tail-position-coverage
     kind: key-space-equality
     incident: tco-tail-position-gap
     severity: medium
     fidelity: grep
     description: >
-      The tail-call analysis (TailCallCodegen::isTailPosition) must treat every
-      core tail-transparent form as tail-propagating so proper tail calls in
-      if/let/let*/letrec/letrec*/begin (and cond/case/when after desugaring) are
-      marked musttail; a dropped case reintroduces stack growth in tail loops.
+      The tail-call analysis (TailCallCodegen::isOperationInTailPosition) must
+      treat every core tail-transparent form it actually classifies as
+      tail-propagating so proper tail calls in if/let/let*/letrec/letrec*/
+      lambda/begin (and cond/case/when after desugaring to these) are marked
+      musttail; a dropped case reintroduces stack growth in tail loops.
     sites:
       - id: core-op-enum
         path: inc/eshkol/eshkol.h
-        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|SEQUENCE)_OP)'
+        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|LAMBDA|SEQUENCE)_OP)'
       - id: tail-position-analysis
         path: lib/backend/tail_call_codegen.cpp
-        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|SEQUENCE)_OP)'
+        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|LAMBDA|SEQUENCE)_OP)'
 
   # 9-11. ADR-0010 v1.4-connection gate: A10/A11/A12 were measured
   #       NOT IMPLEMENTED by the v1.4-connection oracle. Each of these three

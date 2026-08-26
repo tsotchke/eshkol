@@ -540,8 +540,9 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
 // exactly the class of regression the invariant exists to catch
 // (KB/FACT/SUBSTITUTION/WORKSPACE were dropped to a shallow leaf copy this
 // way before ESH-0214d; DNC/SDNC/TAYLOR were never given the tag OR the
-// case at all before this fix, so the invariant could not see them). Keep
-// both sides honest: retag a member the moment its actual evac_kind_for
+// case at all before this fix, so the invariant could not see them; RATIONAL
+// was invisible to an earlier hand-copied pattern list for the same reason).
+// Keep both sides honest: retag a member the moment its actual evac_kind_for
 // treatment changes.
 typedef enum {
     HEAP_SUBTYPE_CONS        = 0,   // Cons cell (pair/list node) [DEEPWALK]

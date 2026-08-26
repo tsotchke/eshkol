@@ -446,25 +446,36 @@ jobs:
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
 
+      # B5/N2 (2026-08-26 audit): every gate below this point deliberately
+      # DROPS --no-trace. This job builds nothing (pure Python over
+      # committed YAML/JSON — see the job-level comment above), so
+      # scripts/icc_traces/ (gitignored, per .gitignore) starts every run
+      # totally empty; with every gate writing --no-trace, it STAYED empty
+      # for the gate's own entire run, and "No high-severity criterion's
+      # evidence is stale" below graded an empty directory every single
+      # time and reported PASS regardless — a required step that had never
+      # once actually graded anything. Each of these five gates already
+      # feeds its own PASS/FAIL back in as a real eshkol_smoke runtime_event
+      # (no_open_silent_wrong / ledger_integrity_clean / oracle_schema_clean
+      # / oracle_false_green_clean / ad_carrier_model_clean — each is itself
+      # a severity:high completion-oracle criterion); letting them write to
+      # the default trace dir here means the staleness check that runs last
+      # has real, freshly-minted evidence to grade instead of nothing.
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
-        run: python3 scripts/gate_no_silent_wrong.py --no-trace
+        run: python3 scripts/gate_no_silent_wrong.py
 
       - name: Silent-wrong ledger has no duplicate ids and every entry is well-formed
         shell: bash
-        run: python3 scripts/check_ledger_integrity.py --no-trace
+        run: python3 scripts/check_ledger_integrity.py
 
       - name: Completion-oracle file parses and every criterion is gradeable
         shell: bash
-        run: python3 scripts/check_oracle_schema.py --no-trace
+        run: python3 scripts/check_oracle_schema.py
 
       - name: No oracle target can read ready on zero evidence (F19 / A13)
         shell: bash
-        run: python3 scripts/audit_oracle_false_green.py --no-trace
-
-      - name: No high-severity criterion's evidence is stale (ADR-0010 A13)
-        shell: bash
-        run: python3 scripts/check_evidence_staleness.py --no-trace
+        run: python3 scripts/audit_oracle_false_green.py
 
       # Structural, not comparative. The VM-parity differential compares
       # program output between engines, so two independent AD implementations
@@ -475,7 +486,7 @@ jobs:
       # re-derived from the source rather than declared.
       - name: Every AD op routes through a declared, exact, source-verified carrier
         shell: bash
-        run: python3 scripts/gate_ad_shared_node_model.py --no-trace
+        run: python3 scripts/gate_ad_shared_node_model.py
 
       # --offline deliberately: reading branch-protection settings needs
       # administration:read, which the default workflow token does not
@@ -493,7 +504,21 @@ jobs:
       # the INTENDED policy itself changes.
       - name: Every required status context is reportable on every PR shape (docs-only included)
         shell: bash
-        run: python3 scripts/check_required_context_consistency.py --offline --no-trace
+        run: python3 scripts/check_required_context_consistency.py --offline
+
+      # Runs LAST so every gate above it has already deposited its own
+      # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
+      # --trace-dir). --require-trace-dir turns "the directory is empty" or
+      # "the directory does not exist" into an honest NO_DATA verdict
+      # (exit 2) instead of a silent PASS — a required step must not read
+      # green on missing input. This closes B5/N2 (2026-08-26 audit): this
+      # step used to grade scripts/icc_traces/ with --no-trace on every
+      # gate above it, so the directory was guaranteed empty by
+      # .gitignore:162 and this step had graded nothing, ever, on any run,
+      # while reporting PASS every time.
+      - name: No high-severity criterion's evidence is stale (ADR-0010 A13)
+        shell: bash
+        run: python3 scripts/check_evidence_staleness.py --require-trace-dir
 
   # ADR-0010 §2.5 / 2026-08-25 architecture audit: several ICC oracle
   # pillars are real, fast (or fast-enough) gates that never ran anywhere in
