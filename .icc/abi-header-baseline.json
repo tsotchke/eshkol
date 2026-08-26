@@ -239,10 +239,7 @@
       "press/ESHKOL_PRESS_INFORMATION_SHEET.md": 1,
       "site/static/eshkol-runtime.js": 1
     },
-    "M_cache_key_without_abi": {
-      "exe/eshkol-run.cpp": 1,
-      "lib/repl/repl_jit.cpp": 1
-    },
+    "M_cache_key_without_abi": {},
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
@@ -393,7 +390,7 @@
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "M_cache_key_without_abi": 2,
+    "M_cache_key_without_abi": 0,
     "S1_clang_header_member": 188,
     "S2_clang_sizeof": 151,
     "S3_clang_header_cast": 118
