@@ -1,0 +1,31 @@
+;; Type System Test: core.memory's memory-fold-lww accumulator is strict-types
+;; clean (SW-63).
+;;
+;; `memory-fold-lww` used to seed a named-let accumulator as `#f` (Boolean)
+;; and reassign it to an `lww-register` (Vector) on the first matching event.
+;; HoTT unifies a tail-recursive loop parameter's type across every call site,
+;; so that reassignment was a genuine Boolean/Vector conflict under
+;; --strict-types, not a false positive — the fix restructures the fold so
+;; each loop's accumulator has one fixed shape for its entire lifetime (see
+;; lib/core/memory.esk).
+;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(require stdlib)
+(require core.memory)
+
+(define log (make-memory-log (quote strict-lww-check)))
+(memory-append! log (quote value) (cons (quote answer) 42))
+(memory-append! log (quote value) (cons (quote answer) 43))
+
+(define observed (memory-fold-lww log (quote answer)))
+(define missing  (memory-fold-lww log (quote nonexistent)))
+
+(display observed) (newline)
+(display missing) (newline)
+
+(if (and (= observed 43) (eq? missing #f))
+    (display "ok\n")
+    (error "core.memory strict-types LWW fold regressed"))

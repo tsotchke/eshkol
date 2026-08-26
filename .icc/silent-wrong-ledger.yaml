@@ -3939,6 +3939,71 @@ entries:
       that holds on one engine and silently does not on the other — so it was
       fixed rather than documented.
 
+  - id: SW-63
+    bucket: LOUD-ERROR
+    subtag: cheap-fix
+    status: closed
+    closed_at: "feat/noesis-blockers"
+    closed_by: "branch feat/noesis-blockers"
+    family: type-system/stdlib
+    title: "core.memory's memory-fold-lww rejected under --strict-types: a named-let accumulator seeded #f then reassigned to an lww-register Vector, a genuine Boolean/Vector unification conflict HoTT was right to refuse"
+    repro: >-
+      (require core.memory) (define log (make-memory-log 'x))
+      (memory-append! log 'value (cons 'answer 42))
+      (display (memory-fold-lww log 'answer)) — compiled with
+      --strict-types --emit-object. Also filed by a downstream consumer as
+      bug-UU (core.memory strict-lww-register), independently reproduced
+      this session.
+    observed: >-
+      pre-fix (measured at afbaaf5b, current master before this branch):
+      `eshkol-run --strict-types --emit-object` on the repro above exits 1
+      with `[ERROR] Type error: argument 3 of 'loop': expected Boolean, got
+      Vector (line 126:24)` then `HoTT: 1 type errors detected (strict
+      mode)`. Under gradual typing (no --strict-types) the same program ran
+      correctly and printed 42 — so the checker's rejection was not
+      protecting against a real defect, and a strict-mode consumer had no
+      way to get the correct, already-working behavior gradual typing gave
+      everyone else.
+    correct: >-
+      The program computes the right answer (42) either way; --strict-types
+      should accept it, not merely fail loudly at a program that was never
+      wrong.
+    root_cause: >-
+      lib/core/memory.esk's memory-fold-lww used one named-let loop with a
+      single accumulator `reg`, seeded `#f` (Boolean) and reassigned on the
+      first matching event to `(make-lww-register ...)` (a Vector). HoTT
+      unifies a tail-recursive loop parameter's type across every one of its
+      call sites within the loop, so a parameter that is genuinely Boolean
+      on the seed call and Vector on every subsequent call is a real
+      Boolean/Vector conflict as written — not a checker false positive.
+      The loud rejection was doing its job on the source AS WRITTEN; the
+      source's own shape was the defect.
+    fix: >-
+      Split the fold into two functions so each named-let's accumulator has
+      ONE fixed shape for its entire lifetime: memory-lww-key-present? is
+      Boolean-only (never touches a register, so nothing to conflict), and
+      memory-fold-lww-vector is called only once a match is already known to
+      exist, seeding its accumulator with a real (harmless,
+      immediately-overwritten) lww-register instead of #f so it stays
+      Vector-shaped throughout. memory-fold-lww composes the two: check
+      presence, then fold only if present, else #f.
+    evidence: >-
+      tests/typesystem/memory_fold_lww_accumulator_test.esk (EXPECT-MODE
+      strict-types, EXPECT-COMPILE ok), wired into
+      scripts/run_typesystem_tests.sh's existing tests/typesystem/*.esk
+      sweep. Verified directly across engines: native AOT
+      (--strict-types --emit-object), native JIT (--strict-types -r), and
+      VM bytecode emission (--strict-types --profile hosted-vm --emit-eskb)
+      all compile clean with no HoTT diagnostics; default gradual mode is
+      unchanged (still prints 42).
+    caught_by: [downstream-consumer-audit-2026-08-26]
+    missed_by: [icc-smoke, icc-readiness, ctest, run_typesystem_tests]
+    notes: >-
+      A WIP fix for this existed unmerged on an old-master-based branch
+      (codex/memory-fold-lww-strict); this entry's fix re-derives the same
+      structural split, verified against current master and re-tested
+      end-to-end rather than rebase-inherited.
+
   - id: DD-11
     bucket: DOC-DEBT
     status: open

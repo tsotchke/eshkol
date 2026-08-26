@@ -113,17 +113,46 @@
 
 ;; Fold 'value-type events for `key` into an LWW register; payload = (key . value).
 ;; Append order is the LWW timestamp (events are totally ordered, incl. post-merge).
-(define (memory-fold-lww log key)
-  (let loop ((evs (memory-events log)) (ts 0) (reg #f))
+;;
+;; Split in two so the named-let accumulator in each loop has ONE fixed shape
+;; across every iteration, not two (Boolean-then-Vector), which is what HoTT
+;; rejects under --strict-types: a tail-recursive loop parameter is unified
+;; across all of its call sites, and seeding it as `#f` only to reassign it to
+;; an `lww-register` vector on the first match makes that unification a real
+;; Boolean/Vector conflict, not a false positive the checker invented — the
+;; loop parameter's static type genuinely varies across iterations as written.
+;;
+;; `memory-lww-key-present?` stays Boolean-only: it never touches a register,
+;; so its own recursion carries no accumulator to conflict. `memory-fold-lww-
+;; vector` is called only once a match is already known to exist, so its
+;; accumulator can start as a real (harmless, immediately-overwritten) LWW
+;; register instead of `#f` and stay Vector-shaped for its entire lifetime.
+(define (memory-lww-key-present? evs key)
+  (if (null? evs)
+      #f
+      (let ((ev (car evs)))
+        (if (and (eq? (memory-event-type ev) (quote value))
+                 (pair? (memory-event-payload ev))
+                 (equal? (car (memory-event-payload ev)) key))
+            #t
+            (memory-lww-key-present? (cdr evs) key)))))
+
+(define (memory-fold-lww-vector evs key)
+  (let loop ((evs evs) (ts 0)
+             (reg (make-lww-register #f -1 (quote memory-fold-lww))))
     (if (null? evs)
-        (if reg (lww-register-value reg) #f)
+        (lww-register-value reg)
         (let ((ev (car evs)))
           (if (and (eq? (memory-event-type ev) (quote value))
                    (pair? (memory-event-payload ev))
                    (equal? (car (memory-event-payload ev)) key))
               (let ((v (cdr (memory-event-payload ev))))
                 (loop (cdr evs) (+ ts 1)
-                      (if reg
-                          (lww-register-set reg v ts (memory-event-node ev))
-                          (make-lww-register v ts (memory-event-node ev)))))
+                      (lww-register-set reg v ts (memory-event-node ev))))
               (loop (cdr evs) (+ ts 1) reg))))))
+
+(define (memory-fold-lww log key)
+  (let ((evs (memory-events log)))
+    (if (memory-lww-key-present? evs key)
+        (memory-fold-lww-vector evs key)
+        #f)))
