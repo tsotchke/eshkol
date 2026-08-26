@@ -1,0 +1,25 @@
+;; Type System Test: storing a qubit in an untyped container is a violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: escapes into an untyped container
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; #471 measured `(vector q)` then two `vector-ref` as accepted, silently, with
+;; no diagnostic of any kind (BI-3). The container's type carries no linearity,
+;; so once the qubit is inside it every read is an unchecked use and a
+;; name-keyed analysis cannot follow it.
+;;
+;; A bare reference handed to a container constructor or mutator is therefore
+;; recorded as an ESCAPE and reported. That verdict is drawn only AFTER the use
+;; count has had its say, so `(cons q q)` -- see qubit_no_cloning_default_test
+;; -- still reads as the clone it is rather than as an escape.
+;;
+;; Note this is about a BARE reference. `(cons (h q) '())` stores the fresh
+;; qubit a gate returned, not the tracked binding, and that value is not tracked
+;; by name at all -- see qubit_linear_container_of_results_ok_test.esk.
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (stash (q : Qubit))
+  (let ((v (vector q)))
+    (cons (h (vector-ref v 0)) (z (vector-ref v 0)))))

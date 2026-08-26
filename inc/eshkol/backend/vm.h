@@ -73,6 +73,37 @@ int eshkol_vm_default_load_options(EshkolVmLoadOptions* out);
 int eshkol_emit_eskb(const char* source, const char* output_path);
 int eshkol_emit_eskb_embedded(const char* source, const char* output_path);
 
+/* ---- Linear (no-cloning) parity between the two engines -------------------
+ *
+ * The linear-type rule lives in the HoTT type checker, on the LLVM engine's
+ * side of the tree. The VM reaches its compiler through an independent reader
+ * that produces a different AST entirely and never builds a TypeChecker, so a
+ * qubit clone used to run to completion here with exit 0 and no diagnostic —
+ * an engine-parity defect on a type-system GUARANTEE.
+ *
+ * The rule is NOT reimplemented for the VM. Instead a driver that has the front
+ * end linked installs it, and the VM calls it before compiling. This is a hook
+ * rather than a direct call for a link reason that is also a design one: this
+ * translation unit is part of libeshkol-runtime.a, which is linked into every
+ * program the compiler EMITS, and those programs must not drag in the C++ type
+ * checker. The hook keeps the dependency pointing the right way — drivers know
+ * about the checker, the runtime does not.
+ *
+ * A build that installs nothing does not silently accept linear programs: any
+ * source carrying a linear annotation is REFUSED, because "I cannot verify
+ * this" is not "this is fine". */
+typedef int (*EshkolLinearCheckFn)(const char* source, const char* source_name);
+
+/* Install the linear-check implementation. Passing NULL restores the
+ * refuse-linear-annotated-programs default. */
+void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn);
+
+/* The implementation, in lib/types/linear_check_bridge.cpp. Drives the real
+ * front end (parser, macro expander, TypeChecker) over @p source and returns
+ * the number of linearity violations, or -1 when the source could not be
+ * analysed at all. Only available where the front end is linked. */
+int eshkol_linear_check_source(const char* source, const char* source_name);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

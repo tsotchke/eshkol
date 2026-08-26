@@ -1,0 +1,15 @@
+;; Type System Test: --unsafe is the one documented no-cloning escape hatch
+;; EXPECT-MODE: unsafe
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type error
+;; EXPECT-NO-STDERR: Type warning
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; `--unsafe` is documented precisely as "linear types can be duplicated
+;; (no-cloning bypassed)" for FFI and low-level work. Making violations fatal
+;; everywhere else must not take that hatch away, and it must stay SILENT --
+;; an unsafe block that still printed diagnostics would be a different feature.
+(define (bad-clone (q : Qubit))
+  (cons q q))
+(display "unsafe mode compiled a clone on purpose")
+(newline)

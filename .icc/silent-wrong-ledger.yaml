@@ -3632,6 +3632,78 @@ entries:
       it makes the project look worse than it is and, more dangerously, trains readers to
       discount the 25 that are still real. Re-running found/ belongs in the parity gate.
 
+  - id: SW-46
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/linearity-complete"
+    closed_by: "branch feat/linearity-complete"
+    family: engine-parity/type-system
+    title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
+    repro: >-
+      Any program with a linear annotation that clones the value, e.g.
+      tests/typesystem/qubit_no_cloning_default_test.esk —
+      `(define (bad-clone (q : Qubit)) (cons q q))`. Run it two ways:
+      `build/eshkol-vm-standalone-test <file>` (VM source execution) and
+      `build/eshkol-run <file> --profile hosted-vm --emit-eskb <out.eskb>`.
+      The SAME binary refuses the SAME program on the LLVM path (exit 1, no
+      artifact).
+    observed: >-
+      pre-fix (measured at 15f9b42a, the head of PR #471): the VM standalone
+      compiled the program, executed it, printed its output and exited 0, with
+      no linearity diagnostic of any kind on stdout or stderr; --emit-eskb
+      wrote a complete .eskb and exited 0. Meanwhile the native path exited 1
+      and wrote nothing for the identical source. So the answer to "does this
+      program type-check" depended on which engine you asked, and the VM's
+      answer was silent.
+    correct: >-
+      A linear (no-cloning) violation is a compile-time type error, and a type
+      error is a property of the PROGRAM, not of the engine that happens to be
+      compiling it. Both engines must refuse the program, neither may write an
+      artifact for it, and both must say why.
+    root_cause: >-
+      The linear judgment lives in the HoTT type checker
+      (lib/types/type_checker.cpp), which is constructed only inside
+      llvm_codegen.cpp's generation path. The VM reaches its compiler through
+      lib/backend/eshkol_vm.c -> lib/backend/vm_compiler.c, which has its own
+      independent S-expression reader producing `Node*` — a different AST from
+      `eshkol_ast_t` entirely — and never constructs a TypeChecker at all.
+      There was no place on the VM route where the rule could have been
+      consulted, so it was not a check that failed; it was a check that did not
+      exist on that engine.
+    fix: >-
+      The rule was NOT reimplemented over `Node*`, which would have produced
+      two judgments that drift. lib/types/linear_check_bridge.cpp exposes
+      eshkol_linear_check_source(), which drives the REAL front end — the same
+      parser, the same macro expander, the same TypeChecker — over the same
+      source text and returns the real verdict. eshkol_vm.c calls it before
+      compiling, at both chokepoints (compile_and_run and
+      emit_eskb_with_options), and refuses the program when it reports a
+      violation. It is reached through an installable hook
+      (eshkol_vm_install_linear_check, inc/eshkol/backend/vm.h) rather than a
+      direct call because eshkol_vm.c ships inside libeshkol-runtime.a, which
+      is linked into every program the compiler emits and must not drag in the
+      C++ type checker; the drivers that have the front end linked install it.
+      A build with nothing installed REFUSES any source carrying a linear
+      annotation rather than accepting it unchecked. The probe is gated on the
+      source actually carrying a linear annotation, so programs that do not opt
+      into linear types are untouched.
+    evidence: >-
+      tests/typesystem/qubit_linearity_engine_parity_gate.sh, wired into ctest
+      as `qubit_linearity_engine_parity_gate`. It pins all four corners, not
+      just the rejection: VM source execution rejects a clone (nonzero exit, a
+      linearity diagnostic, and the program body never runs) AND accepts a
+      correct linear program (exit 0, its output present); --emit-eskb rejects
+      a clone (nonzero exit AND no .eskb written) AND accepts a correct program
+      (exit 0 AND a .eskb written). Pinning acceptance is what stops a "fix"
+      that simply refuses every qubit program from passing.
+    caught_by: [pr-471-vm-parity-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, run_typesystem_tests]
+    notes: >-
+      Filed by PR #471 as build item BI-5 after measuring it on both VM entry
+      points. It is the same class the project refuses elsewhere — a guarantee
+      that holds on one engine and silently does not on the other — so it was
+      fixed rather than documented.
+
   - id: DD-11
     bucket: DOC-DEBT
     status: open

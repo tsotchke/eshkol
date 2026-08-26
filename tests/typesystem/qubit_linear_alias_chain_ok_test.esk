@@ -1,0 +1,22 @@
+;; Type System Test: a chain of aliases ending in ONE use is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_alias_chain_test: q -> a -> b, b consumed
+;; exactly once. Correct, and it must compile.
+;;
+;; A binding's scope is not just the let BODY -- the values of every later
+;; binding are evaluated in it too, and that is where `a` is consumed here (in
+;; the value of `b`). Analysing the body alone counts zero uses of `a` and
+;; rejects this correct program as a discard, which is exactly the class of
+;; over-strictness that makes an enforcement rule wrong rather than incomplete.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (ok-chain (q : Qubit)) : Qubit
+  (let* ((a q) (b a))
+    (h b)))
+(display "alias chain, one use")
+(newline)

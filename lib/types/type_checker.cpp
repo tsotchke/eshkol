@@ -1125,11 +1125,16 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
         return errorAt(expr, "Unbound variable: " + name);
     }
 
-    // Track linear variable usage
+    // Track linear variable usage. The COUNT is kept (checkLinearVariable() and
+    // the branch snapshot/restore machinery read it), but the VERDICT is no
+    // longer drawn here. This site fired on the second name occurrence type
+    // synthesis happened to reach, which is neither an upper nor a lower bound
+    // on the real use count: it never sees a `cond` body at all, and it treats
+    // a plain `bind()` that SHADOWS a linear name as another use of the
+    // original, since bind() does not clear linear_vars_. The authoritative
+    // judgment is analyzeLinearUses(), run over the whole binder body at scope
+    // exit, which models both.
     if (ctx_.isLinear(name)) {
-        if (ctx_.isLinearUsed(name)) {
-            reportTypeIssue("linear variable '" + name + "' used more than once", expr);
-        }
         ctx_.useLinear(name);
     }
 
@@ -1452,6 +1457,7 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
 
     // Collect parameter types and bind parameters in context
     std::vector<TypeId> param_types;
+    std::vector<std::string> linear_params;
     for (size_t i = 0; i < lambda.num_params; i++) {
         std::string param_name = lambda.parameters[i].variable.id;
 
@@ -1466,6 +1472,7 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
         // Register linear parameters for use-once checking
         if (param_type.flags & TYPE_FLAG_LINEAR) {
             ctx_.bindLinear(param_name, param_type);
+            linear_params.push_back(param_name);
         } else {
             ctx_.bind(param_name, param_type);
         }
@@ -1474,17 +1481,13 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     // Synthesize body type
     auto body_result = synthesize(lambda.body);
 
-    // Check linear variable constraints before popping scope
-    if (!ctx_.checkLinearConstraints()) {
-        auto unused = ctx_.getUnusedLinear();
-        for (const auto& name : unused) {
-            reportTypeIssue("linear variable '" + name + "' was not consumed", expr);
-        }
-        auto overused = ctx_.getOverusedLinear();
-        for (const auto& name : overused) {
-            reportTypeIssue("linear variable '" + name + "' was consumed more than once", expr);
-        }
-    }
+    // Enforce linearity for THIS lambda's own linear parameters, over THIS
+    // lambda's body. The previous scope-exit check consulted
+    // checkLinearConstraints(), which ranges over every linear variable alive
+    // anywhere in the context — so an unrelated inner lambda closing its scope
+    // reported the ENCLOSING function's not-yet-consumed qubit as unconsumed,
+    // rejecting a correct program.
+    enforceLinearBindings(linear_params, lambda.body, expr);
 
     ctx_.popScope();
 
@@ -2851,12 +2854,14 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
 
         // Now push scope and bind parameters
         ctx_.pushScope();
+        std::vector<std::string> linear_params;
         for (size_t i = 0; i < def.num_params; i++) {
             if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
                 def.parameters[i].variable.id) {
                 // Register linear parameters for use-once checking
                 if (param_types[i].flags & TYPE_FLAG_LINEAR) {
                     ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
+                    linear_params.push_back(def.parameters[i].variable.id);
                 } else {
                     ctx_.bind(def.parameters[i].variable.id, param_types[i]);
                 }
@@ -2879,15 +2884,10 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
             }
         }
 
-        // Check linear variable constraints before popping scope
-        if (!ctx_.checkLinearConstraints()) {
-            for (const auto& name : ctx_.getUnusedLinear()) {
-                reportTypeIssue("linear variable '" + name + "' was not consumed", expr);
-            }
-            for (const auto& name : ctx_.getOverusedLinear()) {
-                reportTypeIssue("linear variable '" + name + "' was consumed more than once", expr);
-            }
-        }
+        // Enforce linearity for THIS define's own linear parameters, over THIS
+        // define's body — see the matching comment in synthesizeLambda() for
+        // why the old context-wide check was both too broad and too shallow.
+        enforceLinearBindings(linear_params, def.value, expr);
 
         ctx_.popScope();
 
@@ -2964,6 +2964,9 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     // Collect binding types
     std::vector<TypeId> binding_types;
     std::vector<std::string> binding_names;
+    // Name plus the index it was bound at: a binding's scope runs from the next
+    // binding's value through the body, so its region depends on where it sits.
+    std::vector<std::pair<std::string, size_t>> linear_bindings;
 
     // Process each binding
     for (size_t i = 0; i < let.num_bindings; i++) {
@@ -3004,10 +3007,18 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
 
         binding_names.push_back(name);
         binding_types.push_back(binding_type);
-        // NOTE(#320): let bindings use plain bind(), not bindLinear(), so a
-        // linear-typed let binding is NOT use-once checked. Linearity is enforced
-        // only on define/lambda parameters today; see Context's linear API docs.
-        ctx_.bind(name, binding_type);
+        // A linear-typed let binding is use-once checked over the let body, the
+        // same way a linear parameter is over a function body. This used to be
+        // skipped (#320) because the incidental usage counters were too coarse
+        // to decide it; analyzeLinearUses() is not, and leaving it out left
+        // `(let ((q : Qubit (alloc))) (cons q q))` as a one-line way to clone a
+        // qubit that the type system had just declared unclonable.
+        if (binding_type.flags & TYPE_FLAG_LINEAR) {
+            ctx_.bindLinear(name, binding_type);
+            linear_bindings.push_back({name, i});
+        } else {
+            ctx_.bind(name, binding_type);
+        }
     }
 
     // Handle named let (loop): pre-bind the loop name as a recursive function
@@ -3027,6 +3038,28 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
         // Re-bind with the actual return type (though this is after the fact)
         TypeId loop_type = env_.makeFunctionType(binding_types, body_result.inferred_type);
         ctx_.bind(let.name, loop_type);
+    }
+
+    // A named let is a loop: its body runs an unknown number of times, so a
+    // single-path use count says nothing about it. analyzeLinearUses() reports
+    // that as undecidable; skip the enforcement call entirely rather than emit
+    // a "not decidable" note for a binding nobody annotated linear on purpose.
+    if (!let.name && !linear_bindings.empty()) {
+        // Each linear binding's scope is the values of the bindings that FOLLOW
+        // it plus the body — not the body alone. `(let* ((a q) (b a)) (h b))`
+        // consumes `a` in the value of `b`, and analysing only the body counted
+        // that as zero and rejected a correct program as a discard.
+        std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>> regions;
+        for (const auto& entry : linear_bindings) {
+            std::vector<const eshkol_ast_t*> region;
+            for (size_t j = entry.second + 1; j < let.num_bindings; ++j) {
+                const eshkol_ast_t& later = let.bindings[j];
+                if (later.type == ESHKOL_CONS) region.push_back(later.cons_cell.cdr);
+            }
+            region.push_back(let.body);
+            regions.push_back({entry.first, std::move(region)});
+        }
+        enforceLinearRegions(regions, expr);
     }
 
     ctx_.popScope();
@@ -3560,6 +3593,48 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
     addError(msg, node ? node->line : 0, node ? node->column : 0);
 }
 
+/**
+ * @brief Append " (line L:C)" to @p msg for @p node, when the position is real.
+ *
+ * Nodes synthesized by lowering (internal defines becoming a `letrec*`, for
+ * one) do not always carry a source position, and an uninitialised column
+ * prints as a nine-digit number that makes a correct diagnostic look like a
+ * compiler fault. A column past any plausible line length is treated as absent
+ * rather than printed.
+ */
+void TypeChecker::appendLocation(std::string& msg, const eshkol_ast_t* node) {
+    if (!node || node->line <= 0) return;
+    msg += " (line " + std::to_string(node->line);
+    if (node->column > 0 && node->column < 100000) {
+        msg += ":" + std::to_string(node->column);
+    }
+    msg += ")";
+}
+
+/**
+ * @brief Linearity enforcement point: report a no-cloning / no-discard
+ * violation, fatally.
+ *
+ * Same formatting and recording as reportTypeIssue(), with one deliberate
+ * difference: the severity does not depend on `--strict-types`. Gradual typing
+ * is a statement about how much the checker can INFER, not a licence to compile
+ * a program it has PROVEN ill-formed, and the no-cloning guarantee `Qubit`
+ * advertises is worth nothing if violating it still exits 0 and writes a
+ * runnable binary. `--unsafe` — documented precisely as "linear types can be
+ * duplicated (no-cloning bypassed)" — remains the one way to proceed anyway.
+ */
+void TypeChecker::reportLinearViolation(const std::string& msg,
+                                        const eshkol_ast_t* node) {
+    if (unsafe_mode_) return;
+
+    std::string loc_msg = msg;
+    appendLocation(loc_msg, node);
+
+    fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
+    linearity_violations_++;
+    addError(msg, node ? node->line : 0, node ? node->column : 0);
+}
+
 // ============================================================================
 // Dimension Checking (Phase 5.3)
 // ============================================================================
@@ -3679,6 +3754,934 @@ std::optional<CTValue> TypeChecker::extractDimension(TypeId type, size_t dim_ind
 // ============================================================================
 // Linear Type Checking (Phase 6.2)
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// Static linear-use analysis
+//
+// The incidental usage counters on Context are a by-product of type synthesis,
+// and type synthesis does not visit the whole program: `begin` synthesizes only
+// its LAST expression, `and`/`or` synthesize no operand at all, and
+// cond/case/when/unless/do/guard/match synthesize nothing and just answer
+// `Value`. Reading a linearity verdict off those counters is therefore wrong in
+// BOTH directions at once — it missed `(begin (h q) (z q))` (a clone counted as
+// one use) while rejecting `(cond (b (h q)) (else (z q)))` as "never consumed"
+// (a legal program whose only use is invisible). A warning can survive that
+// sloppiness; a fatal error cannot, so the enforcement this file now performs
+// is driven by a dedicated walk instead.
+//
+// The walk answers ONE question — how many times can this binding be used along
+// a single worst-case execution path — and it answers "I do not know" rather
+// than guessing. That is the decidability flag: any form outside the fragment
+// below sets `decidable = false`, and no verdict, fatal or otherwise, is drawn
+// from an undecidable body. Under-approximating (missing a clone) is a bounded
+// gap that a later release can close; over-approximating would reject correct
+// quantum programs, which is the one failure this must never have.
+//
+// Accounting rules, and why each is the worst case:
+//   * `if`         cond + max(then, else). The branches are mutually exclusive,
+//                  so no path runs both (#320 item 2).
+//   * sequence     sum. Every sub-expression of a `begin` runs.
+//   * `and`/`or`   sum. Short-circuit means FEWER evaluations on some paths,
+//                  never more, and linear typing rejects a binding that any
+//                  path can duplicate.
+//   * `let`-family sum of binding values + body, with two refinements: a
+//                  binding whose value is a bare reference to a tracked name is
+//                  an ALIAS and extends tracking to the new name (this is what
+//                  `(let ((a q)) (cons a a))` needs); a binding that shadows a
+//                  tracked name ends tracking for that name in the body.
+//   * `lambda`     body uses, counted as written. A closure that captures a
+//                  linear value and uses it twice clones it; a closure that
+//                  captures it once and is itself invoked many times is the
+//                  dynamic duplication this static analysis does not see, and
+//                  which the enforcement scope documents as out of range.
+//   * `define`     the body of an internal define, with the same shadowing rule.
+//   * `cond`/`case`/`match`
+//                  the EXACT worst path over the clause ladder, not a coarse
+//                  "all tests plus the biggest body". Reaching clause k runs the
+//                  tests of clauses 0..k and then exactly ONE body, so the count
+//                  is max over k of (prefix of tests through k + body of k),
+//                  taken against the fall-through path that runs every test and
+//                  no body at all. A cheaper `sum(tests) + max(body)` would be
+//                  sound but would over-charge a long ladder, and over-charging
+//                  is how a correct program gets rejected.
+//   * `when`/`unless`
+//                  test + the body, which either runs whole or not at all. This
+//                  matches the one-armed `if` rule: a body that consumes the
+//                  binding once is the S14 shape #471 measured as legal.
+//   * `guard`      the body, when NO handler clause mentions the binding. If a
+//                  handler does mention it the form is reported undecidable:
+//                  an exception can be raised after the body already consumed
+//                  the resource, so the handler's use may or may not be a
+//                  second one and neither answer is knowable here.
+//   * `do` / named `let`
+//                  a loop body runs an unknown number of times, so a use inside
+//                  it is not a single-path quantity — undecidable (BI-2). But
+//                  the loop-carried region using the binding ZERO times IS
+//                  decidable: the loop then contributes nothing whatever its
+//                  trip count, and the uses around it are counted normally.
+//                  This is what makes `(begin (h q) (do ((i 0 (+ i 1))) …))`
+//                  enforceable instead of surrendering the whole body.
+//   * `set!`       the value's uses. A `set!` whose value is a bare reference
+//                  to a tracked name MOVES the resource into the assigned name,
+//                  and the sequence walk keeps tracking it there; a `set!` that
+//                  overwrites a tracked name is undecidable, because whether
+//                  the overwritten value was already consumed is a flow fact
+//                  this walk does not carry.
+//   * `((lambda (a) …) q)`
+//                  an immediately applied lambda IS a `let`, and it aliases the
+//                  same way. Not recognising that was the alias-laundering hole
+//                  (BI-3): the argument counted as one use and the clone inside
+//                  the body was invisible because the parameter erased the type.
+//
+// Escape (BI-3, the sound half of place-keyed tracking). Storing a bare
+// reference to a tracked name into an untyped container — `cons`, `list`,
+// `vector`, `vector-set!`, … — puts the resource somewhere this name-keyed
+// analysis cannot follow, and the container can then be read any number of
+// times. That is recorded as an ESCAPE and reported as a violation rather than
+// silently accepted: the honest verdict for "I handed the linear value to
+// something that erases its type" is a rejection, not a pass. It is reported
+// only after the use count has had its say, so `(cons q q)` still reads as the
+// clone it is.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Names currently aliasing the linear binding under analysis. */
+using LinearAliasSet = std::set<std::string>;
+
+/**
+ * @brief Everything the walk learns besides the use count.
+ *
+ * Carried by reference through the recursion so a single undecidable form, or
+ * a single escape, is visible to the caller without threading three separate
+ * out-parameters through every helper.
+ */
+struct LinearWalkState {
+    bool decidable = true;          // false: the body left the decidable fragment
+    const char* blocker = "";       // the form that ended decidability
+    const char* escaped_into = nullptr;  // container a bare reference was stored into
+};
+
+/** Give up on the walk, naming @p why as the form that stopped it. */
+static inline void giveUp(LinearWalkState& st, const char* why) {
+    st.decidable = false;
+    st.blocker = why;
+}
+
+/**
+ * @brief Worst-case count of uses of any name in @p names within @p e.
+ *
+ * Sets `st.decidable` to false (and records the blocker) the first time it
+ * meets a form it cannot account for. Once false it stays false; the returned
+ * count is then meaningless and callers must not read it.
+ */
+static int countLinearUses(const eshkol_ast_t* e,
+                           const LinearAliasSet& names,
+                           LinearWalkState& st);
+
+/** True if @p e is a bare reference to one of @p names (an alias source). */
+static bool isBareRefTo(const eshkol_ast_t* e, const LinearAliasSet& names) {
+    return e && e->type == ESHKOL_VAR && e->variable.id &&
+           names.count(e->variable.id) > 0;
+}
+
+/**
+ * @brief True if @p name is a container constructor or mutator (BI-3).
+ *
+ * Handing a bare linear reference to one of these stores it in a value whose
+ * type carries no linearity, so every later read of that container is an
+ * unchecked use. The list is deliberately the aggregate builders and mutators
+ * only — an ordinary procedure call such as `(h q)` CONSUMES the qubit and
+ * returns a fresh one, which is the shape linear quantum code is written in.
+ */
+static bool isUntypedContainerForm(const char* name) {
+    static const char* const kContainers[] = {
+        "cons", "list", "list*", "cons*", "append",
+        "vector", "make-vector", "vector-set!", "vector-fill!", "vector-push!",
+        "list->vector", "vector-grow",
+        "set-car!", "set-cdr!",
+        "hash-table-set!", "hash-set!", "hash-table-update!",
+        "make-parameter",
+    };
+    for (const char* c : kContainers) {
+        if (std::strcmp(name, c) == 0) return true;
+    }
+    return false;
+}
+
+/** Collect every name a `match` pattern binds, so the clause body shadows it. */
+static void collectPatternBindings(const eshkol_pattern_t* p,
+                                   std::set<std::string>& out) {
+    if (!p) return;
+    switch (p->type) {
+        case PATTERN_VARIABLE:
+            if (p->variable.name) out.insert(p->variable.name);
+            break;
+        case PATTERN_CONS:
+            collectPatternBindings(p->cons.car_pattern, out);
+            collectPatternBindings(p->cons.cdr_pattern, out);
+            break;
+        case PATTERN_LIST:
+            for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
+                collectPatternBindings(p->list.patterns[i], out);
+            }
+            break;
+        case PATTERN_PREDICATE:
+            if (p->predicate.binding_name) out.insert(p->predicate.binding_name);
+            break;
+        case PATTERN_OR:
+            for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) {
+                collectPatternBindings(p->or_pat.patterns[i], out);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+/** Uses inside a pattern's own EXPRESSIONS (predicate guards, literals). */
+static int countPatternUses(const eshkol_pattern_t* p,
+                            const LinearAliasSet& names,
+                            LinearWalkState& st) {
+    if (!p || !st.decidable) return 0;
+    switch (p->type) {
+        case PATTERN_LITERAL:
+            return countLinearUses(p->literal.value, names, st);
+        case PATTERN_CONS:
+            return countPatternUses(p->cons.car_pattern, names, st) +
+                   countPatternUses(p->cons.cdr_pattern, names, st);
+        case PATTERN_LIST: {
+            int total = 0;
+            for (uint64_t i = 0; i < p->list.num_patterns && st.decidable; ++i) {
+                total += countPatternUses(p->list.patterns[i], names, st);
+            }
+            return total;
+        }
+        case PATTERN_PREDICATE:
+            return countLinearUses(p->predicate.predicate, names, st);
+        case PATTERN_OR: {
+            int total = 0;
+            for (uint64_t i = 0; i < p->or_pat.num_patterns && st.decidable; ++i) {
+                total += countPatternUses(p->or_pat.patterns[i], names, st);
+            }
+            return total;
+        }
+        default:
+            return 0;
+    }
+}
+
+/** Sum uses over a contiguous array of @p n sub-expressions. */
+static int sumUses(const eshkol_ast_t* items, uint64_t n,
+                   const LinearAliasSet& names, LinearWalkState& st) {
+    int total = 0;
+    for (uint64_t i = 0; i < n && st.decidable; ++i) {
+        total += countLinearUses(&items[i], names, st);
+    }
+    return total;
+}
+
+/**
+ * @brief Uses over @p n expressions evaluated in sequence, following `set!`.
+ *
+ * Identical to sumUses() except that it carries the tracked-name set FORWARD
+ * across the sequence, so a `(set! a q)` earlier in a `begin` moves tracking to
+ * `a` for everything after it. That is one of the laundering routes BI-3 named:
+ * without it, `(begin (set! a q) (cons (h a) (h a)))` charged exactly one use
+ * and the clone through `a` was invisible.
+ */
+static int countSequenceUses(const eshkol_ast_t* items, uint64_t n,
+                             const LinearAliasSet& names, LinearWalkState& st) {
+    LinearAliasSet cur = names;
+    int total = 0;
+    for (uint64_t i = 0; i < n && st.decidable; ++i) {
+        const eshkol_ast_t& item = items[i];
+        if (item.type == ESHKOL_OP && item.operation.op == ESHKOL_SET_OP &&
+            item.operation.set_op.name &&
+            isBareRefTo(item.operation.set_op.value, cur)) {
+            // A move, not a use: the resource is now reachable under the
+            // assigned name for the rest of the sequence.
+            cur.insert(item.operation.set_op.name);
+            continue;
+        }
+        total += countLinearUses(&item, cur, st);
+    }
+    return total;
+}
+
+/**
+ * @brief Uses within an `if`: condition + the LARGER of the two branches.
+ *
+ * Laid out as a call_op — variables[0]=condition, [1]=then, [2]=else — whether
+ * it arrived as ESHKOL_IF_OP or as the lowered call to the builtin "if".
+ */
+static int countIfUses(const eshkol_operations_t& op,
+                       const LinearAliasSet& names,
+                       LinearWalkState& st) {
+    if (op.call_op.num_vars < 2) {
+        giveUp(st, "a malformed if");
+        return 0;
+    }
+    int cond = countLinearUses(&op.call_op.variables[0], names, st);
+    int then_uses = countLinearUses(&op.call_op.variables[1], names, st);
+    int else_uses = 0;
+    if (op.call_op.num_vars >= 3) {
+        else_uses = countLinearUses(&op.call_op.variables[2], names, st);
+    }
+    return cond + (then_uses > else_uses ? then_uses : else_uses);
+}
+
+/**
+ * @brief Uses over a clause ladder: tests run in order, at most one body runs.
+ *
+ * @p tests and @p bodies are parallel per-clause counts already computed by the
+ * caller (cond, case and match differ only in how they get them). The result is
+ * the exact worst path — see the accounting note above.
+ */
+static int ladderWorstCase(const std::vector<int>& tests,
+                           const std::vector<int>& bodies) {
+    int prefix = 0;
+    int worst = 0;
+    for (size_t i = 0; i < tests.size(); ++i) {
+        prefix += tests[i];
+        int here = prefix + bodies[i];
+        if (here > worst) worst = here;
+    }
+    // The fall-through path runs every test and no body at all.
+    return prefix > worst ? prefix : worst;
+}
+
+/** True if a cond/guard clause is the `else` clause. */
+static bool clauseIsElse(const eshkol_ast_t* clause) {
+    return clause && clause->type == ESHKOL_OP &&
+           clause->operation.op == ESHKOL_CALL_OP &&
+           clause->operation.call_op.func &&
+           clause->operation.call_op.func->type == ESHKOL_VAR &&
+           clause->operation.call_op.func->variable.id &&
+           std::strcmp(clause->operation.call_op.func->variable.id, "else") == 0;
+}
+
+/**
+ * @brief Uses in a clause BODY laid out as a call_op's variables[].
+ *
+ * Handles R7RS §5.5's `(test => receiver)` form, whose body is the two-element
+ * sequence [`=>`, receiver] and whose real evaluation is receiver applied to
+ * the test value — the test is already charged by the caller.
+ */
+static int countClauseBody(const eshkol_operations_t& body_op,
+                           const LinearAliasSet& names, LinearWalkState& st) {
+    if (body_op.call_op.num_vars == 2 &&
+        body_op.call_op.variables[0].type == ESHKOL_VAR &&
+        body_op.call_op.variables[0].variable.id &&
+        std::strcmp(body_op.call_op.variables[0].variable.id, "=>") == 0) {
+        return countLinearUses(&body_op.call_op.variables[1], names, st);
+    }
+    return countSequenceUses(body_op.call_op.variables, body_op.call_op.num_vars,
+                             names, st);
+}
+
+/** Uses within a `cond`: variables[i] is a clause (func = test, vars = body). */
+static int countCondUses(const eshkol_operations_t& op,
+                         const LinearAliasSet& names, LinearWalkState& st) {
+    std::vector<int> tests, bodies;
+    for (uint64_t i = 0; i < op.call_op.num_vars && st.decidable; ++i) {
+        const eshkol_ast_t* clause = &op.call_op.variables[i];
+        if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) {
+            giveUp(st, "a malformed cond clause");
+            return 0;
+        }
+        bool is_else = clauseIsElse(clause);
+        tests.push_back(is_else ? 0
+                                : countLinearUses(clause->operation.call_op.func, names, st));
+        bodies.push_back(countClauseBody(clause->operation, names, st));
+        if (is_else) break;
+    }
+    if (!st.decidable) return 0;
+    return ladderWorstCase(tests, bodies);
+}
+
+/** Uses within a `case`: func = key, variables[i] = CONS(datums, body). */
+static int countCaseUses(const eshkol_operations_t& op,
+                         const LinearAliasSet& names, LinearWalkState& st) {
+    int key = countLinearUses(op.call_op.func, names, st);
+    std::vector<int> tests, bodies;
+    for (uint64_t i = 0; i < op.call_op.num_vars && st.decidable; ++i) {
+        const eshkol_ast_t* clause = &op.call_op.variables[i];
+        if (clause->type != ESHKOL_CONS) {
+            giveUp(st, "a malformed case clause");
+            return 0;
+        }
+        const eshkol_ast_t* datums = clause->cons_cell.car;
+        const eshkol_ast_t* body = clause->cons_cell.cdr;
+        bool is_else = datums && datums->type == ESHKOL_VAR && datums->variable.id &&
+                       std::strcmp(datums->variable.id, "else") == 0;
+        int datum_uses = 0;
+        if (!is_else && datums && datums->type == ESHKOL_OP &&
+            datums->operation.op == ESHKOL_CALL_OP) {
+            datum_uses = sumUses(datums->operation.call_op.variables,
+                                 datums->operation.call_op.num_vars, names, st);
+        }
+        int body_uses = 0;
+        if (body && body->type == ESHKOL_OP && body->operation.op == ESHKOL_CALL_OP) {
+            body_uses = countClauseBody(body->operation, names, st);
+        } else if (body) {
+            body_uses = countLinearUses(body, names, st);
+        }
+        tests.push_back(datum_uses);
+        bodies.push_back(body_uses);
+        if (is_else) break;
+    }
+    if (!st.decidable) return 0;
+    return key + ladderWorstCase(tests, bodies);
+}
+
+/** Uses within `when`/`unless`: variables[0] is the test, the rest the body. */
+static int countWhenUnlessUses(const eshkol_operations_t& op,
+                               const LinearAliasSet& names, LinearWalkState& st) {
+    if (op.call_op.num_vars < 1) {
+        giveUp(st, "a malformed when/unless");
+        return 0;
+    }
+    int test = countLinearUses(&op.call_op.variables[0], names, st);
+    // The body either runs whole or not at all — the one-armed `if` rule.
+    int body = countSequenceUses(op.call_op.variables + 1,
+                                 op.call_op.num_vars - 1, names, st);
+    return test + body;
+}
+
+/**
+ * @brief Uses within a `guard`, when its handlers do not mention the binding.
+ *
+ * If a handler DOES mention it, the form is undecidable: an exception can be
+ * raised at any point in the body, including after the body already consumed
+ * the resource, so the handler's use is a second one on some paths and the
+ * first on others. Refusing to rule is the honest answer; charging
+ * `body + handler` would reject the perfectly ordinary
+ * `(guard (e (#t (release q))) (h q))` and charging `max` would miss a clone.
+ */
+static int countGuardUses(const eshkol_operations_t& op,
+                          const LinearAliasSet& names, LinearWalkState& st) {
+    LinearAliasSet handler_names = names;
+    if (op.guard_op.var_name) handler_names.erase(op.guard_op.var_name);
+
+    int handler_uses = 0;
+    for (uint64_t i = 0; i < op.guard_op.num_clauses && st.decidable; ++i) {
+        const eshkol_ast_t* clause = &op.guard_op.clauses[i];
+        if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) {
+            giveUp(st, "a malformed guard clause");
+            return 0;
+        }
+        if (!clauseIsElse(clause)) {
+            handler_uses += countLinearUses(clause->operation.call_op.func,
+                                            handler_names, st);
+        }
+        handler_uses += countClauseBody(clause->operation, handler_names, st);
+    }
+    if (!st.decidable) return 0;
+    if (handler_uses > 0) {
+        giveUp(st, "a guard handler that may run after a partial body");
+        return 0;
+    }
+    return countSequenceUses(op.guard_op.body, op.guard_op.num_body_exprs, names, st);
+}
+
+/** Uses within a `match`: expr + the worst clause ladder, patterns shadowing. */
+static int countMatchUses(const eshkol_operations_t& op,
+                          const LinearAliasSet& names, LinearWalkState& st) {
+    int key = countLinearUses(op.match_op.expr, names, st);
+    std::vector<int> tests, bodies;
+    for (uint64_t i = 0; i < op.match_op.num_clauses && st.decidable; ++i) {
+        const eshkol_match_clause_t& clause = op.match_op.clauses[i];
+        std::set<std::string> bound;
+        collectPatternBindings(clause.pattern, bound);
+        LinearAliasSet inner = names;
+        for (const auto& b : bound) inner.erase(b);
+
+        int test = countPatternUses(clause.pattern, names, st);
+        if (clause.guard) test += countLinearUses(clause.guard, inner, st);
+        tests.push_back(test);
+        bodies.push_back(clause.body ? countLinearUses(clause.body, inner, st) : 0);
+    }
+    if (!st.decidable) return 0;
+    return key + ladderWorstCase(tests, bodies);
+}
+
+/**
+ * @brief Uses within a `do` loop.
+ *
+ * Layout (see codegenDo): call_op.func is CONS(bindings, CONS(test, results)),
+ * and call_op.variables[] is the body. The init expressions run ONCE, in the
+ * enclosing scope; the test, the steps and the body run an unknown number of
+ * times; the results run once, after the loop.
+ */
+static int countDoUses(const eshkol_operations_t& op,
+                       const LinearAliasSet& names, LinearWalkState& st) {
+    const eshkol_ast_t* main_cons = op.call_op.func;
+    if (!main_cons || main_cons->type != ESHKOL_CONS) {
+        giveUp(st, "a malformed do");
+        return 0;
+    }
+    const eshkol_ast_t* bindings = main_cons->cons_cell.car;
+    const eshkol_ast_t* test_clause = main_cons->cons_cell.cdr;
+    if (!test_clause || test_clause->type != ESHKOL_CONS) {
+        giveUp(st, "a malformed do");
+        return 0;
+    }
+
+    LinearAliasSet inner = names;
+    int once = 0;                       // uses that happen exactly once
+    int loop_carried = 0;               // uses inside the repeated region
+    std::vector<const eshkol_ast_t*> steps;
+
+    if (bindings && bindings->type == ESHKOL_OP &&
+        bindings->operation.op == ESHKOL_CALL_OP) {
+        for (uint64_t i = 0; i < bindings->operation.call_op.num_vars && st.decidable; ++i) {
+            const eshkol_ast_t* b = &bindings->operation.call_op.variables[i];
+            if (b->type != ESHKOL_CONS) continue;
+            const eshkol_ast_t* var = b->cons_cell.car;
+            const eshkol_ast_t* rest = b->cons_cell.cdr;
+            if (!rest || rest->type != ESHKOL_CONS) continue;
+            const eshkol_ast_t* init = rest->cons_cell.car;
+            if (isBareRefTo(init, names)) {
+                // The resource is carried INTO the loop under the loop
+                // variable's name, where it may be read once per iteration.
+                giveUp(st, "a do binding aliased from a linear value");
+                return 0;
+            }
+            once += countLinearUses(init, names, st);
+            steps.push_back(rest->cons_cell.cdr);
+            if (var && var->type == ESHKOL_VAR && var->variable.id) {
+                inner.erase(var->variable.id);
+            }
+        }
+    }
+    if (!st.decidable) return 0;
+
+    loop_carried += countLinearUses(test_clause->cons_cell.car, inner, st);
+    for (const eshkol_ast_t* s : steps) {
+        loop_carried += countLinearUses(s, inner, st);
+    }
+    loop_carried += countSequenceUses(op.call_op.variables, op.call_op.num_vars,
+                                      inner, st);
+    if (!st.decidable) return 0;
+    if (loop_carried > 0) {
+        giveUp(st, "a do loop body that may run any number of times");
+        return 0;
+    }
+
+    // The result expressions run exactly once, after the loop exits.
+    const eshkol_ast_t* results = test_clause->cons_cell.cdr;
+    if (results && results->type == ESHKOL_OP &&
+        results->operation.op == ESHKOL_CALL_OP) {
+        once += countSequenceUses(results->operation.call_op.variables,
+                                  results->operation.call_op.num_vars, inner, st);
+    }
+    return once;
+}
+
+/**
+ * @brief Uses within a `let`-family form, honouring aliasing and shadowing.
+ *
+ * A named `let` is a loop: its body runs any number of times, so a use inside
+ * it is not a single-path quantity and the form is reported undecidable
+ * (BI-2). A loop whose body does NOT mention the binding contributes nothing
+ * whatever its trip count, and that case stays decidable so the uses around
+ * the loop are still enforced.
+ */
+static int countLetUses(const eshkol_operations_t& op,
+                        const LinearAliasSet& names, LinearWalkState& st) {
+    const auto& let = op.let_op;
+
+    if (let.name) {
+        LinearAliasSet inner = names;
+        int total = 0;
+        for (uint64_t i = 0; i < let.num_bindings && st.decidable; ++i) {
+            const eshkol_ast_t& binding = let.bindings[i];
+            if (binding.type != ESHKOL_CONS) {
+                giveUp(st, "a malformed named let binding");
+                return 0;
+            }
+            const eshkol_ast_t* value = binding.cons_cell.cdr;
+            if (isBareRefTo(value, names)) {
+                giveUp(st, "a named let binding aliased from a linear value");
+                return 0;
+            }
+            total += countLinearUses(value, names, st);
+            const eshkol_ast_t* var = binding.cons_cell.car;
+            if (var && var->type == ESHKOL_VAR && var->variable.id) {
+                inner.erase(var->variable.id);
+            }
+        }
+        if (!st.decidable) return 0;
+        inner.erase(let.name);
+        if (inner.empty()) return total;
+        int loop_carried = countLinearUses(let.body, inner, st);
+        if (!st.decidable) return 0;
+        if (loop_carried > 0) {
+            giveUp(st, "a named let loop body that may run any number of times");
+            return 0;
+        }
+        return total;
+    }
+
+    LinearAliasSet inner = names;
+    int total = 0;
+    for (uint64_t i = 0; i < let.num_bindings && st.decidable; ++i) {
+        const eshkol_ast_t& binding = let.bindings[i];
+        if (binding.type != ESHKOL_CONS) {
+            giveUp(st, "let binding");
+            return 0;
+        }
+        const eshkol_ast_t* value = binding.cons_cell.cdr;
+        // An alias binds the SAME resource under a new name: charge no use for
+        // the reference itself and track the new name instead. Anything else is
+        // an ordinary sub-expression whose uses are charged normally.
+        bool is_alias = isBareRefTo(value, inner);
+        if (!is_alias) {
+            total += countLinearUses(value, inner, st);
+        }
+        const eshkol_ast_t* var = binding.cons_cell.car;
+        if (var && var->type == ESHKOL_VAR && var->variable.id) {
+            if (is_alias) {
+                inner.insert(var->variable.id);
+            } else {
+                inner.erase(var->variable.id);   // shadows the tracked name
+            }
+        }
+    }
+    if (!st.decidable) return 0;
+    if (inner.empty()) return total;      // every tracked name was shadowed
+    return total + countLinearUses(let.body, inner, st);
+}
+
+/**
+ * @brief Uses within an immediately applied lambda: `((lambda (a …) body) q …)`.
+ *
+ * This form IS a `let`, and it must alias like one. Treating it as an ordinary
+ * call charged the argument as one use and then walked the lambda body with the
+ * parameter erased, so a clone through the parameter was invisible — the
+ * alias-laundering hole #471 pinned as an intentional accept (BI-3).
+ */
+static int countAppliedLambdaUses(const eshkol_operations_t& op,
+                                  const LinearAliasSet& names,
+                                  LinearWalkState& st) {
+    const eshkol_operations_t& lam = op.call_op.func->operation;
+    LinearAliasSet inner = names;
+    int total = 0;
+
+    for (uint64_t i = 0; i < op.call_op.num_vars && st.decidable; ++i) {
+        const eshkol_ast_t* arg = &op.call_op.variables[i];
+        const char* param = nullptr;
+        if (i < lam.lambda_op.num_params) {
+            const eshkol_ast_t& p = lam.lambda_op.parameters[i];
+            if (p.type == ESHKOL_VAR && p.variable.id) param = p.variable.id;
+        }
+        if (param && isBareRefTo(arg, names)) {
+            inner.insert(param);          // an alias: the argument is not a use
+        } else {
+            total += countLinearUses(arg, names, st);
+            if (param) inner.erase(param);
+        }
+    }
+    if (!st.decidable) return 0;
+
+    for (uint64_t i = op.call_op.num_vars; i < lam.lambda_op.num_params; ++i) {
+        const eshkol_ast_t& p = lam.lambda_op.parameters[i];
+        if (p.type == ESHKOL_VAR && p.variable.id) inner.erase(p.variable.id);
+    }
+    if (lam.lambda_op.rest_param) inner.erase(lam.lambda_op.rest_param);
+    if (inner.empty()) return total;
+    return total + countLinearUses(lam.lambda_op.body, inner, st);
+}
+
+static int countLinearUses(const eshkol_ast_t* e,
+                           const LinearAliasSet& names,
+                           LinearWalkState& st) {
+    if (!e || !st.decidable || names.empty()) return 0;
+
+    switch (e->type) {
+        case ESHKOL_VAR:
+            return (e->variable.id && names.count(e->variable.id) > 0) ? 1 : 0;
+        case ESHKOL_UINT8:  case ESHKOL_UINT16: case ESHKOL_UINT32:
+        case ESHKOL_UINT64: case ESHKOL_INT8:   case ESHKOL_INT16:
+        case ESHKOL_INT32:  case ESHKOL_INT64:  case ESHKOL_DOUBLE:
+        case ESHKOL_STRING: case ESHKOL_CHAR:   case ESHKOL_BOOL:
+        case ESHKOL_NULL:   case ESHKOL_BIGNUM_LITERAL:
+        case ESHKOL_SYMBOL: case ESHKOL_UNTYPED:
+            return 0;   // a literal cannot mention a binding
+        case ESHKOL_CONS:
+            return countLinearUses(e->cons_cell.car, names, st) +
+                   countLinearUses(e->cons_cell.cdr, names, st);
+        case ESHKOL_OP:
+            break;
+        default:
+            giveUp(st, "unrecognised AST node");
+            return 0;
+    }
+
+    const auto& op = e->operation;
+    switch (op.op) {
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            return countSequenceUses(op.sequence_op.expressions,
+                                     op.sequence_op.num_expressions, names, st);
+
+        case ESHKOL_IF_OP:
+            return countIfUses(op, names, st);
+
+        case ESHKOL_COND_OP:
+            return countCondUses(op, names, st);
+
+        case ESHKOL_CASE_OP:
+            return countCaseUses(op, names, st);
+
+        case ESHKOL_WHEN_OP:
+        case ESHKOL_UNLESS_OP:
+            return countWhenUnlessUses(op, names, st);
+
+        case ESHKOL_DO_OP:
+            return countDoUses(op, names, st);
+
+        case ESHKOL_GUARD_OP:
+            return countGuardUses(op, names, st);
+
+        case ESHKOL_MATCH_OP:
+            return countMatchUses(op, names, st);
+
+        case ESHKOL_SET_OP:
+            // A `set!` whose value is a bare reference is handled one level up,
+            // by countSequenceUses(), which can keep tracking the moved
+            // resource under the assigned name. Reaching here with one means
+            // the assignment is NOT in a sequence this walk is following, so
+            // the resource goes somewhere the walk cannot see.
+            if (op.set_op.name && names.count(op.set_op.name) > 0) {
+                giveUp(st, "a set! that overwrites a linear binding");
+                return 0;
+            }
+            if (isBareRefTo(op.set_op.value, names)) {
+                giveUp(st, "a set! that moves a linear value out of the analysed scope");
+                return 0;
+            }
+            return countLinearUses(op.set_op.value, names, st);
+
+        case ESHKOL_CALL_OP:
+        case ESHKOL_ADD_OP:
+        case ESHKOL_SUB_OP:
+        case ESHKOL_MUL_OP:
+        case ESHKOL_DIV_OP: {
+            // The parser lowers `if` to a CALL of a builtin named "if" rather
+            // than to ESHKOL_IF_OP (synthesizeApplication routes it back to
+            // synthesizeIf on the same test). Summing its arguments the way an
+            // ordinary call is summed charges BOTH branches, which reports
+            // `(if b (h q) (z q))` — a qubit consumed exactly once on either
+            // path — as a clone. That is precisely the correct quantum program
+            // an over-strict rule must never reject (#320 item 2).
+            if (op.call_op.func && op.call_op.func->type == ESHKOL_VAR &&
+                op.call_op.func->variable.id &&
+                std::strcmp(op.call_op.func->variable.id, "if") == 0 &&
+                op.call_op.num_vars >= 2) {
+                return countIfUses(op, names, st);
+            }
+            // `((lambda (a) …) q)` is a let, and aliases like one (BI-3).
+            if (op.call_op.func && op.call_op.func->type == ESHKOL_OP &&
+                op.call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
+                return countAppliedLambdaUses(op, names, st);
+            }
+            // Handing a bare reference to a container erases the linear type
+            // (BI-3). Recorded, not counted: the use count still has to run
+            // first so `(cons q q)` reads as the clone it is.
+            if (op.call_op.func && op.call_op.func->type == ESHKOL_VAR &&
+                op.call_op.func->variable.id &&
+                isUntypedContainerForm(op.call_op.func->variable.id)) {
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                    if (isBareRefTo(&op.call_op.variables[i], names)) {
+                        st.escaped_into = op.call_op.func->variable.id;
+                        break;
+                    }
+                }
+            }
+            int total = countLinearUses(op.call_op.func, names, st);
+            total += sumUses(op.call_op.variables, op.call_op.num_vars, names, st);
+            return total;
+        }
+
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            return countLetUses(op, names, st);
+
+        case ESHKOL_LAMBDA_OP: {
+            LinearAliasSet inner = names;
+            for (uint64_t i = 0; i < op.lambda_op.num_params; ++i) {
+                const eshkol_ast_t& p = op.lambda_op.parameters[i];
+                if (p.type == ESHKOL_VAR && p.variable.id) inner.erase(p.variable.id);
+            }
+            if (op.lambda_op.rest_param) inner.erase(op.lambda_op.rest_param);
+            if (inner.empty()) return 0;
+            return countLinearUses(op.lambda_op.body, inner, st);
+        }
+
+        case ESHKOL_DEFINE_OP: {
+            LinearAliasSet inner = names;
+            inner.erase(op.define_op.name ? op.define_op.name : "");
+            for (uint64_t i = 0; i < op.define_op.num_params; ++i) {
+                const eshkol_ast_t& p = op.define_op.parameters[i];
+                if (p.type == ESHKOL_VAR && p.variable.id) inner.erase(p.variable.id);
+            }
+            if (op.define_op.rest_param) inner.erase(op.define_op.rest_param);
+            if (inner.empty()) return 0;
+            return countLinearUses(op.define_op.value, inner, st);
+        }
+
+        case ESHKOL_THE_OP:
+            // The ascription is erased at runtime; the wrapped expression runs
+            // verbatim, so its uses are the form's uses.
+            return countLinearUses(op.the_op.expr, names, st);
+
+        case ESHKOL_QUOTE_OP:
+            return 0;   // quoted data is never evaluated
+
+        default:
+            // call/cc, dynamic-wind, let-values, the region/ownership forms and
+            // everything else: an op-specific union layout this walk does not
+            // model. Refusing to guess is the whole point — see the header
+            // comment. The caller downgrades to a warning and says so.
+            giveUp(st, "a control-flow or special form outside the decidable fragment");
+            return 0;
+    }
+}
+
+}  // namespace
+
+/**
+ * @brief Count worst-case uses of the linear binding @p name within @p body.
+ *
+ * See the block comment above for the decidable fragment and the accounting
+ * rules. When the returned verdict is not `decidable`, its `uses` field carries
+ * no information and no linearity conclusion may be drawn from it.
+ */
+TypeChecker::LinearUseAnalysis
+TypeChecker::analyzeLinearUses(const eshkol_ast_t* body,
+                               const std::string& name) const {
+    LinearUseAnalysis result;
+    if (!body) {
+        // No body to walk: an `extern`/`is_external` define takes its
+        // implementation from a linked object, so nothing here can say how its
+        // parameters are used. Zero uses would read as a discard and reject a
+        // perfectly good declaration.
+        result.decidable = false;
+        result.blocker = "no body (external declaration)";
+        return result;
+    }
+    LinearAliasSet names{name};
+    LinearWalkState st;
+    result.uses = countLinearUses(body, names, st);
+    result.decidable = st.decidable;
+    result.blocker = st.blocker;
+    result.escaped_into = st.escaped_into;
+    if (!result.decidable) result.uses = 0;
+    return result;
+}
+
+/**
+ * @brief As analyzeLinearUses(), over a region of expressions run in sequence.
+ *
+ * A `let` binding is NOT consumed only in the body. The values of every later
+ * binding in the same form are evaluated in its scope too, and that is exactly
+ * where a chained alias consumes it: in `(let* ((a q) (b a)) (h b))` the sole
+ * use of `a` is the value of `b`. Analysing the body alone counted zero and
+ * rejected that correct program as a discard.
+ */
+TypeChecker::LinearUseAnalysis
+TypeChecker::analyzeLinearUses(const std::vector<const eshkol_ast_t*>& region,
+                               const std::string& name) const {
+    LinearUseAnalysis result;
+    LinearAliasSet names{name};
+    LinearWalkState st;
+    int total = 0;
+    for (const eshkol_ast_t* e : region) {
+        if (!st.decidable) break;
+        total += countLinearUses(e, names, st);
+    }
+    result.decidable = st.decidable;
+    result.blocker = st.blocker;
+    result.escaped_into = st.escaped_into;
+    result.uses = result.decidable ? total : 0;
+    return result;
+}
+
+/**
+ * @brief Enforce use-exactly-once for each of @p linear_names over @p body.
+ *
+ * Reports at @p site (the `define`/`lambda`/`let` form) so the diagnostic
+ * points at the binder that made the promise. Two uses is a clone — the
+ * no-cloning violation the `Qubit` type exists to reject — and zero uses is a
+ * discard; both are fatal. A body outside the decidable fragment yields a
+ * warning that NAMES the form which stopped the analysis, because the honest
+ * report of an unenforced shape is "not checked here", not silence and not a
+ * guess.
+ */
+void TypeChecker::enforceLinearBindings(const std::vector<std::string>& linear_names,
+                                        const eshkol_ast_t* body,
+                                        const eshkol_ast_t* site) {
+    for (const auto& name : linear_names) {
+        reportLinearVerdict(name, analyzeLinearUses(body, name), site);
+    }
+}
+
+/**
+ * @brief As enforceLinearBindings(), but each name carries its own scope region.
+ */
+void TypeChecker::enforceLinearRegions(
+    const std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>>& regions,
+    const eshkol_ast_t* site) {
+    for (const auto& entry : regions) {
+        reportLinearVerdict(entry.first, analyzeLinearUses(entry.second, entry.first), site);
+    }
+}
+
+/** Turn one analysis verdict into the right diagnostic (or none). */
+void TypeChecker::reportLinearVerdict(const std::string& name,
+                                      const LinearUseAnalysis& verdict,
+                                      const eshkol_ast_t* site) {
+    if (!verdict.decidable) {
+        // NOT routed through reportTypeIssue(): this says something about the
+        // CHECKER's reach, not about the program, so it must never be counted
+        // as a type error — under `--strict-types` that would reject
+        // `(cond (b (h q)) (else (z q)))`, a correct single-use quantum
+        // program, purely because the analysis does not model `cond` yet. It is
+        // printed anyway so the boundary of the no-cloning guarantee is visible
+        // in the build log and not only in the documentation.
+        if (!unsafe_mode_) {
+            std::string loc = "linear variable '" + name +
+                              "' is not statically decidable here (body contains " +
+                              verdict.blocker + "); use-exactly-once is NOT enforced for it";
+            appendLocation(loc, site);
+            fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
+        }
+        return;
+    }
+    if (verdict.uses > 1) {
+        reportLinearViolation("linear variable '" + name +
+                              "' was consumed more than once", site);
+    } else if (verdict.uses == 0) {
+        reportLinearViolation("linear variable '" + name +
+                              "' was not consumed", site);
+    } else if (verdict.escaped_into) {
+        // Exactly one static use, but that use handed the resource to a
+        // container whose type carries no linearity. The container can be read
+        // any number of times and this name-keyed analysis cannot follow it, so
+        // "used once" would be an unearned pass. Ordered AFTER the count so a
+        // genuine double use — `(cons q q)` — keeps its clone diagnosis.
+        reportLinearViolation("linear variable '" + name +
+                              "' escapes into an untyped container ('" +
+                              verdict.escaped_into +
+                              "'), where use-exactly-once cannot be enforced",
+                              site);
+    }
+}
 
 /**
  * @brief True if @p type is linear (must be used exactly once): the no-cloning constraint.

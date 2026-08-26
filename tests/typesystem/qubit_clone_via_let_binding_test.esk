@@ -1,0 +1,13 @@
+;; Type System Test: a linear-typed let binding is use-once checked too
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+
+;; Linearity used to be enforced on `define`/`lambda` parameters only, so a
+;; qubit introduced by a let binding — the natural way to name a freshly
+;; allocated one — could be cloned freely despite carrying the annotation.
+(define (make-q) 0)
+
+(define (bad-let-clone)
+  (let ((q : Qubit (make-q)))
+    (cons q q)))

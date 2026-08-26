@@ -1,0 +1,17 @@
+;; Type System Test: a single use inside a guard body is valid
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_guard_body_test.esk: a guarded gate
+;; application, which is how a quantum program that can fail is actually
+;; written. It must compile with no diagnostic at all.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (guarded (q : Qubit))
+  (guard (e (#t 0))
+    (h q)))
+(display "guard body charged once")
+(newline)

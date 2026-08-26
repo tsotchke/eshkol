@@ -754,16 +754,35 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       resident tape (#214) has a public training win
 
 ### Quantum Type System
-- [x] Qubit type with linear resource tracking - SHIPPED in v1.3.4-evolve, as
-      a **warning-level type annotation**, corrected 2026-08-25 from
-      "no-cloning enforced at compile time" (conformity audit item a7):
-      `Qubit` is registered `TYPE_FLAG_LINEAR` and double-use is reported via
-      `reportTypeIssue` (`lib/types/type_checker.cpp:1130-1133`), which is a
-      warning unless `--strict-types`, and a no-op under `--unsafe`. Tracking
-      is by variable name, so aliasing or storing in a vector defeats it, and
-      codegen has zero `Qubit` references — `lib/agent/quantum.esk` passes
-      qubits as raw `i32` indices. **BUILD ITEM:** hard compile-time
-      no-cloning enforcement, target v1.9.0 (ADR-0004, ADR-0000 Stage 12).
+- [x] Qubit type with linear resource tracking - SHIPPED in v1.3.4-evolve.
+      Shipped as a **warning-level type annotation** (conformity audit item a7,
+      corrected 2026-08-25 from "no-cloning enforced at compile time": a clone
+      printed `[WARN]`, exited 0 and wrote a runnable binary). **Made a real
+      compile-time error in v1.3.5:** a linearity violation now stops code
+      generation, exits nonzero and writes no artifact in the DEFAULT mode, not
+      only under `--strict-types`; `--unsafe` remains the documented bypass.
+      Enforcement is a worst-case-path analysis of the binder's own body
+      (`TypeChecker::analyzeLinearUses`), covering `define`/`lambda` parameters
+      and `let` bindings, `if` branch-exclusivity, sequences and short-circuit
+      forms, and `let` alias chains. **Extended in the same release** to the
+      remaining control-flow forms — `cond`, `case`, `when`, `unless`, `do`,
+      `guard`, `match` and `set!` are all walked, clause ladders by their exact
+      worst path — to alias laundering through an immediately applied `lambda`
+      and through a `set!` move, and to rejecting a bare linear reference stored
+      into an untyped container. **VM engine parity closed**: the bytecode VM
+      runs the same judgment (not a second implementation), so source execution
+      and `--emit-eskb` both refuse a violating program and write no bytecode.
+      **Remaining BUILD ITEMS**, each announced per binding on stderr rather
+      than silently assumed, and specified in
+      `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` 3.6.8: loop-carried accounting,
+      so a named `let` or `do` whose body names the qubit can be ruled on rather
+      than reported undecidable; a `guard` whose handler names the binding;
+      `call/cc` re-entry; once-closures / affine closure typing for dynamic
+      duplication; and the last name-keyed residue — a qubit returned from a
+      function with an unannotated return type, which needs interprocedural
+      inference and is what ADR-0004's **place-keyed** PlaceId/FlowEnv closes,
+      for linear types and ownership `move` alike (ADR-0004, ADR-0000
+      Stage 12).
 - [ ] Quantum register types `qreg<n>` with compile-time dimension
 - [ ] `define-quantum-region` scoping for qubit allocation and deallocation
 - [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9

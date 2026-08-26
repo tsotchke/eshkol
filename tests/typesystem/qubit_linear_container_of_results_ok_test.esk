@@ -1,0 +1,24 @@
+;; Type System Test: a container of gate RESULTS is not an escape
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: escapes into an untyped container
+;; EXPECT-NO-STDERR: Linearity not enforced
+
+;; The counterpart to qubit_clone_via_container_test.esk, and the line the
+;; escape rule has to hold. The escape fires on a BARE REFERENCE to the tracked
+;; binding, because that is the value this name-keyed analysis was following.
+;; `(h q)` consumes the qubit and returns a fresh one; the tracked name is used
+;; exactly once, inside the argument, and the list built from the result is an
+;; ordinary value.
+;;
+;; Getting this wrong in the other direction -- treating every container
+;; argument as an escape -- would reject the way linear quantum code is written,
+;; which is the failure this whole enforcement effort must not have.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (collect (q : Qubit))
+  (cons (h q) '()))
+(display "a container of results is not an escape")
+(newline)

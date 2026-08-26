@@ -1,0 +1,14 @@
+;; Type System Test: a clone inside a when body is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code for a program that violates linear
+
+;; `when` is charged as its test plus its body: the body either runs whole or
+;; not at all, which is the one-armed `if` rule. Two uses in the body is a clone
+;; on every path that runs it (BI-1).
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (bad-when (b : Bool) (q : Qubit))
+  (when b (cons (h q) (z q))))
