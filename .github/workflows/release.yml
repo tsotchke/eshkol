@@ -1065,7 +1065,12 @@ jobs:
   # "Release-blocking readiness".
   release-readiness-gate:
     name: release-readiness-gate
-    runs-on: ubuntu-22.04
+    # ICC only exists on the maintainer's self-hosted node (see ICC_BIN
+    # below) — a hosted runner can never certify this gate, only report it
+    # unavailable. Labels per docs/platform/SELF_HOSTED_RUNNERS.md §2; the
+    # `eshkol` label guarantees LLVM 21, cmake, ninja, python3, ld.lld are
+    # already provisioned (see the toolchain preflight step further down).
+    runs-on: [self-hosted, Linux, X64, eshkol]
     env:
       # Name intentionally distinct from ICC_BIN: the resolved binary path is
       # published to $GITHUB_ENV as ICC_BIN by the resolve step below, and a
@@ -1110,47 +1115,69 @@ jobs:
           fi
           echo "::warning title=Readiness gate skipped (dry-run)::$msg This non-publishing dry-run continues; a real tag push would be BLOCKED here."
 
-      - name: Add LLVM Repository (Linux)
+      # Self-hosted `eshkol` node: CI does not install anything here — the
+      # toolchain is provisioned once, by hand, per
+      # docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning, the same
+      # contract ci-mesh.yml's mesh-matrix jobs rely on (a self-hosted
+      # runner is a real machine CI has no business mutating, and doing so
+      # would require handing it passwordless sudo). This step only
+      # resolves what's already there and fails loud+specific if something
+      # is missing. `jq` is an extra requirement this job has beyond the
+      # standard mesh set (it parses ICC's JSON readiness verdict below) —
+      # provision it alongside the rest.
+      - name: Toolchain preflight (self-hosted; provisioned out of band)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
         run: |
-          set -euxo pipefail
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          apt_update() {
-            for attempt in 1 2 3; do
-              if sudo apt-get update -o Acquire::Retries=5; then
-                return 0
-              fi
-              sudo rm -rf /var/lib/apt/lists/*
-              sleep $((attempt * 15))
-            done
-            sudo apt-get update -o Acquire::Retries=5
-          }
-          apt_update
+          set -u
+          fail=0
+          note() { echo "::error title=Release runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."; fail=1; }
 
-      - name: Install Dependencies (Linux)
-        if: env.ICC_AVAILABLE == 'true'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
-            libreadline-dev pkg-config \
-            libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
-            git python3 jq
-          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
-          ld.lld --version
+          llvm_config=""
+          for c in \
+            "$(command -v "llvm-config-${LLVM_MAJOR}" 2>/dev/null || true)" \
+            "/usr/lib/llvm-${LLVM_MAJOR}/bin/llvm-config" \
+            "$(command -v llvm-config 2>/dev/null || true)"
+          do
+            [ -n "$c" ] && [ -x "$c" ] || continue
+            if [ "$("$c" --version | cut -d. -f1)" = "${LLVM_MAJOR}" ]; then
+              llvm_config="$c"; break
+            fi
+          done
+          if [ -z "$llvm_config" ]; then
+            note "No LLVM ${LLVM_MAJOR} toolchain found on this runner."
+          else
+            echo "llvm-config: $llvm_config ($("$llvm_config" --version))"
+            echo "LLVM_CONFIG=$llvm_config" >> "$GITHUB_ENV"
+          fi
+
+          command -v cmake   >/dev/null 2>&1 || note "cmake is not installed on this runner."
+          command -v ninja   >/dev/null 2>&1 || note "ninja is not installed on this runner."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
+          command -v jq      >/dev/null 2>&1 || note "jq is not installed on this runner (needed to parse the ICC readiness verdict)."
+
+          # `-fuse-ld=lld` wants an unversioned ld.lld on PATH. A hosted
+          # runner symlinks it into /usr/bin with sudo; a self-hosted runner
+          # must not, so shim it into the runner's own PATH instead.
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            versioned="$(command -v "ld.lld-${LLVM_MAJOR}" 2>/dev/null || echo "/usr/lib/llvm-${LLVM_MAJOR}/bin/ld.lld")"
+            if [ -x "$versioned" ]; then
+              mkdir -p "$RUNNER_TEMP/bin"
+              ln -sf "$versioned" "$RUNNER_TEMP/bin/ld.lld"
+              echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+              echo "shimmed ld.lld -> $versioned"
+            else
+              note "ld.lld (or ld.lld-${LLVM_MAJOR}) is not installed on this runner."
+            fi
+          fi
+
+          exit $fail
 
       - name: Configure and build (readiness evidence)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
         run: |
           set -euxo pipefail
-          LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
@@ -1172,16 +1199,15 @@ jobs:
       # partial/absent trace — which cascaded into every one of the 36
       # oracle targets reading `blocked` regardless of what they actually
       # measure. Mirrors quantum-macos's cmake invocation in ci.yml (same
-      # FetchContent-based Moonlab pull; no extra apt packages beyond the
-      # LLVM toolchain already installed above), on the ubuntu-22.04 runner
-      # this job already provisions rather than a second macOS lane, since
-      # release readiness only needs one quantum-capable tree, not two.
+      # FetchContent-based Moonlab pull; no extra tooling beyond the LLVM
+      # toolchain already provisioned on this self-hosted runner) rather
+      # than a second macOS lane, since release readiness only needs one
+      # quantum-capable tree, not two.
       - name: Configure and build quantum tree (readiness evidence)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
         run: |
           set -euxo pipefail
-          LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           cmake -S . -B build-quantum -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
@@ -1275,6 +1301,18 @@ jobs:
             .icc/runtime-traces/
             .icc/runtime-traces-oracle-view/
           if-no-files-found: ignore
+
+      # A hosted runner is destroyed after the job; this self-hosted node is
+      # not, and this job leaves two full build trees behind (build,
+      # build-quantum). Reclaim them so a shared node doesn't fill up over
+      # successive release attempts — same rationale as mesh-matrix's
+      # "Reclaim build tree" step in ci-mesh.yml.
+      - name: Reclaim build trees
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          rm -rf build build-quantum || true
 
   publish-release:
     name: publish-release
