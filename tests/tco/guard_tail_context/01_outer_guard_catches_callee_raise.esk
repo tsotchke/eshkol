@@ -1,0 +1,6 @@
+; Does a raise in the transferred callee still reach the handler that the
+; ORDINARY lowering would have left standing?  `a` guards, `b` does not.
+(define (a n) (guard (e (#t (list 'caught-by-a n))) (b n)))
+(define (b n) (if (= n 0) (raise 'boom) (a (- n 1))))
+(display (a 3))
+(newline)

@@ -1,0 +1,77 @@
+;;; tail_transfer_interaction_test.esk
+;;;
+;;; The tail-transfer dispatcher (ESH-0102c) works by leaving a `pending` flag in
+;;; a per-thread record and letting the driver loop in a procedure's public entry
+;;; run the transfer. Depth is measured elsewhere (the `mutual_tail_arity`
+;;; depth-parametric kind). What this file gates is the property depth cannot
+;;; see: that the flag never survives into a context that should not act on it,
+;;; and never leaks between contexts that must not share it.
+;;;
+;;; Three ways that could go wrong, each of which is a WRONG ANSWER rather than a
+;;; crash, and each of which a passing depth sweep would happily miss:
+;;;
+;;;   1. a transfer chain that RAISES longjmps past its driver. If the flag were
+;;;      still standing, the next unrelated driver would run a stale transfer.
+;;;   2. a NON-TAIL call into a transferring procedure must observe the chain's
+;;;      real answer, not the placeholder value the body returns while a transfer
+;;;      is queued. (This is exactly the shape that broke when the driver was
+;;;      first attached only to transferring functions and `musttail` handed a
+;;;      frame to a body that queued one.)
+;;;   3. worker threads run compiled closures concurrently. The record is
+;;;      `thread_local`; a shared one would let two workers overwrite each
+;;;      other's pending transfer.
+;;;
+;;; Every procedure below is a DIFFERING-ARITY pair, which is the shape that
+;;; takes the dispatcher rather than `musttail`.
+
+;; The chain under test: aping/2 <-> apong/3.
+(define (aping n acc) (if (= n 0) acc (apong (- n 1) (+ acc n) 0)))
+(define (apong n acc k) (if (= n 0) acc (aping (- n 1) (+ acc n))))
+
+;; The same shape, but it raises instead of terminating.
+(define (xping n acc) (if (= n 0) (raise 'boom) (xpong (- n 1) (+ acc n) 0)))
+(define (xpong n acc k) (if (= n 0) (raise 'boom) (xping (- n 1) (+ acc n))))
+
+(define (check name got want)
+  (if (equal? got want)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; 1. Raise out of a chain, catch it, then run a fresh chain. A stale `pending`
+;;    would make the second answer wrong (or make it answer the first chain's
+;;    arguments).
+(check "raise-out-of-chain-is-caught"
+       (guard (e (#t 'caught)) (xping 100000 0))
+       'caught)
+(check "chain-after-a-raised-chain"
+       (aping 1000000 0)
+       500000500000)
+
+;; 2. Fifty NON-TAIL calls into the transferring procedure, each of which must
+;;    return the chain's real value. `sum` is itself self-tail-recursive, so the
+;;    inner call is genuinely non-tail.
+(define (sum i total) (if (= i 0) total (sum (- i 1) (+ total (aping 1000 0)))))
+(check "non-tail-callers-see-the-real-answer"
+       (sum 50 0)
+       25025000)
+
+;; 3. Eight workers each drive their own chain, then the main thread drives one
+;;    more. A shared transfer record shows up here as a wrong element, a
+;;    duplicated element, or a hang.
+(check "chains-on-worker-threads"
+       (parallel-map (lambda (x) (aping 20000 0)) (list 1 2 3 4 5 6 7 8))
+       (list 200010000 200010000 200010000 200010000
+             200010000 200010000 200010000 200010000))
+(check "main-thread-chain-after-workers"
+       (aping 20000 0)
+       200010000)
+
+;; 4. Interleaving: alternate a chain and a raised chain, so a leaked flag from
+;;    either direction would be visible in the other's answer.
+(check "interleaved-chain-and-raise"
+       (list (aping 100 0)
+             (guard (e (#t 'caught)) (xping 101 0))
+             (aping 100 0))
+       (list 5050 'caught 5050))

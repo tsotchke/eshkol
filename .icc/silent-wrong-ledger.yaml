@@ -2997,6 +2997,87 @@ entries:
       qualify as SILENT-WRONG, which is why both engines are fixed together here rather
       than treating the VM half as out of scope.
 
+  - id: LE-13
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: open
+    renumbered_from: >-
+      LE-12 (collision). Filed as LE-12 on branch feat/tail-transfer-complete,
+      independently of master's own LE-12 ("native curl SIGSEGVs on a
+      list-returning vector field", from feat/ad-structural-gate / PR #487),
+      both allocating the same next-free id in parallel — a textual merge does
+      not conflict on this, only a duplicate-id count does. Moves to LE-13,
+      the next id free across the whole ledger (highest prior id in use was
+      LE-12): master's entry keeps LE-12, being the earlier-landed one, and
+      is referenced from CMakeLists.txt and tests/ad/ad_vm_exactness_gate.sh
+      comments this entry has none of.
+    title: "VM: `when`/`unless`/`and`/`or` and local-allocating `let` bodies are not tail positions, so a tail call there dies at 256 frames"
+    repro: >-
+      Two mutually tail-recursive procedures whose tail call is spelled with
+      `when` instead of `if`, run under the bytecode VM:
+      `(define (wping n acc) (if (= n 0) acc (when #t (wpong (- n 1) (+ acc n)))))`
+      `(define (wpong n acc) (if (= n 0) acc (when #t (wping (- n 1) (+ acc n)))))`
+      `(display (wping 200000 0))` via
+      `ESHKOL_VM_NO_DISASM=1 build/eshkol-vm-standalone-test`. Same for a tail
+      call in a `let` body that allocated locals:
+      `(define (lping n acc) (if (= n 0) acc (let ((m (- n 1))) (lpong m (+ acc n)))))`.
+      The `if` spelling and the differing-arity and indirect shapes are the
+      controls and all answer 20000100000.
+    observed: >-
+      `FRAME OVERFLOW` on stderr, empty stdout, **exit 0** — see LE-07, which is
+      why this is silent to any caller that checks the exit status. Measured at
+      200,000 hops; the real ceiling is ESHKOL_VM_MAX_FRAMES = 256
+      (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly depth 300.
+    correct: >-
+      20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last
+      operand of `and`/`or` tail positions exactly as much as the branches of
+      `if`, and a `let` body inherits the tail position of the `let`.
+    root_cause: >-
+      The VM has no separate tail analysis; lib/backend/vm_compiler.c threads a
+      boolean `tail` down compile_expr(). compile_form_when / compile_form_unless
+      compile their bodies with a literal 0 rather than with `tail`, and so do
+      the last operands of `and` / `or` — which additionally leave a DUP'd value
+      on the stack that a tail call would strand, so those two are not a
+      one-character fix. The let-family bodies drop to 0 whenever the scope
+      allocated locals that need OP_POPN cleanup. This is the VM's exact
+      analogue of SW-50 on the native side, still open.
+    impact: >-
+      NOT a gap in the tail-transfer dispatcher's coverage: the VM needs no
+      dispatcher. Its call frames are a heap-allocated array in the VM struct,
+      not the C stack, and OP_TAIL_CALL (lib/backend/vm_run.c) already reuses the
+      current frame generically — measured, the VM ALREADY has the two shapes
+      ESH-0102c fixed and could not fix on native: mutual tail recursion between
+      DIFFERENT-ARITY procedures, and an INDIRECT tail call through a procedure
+      parameter, both correct at 200,000 hops. The VM's `guard` handling is also
+      more conformant than native's: its guard BODY is deliberately non-tail,
+      which is what R7RS 7.3 requires (see SW-58). The gap is purely which
+      SPELLINGS reach OP_TAIL_CALL.
+    fix_requires: >-
+      Propagate `tail` through compile_form_when / compile_form_unless (direct),
+      and through the last operand of `and` / `or` after resolving the DUP'd
+      short-circuit value. The let-family case needs the tail call to happen
+      after OP_POPN, i.e. an opcode that pops N locals and tail-calls in one
+      step, or the same shared tail epilogue ADR-0006 section 3 calls for on the
+      native side. Wiring tests/tco/*.esk as a VM lane in run_vm_parity.sh would
+      gate it, minus guard_loop_tail_test.esk and apply_loop_tail_test.esk which
+      the VM fails by design.
+    evidence: >-
+      tests/vm_parity/found/when_tail_call_no_tco.esk (pre-existing) and
+      tests/vm_parity/found/vm_tail_let_locals_no_tco.esk, with the two CONTROLS
+      that bound the finding committed beside them:
+      vm_tail_arity_ok.esk and vm_tail_indirect_ok.esk, both of which the VM
+      answers correctly at 200,000 hops. The
+      depth-parametric recursion harness has NO VM lane at all
+      (scripts/run_recursion_depth.sh mentions the VM only in a comment about
+      LLVM musttail), which is why a 256-frame ceiling on five tail spellings
+      has no gate.
+    caught_by: [esh-0102c-vm-assessment, parity-baselines]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
+    notes: >-
+      Bucket LOUD-ERROR follows LE-07's classification of the same
+      exit-0-with-stderr shape, and LE-07's "Borderline SILENT-WRONG" note
+      applies here unchanged.
+
   - id: SW-43
     bucket: SILENT-WRONG
     status: closed
@@ -3386,6 +3467,103 @@ entries:
       on non-AArch64 targets where LLVM 21 refuses aggregate-return musttail
       (ESH-0171). Each of those was measured on this branch at 5,000,000 hops
       and each fails LOUDLY with the same fatal-signal diagnostic.
+    followup: >-
+      ESH-0102c (branch feat/tail-transfer-complete) closes two of those five
+      with the tail-transfer dispatcher: DIFFERING ARITIES (probe
+      `mutual_tail_arity`, 100,000,000 hops flat on JIT and AOT) and NON-AArch64
+      TARGETS (the harness's `aot-xfer` lane, same depth). It leaves INDIRECT
+      tail calls and CALLER-FRAME POINTER arguments bounded and loud, with the
+      requirement for each recorded in docs/design/MUTUAL_TAIL_CALLS.md, and it
+      REFUTES the `guard` item: a call in a guard body is not in a tail context
+      under R7RS 7.3 at all, so optimizing it is not merely hard but wrong. See
+      SW-58, which is the conformance consequence of the sibling decision on the
+      self-TCO side.
+
+  - id: SW-58
+    bucket: SILENT-WRONG
+    status: open
+    title: "Self tail recursion through `guard` collapses the handler chain, so a re-raise reaches the wrong handler"
+    repro: >-
+      A self-recursive procedure whose recursion sits in a `guard` body, where
+      the innermost handler re-raises:
+      `(define (outer n) (guard (e (#t 'outer)) (s n)))`
+      `(define (s n) (guard (e ((= n 0) (raise 'again)) (#t (list 'inner n)))`
+      `                (if (= n 0) (raise 'boom) (s (- n 1)))))`
+      `(display (outer 3))`.
+      Committed as
+      tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk,
+      alongside three control fixtures (01/02/03) on which Eshkol and the
+      reference AGREE. That directory's README carries the reference answers,
+      the measurement commands, and why these are deliberately not wired into
+      scripts/run_tco_tests.sh (that runner gates on a clean exit, which this
+      defect passes).
+    observed: >-
+      Eshkol prints `outer`, exit 0, no diagnostic — on the JIT and AOT alike,
+      and on origin/master as well as on the ESH-0102c branch, so this is not
+      introduced by either.
+    correct: >-
+      `(inner 1)`. Measured on chibi-scheme 0.12 (R7RS reference implementation)
+      with the identical program. R7RS 7.3 derives `guard` from
+      `with-exception-handler` wrapping the body, so each activation of `s`
+      installs its own handler and they NEST: at n=0 there are four live guards.
+      The n=0 clause re-raises, which R7RS raises in the dynamic environment of
+      that guard's outer context — the n=1 guard, whose `n` is 1, so its `#t`
+      clause answers `(inner 1)`. `outer` should never be reached.
+    root_cause: >-
+      ESH-0222 made isInTailPosition() and
+      TailCallCodegen::allSelfCallsInTailPosition() treat a `guard` BODY as a
+      tail position, so a self-call there is turned into a branch to the loop
+      header, and emitTCOBackEdge() (lib/backend/llvm_codegen.cpp) drains
+      `tco_ctx.open_guard_handlers` pops before branching. One activation with a
+      mutated `n` therefore replaces the four nested activations, and with them
+      the three enclosing handlers the re-raise was supposed to find. The
+      handler-stack draining is correct FOR A LOOP; what is wrong is treating
+      the position as tail at all. R7RS's tail-context grammar (7.1.3) does not
+      list `guard`, and it cannot: the handler's whole purpose is to be in
+      effect while the body runs.
+    impact: >-
+      Confined to programs where a guard handler RE-RAISES (or otherwise depends
+      on an enclosing guard of the same recursive procedure). The common shapes
+      agree with the reference: a guard that simply catches answers identically,
+      because the innermost activation's own guard is the one that fires either
+      way — verified on three further fixtures (guard_sem1/2/4) where Eshkol and
+      chibi both answer `(caught-by-a 0)`, `(gb 0)` and `inner`.
+    fix_requires: >-
+      A `guard` frame that survives without a native frame — its handler held as
+      a heap-owned continuation the driver can invoke rather than a `setjmp`
+      landing pad in a frame the transform destroys (ADR-0006 §4,
+      "make continuations explicit and heap-owned"). Reverting ESH-0222 instead
+      would restore conformance at the cost of the resident-tick-loop capability
+      it shipped for (docs/LONG_RUNNING_LOOPS.md), i.e. trade a rare wrong
+      answer for a common crash, so it is not the fix.
+    evidence: >-
+      Differential against chibi-scheme 0.12 on four fixtures, three agreeing
+      and one diverging; the diverging one is guard_sem5. The same differential
+      is what stopped ESH-0102c from extending the tail-transfer dispatcher
+      through `guard` on the mutual side — the mechanism worked, the semantics
+      did not.
+    caught_by: [esh-0102c-guard-soundness-differential, reference-differential]
+    missed_by: [icc-correctness-chain, icc-smoke, ctest, recursion-depth-parametric, vm-parity]
+    notes: >-
+      Filed as SW-58: SW-46..SW-50 are taken or reserved by #466 / #473 / #474
+      and the S4 lane, and SW-51 / SW-52 are taken by in-flight #480. Verified
+      next-free with `grep -o 'id: SW-[0-9]*b*' .icc/silent-wrong-ledger.yaml |
+      sort -V | tail -3` plus that PR's body.
+      recursion-depth-parametric is in missed_by for the same reason it was in
+      SW-50's: its `guard` kind measures how DEEP a guard can nest, not which
+      handler answers. A depth sweep cannot see a semantic defect that costs no
+      stack.
+    waiver:
+      reason: >-
+        Pre-existing on master, not introduced by ESH-0102c, and narrow: it
+        requires a guard handler that re-raises into an enclosing guard of the
+        same self-recursive procedure. The fix is the heap-owned continuation
+        rework named in fix_requires, which is a trajectory item (ADR-0006 §4)
+        rather than a patch, and guessing at it is exactly the silent-wrong risk
+        this ledger exists to prevent.
+      expires: "2027-12-31"
+      owner: tsotchke
+
   - id: SW-54
     bucket: SILENT-WRONG
     status: closed
@@ -3857,11 +4035,11 @@ entries:
       master claiming SW-46, invisible to review since a textual merge does
       not conflict on two branches picking the same next-free id. Moves to
       SW-53, the next id free across the whole ledger (highest prior id in
-      use was SW-52): #487's entry keeps SW-46, being the rightful holder
-      per SW-47's own reservation note and carrying three external
-      cross-references (.icc/architecture-model.yaml,
-      .icc/completion-oracles.yaml, tests/ad/ad_vm_exactness_gate.sh) this
-      entry has none of.
+      use was SW-58, this branch's own guard/handler-chain entry): #487's
+      entry keeps SW-46, being the rightful holder per SW-47's own
+      reservation note and carrying three external cross-references
+      (.icc/architecture-model.yaml, .icc/completion-oracles.yaml,
+      tests/ad/ad_vm_exactness_gate.sh) this entry has none of.
     family: engine-parity/type-system
     title: "The bytecode VM enforced NO linear (no-cloning) typing at all: it ran a qubit clone to completion with exit 0 and no diagnostic, and --emit-eskb wrote the bytecode for it"
     repro: >-

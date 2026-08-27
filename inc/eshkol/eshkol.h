@@ -1525,6 +1525,52 @@ typedef struct eshkol_continuation_state {
 } eshkol_continuation_state_t;
 
 /**
+ * @brief Widest argument list a single tail transfer may carry.
+ *
+ * A transfer copies the callee's arguments into the thread's transfer record,
+ * so the record fixes the arity a transfer can express. A call site with more
+ * arguments than this keeps the ordinary (stack-consuming, loud) lowering
+ * rather than silently dropping arguments -- the code generator checks the
+ * bound before it chooses the transfer path.
+ *
+ * 32 matches GRAD_MAX_ARITY, the widest arity any other dispatch path in the
+ * backend admits.
+ */
+#define ESHKOL_TAIL_TRANSFER_MAX_ARGS 32
+
+/**
+ * @brief The pending general tail call of one thread (ADR-0006 section 3).
+ *
+ * A tail call that `musttail` cannot take -- different arity between the two
+ * procedures, a `guard` frame that owes a handler pop, or a target whose LLVM
+ * backend refuses an aggregate-return musttail -- is performed by RETURNING
+ * rather than calling. The caller fills this record, sets @c pending, and
+ * returns normally so that every epilogue it owes still runs; the driver loop
+ * in the nearest ordinary entry then invokes @c target. Native stack stays
+ * constant across the whole chain.
+ *
+ * @c argv is owned by the record, never by a frame: the uniform entry named by
+ * @c target loads all @c argc slots before it calls the real body, so a
+ * transfer performed by that body may overwrite the buffer safely.
+ */
+typedef struct eshkol_tail_transfer {
+    uint32_t pending;   // 1 while a transfer is queued; the driver clears it
+    uint32_t argc;      // Number of live slots in argv
+    void* target;       // Uniform entry: eshkol_tagged_value_t (*)(const eshkol_tagged_value_t*, uint64_t)
+    eshkol_tagged_value_t argv[ESHKOL_TAIL_TRANSFER_MAX_ARGS];
+} eshkol_tail_transfer_t;
+
+/**
+ * @brief Address of the calling thread's tail-transfer record.
+ *
+ * Per-thread because worker threads (parallel-map and friends) run compiled
+ * closures concurrently and must not overwrite each other's pending transfer.
+ *
+ * @return Never NULL.
+ */
+eshkol_tail_transfer_t* eshkol_tail_transfer_slot(void);
+
+/**
  * @brief One entry in the `dynamic-wind` stack.
  *
  * Records the before/after thunks of an active `dynamic-wind` so that

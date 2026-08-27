@@ -1,0 +1,5 @@
+; Both partners guard: the innermost guard is the callee's own.
+(define (ga n) (guard (e (#t (list 'ga n))) (gb n)))
+(define (gb n) (guard (e (#t (list 'gb n))) (if (= n 0) (raise 'boom) (ga (- n 1)))))
+(display (ga 3))
+(newline)

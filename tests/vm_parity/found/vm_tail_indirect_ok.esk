@@ -1,0 +1,10 @@
+; CONTROL for LE-13 (not a defect): an INDIRECT tail call -- the callee arrives
+; as a procedure PARAMETER, not a name -- is already O(1) on the VM, because the
+; VM dispatches on a value and never needed the callee's identity. This is the
+; one shape where the VM is ahead of native, which still lowers it to a bounded
+; ordinary call (see docs/reference/language/tail-calls.md).
+; vm-src : ok, 20000100000 at 200,000 hops
+; native : FILED -- bounded, exit 138 SIGBUS with the fatal-signal diagnostic
+(define (step f n acc) (if (= n 0) acc (f f (- n 1) (+ acc n))))
+(display (step step 200000 0))
+(newline)

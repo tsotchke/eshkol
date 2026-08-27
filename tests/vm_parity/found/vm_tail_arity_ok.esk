@@ -1,0 +1,10 @@
+; CONTROL for LE-13 (not a defect): mutual tail recursion between procedures of
+; DIFFERENT ARITY is already O(1) on the VM. OP_TAIL_CALL slides `argc` slots
+; onto the current frame and jumps, with no arity comparison anywhere, so the
+; shape LLVM `musttail` cannot express at all costs the VM nothing.
+; vm-src : ok, 20000100000 at 200,000 hops
+; native : ok (ESH-0102c, via the tail-transfer dispatcher)
+(define (aping n acc) (if (= n 0) acc (apong (- n 1) (+ acc n) 0)))
+(define (apong n acc k) (if (= n 0) acc (aping (- n 1) (+ acc n))))
+(display (aping 200000 0))
+(newline)
