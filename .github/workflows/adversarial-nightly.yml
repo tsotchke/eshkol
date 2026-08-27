@@ -3,10 +3,13 @@ name: Adversarial Nightly (P8 escape-closure)
 # NEW workflow (does not touch ci.yml / release.yml / pages.yml). Runs the P8
 # escape-closure pillar at full depth plus the heavy lanes that are too slow for
 # the per-PR CI budget: the full native-vs-VM arity sweep, the TSan concurrency
-# corpus, and the packaging (Homebrew / install-script) lanes.
+# corpus, the packaging (Homebrew / install-script) lanes, and the
+# large-single-file AOT compile-time shape (Axis 9b below).
 #
 # Nightly + manual only. The escape-matrix and TSan lanes are real gates; the
-# packaging lane is advisory (continue-on-error) and only alerts.
+# packaging lane is advisory (continue-on-error) and only alerts; the
+# large-single-file compile bench is a real gate at a deliberately generous
+# ceiling (measuring the shape continuously, not fixing its cost).
 
 on:
   schedule:
@@ -225,3 +228,55 @@ jobs:
           [ -x "$BIN" ] || BIN="build/eshkol-run"
           echo '(display "packaging-smoke-ok")(newline)' > "$RUNNER_TEMP/smoke.esk"
           "$BIN" -r "$RUNNER_TEMP/smoke.esk" | grep -q packaging-smoke-ok
+
+  # ---------------------------------------------------------------------------
+  # Axis 9b: large-single-file AOT compile-time shape (measurement, not a fix).
+  #
+  # A 2026-08-26 downstream-consumer audit found a compile-time shape
+  # Eshkol's own corpus never exercised: a single hand-written file with many
+  # top-level `define`s took disproportionately (4x+) longer to
+  # `--emit-object` than a multi-file bundle of comparable total code volume,
+  # and never finished within that audit's time window. This job measures the
+  # SAME shape continuously with a synthetic, generated fixture (never
+  # derived from any external codebase — see bench/generate_large_single_file.py)
+  # against a generous ceiling, so a regression here is caught rather than
+  # shipping silently. Fixing the underlying compile-time cost is a v1.3.6+
+  # item; this job's job is only to keep it measured.
+  # ---------------------------------------------------------------------------
+  large-single-file-compile-bench:
+    name: large-single-file-compile-bench
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (macOS)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_CONFIG="$(brew --prefix llvm@${LLVM_MAJOR})/bin/llvm-config"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG"
+          cmake --build build --target eshkol-run --parallel
+
+      - name: Run the large-single-file compile-time bench
+        shell: bash
+        run: |
+          set -uxo pipefail
+          bash bench/large_single_file_compile_bench.sh build 1600 900
+
+      - name: Upload phase-timing / compile logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: large-single-file-compile-bench-logs
+          path: |
+            build/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore
