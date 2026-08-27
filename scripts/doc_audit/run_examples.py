@@ -6,6 +6,27 @@ Usage: run_examples.py <examples.json> <eshkol-run> <outdir> [--mode jit|aot|vm]
 
 Writes <outdir>/results.json with one record per example:
   {file, start_line, klass, mode, exit, stdout, stderr, seconds}
+
+VALIDATION (v1.3.5 assurance wave 2)
+
+ICC's v1.3.4 readiness run flagged `Artifact:results-%s.json` — the file this
+script writes below — as `artifact_without_test_or_trace`: produced, but
+nothing validates it and nothing traces that it ran. This closes both halves
+of ICC's suggested `add_artifact_validator_or_runtime_probe` action:
+
+  * the validator: `scripts/doc_audit/check_results_schema.py` schema-checks
+    the file this script just wrote (required fields, sorted order, no
+    duplicate (file, start_line, mode) records, record count matches the
+    examples manifest) and can be run standalone against any results file;
+  * the trace: this script calls that validator on its own output before
+    exiting and emits a `runtime_event`-shaped JSON-L record to
+    `scripts/icc_traces/doc_examples.jsonl` naming the verdict, so ICC has
+    execution evidence for this artifact rather than none at all.
+
+Neither step changes this script's own exit behavior (validation failure is
+reported, not silently promoted to a fatal error here) — the gate that FAILS
+the build on a broken results file is `check_results_schema.py` itself, run
+standalone in CI.
 """
 
 import argparse
@@ -18,6 +39,38 @@ import tempfile
 import time
 
 TIMEOUT = 60
+
+
+def _emit_results_validation_trace(results_path, mode):
+    """Validate the just-written results file and record a runtime_event
+    trace of the verdict. Best-effort: a trace-emission problem must never
+    fail the actual doc-example run this script exists to perform."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import check_results_schema as validator  # noqa: E402
+
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        trace_dir = os.path.join(repo_root, "scripts", "icc_traces")
+        data = validator._load_json(results_path)
+        result = validator.check(data)
+        status = "PASS" if result["passed"] else "FAIL"
+        snippet = (
+            f"mode={mode} records={result['record_count']} sorted={result['sorted']}"
+            if result["passed"]
+            else f"mode={mode} {len(result['errors'])} schema error(s): " + "; ".join(result["errors"][:3])
+        )
+        os.makedirs(trace_dir, exist_ok=True)
+        with open(os.path.join(trace_dir, "doc_examples.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "kind": "runtime_event",
+                "name": "doc_examples_results_written",
+                "value": status,
+                "snippet": snippet,
+                "confidence": 1.0,
+            }, ensure_ascii=False) + "\n")
+        print("doc_examples_results_valid: %s (%s)" % (status, snippet), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - tracing must never break the run
+        print("run_examples.py: could not emit results-validation trace: %r" % (exc,), file=sys.stderr)
 
 
 def run_one(rec, eshkol_run, mode, workroot, repo):
@@ -104,10 +157,12 @@ def main():
             if (i + 1) % 25 == 0:
                 print("... %d/%d" % (i + 1, len(futs)), file=sys.stderr)
     results.sort(key=lambda r: (r["file"], r["start_line"]))
-    with open(os.path.join(args.outdir, "results-%s.json" % args.mode), "w") as fh:
+    results_path = os.path.join(args.outdir, "results-%s.json" % args.mode)
+    with open(results_path, "w") as fh:
         json.dump(results, fh, indent=1)
     ok = sum(1 for r in results if r["exit"] == 0)
     print("mode=%s ran=%d exit0=%d nonzero=%d" % (args.mode, len(results), ok, len(results) - ok))
+    _emit_results_validation_trace(results_path, args.mode)
 
 
 if __name__ == "__main__":

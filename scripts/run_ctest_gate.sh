@@ -74,6 +74,11 @@ if [ ! -r "$BUILD_DIR/CTestTestfile.cmake" ]; then
     exit 2
 fi
 
+# Record which exact binary this ctest run is about (D-11 BUILD FRESHNESS).
+# shellcheck source=lib/build_fingerprint.sh
+. "$REPO_ROOT/scripts/lib/build_fingerprint.sh"
+[ -x "$BUILD_DIR/eshkol-run" ] && eshkol_emit_build_fingerprint_event "$TRACE_DIR" "run_ctest_gate" "$BUILD_DIR" eshkol-run
+
 # ── the gated pillars ────────────────────────────────────────────────────
 # event_name<TAB>test-name regex<TAB>what the group certifies
 #
@@ -242,6 +247,30 @@ if [ "$TOTAL" -eq 0 ]; then
     exit 1
 fi
 
+# ── self-verdict gate ────────────────────────────────────────────────────
+# CTest's own PASS/FAIL comes from exit status (or a FAIL_REGULAR_EXPRESSION
+# a handful of tests set) — it never looks at what a test actually PRINTED.
+# scripts/check_self_verdicts.py reads the same JUnit file for the captured
+# <system-out>/<system-err> of every test CTest counted as passing, and fails
+# this gate if any of them self-reports a failure marker anyway (D-05: SW-24
+# printed `FAIL: Expected 12` on a green baseline for months).
+SELF_VERDICT_FAILURES=0
+if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
+    if self_verdict_out=$(python3 "$REPO_ROOT/scripts/check_self_verdicts.py" \
+            --junit "$JUNIT" --no-trace 2>&1); then
+        emit_event "ctest_self_verdict_scan" PASS "no PASS-graded ctest test self-reports a failure"
+        emit_test_result "ctest::self-verdict-scan" PASS "clean"
+    else
+        SELF_VERDICT_FAILURES=1
+        echo "$self_verdict_out"
+        emit_event "ctest_self_verdict_scan" FAIL "a PASS-graded ctest test's own output contains a self-reported failure marker"
+        emit_test_result "ctest::self-verdict-scan" FAIL "contradiction found"
+        echo "FAILED ctest::self-verdict-scan"
+    fi
+else
+    echo "run_ctest_gate.sh: no JUnit output available (older CMake?) — self-verdict scan skipped" >&2
+fi
+
 # ── group roll-ups ───────────────────────────────────────────────────────
 GROUP_FAILURES=0
 GROUP_INFRA=0
@@ -311,7 +340,7 @@ GROUPS_EOF
 # scripts/run_all_tests.sh already guards: individual verdicts and the
 # aggregate disagreeing), and is treated as a failure rather than trusted.
 SUMMARY="$PASSED/$TOTAL ctest tests passed"
-if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ]; then
+if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILURES" -eq 0 ]; then
     if [ "$CTEST_RC" -eq 0 ]; then
         emit_event "ctest_suite_green" PASS "$SUMMARY"
         emit_test_result "ctest::suite" PASS "$SUMMARY"
@@ -342,7 +371,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ]; then
     fi
 fi
 
-DETAIL="$SUMMARY; $FAILED failed; $INFRA infra; $GROUP_FAILURES group(s) failed or absent; ctest exit $CTEST_RC"
+DETAIL="$SUMMARY; $FAILED failed; $INFRA infra; $GROUP_FAILURES group(s) failed or absent; $SELF_VERDICT_FAILURES self-verdict contradiction(s); ctest exit $CTEST_RC"
 emit_event "ctest_suite_green" FAIL "$DETAIL"
 emit_test_result "ctest::suite" FAIL "$DETAIL"
 echo

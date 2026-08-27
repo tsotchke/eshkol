@@ -65,6 +65,15 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 2
 fi
 
+# Record which exact binary this run is about (D-11 BUILD FRESHNESS): a
+# harness run against a binary that predates a rebase, or a binary that gets
+# rebuilt after this run and before a gate reads its evidence, must be
+# detectable rather than trusted. scripts/check_build_fingerprint.py reads
+# this event at gate time.
+# shellcheck source=lib/build_fingerprint.sh
+. "$REPO_ROOT/scripts/lib/build_fingerprint.sh"
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "run_icc_smoke" "$BUILD_DIR_PATH" eshkol-run
+
 if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then
     if eshkol_durable_enabled; then
         ESHKOL_ICC_JIT_CACHE_DIR="$ESHKOL_ICC_WORK/jit-cache"
