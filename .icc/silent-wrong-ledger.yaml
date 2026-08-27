@@ -3758,6 +3758,185 @@ entries:
       expires: "2027-12-31"
       owner: tsotchke
 
+  - id: SW-57
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "fix/resident-rss-longrun"
+    closed_by: "branch fix/resident-rss-longrun"
+    renumbered_from: >-
+      SW-49 (collision). SW-45 was the highest id on origin/master when this
+      entry was originally filed, with SW-46/SW-47/SW-48 reserved by
+      in-flight PR #466 and deliberately skipped, so it took SW-49 — verified
+      at the time with the usual duplicate-id scan returning empty. Master's
+      own vm/prelude-cache entry (28 builtins stale) independently landed
+      under the SAME id SW-49 in the meantime (a textual merge does not
+      conflict on this), so on rebase this entry moves to SW-57, the next id
+      free across the whole ledger (highest prior id in use was SW-52);
+      master's entry keeps SW-49, being the earlier-landed one.
+    title: "A resident daemon loop leaks 48 bytes per tick forever: every `guard` entry takes a handler frame that is never given back"
+    repro: >-
+      Any resident tick loop in the shape this project documents for daemons —
+      a self-tail `define` loop wrapped in a catch-all `guard` error boundary —
+      whose body performs ANY barriered persistent mutation (`vector-set!`,
+      `hash-table-set!`, `set-cdr!`, or `set!` of a global). The stored value
+      does not matter: storing a plain fixnum into a FIXED vector slot leaks at
+      the same rate as storing a freshly consed list. Minimal form:
+      `(define ws (make-vector 64 0))
+       (define (tick i) (guard (e (#t i))
+         (if (>= i ticks) i (begin (vector-set! ws 0 i) (tick (+ i 1))))))`
+      compiled AOT with `eshkol-run` and run at increasing tick counts.
+      Discovered by the public benchmark suite's axis-3 flat-RSS sweep (PR #469,
+      bench/axes/03_flat_rss.sh), which extended the published 100k-tick point
+      to 400k; reproduced independently here with a from-scratch harness
+      (fixtures, runner and reducer all separate from the bench code).
+    observed: >-
+      Peak RSS grows linearly with tick count, without bound and with no
+      diagnostic, exit 0 throughout. Independent reproduction, native AOT,
+      one fresh process per point: 11.98 MB at 10k ticks, 23.78 at 50k, 37.42
+      at 100k, 64.50 at 200k, 120.12 at 400k, 229.92 at 800k, 449.56 at 1.6M —
+      dead linear at 287.9 bytes/tick over a 160x span, no plateau. Of that,
+      48.0 bytes/tick is this entry (one handler frame per guard ENTRY) and
+      240.0 bytes/tick is the fixture legitimately publishing five fresh cons
+      cells per tick. The guard-frame half is present with NO allocation
+      escaping at all: an immediate-store loop, which publishes nothing,
+      still grew 40.0 bytes/tick of measured RSS (48 bytes of arena, one frame
+      rounded to the arena's alignment).
+    correct: >-
+      A resident loop whose per-tick allocation is transient, and whose stores
+      into persistent state publish nothing freshly allocated, must retain
+      EXACTLY zero bytes per tick, indefinitely — the daemon promise Eshkol's
+      no-GC memory model is built on ("a daemon ends exactly as large as it
+      started"). The presence or absence of a `guard` around the loop body must
+      not change that by one byte.
+    root_cause: >-
+      A lifetime/allocator mismatch, plus an accident that hid it.
+
+      `eshkol_push_exception_handler` (lib/core/runtime_exceptions_hosted.cpp)
+      bump-allocated one `eshkol_exception_handler_t` (5 words = 40 bytes, 48
+      after arena alignment) out of `__repl_shared_arena` — the TRUE
+      process-global arena, which AOT codegen installs at startup
+      (lib/backend/llvm_codegen.cpp, the non-REPL branch of the arena-init step)
+      and which region entry deliberately never hijacks.
+      `eshkol_pop_exception_handler` unlinked the frame and returned the memory
+      to nobody, by explicit design: "Note: If allocated from arena, memory is
+      automatically freed with arena / If from heap, we leak here - but
+      exception handlers should be short-lived".
+
+      That assumption is false for exactly the shape the language most loudly
+      supports. A guard around a tick-loop body is ENTERED once per tick,
+      forever, so the frames are not short-lived in aggregate — they accumulate
+      one per tick in an arena that is never reset. The chain itself stays
+      balanced (ESH-0222 already drains `open_guard_handlers` pops at the TCO
+      back edge, and the guard's handler block pops on the exception path), so
+      nothing observable went wrong: the bytes were simply never reusable.
+
+      Why nobody saw it. ESH-0214b's iter-scope reclamation rewinds the GLOBAL
+      arena's bump pointer at each back edge, and the handler frame lives in
+      that arena — so it was reclaimed as a SIDE EFFECT and a non-mutating tick
+      loop measured perfectly flat. ESH-0214e then lowered every
+      persistent-mutation tick loop (i.e. every real daemon) through a NURSERY
+      REGION instead, and `eshkol_iter_nursery_recycle` resets only the nursery
+      arena. From ESH-0214e onward, guard frames in the daemon shape were never
+      reclaimed by anything. Measured both ways on the same binary: with
+      `ESHKOL_NO_ITER_SCOPE=1` the immediate-store loop retains 39.0 MB at 800k
+      ticks and with iter-scope ON it retains 39.3 MB — the nursery gave that
+      loop no benefit at all, which is the signature of an allocation outside
+      the span it resets.
+    fix: >-
+      lib/core/runtime_exceptions_hosted.cpp: handler frames now come from a
+      `thread_local` LIFO FREE LIST owned by the exception subsystem.
+      `eshkol_pop_exception_handler` returns the frame to the list (it is dead
+      the instant it leaves the chain — `g_exception_handler_stack` is its only
+      owner, and only push/pop/raise in that one file ever read it);
+      `eshkol_push_exception_handler` reuses a frame before it allocates. Frames
+      are malloc-backed and NEVER arena-backed: an arena frame is not merely
+      unreclaimed, it is unsafe to recycle, because an iter-scope or region
+      rewind can retract the span a pooled frame sits in and handing that
+      address back out would alias a fresh object. Steady-state allocation per
+      guard entry is therefore zero, and total frame memory is bounded by peak
+      guard NESTING DEPTH rather than by guard ENTRY COUNT. The free list is
+      thread-local so a concurrent push/pop on another thread cannot corrupt it.
+
+      lib/core/runtime_arena_diagnostics_hosted.cpp: adds `ESHKOL_ARENA_REPORT=1`,
+      which prints the process-global arena's own `total_allocated` once at exit
+      (`[eshkol-arena] global_total_allocated_bytes=N`). Diagnostic only, off by
+      default, no effect on allocation. It lives in the hosted diagnostics file
+      beside the `ESHKOL_ARENA_POISON` switch because the arena core is
+      freestanding-clean and may not call getenv() (enforced by
+      runtime_core_boundary_test).
+    evidence: >-
+      tests/memory/resident_longrun_flat_gate.sh, a NEW gate that fixes both
+      weaknesses that let this through. (a) Every pre-existing flat-memory gate
+      stops at 100 000 ticks and asserts a peak-RSS CEILING; one point cannot
+      distinguish "flat" from "linear with a small slope", and 48 bytes/tick is
+      4.6 MB over 100k ticks — invisible under
+      iter_scope_partial_reclaim_test.sh's 150 MB ceiling, but 3.1 GB over a
+      week-long daemon run. This gate measures at TWO horizons (200k and 1.6M by
+      default, 8x apart) and gates on the SLOPE. (b) It reads the exact arena
+      byte counter rather than peak RSS, because `maximum resident set size` is
+      a high-water mark of INSTANTANEOUS residency: under memory pressure the
+      compressor evicts pages and the recorded maximum comes back LOWER than
+      what the process retains. The same binary measured 97 MB and 193 MB on
+      consecutive runs of a 24-core host at load average ~200 — a peak-RSS leak
+      gate is quietest exactly when CI is busiest.
+
+      Section A gates the four barriered mutation channels plus a pure-transient
+      loop, each inside the catch-all `guard`, and requires BYTE-IDENTICAL arena
+      totals at both horizons — not "within a factor". Section B pins the
+      published-bytes rate of the ESH-0214e fixture shape (5 fresh cons/tick) to
+      a 320 bytes/tick ceiling against a measured 240.0, so a re-introduced
+      per-iteration leak cannot hide inside legitimate publishing.
+
+      Verified to CATCH the defect: with only lib/core/runtime_exceptions_hosted.cpp
+      reverted to its pre-fix content and everything else unchanged, section A
+      fails all four channels at 40.024 bytes/tick and section B reports 288.0
+      instead of 240.0. With the fix, all five section-A rows report 0.000
+      bytes/tick with identical totals (917504 bytes at both 200k and 1.6M).
+
+      Wired as ICC probe `resident_longrun_flat` (scripts/run_icc_smoke.sh) and
+      as the `resident-longrun` job in .github/workflows/adversarial-nightly.yml,
+      which runs the same gate at a 6.4M-tick horizon. All eight pre-existing
+      tests/memory/ gates re-run green with the fix in place, including
+      iter_scope_partial_reclaim_test.sh (whose ESHKOL_ARENA_POISON=1 tripwire
+      run confirms the recycled frames introduce no dangling pointer).
+    caught_by: [public-benchmark-suite-axis3]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, memory-gates, flat-rss-gates]
+    build_item: >-
+      OPEN, and deliberately NOT a weakening of the flat-memory claim. With this
+      entry closed, the only remaining growth in a resident loop is bytes the
+      program deliberately PUBLISHES: a tick that allocates a fresh heap object
+      and stores it into a persistent slot retains that object (48 bytes/cons,
+      144 bytes for an 8-element vector), because the value it supersedes is
+      dead the instant it is overwritten but nothing can prove it unshared. A
+      second, smaller instance of the same shape was measured while closing this
+      entry and is documented rather than hidden: each `raise` allocates a
+      condition object from the global arena and never gets it back, at exactly
+      71.996 bytes per raise (200k vs 1.6M raises), so a resident loop whose
+      error boundary FIRES every tick grows even though one whose boundary
+      merely STANDS every tick is now exactly flat. It is not folded into the
+      fix above because a condition object is user-reachable — for `(error ...)`
+      it is what the handler's variable binds to — so recycling it needs the
+      same liveness proof as row three, and guessing at one here is precisely
+      the silent-wrong risk this ledger exists to prevent. The
+      claim's conditions are now stated exactly — see
+      docs/reference/runtime/memory-model.md "What is flat, and what is not",
+      which gives the three-row matrix, names the workload class that is flat
+      (zero bytes/tick, gated) and the class that is not, and shows how to write
+      a genuinely flat resident loop. Removing the boundary itself needs either
+      a store barrier that can retire a persistent slot's previous occupant when
+      an ownership/uniqueness result proves it unshared (the OALR ownership
+      layer is the natural home), or a compacting pass over persistent slots.
+      Until then the third row is a documented design boundary with a measured
+      rate, not an unquantified caveat.
+    notes: >-
+      The finding as originally reported ("flat at the published 100k point,
+      119 MB by 400k") was TRUE as stated and as originally measured — no
+      published number was false, and the 34 MB figure reproduces. What did not
+      hold was the INTENT behind it. Splitting the measured slope into its two
+      causes is what made the difference actionable: 48 bytes/tick was a genuine
+      leak with no legitimate owner and is now zero, while 240 bytes/tick is the
+      program's own publishing and is now documented with its exact rate rather
+      than implied away.
   - id: SW-54
     bucket: SILENT-WRONG
     status: closed
@@ -3960,7 +4139,6 @@ entries:
       was never at fault in any of the three — it recorded is_char, is_inexact and the
       vector origin correctly every time. The loss was always downstream, in a
       consumer that read a subset of what the reader had written down.
-
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01

@@ -297,6 +297,67 @@ The bytecode VM has no nursery: a resident VM loop reclaims when it is wrapped i
 an explicit `with-region`, and not otherwise. See
 [Which engine reclaims](#which-engine-reclaims).
 
+### What is flat, and what is not
+
+"Flat" above is a statement about **transient** garbage, and it is exact: the
+nursery reclaims every byte an iteration allocates and then drops. It is not a
+statement about bytes the iteration deliberately **publishes**. Those are
+different quantities, and a resident loop can have both, so the condition is
+worth stating precisely rather than leaving to inference:
+
+| Per-tick behaviour | Steady-state retention | Measured |
+|---|---|---|
+| Allocates transient garbage and drops it | **exactly 0 bytes/tick** | a 200-element vector per tick, 1.6 M ticks: byte-identical arena total at 200 k and 1.6 M ticks |
+| Stores an immediate (or an already-persistent object) into persistent state — `vector-set!`, `hash-table-set!`, `set-cdr!`, `set!` | **exactly 0 bytes/tick** | all four channels, byte-identical arena total across an 8× horizon |
+| Allocates a **fresh** heap object each tick and publishes it into persistent state | **size of the published object per tick** | 48 bytes per cons cell; 144 bytes for an 8-element vector |
+| `raise`s and catches a condition each tick | **72 bytes per `raise`** | 200 k → 1.6 M raises, 71.996 bytes/raise |
+
+Rows three and four are not leaks — they are the no-GC design boundary, and
+they are the cases where a resident loop's memory is not flat. When a tick allocates a
+fresh value and stores it into a persistent slot, that value must outlive the
+tick, so the write barrier promotes it out of the nursery into the enclosing
+arena. The value it *supersedes* — the previous occupant of that slot — is dead
+the instant it is overwritten, but nothing can prove that: reclaiming it needs
+either a tracing collector (which Eshkol does not have, by design) or a
+uniqueness proof that the dead value is unshared. So the published bytes
+accumulate at exactly the rate the program publishes them.
+
+The fourth row is the same shape one level down: each `raise` allocates a
+condition object, and for `(error ...)` that object is what the handler's
+variable is bound to — user-reachable, so it cannot be recycled on the way out
+of the handler without the same liveness proof. A resident loop whose error
+boundary *fires* every tick therefore grows at 72 bytes/tick even though a loop
+whose boundary merely *stands* every tick is exactly flat. Note the asymmetry:
+entering a `guard` costs nothing (that was SW-57, fixed); raising through one
+costs a condition object.
+
+The gate fixture for this section (`tests/memory/iter_scope_partial_reclaim_test.esk`)
+is a third-row program: it publishes a 3-element and a 2-element list every tick,
+five cons cells, and therefore retains **240.0 bytes/tick exactly**. The
+100 000-tick figure quoted above is measured and correct; what it is flat *in* is
+the ~3,366 bytes/tick of transient garbage the nursery removed — a factor of
+14 — not in the 240 bytes/tick the program asks to keep. Over a long enough
+horizon the published bytes dominate: the same fixture measures ~385 MB of arena
+at 1.6 M ticks.
+
+**Writing a genuinely flat resident loop.** Keep the third row out of the tick.
+Publish immediates or pre-allocated objects into persistent slots and mutate
+those in place (`vector-set!` a number, or `set-car!`/`set-cdr!` the cells of a
+list allocated once before the loop) instead of publishing a freshly consed
+value each tick. Such a loop retains exactly zero bytes per tick, indefinitely —
+this is gated at an 8× horizon by `tests/memory/resident_longrun_flat_gate.sh`.
+
+**Build item — reclaiming superseded published values and spent conditions.**
+Making rows three and four flat too is open work, not a documented limit to live
+with forever. Both need the same missing ingredient: a liveness result strong
+enough to retire an object whose last reference has just been overwritten (row
+three: the previous occupant of a persistent slot) or has just gone out of scope
+(row four: a condition object the handler did not keep). The natural home is a
+store barrier driven by an ownership/uniqueness proof from the OALR ownership
+layer; a compacting pass over persistent slots is the alternative. Tracked as
+ledger entry SW-57's build item in
+[`.icc/silent-wrong-ledger.yaml`](../../../.icc/silent-wrong-ledger.yaml).
+
 ## User-reachable region handles (#341)
 
 `with-region` is the **recommended default and should stay your first choice**.

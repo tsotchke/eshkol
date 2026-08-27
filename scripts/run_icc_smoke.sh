@@ -655,6 +655,18 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
 
+probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
+    'cd "$REPO_ROOT";
+     ## SW-57. Every other flat-memory gate here stops at 100k ticks and asserts
+     ## a peak-RSS CEILING. One point cannot tell "flat" from "linear with a
+     ## small slope" (48 bytes/tick is 4.6MB over 100k — invisible under a 150MB
+     ## ceiling, 3.1GB over a week-long daemon run), and peak RSS reads LOW on a
+     ## loaded host because it is a high-water mark of INSTANTANEOUS residency.
+     ## This gate measures the exact arena byte counter (ESHKOL_ARENA_REPORT=1)
+     ## at two horizons and gates on the SLOPE, requiring byte-identical totals
+     ## for the loops that publish nothing freshly allocated.
+     BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/resident_longrun_flat_gate.sh'
+
 probe region_handle_scoped_reclamation '#341: user-reachable region handles keep an AD training loop flat, numerics identical across plain/with-region/handle, full misuse matrix clean under ESHKOL_ARENA_POISON=1' \
     'cd "$REPO_ROOT";
      ## #341: the automatic per-iteration nursery (ESH-0214e) disqualifies any

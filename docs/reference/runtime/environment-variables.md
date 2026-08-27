@@ -224,5 +224,6 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 | `ESHKOL_SERVER_TOKEN` | Auth token for `agent.http-server` / `eshkol-server`. | unset |
 | `ESHKOL_VERBOSE` | Verbose logging (`=1`). | off |
 | `ESHKOL_ARENA_POISON` | Poison freed arena memory (debug); set non-`0`. | off |
+| `ESHKOL_ARENA_REPORT` | Set to exactly `1` to print the process-global arena's own byte total once at exit, on stderr, as `[eshkol-arena] global_total_allocated_bytes=N`. Diagnostic only — it changes no allocation behaviour. This is the retention signal `tests/memory/resident_longrun_flat_gate.sh` gates on, because it is deterministic to the byte, whereas peak RSS is a high-water mark of *instantaneous* residency and reads low on a loaded host. | off |
 | `ESHKOL_VM_NO_DISASM` | Suppress the VM disassembly dump in `eshkol-vm-standalone`. | off |
 | `ESHKOL_DUMP_BC` / `ESHKOL_DUMP_REPL_IR` | Dump bitcode / REPL IR (debug). | off |

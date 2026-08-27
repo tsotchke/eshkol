@@ -838,13 +838,60 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// SW-57: HANDLER-FRAME STORAGE IS LIFO, SO ITS ALLOCATOR MUST BE.
+//
+// A `guard` frame's lifetime is exactly the dynamic extent of the guard: it is
+// pushed at `guard` entry and popped at every exit (normal completion, caught
+// exception, re-raise, and — since ESH-0222 — the TCO back edge that branches
+// out of a protected body). Nothing anywhere retains a pointer to a popped
+// frame: `g_exception_handler_stack` is the only owner, and only push/pop/raise
+// in this file ever read it.
+//
+// The storage did NOT match that lifetime. Every push took a fresh
+// `sizeof(eshkol_exception_handler_t)` (40 bytes) bump-allocation out of
+// `__repl_shared_arena` — the TRUE process-global arena, which AOT codegen
+// installs at startup and which region entry deliberately never hijacks — and
+// pop returned nothing, by design ("we leak here - but exception handlers
+// should be short-lived").
+//
+// That assumption fails for the one shape Eshkol most loudly promises to
+// support: the resident daemon tick loop wrapped in a catch-all `guard` error
+// boundary. There the guard is re-entered once per tick, forever, so "short-
+// lived" frames accumulate at 40 bytes/tick in an arena that is never reset —
+// unbounded growth in a runtime whose central claim is that a daemon ends
+// exactly as large as it started.
+//
+// It stayed invisible because ESH-0214b's iter-scope reclamation rewinds the
+// GLOBAL arena's bump pointer at each back edge, which happened to reclaim the
+// frame as a side effect — so a non-mutating tick loop measured flat. ESH-0214e
+// then lowered every PERSISTENT-MUTATION tick loop (the actual daemon shape)
+// through a nursery region instead, and a nursery back edge resets only the
+// NURSERY arena. Handler frames live in the global arena, so from ESH-0214e on
+// they were never reclaimed at all: exactly 40 bytes/tick, linear, forever.
+//
+// The fix gives the frame storage whose lifetime matches its use — a LIFO free
+// list of frames owned by the exception subsystem itself:
+//
+//   * Frames are malloc'd, NEVER arena-allocated. An arena frame is not merely
+//     unreclaimed, it is unsafe to recycle: iter-scope/region rewind can retract
+//     the span a pooled frame sits in, and handing that address back out would
+//     alias a fresh object. Owning the storage outright removes the coupling to
+//     any arena's reclamation policy rather than working around it.
+//   * pop returns the frame to the free list; push reuses one before it mallocs.
+//     Steady-state allocation per guard entry is therefore ZERO, and total frame
+//     memory is bounded by PEAK GUARD NESTING DEPTH — not by guard entry count.
+//   * The free list is thread_local, so it cannot be corrupted by a concurrent
+//     push/pop on another thread. (Recycling across threads would be benign —
+//     frames are never freed — but a shared list would not be.)
+// ───────────────────────────────────────────────────────────────────────────
+static thread_local eshkol_exception_handler_t* g_exception_handler_free_list = nullptr;
+
 // Push exception handler onto stack
 extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
-    eshkol_exception_handler_t* handler;
-
-    arena_t* arena = __repl_shared_arena.load();
-    if (arena) {
-        handler = (eshkol_exception_handler_t*)arena_allocate(arena, sizeof(eshkol_exception_handler_t));
+    eshkol_exception_handler_t* handler = g_exception_handler_free_list;
+    if (handler) {
+        g_exception_handler_free_list = handler->prev;
     } else {
         handler = (eshkol_exception_handler_t*)malloc(sizeof(eshkol_exception_handler_t));
     }
@@ -867,8 +914,13 @@ extern "C" void eshkol_pop_exception_handler(void) {
     if (g_exception_handler_stack) {
         eshkol_exception_handler_t* popped = g_exception_handler_stack;
         g_exception_handler_stack = popped->prev;
-        // Note: If allocated from arena, memory is automatically freed with arena
-        // If from heap, we leak here - but exception handlers should be short-lived
+        // SW-57: recycle rather than abandon. The frame is dead the instant it
+        // leaves the chain (see the block above: nothing else can hold it), so
+        // returning it to the free list makes a re-entered guard — a resident
+        // tick loop's error boundary — cost no allocation at all.
+        popped->jmp_buf_ptr = nullptr;
+        popped->prev = g_exception_handler_free_list;
+        g_exception_handler_free_list = popped;
     }
 }
 

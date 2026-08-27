@@ -65,6 +65,16 @@ programs under `tests/vm_parity/found/`.
   scoping now matches `with-region` in resident loops, so `with-region` is no
   longer required to get flat RSS. A new RSS gate pins the behavior.
 
+  Since v1.3.5, the conditions on that 34 MB figure are stated exactly rather
+  than left to inference. It is a 100 000-tick measurement of a fixture that
+  *publishes* five freshly consed cells per tick, so what it is flat in is the
+  ~3,366 bytes/tick of transient garbage the nursery removed — not in the
+  240 bytes/tick the program asks to keep, which grow with tick count on any
+  no-GC allocator. A loop that publishes immediates or pre-allocated objects
+  instead retains exactly zero bytes per tick, indefinitely. See
+  [docs/reference/runtime/memory-model.md](docs/reference/runtime/memory-model.md#what-is-flat-and-what-is-not)
+  for the full matrix and the open build item.
+
 ### Race-free parallelism
 
 - **`parallel-map` is safe for collection-valued closures.** A closure mapped in

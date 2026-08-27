@@ -1132,6 +1132,24 @@ oracles:
         label: 'ESH-0214e: resident tick loop that mutates persistent state every tick (hash-table-set!/vector-set!/set-cdr!) reclaims transient garbage automatically via a nursery region — AOT flat RSS, correct read-back, clean under ESHKOL_ARENA_POISON=1, within 10x of the with-region baseline'
         action: ./scripts/run_icc_smoke.sh
 
+      # SW-57 long-horizon residency. The gate above, and every other flat-memory
+      # gate in tests/memory/, stops at 100k ticks and asserts a peak-RSS
+      # CEILING — which cannot distinguish "flat" from "linear with a small
+      # slope", and which reads LOW on a loaded host because peak RSS is a
+      # high-water mark of instantaneous residency. SW-57 leaked one 48-byte
+      # guard handler frame per tick underneath both blind spots. This probe
+      # measures the exact arena byte counter at two horizons 8x apart and gates
+      # on the SLOPE: the four barriered mutation channels plus a pure-transient
+      # loop must retain BYTE-IDENTICAL totals, and the publishing fixture's rate
+      # must stay pinned to what the program actually publishes.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["resident_longrun_flat"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SW-57: a guarded resident daemon loop retains exactly zero bytes/tick across an 8x tick horizon on every barriered mutation channel, measured on the arena byte counter rather than peak RSS; the publishing fixture stays pinned to its documented 240 bytes/tick'
+        action: ./scripts/run_icc_smoke.sh
+
       # #341 user-reachable region handles. The automatic nursery above cannot
       # help an AD training step: its static escape analysis disqualifies any
       # loop body containing a gradient/derivative op, a set! or a tensor-set!,

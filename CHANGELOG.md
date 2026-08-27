@@ -799,6 +799,41 @@ and a release gate that finally reads CTest results as oracle evidence.
 
 ### Fixed
 
+- **A resident daemon loop leaked 48 bytes per tick for as long as it ran,
+  because every `guard` entry took a handler frame that was never given back
+  (SW-57).** The catch-all `guard` error boundary is *the* resident-loop idiom
+  this project documents, and `eshkol_push_exception_handler` bump-allocated
+  each frame out of the process-global arena while `eshkol_pop_exception_handler`
+  returned nothing — by design ("we leak here, but exception handlers should be
+  short-lived"). In a tick loop the guard is re-entered once per tick, forever,
+  so "short-lived" frames accumulated linearly in an arena that is never reset.
+
+  It stayed invisible because ESH-0214b's iter-scope reclamation rewinds the
+  *global* arena at each back edge, which reclaimed the frame as a side effect —
+  so a non-mutating tick loop measured flat. ESH-0214e then lowered every
+  persistent-mutation tick loop (the actual daemon shape) through a nursery
+  region instead, and a nursery back edge resets only the *nursery* arena. From
+  that point on the frames were never reclaimed at all.
+
+  Handler frames now come from a thread-local LIFO free list owned by the
+  exception subsystem: `pop` recycles the frame, `push` reuses one before it
+  allocates, and the storage is malloc-backed rather than arena-backed so no
+  region or iter-scope rewind can retract a pooled frame. Steady-state cost per
+  guard entry is zero; total frame memory is bounded by peak guard *nesting
+  depth* instead of by guard *entry count*. Measured on the four barriered
+  mutation channels (`vector-set!`, `hash-table-set!`, `set-cdr!`, `set!` of a
+  global) inside a guarded tick loop: **40.0 bytes/tick before, exactly 0 after**
+  — byte-identical arena totals at 200 000 and 1 600 000 ticks.
+
+  Gated by `tests/memory/resident_longrun_flat_gate.sh`, which measures at two
+  horizons and gates on the *slope*, not on a ceiling at one tick count. It also
+  reads the arena's own byte counter (`ESHKOL_ARENA_REPORT=1`) rather than peak
+  RSS: `maximum resident set size` is a high-water mark of instantaneous
+  residency, so under memory pressure it reports *less* than the process
+  retains — the same binary measured 97 MB and 193 MB on consecutive runs of a
+  loaded host — which makes a peak-RSS leak gate quietest exactly when CI is
+  busiest.
+
 - **Every documented resource-limit environment variable was accepted and then
   enforced by nothing.** `ESHKOL_MAX_HEAP`, `ESHKOL_TIMEOUT_MS`,
   `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS`, `ESHKOL_MAX_STRING_LEN`,
