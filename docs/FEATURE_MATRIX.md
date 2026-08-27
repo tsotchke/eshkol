@@ -4,19 +4,27 @@
 
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (45 suites, 770 individual tests).
 
-**Language surface count (canonical, corrected 2026-08-25 — conformity audit item d3):**
-the declared language surface is **1,106** constructs. This is not a new
-number competing with the ones previously cited elsewhere (1,091 here and in
-`docs/COMPILER_ROADMAP.md`; 1,078 in `.icc/architecture-model.yaml`; 1,058 in
-ADR-0011 §2.1; "550+ built-in functions"/"39 special forms" in `README.md`)
-— it is the same manifest, `tests/coverage/language_surface.json` (1,040
+**Language surface count (canonical, reconciled 2026-08-26 against commit
+`afbaaf5b` — doc-truth audit finding N4):** the declared language surface is
+**1,107** constructs. Older cited figures — 1,091 and 1,106 here and in
+`docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
+"550+ built-in functions"/"39 special forms" in `README.md` — were each
+correct on the day they were written but drifted as the surface grew; the
+gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
+the previous reconciliation pass was itself wrong: ADR-0011 is the
+guest-collector adapter design and contains no surface-count section — there
+is no §2.1 that states 1,058. The only correct citation for this number is
+the coverage manifest itself: `tests/coverage/language_surface.json` (1,042
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
 `scripts/language_coverage.py` already deduplicates it to compute the
 number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 `baseline_surface_total` = `tests/coverage/execution_deficit.json`
-`surface_total` = **1,106**. This is the figure this doc, README.md, and
-`docs/COMPILER_ROADMAP.md` now use uniformly.
+`surface_total` = **1,108**, confirmed by a fresh run of
+`scripts/run_language_coverage.sh` at `afbaaf5b` on 2026-08-26. This is the
+figure this doc, README.md, and `.icc/architecture-model.yaml` now use
+uniformly; `scripts/check_surface_counts.py` fails CI if any of them drift
+from the manifest again.
 
 ---
 
@@ -482,7 +490,7 @@ number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,040 builtins across a 1,106-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,042 builtins across a 1,108-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -838,7 +846,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,040 builtins — 1,106-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,042 builtins — 1,108-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

@@ -213,38 +213,61 @@ We follow a standard GitHub flow for contributions:
 
 `master` is branch-protected. The protection rules themselves are applied in the
 repository settings (Settings → Branches → branch protection rule for `master`);
-this section is the authoritative reference for *what* that configuration should
-require. It is the enforcement half of the closed-loop assurance architecture
+this section is the authoritative reference for *what* that configuration
+requires, checked directly against
+`gh api repos/tsotchke/eshkol/branches/master/protection` on 2026-08-26. It is
+the enforcement half of the closed-loop assurance architecture
 (`docs/design/adr/0010-closed-loop-assurance.md`, closing AR1 gap A5): before this
 was in place, `master` had zero required checks and every lane was advisory.
 
-**Required status checks** (a PR cannot merge until all of these are green):
+**Required status checks** (16 contexts; a PR cannot merge until all of these are
+green):
 
-- `linux-x64-lite`
-- `linux-arm64-lite`
-- `macos-arm64-lite`
-- `macos-x64-lite`
-- `windows-arm64-lite`
+- `guard` — enforces the commit-identity allowlist on every PR (workflow
+  `identity-guard.yml`, job id `guard`).
+- `assurance-gates`, `surface-manifest`, `wasm-execute-diff`.
 - `linux-x64-asan-ubsan` — the memory-safety (ASan + UBSan) lane; required so
   address/UB regressions cannot merge behind an advisory lane.
-- `identity-guard` — enforces the commit-identity allowlist on every PR.
+- `linux-x64-xla`, `linux-arm64-xla`, `windows-arm64-xla`, `macos-arm64-xla`,
+  `macos-x64-xla`.
+- `linux-x64-cuda`, `linux-arm64-cuda`, `windows-x64-cuda`.
+- `windows-arm64-lite`, `macos-arm64-lite`, `macos-x64-lite`.
 
-Also enabled in the protection rule: require branches to be up to date before
-merging, require linear history, and dismiss stale approvals on new commits.
+**Other rule-set settings**, matching the live config exactly rather than an
+aspirational description of it:
+
+- `strict: false` — a branch does **not** have to be up to date with `master`
+  before merging.
+- `enforce_admins: true` — the rules apply to repository administrators too;
+  there is no bypass.
+- `required_linear_history: true`.
+- No pull-request review count is required (there is no
+  `required_pull_request_reviews` block on the rule), so there is nothing to
+  "dismiss" on new commits — that behavior does not exist on this repository.
+- Force pushes and branch deletion are both disabled on `master`.
+- The repository is squash-only: `allow_squash_merge: true`,
+  `allow_merge_commit: false`, `allow_rebase_merge: false`. Every PR lands on
+  `master` as a single squash commit.
 
 **Advisory checks** (run on every PR and must be *reviewed* before merge, but do
-not mechanically block it — they depend on optional backends, special hardware, or
-a networked service and cannot gate the default merge):
+not mechanically block it):
 
+- `linux-x64-lite`, `linux-arm64-lite` — demoted out of the required set; both
+  lite lanes hit chronic hosted-runner reclaim (exit 143 / `BlobNotFound`)
+  independent of code changes, so they cannot gate the default merge.
 - `quantum-macos` — opt-in Moonlab quantum lane (`continue-on-error`, networked).
-- the XLA lanes (`*-xla`) — optional XLA backend.
-- the CUDA lanes (`*-cuda`) and the self-hosted GPU execution gate — require GPU
-  hardware not present on the default hosted runners.
+- `mesh-gate-advisory` — self-hosted mesh CI lane (see
+  `docs/platform/SELF_HOSTED_RUNNERS.md`); skips rather than blocks when no
+  self-hosted runner is online.
+- `bench-smoke`.
+
+Note that the XLA and CUDA lanes are **required**, not advisory, on this
+repository — an earlier draft of this section described them as optional; the
+live rule set does not.
 
 Advisory does not mean ignorable: a reviewer checks **all** lanes, including the
 advisory ones, before merging, and dedupes stale check entries by taking the latest
-run per lane name. Linux lite lanes intermittently hit hosted-runner reclaim
-(exit 143 / `BlobNotFound`); re-run the failed jobs once before treating a red as a
+run per lane name. Re-run the failed jobs once before treating a lite-lane red as a
 real regression.
 
 **Release-blocking readiness.** Publishing a release is additionally gated by the
