@@ -1,9 +1,9 @@
 Object-header layout dependence — machine inventory
 ==================================================================
 
-commit        892622c0f628f61bc5c829fb63f1cac4606c8553
+commit        61935eef779b3f1764c36f72208c2bfccea23810
 layout pin    OK
-total sites   816
+total sites   820
 files         99
 semantic      not requested (--clang)
 
@@ -37,7 +37,7 @@ Class breakdown
       what: Struct declarations that structurally duplicate the canonical header under a different name.
       how:  Parse every `typedef struct { ... } Name;` and `struct Name { ... };` body in the tree and compare its field sequence — types and names in order — against the canonical header's. A structural match under a different name is a second definition of the ABI that no search for the canonical type name will ever find, and that will not be updated when the canonical one is.
 
-  G_header_field_write         164 sites   36 files  [lexical]
+  G_header_field_write         168 sites   36 files  [lexical]
       what: Direct writes to header fields through a pointer whose name suggests a header.
       how:  Stripped regex for `<ident>->{subtype,flags,ref_count,size}` where <ident> matches a header-ish name (hdr, header, h, obj_header, ...). Heuristic by design; the semantic layer supersedes it when libclang is available.
 
@@ -216,14 +216,14 @@ Per-file counts
   G_header_field_write
         20  lib/core/runtime_object_alloc.cpp
         18  lib/core/runtime_taylor.c
+        10  lib/core/introspection.cpp
         10  lib/core/logic.cpp
         10  lib/core/runtime_tensor_alloc.cpp
-         8  lib/core/introspection.cpp
+         8  lib/core/runtime_display_hosted.cpp
          7  lib/core/kb_persistence.cpp
          7  lib/core/runtime_deep_equal.cpp
          7  lib/core/runtime_tensor_index.cpp
          6  lib/core/inference.cpp
-         6  lib/core/runtime_display_hosted.cpp
          5  lib/core/runtime_regions.cpp
          5  lib/core/sdnc_api.c
          4  lib/backend/vm_arena.h
