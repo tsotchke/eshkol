@@ -15,6 +15,7 @@
 #include <eshkol/core/eval_bridge.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
+#include <eshkol/exhaustive_dispatch.h>
 #include "arena_memory.h"
 
 // NOTE: repl_jit.h is deliberately NOT included here. introspection.cpp
@@ -1305,8 +1306,20 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
             void* ptr = get_ptr(value);
             if (ptr) {
                 eshkol_object_header_t* header = ESHKOL_GET_HEADER(ptr);
-                if (header) {
-                    switch (header->subtype) {
+                if (header && !eshkol_heap_subtype_is_declared(header->subtype)) {
+                    // Open-set half: the subtype byte is not a declared member
+                    // at all. Loud, and named, because it means the header is
+                    // not one of ours.
+                    eshkol_warn("undeclared heap subtype: %d", header->subtype);
+                    type_name = "heap-object";
+                } else if (header) {
+                    // Closed-set half: exhaustive, no default. `type-of` is the
+                    // program's answer to "what is this"; a subtype absorbed by
+                    // a default answers "heap-object", which is not wrong so
+                    // much as uninformative in exactly the case where the
+                    // information mattered.
+                    ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+                    switch ((heap_subtype_t)header->subtype) {
                         case HEAP_SUBTYPE_CONS:
                             type_name = "pair";
                             break;
@@ -1361,11 +1374,34 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                         case HEAP_SUBTYPE_PARAMETER:
                             type_name = "parameter";
                             break;
-                        default:
-                            eshkol_warn("unknown heap subtype: %d", header->subtype);
-                            type_name = "heap-object";
+                        case HEAP_SUBTYPE_MULTI_VALUE:
+                            type_name = "values";
+                            break;
+                        case HEAP_SUBTYPE_RECORD:
+                            // Records allocate through the vector allocator, so
+                            // a live record normally arrives stamped VECTOR and
+                            // answers "vector" above. Named so a future record
+                            // allocator stamping subtype 7 does not silently
+                            // start answering "heap-object".
+                            type_name = "record";
+                            break;
+                        case HEAP_SUBTYPE_PROMISE:
+                            type_name = "promise";
+                            break;
+                        case HEAP_SUBTYPE_DNC:
+                            type_name = "dnc";
+                            break;
+                        case HEAP_SUBTYPE_SDNC:
+                            type_name = "sdnc";
+                            break;
+                        case HEAP_SUBTYPE_TAYLOR:
+                            type_name = "taylor";
+                            break;
+                        case HEAP_SUBTYPE_I128:
+                            type_name = "i128";
                             break;
                     }
+                    ESHKOL_EXHAUSTIVE_SWITCH_END
                 }
             }
             if (!type_name) type_name = "heap-object";
@@ -1376,8 +1412,12 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
             void* ptr = get_ptr(value);
             if (ptr) {
                 eshkol_object_header_t* header = ESHKOL_GET_HEADER(ptr);
-                if (header) {
-                    switch (header->subtype) {
+                if (header && !eshkol_callable_subtype_is_declared(header->subtype)) {
+                    eshkol_warn("undeclared callable subtype: %d", header->subtype);
+                    type_name = "procedure";
+                } else if (header) {
+                    ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+                    switch ((callable_subtype_t)header->subtype) {
                         case CALLABLE_SUBTYPE_CLOSURE:
                             type_name = "closure";
                             break;
@@ -1393,11 +1433,8 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                         case CALLABLE_SUBTYPE_CONTINUATION:
                             type_name = "continuation";
                             break;
-                        default:
-                            eshkol_warn("unknown callable subtype: %d", header->subtype);
-                            type_name = "procedure";
-                            break;
                     }
+                    ESHKOL_EXHAUSTIVE_SWITCH_END
                 }
             }
             if (!type_name) type_name = "procedure";

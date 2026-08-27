@@ -1,0 +1,226 @@
+/* ad_node_registry.def — the single declaration site for every AD tape node type.
+ *
+ * WHY THIS FILE EXISTS
+ *   PR #498 found four tensor-valued AD node types reaching an early `default:`
+ *   in eshkol_tensor_backward_dispatch that did nothing at all: gradients came
+ *   back exactly 0.0, with no diagnostic and exit 0.  That default carried a
+ *   comment asserting the case was impossible, reasoning from a numeric band of
+ *   enum values ("every tensor op is 19-32 or 67-80") that four new node types
+ *   had already invalidated.  The comment was the only thing enforcing the
+ *   claim, and a comment enforces nothing.
+ *
+ *   The class is general: a dispatch switch over a closed enum whose `default:`
+ *   encodes an assumption instead of failing, in a language where the enum can
+ *   grow without the switch ever knowing.  The fix is to make the assumption a
+ *   compile-time property.  This registry is where an AD node type is DECLARED,
+ *   once; the enum, the tensor-dispatch grouping and the bridge backward table
+ *   are all generated from these rows, so a node type cannot exist without
+ *   stating what its reverse pass does.
+ *
+ * ROW FORMAT
+ *   ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN)
+ *
+ *   NAME    Enum member spelling without the AD_NODE_ prefix.  AD_NODE_##NAME
+ *           is generated in inc/eshkol/eshkol.h.
+ *
+ *   VALUE   The node type's numeric value.  Stated explicitly and asserted to
+ *           equal the row's ordinal (see ESHKOL_AD_NODE_REGISTRY_ROWS), because
+ *           these values are an ABI: emitted LLVM IR compares node->type
+ *           against integer literals, and serialized tapes carry them.
+ *
+ *   PAYLOAD What the node's forward value is.
+ *             SCALAR  node->value holds the result; tensor_value is NULL.
+ *             TENSOR  node->tensor_value holds the result buffer.
+ *           A TENSOR row is one that CAN reach eshkol_tensor_backward_dispatch
+ *           with a live upstream gradient; a SCALAR row normally cannot,
+ *           because the dispatcher returns early on a NULL tensor_gradient.
+ *
+ *   TENSOR_BACKWARD  What eshkol_tensor_backward_dispatch must do for this row.
+ *           This column is ONLY about the runtime tensor dispatcher.  Eshkol
+ *           has a second reverse sweep — the one autodiff_codegen.cpp emits as
+ *           LLVM IR — and a row may have an adjoint there and none here.
+ *
+ *             LEAF           Graph leaf (constant / variable).  No adjoint; the
+ *                            reverse sweep stops.
+ *             SCALAR_ADJOINT The adjoint is emitted inline by the codegen's
+ *                            scalar reverse sweep.  The tensor dispatcher has
+ *                            nothing to do.  Generated into one shared no-op
+ *                            arm — a new row lands there only by SAYING so.
+ *             INLINE         A hand-written arm of eshkol_tensor_backward_dispatch
+ *                            reconstructs shapes/params and calls an
+ *                            eshkol_backward_* kernel.  NOT generated: the arm
+ *                            is bespoke, and -Werror=switch-enum on that
+ *                            translation unit is what proves it exists.
+ *             BRIDGE         Handled by the generated table in
+ *                            lib/bridge/tensor_backward.cpp.  BRIDGE_FN names
+ *                            the function; if it does not exist, that TU does
+ *                            not compile.  That is registration completeness.
+ *             CUSTOM_VJP     External adjoint supplied by the caller.
+ *             UNREGISTERED   An EXPLICIT REGISTERED REFUSAL.  No exact backward
+ *                            exists for this node in the tensor dispatcher, and
+ *                            rather than return a plausible zero it aborts,
+ *                            naming the node type.  This is a declaration, not
+ *                            an oversight: the row had to be written.
+ *
+ *   BRIDGE_FN  For BRIDGE rows, the backward function symbol.  Every other row
+ *              passes ESHKOL_AD_NO_BRIDGE.
+ *
+ * ADDING A NODE TYPE
+ *   Append a row here.  Three things then hold without further action:
+ *     - AD_NODE_<NAME> and AD_NODE_TYPE_COUNT are correct by construction;
+ *     - a static assertion proves VALUE == ordinal, so the dense dispatch
+ *       tables indexed by node type stay valid;
+ *     - the tensor dispatcher either handles it (SCALAR_ADJOINT / BRIDGE /
+ *       LEAF / CUSTOM_VJP / UNREGISTERED are all generated) or refuses to
+ *       compile until a hand-written INLINE arm is added.
+ *   What is NOT possible is adding one and having its gradient silently vanish.
+ *
+ * Copyright (C) tsotchke
+ * SPDX-License-Identifier: MIT
+ */
+
+/* clang-format off */
+
+/* ── Core operations (0-11) ─────────────────────────────────────────────── */
+ESHKOL_AD_NODE(CONSTANT,             0, SCALAR, LEAF,           ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(VARIABLE,             1, SCALAR, LEAF,           ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ADD,                  2, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SUB,                  3, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MUL,                  4, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(DIV,                  5, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SIN,                  6, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(COS,                  7, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(EXP,                  8, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(LOG,                  9, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(POW,                 10, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(NEG,                 11, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Activation gradients (12-18) ───────────────────────────────────────── */
+ESHKOL_AD_NODE(RELU,                12, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SIGMOID,             13, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SOFTMAX,             14, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TANH,                15, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(GELU,                16, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(LEAKY_RELU,          17, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SILU,                18, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Tensor operation gradients (19-28) ─────────────────────────────────── */
+ESHKOL_AD_NODE(CONV2D,              19, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MAXPOOL2D,           20, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(AVGPOOL2D,           21, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(BATCHNORM,           22, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(LAYERNORM,           23, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MATMUL,              24, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TRANSPOSE,           25, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(RESHAPE,             26, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SUM,                 27, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MEAN,                28, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+
+/* ── Transformer gradients (29-32) ──────────────────────────────────────── */
+ESHKOL_AD_NODE(ATTENTION,           29, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MULTIHEAD_ATTENTION, 30, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(POSITIONAL_ENCODING, 31, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(EMBEDDING,           32, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+
+/* ── qLLM geometric gradients (33-40) ───────────────────────────────────────
+ *
+ * THIS BLOCK IS THE #498 CLASS, STILL LIVE, IN FOUR MORE NODE TYPES.
+ *
+ * The four rows lib/bridge/qllm_bridge.cpp actually produces —
+ * HYPERBOLIC_DISTANCE, POINCARE_EXP_MAP, POINCARE_LOG_MAP and
+ * GEODESIC_ATTENTION — are recorded on the tape as TENSOR nodes
+ * (make_node(..., out, shape, ...) with a tensor_value), so a reverse sweep
+ * routes them to eshkol_tensor_backward_dispatch, where until this change
+ * they hit the same asserted-impossible `default:` and returned zero.  The
+ * numeric band the old comment reasoned from ("tensor ops are 19-32 and
+ * 67-80") never covered 33-40.
+ *
+ * They are declared UNREGISTERED rather than given a backward here: writing
+ * Riemannian adjoints is AD work with its own correctness bar, in flight on a
+ * separate lane, and inventing one to close a dispatch hole is how a wrong
+ * gradient gets shipped.  UNREGISTERED aborts naming the node type, so the
+ * gap announces itself at the point of use.  Note these DO have an adjoint on
+ * the OTHER reverse sweep: autodiff_codegen.cpp emits scalar backward blocks
+ * for node types 33-40.  This column is about the tensor dispatcher alone.
+ *
+ * TANGENT_PROJECT / MOBIUS_ADD / MOBIUS_MATMUL / GYROVECTOR_SPACE have no
+ * producer at all today; the emitted scalar sweep reads them, nothing writes
+ * them.  A future producer that records one as a tensor node inherits the
+ * abort rather than the silence.
+ */
+ESHKOL_AD_NODE(HYPERBOLIC_DISTANCE, 33, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(POINCARE_EXP_MAP,    34, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(POINCARE_LOG_MAP,    35, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TANGENT_PROJECT,     36, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(GEODESIC_ATTENTION,  37, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MOBIUS_ADD,          38, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MOBIUS_MATMUL,       39, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(GYROVECTOR_SPACE,    40, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+
+/* ── Additional math operations (41-45) ─────────────────────────────────── */
+ESHKOL_AD_NODE(SQRT,                41, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ABS,                 42, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SQUARE,              43, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MAX,                 44, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MIN,                 45, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Phase 4 activation gradients (46-53) ───────────────────────────────── */
+ESHKOL_AD_NODE(ELU,                 46, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SELU,                47, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(MISH,                48, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(HARDSWISH,           49, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(HARDSIGMOID,         50, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SOFTPLUS,            51, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(DROPOUT,             52, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(CELU,                53, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Complete math function gradients (54-66) ───────────────────────────── */
+ESHKOL_AD_NODE(TAN,                 54, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ASIN,                55, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ACOS,                56, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ATAN,                57, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(SINH,                58, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(COSH,                59, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ASINH,               60, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ACOSH,               61, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(ATANH,               62, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(LOG10,               63, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(LOG2,                64, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(EXP2,                65, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(CBRT,                66, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Tensor AD nodes for the qLLM bridge (67-80) ────────────────────────────
+ * Each BRIDGE row names the backward function that answers it.  The names
+ * resolve inside lib/bridge/tensor_backward.cpp, where the dispatch table is
+ * generated from these rows: a row naming a function that does not exist is a
+ * compile error, which is what makes "registered" mean registered.
+ */
+ESHKOL_AD_NODE(TENSOR_MATMUL,        67, TENSOR, BRIDGE, tensor_matmul_backward)
+ESHKOL_AD_NODE(TENSOR_SOFTMAX,       68, TENSOR, BRIDGE, tensor_softmax_backward)
+ESHKOL_AD_NODE(TENSOR_LAYERNORM,     69, TENSOR, BRIDGE, tensor_layernorm_backward)
+ESHKOL_AD_NODE(TENSOR_RMSNORM,       70, TENSOR, BRIDGE, tensor_rmsnorm_backward)
+ESHKOL_AD_NODE(TENSOR_ATTENTION,     71, TENSOR, BRIDGE, tensor_attention_backward)
+ESHKOL_AD_NODE(TENSOR_GELU,          72, TENSOR, BRIDGE, tensor_gelu_backward)
+ESHKOL_AD_NODE(TENSOR_SILU,          73, TENSOR, BRIDGE, tensor_silu_backward)
+ESHKOL_AD_NODE(TENSOR_TRANSPOSE,     74, TENSOR, BRIDGE, tensor_transpose_backward)
+ESHKOL_AD_NODE(TENSOR_SUM,           75, TENSOR, BRIDGE, tensor_sum_backward)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_ADD, 76, TENSOR, BRIDGE, tensor_broadcast_add_backward)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_MUL, 77, TENSOR, BRIDGE, tensor_broadcast_mul_backward)
+ESHKOL_AD_NODE(TENSOR_EMBEDDING,     78, TENSOR, BRIDGE, tensor_embedding_backward)
+ESHKOL_AD_NODE(TENSOR_CROSS_ENTROPY, 79, TENSOR, BRIDGE, tensor_cross_entropy_backward)
+/* The Riemannian center of mass is defined implicitly, as the stationary point
+ * of the weighted variance, so its rule differentiates that condition rather
+ * than the iteration that solves it. */
+ESHKOL_AD_NODE(FRECHET_MEAN,         80, TENSOR, BRIDGE, tensor_frechet_mean_backward)
+
+/* ── Binary atan2 (81) ──────────────────────────────────────────────────── */
+ESHKOL_AD_NODE(ATAN2,               81, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRIDGE)
+
+/* ── Custom vector-Jacobian product (82) ────────────────────────────────────
+ * An opaque scalar-valued primitive y = f(x_0..x_{n-1}) whose reverse-mode
+ * adjoint is supplied externally rather than by a hardcoded formula (e.g. a
+ * Moonlab VQE circuit), composed inside Eshkol's own reverse-mode tape.
+ */
+ESHKOL_AD_NODE(CUSTOM,              82, SCALAR, CUSTOM_VJP,     ESHKOL_AD_NO_BRIDGE)
+
+/* clang-format on */

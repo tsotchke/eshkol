@@ -445,6 +445,7 @@ jobs:
           python3 scripts/check_required_context_consistency.py --self-test
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
+          python3 scripts/gate_exhaustive_dispatch.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -487,6 +488,21 @@ jobs:
       - name: Every AD op routes through a declared, exact, source-verified carrier
         shell: bash
         run: python3 scripts/gate_ad_shared_node_model.py
+
+      # Source-derived, and it has to be: the PRIMARY enforcement for this
+      # class is the compiler (-Werror=switch -Werror=switch-enum, or
+      # ESHKOL_EXHAUSTIVE_SWITCH_BEGIN per switch), which cannot report
+      # anything here — a build that fails produces an absence, not evidence.
+      # This step is the half that can: it re-derives each closed enum's
+      # members from its own DEFINITION and fails on any registered dispatch
+      # site that carries a `default:`, omits a member, or has had its arming
+      # removed. It runs in THIS job rather than only in ctest so it grades
+      # every PR shape, including docs-only ones where no build runs at all —
+      # a change that deletes eshkol_require_exhaustive_dispatch() from
+      # CMakeLists.txt touches no source file the build matrix would notice.
+      - name: No dispatch switch over a closed enum carries a default (SW-70)
+        shell: bash
+        run: python3 scripts/gate_exhaustive_dispatch.py --no-trace
 
       # --offline deliberately: reading branch-protection settings needs
       # administration:read, which the default workflow token does not

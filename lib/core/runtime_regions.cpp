@@ -12,6 +12,7 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/exhaustive_dispatch.h"
 #include "../../inc/eshkol/core/logic.h"       // eshkol_substitution_t / _fact_t / _knowledge_base_t
 #include "../../inc/eshkol/core/inference.h"   // eshkol_factor_graph_t / _factor_t
 #include "../../inc/eshkol/core/workspace.h"   // eshkol_workspace_t / _workspace_module_t
@@ -1087,7 +1088,21 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
     const uint8_t sub = h->subtype;
 
     if (ESHKOL_IS_ANY_CALLABLE_TYPE(type)) {
-        if (sub == CALLABLE_SUBTYPE_CLOSURE) return EVAC_CLOSURE;
+        // An exhaustive switch rather than an if-chain, for the same reason as
+        // the heap-subtype switch below: an if-chain's fallthrough is a default
+        // wearing different syntax, and a new callable subtype would inherit
+        // EVAC_LEAF from it in silence.
+        ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+        switch ((callable_subtype_t)sub) {
+        case CALLABLE_SUBTYPE_CLOSURE:
+            return EVAC_CLOSURE;
+        case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
+        case CALLABLE_SUBTYPE_PRIMITIVE:
+        case CALLABLE_SUBTYPE_CONTINUATION:
+        case CALLABLE_SUBTYPE_AD_NODE:
+            break;  // handled below
+        }
+        ESHKOL_EXHAUSTIVE_SWITCH_END
         // LAMBDA_SEXPR / AD_NODE / PRIMITIVE / CONTINUATION: their interior
         // reference graph is not confidently traversable here and they almost
         // never escape a region via mutation. Kept shallow (documented).
@@ -1122,7 +1137,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         return EVAC_LEAF;
     }
 
-    switch (sub) {
+    switch ((heap_subtype_t)sub) {
         case HEAP_SUBTYPE_CONS:        return EVAC_CONS;
         case HEAP_SUBTYPE_VECTOR:      return EVAC_VECTOR;   // records are vectors too
         case HEAP_SUBTYPE_RECORD:      return EVAC_VECTOR;   // records allocate as vectors;
@@ -1161,17 +1176,36 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // the F64 case is a cheap no-op there, mirroring EVAC_RATIONAL's
         // is_big==0 fast path just above.
         case HEAP_SUBTYPE_TAYLOR:         return EVAC_TAYLOR;
+        // ── EVAC_LEAF, one subtype at a time ────────────────────────────
+        //
+        // THERE IS NO `default:` HERE, AND THAT IS THE POINT. A default in
+        // this switch would mean "any heap subtype I have not thought about
+        // is self-contained" — which is the ESH-0214d bug stated as a policy.
+        // KB / FACT / SUBSTITUTION / WORKSPACE each carried interior tagged
+        // values, each fell to that default, and each left pointers aimed into
+        // an arena that had already been reclaimed. Listing every member means
+        // a NEW subtype cannot inherit that answer by omission: adding one to
+        // heap_subtype_t without deciding its evacuation is a compile error
+        // (this file is built with -Werror=switch-enum; see
+        // eshkol_require_exhaustive_dispatch in CMakeLists.txt).
+        //
         // STRING / SYMBOL / BIGNUM / BYTEVECTOR / I128: self-contained payloads
         // -> a contiguous leaf copy fully preserves them. I128 in particular is
-        // a flat 16-byte {lo,hi} POD with no interior pointers, so the default
-        // EVAC_LEAF path (a straight memcpy of header+payload) is correct and
-        // complete — no deep walk is needed (confirmed against ESH-0214d).
-        //
+        // a flat 16-byte {lo,hi} POD with no interior pointers, so the leaf
+        // path (a straight memcpy of header+payload) is correct and complete —
+        // no deep walk is needed (confirmed against ESH-0214d).
+        case HEAP_SUBTYPE_STRING:
+        case HEAP_SUBTYPE_SYMBOL:
+        case HEAP_SUBTYPE_BIGNUM:
+        case HEAP_SUBTYPE_BYTEVECTOR:
+        case HEAP_SUBTYPE_I128:
         // Deliberately kept EVAC_LEAF (no interior region pointers, or their
         // interior graph is not confidently/safely traversable here, AND they
         // are not observed to escape a region by mutation):
         //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
         //   PRNG      - self-contained state words, no interior pointers.
+        //   PARAMETER - R7RS parameter object; its value is reached through the
+        //               dynamic-environment path, not by walking the object.
         //   DNC/SDNC  - VERIFIED SW-66 by reading both handle layouts:
         //               DncHandle.{mem,usage} (lib/core/dnc_api.c) and
         //               SdncHandle.w (lib/core/sdnc_api.c) are calloc'd on
@@ -1183,12 +1217,28 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         //               into it in the first place. This is a confirmed
         //               property of the current handle layouts, not an
         //               assumption -- see the debug guard just below.
+        //   TAYLOR is NOT in this leaf list -- see its explicit EVAC_TAYLOR
+        //   case above (SW-66's exact-coefficient deep-walk fix).
         // A guarded assert below (region_evacuate leaf handler) fires under a debug
-        // build if either subtype's handle layout ever changes to hold a real
-        // arena pointer without this switch being updated to match, so a real
-        // regression is discovered instead of silently corrupting.
-        default:                       return EVAC_LEAF;
+        // build if any such subtype is ever seen with a real arena pointer or
+        // actually escaping, so a real regression is discovered instead of
+        // silently corrupting.
+        case HEAP_SUBTYPE_PORT:
+        case HEAP_SUBTYPE_PRNG:
+        case HEAP_SUBTYPE_PARAMETER:
+        case HEAP_SUBTYPE_DNC:
+        case HEAP_SUBTYPE_SDNC:
+            return EVAC_LEAF;
     }
+
+    // Unreachable for any DECLARED subtype: the switch above names every
+    // member of heap_subtype_t and the compiler enforces that. This arm exists
+    // for the value that is not a declared subtype at all — a header byte read
+    // out of a corrupted or foreign object. Leaf-copying it would be the same
+    // silent shallow copy this switch exists to prevent, so it is reported.
+    eshkol_warn("region evacuate: undeclared heap subtype %u; leaf-copying, "
+                "interior pointers (if any) will dangle", (unsigned)sub);
+    return EVAC_LEAF;
 }
 
 // Copy a headerless raw buffer (closure env, hash arrays, tensor buffers,
@@ -1254,7 +1304,12 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
     if (k == EVAC_LEAF) {
         const auto* dh = (const eshkol_object_header_t*)
             ((const uint8_t*)new_data - sizeof(eshkol_object_header_t));
-        switch (dh->subtype) {
+        // No default: the watchlist is a decision about every subtype, so a
+        // NEW subtype must be placed on it or off it explicitly. A default
+        // would put every future subtype silently in the "not watched" half —
+        // which is how a subtype gets shallow-copied for a release without
+        // anyone hearing about it.
+        switch ((heap_subtype_t)dh->subtype) {
             case HEAP_SUBTYPE_DNC:
             case HEAP_SUBTYPE_SDNC:
                 eshkol_warn("region evacuate: subtype %u escaped a region as a "
@@ -1263,7 +1318,36 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
                             "subtype needs a real evac_kind_for case.",
                             (unsigned)dh->subtype);
                 break;
-            default: break;
+            // Not watched: self-contained payloads, or objects whose interior
+            // is reached by a path other than the evacuator (PORT wraps an fd,
+            // PARAMETER is read through the dynamic environment).
+            case HEAP_SUBTYPE_STRING:
+            case HEAP_SUBTYPE_SYMBOL:
+            case HEAP_SUBTYPE_BIGNUM:
+            case HEAP_SUBTYPE_BYTEVECTOR:
+            case HEAP_SUBTYPE_I128:
+            case HEAP_SUBTYPE_PORT:
+            case HEAP_SUBTYPE_PRNG:
+            case HEAP_SUBTYPE_PARAMETER:
+            // Deep-walked above, so reaching the leaf handler at all would mean
+            // evac_kind_for and this watchlist disagree; nothing to warn about
+            // here, because k == EVAC_LEAF already excluded them.
+            case HEAP_SUBTYPE_CONS:
+            case HEAP_SUBTYPE_VECTOR:
+            case HEAP_SUBTYPE_RECORD:
+            case HEAP_SUBTYPE_MULTI_VALUE:
+            case HEAP_SUBTYPE_HASH:
+            case HEAP_SUBTYPE_TENSOR:
+            case HEAP_SUBTYPE_EXCEPTION:
+            case HEAP_SUBTYPE_SUBSTITUTION:
+            case HEAP_SUBTYPE_FACT:
+            case HEAP_SUBTYPE_KNOWLEDGE_BASE:
+            case HEAP_SUBTYPE_FACTOR_GRAPH:
+            case HEAP_SUBTYPE_WORKSPACE:
+            case HEAP_SUBTYPE_PROMISE:
+            case HEAP_SUBTYPE_RATIONAL:
+            case HEAP_SUBTYPE_TAYLOR:
+                break;
         }
     }
 #endif
@@ -1676,7 +1760,13 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 break;
             }
             case EVAC_LEAF:
-            default:
+                // Never enqueued (region_evacuate only pushes non-leaf kinds),
+                // but named rather than defaulted: this switch has no default,
+                // so a new EvacKind cannot be added without deciding here how
+                // its interior is walked. A default would let one be added and
+                // silently walk nothing — which, for a kind added precisely
+                // because it HAS interior pointers, is the ESH-0214d bug back
+                // at the other end of the same pipeline.
                 break;
         }
     }

@@ -2231,6 +2231,150 @@ entries:
       counted as covered. Nested/second-order `derivative` on the VM raises a LOUD,
       honest "not supported on the VM" error today, so no silent path reaches it.
 
+
+  - id: SW-70
+    bucket: SILENT-WRONG
+    status: guarded
+    guarded_by: "branch fix/exhaustive-dispatch"
+    title: "a dispatch switch's `default:` encoded an assumption instead of failing, so four tensor AD node types returned gradients of exactly 0.0 with no diagnostic and exit 0"
+    mechanism: >-
+      THE CLASS, not one bug: a dispatch switch over a CLOSED enum, carrying a
+      `default:` that encodes an ASSUMPTION instead of failing, in a language
+      where the enum can grow without the switch ever knowing.
+
+      The instance PR #498 found: eshkol_tensor_backward_dispatch's `default:`
+      carried the comment "Every TENSOR op (19-32 and the qLLM bridge ops
+      67-80) has an explicit case above, so a tensor-op gradient can never
+      silently fall through this default." That is a proxy — a NUMERIC BAND of
+      enum values — standing in for the property that actually mattered, and
+      it was false the moment a tensor node type was declared outside the
+      band. Four had been. Their gradients came back exactly 0.0, no output,
+      exit 0.
+
+      THE SAME DEFECT IS STILL LIVE ON master IN FOUR MORE NODE TYPES, and
+      this entry is the measurement that found them rather than a restatement
+      of #498. AD_NODE_HYPERBOLIC_DISTANCE (33), AD_NODE_POINCARE_EXP_MAP
+      (34), AD_NODE_POINCARE_LOG_MAP (35) and AD_NODE_GEODESIC_ATTENTION (37)
+      are recorded on the tape as TENSOR nodes by lib/bridge/qllm_bridge.cpp —
+      make_node(tape, AD_NODE_..., out, shape, ...) with a live tensor_value —
+      and autodiff_codegen.cpp's emitted reverse sweep routes ANY node with a
+      non-null tensor_gradient to eshkol_tensor_backward_dispatch. 33-40 is
+      exactly the band the old comment did not cover. Every gradient through
+      a Poincare exp/log map, a hyperbolic distance or a geodesic attention
+      returned zero, silently. (These four DO have an adjoint on the OTHER
+      reverse sweep — codegen emits scalar backward blocks for node types
+      33-40 — which is why the gap survived review: the adjoint exists, just
+      not on the sweep the bridge's tensor nodes actually take.)
+
+      The identical shape is ESH-0214d one subsystem over: evac_kind_for's
+      `default: return EVAC_LEAF` answered "heap subtype I have not thought
+      about" with "self-contained, a memcpy is enough", and
+      KB/FACT/SUBSTITUTION/WORKSPACE were shallow-copied with their interior
+      pointers left aimed into an arena that had already been reclaimed.
+
+      The VACUOUS-ASSURANCE half is the comment. Both defaults were annotated
+      with an argument for why they were unreachable, and in both cases the
+      comment was the ONLY thing enforcing the claim. A comment enforces
+      nothing; it cannot fail, cannot be re-derived, and does not notice an
+      enum growing underneath it. An invariant a human has to re-check on
+      every enum edit is not an invariant.
+    reproducer: >-
+      tests/backend/exhaustive_dispatch_test.cpp —
+      geodesic_attention_backward_refuses, hyperbolic_distance_backward_refuses,
+      poincare_exp_map_backward_refuses, poincare_log_map_backward_refuses
+      (fork death tests), plus ad_node_registry_is_dense and
+      every_bridge_row_resolves_to_a_registered_backward. Each builds a tensor
+      node of that type with a seeded all-ones tensor_gradient and a variable
+      input, and runs eshkol_tensor_backward_dispatch on it.
+
+      MEASURED DIRECTLY ON master (afbaaf5b), not inferred from the source:
+      the same four probes each printed "returned normally; input grad = STILL
+      NULL (nothing propagated)" and the process exited 0. On this branch all
+      four abort with the node type named.
+    observed: "no gradient propagated at all (the input node's tensor_gradient was never even allocated); no stderr output; exit 0"
+    correct: "the exact adjoint, or a loud, named refusal — never a plausible zero"
+    resolution: >-
+      GUARDED, and the distinction matters: the wrong VALUE is gone but four of
+      the eight geometric node types still cannot compute the right one. They
+      are declared UNREGISTERED in inc/eshkol/ad_node_registry.def — an
+      EXPLICIT, written-down refusal — and the dispatcher aborts naming the
+      node type instead of returning zero. Writing exact Riemannian adjoints
+      is AD work with its own correctness bar and belongs to the lane doing
+      it; inventing one to close a dispatch hole is how a wrong gradient
+      ships. The entry stays on the ledger until those adjoints land.
+    fixed_by: >-
+      branch fix/exhaustive-dispatch — the class is closed at the
+      architectural root rather than at the four sites.
+      (1) inc/eshkol/ad_node_registry.def is now the single declaration point
+      for an AD node type: name, value, payload kind, and what
+      eshkol_tensor_backward_dispatch does for it. The ad_node_type_t enum,
+      the dispatcher's homogeneous arms and the bridge backward table are all
+      GENERATED from those rows, so a node type cannot exist without stating
+      its backward disposition, and a row claiming BRIDGE must name a function
+      that exists or lib/bridge/tensor_backward.cpp does not compile.
+      (2) The dispatch switches over ad_node_type_t, heap_subtype_t and
+      callable_subtype_t carry no `default:` and are compiled with
+      -Werror=switch -Werror=switch-enum (per translation unit, via
+      eshkol_require_exhaustive_dispatch in CMakeLists.txt) or wrapped in
+      ESHKOL_EXHAUSTIVE_SWITCH_BEGIN/_END (per switch, inc/eshkol/
+      exhaustive_dispatch.h). Adding an enum member without handling it is now
+      a BUILD FAILURE.
+      (3) Where the dispatched value comes from outside the program — a
+      subtype byte read off an object header — the open half is separated out
+      by eshkol_heap_subtype_is_declared / eshkol_callable_subtype_is_declared
+      and answered by a loud, value-naming fallback, so the closed half can be
+      exhaustive without pretending a corrupt byte is impossible.
+      (4) scripts/gate_exhaustive_dispatch.py re-derives each enum's members
+      from its own DEFINITION and fails on any registered site that carries a
+      default, omits a member, or is not armed. One registered site — the
+      ESH-0214d watchlist in evac_object — lives inside `#ifndef NDEBUG`, so
+      the COMPILER never sees it in the release builds CI actually runs; that
+      site is guarded by this gate alone, which is the concrete reason the
+      source-derived half is not redundant with the flags — the half the compiler cannot
+      provide on MSVC, and the half that catches the enforcement being removed.
+      Wired into ctest (exhaustive_dispatch_gate /
+      exhaustive_dispatch_gate_selftest), the `assurance-gates` CI job — which
+      runs on every PR shape, including docs-only ones where no build happens
+      and a change deleting the CMake arming would otherwise go unmeasured —
+      and the INV-closed-enum-dispatch-exhaustive invariant.
+    evidence: >-
+      COMPILE-TIME RED PROOF, measured on this branch, not asserted. Appending
+      one row to ad_node_registry.def with disposition INLINE and no
+      hand-written arm: "error: enumeration value 'AD_NODE_REDPROOF_NEW_OP'
+      not handled in switch [-Werror,-Wswitch]" — the build stops. Re-adding a
+      `default:` to that same switch and repeating: "error: enumeration value
+      'AD_NODE_REDPROOF_NEW_OP' not explicitly handled in switch
+      [-Werror,-Wswitch-enum]" — the default cannot defeat the flag, which is
+      why both diagnostics are escalated and not just one. Re-adding a
+      `default:` with no new member compiles (the default is then dead code)
+      and is caught instead by the source-derived gate: "carries a `default:`
+      — a default over a closed enum answers 'member I have not thought
+      about' with a plausible value". GATE RED PROOF: six self-test fixtures,
+      including one whose default is annotated with an it-cannot-happen
+      comment — the #498 shape exactly — proving the gate is not fooled by the
+      annotation that fooled review.
+    caught_by: [pr-498-review, architectural-audit-2026-08-26, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, ad-oracle, vm-parity-differential]
+    notes: >-
+      SCOPE, recorded so this entry is not read as more than it is. 179
+      switches with three or more enum-member case labels were inventoried;
+      they are NOT all this defect. The discriminator is what the default
+      DOES: a default that produces a RESULT (a gradient, an evacuation
+      classification, a type name) silently answers for members nobody
+      considered; a default that REFUSES (kb_persistence's
+      eshkol_error+return false, runtime_taylor's ok-flag refusal) is a
+      partial classification stating its own boundary and is correct as
+      written. Converted here: the AD/tensor dispatch and the evacuator paths
+      in full, plus the heap/callable-subtype dispatch in display,
+      introspection and error formatting. Left as loud backstops, correctly:
+      the VM's OpCode and ValType switches, which dispatch on bytes read from
+      bytecode — an OPEN set whatever the enum declares, where exhaustiveness
+      would be enforcing a fiction. Deferred as a build item with the
+      mechanism proven: lib/core/sexp_to_ast.cpp's heap-subtype switch, whose
+      `default: break` falls through to a null AST rather than refusing, and
+      the ~20 eshkol_op_t switches (113 members) whose conversion is a large
+      mechanical diff that does not belong in the same change as the fix.
+
   # ───────────────────────── IN-FLIGHT ─────────────────────────
 
   - id: IF-01

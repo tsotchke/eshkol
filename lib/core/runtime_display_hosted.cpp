@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include "../../inc/eshkol/exhaustive_dispatch.h"
 #include "../../inc/eshkol/core/bignum.h"
 #include "../../inc/eshkol/core/logic.h"
 #include "../../inc/eshkol/core/inference.h"
@@ -319,7 +320,21 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 break;
             }
             eshkol_object_header_t* header = ESHKOL_GET_HEADER(data_ptr);
-            switch (header->subtype) {
+            if (!eshkol_heap_subtype_is_declared(header->subtype)) {
+                // Open-set half: a subtype byte that is not a declared member
+                // at all (corrupt header, foreign object, headerless
+                // allocation). Named loudly rather than absorbed.
+                fprintf(get_output(opts), "#<heap:%d>", header->subtype);
+                break;
+            }
+            // Closed-set half. Exhaustive over heap_subtype_t, no default. `display` is where a
+            // value tells the user what it is; a subtype that falls through a
+            // default prints as "#<heap:23>", a number the reader must go look
+            // up, and nothing anywhere fails when a new subtype starts doing
+            // that. Naming every member means a new one has to be given a
+            // printed form deliberately.
+            ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+            switch ((heap_subtype_t)header->subtype) {
                 case HEAP_SUBTYPE_CONS:
                     eshkol_display_list(value->data.ptr_val, opts);
                     break;
@@ -403,10 +418,35 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 case HEAP_SUBTYPE_PARAMETER:
                     fprintf(get_output(opts), "#<parameter>");
                     break;
-                default:
-                    fprintf(get_output(opts), "#<heap:%d>", header->subtype);
+                case HEAP_SUBTYPE_RECORD:
+                    // Records allocate through the vector allocator, so a live
+                    // record normally arrives stamped HEAP_SUBTYPE_VECTOR and
+                    // is printed above. Named here so a future record allocator
+                    // that stamps subtype 7 prints as a record rather than as
+                    // "#<heap:7>".
+                    fprintf(get_output(opts), "#<record>");
+                    break;
+                case HEAP_SUBTYPE_BYTEVECTOR:
+                    fprintf(get_output(opts), "#<bytevector>");
+                    break;
+                case HEAP_SUBTYPE_PORT:
+                    // A port normally rides on HEAP_PTR with the port flag bits
+                    // set and is handled by the flagged-type checks well above
+                    // this switch; reaching here means a port object with no
+                    // flags, which still deserves a name.
+                    fprintf(get_output(opts), "#<port>");
+                    break;
+                case HEAP_SUBTYPE_DNC:
+                    fprintf(get_output(opts), "#<dnc>");
+                    break;
+                case HEAP_SUBTYPE_SDNC:
+                    fprintf(get_output(opts), "#<sdnc>");
+                    break;
+                case HEAP_SUBTYPE_TAYLOR:
+                    fprintf(get_output(opts), "#<taylor>");
                     break;
             }
+            ESHKOL_EXHAUSTIVE_SWITCH_END
             break;
         }
 
@@ -418,7 +458,12 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 break;
             }
             eshkol_object_header_t* header = ESHKOL_GET_HEADER(data_ptr);
-            switch (header->subtype) {
+            if (!eshkol_callable_subtype_is_declared(header->subtype)) {
+                fprintf(get_output(opts), "#<callable:%d>", header->subtype);
+                break;
+            }
+            ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+            switch ((callable_subtype_t)header->subtype) {
                 case CALLABLE_SUBTYPE_CLOSURE:
                     eshkol_display_closure(value->data.ptr_val, opts);
                     break;
@@ -434,10 +479,8 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                 case CALLABLE_SUBTYPE_CONTINUATION:
                     fprintf(get_output(opts), "#<continuation>");
                     break;
-                default:
-                    fprintf(get_output(opts), "#<callable:%d>", header->subtype);
-                    break;
             }
+            ESHKOL_EXHAUSTIVE_SWITCH_END
             break;
         }
 

@@ -815,3 +815,91 @@ invariants:
     evidence:
       trace_name_pattern: '^abi_layout_pin$'
       max_age_days: 45
+
+  # 14. Closed-enum dispatch exhaustiveness, encoded as intended-invariant with
+  #    a source-derived guard.  THE CLASS: a dispatch switch over a closed enum
+  #    whose `default:` encodes an ASSUMPTION instead of failing, in a language
+  #    where the enum can grow without the switch ever knowing.  PR #498 found
+  #    four tensor-valued AD node types falling into an early `default:` in
+  #    eshkol_tensor_backward_dispatch that did nothing at all — gradients
+  #    exactly 0.0, no diagnostic, exit 0 — behind a comment asserting the case
+  #    was impossible, reasoned from a numeric band of enum values that those
+  #    four node types had already left.  ESH-0214d is the same shape one
+  #    subsystem over.  The primary enforcement is COMPILE-TIME
+  #    (-Werror=switch-enum per translation unit, or
+  #    ESHKOL_EXHAUSTIVE_SWITCH_BEGIN/_END per switch); this invariant is the
+  #    source-derived second half, so the property is re-measured on lanes
+  #    whose toolchain has no such diagnostic (MSVC) and so REMOVING the
+  #    enforcement is itself caught.  Expected PASS; adding a `default:` to any
+  #    registered site, or an enum member no site names, FAILs it.
+  - id: INV-closed-enum-dispatch-exhaustive
+    kind: intended-invariant
+    incident: closed-enum-dispatch-default
+    severity: critical
+    description: >
+      No dispatch switch over a CLOSED enum may carry a `default:`.  The gate
+      re-derives each enum's members from its own DEFINITION (not from a
+      hand-typed list that would drift in exactly the situation being guarded
+      against) and requires every registered dispatch site to name all of them
+      with no default, and to be armed — the translation unit listed in
+      CMakeLists' eshkol_require_exhaustive_dispatch(), or the switch wrapped
+      in ESHKOL_EXHAUSTIVE_SWITCH_BEGIN/_END.  It additionally requires that
+      every ad_node_registry.def row declaring BRIDGE names a backward function
+      that is DEFINED in lib/bridge/tensor_backward.cpp, and that the registry
+      values are dense and equal to their ordinal, because the backward table
+      is a flat array indexed by node type.
+
+      SCOPE, stated so the invariant is not read as more than it is: this
+      covers switches over values the PROGRAM ITSELF produces.  A switch over a
+      value that arrives from outside — a bytecode opcode, a subtype byte read
+      off a header or a file, an integer crossing an FFI boundary — dispatches
+      over an OPEN set whatever the enum declares, keeps its `default:`, and
+      the requirement there is that the default be a LOUD, value-naming abort.
+      Demanding exhaustiveness of those would be enforcing a fiction.
+    invariant_name: closed-enum-dispatch-carries-no-default
+    impl: {path: scripts/gate_exhaustive_dispatch.py, symbol: grade}
+    reference: {path: scripts/gate_exhaustive_dispatch.py, symbol: enum_members}
+    guard:
+      path: scripts/gate_exhaustive_dispatch.py
+      symbol: grade_site
+      # The finding string the check emits. Deliberately a literal rather than
+      # a regex over source structure: this guard's job is to prove the check
+      # itself is still present in grade_site, and a guard written as clever
+      # pattern-matching is one more thing that can quietly stop matching.
+      pattern: 'carries a .default:.'
+    evidence:
+      trace_name_pattern: '^closed_enum_dispatch_exhaustive$'
+      max_age_days: 45
+
+  # 14b. The AD node registry as key-space-equality — the cheap, grep-fidelity
+  #     half of the same property.  A node type may not exist in the enum
+  #     without a registry row declaring what its reverse pass does, because
+  #     the enum IS generated from those rows.  This encodes the requirement so
+  #     a future change that un-generates the enum (returning to a hand-written
+  #     member list) is caught by the key spaces diverging rather than by
+  #     someone noticing.
+  - id: INV-ad-node-declared-in-registry
+    kind: key-space-equality
+    incident: ad-node-type-without-backward-disposition
+    severity: critical
+    fidelity: grep
+    description: >
+      Every AD node type is declared in inc/eshkol/ad_node_registry.def, which
+      states its payload kind and what eshkol_tensor_backward_dispatch does for
+      it — a registered backward, a registered refusal, or an explicit "its
+      adjoint lives on the scalar sweep" — and the enum, the dispatch arms and
+      the backward table are all generated from those rows.  The checkable
+      equality is the one the generation cannot enforce on its own: every row
+      that CLAIMS a bridge backward must name a function that is actually
+      DEFINED, and every backward function that exists must be claimed by a
+      row.  A row naming a missing function already fails to compile; this
+      catches the other direction — a backward rule that exists, works, and is
+      wired to nothing, which is how seven bridge ops sat with correct
+      backwards registered while the dispatcher dropped their gradients.
+    sites:
+      - id: ad-node-registry-bridge-rows
+        path: inc/eshkol/ad_node_registry.def
+        key_pattern: '^ESHKOL_AD_NODE\([^)]*\bBRIDGE,\s*(\w+)\)'
+      - id: bridge-backward-definitions
+        path: lib/bridge/tensor_backward.cpp
+        key_pattern: '^extern "C" void (tensor_\w+_backward)\(ad_node_t\*'

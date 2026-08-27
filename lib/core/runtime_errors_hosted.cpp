@@ -13,6 +13,7 @@
 #include <eshkol/core/runtime.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include <eshkol/exhaustive_dispatch.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -210,17 +211,36 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
             void* p = (void*)v.data.ptr_val;
             if (!p) return "procedure";
             uint8_t sub = *((uint8_t*)p - 8);
-            switch (sub) {
-                case 2: return "ad-node";
-                case 3: return "continuation";
-                default: return "procedure";
+            // Named enum members, not the raw 2/3 this used to compare against:
+            // a magic number is a second, invisible copy of the enum that no
+            // compiler checks, and CALLABLE_SUBTYPE_CONTINUATION being 3 was
+            // never a fact this file could see. No default over the declared
+            // members either — a new callable subtype must be given a name
+            // here rather than inheriting "procedure" by omission.
+            ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+            switch ((callable_subtype_t)sub) {
+                case CALLABLE_SUBTYPE_AD_NODE:       return "ad-node";
+                case CALLABLE_SUBTYPE_CONTINUATION:  return "continuation";
+                case CALLABLE_SUBTYPE_CLOSURE:
+                case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
+                case CALLABLE_SUBTYPE_PRIMITIVE:     return "procedure";
             }
+            ESHKOL_EXHAUSTIVE_SWITCH_END
+            // Only reachable for a byte that is not a declared subtype at all
+            // (corrupt or foreign object) — the open-set half.
+            return "procedure";
         }
         case ESHKOL_VALUE_HEAP_PTR: {
             void* p = (void*)v.data.ptr_val;
             if (!p) return "null";
             uint8_t sub = *((uint8_t*)p - 8);
-            switch (sub) {
+            // Exhaustive over heap_subtype_t, no default: this function is the
+            // single source of the type name a runtime error reports, and a
+            // subtype that falls through a default is reported to the user as
+            // the generic "heap-object" — an error message that names the wrong
+            // type is its own quiet wrong answer.
+            ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
+            switch ((heap_subtype_t)sub) {
                 case HEAP_SUBTYPE_CONS:           return "pair";
                 case HEAP_SUBTYPE_STRING:         return "string";
                 case HEAP_SUBTYPE_VECTOR:         return "vector";
@@ -242,8 +262,15 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
                 case HEAP_SUBTYPE_RATIONAL:       return "rational";
                 case HEAP_SUBTYPE_PRNG:           return "prng";
                 case HEAP_SUBTYPE_PARAMETER:      return "parameter";
-                default:                          return "heap-object";
+                case HEAP_SUBTYPE_DNC:            return "dnc";
+                case HEAP_SUBTYPE_SDNC:           return "sdnc";
+                case HEAP_SUBTYPE_TAYLOR:         return "taylor";
+                case HEAP_SUBTYPE_I128:           return "i128";
             }
+            ESHKOL_EXHAUSTIVE_SWITCH_END
+            // Not a declared subtype: a byte read from a corrupt or foreign
+            // object. Genuinely open, so a backstop rather than exhaustiveness.
+            return "heap-object";
         }
         case ESHKOL_VALUE_CONS_PTR:    return "pair";
         case ESHKOL_VALUE_STRING_PTR:  return "string";
