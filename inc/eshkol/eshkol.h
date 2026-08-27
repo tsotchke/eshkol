@@ -525,34 +525,52 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
  * neuro-symbolic/AD structures added for the consciousness engine and
  * Taylor-tower AD) that share the single consolidated HEAP_PTR type tag.
  */
+// Interior-pointer classification tags (SW-66, 2026-08-26 libclance
+// architecture-verify admission).  Every member below carries a trailing
+// [DEEPWALK] or [LEAF] marker: DEEPWALK means the region evacuator
+// (lib/core/runtime_regions.cpp, evac_kind_for) MUST walk this subtype's
+// interior tagged values/pointers when it escapes a dying region; LEAF means
+// a contiguous header+payload copy is sound because the subtype holds no
+// interior REGION pointer (a raw non-arena C-heap pointer is fine to
+// shallow-copy, since it never dangles when the region's arena is freed).
+// This is the source side of INV-oalr-interior-pointer-deepwalk
+// (.icc/architecture-model.yaml), graded against a source-derived pattern
+// over evac_kind_for's actual `case HEAP_SUBTYPE_X: return EVAC_...;` arms:
+// adding a member here without also giving it a real case in that switch is
+// exactly the class of regression the invariant exists to catch
+// (KB/FACT/SUBSTITUTION/WORKSPACE were dropped to a shallow leaf copy this
+// way before ESH-0214d; DNC/SDNC/TAYLOR were never given the tag OR the
+// case at all before this fix, so the invariant could not see them). Keep
+// both sides honest: retag a member the moment its actual evac_kind_for
+// treatment changes.
 typedef enum {
-    HEAP_SUBTYPE_CONS        = 0,   // Cons cell (pair/list node)
-    HEAP_SUBTYPE_STRING      = 1,   // String (UTF-8 with length)
-    HEAP_SUBTYPE_VECTOR      = 2,   // Heterogeneous vector
-    HEAP_SUBTYPE_TENSOR      = 3,   // N-dimensional numeric tensor
-    HEAP_SUBTYPE_MULTI_VALUE = 4,   // Multiple return values container
-    HEAP_SUBTYPE_HASH        = 5,   // Hash table / dictionary
-    HEAP_SUBTYPE_EXCEPTION   = 6,   // Exception object
-    HEAP_SUBTYPE_RECORD      = 7,   // User-defined record type
-    HEAP_SUBTYPE_BYTEVECTOR  = 8,   // Raw byte vector (R7RS)
-    HEAP_SUBTYPE_PORT        = 9,   // I/O port
-    HEAP_SUBTYPE_SYMBOL      = 10,  // Interned symbol (distinct from string)
-    HEAP_SUBTYPE_BIGNUM      = 11,  // Arbitrary-precision integer (R7RS exact)
+    HEAP_SUBTYPE_CONS        = 0,   // Cons cell (pair/list node) [DEEPWALK]
+    HEAP_SUBTYPE_STRING      = 1,   // String (UTF-8 with length) [LEAF] -- self-contained payload
+    HEAP_SUBTYPE_VECTOR      = 2,   // Heterogeneous vector [DEEPWALK]
+    HEAP_SUBTYPE_TENSOR      = 3,   // N-dimensional numeric tensor [DEEPWALK]
+    HEAP_SUBTYPE_MULTI_VALUE = 4,   // Multiple return values container [DEEPWALK]
+    HEAP_SUBTYPE_HASH        = 5,   // Hash table / dictionary [DEEPWALK]
+    HEAP_SUBTYPE_EXCEPTION   = 6,   // Exception object [DEEPWALK]
+    HEAP_SUBTYPE_RECORD      = 7,   // User-defined record type [DEEPWALK] -- records allocate as vectors
+    HEAP_SUBTYPE_BYTEVECTOR  = 8,   // Raw byte vector (R7RS) [LEAF] -- self-contained payload
+    HEAP_SUBTYPE_PORT        = 9,   // I/O port [LEAF] -- wraps an OS fd/FILE*; handle intentionally shared, not copied
+    HEAP_SUBTYPE_SYMBOL      = 10,  // Interned symbol (distinct from string) [LEAF] -- self-contained payload
+    HEAP_SUBTYPE_BIGNUM      = 11,  // Arbitrary-precision integer (R7RS exact) [LEAF] -- self-contained payload
     // Neuro-symbolic consciousness engine types
-    HEAP_SUBTYPE_SUBSTITUTION    = 12,  // Immutable binding map {var_id -> tagged_value}
-    HEAP_SUBTYPE_FACT            = 13,  // Predicate + arguments: (pred arg1 arg2 ...)
+    HEAP_SUBTYPE_SUBSTITUTION    = 12,  // Immutable binding map {var_id -> tagged_value} [DEEPWALK]
+    HEAP_SUBTYPE_FACT            = 13,  // Predicate + arguments: (pred arg1 arg2 ...) [DEEPWALK]
     // Reserved: 14 for RULE (v1.2 backward chaining)
-    HEAP_SUBTYPE_KNOWLEDGE_BASE  = 15,  // Collection of facts with query support
-    HEAP_SUBTYPE_FACTOR_GRAPH    = 16,  // Factor graph for probabilistic inference
-    HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition
-    HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization)
-    HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator)
-    HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state
-    HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head)
-    HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ)
-    HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186)
-    HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize)
-    HEAP_SUBTYPE_I128            = 25,  // Native fixed-width 128-bit integer (wraps; OFF the numeric tower)
+    HEAP_SUBTYPE_KNOWLEDGE_BASE  = 15,  // Collection of facts with query support [DEEPWALK]
+    HEAP_SUBTYPE_FACTOR_GRAPH    = 16,  // Factor graph for probabilistic inference [DEEPWALK]
+    HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition [DEEPWALK]
+    HEAP_SUBTYPE_PROMISE         = 18,  // Lazy promise (delay/force with memoization) [DEEPWALK]
+    HEAP_SUBTYPE_RATIONAL        = 19,  // Exact rational number (numerator/denominator) [DEEPWALK] -- the bignum-backed path carries raw bignum pointers
+    HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state [LEAF] -- self-contained state words, no interior pointers
+    HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head) [LEAF] -- VERIFIED SW-66: DncHandle.{mem,usage} (lib/core/dnc_api.c) are calloc'd on the C heap, never arena-allocated; a shallow copy preserves both pointers exactly, so they cannot dangle when the region's arena is freed
+    HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ) [LEAF] -- VERIFIED SW-66: SdncHandle.w (lib/core/sdnc_api.c) is calloc'd on the C heap (not arena-allocated) and .pe[][] is inline scalar data; same reasoning as DNC
+    HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186) [DEEPWALK] -- SW-66: a COEFF_RATIONAL (exact) tower's c[] is an array of eshkol_tagged_value_t that can hold HEAP_PTRs to arena-resident HEAP_SUBTYPE_BIGNUM/HEAP_SUBTYPE_RATIONAL coefficients (lib/core/runtime_taylor.c); a COEFF_F64 tower's c[] is raw doubles (nothing to walk, the walk is a cheap no-op)
+    HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize) [LEAF] -- current native evac_kind_for treatment; UNLIKE the other LEAF members above, this one is NOT a reviewed, documented exemption in runtime_regions.cpp, and the bytecode VM's own region evacuator (lib/backend/vm_region_evac.c) already deep-walks its parameter row (current_value/converter/save_stack) -- tracked as ledger IF-08 pending a native-side decision, not silently matched to today's code by coincidence
+    HEAP_SUBTYPE_I128            = 25,  // Native fixed-width 128-bit integer (wraps; OFF the numeric tower) [LEAF] -- flat {lo,hi} POD, no interior pointers
     // Reserved: 26-255 for future heap types
 } heap_subtype_t;
 

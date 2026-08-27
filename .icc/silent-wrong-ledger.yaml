@@ -5155,3 +5155,97 @@ entries:
       this class cannot silently reopen a third time.
     caught_by: [direct-measurement, branch-protection-audit]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-66
+    bucket: SILENT-WRONG
+    subtag: structural
+    family: region-evacuator/interior-pointer-deepwalk
+    status: closed
+    closed_at: "fix/evac-subtypes-dnc-sdnc-taylor"
+    closed_by: "branch fix/evac-subtypes-dnc-sdnc-taylor"
+    title: "evac_kind_for never classified HEAP_SUBTYPE_DNC/SDNC/TAYLOR at all; the exact (COEFF_RATIONAL) Taylor tower genuinely carries interior bignum pointers a shallow leaf copy leaves dangling into a freed region arena"
+    repro: >-
+      `icc architecture-verify --cxx-backend libclang` (the new C/C++
+      semantic-index backend) resolved lib/core/runtime_regions.cpp's
+      evac_kind_for switch precisely and found HEAP_SUBTYPE_DNC, _SDNC and
+      _TAYLOR present in inc/eshkol/eshkol.h's enum but absent from the
+      switch's real deep-walk arms — invisible to the prior grep-fidelity
+      INV-oalr-interior-pointer-deepwalk invariant, which matched the whole
+      FILE's token set (all three names appear elsewhere in the file: a
+      debug-only watchlist warn block and doc comments) rather than the
+      function body. tests/memory/region_evac_taylor_exact_test.esk
+      differentiates x^30/x^22/x^10 at exact integer points with the
+      differentiated body wrapped in `(with-region ...)`, forcing the exact
+      tower's bignum-scale coefficients to be allocated in the region arena
+      and escape it via with-region's own return-value evacuation.
+    observed: >-
+      Layout investigation (not blind pattern-matching) showed a THREE-WAY
+      split, not one uniform gap: DncHandle.{mem,usage} (lib/core/dnc_api.c)
+      and SdncHandle.w (lib/core/sdnc_api.c) are calloc'd on the plain C
+      heap, never arena-allocated, so a shallow copy of either handle is
+      genuinely correct — they were undertagged but not actually buggy.
+      HEAP_SUBTYPE_TAYLOR is different: its EXACT (COEFF_RATIONAL)
+      representation reinterprets c[] as an eshkol_tagged_value_t array
+      (lib/core/runtime_taylor.c), and any coefficient that overflows int64
+      is a HEAP_PTR to an independently arena-allocated HEAP_SUBTYPE_BIGNUM
+      object. Under ESHKOL_ARENA_POISON=1, the pre-fix runtime read that
+      dangling bignum pointer and, in this fixture, first hit a size-sanity
+      guard ("arena_allocate_with_header: data_size=27353046632 exceeds
+      UINT32_MAX") and then returned 0 instead of the true derivative value
+      (e.g. 7^30 = 22539340290692258087863249) -- 5 of 7 checks failed.
+      Without poison the same defect is genuinely silent: the freed bytes
+      had not yet been overwritten, so the stale-but-still-valid bignum read
+      back correct by luck.
+    correct: >-
+      Every interior-pointer-carrying heap subtype is either deep-walked on
+      region escape or is a reviewed, verified LEAF exemption backed by its
+      actual struct layout -- never an unclassified gap that happens to look
+      safe today.
+    root_cause: >-
+      DNC/SDNC/TAYLOR were added to the HEAP_SUBTYPE_* enum after ESH-0214d
+      closed the KB/FACT/SUBSTITUTION/WORKSPACE class, and evac_kind_for's
+      switch was never revisited for any of the three: no case arm, no
+      review comment, no ledger entry. The prior architecture-model.yaml
+      invariant sites were a hand-typed 16-name alternation duplicated on
+      both the enum and the switch side, so the comparison always matched
+      itself regardless of what either file actually contained -- neither a
+      human nor `icc architecture-verify --cxx-backend none` (grep/whole-
+      file scope) could see that TAYLOR's real switch treatment (falling to
+      `default: return EVAC_LEAF;`) diverged from its true interior-pointer
+      shape.
+    fix: >-
+      lib/core/runtime_regions.cpp: added a new EVAC_TAYLOR EvacKind and an
+      explicit `case HEAP_SUBTYPE_TAYLOR: return EVAC_TAYLOR;` arm; the
+      worklist handler walks the tower's coefficient array with evac_value()
+      only when flags carry ESH_TAYLOR_COEFF_MASK == ESH_TAYLOR_COEFF_RATIONAL
+      (a COEFF_F64 tower's c[] is raw doubles, walked as a cheap no-op,
+      mirroring EVAC_RATIONAL's is_big==0 fast path). DNC/SDNC were left on
+      the `default: return EVAC_LEAF;` path (verified correct, not a
+      regression) but the debug-only watchlist guard was renamed and kept as
+      a live regression trap on their handle layouts. inc/eshkol/eshkol.h:
+      every HEAP_SUBTYPE_* member now carries an explicit [DEEPWALK]/[LEAF]
+      classification tag with the per-member reasoning, so
+      INV-oalr-interior-pointer-deepwalk's sites (.icc/architecture-model.yaml)
+      are now GENERIC source-derived patterns -- the enum side reads the
+      [DEEPWALK] tags, the switch side reads every real
+      `case HEAP_SUBTYPE_X: return EVAC_...;` arm -- instead of a hand-typed
+      list duplicated on both sides. The bytecode VM was investigated and
+      found to have NO HEAP_DNC/HEAP_SDNC/HEAP_TAYLOR tags and no
+      derivative-n/taylor/dnc/sdnc op codegen in vm_compiler.c at all (a live
+      probe under --profile hosted-vm reports `derivative-n` as an undefined
+      variable); there is no VM-side parity gap to fix because the feature
+      is not implemented on that engine.
+    evidence: >-
+      tests/memory/region_evac_taylor_exact_test.esk (7 checks; wired into
+      ctest as region_evac_taylor_exact_runtime_smoke and
+      region_evac_taylor_exact_aot_smoke, both under
+      ESHKOL_ARENA_POISON=1) -- 5/7 fail on the pre-fix switch, 7/7 pass
+      post-fix, on both the JIT and AOT engines. `icc architecture-verify
+      --repo eshkol --model .icc/architecture-model.yaml` on
+      INV-oalr-interior-pointer-deepwalk: FAIL with `divergent=['TAYLOR']`
+      against the pre-fix switch (tags applied, case arm reverted), PASS
+      (`all sites resolve the same identifier space`, 15/15 tokens) against
+      the fixed source, confirmed under both --cxx-backend none and the
+      default tree-sitter AST backend. Full ctest: 203/203 passed.
+    caught_by: [icc-architecture-verify-libclang-admission-20260826]
+    missed_by: [icc-architecture-verify-grep-fidelity, icc-smoke, icc-readiness, ctest]
