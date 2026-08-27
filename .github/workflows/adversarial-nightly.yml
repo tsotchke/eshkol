@@ -197,6 +197,15 @@ jobs:
           }
           eshkol-run --version || eshkol --version || true
 
+      - name: System-package integration test (find_package(Eshkol))
+        shell: bash
+        run: |
+          set -uxo pipefail
+          bash scripts/run_system_package_integration_test.sh --prefix "$(brew --prefix eshkol)" || {
+            echo "::warning::system-package integration test failed against the real brew install"
+            exit 1
+          }
+
   packaging-linux:
     name: packaging-linux (install-script smoke)
     runs-on: ubuntu-22.04

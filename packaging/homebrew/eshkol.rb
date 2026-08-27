@@ -235,6 +235,18 @@ class Eshkol < Formula
     # Agent modules: install the .esk wrappers only (skip the bundled C sources
     # under lib/agent/c) so (require agent.regex) etc. resolve.
     (esklib/"agent").install Dir["lib/agent/*.esk"] if Dir.exist?("lib/agent")
+
+    # CMake downstream-integration modules. A packaged install shipped NO
+    # discovery contract at all before this: a consumer's own find_package(Eshkol)
+    # had nothing canonical to match against and had to guess library names,
+    # which could silently resolve to lib/eshkol/libeshkol-static.a (the
+    # compiler/tool aggregate) instead of libeshkol-runtime.a (what a COMPILED
+    # PROGRAM actually needs) — see cmake/FindEshkol.cmake's header comment.
+    # Installing this repo's own copies here means a consumer never has to
+    # guess: `list(APPEND CMAKE_MODULE_PATH "#{HOMEBREW_PREFIX}/share/eshkol/cmake")`
+    # then `find_package(Eshkol)` gets the real, current layout every time.
+    (share/"eshkol/cmake").install "cmake/FindEshkol.cmake"
+    (share/"eshkol/cmake").install "cmake/EshkolCompile.cmake"
   end
 
   def caveats

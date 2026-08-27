@@ -30,6 +30,15 @@ Checks performed, per manifest category:
                            module fails the gate even when the total count
                            still looks plausible
   - docs                 : declared `path` entries exist
+  - cmake_integration     : declared `path` entries exist (the downstream
+                           find_package(Eshkol) discovery modules)
+  - integration_contract  : (only with --verify-integration-contract) actually
+                           RUNS the declared script against the staged
+                           package directory and requires exit 0 — this is
+                           the one category that checks the contract WORKS,
+                           not merely that its files are present. A missing
+                           cmake_integration file fails this fast without
+                           attempting to invoke a toolchain.
 
 Every entry may restrict itself to a `platforms` list; entries default to
 "all" and are skipped entirely (neither required nor forbidden) on a
@@ -37,6 +46,8 @@ platform they do not name.
 
 Usage
     python3 scripts/check_package_manifest.py --package-dir <staged dir> --platform linux
+    python3 scripts/check_package_manifest.py --package-dir <staged dir> --platform linux \
+        --verify-integration-contract
     python3 scripts/check_package_manifest.py --self-test
 
 Exit status is 0 on PASS and 1 on FAIL (including under --self-test, where it
@@ -52,6 +63,7 @@ import argparse
 import json
 import os
 import platform as _platform
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -215,7 +227,73 @@ def _check_docs(entries: list, package_dir: Path, platform_name: str, errors: li
         _check_leaf(package_dir / entry["path"], f"doc {entry['path']!r}", errors)
 
 
-def evaluate(manifest: dict, package_dir: Path, repo_root: Path, platform_name: str) -> dict:
+def _check_cmake_integration(entries: list, package_dir: Path, platform_name: str, errors: list[str], checked: list[int]) -> None:
+    for entry in entries:
+        if not _platform_allowed(entry, platform_name):
+            continue
+        if not entry.get("required", True):
+            continue
+        checked[0] += 1
+        _check_leaf(package_dir / entry["path"], f"cmake integration module {entry['path']!r}", errors)
+
+
+def _check_integration_contract(
+    entries: list,
+    package_dir: Path,
+    repo_root: Path,
+    platform_name: str,
+    errors: list[str],
+    checked: list[int],
+    run_it: bool,
+) -> None:
+    for entry in entries:
+        if not _platform_allowed(entry, platform_name):
+            continue
+        if not entry.get("required", True):
+            continue
+        if not run_it:
+            # Presence-only mode (self-test, the plain schema-conformance
+            # invocation): declared but not executed. Not counted as
+            # `checked` — an unexecuted contract entry proves nothing, and
+            # counting it would let this category look verified when it was
+            # only ever read.
+            continue
+
+        checked[0] += 1
+        script = repo_root / entry["script"]
+        label = f"integration_contract {entry.get('id', entry['script'])!r}"
+        if not script.is_file():
+            errors.append(f"{label}: script not found: {script}")
+            continue
+
+        try:
+            result = subprocess.run(
+                ["bash", str(script), "--prefix", str(package_dir)],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except Exception as exc:  # pragma: no cover - environment dependent
+            errors.append(f"{label}: failed to invoke {script}: {exc}")
+            continue
+
+        if result.returncode != 0:
+            tail = "\n".join((result.stdout + result.stderr).splitlines()[-20:])
+            errors.append(
+                f"{label}: exited {result.returncode} — the discovery contract "
+                f"does not actually work against this staged package. Last "
+                f"output:\n{tail}"
+            )
+
+
+def evaluate(
+    manifest: dict,
+    package_dir: Path,
+    repo_root: Path,
+    platform_name: str,
+    verify_integration_contract: bool = False,
+) -> dict:
     """Validate a staged package directory against a parsed manifest. Never raises."""
 
     errors: list[str] = []
@@ -241,6 +319,12 @@ def evaluate(manifest: dict, package_dir: Path, repo_root: Path, platform_name: 
     _check_static_libraries(surface.get("static_libraries", []), package_dir, platform_name, errors, checked)
     _check_stdlib_sources(surface.get("stdlib_sources", []), package_dir, repo_root, platform_name, errors, checked)
     _check_docs(surface.get("docs", []), package_dir, platform_name, errors, checked)
+    _check_cmake_integration(surface.get("cmake_integration", []), package_dir, platform_name, errors, checked)
+    _check_integration_contract(
+        surface.get("integration_contract", []),
+        package_dir, repo_root, platform_name, errors, checked,
+        run_it=verify_integration_contract,
+    )
 
     return {"passed": not errors, "errors": errors, "checked_count": checked[0]}
 
@@ -287,6 +371,13 @@ package_surface:
   docs:
     - path: README.md
       required: true
+  cmake_integration:
+    - path: share/cmake/FakeFind.cmake
+      required: true
+  integration_contract:
+    - id: fake_contract
+      script: fake_integration_check.sh
+      required: true
 """
 
 
@@ -310,6 +401,11 @@ def _build_good_fixture(root: Path, platform_name: str) -> tuple[Path, Path]:
     _write(package_dir / "share" / "lib" / "a.esk")
     _write(package_dir / "share" / "lib" / "nested" / "b.esk")
     _write(package_dir / "README.md")
+    _write(package_dir / "share" / "cmake" / "FakeFind.cmake")
+
+    fake_script = repo_root / "fake_integration_check.sh"
+    _write(fake_script, "#!/usr/bin/env bash\nexit 0\n")
+    fake_script.chmod(0o755)
     return repo_root, package_dir
 
 
@@ -358,7 +454,41 @@ def self_test() -> bool:
         all_ok = all_ok and ok
         print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] wrong_platform_ext: expected passed=False, got passed={result['passed']}")
 
-        # 5. Malformed manifest document -> must raise / be reported unusable.
+        # 5. Missing cmake_integration file -> must FAIL, naming it.
+        repo_root, package_dir = _build_good_fixture(tmp_root / "missing_cmake_module", platform_name)
+        (package_dir / "share" / "cmake" / "FakeFind.cmake").unlink()
+        result = evaluate(manifest, package_dir, repo_root, platform_name)
+        ok = result["passed"] is False and any("cmake integration module" in e for e in result["errors"])
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] missing_cmake_integration_module: expected passed=False, got {result}")
+
+        # 6. integration_contract is declared but --verify-integration-contract
+        #    was NOT passed -> must PASS without ever invoking the script (the
+        #    fast schema-only path some callers need).
+        repo_root, package_dir = _build_good_fixture(tmp_root / "contract_not_verified", platform_name)
+        result = evaluate(manifest, package_dir, repo_root, platform_name, verify_integration_contract=False)
+        ok = result["passed"] is True
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] integration_contract_unverified_passes: expected passed=True, got {result['passed']}")
+
+        # 7. integration_contract IS verified and its script exits 0 -> PASS.
+        repo_root, package_dir = _build_good_fixture(tmp_root / "contract_verified_ok", platform_name)
+        result = evaluate(manifest, package_dir, repo_root, platform_name, verify_integration_contract=True)
+        ok = result["passed"] is True
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] integration_contract_verified_ok: expected passed=True, got {result}")
+
+        # 8. integration_contract IS verified and its script exits nonzero ->
+        #    must FAIL — this is the actual "the contract works" assertion,
+        #    not just file presence.
+        repo_root, package_dir = _build_good_fixture(tmp_root / "contract_verified_fail", platform_name)
+        (repo_root / "fake_integration_check.sh").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+        result = evaluate(manifest, package_dir, repo_root, platform_name, verify_integration_contract=True)
+        ok = result["passed"] is False and any("integration_contract" in e for e in result["errors"])
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] integration_contract_verified_fail: expected passed=False, got passed={result['passed']}")
+
+        # 9. Malformed manifest document -> must raise / be reported unusable.
         try:
             bad = yaml.safe_load("package_surface: [not, a, mapping]")
             result = evaluate(bad, package_dir, repo_root, platform_name)
@@ -385,6 +515,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-trace", action="store_true", help="grade only, write no trace")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--self-test", action="store_true", help="run built-in red/green fixtures and exit")
+    parser.add_argument(
+        "--verify-integration-contract", action="store_true",
+        help="actually RUN each declared integration_contract script against --package-dir "
+             "(requires a real toolchain; off by default and in --self-test)")
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -405,7 +539,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{PROBE_ID}: FAIL — {exc}", file=sys.stderr)
         return 1
 
-    result = evaluate(manifest, Path(args.package_dir), Path(args.repo_root), platform_name)
+    result = evaluate(
+        manifest, Path(args.package_dir), Path(args.repo_root), platform_name,
+        verify_integration_contract=args.verify_integration_contract,
+    )
 
     status = "PASS" if result["passed"] else "FAIL"
     if result["passed"]:

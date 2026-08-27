@@ -130,3 +130,40 @@ package_surface:
       required: true
     - path: RELEASE_NOTES.md
       required: true
+
+  # Downstream CMake discovery contract (ADR-0010 gap A10 follow-on, a
+  # 2026-08-26 consumer audit finding). Before this, a packaged install
+  # shipped no Find/Config module at all: a consumer's own find_package(Eshkol)
+  # had to guess library names against whatever this release actually staged,
+  # and a plausible guess ("eshkol-static") resolves to the compiler/tool
+  # aggregate rather than the runtime a compiled program needs. Presence here
+  # is necessary but not sufficient — see `integration_contract` below, which
+  # is what actually exercises find_package(Eshkol) against the staged
+  # package rather than just checking the files landed.
+  cmake_integration:
+    - path: share/eshkol/cmake/FindEshkol.cmake
+      required: true
+      description: Canonical find_package(Eshkol) discovery module.
+    - path: share/eshkol/cmake/EshkolCompile.cmake
+      required: true
+      description: eshkol_compile_library()/eshkol_compile_executable() CMake helpers.
+
+  # Executable, not file-presence, verification of the discovery contract
+  # above: a from-scratch consumer CMake project
+  # (tests/integration/system_package/) is configured against THIS staged
+  # package directory via scripts/run_system_package_integration_test.sh,
+  # built, and run, asserting its output. Only runs when the caller passes
+  # --verify-integration-contract (release.yml does; the fast schema-only
+  # invocation and this file's own self-test do not, since there is no real
+  # eshkol-run/cmake toolchain to exercise in those contexts). macOS/Linux
+  # only for now — the verified link recipe in cmake/FindEshkol.cmake has not
+  # been established for the Windows/MSVC toolchain.
+  integration_contract:
+    - id: system_package_find_package
+      script: scripts/run_system_package_integration_test.sh
+      required: true
+      platforms: [linux, macos]
+      description: >-
+        find_package(Eshkol) -> include(EshkolCompile) ->
+        eshkol_compile_executable() -> link -> run, against the staged
+        package directory.

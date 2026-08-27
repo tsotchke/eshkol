@@ -1,0 +1,10 @@
+; tests/integration/system_package — a from-scratch consumer's entry point.
+;
+; Deliberately in the "bare top-level expressions" style rather than an
+; explicit (define (main) ...), because that style is the one that calls
+; __eshkol_lib_init__ from the synthesized entry point — see
+; cmake/FindEshkol.cmake's "Every program needs stdlib.o" note. A consumer
+; project that only ever compiled explicit-main-style sources would not have
+; caught the missing-stdlib.o link failure this fixture exists to pin.
+(display "system-package-integration-ok")
+(newline)
