@@ -211,6 +211,17 @@ probe aot_link_succeeds "AOT compile + run hello.esk" \
 probe jit_repl_clean_exit "eshkol-run -r returns 0 on a noop input" \
     'tmp=$(mktemp); echo "(+ 1 2)" > "$tmp.esk"; "$ESHKOL_RUN" -r "$tmp.esk" >/dev/null; rc=$?; rm -f "$tmp" "$tmp.esk"; exit $rc'
 
+# Object ABI. The heap object header carries no discriminator for its own
+# layout, so a compiler and a runtime built against different layouts link
+# cleanly and read each other's objects at the wrong offsets — silently. These
+# two probes are the evidence for INV-object-abi-mixed-link-refused and
+# INV-object-abi-site-ratchet respectively.
+probe abi_layout_pin "object header layout and guard symbol are pinned" \
+    '"$(dirname "$ESHKOL_RUN")/abi_layout_pin_test"'
+
+probe abi_object_header_ratchet "no new object-header layout dependence" \
+    'python3 "$REPO_ROOT/scripts/abi_header_inventory.py" check --repo "$REPO_ROOT"'
+
 # ─────────────────────────────────────────────────────────────────
 # Agent FFI probes (#234/#236/#237/#248 contracts)
 # ─────────────────────────────────────────────────────────────────
