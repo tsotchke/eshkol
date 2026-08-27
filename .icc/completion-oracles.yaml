@@ -177,6 +177,25 @@ oracles:
         label: 'Every oracle target has at least one severity:high criterion, so total absence of evidence forces `blocked` rather than `ready`/`incomplete` (scripts/audit_oracle_false_green.py)'
         action: python3 scripts/audit_oracle_false_green.py
 
+      # N5 (2026-08-26 audit): .icc/doc-claims-allowlist.yaml's own header
+      # comment has claimed since 2026-08-14 to be "consumed by the
+      # doc-typed-claims-residual release-oracle criterion", enforcing
+      # current_wrong_count == len(allowlist entries) + open DOC-DEBT
+      # build-item count, with zero unexplained remainder. That criterion
+      # existed nowhere -- the string appeared only in the allowlist's own
+      # prose. scripts/check_doc_claims_residual.py is the criterion the
+      # allowlist always claimed existed; the allowlist itself was
+      # regenerated in the same change (27 stale doc line-count mentions
+      # corrected in the doc text; 8 claims that had only drifted line
+      # number re-hashed in place; zero left unexplained).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_claims_residual_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every icc doc-typed-claims "wrong" finding is either allowlisted (.icc/doc-claims-allowlist.yaml) or an open, maintainer-tracked DOC-DEBT ledger item -- zero unexplained (scripts/check_doc_claims_residual.py)'
+        action: python3 scripts/check_doc_claims_residual.py --icc-bin "$ICC_BIN" --repo "$ICC_REPO"
+
       # 2026-08-25 (VA-01): branch protection hardened to enforce_admins:
       # true the same day PR #455's docs-only-required-context-stubs job
       # was found to be missing 5 of its now-required matrix-derived
@@ -1324,6 +1343,209 @@ oracles:
           - synthetic_model_only
         severity: high
         label: 'No silent fallbacks or synthetic implementations in v1.3 production paths'
+        action: classify_or_replace_each_stub
+
+  # -----------------------------------------------------------------
+  # v1.3.5-evolve -- release-machinery finding B1 (2026-08-26 audit).
+  # v1.3-evolve grades the v1.3.x line; nothing gave "all of v1.3.5" a
+  # machine representation, so a v1.3.5 tag had no readiness target of
+  # its own to certify against. Criteria enumerate this release's actual
+  # scope as recorded in CHANGELOG.md's [Unreleased] section at the time
+  # this target was authored (verified against origin/release/v135-cut),
+  # each bound to a real, already-committed gate/script/ctest name rather
+  # than a fabricated PASS -- the same discipline the v1.4-connection
+  # placeholder fix (#467) established after it shipped with one
+  # criterion nothing in the repo ever emitted. Several criteria are
+  # intentionally the SAME runtime_event already graded under
+  # eshkol-compiler-readiness / v1.3-evolve / adr0000-s1-identity: this
+  # target is a release-scoped VIEW over those probes, not a second
+  # independent implementation of them. Extend this target's `requires`
+  # list as each additional v1.3.5 PR lands, rather than opening a
+  # second v1.3.5 target -- one target, one truth, same convention as
+  # v1.3-evolve.
+  # -----------------------------------------------------------------
+  - name: v1.3.5-evolve
+    aliases: [v1.3.5, release-1.3.5]
+    requires:
+      # ADR-0000 Stage 1 phase A: the frontend node-identity substrate.
+      # Same probes as the adr0000-s1-identity target (duplicated here
+      # deliberately -- see the target-level comment above).
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["node_identity_substrate_present"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'The NodeId -> SourceSpan substrate exists and is consumed: the parser mints ids and a real consumer resolves locations through them'
+        action: python3 scripts/run_node_identity_gate.py
+
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["node_identity_span_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Substrate span coverage at the codegen dispatcher holds its monotonic floor (resolved/queried, measured on a mixed corpus)
+        action: python3 scripts/run_node_identity_gate.py
+
+      # SW-14 flagship: the bytecode VM's Stage-1 OALR region evacuator.
+      # tests/memory/vm_region_flat_rss_test.sh requires a flat RSS curve
+      # across iteration counts AND the on/off separation AND identical
+      # printed output either way -- a gate that can fail on any of the
+      # three axes, not a liveness smoke test.
+      - test_evidence: true
+        severity: high
+        label: 'Bytecode VM Stage-1 region evacuator: with-region reclaims on the VM heap with a flat RSS curve across iteration counts, matching output with ESHKOL_VM_REGION_EVAC on and off'
+        action: cd build && cmake --build . && ctest -R vm_region_flat_rss
+
+      - test_evidence: true
+        severity: high
+        label: 'Bytecode VM Stage-1 region evacuator classifies the full heap-tag space (28 HeapType members + geometric-tag extensions); a compile-time span check and a startup fatal-check guard every row is filled in'
+        action: cd build && cmake --build . && ctest -R vm_region_evac_subtype_coverage
+
+      # #471: linear Qubit violations are compile-time errors, not warnings.
+      - test_evidence: true
+        severity: high
+        label: 'Cloning a linear Qubit is a compile-time error that exits nonzero and writes no artifact in default compilation mode (previously a warning with exit 0); measured against 24 shapes'
+        action: cd build && cmake --build . && ctest -R qubit_linearity_engine_parity_gate
+
+      # #474/SW-47: the no-finite-differences AD guarantee is enforced
+      # (the FD counter had zero callers, so every green assertion was
+      # true by construction), plus #487's structural carrier gate that
+      # re-derives each AD op's carrier from the actual case body rather
+      # than trusting a declaration -- the exact gap that let op:GRADIENT
+      # be promoted on an undeclared VM-private carrier (SW-52).
+      - test_evidence: true
+        severity: high
+        label: 'ad-note-finite-difference! counter is live on native and VM; run_ad_exactness_gate.sh proves both a positive case and a negative control (a planted difference quotient) are caught on JIT, AOT and the VM'
+        action: ./scripts/run_ad_exactness_gate.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_carrier_model_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every AD operator declares its differentiation carrier in .icc/ad-carrier-manifest.yaml, re-derived from the actual case body rather than believed (scripts/gate_ad_shared_node_model.py)'
+        action: python3 scripts/gate_ad_shared_node_model.py
+
+      # #483/#478, ADR-0006 S3 / ADR-0000 Stage 4: mutual tail recursion
+      # in every tail-position spelling, and the tail-transfer dispatcher
+      # that keeps differing-signature and non-AArch64 mutual tail calls
+      # bounded (100,000,000 hops measured at 9.1 MB peak RSS).
+      - test_evidence: true
+        severity: high
+        label: 'Mutual tail recursion through cond/case/when/and/or is as wide as isInTailPosition; the tail-transfer dispatcher bounds differing-call-signature and non-AArch64 mutual tail calls (previously SIGBUS at ~5,000,000 hops)'
+        action: cd build && cmake --build . && ctest -R tail_transfer
+
+      - test_evidence: true
+        severity: high
+        label: 'OALR ABI v2 phase A groundwork and the runtime closure-upvalue capacity match the compiler constant again (MAX_UPVALUES vs. the runtime closure representation; #457, 17-32-upvalue procedures previously silently clamped and corrupted an unrelated later define)'
+        action: cd build && cmake --build . && ctest -R closure_upvalue_capacity_overflow_gate
+
+      - test_evidence: true
+        severity: high
+        label: 'Object ABI migration stage 0: the header-layout inventory ratchets against .icc/abi-header-baseline.json (new dependent sites fail the build) and the link-time ABI fingerprint guard + layout-pin test hold (#488, ADR-0012)'
+        action: python3 scripts/abi_header_inventory.py && cd build && cmake --build . && ctest -R abi_layout_pin_test
+
+      # #486: the leak-detection lane could not fail (LSan ran, found
+      # leaks, printed them, and exited 0 regardless); four real JIT/
+      # driver leaks fixed once it could.
+      - test_evidence: true
+        severity: high
+        label: 'LeakSanitizer failure path is live end to end (__lsan_default_options no longer forces exitcode=0; the REPL calls __lsan_do_leak_check() before _Exit); every leak the now-live lane found is fixed'
+        action: ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS= ./scripts/run_sanitizer_fuzz.sh --quick
+
+      # #480: gensym reachable on every engine (native JIT/AOT + VM),
+      # previously wired into no dispatch table anywhere.
+      - test_evidence: true
+        severity: high
+        label: 'gensym is dispatched on native JIT/AOT and the bytecode VM (fid / VM builtin id 2227), not merely defined in a module the slim runtime archive never links'
+        action: cd build && cmake --build . && ctest -R gensym
+
+      # Assurance waves 1 and 2 (#454, #465, F19/ADR-0010 A13) -- same
+      # probes already graded under eshkol-compiler-readiness, viewed
+      # here as v1.3.5 release scope.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ledger_integrity_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Silent-wrong ledger has no duplicate ids and every entry is well-formed (scripts/check_ledger_integrity.py)'
+        action: python3 scripts/check_ledger_integrity.py
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["oracle_schema_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Completion-oracle file parses and every criterion validates to the declared count (scripts/check_oracle_schema.py)'
+        action: python3 scripts/check_oracle_schema.py
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["oracle_false_green_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every oracle target has at least one severity:high criterion, so total absence of evidence forces blocked rather than ready (scripts/audit_oracle_false_green.py)'
+        action: python3 scripts/audit_oracle_false_green.py
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["evidence_staleness_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No severity:high criterion''s newest matching runtime-event evidence is older than the configured window (scripts/check_evidence_staleness.py)'
+        action: python3 scripts/check_evidence_staleness.py
+
+      - test_evidence: true
+        severity: high
+        label: 'Assurance wave 2: the self-verdict scanner fails a PASS-graded artifact whose text still contains a self-reported failure marker (scripts/check_self_verdicts.py), wired into run_ctest_gate.sh and run_vm_parity.sh'
+        action: python3 scripts/check_self_verdicts.py --self-test
+
+      # #455/#465: docs-only PRs report every required context.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["required_context_consistency_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every branch-protection required status context is reportable on every PR shape CI can produce, including docs-only (scripts/check_required_context_consistency.py)'
+        action: python3 scripts/check_required_context_consistency.py
+
+      # #462: R7RS 7.1.1 vertical-line symbol syntax, all four readers.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["pipe_symbol_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'R7RS 7.1.1 vertical-line symbols round-trip byte-identically across JIT, AOT and VM'
+        action: ./scripts/run_icc_smoke.sh
+
+      # #466: reader quoted-datum kinds beyond ( and '.
+      - test_evidence: true
+        severity: high
+        label: 'parse_quoted_data_with_token dispatches every quoted-datum kind (vector, quasiquote, unquote), not only list and quote; compile_quote preserves is_char/is_inexact reader flags'
+        action: cd build && cmake --build . && ctest -R reader
+
+      # #458/audit H1: NumPy capsule keeps the tensor buffer alive.
+      - test_evidence: true
+        severity: high
+        label: 'A NumPy array exported from a tensor eval() keeps its owning Context alive via shared_ptr + per-array capsule reference; closes silent-wrong-ledger SW-44'
+        action: cd build && cmake --build . && ctest -R python_bindings_capsule_lifetime
+
+      # N5 (2026-08-26 audit): same probe as eshkol-compiler-readiness's
+      # doc_claims_residual_clean criterion (see that criterion's comment) --
+      # viewed here as v1.3.5 release scope.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_claims_residual_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every icc doc-typed-claims "wrong" finding is either allowlisted or an open, maintainer-tracked DOC-DEBT ledger item -- zero unexplained (scripts/check_doc_claims_residual.py)'
+        action: python3 scripts/check_doc_claims_residual.py --icc-bin "$ICC_BIN" --repo "$ICC_REPO"
+
+      - no_stubbed_paths:
+          - production_fallback
+          - synthetic_model_only
+        severity: high
+        label: 'No silent fallbacks or synthetic implementations in v1.3.5 production paths'
         action: classify_or_replace_each_stub
 
   # -----------------------------------------------------------------

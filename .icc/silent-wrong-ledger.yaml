@@ -2351,6 +2351,56 @@ entries:
     caught_by: [pr-record-416]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
+  - id: IF-08
+    bucket: IN-FLIGHT
+    silent_wrong_class: false
+    status: open
+    title: "HEAP_SUBTYPE_PARAMETER is leaf-copied (not deep-walked) by the native region evacuator; the bytecode VM's own evacuator already deep-walks the equivalent row"
+    observed: >-
+      Fixing INV-oalr-interior-pointer-deepwalk (B5/N3, 2026-08-26 audit) to
+      derive its heap-subtype-enum side from source-verified per-member
+      [DEEPWALK]/[LEAF] tags (inc/eshkol/eshkol.h) required classifying every
+      member against evac_kind_for's actual case list
+      (lib/core/runtime_regions.cpp). Fourteen members have an explicit deep
+      -walk case; ten more are documented, reviewed EVAC_LEAF exemptions
+      (PORT/PRNG/DNC/SDNC/TAYLOR/STRING/SYMBOL/BIGNUM/BYTEVECTOR/I128).
+      HEAP_SUBTYPE_PARAMETER falls to evac_kind_for's `default: return
+      EVAC_LEAF;` with NO comment anywhere in that file naming it a reviewed
+      exemption — unlike every other LEAF member. eshkol_param_t
+      (lib/core/runtime_parameters_hosted.cpp) holds a `converter`
+      eshkol_tagged_value_t (Scheme code, may be a heap-allocated
+      closure/procedure) and a malloc'd `stack` array of
+      eshkol_tagged_value_t (the parameterize dynamic-binding stack, whose
+      entries may themselves be heap pointers) — both are exactly the
+      interior-tagged-value shape ESH-0214d fixed for
+      KB/FACT/SUBSTITUTION/WORKSPACE. Independent corroboration: the bytecode
+      VM's own Stage-1 region evacuator (lib/backend/vm_region_evac.c)
+      already classifies `[HEAP_PARAMETER] = { ..., VM_EVAC_WALK,
+      "current_value, converter, save_stack[0..stack_depth)" }` — the VM
+      engine already treats this exact shape as needing a deep walk; the
+      native engine does not.
+    correct: >-
+      Not yet established by a failing repro on this pass — see below. If a
+      parameter object outlives a region only via its own arena allocation
+      (never escaping via a mutation the write barrier promotes), and the
+      converter/stack contents never point into a shorter-lived region than
+      the parameter itself, the current LEAF treatment may be sound by
+      construction rather than by oversight. This entry exists because the
+      classification was UNDOCUMENTED, not because a wrong value has been
+      measured.
+    repro: >-
+      Not yet constructed. A candidate shape: `(with-region (make-parameter
+      (lambda (x) x)))` promoted out of the region while a
+      `parameterize`-installed converter or stack entry that IS
+      region-resident is still reachable, then read back after the region
+      pops. Needs a probe analogous to
+      tests/memory/vm_region_evac_subtype_coverage_test.esk on the native
+      engine.
+    fix_lane: "Unassigned — needs investigation before a native-side fix or an explicit reviewed-LEAF justification lands"
+    evidence: "inc/eshkol/eshkol.h HEAP_SUBTYPE_PARAMETER tag comment; lib/core/runtime_regions.cpp evac_kind_for default case; lib/core/runtime_parameters_hosted.cpp eshkol_param_t; lib/backend/vm_region_evac.c HEAP_PARAMETER row"
+    caught_by: [icc-architecture-verify-inv-oalr-interior-pointer-deepwalk-fix]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest]
+
   - id: SW-41
     bucket: PARITY-RATCHET
     status: closed
@@ -3907,10 +3957,19 @@ entries:
     status: open
     title: "74 doc claims are allowlisted against ICC's doc-typed-claims detector"
     count: 74
-    evidence: ".icc/doc-claims-allowlist.yaml carried by PR #416 final source measurement cleanup"
+    evidence: ".icc/doc-claims-allowlist.yaml carried by PR #416 final source measurement cleanup; regenerated 2026-08-26 (N5, B5 audit) via scripts/check_doc_claims_residual.py"
     breakdown: "66 DETECTOR-MISATTRIBUTION, 8 EXEMPT-HISTORICAL; zero describe a runtime defect"
     caught_by: [pr-record-416]
-    notes: "Live doc-typed-claims at 4c35c0f8 is 74 wrong == 74 exact allowlist IDs, with zero unexplained, stale, or path/line-shifted entries."
+    notes: >-
+      Re-verified 2026-08-26 at afbaaf5b (still 74/74, same disposition split, after this pass regenerated
+      the allowlist: 8 entries had merely drifted (CHANGELOG.md/ROADMAP.md/the press sheet grew new content
+      above them between 2026-08-14 and 2026-08-26, shifting their line numbers and claim_id hashes with no
+      change in reasoning -- re-hashed in place) and 27 were plain current-size claims the codebase had
+      grown past, corrected directly in the doc text instead of allowlisted (correcting is strictly better
+      than exempting a claim the detector could ground correctly). Graded going forward by the
+      doc-typed-claims-residual completion-oracle criterion (scripts/check_doc_claims_residual.py), which
+      asserts current_wrong_count == len(.icc/doc-claims-allowlist.yaml entries) + open DOC-DEBT count, so a
+      drift this size cannot silently reopen a third time without failing that gate."
 
   - id: DD-02
     bucket: DOC-DEBT

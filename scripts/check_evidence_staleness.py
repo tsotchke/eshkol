@@ -65,15 +65,29 @@ Checks
     exists, compute its age; a criterion whose newest matching evidence is
     older than `--max-age-days` is STALE.
 
-Grading
-    PASS  no `severity: high` criterion has evidence, and every criterion
-          that DOES have evidence has evidence newer than the window.
-    FAIL  at least one criterion's newest matching evidence has aged past
-          the window.
+Grading (PASS / FAIL / NO_DATA, the same three-way vocabulary
+`check_required_context_consistency.py` already uses)
+    PASS      at least one `severity: high` criterion has matching evidence,
+              and every criterion that has evidence is newer than the window.
+    FAIL      at least one criterion's newest matching evidence has aged
+              past the window.
+    NO_DATA   zero `severity: high` criteria have ANY matching evidence at
+              all -- nothing was actually graded. Exit 2. By default this is
+              not a failure (a bare local invocation with no trace corpus
+              yet has nothing to say -- the absence case the severity gate
+              already handles), but it is also no longer indistinguishable
+              from a real PASS: `--require-trace-dir` callers (a CI step
+              asserting real evidence should exist here) get NO_DATA
+              honestly rather than a silent green (B5/N2, 2026-08-26 audit
+              -- a required assurance-gates step read PASS every run against
+              a directory .gitignore guarantees is always empty, because the
+              gate had no way to say anything other than PASS or FAIL for
+              "nothing to check").
 
 The gate FAILS CLOSED: a missing or unparseable oracle file is FAIL. A
-missing trace directory is PASS-with-nothing-to-check (same "absence is
-not this gate's job" stance as above) unless `--require-trace-dir` is set.
+missing OR EMPTY trace directory is NO_DATA (PASS by default, unless
+`--require-trace-dir` is set, in which case it is a non-PASS NO_DATA,
+exit 2).
 
 Usage
     python3 scripts/check_evidence_staleness.py
@@ -235,7 +249,7 @@ def check(
     now = time.time() if now is None else now
 
     if not isinstance(data, dict):
-        return {"passed": False, "errors": ["oracle document is not a mapping"], "criteria": []}
+        return {"passed": False, "status": "FAIL", "errors": ["oracle document is not a mapping"], "criteria": []}
 
     criteria = high_severity_runtime_event_criteria(data)
 
@@ -243,11 +257,13 @@ def check(
         if require_trace_dir:
             return {
                 "passed": False,
+                "status": "NO_DATA",
                 "errors": [f"trace directory {trace_dir} does not exist (--require-trace-dir set)"],
                 "criteria": [],
             }
         return {
             "passed": True,
+            "status": "NO_DATA",
             "errors": [],
             "criteria": [],
             "note": f"trace directory {trace_dir} does not exist -- nothing to check "
@@ -282,7 +298,43 @@ def check(
         f"{row['trace_file']}), past the {max_age_days:g}-day window"
         for row in stale
     ]
-    return {"passed": not errors, "errors": errors, "criteria": rows, "max_age_days": max_age_days}
+
+    # Three-way verdict (B5/N2, 2026-08-26 audit). A trace directory that
+    # EXISTS but holds zero records matching any severity:high criterion
+    # (the shape a CI job with no build/run step in it — e.g. a pure-Python
+    # assurance job — structurally always produces) used to read PASS
+    # identically to a directory holding real, fresh evidence: "0 criteria
+    # checked, 0 stale" and "12 criteria checked, 0 stale" both had
+    # `errors == []`. That let a required CI step go green forever without
+    # ever having graded anything. NO_DATA is now distinct from PASS: it
+    # still does not FAIL by default (missing evidence is the severity
+    # gate's job — see the docstring), but `--require-trace-dir` callers
+    # (a CI step asserting "this directory is supposed to have evidence in
+    # it") get an honest non-PASS verdict instead of a silent one, exactly
+    # the `required_context_consistency_clean` PASS/FAIL/NO_DATA precedent
+    # `scripts/check_required_context_consistency.py` already established.
+    if stale:
+        status = "FAIL"
+        passed = False
+    elif not rows:
+        status = "NO_DATA"
+        passed = not require_trace_dir
+        if require_trace_dir:
+            errors = [
+                f"trace directory {trace_dir} exists but contains no evidence matching "
+                "any severity:high criterion (--require-trace-dir set): nothing was graded"
+            ]
+    else:
+        status = "PASS"
+        passed = True
+
+    return {
+        "passed": passed,
+        "status": status,
+        "errors": errors,
+        "criteria": rows,
+        "max_age_days": max_age_days,
+    }
 
 
 def emit_trace(trace_dir: str, status: str, snippet: str) -> str:
@@ -373,19 +425,46 @@ def self_test() -> bool:
         result = check(data, ts_dir, max_age_days=14.0, now=now)
         cases.append(("explicit_stale_timestamp_beats_fresh_mtime", result["passed"] is False))
 
-        # Case 4: no matching evidence at all -> PASS (absence is the
-        # severity gate's job, not this one's).
+        # Case 4: no matching evidence at all, --require-trace-dir NOT set
+        # -> PASS/NO_DATA (absence is the severity gate's job, not this
+        # one's, for an ordinary/local invocation).
         empty_dir = os.path.join(tmp_dir, "empty")
         os.makedirs(empty_dir)
         result = check(data, empty_dir, max_age_days=14.0, now=now)
-        cases.append(("no_evidence_is_not_this_gates_job", result["passed"] is True and not result["criteria"]))
+        cases.append(("no_evidence_is_not_this_gates_job", result["passed"] is True and not result["criteria"]
+                      and result["status"] == "NO_DATA"))
 
         # Case 5: missing trace dir -> PASS unless --require-trace-dir.
         missing_dir = os.path.join(tmp_dir, "does-not-exist")
         result = check(data, missing_dir, max_age_days=14.0, now=now)
-        cases.append(("missing_trace_dir_passes_by_default", result["passed"] is True))
+        cases.append(("missing_trace_dir_passes_by_default", result["passed"] is True and result["status"] == "NO_DATA"))
         result = check(data, missing_dir, max_age_days=14.0, now=now, require_trace_dir=True)
-        cases.append(("missing_trace_dir_fails_when_required", result["passed"] is False))
+        cases.append(("missing_trace_dir_fails_when_required", result["passed"] is False and result["status"] == "NO_DATA"))
+
+        # Case 6 (B5/N2, 2026-08-26 audit): a trace directory that EXISTS but
+        # holds zero records matching any severity:high criterion is the
+        # SHAPE the assurance-gates CI job produced every single run (a
+        # gitignored, always-empty scripts/icc_traces/) -- and the gate used
+        # to read that identically to genuine "checked N criteria, none
+        # stale" PASS. With --require-trace-dir this must now be a
+        # distinguishable, non-silent NO_DATA verdict, not PASS.
+        existing_empty_dir = os.path.join(tmp_dir, "existing_empty")
+        os.makedirs(existing_empty_dir)
+        result = check(data, existing_empty_dir, max_age_days=14.0, now=now, require_trace_dir=True)
+        cases.append(("existing_but_empty_trace_dir_is_no_data_when_required",
+                      result["passed"] is False and result["status"] == "NO_DATA"))
+
+        # Case 7: the SAME existing-but-empty directory populated with one
+        # real, fresh record -> a genuine PASS (status flips from NO_DATA to
+        # PASS the moment there is something to actually grade).
+        _write_trace(
+            existing_empty_dir, "selftest.jsonl",
+            {"kind": "selftest_kind", "name": "selftest_probe", "value": "PASS"},
+            mtime=now,
+        )
+        result = check(data, existing_empty_dir, max_age_days=14.0, now=now, require_trace_dir=True)
+        cases.append(("populated_dir_is_a_real_pass_when_required",
+                      result["passed"] is True and result["status"] == "PASS" and len(result["criteria"]) == 1))
 
     all_ok = True
     print("check_evidence_staleness.py self-test:")
@@ -428,16 +507,20 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_trace:
             emit_trace(args.emit_trace_dir, "FAIL", snippet)
         if args.format == "json":
-            print(json.dumps({"passed": False, "error": str(exc)}, indent=2))
+            print(json.dumps({"status": "FAIL", "passed": False, "error": str(exc)}, indent=2))
         else:
             print(f"{PROBE_ID}: FAIL -- {exc}", file=sys.stderr)
         return 1
 
     result = check(data, args.trace_dir, args.max_age_days, require_trace_dir=args.require_trace_dir)
-    status = "PASS" if result["passed"] else "FAIL"
-    if result["passed"]:
+    status = result["status"]
+    if status == "PASS":
         checked = len(result.get("criteria", []))
         snippet = result.get("note") or f"{checked} criteria had matching evidence, none past {args.max_age_days:g} days"
+    elif status == "NO_DATA":
+        snippet = result.get("note") or (
+            result["errors"][0] if result["errors"] else "no severity:high criterion has any matching evidence"
+        )
     else:
         snippet = f"{len(result['errors'])} stale criterion/criteria: " + "; ".join(result["errors"][:5])
 
@@ -462,8 +545,14 @@ def main(argv: list[str] | None = None) -> int:
             print("  ERRORS:")
             for error in result["errors"]:
                 print(f"    - {error}")
+        if status == "NO_DATA":
+            print("  NO_DATA is not a pass: nothing was graded.", file=sys.stderr)
 
-    return 0 if result["passed"] else 1
+    if status == "FAIL":
+        return 1
+    if status == "NO_DATA" and not result["passed"]:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

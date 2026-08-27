@@ -1162,11 +1162,45 @@ jobs:
           # consumes — without it architecture-verify false-FAILs.
           cmake --build build --parallel
 
+      # B3 (2026-08-26 audit): scripts/run_language_coverage.sh hard-requires
+      # a quantum-enabled runner (agent.quantum/agent.pqc are part of "100%
+      # language coverage" — see run_language_coverage.sh's own
+      # Missing-quantum-runner check) and exits 2 without one. This job used
+      # to configure only the plain `build` tree, so the probe always exited
+      # 2, `run_language_coverage.sh` never produced evidence, and the
+      # eshkol_smoke `failure_free` check read FAIL from the resulting
+      # partial/absent trace — which cascaded into every one of the 36
+      # oracle targets reading `blocked` regardless of what they actually
+      # measure. Mirrors quantum-macos's cmake invocation in ci.yml (same
+      # FetchContent-based Moonlab pull; no extra apt packages beyond the
+      # LLVM toolchain already installed above), on the ubuntu-22.04 runner
+      # this job already provisions rather than a second macOS lane, since
+      # release readiness only needs one quantum-capable tree, not two.
+      - name: Configure and build quantum tree (readiness evidence)
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          cmake -S . -B build-quantum -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_QUANTUM_ENABLED=ON \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_BUILD_AGENT_FFI=ON
+          cmake --build build-quantum --parallel
+
       # Regenerate the oracle evidence at the tagged SHA (the readiness recipe's
       # trace-emitting steps): language-surface coverage, then VM parity.
+      # QUANTUM_BUILD_DIR points run_language_coverage.sh at the quantum tree
+      # built above so its agent.quantum/agent.pqc probe has a real runner
+      # instead of exiting 2 (B3).
       - name: Emit evidence traces
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
+        env:
+          QUANTUM_BUILD_DIR: build-quantum
         run: |
           set -euxo pipefail
           scripts/run_language_coverage.sh

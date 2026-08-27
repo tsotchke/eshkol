@@ -109,7 +109,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,116 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,337 lines)
 
 The parser is a recursive descent processor that builds an AST from S-expressions:
 
@@ -155,7 +155,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (3,910 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (4,913 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (42,974 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (43,232 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -424,7 +424,7 @@ ArithmeticCodegen depends on TensorCodegen, AutodiffCodegen, and ComplexCodegen 
 
 ### GPU Dispatch (SIMD -> cBLAS -> Metal)
 
-**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) (1,281 lines), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines)
+**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) (1,316 lines), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines)
 
 The cost model selects the optimal compute backend based on tensor dimensions:
 
@@ -591,7 +591,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,354 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,359 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
