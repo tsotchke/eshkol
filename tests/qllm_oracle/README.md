@@ -427,24 +427,49 @@ disc the arc-length coordinate is `t = 2·artanh(x)` and the weighted Fréchet m
 is the weighted average in `t`, so points at `±0.8` with weights `3:1` give
 exactly `0.5`, against a Euclidean average of `0.4`.
 
-**Attention — deliberately deferred, not blocked.** The exact rule needs the
-Q/K/V split and the softmax intermediate retained on the node; the 5-step chain
-through `softmax(QKᵀ/√d)V` is then standard, decomposed per head with backprop
-into `(W_Q, W_K, W_V, W_O)` for the multi-head case, plus `dL/dβ = Σ dy` for the
-layernorm rule the same forward feeds. Its marginal value is low because the path
-users actually differentiate — `scaled-dot-attention` — decomposes to scalar AD
-nodes in `tensor_transformer_codegen.cpp` and is already exact, which is
-precisely why the bridge node has no producer.
+**Attention — DONE (SW-12).** `ad_tensor_attention` retains the dense softmax
+weights `A` and the causal flag on the node, and `tensor_attention_backward` runs
+the exact 5-step chain through `softmax(QKᵀ/√d)V` from them. Recomputing `A` in
+the backward was the alternative and was rejected: it would have to re-derive the
+softmax max-shift and the mask, and any drift between the two copies is precisely
+the silently-wrong-gradient class SW-12 exists to close. The causal case is
+checked by scanning the retained weights for a non-zero above the diagonal —
+exact equality, not a tolerance.
 
-**Reachability caveat, stated plainly.** Both new rules are exercised through the
-C dispatcher (`eshkol_tensor_backward_dispatch`) by their ctest gradchecks, not
-yet through `(gradient (lambda (W) … (embedding idx W)))`. Nothing in the tree
-assigns `ad_node_t.type` any `AD_NODE_TENSOR_*` value: the bridge's *backward*
-half shipped ahead of its forward half, and the forward that would record these
-nodes lives in tensor codegen. Making `(embedding …)` and `(frechet-mean …)`
-record their nodes is a one-site change per op in that layer and is the remaining
-step for Eshkol-level differentiation; the rules themselves, and the gates, are
-complete and verified.
+**Producers, and what remains.** All three node types now have a forward that
+records them: `ad_tensor_attention`, `ad_tensor_embedding` and `ad_frechet_mean`
+in `lib/bridge/qllm_bridge.cpp`. Each is gradchecked *through the producer* —
+`ctest -R qllm_bridge_producer_gradcheck` for embedding and the Fréchet mean,
+`ctest -R qllm_bridge_gradcheck` for attention — which is a different claim from
+the hand-built-node gradchecks that came first. A fixture assembled by hand
+agrees with the backward by construction, because it is written from the same
+contract; the one defect class it structurally cannot see is a producer that
+fills that contract wrongly.
+
+**The remaining gap is Eshkol-language reachability, and it is NOT a one-site
+change.** The producers are reachable from C, which is the external-tensor bridge
+path. They are not reachable from `(gradient (lambda (W) … (embedding idx W)))`,
+because no *compiled* Eshkol program can create an `AD_NODE_TENSOR_*` node at
+all. `lib/backend/llvm_codegen.cpp` (see the block comment above
+`kDenseTensorADNodesEnabled`) enumerates three independent unfinished pieces, and
+flipping the flag SIGSEGVs rather than producing a slower-but-correct gradient:
+
+1. `recordADNodeTensor` leaves `tensor_gradient` NULL, while the reverse pass
+   *selects* the tensor backward by testing that field non-null — constructor and
+   consumer each wait for the other;
+2. the node it builds is dropped on the floor (the function returns a plain
+   tensor, so nothing downstream can find it);
+3. under AD the scalarizing path leaves AD-node *pointers* in the result tensor's
+   elements, which is what `tensor-sum` and friends consume, so a dense node
+   would sever the chain at the next tensor op.
+
+That is ADR-0002 Position A, the dense resident tape, scheduled for v1.6. The VM
+is a separate matter again: `lib/backend/vm_autodiff.c` has its own scalar
+`AdNode` representation and no VM file references `ad_node_t`, so `frechet-mean`
+(opcode 817) cannot record one of these nodes without the shared-node-model work
+described in `docs/reference/ad/architecture.md`. Its forward is nonetheless the
+*same code* the bridge producer runs — `inc/eshkol/backend/frechet_mean_core.h` —
+so the two cannot drift apart while that work is pending.
 
 ## Files
 

@@ -5687,6 +5687,38 @@ if(ESHKOL_BUILD_TESTS AND
     )
 endif()
 
+# ===== Bridge AD-node producer gradchecks ====================================
+# ad_tensor_embedding and ad_frechet_mean are the forward halves that were
+# missing for AD_NODE_TENSOR_EMBEDDING and AD_NODE_FRECHET_MEAN: both backward
+# rules shipped and were gradchecked, but only against nodes the tests
+# assembled by hand, which cannot detect a producer that fills the contract
+# wrongly. Every check here records its node through the real forward entry
+# point. Each gradient is checked against an EXACT analytic reference (the
+# scatter-add adjoint; the closed-form Euclidean mean; the coincident-point
+# limit in the hyperbolic regime) and, where no closed form exists, against
+# central finite differences of the same forward.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_producer_gradcheck_test.cpp")
+    add_executable(qllm_bridge_producer_gradcheck_test
+        tests/bridge/qllm_bridge_producer_gradcheck_test.cpp)
+    target_compile_features(qllm_bridge_producer_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_producer_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_producer_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_producer_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_producer_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_producer_gradcheck
+             COMMAND qllm_bridge_producer_gradcheck_test)
+    set_tests_properties(qllm_bridge_producer_gradcheck PROPERTIES
+        # 5 embedding checks + 4 Frechet checks. Pinned deliberately: a bare
+        # "0 failed" would stay green if a check silently stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
+    )
+endif()
+
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
 # `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
 # weight_matrices tool) and executes Eshkol bytecode by running the transformer
