@@ -471,6 +471,59 @@ described in `docs/reference/ad/architecture.md`. Its forward is nonetheless the
 *same code* the bridge producer runs — `inc/eshkol/backend/frechet_mean_core.h` —
 so the two cannot drift apart while that work is pending.
 
+### The geometric bridge ops had no backward at all (SW-65)
+
+Separate from the three above, and worse, because it was silent rather than
+merely missing. `ad_hyperbolic_distance`, `ad_poincare_exp_map`,
+`ad_poincare_log_map` and `ad_geodesic_attention` record **tensor-valued** AD
+nodes — types 33, 34, 35 and 37 — and none of them had a backward. They did not
+refuse and they did not warn: those type numbers sit in the band
+`eshkol_tensor_backward_dispatch` treated as "scalar ops differentiated by
+codegen", so they fell into its `default:` and the reverse sweep propagated
+nothing. Every input gradient came back exactly `0.0`, which a caller cannot
+tell from a genuine zero.
+
+All four now have exact rules. The `exp`/`log` rules reuse the Möbius and
+log-map Jacobians the Fréchet rule already carries rather than re-deriving them
+— the log map *is* the function that routine differentiates, and a second
+derivation could only introduce a disagreement.
+
+**These golden vectors are what validate them.** The `exp_0` and `log_0`
+Jacobians in `golden/` are computed by Eshkol's reverse-mode AD over an
+independently written Eshkol transcription of the same formulas, so asserting
+the C rules against them is a genuine two-implementation, two-language check:
+`poincare_log_map_origin.d2.c1.u0p5` agrees to `3.7e-16` and
+`poincare_exp_map_origin.d2.c1.tv0p1` to `1.1e-14`. Two further exact
+references back them up — the conformal-factor identity
+`|∇_x d| = λ_x = 2/(1−c‖x‖²)`, which holds at every interior pair, and the
+inverse-Jacobian identity `J_log · J_exp = I`, which couples the two rules to
+each other with no appeal to either derivation. Finite differences are the last
+line, not the first. `ctest -R qllm_bridge_geometric_gradcheck`.
+
+**Two facts the rules make explicit that the silent zero had hidden.** The
+Riemannian distance behaves like `|x − y|` near coincidence: it has no
+derivative at `x = y`, only a subgradient set, so both distance-based rules
+refuse there. For geodesic attention that means the op is **not differentiable
+whenever a query row equals a key row exactly** — the ordinary case when `Q` and
+`K` are the same tensor. That is a property of scoring by distance rather than
+by inner product, and a consumer needs to know it. Second,
+`ad_poincare_log_map`'s forward clamps `artanh`'s argument at `t ≥ 1` and
+returns a value where no finite log exists; the backward refuses there rather
+than differentiate the clamp, matching what the Fréchet machinery already does
+on the same condition.
+
+The structural half of the fix is the AD-node registry
+(`inc/eshkol/ad_node_registry.def`): the dispatcher no longer has a `default:`
+to infer scalar-ness from a numeric band at all. Every node type declares its
+backward disposition in one registry row, the dispatch arms and the backward
+table are generated from those rows under `-Werror=switch-enum`, and these four
+ops are declared `BRIDGE`, each row naming its backward function — a name that
+must resolve or `lib/bridge/tensor_backward.cpp` does not compile. A
+tensor-valued node type with no rule is an explicit `UNREGISTERED` row that
+aborts naming itself instead of returning zero, while `LEAF` rows keep
+`AD_NODE_VARIABLE` and `AD_NODE_CONSTANT`, which legitimately carry
+`tensor_value`, out of the refusal. Both halves are red-proofed.
+
 ## Files
 
 - `qllm_oracle_lib.esk` — shared vector math, exact/FD Jacobian assembly,

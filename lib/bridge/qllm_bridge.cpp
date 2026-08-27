@@ -903,7 +903,13 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     const double* V = (const double*)v->tensor_value;
     double* O = alloc_doubles(batch * seq * dim);
     double* scores = alloc_doubles(seq);
-    if (!O || !scores) return nullptr;
+    /* Retain the softmax weights for the backward (SW-65). Recomputing them in
+     * the reverse pass would have to re-derive the max-shift and the causal
+     * mask, i.e. duplicate this loop, and any drift between the two copies is
+     * the silently-wrong-gradient class SW-12 records for ad_tensor_attention.
+     * Zero-filled, so a masked tail stays exactly zero. */
+    double* A = alloc_doubles(batch * (size_t)num_heads * seq * seq);
+    if (!O || !scores || !A) return nullptr;
 
     /* Score by NEGATIVE geodesic distance (closer => higher attention), with the
      * curvature-adaptive 1/sqrt(c * head_dim) scaling. */
@@ -943,11 +949,14 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                     sum += scores[j];
                 }
                 if (sum <= 0.0) sum = 1.0;
+                double* arow =
+                    &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
+                for (size_t j = 0; j < limit; ++j) arow[j] = scores[j] / sum;
                 for (size_t d = 0; d < head_dim; ++d) {
                     double acc = 0.0;
                     for (size_t j = 0; j < limit; ++j) {
                         size_t vj = (b * seq + j) * dim + off;
-                        acc += (scores[j] / sum) * V[vj + d];
+                        acc += arow[j] * V[vj + d];
                     }
                     O[(b * seq + i) * dim + off + d] = acc;
                 }
@@ -958,8 +967,35 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     ad_node_t* node = make_node(tape, AD_NODE_GEODESIC_ATTENTION, O,
                                 q->shape, q->ndim, q, k, v);
     if (node) {
-        node->params.attention_params.num_heads = num_heads;
-        node->params.attention_params.head_dim = (int64_t)head_dim;
+        /* params as int64[6], the layout tensor_geodesic_attention_backward
+         * reads:
+         *   [0] num_heads   [1] head_dim   [2] causal (0/1)
+         *   [3] curvature c bit-cast from double (the "scale_bits" convention
+         *       shared with ad_tensor_attention and the Frechet rule)
+         *   [4] [5] reserved, zero
+         * [0]/[1] deliberately coincide with the named attention_params fields
+         * so both spellings read the same slots. Before this, `causal` and the
+         * curvature were not recorded at all — the backward could not have
+         * reconstructed the mask or the metric. */
+        int64_t* p = (int64_t*)&node->params;
+        p[0] = (int64_t)num_heads;
+        p[1] = (int64_t)head_dim;
+        p[2] = causal ? 1 : 0;
+        std::memcpy(&p[3], &c, sizeof c);
+        p[4] = 0;
+        p[5] = 0;
+
+        double** saved = (double**)arena_allocate_zeroed(get_global_arena(),
+                                                         sizeof(double*));
+        if (!saved) {
+            eshkol_error("qllm bridge: ad_geodesic_attention could not retain the "
+                         "attention weights; refusing to record a node whose "
+                         "backward would have nothing exact to work from");
+            return nullptr;
+        }
+        saved[0] = A;
+        node->saved_tensors = (void**)saved;
+        node->num_saved = 1;
     }
     return node;
 }

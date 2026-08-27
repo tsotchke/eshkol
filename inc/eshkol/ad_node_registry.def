@@ -124,35 +124,39 @@ ESHKOL_AD_NODE(EMBEDDING,           32, TENSOR, INLINE,         ESHKOL_AD_NO_BRI
 
 /* ── qLLM geometric gradients (33-40) ───────────────────────────────────────
  *
- * THIS BLOCK IS THE #498 CLASS, STILL LIVE, IN FOUR MORE NODE TYPES.
+ * THIS BLOCK IS THE #498 CLASS — the four node types whose silent zero
+ * gradients motivated this registry in the first place.
  *
  * The four rows lib/bridge/qllm_bridge.cpp actually produces —
  * HYPERBOLIC_DISTANCE, POINCARE_EXP_MAP, POINCARE_LOG_MAP and
  * GEODESIC_ATTENTION — are recorded on the tape as TENSOR nodes
  * (make_node(..., out, shape, ...) with a tensor_value), so a reverse sweep
- * routes them to eshkol_tensor_backward_dispatch, where until this change
- * they hit the same asserted-impossible `default:` and returned zero.  The
- * numeric band the old comment reasoned from ("tensor ops are 19-32 and
- * 67-80") never covered 33-40.
+ * routes them to eshkol_tensor_backward_dispatch, where until SW-65 they hit
+ * an asserted-impossible `default:` and returned zero.  The numeric band that
+ * default's comment reasoned from ("tensor ops are 19-32 and 67-80") never
+ * covered 33-40.
  *
- * They are declared UNREGISTERED rather than given a backward here: writing
- * Riemannian adjoints is AD work with its own correctness bar, in flight on a
- * separate lane, and inventing one to close a dispatch hole is how a wrong
- * gradient gets shipped.  UNREGISTERED aborts naming the node type, so the
- * gap announces itself at the point of use.  Note these DO have an adjoint on
- * the OTHER reverse sweep: autodiff_codegen.cpp emits scalar backward blocks
- * for node types 33-40.  This column is about the tensor dispatcher alone.
+ * They are BRIDGE rows now: exact Riemannian adjoints live in
+ * lib/bridge/tensor_backward.cpp (SW-65).  The exp- and log-map rules reuse
+ * FrechetGeometry's mobius_add_with_jacobians / log_map_with_jacobians rather
+ * than re-deriving them, and the distance-based rules REFUSE at coincident
+ * points — the geodesic distance has a subgradient set there, not a
+ * derivative — instead of inventing a member of that set.  Note these also
+ * have an adjoint on the OTHER reverse sweep: autodiff_codegen.cpp emits
+ * scalar backward blocks for node types 33-40.  This column is about the
+ * tensor dispatcher alone.
  *
  * TANGENT_PROJECT / MOBIUS_ADD / MOBIUS_MATMUL / GYROVECTOR_SPACE have no
  * producer at all today; the emitted scalar sweep reads them, nothing writes
- * them.  A future producer that records one as a tensor node inherits the
- * abort rather than the silence.
+ * them.  They stay UNREGISTERED — an explicit abort naming the node type — so
+ * a future producer that records one as a tensor node inherits the abort
+ * rather than the silence.
  */
-ESHKOL_AD_NODE(HYPERBOLIC_DISTANCE, 33, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
-ESHKOL_AD_NODE(POINCARE_EXP_MAP,    34, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
-ESHKOL_AD_NODE(POINCARE_LOG_MAP,    35, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(HYPERBOLIC_DISTANCE, 33, TENSOR, BRIDGE, tensor_hyperbolic_distance_backward)
+ESHKOL_AD_NODE(POINCARE_EXP_MAP,    34, TENSOR, BRIDGE, tensor_poincare_exp_map_backward)
+ESHKOL_AD_NODE(POINCARE_LOG_MAP,    35, TENSOR, BRIDGE, tensor_poincare_log_map_backward)
 ESHKOL_AD_NODE(TANGENT_PROJECT,     36, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
-ESHKOL_AD_NODE(GEODESIC_ATTENTION,  37, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(GEODESIC_ATTENTION,  37, TENSOR, BRIDGE, tensor_geodesic_attention_backward)
 ESHKOL_AD_NODE(MOBIUS_ADD,          38, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(MOBIUS_MATMUL,       39, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(GYROVECTOR_SPACE,    40, TENSOR, UNREGISTERED,   ESHKOL_AD_NO_BRIDGE)

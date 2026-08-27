@@ -263,19 +263,24 @@ void drive_unregistered(ad_node_type_t type) {
     eshkol_tensor_backward_dispatch(out);
 }
 
-void body_geodesic()  { drive_unregistered(AD_NODE_GEODESIC_ATTENTION); }
-void body_hyperbolic(){ drive_unregistered(AD_NODE_HYPERBOLIC_DISTANCE); }
-void body_exp_map()   { drive_unregistered(AD_NODE_POINCARE_EXP_MAP); }
-void body_log_map()   { drive_unregistered(AD_NODE_POINCARE_LOG_MAP); }
+void body_tangent_project() { drive_unregistered(AD_NODE_TANGENT_PROJECT); }
+void body_mobius_add()      { drive_unregistered(AD_NODE_MOBIUS_ADD); }
+void body_mobius_matmul()   { drive_unregistered(AD_NODE_MOBIUS_MATMUL); }
+void body_gyrovector()      { drive_unregistered(AD_NODE_GYROVECTOR_SPACE); }
 
 void test_unregistered_tensor_backward_is_declared_not_silent() {
-    // The four the qLLM bridge actually produces. Each one of these assertions
-    // FAILED before this change — the dispatcher returned normally and the
+    // The four UNREGISTERED rows that remain after SW-65 registered exact
+    // BRIDGE backwards for the ops the qLLM bridge actually produces
+    // (HYPERBOLIC_DISTANCE / POINCARE_EXP_MAP / POINCARE_LOG_MAP /
+    // GEODESIC_ATTENTION — those are now exercised end-to-end by
+    // qllm_bridge_geometric_gradcheck instead).  Nothing writes these four
+    // today; a future producer must inherit the abort, not the silence.
+    // The same drive on the pre-registry dispatcher returned normally and the
     // caller read a gradient of exactly 0.0 as if it were the answer.
-    report("geodesic_attention_backward_refuses",  refuses(body_geodesic));
-    report("hyperbolic_distance_backward_refuses", refuses(body_hyperbolic));
-    report("poincare_exp_map_backward_refuses",    refuses(body_exp_map));
-    report("poincare_log_map_backward_refuses",    refuses(body_log_map));
+    report("tangent_project_backward_refuses",  refuses(body_tangent_project));
+    report("mobius_add_backward_refuses",       refuses(body_mobius_add));
+    report("mobius_matmul_backward_refuses",    refuses(body_mobius_matmul));
+    report("gyrovector_space_backward_refuses", refuses(body_gyrovector));
 }
 
 #else
@@ -289,7 +294,7 @@ void test_unregistered_tensor_backward_is_declared_not_silent() {
 
 /** @brief Every UNREGISTERED row must be reachable as a refusal, i.e. it must
  *  not silently also have a bridge entry. Cheap, but it is the property that
- *  makes the four death tests above representative of all eight. */
+ *  keeps the death tests above and the registry rows in agreement. */
 void test_all_unregistered_rows_have_no_backward() {
     bool ok = true;
     std::string detail;

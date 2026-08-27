@@ -4485,8 +4485,8 @@ endif()
 # (-Werror=switch -Werror=switch-enum, see eshkol_require_exhaustive_dispatch
 # above) cannot be observed from a test — a build that fails produces no test
 # run at all — so this covers what remains: registry density, name and payload
-# totality, table/disposition agreement, and the four qLLM geometric node
-# types actually refusing under a live upstream gradient.
+# totality, table/disposition agreement, and the UNREGISTERED qLLM geometric
+# node types actually refusing under a live upstream gradient.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/exhaustive_dispatch_test.cpp")
     add_executable(exhaustive_dispatch_test tests/backend/exhaustive_dispatch_test.cpp)
     target_compile_features(exhaustive_dispatch_test PRIVATE cxx_std_17)
@@ -5950,6 +5950,37 @@ if(ESHKOL_BUILD_TESTS AND
         # 5 embedding checks + 4 Frechet checks. Pinned deliberately: a bare
         # "0 failed" would stay green if a check silently stopped running.
         PASS_REGULAR_EXPRESSION "Results: 9 passed, 0 failed"
+    )
+endif()
+
+# ===== Geometric bridge backwards (SW-65) ====================================
+# ad_hyperbolic_distance / ad_poincare_exp_map / ad_poincare_log_map /
+# ad_geodesic_attention record tensor-valued AD nodes whose type numbers sit in
+# the band the dispatcher treated as scalar-only, so their absent backwards were
+# SILENT: every input gradient came back 0.0 with no diagnostic. This gate
+# checks the four new rules against the committed qllm_oracle golden Jacobians,
+# the conformal-factor identity, the exp/log inverse-Jacobian identity and
+# finite differences, and red-proofs the registry's UNREGISTERED refusal that
+# stops a fifth op joining the family.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp")
+    add_executable(qllm_bridge_geometric_gradcheck_test
+        tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp)
+    target_compile_features(qllm_bridge_geometric_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_geometric_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_geometric_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_geometric_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_geometric_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_geometric_gradcheck
+             COMMAND qllm_bridge_geometric_gradcheck_test)
+    set_tests_properties(qllm_bridge_geometric_gradcheck PROPERTIES
+        # 3 distance + 5 exp/log + 3 geodesic + 2 structural. Pinned: a bare
+        # "0 failed" would stay green if a check silently stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 13 passed, 0 failed"
     )
 endif()
 
