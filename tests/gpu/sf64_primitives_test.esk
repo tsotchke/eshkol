@@ -4,6 +4,16 @@
 
 (display "=== SF64 Primitives Test ===") (newline)
 
+;; Verdict grammar: every check below prints "PASS: <name>" or
+;; "FAIL: <name> ..." (see scripts/run_gpu_tests.sh header for the full
+;; contract) and increments sf64-failures on failure. Previously the FAIL
+;; branches printed a colonless "FAIL (got ..." — a colon-anchored marker
+;; scan (e.g. `^FAIL:`) matched none of them, and nothing here ever
+;; aggregated a failure into a process exit code either, so this file
+;; could not fail no matter how many checks were actually wrong.
+(define sf64-failures 0)
+(define (note-fail!) (set! sf64-failures (+ sf64-failures 1)))
+
 ;; Helper to create 2x2 matmul test with specific values
 ;; For matrices [[a,b],[c,d]] * [[e,f],[g,h]] = [[ae+bg, af+bh],[ce+dg, cf+dh]]
 (define (test-2x2-matmul name a b c d e f g h expected-00 expected-01 expected-10 expected-11)
@@ -17,12 +27,12 @@
   (define c01 (vector-ref C-data 1))
   (define c10 (vector-ref C-data 2))
   (define c11 (vector-ref C-data 3))
-  (display "  ") (display name) (display ": ")
   (define pass (and (= c00 expected-00) (= c01 expected-01)
                     (= c10 expected-10) (= c11 expected-11)))
   (if pass
-      (begin (display "PASS") (newline))
-      (begin (display "FAIL") (newline)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (newline)
              (display "    Got: [") (display c00) (display ", ") (display c01)
              (display ", ") (display c10) (display ", ") (display c11) (display "]") (newline)
              (display "    Expected: [") (display expected-00) (display ", ") (display expected-01)
@@ -38,11 +48,11 @@
   (define C (matmul A B))
   (define C-data (tensor-data C))
   (define result (vector-ref C-data 0))
-  (display "  ") (display name) (display ": ")
   (define pass (= result expected))
   (if pass
-      (begin (display result) (display " PASS") (newline))
-      (begin (display "FAIL (got ") (display result)
+      (begin (display "PASS: ") (display name) (display " (") (display result) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (display " (got ") (display result)
              (display ", expected ") (display expected) (display ")") (newline)))
   pass)
 
@@ -60,11 +70,11 @@
   (define C (matmul A B))
   (define C-data (tensor-data C))
   (define result (vector-ref C-data 0))
-  (display "  ") (display name) (display ": ")
   (define pass (approx= result expected))
   (if pass
-      (begin (display result) (display " PASS") (newline))
-      (begin (display "FAIL (got ") (display result)
+      (begin (display "PASS: ") (display name) (display " (") (display result) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (display " (got ") (display result)
              (display ", expected ") (display expected) (display ")") (newline)))
   pass)
 
@@ -102,11 +112,11 @@
   (define C (matmul A B))
   (define C-data (tensor-data C))
   (define result (vector-ref C-data 0))
-  (display "  ") (display name) (display ": ")
   (define pass (approx= result expected))
   (if pass
-      (begin (display result) (display " PASS") (newline))
-      (begin (display "FAIL (got ") (display result)
+      (begin (display "PASS: ") (display name) (display " (") (display result) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (display " (got ") (display result)
              (display ", expected ") (display expected) (display ")") (newline)))
   pass)
 
@@ -127,11 +137,11 @@
   (define C (matmul A B))
   (define C-data (tensor-data C))
   (define result (vector-ref C-data 0))
-  (display "  ") (display name) (display ": ")
   (define pass (approx= result expected))
   (if pass
-      (begin (display result) (display " PASS") (newline))
-      (begin (display "FAIL (got ") (display result)
+      (begin (display "PASS: ") (display name) (display " (") (display result) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (display " (got ") (display result)
              (display ", expected ") (display expected) (display ")") (newline)))
   pass)
 
@@ -166,11 +176,11 @@
   (define c01 (vector-ref C-data 1))
   (define c10 (vector-ref C-data 2))
   (define c11 (vector-ref C-data 3))
-  (display "  ") (display name) (display " * I: ")
   (define pass (and (= c00 a) (= c01 b) (= c10 c) (= c11 d)))
   (if pass
-      (begin (display "PASS") (newline))
-      (begin (display "FAIL") (newline)))
+      (begin (display "PASS: ") (display name) (display " * I") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name) (display " * I") (newline)))
   pass)
 
 (test-identity-2x2 "[[1,2],[3,4]]" 1.0 2.0 3.0 4.0)
@@ -208,10 +218,11 @@
               #f))
         pass))
   (define pass (check-diagonal 0 #t))
-  (display "  ") (display n) (display "x") (display n) (display " diagonal: ")
+  (define label (string-append (number->string n) "x" (number->string n) " diagonal"))
   (if pass
-      (begin (display "PASS") (newline))
-      (begin (display "FAIL") (newline)))
+      (begin (display "PASS: ") (display label) (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display label) (newline)))
   pass)
 
 (test-matmul-correctness 32)  ;; 32768 ops - BLAS path
@@ -220,3 +231,9 @@
 (test-matmul-correctness 50)  ;; 125000 ops - GPU path
 
 (display "=== SF64 Primitives Test Complete ===") (newline)
+(display "Results: ") (display sf64-failures) (display " failed") (newline)
+(if (= sf64-failures 0)
+    (begin (display "PASS: sf64_primitives_test") (newline) (exit 0))
+    (begin (display "FAIL: sf64_primitives_test (")
+           (display sf64-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

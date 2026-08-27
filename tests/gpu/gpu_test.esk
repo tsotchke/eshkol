@@ -1,5 +1,13 @@
 ;; GPU Backend Test
 ;; Tests GPU-accelerated matrix operations
+;;
+;; Previously this file only ever displayed intermediate values and never
+;; asserted anything -- a real accuracy break in A * I could have printed
+;; any garbage and this file would still have said "Complete" and exited 0.
+;; Verdict grammar: "PASS: <label>" / "FAIL: <label> ..." (see
+;; scripts/run_gpu_tests.sh header), aggregated into gate-failures and a
+;; process exit code.
+(define gate-failures 0)
 
 (display "=== GPU Backend Test ===") (newline)
 
@@ -9,9 +17,39 @@
 (define B (reshape (vector 1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0) 4 4))
 (define C (matmul A B))
 (display "A * I = ") (display C) (newline)
+
+;; A * I must equal A exactly (identity multiply).
+(define (identity-holds? row col)
+  (= (tensor-get C row col) (tensor-get A row col)))
+(define t1-pass
+  (and (identity-holds? 0 0) (identity-holds? 0 3)
+       (identity-holds? 1 1) (identity-holds? 2 2)
+       (identity-holds? 3 0) (identity-holds? 3 3)))
+(if t1-pass
+    (display "PASS: 4x4 A * I = A")
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: 4x4 A * I != A")))
+(newline)
 (newline)
 
 ;; Test 2: Larger matmul (still BLAS for 100x100 = 10K elements)
-(display "Test 2: Matmul complete") (newline)
+(display "Test 2: 100x100 all-ones matmul") (newline)
+(define n2 100)
+(define size2 (* n2 n2))
+(define A2 (reshape (make-vector size2 1.0) n2 n2))
+(define B2 (reshape (make-vector size2 1.0) n2 n2))
+(define C2 (matmul A2 B2))
+;; ones(n) x ones(n) = n everywhere.
+(define t2-pass (= (tensor-get C2 0 0) (exact->inexact n2)))
+(if t2-pass
+    (display "PASS: 100x100 all-ones matmul = 100")
+    (begin (set! gate-failures (+ gate-failures 1))
+           (display "FAIL: 100x100 all-ones matmul != 100, got ")
+           (display (tensor-get C2 0 0))))
+(newline)
 
 (display "=== GPU Test Complete ===") (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: gpu_test") (newline) (exit 0))
+    (begin (display "FAIL: gpu_test (") (display gate-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

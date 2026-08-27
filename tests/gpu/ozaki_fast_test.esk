@@ -68,3 +68,8 @@
         (check r N Ad Bd Cd)))))
 
 (display "SUMMARY total_fail=") (display total-fail) (newline)
+(if (= total-fail 0)
+    (begin (display "PASS: ozaki_fast_test") (newline) (exit 0))
+    (begin (display "FAIL: ozaki_fast_test (")
+           (display total-fail) (display " regime(s) failed)") (newline)
+           (exit 1)))

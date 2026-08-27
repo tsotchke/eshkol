@@ -46,3 +46,7 @@
       (display " expected=")
       (display (vector-ref A-data 0))))
 (newline)
+
+(if ok
+    (begin (display "PASS: cuda_host_sync_regression_test") (newline) (exit 0))
+    (begin (display "FAIL: cuda_host_sync_regression_test") (newline) (exit 1)))

@@ -25,10 +25,26 @@
 #   BUILD_DIR_CPU   build dir for the GPU-disabled reference binary (default: build-gpu-gate-cpuref)
 #   REUSE_BUILDS=1  skip (re)configuring/building if eshkol-run already exists
 #                   in both dirs — for CI jobs that cache the build step
-#   GPU_GATE_TOL    relative tolerance for the numeric diff (default: 1e-4;
-#                   loose because eshkol's `display` prints floats with
-#                   ~6 significant digits, not full round-trip precision —
-#                   see the comment in gpu_correctness_gate.esk)
+#   GPU_GATE_TOL    relative tolerance for the numeric diff (default: 1e-9).
+#                   This used to default to 1e-4 on the claim that `display`
+#                   prints only ~6 significant digits — that claim is FALSE:
+#                   `display` calls eshkol_dtoa_shortest()
+#                   (lib/core/runtime_display_hosted.cpp), the same
+#                   shortest-round-trip formatter used everywhere else, and a
+#                   direct round-trip probe (print a double, read it back,
+#                   compare bits) confirms every value comes back bit-exact.
+#                   See the comment in gpu_correctness_gate.esk. Measured
+#                   Metal-vs-CPU divergence on this workload (N=K=512 f64
+#                   matmul/add/mul/transpose/reduce) is exactly 0 across every
+#                   probe — 1e-9 leaves ~4 orders of margin above the
+#                   theoretical floating-point noise floor for a K=512
+#                   accumulation (~K*eps ~= 6e-14) for backends/kernel
+#                   variants (CUDA, other Metal tile configs) that may
+#                   legitimately reorder the reduction, while still catching
+#                   real GPU-kernel bugs, which corrupt results by 1e-2 to
+#                   1e0 (see ozaki_correctness_test.esk's documented CRT
+#                   defect class) — five to nine orders of magnitude looser
+#                   than this tolerance.
 #   LLVM_CONFIG     path to llvm-config (auto-detected via `brew --prefix
 #                   llvm@21` on macOS, or llvm-config-21/llvm-config on
 #                   Linux and Git Bash/MSYS2 Windows, if unset)
@@ -52,7 +68,7 @@ REPO_ROOT="$(pwd)"
 BUILD_DIR_GPU="${BUILD_DIR_GPU:-build-gpu-gate}"
 BUILD_DIR_CPU="${BUILD_DIR_CPU:-build-gpu-gate-cpuref}"
 REUSE_BUILDS="${REUSE_BUILDS:-0}"
-GPU_GATE_TOL="${GPU_GATE_TOL:-1e-4}"
+GPU_GATE_TOL="${GPU_GATE_TOL:-1e-9}"
 GATE_ESK="$REPO_ROOT/tests/gpu/gpu_correctness_gate.esk"
 
 # ICC evidence trace (.icc/completion-oracles.yaml::gpu-execution). Only
@@ -80,6 +96,73 @@ emit_trace() {  # emit_trace <value> <snippet>
 log()  { printf '%s\n' "$*"; }
 skip() { log "SKIP: $*"; exit 0; }
 fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────
+# --self-test: proves the SKIP/PASS/FAIL-vs-trace contract directly,
+# independent of whether this host actually has a GPU. `skip()` is
+# deliberately the ONE verdict path that never calls emit_trace — that
+# silence is what lets .icc/completion-oracles.yaml's `gpu-execution`
+# criterion (severity: high) read a GPU-less host as "no evidence yet"
+# instead of a false PASS. A judge (or a future edit to this file) that
+# starts calling emit_trace from inside skip() — even with value=SKIP —
+# would let a stale or synthetic trace line satisfy `event_values:
+# ["PASS"]`-style matching depending on how a consumer reads the file, so
+# this asserts the omission holds, on every invocation, in addition to
+# the FAIL and PASS paths actually writing what they claim to write.
+# Exits 0 only if every assertion below holds; runs no build, no GPU.
+if [ "${1:-}" = "--self-test" ]; then
+    st_dir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-gpu-gate-selftest.XXXXXX")"
+    trap 'rm -rf "$st_dir"' EXIT
+    st_fail=0
+    st_check() {  # st_check <description> <cmd...>
+        local desc="$1"; shift
+        if "$@"; then
+            log "  ok   $desc"
+        else
+            log "  FAIL $desc"
+            st_fail=1
+        fi
+    }
+
+    # 1. skip() must not touch the trace file at all.
+    TRACE_DIR="$st_dir/traces_skip"
+    TRACE_FILE="$TRACE_DIR/gpu_execution.jsonl"
+    ( skip "self-test probe" ) > /dev/null 2>&1
+    st_check "skip() leaves no trace directory" [ ! -e "$TRACE_DIR" ]
+
+    # 2. fail() must write exactly one FAIL-valued trace record.
+    TRACE_DIR="$st_dir/traces_fail"
+    TRACE_FILE="$TRACE_DIR/gpu_execution.jsonl"
+    ( fail "self-test probe" ) > /dev/null 2>&1
+    st_check "fail() creates the trace file" [ -f "$TRACE_FILE" ]
+    st_check "fail() writes a FAIL-valued record" \
+        grep -q '"kind":"gpu_execution".*"value":"FAIL"' "$TRACE_FILE"
+    st_check "fail() writes exactly one record" \
+        [ "$(wc -l < "$TRACE_FILE" | tr -d ' ')" = "1" ]
+
+    # 3. A PASS-shaped emit_trace call must write a PASS-valued record —
+    #    proving the PASS and FAIL paths are distinguishable in the trace
+    #    the same way they are distinguishable at exit-code level.
+    TRACE_DIR="$st_dir/traces_pass"
+    TRACE_FILE="$TRACE_DIR/gpu_execution.jsonl"
+    ( emit_trace PASS "self-test probe" ) > /dev/null 2>&1
+    st_check "emit_trace PASS writes a PASS-valued record" \
+        grep -q '"kind":"gpu_execution".*"value":"PASS"' "$TRACE_FILE"
+    if grep -q '"value":"FAIL"' "$TRACE_FILE" 2>/dev/null; then
+        log "  FAIL a PASS-valued record does not also read as FAIL"
+        st_fail=1
+    else
+        log "  ok   a PASS-valued record does not also read as FAIL"
+    fi
+
+    if [ "$st_fail" -eq 0 ]; then
+        log "PASS: gpu_correctness_gate.sh --self-test (SKIP/PASS/FAIL trace contract holds)"
+        exit 0
+    else
+        log "FAIL: gpu_correctness_gate.sh --self-test (SKIP/PASS/FAIL trace contract is broken — see above)"
+        exit 1
+    fi
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Step 1: build-time GPU framework detection. No point configuring a

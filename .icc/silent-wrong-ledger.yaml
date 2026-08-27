@@ -5839,3 +5839,107 @@ entries:
       returns a value where no finite log exists; the backward refuses there
       rather than differentiate the clamp, matching what the Frechet machinery
       already does on the same condition.
+  - id: SW-67
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "fix/gpu-correctness-gate-vacuous"
+    closed_by: "branch fix/gpu-correctness-gate-vacuous"
+    title: "The GPU correctness gate could not fail: no test program's failed checks reached its process exit code, and four of them emitted no failure-shaped output at all"
+    repro: >-
+      Read tests/gpu/gpu_correctness_gate.esk on unmodified origin/master: it
+      prints ten unlabelled `RESULT <label> <value>` lines and `GATE-DONE`,
+      then falls off the end with no PASS/FAIL/error/mismatch token in any
+      form and no `(exit ...)` call. Same for tests/gpu/gpu_test.esk,
+      sf64_simple_test.esk and sf64_nonuniform_test.esk — all three compute
+      results and display "(expected N)" comments but never compare actual
+      against expected. Every other file under tests/gpu/*.esk (13 of 17,
+      plus the already-compliant ozaki_certification_test.esk) DID print a
+      well-formed `FAIL: <description>` line on a failed check, but NONE of
+      them — not one, checked exhaustively — ever called `exit` with a
+      nonzero status: a failed check only ever produced text, never a
+      process-level signal. scripts/run_gpu_tests.sh's own marker-matching
+      history (scripts/lib/test_isolation.sh's "Honest failure detection"
+      section) already documents a PRIOR near-miss of this same defect
+      class: an anchored `^FAIL:` regex missed every indented `  <case>:
+      FAIL` marker and sf64_primitives_test.esk's colonless `FAIL (got
+      ...`, fixed before this ledger entry by making marker matching
+      unanchored and boundary-based. That fix closed the marker-QUALITY
+      half of the problem; it could not close this half, because a marker
+      regex — however good — has nothing to match in a file that never
+      prints a failure-shaped token, and even where a real `FAIL:` marker
+      existed, this harness's own contract said exit code should be the
+      verdict, which none of these files ever honored.
+    observed: >-
+      A GPU kernel that silently computed the wrong answer for the matmul,
+      elementwise add/mul, transpose round-trip or reduce workload in
+      gpu_correctness_gate.esk would print numbers nobody was checking and
+      exit 0 — scripts/run_gpu_tests.sh would print PASS regardless. For the
+      13 files with FAIL: markers but no exit code, a failed check was
+      visible to a human reading full output but invisible to any judge
+      that graded on exit status alone (as the exit-code-primary contract
+      this fix establishes now requires).
+    correct: >-
+      Every tests/gpu/*.esk program must exit non-zero if and only if a
+      check inside it failed, so the process exit code alone is a
+      sufficient, judge-agnostic verdict. A PASS:/FAIL: marker grammar
+      remains as a diagnostic backstop, not the verdict channel. A test
+      that produces no recognized verdict at all must be graded FAIL, not
+      PASS — absence of evidence that a check ran is not evidence the
+      check passed.
+    observed_after: >-
+      All 17 non-compliant tests/gpu/*.esk files now aggregate a
+      gate-failures counter and call `(exit 0)`/`(exit 1)` on a final
+      PASS:/FAIL: verdict line, matching the strongest pre-existing
+      convention in the suite (tests/gpu/ozaki_certification_test.esk).
+      gpu_correctness_gate.esk gained ten backend-independent self-check
+      invariants (finiteness, exact transpose round-trip, an independent
+      manual reduce-sum cross-check, sum(A+B)==sum(A)+sum(B)) so it has
+      teeth even when run standalone (not through the CPU-vs-GPU
+      differential in gpu_correctness_gate.sh). A canary,
+      tests/gpu/gate_canary_must_fail.esk, is a deliberate permanent
+      failure that scripts/run_gpu_tests.sh runs on every invocation and
+      requires to fail (non-zero exit AND a FAIL: marker); if it ever
+      passes, the whole run is forced red regardless of every other
+      result. tests/gpu/gpu_correctness_gate.sh gained a `--self-test`
+      mode asserting its SKIP path writes no trace record while its
+      FAIL/PASS paths write distinguishable ones (closing the
+      SKIP-must-never-read-as-PASS half of this class at the trace-emission
+      layer, complementing .icc/completion-oracles.yaml's existing
+      severity:high absence-is-FAIL handling for the `gpu-execution`
+      target). Verified red-to-green on both changed target files by
+      corrupting one check in each and confirming a nonzero exit with a
+      FAIL: line, then reverting. Full suite run locally under Metal
+      (Apple M2 Ultra): canary RED, self-test PASS, all 18 real
+      tests/gpu/*.esk files PASS, exit 0. The CPU-vs-GPU differential
+      (tests/gpu/gpu_correctness_gate.sh) was also run end-to-end (fresh
+      GPU-enabled and CPU-only builds) and measured exactly 0 relative
+      divergence across all ten probes, which is also why this fix tightens
+      that script's GPU_GATE_TOL default from 1e-4 to 1e-9 and corrects a
+      stale comment claiming `display` prints only ~6 significant digits —
+      `display` calls the shortest-round-trip formatter
+      (eshkol_dtoa_shortest), confirmed bit-exact by a direct round-trip
+      probe.
+    fixed_by: >-
+      branch fix/gpu-correctness-gate-vacuous — structured exit-code
+      contract across every tests/gpu/*.esk file, ten new self-check
+      invariants in gpu_correctness_gate.esk, tests/gpu/gate_canary_must_fail.esk,
+      a --self-test mode in tests/gpu/gpu_correctness_gate.sh, an additive
+      eshkol_test_output_has_verdict()/eshkol_test_output_has_success_marker()
+      pair in scripts/lib/test_isolation.sh (opt-in, no change to any
+      existing caller's behavior) wired into a new "NO VERDICT" grading
+      branch in scripts/run_gpu_tests.sh, and the VERDICT CONTRACT
+      documentation block at that script's head.
+    evidence: >-
+      tests/gpu/*.esk (17 files changed), tests/gpu/gate_canary_must_fail.esk
+      (new), tests/gpu/gpu_correctness_gate.sh, scripts/run_gpu_tests.sh,
+      scripts/lib/test_isolation.sh — local Metal run captured in this PR's
+      body (canary RED, self-test PASS, 18/18 real tests PASS, differential
+      gate PASS with measured max_rel_diff=0 at the new 1e-9 tolerance).
+    caught_by: [cross-repo-certification-audit, direct-measurement]
+    missed_by: [run_gpu_tests.sh (pre-fix), icc-smoke, icc-readiness]
+    notes: >-
+      Blocks the Eshkol-emits-certified-CUDA-kernels program: a GPU
+      correctness gate that cannot fail is not evidence a certification
+      consumer can build on. Scope was the GPU harness/test contract only;
+      no dispatch-switch code was touched (a parallel lane owns that
+      surface).

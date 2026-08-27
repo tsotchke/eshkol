@@ -1,4 +1,13 @@
 ;; GPU Softmax and Normalization Tests
+;;
+;; Verdict grammar: each check below prints "PASS: <label>" or
+;; "FAIL: <label> ..." and increments gate-failures on failure (see
+;; scripts/run_gpu_tests.sh header for the full contract). Before this
+;; fix, a FAIL: line was printed but nothing aggregated it into a process
+;; exit code, so this file always exited 0 no matter how many checks
+;; actually failed -- the marker-only harness had to notice the text, and
+;; a differently-shaped judge could not.
+(define gate-failures 0)
 
 ;; --- Softmax correctness (global) ---
 ;; softmax([0,0,0,0]) = [0.25, 0.25, 0.25, 0.25]
@@ -6,14 +15,14 @@
 (define sm-uniform (softmax uniform))
 (if (< (abs (- (tensor-get sm-uniform 0) 0.25)) 1e-10)
     (display "PASS: softmax uniform = 0.25")
-    (begin (display "FAIL: softmax uniform = ") (display (tensor-get sm-uniform 0))))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax uniform = ") (display (tensor-get sm-uniform 0))))
 (newline)
 
 ;; softmax should sum to 1.0
 (define sm-sum (tensor-sum sm-uniform))
 (if (< (abs (- sm-sum 1.0)) 1e-10)
     (display "PASS: softmax sum = 1.0")
-    (begin (display "FAIL: softmax sum = ") (display sm-sum)))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax sum = ") (display sm-sum)))
 (newline)
 
 ;; --- Softmax with varying values ---
@@ -25,13 +34,13 @@
          (> (tensor-get sm-vals 1 0) 0.0)
          (> (tensor-get sm-vals 1 1) 0.0))
     (display "PASS: softmax all positive")
-    (display "FAIL: softmax has non-positive values"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax has non-positive values")))
 (newline)
 
 ;; Larger value -> larger softmax
 (if (< (tensor-get sm-vals 0 0) (tensor-get sm-vals 1 1))
     (display "PASS: softmax preserves ordering")
-    (display "FAIL: softmax does not preserve ordering"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax does not preserve ordering")))
 (newline)
 
 ;; --- Axis-aware softmax: each row sums to ~1.0 ---
@@ -42,7 +51,7 @@
               (+ (tensor-get sm-rows 0 1) (tensor-get sm-rows 0 2))))
 (if (< (abs (- r0 1.0)) 1e-6)
     (display "PASS: softmax axis=1 row0 sums to 1.0")
-    (begin (display "FAIL: softmax axis=1 row0 sum = ") (display r0)))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax axis=1 row0 sum = ") (display r0)))
 (newline)
 
 ;; Row 1: softmax([4,5,6]) -> should sum to 1
@@ -50,7 +59,7 @@
               (+ (tensor-get sm-rows 1 1) (tensor-get sm-rows 1 2))))
 (if (< (abs (- r1 1.0)) 1e-6)
     (display "PASS: softmax axis=1 row1 sums to 1.0")
-    (begin (display "FAIL: softmax axis=1 row1 sum = ") (display r1)))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax axis=1 row1 sum = ") (display r1)))
 (newline)
 
 ;; --- Softmax numerical stability (large values) ---
@@ -59,5 +68,10 @@
 (define sm-big-sum (tensor-sum sm-big))
 (if (< (abs (- sm-big-sum 1.0)) 1e-6)
     (display "PASS: softmax large values sum = 1.0")
-    (begin (display "FAIL: softmax large values sum = ") (display sm-big-sum)))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: softmax large values sum = ") (display sm-big-sum)))
 (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: softmax_normalize_test") (newline) (exit 0))
+    (begin (display "FAIL: softmax_normalize_test (") (display gate-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

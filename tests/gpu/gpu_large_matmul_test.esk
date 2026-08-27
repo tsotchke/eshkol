@@ -64,3 +64,7 @@
     (begin (display "FAIL: Matrix multiply incorrect") (newline)))
 
 (display "=== GPU Large Matrix Test Complete ===") (newline)
+
+(if correct
+    (begin (display "PASS: gpu_large_matmul_test") (newline) (exit 0))
+    (begin (display "FAIL: gpu_large_matmul_test") (newline) (exit 1)))
