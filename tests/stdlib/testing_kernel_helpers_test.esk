@@ -1,0 +1,22 @@
+;; Public numeric helpers used by GPU and kernel certification fixtures.
+(require core.testing)
+
+(define failures 0)
+(define (check-helper ok? label)
+  (if ok?
+      (begin (display "PASS: ") (display label) (newline))
+      (begin (display "FAIL: ") (display label) (newline)
+             (set! failures (+ failures 1)))))
+
+(check-helper (assert-close 100.0 100.00005 1e-6)
+              "assert-close accepts relative tolerance")
+(check-helper (assert-close 0.25 0.2500005 1e-6)
+              "assert-close accepts absolute tolerance below unit magnitude")
+(check-helper (not (assert-close 1.0 1.1 1e-6))
+              "assert-close rejects out-of-tolerance values")
+(check-helper (certify-kernel "helper exact" 3.0 3.0 1e-12)
+              "certify-kernel returns true on a match")
+(check-helper (not (certify-kernel "helper mismatch" 3.0 4.0 1e-12))
+              "certify-kernel returns false on a mismatch")
+
+(if (= failures 0) (exit 0) (exit 1))

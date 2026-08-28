@@ -51,7 +51,7 @@ either queues forever or lies.
 |---|---|---|
 | `eshkol` | This runner is provisioned for **this repository's** build: LLVM 21, cmake, ninja, python3, and (Linux) `ld.lld`. Every mesh lane requires it. | `ci-mesh.yml` (all lanes), `mesh-preflight`'s online-runner probe |
 | `gpu` | The host has a **real, addressable GPU device** — not merely a GPU toolchain. `nvidia-smi` lists a device, or the host is Apple Silicon with a working Metal device. | `gpu-execution-gate.yml` (`runs-on: [self-hosted, gpu]`) |
-| `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`. Implies `gpu`; assign both. | `mesh-linux-x64-cuda-exec` |
+| `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`. Implies `gpu`; assign both. | `mesh-linux-x64-cuda-exec`, `mesh-gpu-gate` |
 | `metal` | Apple Silicon host with a working Metal device. Implies `gpu`; assign both. Reserved for a future Metal execution lane. | (none yet) |
 
 So a full label set looks like `--labels eshkol` for a plain build node, or
@@ -223,7 +223,11 @@ gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body on
 ```
 
 `gpu-execution-gate.yml` needs no variable — it dispatches to `[self-hosted, gpu]`
-as soon as such a runner exists.
+as soon as such a runner exists. The advisory `mesh-gpu-gate` lane in
+`ci-mesh.yml` requires `[self-hosted, Linux, X64, eshkol, cuda]` and runs
+`tests/gpu/gpu_correctness_gate.sh`; its exit code is the primary verdict.
+The lane remains outside branch protection and is controlled by the mesh
+preflight dispatch guard.
 
 ---
 

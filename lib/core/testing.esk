@@ -34,7 +34,7 @@
 
 (provide register-test
          check-equal? check-true check-false
-         check-approx check-raises
+         check-approx assert-close certify-kernel check-raises
          run-tests reset-tests!
          *tests* *test-pass-count* *test-fail-count*
          *current-test-fails* *current-test-name*)
@@ -116,6 +116,17 @@
         (display "    FAIL: expected ≈ ") (write expected)
         (display " (±") (write tol)
         (display "), got ") (write actual) (newline))))
+
+;; assert-close: numeric absolute/relative comparison for standalone gates.
+(define (assert-close actual expected tolerance)
+  (<= (abs (- actual expected))
+      (* tolerance (if (> (abs expected) 1.0) (abs expected) 1.0))))
+
+;; certify-kernel: emit a diagnostic marker and return its boolean.
+(define (certify-kernel name actual expected tolerance)
+  (if (assert-close actual expected tolerance)
+      (begin (display "PASS: ") (display name) (newline) #t)
+      (begin (display "FAIL: ") (display name) (newline) #f)))
 
 ;; check-raises: thunk MUST raise. If it returns normally, that's a failure.
 (define (check-raises thunk)

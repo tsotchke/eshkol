@@ -60,11 +60,12 @@ for pull requests and for non-`master` branches; `master` is never cancelled.
 
 ## Self-hosted (mesh) lanes
 
-`ci-mesh.yml` adds four **advisory, non-required** lanes that run on the
+`ci-mesh.yml` adds five **advisory, non-required** lanes that run on the
 maintainer's own hardware: `mesh-linux-x64-lite`, `mesh-linux-arm64-lite`,
-`mesh-macos-arm64-lite`, and `mesh-linux-x64-cuda-exec`. The last of these is the
-only lane in the repository that runs `run_gpu_tests.sh` against a **real** CUDA
-device — lanes 5, 6 and 14 above are compile-only, because hosted runners have no
+`mesh-macos-arm64-lite`, `mesh-linux-x64-cuda-exec`, and `mesh-gpu-gate`. The
+last two run GPU checks against a **real** CUDA device; `mesh-gpu-gate` runs
+`tests/gpu/gpu_correctness_gate.sh` with its exit code as the primary verdict.
+Lanes 5, 6 and 14 above are compile-only, because hosted runners have no
 GPU. The whole workflow is off unless the repository variable `ESHKOL_MESH_CI` is
 `on` *and* a runner carrying the `eshkol` label is online, and none of its jobs is
 (or may become) a required status check. See
