@@ -6408,3 +6408,181 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-74
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "PLACEHOLDER_SHA"
+    closed_by: "branch fix/region-pin-lifecycle-sw74"
+    title: "native: an escape-only call/cc inside with-region pins and permanently leaks the region arena — one arena lost per capture, silently, for a continuation the compiler had already proven could not outlive its frame"
+    repro: >-
+      A resident loop whose body is an escape-only `call/cc` inside a
+      `with-region`, compiled AOT and measured on the arena's own byte counter
+      at two horizons (this is what tests/memory/region_callcc_flat_rss_test.sh
+      generates and gates):
+        (define (probe i)
+          (with-region
+            (call/cc (lambda (k) (if (> i 0) (k i) 0)))))
+        (define (tick i)
+          (if (>= i ticks) i (if (= (probe i) i) (tick (+ i 1)) (- 0 i))))
+        (define result (tick 0))
+      built with `eshkol-run loop.esk -o loop` and run twice, at ticks=100000
+      and ticks=800000, under ESHKOL_ARENA_REPORT=1; compare the
+      `global_total_allocated_bytes` line. Also visible without any counter as
+      unbounded RSS growth at a large tick count.
+    observed: >-
+      PRE-FIX: retention grows linearly with the tick count — one whole region
+      arena (arena_create's 8192-byte default block, plus any block the body
+      grew) is lost per iteration and never returned for the life of the
+      process. Nothing is printed, the answers are correct, and the exit status
+      is 0. The bytes are also invisible to every arena counter the repo gates
+      on: region_destroy() dropped the block chain without ever charging it to
+      an arena, so ESHKOL_ARENA_REPORT=1 could not see it and only RSS could.
+      POST-FIX: byte-identical retention at both horizons, 0.000 bytes/tick.
+    correct: >-
+      A `with-region` whose body captures a continuation that provably cannot
+      outlive the frame that captured it must reclaim in full at region exit,
+      exactly as the same body without the `call/cc` does: the steady-state
+      arena retention of the loop is zero bytes per tick, at any horizon. And a
+      region that IS pinned must be promoted into the enclosing arena — owned,
+      accounted, and released when that scope ends — not dropped.
+    root_cause: >-
+      Two independent defects that compounded, both introduced with SW-59's
+      pin.
+
+      (1) The pin ignored the classification the compiler had already computed.
+      `codegenCallCC` (lib/backend/llvm_codegen.cpp) calls
+      `callCCContinuationStaysLocal()` on every capture and uses the answer for
+      exactly ONE decision: whether to emit
+      `eshkol_continuation_capture_stack()`. The region pin was taken
+      elsewhere and on a different question —
+      `eshkol_make_continuation_state()` (lib/core/runtime_continuations.cpp)
+      called `eshkol_region_pin_all()` whenever `eshkol_region_mark() > 0`,
+      i.e. on nothing but "is a region open". So the early-return idiom
+      `(call/cc (lambda (k) ... (k v) ...))`, whose continuation the compiler
+      had just proven cannot outlive its frame, pinned every open region
+      anyway. It cannot need the pin: a continuation that can only be invoked
+      while the capturing frame is running cannot be invoked after an enclosing
+      `with-region` has exited, because that region's dynamic extent strictly
+      contains the frame's.
+
+      (2) A pinned region's arena was not merely retained, it was ABANDONED.
+      `region_destroy()` (lib/core/runtime_regions.cpp) skipped
+      `arena_destroy()` for a pinned region and then freed the region struct,
+      so the block chain had no owner left and was never freed by anything —
+      unlike the bytecode VM, whose `vm_evac_promote_all_blocks()`
+      (lib/backend/vm_region_evac.c) splices a pinned region's blocks into the
+      PARENT arena, where they are owned and are released when the parent
+      scope ends. docs/reference/language/continuations.md described the VM's
+      promotion as if it were native's behaviour (v1.3.5 docs audit, BI-14).
+
+      SW-59's own `measured:` block scoped its escape-only checks to fixtures
+      with "no `with-region` involved", so the combination of the two — an
+      escape-only capture inside a region — was never measured on either
+      count.
+    resolution: >-
+      The pin gets a lifecycle: it is taken only when the continuation can
+      still be invoked after the region's dynamic extent ends, and when it is
+      taken it costs a promotion rather than a leak.
+
+      (1) The capture site now carries its classification into the runtime. New
+      `eshkol_make_continuation_state_flags(arena, jmp_buf, flags)` with
+      `ESHKOL_CONT_FLAG_ESCAPE_ONLY` (inc/eshkol/eshkol.h); codegenCallCC
+      passes `stays_local` — the SAME predicate that already gates the stack
+      snapshot, so the two decisions can no longer disagree. The 2-argument
+      `eshkol_make_continuation_state()` remains as the conservative ABI entry
+      point (flags = 0 = "may outlive its frame") for any caller with nothing
+      to say. An escape-only capture does not pin.
+
+      One exception, and it is the only route by which an enclosing region can
+      be torn down inside an escape-only capture's usable extent: a region
+      opened through the region-HANDLE api. `(region-close h)` is an ordinary
+      call, so unlike a lexical `with-region` exit — which is downstream of the
+      `call/cc` it encloses and therefore always runs after the continuation is
+      dead — it can run inside the `call/cc` procedure itself and
+      cascade-close a region the capture is standing in.
+      `eshkol_region_t::handle_owned` records this at
+      `eshkol_region_handle_open()`, and `eshkol_region_any_handle_owned_open()`
+      makes an escape-only capture pin exactly as before whenever one is open.
+      The other two teardown routes are safe by construction: an exception
+      unwind and a continuation invoke both destroy the capturing frame on
+      their way past, so neither can strand a live escape-only continuation.
+
+      (2) A pinned region is now PROMOTED, not abandoned. New
+      `arena_adopt_blocks(dst, src)` (lib/core/runtime_arena_core.cpp) moves
+      src's whole block chain onto `dst->adopted_blocks`, and `region_destroy()`
+      hands a pinned region's blocks to `region->escape_base` — the arena
+      captured at region_push that is guaranteed to outlive the region. This is
+      the native analogue of `vm_evac_promote_all_blocks()`. The move is
+      zero-copy, so NO promoted object changes address and a resumed
+      continuation's interior pointers stay valid. Adopted blocks are held on a
+      separate list rather than spliced into `dst->current_block`, because
+      allocation (`arena_allocate_aligned`) and rewind (`arena_pop_scope`,
+      `arena_reset`) both walk the current_block chain: splicing there would
+      either hand a later allocation memory a live continuation still reads, or
+      free it early at a scope pop. The adopted list is walked only by
+      `arena_destroy()`/`arena_reset()`, which free it (poisoning it on the same
+      terms as the allocation chain under ESHKOL_ARENA_POISON). The bytes are
+      added to the receiving arena's `total_allocated`, so the retention is
+      now VISIBLE to ESHKOL_ARENA_REPORT=1 and to every residency gate — the
+      defect hid partly because it was not.
+
+      Nested pinned regions pop innermost-first and promote one hop per level:
+      the inner arena is adopted by the outer region's arena, then promoted
+      onward when the outer region pops. `arena_adopt_blocks` moves the
+      source's own adopted list as well, so an N-deep nest costs N splices and
+      no copies.
+
+      Native's stderr pin note (eshkol_region_pin_notice(), SW-59 follow-up in
+      lib/core/runtime_arena_diagnostics_hosted.cpp) now says the arena "was
+      promoted whole into the enclosing arena", which is what it now does, and
+      says that an escape-only capture does not pin and does not print it.
+    guarded_by: >-
+      tests/memory/region_callcc_flat_rss_test.sh, wired into
+      scripts/run_icc_smoke.sh as the `region_callcc_pin_lifecycle` probe and
+      into the `v1.3-evolve` release oracle in .icc/completion-oracles.yaml.
+      Three things are gated, and the second exists so the first cannot pass
+      vacuously: (a) escape_only_region retains BYTE-IDENTICAL arena bytes at
+      100k and 800k ticks — not "within a factor", equal — and prints no pin
+      note; (b) escape_only_no_region, the same loop with no `with-region`,
+      must retain STRICTLY MORE at the long horizon, because every native
+      `call/cc` allocates its state and closure from the current arena and with
+      no region open that arena is the process arena — if this row measured
+      zero it would mean the counter cannot see call/cc allocations at all and
+      (a)'s zero would be an instrument artifact; (c) escaping_region, a
+      capture stored into a global, must still pin, must still retain, and must
+      still print the note — a regression that stopped taking the pin would
+      otherwise look like an improvement on (a).
+      Answers are gated separately and on all three engines by
+      scripts/run_continuation_tests.sh:
+      tests/continuations/region_escape_only_no_pin.esk (the escape-only shapes,
+      including two regions deep and a capture that is never taken) and
+      region_capture_resume_nested.esk (a capture two regions deep, resumed
+      three times after both have exited, with 20000 iterations of churn in
+      between — the promotion chain, which would read recycled memory if
+      either level had been reclaimed).
+    evidence: >-
+      PLACEHOLDER_EVIDENCE
+    caught_by: [direct-measurement, v1.3.5 release documentation audit BI-13]
+    missed_by: [icc-smoke (pre-fix), icc-readiness, resident_longrun_flat_gate.sh, native_region_pin_diagnostic_test.sh]
+    notes: >-
+      Filed from BI-13 of the v1.3.5-evolve release documentation audit
+      (2026-08-28), which found the defect by reading SW-59's fix against
+      codegenCallCC rather than by running anything. BI-14 of the same audit —
+      that docs/reference/language/continuations.md attributed the VM's
+      promote-whole behaviour to native, where the arena was actually leaked,
+      and described the pin as covering one region rather than all open ones —
+      is closed by the same change: the code now does what the doc said, and
+      the doc now says what both engines do.
+
+      An asymmetry remains and is documented rather than papered over: the
+      bytecode VM pins on region depth alone and has no escape-only
+      classification, so the same escape-only program retains its region on the
+      VM and reclaims it on native. This is a memory-policy difference only —
+      the printed answer is identical, which is what run_continuation_tests.sh
+      compares byte-for-byte on all three engines. Giving the VM the same
+      narrowing would mean reimplementing the escape analysis over the VM's own
+      s-expression AST, a duplicate of a subtle predicate in a second compiler,
+      which is the drift hazard this ledger exists to catch; the more
+      attractive route is liveness-based (let the evacuator's own mark phase
+      decide, since it already walks HEAP_CONTINUATION) and belongs with the
+      Stage-2 evacuator work rather than here.
