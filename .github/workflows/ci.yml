@@ -444,7 +444,14 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     steps:
+      # fetch-depth: 0 (rather than the default shallow depth 1) so the
+      # infrastructure-disclosure gate below can `git log`/`git diff`
+      # <PR base sha>..<PR head sha> directly -- on a pull_request event
+      # actions/checkout fetches the full ancestry of the merge commit it
+      # checks out, which already contains both endpoints.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Install PyYAML
         shell: bash
         run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
@@ -469,6 +476,7 @@ jobs:
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
+           python3 scripts/check_disclosure.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -585,6 +593,61 @@ jobs:
       - name: Every tracked PowerShell script is ASCII, or BOM-marked UTF-8 (5.1 vs pwsh 7 decoding)
         shell: bash
         run: python3 scripts/check_ps1_encoding.py
+
+      # 2026-08-28: a squash-merge commit body is assembled out of the PR's
+      # own branch commit messages, and nothing in review treats commit prose
+      # as a reviewable surface the way a diff hunk is. This gate scans PR
+      # text and the diff for private IPv4 literals, ssh key-file references,
+      # ProxyCommand/`tailscale nc` recipes, and MAC addresses (maintainer
+      # ruling 2026-08-28: internal machine/hostnames by themselves are
+      # public-safe in this repo and are not in scope). This step optionally
+      # writes a maintainer's own private DISCLOSURE_DENYLIST secret (specific
+      # known-sensitive tokens) to a runner-local file if one is configured,
+      # then runs the gate for real against this PR's own commit range. On
+      # any non-pull_request event (a push, e.g. to master) the range is
+      # already-reviewed, already-merged history with no PR title/body to
+      # check, so this reports a deliberate no-op PASS instead of re-scanning
+      # it.
+      - name: Write private disclosure denylist (optional; if the maintainer has configured one)
+        env:
+          DISCLOSURE_DENYLIST: ${{ secrets.DISCLOSURE_DENYLIST }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${DISCLOSURE_DENYLIST:-}" ]; then
+            printf '%s' "$DISCLOSURE_DENYLIST" > "$RUNNER_TEMP/disclosure-denylist.txt"
+            echo "ESHKOL_DISCLOSURE_DENYLIST=$RUNNER_TEMP/disclosure-denylist.txt" >> "$GITHUB_ENV"
+          else
+            echo "note: DISCLOSURE_DENYLIST repository secret is not set — this optional layer stays off and the gate runs its generic patterns only. Enable it any time with: gh secret set DISCLOSURE_DENYLIST < /path/to/local/denylist.txt"
+          fi
+
+      - name: No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::disclosure-gate could not resolve the PR base/head commits in this checkout (fetch-depth:0 should guarantee this) — failing closed rather than skipping a security gate."
+            exit 1
+          fi
+          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/disclosure-pr-title.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/disclosure-pr-body.txt"
+          python3 scripts/check_disclosure.py \
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --pr-title-file "$RUNNER_TEMP/disclosure-pr-title.txt" \
+            --pr-body-file "$RUNNER_TEMP/disclosure-pr-body.txt"
+
+      - name: No PR text to check on this event (push — history already merged)
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          python3 scripts/check_disclosure.py --noop-pass \
+            --reason "github.event_name=${{ github.event_name }} carries no PR title/body and represents already-reviewed history; the real scan runs at PR review time"
 
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
