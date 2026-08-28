@@ -198,7 +198,8 @@ current-time	gap	time surface has no VM binding
 current-time-ms	vm-supported	
 current-time-ns	vm-supported	
 current-timestamp	vm-supported	
-dataloader-has-next	gap	ml faculty has no VM fid coverage
+dataloader-has-next	gap	ml faculty has no VM fid coverage; kept as the pre-BI-7 alias for dataloader-has-next?
+dataloader-has-next?	gap	ml faculty has no VM fid coverage; canonical spelling (Scheme predicate convention) as of BI-7
 dataloader-length	gap	ml faculty has no VM fid coverage
 dataloader-next	gap	ml faculty has no VM fid coverage
 dataloader-reset	gap	ml faculty has no VM fid coverage

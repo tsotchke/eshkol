@@ -7,7 +7,9 @@
  */
 
 #include <eshkol/eshkol.h>
+#include <eshkol/core/resource_limits.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 
@@ -53,10 +55,18 @@ static uintptr_t eshkol_hosted_stack_base(void) {
  *
  * No-op on Windows (thread stacks are sized at creation time instead). On
  * other platforms, reads a target size from the ESHKOL_STACK_SIZE
- * environment variable (falling back to a 512MB default when unset, too
- * small to parse, or below 1MB), then raises RLIMIT_STACK's soft limit to
- * that target via getrlimit()/setrlimit(), clamped to the hard limit if one
- * is set. Only ever increases the current soft limit; never lowers it.
+ * environment variable — accepting a bare byte count or a value with a
+ * K/M/G (or KiB/MiB/GiB) suffix via eshkol_parse_size(), the same parser
+ * every other ESHKOL_* size variable uses — falling back to a 512MB default
+ * when unset or below the 1MB floor, then raises RLIMIT_STACK's soft limit
+ * to that target via getrlimit()/setrlimit(), clamped to the hard limit if
+ * one is set. Only ever increases the current soft limit; never lowers it.
+ *
+ * A value that fails to parse at all (empty, non-numeric, unrecognized
+ * suffix, or trailing garbage after a valid one) is reported to stderr
+ * naming the variable and the offending value, then falls back to the
+ * default; a value that parses but is below the 1MB floor falls back
+ * silently, per the documented floor.
  */
 extern "C" void eshkol_init_stack_size(void) {
     // Hand the freestanding runtime core a platform probe so `call/cc` can
@@ -68,15 +78,23 @@ extern "C" void eshkol_init_stack_size(void) {
     return;
 #else
     const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
+    const size_t floor_bytes = 1024ULL * 1024;           // 1MB
     rlim_t target = default_stack;
 
     const char* env_val = std::getenv("ESHKOL_STACK_SIZE");
     if (env_val) {
-        char* end = nullptr;
-        unsigned long long parsed = std::strtoull(env_val, &end, 0);
-        if (end != env_val && parsed >= 1024 * 1024) {
+        size_t parsed = 0;
+        if (!eshkol_parse_size(env_val, &parsed)) {
+            std::fprintf(stderr,
+                "eshkol: warning: ESHKOL_STACK_SIZE=\"%s\" is not a valid "
+                "size (expected a byte count or a value with a K/M/G or "
+                "KiB/MiB/GiB suffix); using default stack size\n",
+                env_val);
+        } else if (parsed >= floor_bytes) {
             target = (rlim_t)parsed;
         }
+        // parsed < floor_bytes: too small to be useful, silently keep the
+        // default (the documented 1MB floor).
     }
 
     struct rlimit rl;

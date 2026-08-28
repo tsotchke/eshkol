@@ -11,13 +11,19 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 /**
  * @brief Report whether arena allocation poisoning is enabled for this process.
  *
  * Reads the ESHKOL_ARENA_POISON environment variable once (cached in an atomic
  * function-local static) and enables poisoning unless it is unset, empty, or
- * "0".
+ * exactly "0" — the WHOLE value is compared, not just its first byte, so e.g.
+ * "01" counts as set. This is the native engine's own accessor: it cannot see
+ * the freestanding VM's vm_arena_poison_enabled() (lib/backend/vm_arena.h),
+ * which is the bytecode VM's single reader of the same variable, but both
+ * apply this identical rule so the two substrates never disagree about
+ * whether a given value arms poisoning.
  *
  * The cache is an atomic tri-state (-1 = uncomputed, 0/1 = resolved) because
  * arena allocation runs concurrently on pool workers: the plain-int cache
@@ -33,7 +39,7 @@ extern "C" int eshkol_arena_poison_enabled(void) {
     int cached = poison_enabled.load(std::memory_order_relaxed);
     if (cached < 0) {
         const char* env = std::getenv("ESHKOL_ARENA_POISON");
-        cached = (env && env[0] && env[0] != '0') ? 1 : 0;
+        cached = (env && env[0] && std::strcmp(env, "0") != 0) ? 1 : 0;
         poison_enabled.store(cached, std::memory_order_relaxed);
     }
     return cached;

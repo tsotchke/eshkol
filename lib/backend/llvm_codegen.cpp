@@ -18487,7 +18487,12 @@ private:
         if (func_name == "dataloader-next") return tensor_->dataloaderNext(op);
         if (func_name == "dataloader-reset" || func_name == "dataloader-reset!") return tensor_->dataloaderReset(op);
         if (func_name == "dataloader-length") return tensor_->dataloaderLength(op);
-        if (func_name == "dataloader-has-next") return tensor_->dataloaderHasNext(op);
+        // "dataloader-has-next?" is canonical (Scheme predicate convention;
+        // it is what the docs, PARITY.tsv's justification and the
+        // implementation's own error messages in tensor_dataloader_codegen.cpp
+        // all use). The bare "dataloader-has-next" spelling is kept as an
+        // alias so programs written against the pre-BI-7 dispatch keep working.
+        if (func_name == "dataloader-has-next?" || func_name == "dataloader-has-next") return tensor_->dataloaderHasNext(op);
         if (func_name == "train-test-split") return tensor_->trainTestSplit(op);
 
         // Transformer architecture (Track 8.1-8.3)

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -154,6 +155,17 @@ ProcessResult run_process_capture(const std::vector<std::string>& args,
 
 bool contains(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
+}
+
+// Look up `key=value\n` in KEY=VALUE output such as --features / --abi-fingerprint.
+std::string find_kv(const std::string& text, const std::string& key) {
+    const std::string needle = key + "=";
+    std::size_t pos = text.find(needle);
+    if (pos == std::string::npos) return {};
+    pos += needle.size();
+    std::size_t end = text.find('\n', pos);
+    if (end == std::string::npos) end = text.size();
+    return text.substr(pos, end - pos);
 }
 
 int expect_success(const std::string& label, const ProcessResult& result) {
@@ -429,6 +441,85 @@ int main(int argc, char** argv) {
     if (fs::exists(temp_root / "desktop-native.eskb")) {
         return fail("embedded VM wrote ESKB after rejecting desktop native bytecode");
     }
+
+    // --abi-fingerprint (ADR-0012). This test binary does not link the
+    // runtime (it only drives eshkol-run as a subprocess), so it cannot call
+    // the two C accessors (eshkol_abi_fingerprint_name(),
+    // eshkol_abi_runtime_header_size(), lib/core/abi_fingerprint.c)
+    // directly. Verify the CLI two ways instead:
+    //  1. Internal consistency: the printed `symbol` must be exactly
+    //     "eshkol_object_abi_v<version>_h<header_size>_s<subtype_offset>_a<payload_align>",
+    //     assembled from the CLI's own other fields (inc/eshkol/abi_fingerprint.h's
+    //     ESHKOL_ABI_NAME macro). A version/field printed inconsistently with
+    //     the symbol name it was pasted into would be caught here.
+    //  2. Independent oracle: `nm` on the built eshkol-run binary must show
+    //     the SAME guard symbol -- this is the exact property ADR-0012's
+    //     header docstring promises ("a debugger or `nm` on a shipped binary
+    //     answers which ABI this is"), so it is what the accessors and the
+    //     CLI both ultimately report.
+    ProcessResult abi_fingerprint = run_process_capture(
+        {run_binary.string(), "--abi-fingerprint"}, temp_root);
+    if (int rc = expect_success("--abi-fingerprint", abi_fingerprint)) {
+        return rc;
+    }
+    const std::string fp_symbol = find_kv(abi_fingerprint.output, "symbol");
+    const std::string fp_version = find_kv(abi_fingerprint.output, "version");
+    const std::string fp_header_size = find_kv(abi_fingerprint.output, "header_size");
+    const std::string fp_subtype_offset = find_kv(abi_fingerprint.output, "subtype_offset");
+    const std::string fp_payload_align = find_kv(abi_fingerprint.output, "payload_align");
+    const std::string fp_runtime_header_size =
+        find_kv(abi_fingerprint.output, "runtime_header_size");
+    if (fp_symbol.empty() || fp_version.empty() || fp_header_size.empty() ||
+        fp_subtype_offset.empty() || fp_payload_align.empty() ||
+        fp_runtime_header_size.empty()) {
+        return fail("--abi-fingerprint output missing an expected field\n" +
+                    abi_fingerprint.output);
+    }
+    const std::string expected_symbol = "eshkol_object_abi_v" + fp_version +
+                                        "_h" + fp_header_size +
+                                        "_s" + fp_subtype_offset +
+                                        "_a" + fp_payload_align;
+    if (fp_symbol != expected_symbol) {
+        return fail("--abi-fingerprint symbol '" + fp_symbol +
+                    "' is not assembled from its own version/header_size/"
+                    "subtype_offset/payload_align fields (expected '" +
+                    expected_symbol + "')\n" + abi_fingerprint.output);
+    }
+    // The runtime linked into `eshkol-run` is built from the same tree at the
+    // same configuration as this test binary, so a correctly linked program
+    // reports the identical header size for both fields (a real mixed-ABI
+    // link would fail before either binary existed to run -- see
+    // abi_fingerprint.h).
+    if (fp_runtime_header_size != fp_header_size) {
+        return fail("--abi-fingerprint header_size/runtime_header_size disagree "
+                    "within one binary\n" + abi_fingerprint.output);
+    }
+
+#ifndef _WIN32
+    // Independent oracle: the guard symbol must actually be present in the
+    // binary under this exact name (ADR-0012's whole mechanism is that a
+    // mismatched layout is an UNDEFINED symbol at link time, so if the
+    // program linked at all, this symbol exists in it).
+    {
+        std::string nm_command = "nm \"" + run_binary.string() + "\" 2>/dev/null";
+        FILE* nm_pipe = popen(nm_command.c_str(), "r");
+        if (!nm_pipe) {
+            return fail("failed to run nm on " + run_binary.string());
+        }
+        std::string nm_output;
+        char buffer[4096];
+        while (fgets(buffer, sizeof(buffer), nm_pipe)) {
+            nm_output += buffer;
+        }
+        pclose(nm_pipe);
+
+        if (!contains(nm_output, fp_symbol)) {
+            return fail("nm on " + run_binary.string() +
+                        " does not contain the --abi-fingerprint guard symbol '" +
+                        fp_symbol + "'");
+        }
+    }
+#endif
 
     fs::remove_all(temp_root, ec);
     std::cout << "PASS" << std::endl;

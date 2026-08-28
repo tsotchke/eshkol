@@ -89,54 +89,11 @@ const char* skip_space(const char* cursor) {
 
 // Parse size with optional K/M/G suffix. Invalid values keep the caller's
 // fallback so malformed hosted env vars cannot silently disable limits.
+// The actual parsing lives in the public eshkol_parse_size() below, shared
+// by every reader of an ESHKOL_* size variable.
 size_t parse_size_or_default(const char* str, size_t fallback) {
-    if (!str) return fallback;
-
-    const char* start = skip_space(str);
-    if (!*start) return fallback;
-
-    errno = 0;
-    char* end = nullptr;
-    double value = strtod(start, &end);
-    if (end == start || errno == ERANGE || !std::isfinite(value) || value < 0.0) {
-        return fallback;
-    }
-
-    end = const_cast<char*>(skip_space(end));
-
-    double multiplier = 1.0;
-    if (*end) {
-        switch (*end) {
-            case 'K': case 'k':
-                multiplier = 1024.0;
-                break;
-            case 'M': case 'm':
-                multiplier = 1024.0 * 1024.0;
-                break;
-            case 'G': case 'g':
-                multiplier = 1024.0 * 1024.0 * 1024.0;
-                break;
-            default:
-                return fallback;
-        }
-        ++end;
-        if (*end == 'B' || *end == 'b') {
-            ++end;
-        }
-        end = const_cast<char*>(skip_space(end));
-    }
-
-    if (*end) {
-        return fallback;
-    }
-
-    const double bytes = value * multiplier;
-    if (!std::isfinite(bytes) ||
-        bytes > static_cast<double>(std::numeric_limits<size_t>::max())) {
-        return fallback;
-    }
-
-    return static_cast<size_t>(bytes);
+    size_t out = 0;
+    return eshkol_parse_size(str, &out) ? out : fallback;
 }
 
 /** Parse @p str as an unsigned 64-bit decimal integer.
@@ -329,6 +286,68 @@ bool eshkol_limit_is_active(uint32_t which) {
 /** Return a pointer to the currently active resource limits. */
 const eshkol_resource_limits_t* eshkol_get_limits(void) {
     return &g_limits;
+}
+
+/** Parse a byte-size string with an optional K/M/G (or KiB/MiB/GiB) suffix.
+ *  See the declaration in resource_limits.h for the accepted grammar. This
+ *  is the one parser shared by every `ESHKOL_*` size environment variable,
+ *  including ESHKOL_STACK_SIZE (read outside this file, in
+ *  runtime_stack_hosted.cpp). */
+bool eshkol_parse_size(const char* str, size_t* out_bytes) {
+    if (!str || !out_bytes) return false;
+
+    const char* start = skip_space(str);
+    if (!*start) return false;
+
+    errno = 0;
+    char* end = nullptr;
+    double value = strtod(start, &end);
+    if (end == start || errno == ERANGE || !std::isfinite(value) || value < 0.0) {
+        return false;
+    }
+
+    end = const_cast<char*>(skip_space(end));
+
+    double multiplier = 1.0;
+    if (*end) {
+        switch (*end) {
+            case 'K': case 'k':
+                multiplier = 1024.0;
+                break;
+            case 'M': case 'm':
+                multiplier = 1024.0 * 1024.0;
+                break;
+            case 'G': case 'g':
+                multiplier = 1024.0 * 1024.0 * 1024.0;
+                break;
+            default:
+                return false;
+        }
+        ++end;
+        // Binary-unit spelling: "KiB"/"MiB"/"GiB" (the 'i' is optional and
+        // does not change the multiplier — it is already the binary one).
+        if (*end == 'i' || *end == 'I') {
+            ++end;
+        }
+        if (*end == 'B' || *end == 'b') {
+            ++end;
+        }
+        end = const_cast<char*>(skip_space(end));
+    }
+
+    if (*end) {
+        // Trailing garbage after the number (and optional suffix).
+        return false;
+    }
+
+    const double bytes = value * multiplier;
+    if (!std::isfinite(bytes) ||
+        bytes > static_cast<double>(std::numeric_limits<size_t>::max())) {
+        return false;
+    }
+
+    *out_bytes = static_cast<size_t>(bytes);
+    return true;
 }
 
 // ----------------------------------------------------------------------------
