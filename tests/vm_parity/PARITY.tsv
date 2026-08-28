@@ -815,7 +815,7 @@ temp-directory	vm-supported
 tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (found/tensor_nested_collection_native.esk)
 tensor->vector	gap	tensor linalg/manipulation fid missing in VM
 tensor-abs	vm-supported	
-tensor-add	vm-supported	
+tensor-add	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_ADD_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-apply	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmax	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmin	gap	tensor linalg/manipulation fid missing in VM
@@ -827,7 +827,7 @@ tensor-cov	gap	tensor linalg/manipulation fid missing in VM
 tensor-data	vm-supported	returns a VECTOR like native (it built a list) and no longer truncates silently at 1024 elements (corpus/41_tensor_literals.esk)
 tensor-det	gap	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	gap	tensor linalg/manipulation fid missing in VM
-tensor-div	vm-supported	
+tensor-div	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_DIV_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-dot	vm-supported	
 tensor-dtype	vm-supported	
 tensor-exp	vm-supported	
@@ -843,7 +843,7 @@ tensor-maximum	vm-supported
 tensor-mean	vm-supported	
 tensor-min	vm-supported	
 tensor-minimum	vm-supported	
-tensor-mul	vm-supported	
+tensor-mul	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_MUL_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-neg	vm-supported	
 tensor-norm	gap	tensor linalg/manipulation fid missing in VM
 tensor-pow	vm-supported	
@@ -862,7 +862,7 @@ tensor-sin	vm-supported
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM
 tensor-sqrt	vm-supported	
 tensor-std	gap	tensor linalg/manipulation fid missing in VM
-tensor-sub	vm-supported	
+tensor-sub	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_SUB_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-sum	vm-supported	
 tensor-svd	gap	tensor linalg/manipulation fid missing in VM
 tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM

@@ -5772,6 +5772,14 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         return gradientHigherOrder(op);
     }
 
+    // Count the user-function evaluation once at the shared reverse-gradient
+    // entry.  The old sites were inside the scalar/vector branch bodies, so a
+    // tensor-valued point could execute an exact route without incrementing
+    // the public counter even though one primal call occurred.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_primal",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
+
     // Resolve function (lambda or function reference)
     Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
 
@@ -7259,10 +7267,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_scalar = ctx_.builder().CreateCall(seed_swap_scalar, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
 
     // ESH-0093: restore the previously active seed node
@@ -7499,10 +7503,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_vector = ctx_.builder().CreateCall(seed_swap_vector, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
 
     // ESH-0093: restore the previously active seed node

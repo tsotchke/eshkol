@@ -102,8 +102,8 @@ its backward rule is reachable and gradchecked *through* that producer rather
 than through a hand-built fixture. What remains is reachability from the two
 other paths, and neither is a wiring change.
 
-**Compiled Eshkol (JIT and AOT) — COMPLETE for `matmul`, `tensor-sum` and
-`tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
+**Compiled Eshkol (JIT and AOT) — COMPLETE for `matmul`, dense elementwise
+arithmetic, `tensor-sum` and `tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
 architecture: no compiled program could create one of these nodes at all.
 `AutodiffCodegen::recordADNodeTensor` existed and had exactly one call site,
 dead behind `kDenseTensorADNodesEnabled` in `lib/backend/llvm_codegen.cpp`, and
@@ -162,9 +162,8 @@ codegen time, so the two are two emitted programs rather than one program with
 a runtime branch.
 
 **Still scalarizing** (unchanged, and correct — the scalar decomposition has
-always produced exact gradients; what it costs is tape size): dense elementwise
-tensor arithmetic and the broadcast variants, which ADR-0002 schedules as Phase
-C.3/C.4 for v1.4, and `conv2d`, `attention` and the norm layers. `(embedding …)`
+always produced exact gradients; what it costs is tape size): `conv2d`,
+`attention` and the norm layers. `(embedding …)`
 codegen still emits a plain gather with no tape node, so
 `(gradient (lambda (W) … (embedding idx W)))` records nothing for the lookup.
 An op that has not learned the dense representation and is handed a dense

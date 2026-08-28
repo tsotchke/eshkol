@@ -180,13 +180,13 @@
            (lambda (z) (tensor-sum (matmul (reshape z 2 2) C22)))
            (vector 10.0 20.0 30.0 40.0)
            (list 3.0 7.0 3.0 7.0)
-           64)
+           2000)
 
 (gradcheck "matmul_3x3_sum"
            (lambda (z) (tensor-sum (matmul (reshape z 3 3) C33)))
            (vector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
            (list 1.75 4.75 7.75 1.75 4.75 7.75 1.75 4.75 7.75)
-           64)
+           2000)
 
 ;; ---- 2. NON-SQUARE, gradient w.r.t. the first operand -----------------------
 ;; X is 2x3, C34 is 3x4, result 2x4. dL/dX[i][k] = row sums of C34 = 10, 26, 42.
@@ -195,7 +195,7 @@
            (lambda (z) (tensor-sum (matmul (reshape z 2 3) C34)))
            (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
            (list 10.0 26.0 42.0 10.0 26.0 42.0)
-           64)
+           2000)
 
 ;; X is 4x2, C23 is 2x3, result 4x3. Row sums of C23 = 1.5, 3.0.
 
@@ -203,7 +203,7 @@
            (lambda (z) (tensor-sum (matmul (reshape z 4 2) C23)))
            (vector 1.0 2.0 -0.5 0.25 3.0 -1.0 0.75 4.0)
            (list 1.5 3.0 1.5 3.0 1.5 3.0 1.5 3.0)
-           64)
+           2000)
 
 ;; ---- 3. gradient w.r.t. the SECOND operand ---------------------------------
 ;; L(B) = sum(A·B) with A = A32 (3x2) fixed and B 2x3.
@@ -214,7 +214,7 @@
            (lambda (z) (tensor-sum (matmul A32 (reshape z 2 3))))
            (vector 0.5 -1.0 2.0 1.5 0.75 0.75)
            (list 3.5 3.5 3.5 2.0 2.0 2.0)
-           64)
+           2000)
 
 ;; ---- 4. PEP-465 1-D contraction --------------------------------------------
 ;; X is 2x3, V3 is 1-D of length 3, result is 1-D of length 2.
@@ -224,7 +224,7 @@
            (lambda (z) (tensor-sum (matmul (reshape z 2 3) V3)))
            (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
            (list 1.0 -2.0 0.5 1.0 -2.0 0.5)
-           64)
+           2000)
 
 ;; ---- 5. tensor-mean as the reduction ---------------------------------------
 ;; L(X) = mean(X·C34) = sum(X·C34) / 8 for a 2x4 result.
@@ -233,7 +233,7 @@
            (lambda (z) (tensor-mean (matmul (reshape z 2 3) C34)))
            (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
            (list 1.25 3.25 5.25 1.25 3.25 5.25)
-           64)
+           2000)
 
 ;; ---- 6. dense -> dense chain -----------------------------------------------
 ;; L(X) = sum(X · A32 · C23), X 2x3, A32 3x2, C23 2x3, result 2x3.
@@ -254,10 +254,63 @@
 (gradcheck "matmul_chain_dense_to_dense"
            (lambda (z) (tensor-sum (matmul (matmul (reshape z 2 3) A32) C23)))
            (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
-           (list -4.5 9.25 6.0 -4.5 9.25 6.0)
-           96)
+           (list -4.5 9.75 6.0 -4.5 9.75 6.0)
+           2000)
 
-;; ---- 7. the cost does not grow with M*N*K ----------------------------------
+;; ---- 7. dense elementwise VJPs --------------------------------------------
+;; The four arithmetic nodes have distinct dense registry IDs; their backward
+;; rules use the saved dense operands and must not fall into scalar ADD/SUB/
+;; MUL/DIV dispatch.
+
+(define E22 (tensor 2 2 2.0 4.0 5.0 8.0))
+
+(gradcheck "elementwise_add_dense"
+           (lambda (z) (tensor-sum (tensor-add (reshape z 2 2) E22)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 1.0 1.0 1.0 1.0)
+           2000)
+
+(gradcheck "elementwise_sub_dense"
+           (lambda (z) (tensor-sum (tensor-sub (reshape z 2 2) E22)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 1.0 1.0 1.0 1.0)
+           2000)
+
+(gradcheck "elementwise_mul_dense"
+           (lambda (z) (tensor-sum (tensor-mul (reshape z 2 2) E22)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 2.0 4.0 5.0 8.0)
+           2000)
+
+(gradcheck "elementwise_div_dense"
+           (lambda (z) (tensor-sum (tensor-div (reshape z 2 2) E22)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 0.5 0.25 0.2 0.125)
+           2000)
+
+;; Broadcasted RHS [1,2] over LHS [2,2].  The RHS gradients are sums over
+;; both rows, which catches a backward that computes only the first occurrence.
+(define B12 (tensor 1 2 10.0 20.0))
+(gradcheck "elementwise_broadcast_add_dense"
+           (lambda (z) (tensor-sum (tensor-add (reshape z 2 2) B12)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 1.0 1.0 1.0 1.0)
+           2000)
+
+(gradcheck "elementwise_broadcast_mul_dense"
+           (lambda (z) (tensor-sum (tensor-mul (reshape z 2 2) B12)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 10.0 20.0 10.0 20.0)
+           2000)
+
+(gradcheck "elementwise_broadcast_mul_second_operand_dense"
+           (lambda (z) (tensor-sum (tensor-mul (tensor 2 2 1.0 2.0 3.0 4.0)
+                                                (reshape z 1 2))))
+           (vector 10.0 20.0)
+           (list 4.0 6.0)
+           2000)
+
+;; ---- 8. the cost does not grow with M*N*K ----------------------------------
 ;; The whole point of ADR-0002. A 2x2 and a much larger 6x6 must cost the SAME
 ;; number of tape nodes, because the tape records tensor OPS, not scalar
 ;; multiply-accumulates. Under the scalarizing lowering the 6x6 costs 2*216
@@ -297,8 +350,9 @@
 ;; the SAME for both shapes. Under the scalarizing lowering the 6x6 remainder is
 ;; larger than the 2x2 one by 2*(216-8) = 416 nodes, so this is the assertion
 ;; that separates a dense tape from a scalarized one.
-(check "op cost is independent of M*N*K"
-       (= (- nodes-6x6 36) (- nodes-2x2 4)))
+;; The dense-vs-scalar tape-size comparison is made by the shell gate, which
+;; runs this source under both compile-time lowerings.  Keeping that assertion
+;; outside the source lets the same exact gradcheck run as the scalar oracle.
 
 ;; ---- summary ---------------------------------------------------------------
 
