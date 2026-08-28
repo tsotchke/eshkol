@@ -51,6 +51,27 @@ on the LLVM backend but raises a named diagnostic on the VM, whose forward dual
 is a scalar carrier and whose tensors hold bare doubles — every tangent would be
 dropped at construction, so it reports instead of approximating.
 
+## Native bridge primitive — squared geodesic distance
+
+The native C bridge exposes `AD_NODE_SQUARED_DISTANCE` through
+`ad_squared_distance` and `ad_product_squared_distance`. These are not Scheme
+builtins: they accept native `ad_node_t` point tensors and record a scalar
+node for the native reverse sweep. The product form sums weighted squared
+distances factorwise across Euclidean, hyperbolic, and spherical factors.
+
+The backward evaluates the log-map form directly:
+
+```
+grad_x d²(x,y) = -2 log_x(y)
+```
+
+It is differentiable at `x == y`; the forward value and both point gradients
+are exactly zero there. The spherical antipode remains a refusal because the
+log map is not defined at the cut locus. The bridge is native-only and has an
+explicit VM-parity justification; it does not claim a Scheme or VM surface.
+See [`space_form.h`](../../../inc/eshkol/bridge/space_form.h) and the
+[support matrix](support-matrix.md).
+
 ---
 
 ## `derivative` — forward-mode scalar derivative

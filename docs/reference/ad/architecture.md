@@ -138,6 +138,49 @@ it rejects.
 
 ---
 
+### Build item — `AD_NODE_SQUARED_DISTANCE` has no Scheme surface and no VM path
+
+`d²(x,y)` on the space forms and their products
+(`lib/bridge/space_form_ad.cpp`, `AD_NODE_SQUARED_DISTANCE`) is a C bridge
+entry point. It records onto the native `ad_node_t` tape and is answered by the
+`native-ad-node` carrier, which `.icc/ad-carrier-manifest.yaml` declares
+`shared: false`. There is no `(squared-distance …)` builtin or native call id;
+the deliberate native-only limitation is recorded by the
+`ad-squared-distance` row in `tests/vm_parity/PARITY.tsv` so the absence of a VM
+implementation is explicit rather than inferred.
+
+Two things gate a VM path, and neither is a wiring change:
+
+1. **The VM has no `ad_node_t`.** `lib/backend/vm_autodiff.c` carries its own
+   scalar `AdNode` with a single `double saved` slot. This op keeps its factor
+   list — form, dimension, curvature and weight per factor — in
+   `saved_tensors[0]`, which has no counterpart there. The chunked-storage and
+   `void** saved` work listed for `AD_NODE_CUSTOM` above is the same
+   prerequisite.
+2. **The VM's `gradient` builds no tape at all.** It is the forward `VmDual`
+   carrier, which is scalar and cannot carry a tangent through a `VmTensor`
+   (`fork_debt.blocked_on`). A point on a manifold is a vector by construction,
+   so there is nothing for the forward carrier to seed.
+
+Until both land, adding a VM opcode for this op would mean a *second*
+implementation of the geometry answering the same name — the exact fork
+`gate_ad_shared_node_model.py` was written to size and cap. The honest
+intermediate state is the one recorded here: native only, declared as such, and
+no VM parity beyond the explicit native-only row claiming otherwise.
+
+What is worth stating alongside that, because it is the reason the op exists:
+this node deliberately does **not** inherit `ad_hyperbolic_distance`'s
+coincidence refusal. `d` has a cone point at `x == y` and refusing there is
+right. `d²` is smooth on the whole injectivity ball, with
+`grad_x d² = -2 log_x(y)` vanishing exactly at coincidence — and it cannot be
+obtained from `d` by squaring, because `2·d·grad d` is `0·(no limit)` at the
+diagonal. The two ops are kept in separate translation units with separate
+dispatch arms for that reason: a shared implementation would eventually
+propagate one op's refusal to the other, and the diagonal is not an edge case
+for a scoring function, it is every self-attention row.
+
+---
+
 ## Forward mode — the 4-component jet
 
 A "dual number" in Eshkol is **not** the classic 2-component `{value,

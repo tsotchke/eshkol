@@ -1,0 +1,420 @@
+;;; squared_distance.esk — golden gradient vectors for squared geodesic
+;;; distance on the space forms and on a product of them.
+;;;
+;;; WHAT THIS EXPORTER IS FOR, AND WHY IT IS WRITTEN THE WAY IT IS
+;;;
+;;; The shipped primitive (AD_NODE_SQUARED_DISTANCE, lib/bridge/space_form_ad.cpp)
+;;; computes d^2 in the LOG-MAP form and returns grad_x d^2 = -2 log_x(y) pushed
+;;; through the metric. It never forms d, and it never differentiates sqrt(d^2),
+;;; because doing either reintroduces a 0/0 at x == y that the mathematics does
+;;; not have.
+;;;
+;;; This file deliberately takes the OTHER route. It writes d in each chart's
+;;; textbook closed form — arcosh for the ball, arccos for the sphere — squares
+;;; it, and lets Eshkol's generic reverse-mode AD differentiate the whole
+;;; composition. Away from the diagonal the two routes must agree to the last
+;;; few bits, and that agreement is the check: two derivations, two languages,
+;;; no shared line of code.
+;;;
+;;; The route also demonstrates, rather than asserts, WHY the shipped node had
+;;; to be written the other way. Case `coincident` differentiates the same
+;;; arcosh composition at x == y, where arcosh'(1) is infinite and d is zero:
+;;; the product 2*d*d' is 0*inf, and the gradient comes back NON-FINITE. The
+;;; value is a clean 0.0 and the derivative is a NaN. That is exactly the
+;;; failure the log-map form does not have, and the golden file records it as
+;;; a null with `all_finite: false` so a consumer cannot mistake it for a
+;;; number.
+;;;
+;;; Reference for the formulas:
+;;;   ball        d(x,y) = arcosh(1 + 2c|x-y|^2 / ((1-c|x|^2)(1-c|y|^2))) / sqrt(c)
+;;;   sphere      d(x,y) = R * arccos(<x,y>/R^2),  R = 1/sqrt(c)
+;;;   euclidean   d(x,y) = |x - y|
+;;;   product     d^2 = sum_f w_f d_f^2   (index-contiguous factors)
+;;;
+;;; Consumed by tests/bridge/squared_distance_gradcheck_test.cpp, which cites
+;;; each case by id.
+
+(load "qllm_oracle_lib.esk")
+
+;;; ----------------------------------------------------------------------
+;;; Scalar helpers the VM has no builtin for
+;;; ----------------------------------------------------------------------
+
+;; arcosh(z) = log(z + sqrt(z^2 - 1)), z >= 1. Unclamped on purpose: the
+;; whole point of the coincident case is what this does at z = 1.
+(define (arcosh z) (log (+ z (sqrt (- (* z z) 1.0)))))
+
+;; arccos with the argument clamped into [-1, 1]. The clamp only ever fires on
+;; a rounding excursion past the ends; it is not a cut-locus guard, and the
+;; sphere cases here stay well short of the antipode.
+(define (arccos-clamped s)
+  (acos (if (> s 1.0) 1.0 (if (< s -1.0) -1.0 s))))
+
+;;; ----------------------------------------------------------------------
+;;; Globals
+;;;
+;;; The second point, the curvature, the factor layout and the factor weights
+;;; all travel as globals rather than as parameters captured by the AD lambda:
+;;; capturing a local parameter inside an AD lambda over a vector point is the
+;;; tracked open compiler bug ESH-0097 and would turn these vectors into
+;;; silent garbage. Same convention as every other exporter here.
+;;; ----------------------------------------------------------------------
+
+(define *SD-Y* (vector 0.0 0.0))
+(define *SD-C* 1.0)
+
+;; Product layout: three factors, each described by (form dim curvature weight)
+;; with form 0 = euclidean, 1 = hyperbolic (ball), 2 = spherical.
+(define *SD-FACTORS* (vector))
+
+;;; ----------------------------------------------------------------------
+;;; The three space forms — squared distance, textbook route
+;;; ----------------------------------------------------------------------
+
+(define (sqdist-euclid x y)
+  (let ((d (vsub x y))) (vdot d d)))
+
+;; Ball of curvature -c. d = arcosh(w)/sqrt(c), d^2 = d*d.
+(define (sqdist-ball x y c)
+  (let* ((dv (vsub x y))
+         (dd (vdot dv dv))
+         (a  (- 1.0 (* c (vdot x x))))
+         (b  (- 1.0 (* c (vdot y y))))
+         (w  (+ 1.0 (/ (* 2.0 (* c dd)) (* a b))))
+         (d  (/ (arcosh w) (sqrt c))))
+    (* d d)))
+
+;; Sphere of curvature +c, radius R = 1/sqrt(c). Points are normalised onto
+;; the sphere, which is what makes the map 0-homogeneous in each argument and
+;; its ambient gradient exactly tangent.
+(define (sqdist-sphere x y c)
+  (let* ((r  (/ 1.0 (sqrt c)))
+         (nx (vnorm x))
+         (ny (vnorm y))
+         (s  (/ (vdot x y) (* nx ny)))
+         (th (arccos-clamped s))
+         (d  (* r th)))
+    (* d d)))
+
+(define (sqdist-form form x y c)
+  (if (= form 0) (sqdist-euclid x y)
+      (if (= form 1) (sqdist-ball x y c)
+          (sqdist-sphere x y c))))
+
+;; Slice [off, off+len) of v.
+(define (vslice v off len)
+  (let ((o (make-vector len 0.0)))
+    (let loop ((i 0))
+      (if (< i len)
+          (begin (vector-set! o i (vector-ref v (+ off i))) (loop (+ i 1)))))
+    o))
+
+;; d^2 over the product described by *SD-FACTORS*.
+(define (sqdist-product x y facs)
+  (let ((k (vector-length facs)))
+    (let loop ((i 0) (off 0) (acc 0.0))
+      (if (>= i k) acc
+          (let* ((f    (vector-ref facs i))
+                 (form (vector-ref f 0))
+                 (dim  (vector-ref f 1))
+                 (c    (vector-ref f 2))
+                 (w    (vector-ref f 3))
+                 (xs   (vslice x off dim))
+                 (ys   (vslice y off dim)))
+            (loop (+ i 1) (+ off dim)
+                  (+ acc (* w (sqdist-form form xs ys c)))))))))
+
+;;; Projections handed to `gradient` — scalar of a vector, globals for the rest.
+
+(define (sd-euclid-x v)  (sqdist-euclid v *SD-Y*))
+(define (sd-ball-x v)    (sqdist-ball v *SD-Y* *SD-C*))
+(define (sd-sphere-x v)  (sqdist-sphere v *SD-Y* *SD-C*))
+(define (sd-product-x v) (sqdist-product v *SD-Y* *SD-FACTORS*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic seed points
+;;; ----------------------------------------------------------------------
+
+;; Ball, curvature -1: two interior points, neither near the boundary, at a
+;; separation of order 1 so arcosh is well conditioned and the FD column is
+;; meaningful.
+(define BALL-X (vector 0.3 -0.2 0.1))
+(define BALL-Y (vector -0.15 0.25 0.4))
+
+;; Sphere, curvature +1 (unit 2-sphere in R^3). Both points normalised.
+(define SPH-X (vwith-norm (vector 0.6 -0.8 0.0) 1.0))
+(define SPH-Y (vwith-norm (vector 0.2 0.3 0.9) 1.0))
+
+;; Flat R^3.
+(define EUC-X (vector 0.5 -1.25 2.0))
+(define EUC-Y (vector -0.75 0.5 0.125))
+
+;; Product H^2(c=1) x S^2(c=1, ambient R^3) x R^2, weights 1, 2, 0.5.
+;; Coordinate layout is index-contiguous in that order: 2 + 3 + 2 = 7.
+(define PROD-FACTORS
+  (vector (vector 1 2 1.0 1.0)      ; hyperbolic ball, dim 2, c = 1, w = 1
+          (vector 2 3 1.0 2.0)      ; sphere, ambient dim 3, c = 1, w = 2
+          (vector 0 2 0.0 0.5)))    ; euclidean, dim 2, w = 1/2
+
+(define PROD-X (vector  0.25 -0.1
+                        0.6 -0.8 0.0
+                        1.5  0.25))
+(define PROD-Y (vector -0.3   0.2
+                        0.2   0.3  0.9
+                       -0.5   1.75))
+
+;;; ----------------------------------------------------------------------
+;;; Identities asserted in-language
+;;;
+;;; These are the closed-form cross-checks, and they run BEFORE any finite
+;;; difference is consulted. Each is an identity of Riemannian geometry, not a
+;;; rearrangement of the formula being differentiated:
+;;;
+;;;   Gauss lemma:  |grad d^2|_g = 2 d.  Note which side lambda goes on. The
+;;;   RIEMANNIAN gradient is g^{-1} times the coordinate gradient the tape
+;;;   carries, so on the ball, where g = lambda_x^2 I with
+;;;   lambda_x = 2/(1-c|x|^2), its Riemannian norm is |grad_x d^2|_euclid /
+;;;   lambda_x, and the identity reads |grad|_euclid / lambda_x = 2 d. On the
+;;;   sphere and in flat space the metric is the ambient one and it is
+;;;   |grad| = 2 d directly.
+;;;
+;;;   Product additivity: d^2 over the product equals the weighted sum of the
+;;;   factors' own d^2, computed by three separate single-factor calls.
+;;; ----------------------------------------------------------------------
+
+(define (ball-lambda x c) (/ 2.0 (- 1.0 (* c (vdot x x)))))
+
+(define (ball-dist x y c)
+  (let* ((dv (vsub x y))
+         (dd (vdot dv dv))
+         (a  (- 1.0 (* c (vdot x x))))
+         (b  (- 1.0 (* c (vdot y y)))))
+    (/ (arcosh (+ 1.0 (/ (* 2.0 (* c dd)) (* a b)))) (sqrt c))))
+
+(define (sphere-dist x y c)
+  (* (/ 1.0 (sqrt c))
+     (arccos-clamped (/ (vdot x y) (* (vnorm x) (vnorm y))))))
+
+(define (rel a b) (/ (fabs (- a b)) (+ 1.0 (fabs b))))
+
+;;; ----------------------------------------------------------------------
+;;; Emission
+;;; ----------------------------------------------------------------------
+
+(json-open "squared_distance.json")
+(json-header "squared_distance"
+             "tests/qllm_oracle/squared_distance.esk"
+             "inc/eshkol/bridge/space_form.h (AD_NODE_SQUARED_DISTANCE)"
+             "d^2(x,y) on H^n (ball) / S^n / R^n and products; grad_x d^2 = -2 log_x(y)")
+
+;;; --- case 1: flat R^3, the exact case ---------------------------------
+(set! *SD-Y* EUC-Y)
+(let* ((x   EUC-X)
+       (d2  (sqdist-euclid x EUC-Y))
+       (g   (gradient sd-euclid-x x))
+       (dist (vnorm (vsub x EUC-Y)))
+       ;; grad = 2(x-y), exactly, so this comparison is not a tolerance.
+       (want (vscale (vsub x EUC-Y) 2.0))
+       (exactly-equal
+        (let loop ((i 0) (ok #t))
+          (if (>= i (vector-length g)) ok
+              (loop (+ i 1) (and ok (= (vector-ref g i) (vector-ref want i)))))))
+       (fdbest (fd-best-rel-diff sd-euclid-x x 1 (vector g)))
+       (fd-rel (vector-ref fdbest 0))
+       (fd-h   (vector-ref fdbest 1)))
+  (jo "    {") (jnl)
+  (jo "      ") (jkv-str "id" "squared_distance.euclidean.d3") (jo ",") (jnl)
+  (jo "      ") (jkv-str "form" "euclidean") (jo ",") (jnl)
+  (jo "      ") (jkv-int "dim" 3) (jo ",") (jnl)
+  (jo "      ") (jkey "inputs") (jo "{")
+  (jkv-vec "x" x) (jo ", ") (jkv-vec "y" EUC-Y) (jo "},") (jnl)
+  (jo "      ") (jkey "primal_outputs") (jo "{")
+  (jkv-num "d2" d2) (jo ", ") (jkv-num "d" dist) (jo "},") (jnl)
+  (jo "      ") (jkey "gradients") (jo "{")
+  (jkv-vec "d_d2_d_x" g) (jo ", ")
+  (jkv-bool "all_finite" (vec-all-finite? g)) (jo "},") (jnl)
+  (jo "      ") (jkey "fd_cross_check") (jo "{")
+  (jkv-num "best_step" fd-h) (jo ", ") (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+  (jkv-bool "fd_usable" (< fd-rel 1e-6)) (jo "}") (jnl)
+  (jo "    }")
+  (chk "squared_distance.euclidean.d3 grad == 2(x-y) exactly"
+       exactly-equal
+       (string-append "d2=" (number->string d2)
+                      " fd_best_rel=" (number->string fd-rel))))
+
+;;; --- case 2: Poincare ball, c = 1 -------------------------------------
+(set! *SD-Y* BALL-Y)
+(set! *SD-C* 1.0)
+(let* ((x    BALL-X)
+       (d2   (sqdist-ball x BALL-Y 1.0))
+       (g    (gradient sd-ball-x x))
+       (dist (ball-dist x BALL-Y 1.0))
+       (lam  (ball-lambda x 1.0))
+       ;; Gauss lemma in the conformal metric. The Riemannian gradient is
+       ;; g^{-1} = lambda_x^{-2} times this coordinate one, so its Riemannian
+       ;; norm is lambda_x * (|grad|/lambda_x^2) = |grad|/lambda_x, and THAT is
+       ;; the 2 d. Putting lambda on the other side is off by lambda^2 and is
+       ;; a mistake this check is well placed to catch.
+       (gauss (rel (/ (vnorm g) lam) (* 2.0 dist)))
+       (fdbest (fd-best-rel-diff sd-ball-x x 1 (vector g)))
+       (fd-rel (vector-ref fdbest 0))
+       (fd-h   (vector-ref fdbest 1)))
+  (jo ",") (jnl)
+  (jo "    {") (jnl)
+  (jo "      ") (jkv-str "id" "squared_distance.ball.d3.c1") (jo ",") (jnl)
+  (jo "      ") (jkv-str "form" "hyperbolic") (jo ",") (jnl)
+  (jo "      ") (jkv-int "dim" 3) (jo ",") (jnl)
+  (jo "      ") (jkv-num "curvature" 1.0) (jo ",") (jnl)
+  (jo "      ") (jkey "inputs") (jo "{")
+  (jkv-vec "x" x) (jo ", ") (jkv-vec "y" BALL-Y) (jo "},") (jnl)
+  (jo "      ") (jkey "primal_outputs") (jo "{")
+  (jkv-num "d2" d2) (jo ", ") (jkv-num "d" dist) (jo ", ")
+  (jkv-num "lambda_x" lam) (jo "},") (jnl)
+  (jo "      ") (jkey "gradients") (jo "{")
+  (jkv-vec "d_d2_d_x" g) (jo ", ")
+  (jkv-bool "all_finite" (vec-all-finite? g)) (jo "},") (jnl)
+  (jo "      ") (jkey "identities") (jo "{")
+  (jkv-num "gauss_lemma_rel" gauss) (jo "},") (jnl)
+  (jo "      ") (jkey "fd_cross_check") (jo "{")
+  (jkv-num "best_step" fd-h) (jo ", ") (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+  (jkv-bool "fd_usable" (< fd-rel 1e-6)) (jo "}") (jnl)
+  (jo "    }")
+  (chk "squared_distance.ball.d3.c1 |grad|/lambda_x == 2 d"
+       (< gauss 1e-13)
+       (string-append "d2=" (number->string d2)
+                      " gauss_rel=" (number->string gauss)
+                      " fd_best_rel=" (number->string fd-rel))))
+
+;;; --- case 3: sphere, c = 1 --------------------------------------------
+(set! *SD-Y* SPH-Y)
+(set! *SD-C* 1.0)
+(let* ((x    SPH-X)
+       (d2   (sqdist-sphere x SPH-Y 1.0))
+       (g    (gradient sd-sphere-x x))
+       (dist (sphere-dist x SPH-Y 1.0))
+       ;; Ambient metric on the sphere: |grad d^2| = 2 d directly. The radial
+       ;; component is zero because the map is 0-homogeneous in x, and this
+       ;; identity is what detects a stray normal term.
+       (gauss (rel (vnorm g) (* 2.0 dist)))
+       (radial (fabs (vdot g x)))
+       (fdbest (fd-best-rel-diff sd-sphere-x x 1 (vector g)))
+       (fd-rel (vector-ref fdbest 0))
+       (fd-h   (vector-ref fdbest 1)))
+  (jo ",") (jnl)
+  (jo "    {") (jnl)
+  (jo "      ") (jkv-str "id" "squared_distance.sphere.d3.c1") (jo ",") (jnl)
+  (jo "      ") (jkv-str "form" "spherical") (jo ",") (jnl)
+  (jo "      ") (jkv-int "dim" 3) (jo ",") (jnl)
+  (jo "      ") (jkv-num "curvature" 1.0) (jo ",") (jnl)
+  (jo "      ") (jkey "inputs") (jo "{")
+  (jkv-vec "x" x) (jo ", ") (jkv-vec "y" SPH-Y) (jo "},") (jnl)
+  (jo "      ") (jkey "primal_outputs") (jo "{")
+  (jkv-num "d2" d2) (jo ", ") (jkv-num "d" dist) (jo "},") (jnl)
+  (jo "      ") (jkey "gradients") (jo "{")
+  (jkv-vec "d_d2_d_x" g) (jo ", ")
+  (jkv-bool "all_finite" (vec-all-finite? g)) (jo "},") (jnl)
+  (jo "      ") (jkey "identities") (jo "{")
+  (jkv-num "gauss_lemma_rel" gauss) (jo ", ")
+  (jkv-num "radial_component" radial) (jo "},") (jnl)
+  (jo "      ") (jkey "fd_cross_check") (jo "{")
+  (jkv-num "best_step" fd-h) (jo ", ") (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+  (jkv-bool "fd_usable" (< fd-rel 1e-6)) (jo "}") (jnl)
+  (jo "    }")
+  (chk "squared_distance.sphere.d3.c1 |grad| == 2 d and no radial part"
+       (and (< gauss 1e-12) (< radial 1e-13))
+       (string-append "d2=" (number->string d2)
+                      " gauss_rel=" (number->string gauss)
+                      " radial=" (number->string radial)
+                      " fd_best_rel=" (number->string fd-rel))))
+
+;;; --- case 4: product H^2 x S^2 x R^2 ----------------------------------
+(set! *SD-Y* PROD-Y)
+(set! *SD-FACTORS* PROD-FACTORS)
+(let* ((x  PROD-X)
+       (d2 (sqdist-product x PROD-Y PROD-FACTORS))
+       (g  (gradient sd-product-x x))
+       ;; Additivity, computed factor by factor from single-factor calls.
+       (h2 (sqdist-ball   (vslice x 0 2) (vslice PROD-Y 0 2) 1.0))
+       (s2 (sqdist-sphere (vslice x 2 3) (vslice PROD-Y 2 3) 1.0))
+       (r2 (sqdist-euclid (vslice x 5 2) (vslice PROD-Y 5 2)))
+       (sum (+ (* 1.0 h2) (+ (* 2.0 s2) (* 0.5 r2))))
+       (add-rel (rel d2 sum))
+       (fdbest (fd-best-rel-diff sd-product-x x 1 (vector g)))
+       (fd-rel (vector-ref fdbest 0))
+       (fd-h   (vector-ref fdbest 1)))
+  (jo ",") (jnl)
+  (jo "    {") (jnl)
+  (jo "      ") (jkv-str "id" "squared_distance.product.h2s2r2") (jo ",") (jnl)
+  (jo "      ") (jkv-str "form" "product") (jo ",") (jnl)
+  (jo "      ") (jkv-int "dim" 7) (jo ",") (jnl)
+  (jo "      ") (jkv-str "layout" "H2(c=1,w=1) x S2(ambient 3,c=1,w=2) x R2(w=0.5)")
+  (jo ",") (jnl)
+  (jo "      ") (jkey "inputs") (jo "{")
+  (jkv-vec "x" x) (jo ", ") (jkv-vec "y" PROD-Y) (jo "},") (jnl)
+  (jo "      ") (jkey "primal_outputs") (jo "{")
+  (jkv-num "d2" d2) (jo ", ")
+  (jkv-num "d2_hyperbolic" h2) (jo ", ")
+  (jkv-num "d2_spherical" s2) (jo ", ")
+  (jkv-num "d2_euclidean" r2) (jo "},") (jnl)
+  (jo "      ") (jkey "gradients") (jo "{")
+  (jkv-vec "d_d2_d_x" g) (jo ", ")
+  (jkv-bool "all_finite" (vec-all-finite? g)) (jo "},") (jnl)
+  (jo "      ") (jkey "identities") (jo "{")
+  (jkv-num "additivity_rel" add-rel) (jo "},") (jnl)
+  (jo "      ") (jkey "fd_cross_check") (jo "{")
+  (jkv-num "best_step" fd-h) (jo ", ") (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+  (jkv-bool "fd_usable" (< fd-rel 1e-6)) (jo "}") (jnl)
+  (jo "    }")
+  (chk "squared_distance.product.h2s2r2 == sum_f w_f d_f^2"
+       (< add-rel 1e-14)
+       (string-append "d2=" (number->string d2)
+                      " additivity_rel=" (number->string add-rel)
+                      " fd_best_rel=" (number->string fd-rel))))
+
+;;; --- case 5: coincidence, the whole reason for the primitive ----------
+;;;
+;;; x == y bitwise, on the ball, through the arcosh route. The VALUE is a clean
+;;; 0.0; the DERIVATIVE is not a number, because arcosh'(1) = 1/sqrt(w^2-1) is
+;;; infinite and d is zero, so 2*d*d' is 0*inf. The shipped node reaches the
+;;; same point through log_x(y) and returns exactly zero — see
+;;; tests/bridge/squared_distance_gradcheck_test.cpp, which asserts that the
+;;; value here is 0.0, that THIS gradient is non-finite, and that the shipped
+;;; one is exactly zero. The three together are the whole design argument.
+(set! *SD-Y* BALL-X)
+(set! *SD-C* 1.0)
+(let* ((x  BALL-X)
+       (d2 (sqdist-ball x BALL-X 1.0))
+       (g  (gradient sd-ball-x x))
+       (fin (vec-all-finite? g)))
+  (jo ",") (jnl)
+  (jo "    {") (jnl)
+  (jo "      ") (jkv-str "id" "squared_distance.ball.coincident.d3.c1") (jo ",") (jnl)
+  (jo "      ") (jkv-str "form" "hyperbolic") (jo ",") (jnl)
+  (jo "      ") (jkv-int "dim" 3) (jo ",") (jnl)
+  (jo "      ") (jkv-num "curvature" 1.0) (jo ",") (jnl)
+  (jo "      ") (jkv-str "route" "arcosh-then-square (NOT the shipped route)")
+  (jo ",") (jnl)
+  (jo "      ") (jkey "inputs") (jo "{")
+  (jkv-vec "x" x) (jo ", ") (jkv-vec "y" x) (jo "},") (jnl)
+  (jo "      ") (jkey "primal_outputs") (jo "{")
+  (jkv-num "d2" d2) (jo "},") (jnl)
+  (jo "      ") (jkey "gradients") (jo "{")
+  (jkv-vec "d_d2_d_x" g) (jo ", ")
+  (jkv-bool "all_finite" fin) (jo "},") (jnl)
+  (jo "      ") (jkey "expected_from_log_map_route") (jo "{")
+  (jkv-vec "d_d2_d_x" (vector 0.0 0.0 0.0)) (jo ", ")
+  (jkv-bool "all_finite" #t) (jo "}") (jnl)
+  (jo "    }")
+  ;; The failure is the finding. A finite answer here would mean the arcosh
+  ;; route had quietly acquired a guard, and the contrast this case exists to
+  ;; draw would be gone.
+  (chk "squared_distance.ball.coincident: sqrt route value 0, gradient NOT finite"
+       (and (= d2 0.0) (not fin))
+       (string-append "d2=" (number->string d2)
+                      " all_finite=" (if fin "true" "false"))))
+
+(json-footer)
+(json-close)
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))

@@ -73,6 +73,7 @@ poincare_retract.esk
 sphere_ops.esk
 poincare_maps.esk
 sheaf_ee_step.esk
+squared_distance.esk
 "
 
 # macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).

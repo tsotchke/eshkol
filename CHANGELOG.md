@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Squared geodesic distance as an AD primitive, differentiable through the
+  diagonal.** Added `AD_NODE_SQUARED_DISTANCE` for Euclidean, hyperbolic,
+  spherical, and product manifolds, with exact zero value and gradient at
+  coincidence, direct log-map evaluation, native reverse dispatch coverage,
+  30-check gradcheck coverage, and independent oracle golden vectors. The
+  spherical cut locus remains correctly refused.
+
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
   exactly verify public finite witnesses: the 2026 Jacobian-conjecture
   counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47
