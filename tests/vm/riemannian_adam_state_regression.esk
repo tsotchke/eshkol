@@ -29,6 +29,14 @@
 (define st (make-riemannian-adam-state p))
 (report (if st #t #f) "make-riemannian-adam-state")
 
+;; Shape is not parameter identity. A state made for p must refuse an
+;; independent same-shaped tensor instead of sharing its moments with it.
+(define same-shaped (make-tensor '(2) 1.0))
+(define wrong-owner
+  (riemannian-adam-step! st same-shaped g 0.1 0.9 0.999 0.0))
+(report (null? wrong-owner)
+        "Adam state refuses a different same-shaped parameter")
+
 ;; ── the first step has Riemannian length exactly lr ──────────────────────────
 ;; On step 1 the bias corrections cancel exactly: m_hat = g and s_hat = ||g||^2,
 ;; so the delta is -lr g/||g||_x and its Riemannian length is lr, on EVERY

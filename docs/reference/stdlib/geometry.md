@@ -58,7 +58,7 @@ of constant-curvature geometry in f64** (`inc/eshkol/backend/riemannian_core.h`)
 together with the **differential-form jet calculus**
 (`inc/eshkol/backend/differential_form_core.h`).
 
-It used to have two, selected at compile time by `ESHKOL_GEOMETRIC_ENABLED`, the
+It used to have two, selected by a legacy compile-time qLLM branch, the
 second dispatching through the out-of-tree `semiclassical_qllm` library. **That
 body has been deleted.** No target ever defined the macro, so it was unreachable
 from every configuration of this repository; and it was not a working
@@ -1080,9 +1080,10 @@ degrade to a bias-corrected SGD. The state has to be named by the caller.
 
 ### `(make-riemannian-adam-state point)` — id 860
 
-Allocates a zeroed state — a first-moment buffer shaped like `point`, a
-**scalar** second moment, and a step counter — and returns the handle. The state
-is region-scoped. `()` if `point` is not a usable tensor.
+Allocates a zeroed state — a first-moment buffer shaped like `point`, one scalar
+second moment for this manifold factor, and a step counter — and returns the
+handle. The state is region-scoped and identity-keyed to `point`; it cannot be
+used with a different same-shaped tensor. `()` if `point` is not a usable tensor.
 
 ```scheme
 (define st (make-riemannian-adam-state (make-tensor '(4) 1.0)))
@@ -1096,14 +1097,15 @@ Bias-corrected **intrinsic** Riemannian Adam with `ε = 1e-8`. `beta1` outside
 with `exp_point`, and the **first moment is parallel-transported** to the new
 point — it is a tangent vector at the old one and is meaningless at the new one
 until it is moved. Despite the `!`, the returned value is a **new** tensor;
-`point` is not mutated, `state` is. `()` if the state's shape does not match
-`point`.
+`point` is not mutated, `state` is. `()` if the state is not identity-keyed to
+`point` (a shape match alone is not enough).
 
-**The second moment is one scalar**, not a per-coordinate array:
+**The second moment is one scalar per manifold factor**, not a per-coordinate
+array:
 
     s_t = β₂ s_{t−1} + (1 − β₂) ‖g_t‖²_{x_t}
 
-measured in the manifold's own metric, so the delta stays **parallel to the first
+measured in the factor's own metric, so the delta stays **parallel to the first
 moment** and is therefore tangent wherever the gradient is. The per-coordinate
 form this replaces is not an operation on a manifold — it does not commute with a
 change of chart and it does not preserve a tangent space. On the unit sphere at
@@ -1118,11 +1120,11 @@ A consequence worth testing against: on the first step the bias corrections
 cancel exactly, so the delta is `−lr·g/‖g‖_x` and **the step's Riemannian length
 is exactly `lr`**, on every branch.
 
-**A refused step changes nothing.** The moments and the step counter are held in
-temporaries and committed only after the exponential map and the moment
-transport have both succeeded. They used to be written first, so a call that
-ended in a raise still advanced the optimizer and the retry answered a different
-question.
+**A refused step changes nothing.** The moments, step counter, and parameter
+identity are held in temporaries and committed only after the exponential map
+and moment transport have both succeeded. They used to be written first, so a
+call that ended in a raise still advanced the optimizer and the retry answered a
+different question.
 
 ```scheme
 (define p  (make-tensor '(4) 1.0))

@@ -223,7 +223,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_PARAMETER]    = { "parameter",    VM_EVAC_WALK, "current_value, converter, save_stack[0..stack_depth)" },
     [HEAP_HYPER_DUAL]   = { "hyper-dual",   VM_EVAC_WALK, "payload only (four doubles)" },
     [HEAP_RIEMANNIAN_ADAM_STATE] = { "riemannian-adam-state", VM_EVAC_WALK,
-                                     "payload only (two double buffers)" },
+                                     "payload only (moment buffer, scalar moment, owner identity)" },
     [HEAP_FUTURE]       = { "future",       VM_EVAC_ROOT, "thunk/result Values, plus a live pthread mutex+cond" },
     [HEAP_I128]         = { "i128",         VM_EVAC_WALK, "payload only (flat {lo,hi})" },
     [28]                = { "<unassigned 28>", VM_EVAC_PIN, "no such tag; pin if one ever appears" },
@@ -780,19 +780,13 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
 }
 
 /** @brief Retain the region memory the VM points at directly, rather than
- *         through an arena or a heap object: the live AD tape and the
- *         geometric optimizer states. Everything else in `struct VM` is either
+ *         through an arena or a heap object: the live AD tape. Everything else
+ *         in `struct VM` is either
  *         a Value (covered as a mark root) or a non-arena OS handle. */
 static void vm_evac_scan_vm_raw_pointers(VM* vm, VmEvacBlocks* bs) {
     if (vm->active_tape) {
         vm_evac_retain_ptr(bs, vm->active_tape);
         vm_evac_scan_range(bs, vm->active_tape, sizeof(AdTape));
-    }
-    for (int i = 0; i < 16; i++) {
-        if (!vm->geometric_adam_states[i]) continue;
-        vm_evac_retain_ptr(bs, vm->geometric_adam_states[i]);
-        vm_evac_scan_range(bs, vm->geometric_adam_states[i],
-                           sizeof(VmRiemannianAdamState));
     }
 }
 

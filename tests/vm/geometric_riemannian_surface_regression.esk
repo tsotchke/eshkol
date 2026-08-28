@@ -234,8 +234,10 @@
 (define s4-b (vec3 0.0 0.5 0.0))
 (report (rel-near? (geodesic-distance s4-a s4-b 4.0) 0.7853981633974483)
         "K = 4 sphere distance is R pi/2 with R = 1/2")
+(define s1-a (vec3 1.0 0.0 0.0))
+(define s1-b (vec3 0.0 1.0 0.0))
 (report (far? (geodesic-distance s4-a s4-b 4.0)
-              (geodesic-distance s4-a s4-b 1.0))
+              (geodesic-distance s1-a s1-b 1.0))
         "K = 4 and K = 1 disagree on the great-circle distance")
 
 ;; ═══ Near-coincident and near-boundary: where the old forms lost everything ══
@@ -444,8 +446,8 @@
 (report (near? (tensor-ref df 6) 21.0) "d(f) dy coefficient is f_y")
 (report (near? (tensor-ref df 4) 4.0)  "d(f) dx coefficient's x-partial is f_xx")
 (report (near? (tensor-ref df 5) 22.0) "d(f) dx coefficient's y-partial is f_xy")
-(report (near? (tensor-ref df 8) 22.0) "d(f) dy coefficient's x-partial is f_yx")
-(report (near? (tensor-ref df 9) 10.0) "d(f) dy coefficient's y-partial is f_yy")
+(report (near? (tensor-ref df 7) 22.0) "d(f) dy coefficient's x-partial is f_yx")
+(report (near? (tensor-ref df 8) 10.0) "d(f) dy coefficient's y-partial is f_yy")
 
 ;; d(d(f)) = 0, and EXACTLY: the two mixed partials that cancel are the same
 ;; stored double, so this is bit-equal zero rather than zero to a tolerance.
@@ -528,14 +530,15 @@
 ;; produce, and one the old identity-map body could not either.
 (define lam-form (/ 2.0 (- 1.0 0.25)))
 (define g-curved (fill! (make-tensor '(3 3) 0.0)
-                        (list (* lam-form lam-form) 0.0 0.0
-                              0.0 (* lam-form lam-form) 0.0
-                              0.0 0.0 (* lam-form lam-form))))
+                        '(0.0 0.0 0.0  0.0 0.0 0.0  0.0 0.0 0.0)))
+(tensor-set! g-curved 0 (* lam-form lam-form))
+(tensor-set! g-curved 4 (* lam-form lam-form))
+(tensor-set! g-curved 8 (* lam-form lam-form))
 (define dx1 (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0  1.0 0.0 0.0)))
 (define star-curved (hodge-star dx1 g-curved))
-(report (near? (tensor-ref star-curved 3) lam-form)
+(report (near? (tensor-ref star-curved 5) lam-form)
         "conformal metric: *(dx) = lambda (dy^dz), lambda = 8/3")
-(report (far? (tensor-ref star-curved 3) 1.0)
+(report (far? (tensor-ref star-curved 5) 1.0)
         "the star reads the metric it is handed, not a flat one")
 
 ;; The star is defined by a RIEMANNIAN inner product on k-forms; a metric that is

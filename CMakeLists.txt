@@ -196,7 +196,7 @@ set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
 
 # lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
-# 62 VM builtins (ids 804-861), selected by ESHKOL_GEOMETRIC_ENABLED and
+# 62 VM builtins (ids 804-861), selected by a legacy qLLM build branch and
 # dispatching through libsemiclassical_qllm.  No target defined that macro and
 # nothing in the build system could, so the closed-form body was the one every
 # CI lane, every release binary and the WASM playground compiled -- and the
@@ -204,7 +204,7 @@ set(ESHKOL_QLLM_ROOT "" CACHE PATH
 #
 # It has been DELETED rather than wired up, and the option that briefly existed
 # to select it is gone with it.  Measured, not assumed: a syntax-only pass of
-# lib/backend/eshkol_vm.c with -DESHKOL_GEOMETRIC_ENABLED against a current
+# lib/backend/eshkol_vm.c against a current
 # libsemiclassical_qllm include directory reported 19 errors inside
 # vm_geometric.c alone -- changed arities on qllm_hyperbolic_exp_map / _log_map
 # / _distance / _parallel_transport / _mobius_add / _mobius_scalar,

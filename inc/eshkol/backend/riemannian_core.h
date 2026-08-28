@@ -14,7 +14,7 @@
  * with nothing in the output showing the argument had been dropped: the same
  * plausible-wrong-number class `frechet_mean_core.h` documents for the Euclidean
  * weighted average that used to stand in for the Frechet mean. That second
- * dispatch body (the ESHKOL_GEOMETRIC_ENABLED one) has since been deleted
+ * legacy qLLM dispatch body has since been deleted
  * outright — it did not compile against the current libsemiclassical_qllm ABI
  * and was fp32 throughout — so the forms below are the ONE implementation of
  * this geometry on the VM engine, not the default of two.
@@ -927,8 +927,10 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
         /* dB/dc = LAMBDA0^2/4 and c = -K, so dB/dK = -LAMBDA0^2/4. */
         double dBdK = -(ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
 
-        double P   = (1.0 - B * a) * (1.0 - B * b);
-        double Pp  = -(a + b) + 2.0 * B * a * b;      /* dP/dB   */
+        double pa  = eshkol_rm_one_minus_bnorm2(x, B, n);
+        double pb  = eshkol_rm_one_minus_bnorm2(y, B, n);
+        double P   = pa * pb;
+        double Pp  = -a * pb - b * pa;                /* dP/dB   */
         double Ppp = 2.0 * a * b;                     /* d2P/dB2 */
         double Rr  = E / P;
         double Rp  = -E * Pp / (P * P);

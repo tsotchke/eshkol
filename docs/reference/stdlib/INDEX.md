@@ -154,6 +154,9 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 
 ## Not covered here
 
+- The VM geometric builtin surface is documented in
+  [geometry.md](geometry.md); these names are native VM operations rather than
+  a `require`-loaded standard-library module.
 - `core.test-module` (`lib/core/test-module.esk`) and `ml.nested_test_module`
   (`lib/ml/nested_test_module.esk`) are module-loader test fixtures, not user API.
 - `lib/agent/*` (HTTP client, sqlite, subprocess, regex, crypto/sha256, terminal, …)

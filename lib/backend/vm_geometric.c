@@ -8,8 +8,8 @@
  * VM arena. Handles are logically invalidated by manifold-destroy!; arena memory
  * remains owned by the VM region stack.
  *
- * This file used to carry a SECOND body for the same 62 names, selected by
- * ESHKOL_GEOMETRIC_ENABLED, which dispatched through libsemiclassical_qllm. It
+ * This file used to carry a SECOND body for the same 62 names, selected by a
+ * legacy qLLM build branch. It
  * has been deleted rather than repaired: measured against a current
  * libsemiclassical_qllm it produced 19 compile errors (moved arities on
  * qllm_hyperbolic_exp_map / _log_map / _distance / _parallel_transport /
@@ -231,14 +231,14 @@ typedef struct {
     int64_t  shape[VM_TENSOR_MAX_DIMS];
     int64_t  total;
     int64_t  step;
+    const VmTensor* owner; /* current parameter identity; changes after success */
     double*  m;    /* first moment: a tangent vector at the current point */
-    double   v2;   /* second moment: one scalar in the Riemannian metric  */
+    double   v2;   /* second moment: one scalar for this manifold factor */
 } VmRiemannianAdamState;
 
 /** @brief Allocate @p size bytes either from the VM-lifetime global arena
- *         (@p vm_lifetime true, survives region pops — used for the
- *         persistent per-slot Adam optimizer states) or the current
- *         region-scoped arena (@p vm_lifetime false). */
+ *         (@p vm_lifetime true) or the current region-scoped arena
+ *         (@p vm_lifetime false). Explicit optimizer states use the latter. */
 static void* vm_geometric_alloc(VM* vm, size_t size, int vm_lifetime) {
     if (!vm) return NULL;
     if (vm_lifetime) return vm_arena_alloc(&vm->heap.regions.global_arena, size);
@@ -259,6 +259,7 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
     memset(st, 0, sizeof(VmRiemannianAdamState));
     st->n_dims = ref->n_dims;
     st->total = ref->total;
+    st->owner = ref;
     memcpy(st->shape, ref->shape, (size_t)ref->n_dims * sizeof(int64_t));
     st->m = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
     if (!st->m) return NULL;
@@ -273,10 +274,17 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_new(VM* vm, const VmTenso
     return vm_riemannian_adam_state_new_with_lifetime(vm, ref, 0);
 }
 
-/** @brief Whether optimizer state @p st's shape matches tensor @p ref's. */
+/** @brief Whether optimizer state @p st belongs to tensor @p ref.
+ *
+ * Shape equality is necessary for the moment buffer, but it is not identity:
+ * two independent parameters routinely have the same shape. The state belongs
+ * to the current parameter object and is retargeted only after a successful
+ * step returns that step's new tensor.
+ */
 static int vm_riemannian_adam_state_matches(const VmRiemannianAdamState* st,
                                             const VmTensor* ref) {
-    if (!st || !ref || st->total != ref->total || st->n_dims != ref->n_dims) return 0;
+    if (!st || !ref || st->owner != ref || st->total != ref->total ||
+        st->n_dims != ref->n_dims) return 0;
     for (int i = 0; i < ref->n_dims; i++)
         if (st->shape[i] != ref->shape[i]) return 0;
     return 1;
@@ -374,9 +382,8 @@ static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* point,
  *
  * The first moment is a tangent vector at the OLD point and is meaningless at
  * the new one until transported; this is the transport geoopt's RiemannianAdam
- * performs. The second moment is a per-coordinate scale, not a tangent vector,
- * and is left as is -- the same choice, and stated here rather than left to be
- * inferred from the absence of code.
+ * performs. The second moment is one scalar for this manifold factor, not a
+ * tangent vector, and is left as is.
  *
  * @return NULL on allocation/shape failure, or when @p why_out is set (in which
  *         case the caller raises). @p why_out is set only on a geometry
@@ -428,6 +435,7 @@ static VmTensor* vm_riemannian_adam_geodesic_step(VM* vm, const VmTensor* point,
     memcpy(st->m, moved, (size_t)n * sizeof(double));
     st->v2 = v2_next;
     st->step = step_next;
+    st->owner = out;
     return out;
 }
 
@@ -1583,5 +1591,3 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     }
     }
 }
-
-
