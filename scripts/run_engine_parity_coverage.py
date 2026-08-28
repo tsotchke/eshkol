@@ -276,8 +276,10 @@ def main():
             n_constructs = read_constructs(nd)
             v_constructs = read_constructs(vd)
         else:
-            with tempfile.TemporaryDirectory() as nd, \
-                    tempfile.TemporaryDirectory() as vd:
+            scratch = os.path.join(REPO, ".scratch")
+            os.makedirs(scratch, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=scratch) as nd, \
+                    tempfile.TemporaryDirectory(dir=scratch) as vd:
                 run_engine([ESHKOL_RUN, "-r"], prog, nd,
                            {"ESHKOL_JIT_CACHE": "0"}, args.timeout)
                 run_engine([VM_BIN], prog, vd,
@@ -360,6 +362,19 @@ def main():
                     % (len(credited), len(surface), 100.0 * fraction,
                        len(divergences), len(new_div))),
         "confidence": 0.95,
+        # Keep the measurements separate from the human-readable snippet.
+        # The architecture model's generic `exercise` invariant only checks
+        # that this event exists; the repository threshold gate consumes these
+        # fields and checks the allowed divergence count and coverage floor.
+        "threshold": {
+            "differential_fraction": fraction,
+            "minimum_differential_fraction": floor,
+            "divergent_programs": len(divergences),
+            "allowed_divergent_programs": len(known),
+            "new_divergent_programs": len(new_div),
+            "regressed_programs": len(regressions),
+            "allowed_new_divergent_programs": 0,
+        },
     }
     os.makedirs(TRACE_DIR, exist_ok=True)
     with open(TRACE, "w", encoding="utf-8") as f:

@@ -34,7 +34,10 @@ def main():
     ok_keys = {(r["file"], r["start_line"]) for r in results if r["exit"] == 0}
 
     out = []
-    work = tempfile.mkdtemp(prefix="docaudit-ctx-")
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    scratch = os.path.join(repo_root, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="docaudit-ctx-", dir=scratch)
     todo = [r for r in results if r["exit"] != 0]
     for n, r in enumerate(todo):
         blob = (r["stderr"] or "") + (r["stdout"] or "")

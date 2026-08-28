@@ -64,7 +64,7 @@ build/eshkol-run hello.esk
 
 ### Core Architecture
 
-- **[Compiler Architecture](COMPILER_ARCHITECTURE.md)** — LLVM backend, 21 specialized codegen modules, JIT system
+- **[Compiler Architecture](COMPILER_ARCHITECTURE.md)** — LLVM backend, 36 specialized codegen modules, JIT system
 - **[Type System](TYPE_SYSTEM.md)** — Runtime tagged values, HoTT gradual typing, formal inference rules, object headers
 - **[Memory Management](MEMORY_MANAGEMENT.md)** — OALR, arena allocation, linear types, reference counting
 - **[Function Composition](FUNCTION_COMPOSITION.md)** — Closures (40-byte structures), lambda registry, mutable captures
@@ -131,7 +131,7 @@ build/eshkol-run hello.esk
 
 - **Frontend**: S-expression parser (11,116 lines), macro expander (1,658 lines)
 - **Type Checker**: HoTT-inspired gradual typing (3,910 lines)
-- **LLVM Backend**: Main codegen (42,974 lines) + 34 further specialised codegen modules (~65,400 lines, including the post-v1.2 tensor split)
+- **LLVM Backend**: Main codegen (43,959 lines) + 35 further specialised codegen modules, including the post-v1.2 tensor split
 - **Runtime**: Arena memory (4,259 lines across `lib/core/runtime_arena_*.cpp`, `runtime_regions.cpp` and the `runtime_*_alloc.cpp` modules), closure system, AD tape infrastructure
 - **JIT**: REPL with LLVM OrcJIT (4,354 lines)
 

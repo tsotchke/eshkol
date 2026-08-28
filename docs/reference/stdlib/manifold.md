@@ -302,7 +302,7 @@ chain through the vector layout, so what it returns is **whatever the adjacent
 heap words happen to hold** — it is not a stable wrong number, and re-running
 the same program prints a different one. This is
 the same "no type error on non-vector/non-tensor geometric input" class tracked by
-[ESH-0069](../../../.swarm/tasks/ESH-0069.json) (*"Tensor ops SIGSEGV on non-tensor
+ESH-0069 (*"Tensor ops SIGSEGV on non-tensor
 (vector) input instead of raising a type error"* — here it is silent-wrong rather than a
 crash). Always pass `#(...)`, `(vector ...)`, or `(make-vector n x)` points.
 

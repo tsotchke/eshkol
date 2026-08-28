@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run the v1.3-evolve smoke probes and ask ICC for trace-aware readiness.
+# Run the v1.3.5-evolve smoke probes and ask ICC for trace-aware readiness.
 #
-# Plain `icc readiness --repo eshkol_lang --target v1.3-evolve` does not know
+# Plain `icc readiness --repo eshkol_lang --target v1.3.5-evolve` does not know
 # where this repository writes smoke traces. This wrapper is the canonical
 # release check: refresh the trace, then pass scripts/icc_traces explicitly.
 set -euo pipefail
@@ -24,7 +24,8 @@ ARCH_TRACE_GLOB="${ARCH_TRACE_GLOB:-.icc/runtime-traces-oracle-view/*architectur
 if eshkol_durable_enabled; then
   READINESS_JSON="$(eshkol_durable_file "$READINESS_WORK" readiness.json)" || exit $?
 else
-  READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
+  mkdir -p "$REPO_ROOT/.scratch"
+  READINESS_JSON="$(mktemp "$REPO_ROOT/.scratch/eshkol-v135-readiness.XXXXXX.json")"
 fi
 : "${READINESS_JSON:?READINESS_JSON must be set}"
 if ! eshkol_durable_enabled; then trap 'rm -f -- "${READINESS_JSON:?}"' EXIT; fi
@@ -45,20 +46,20 @@ scripts/run_icc_smoke.sh
 
 "$ICC_BIN" readiness \
   --repo "$ICC_REPO" \
-  --target v1.3-evolve \
+  --target v1.3.5-evolve \
   --trace-dir "$TRACE_DIR" \
   --trace-latest "$ARCH_TRACE_GLOB" \
   --format json > "${READINESS_JSON:?}"
 
 "$ICC_BIN" readiness \
   --repo "$ICC_REPO" \
-  --target v1.3-evolve \
+  --target v1.3.5-evolve \
   --trace-dir "$TRACE_DIR" \
   --trace-latest "$ARCH_TRACE_GLOB" \
   --format markdown
 
 status="$(jq -r '.status // ""' "$READINESS_JSON")"
 if [ "$status" != "ready" ]; then
-  echo "v1.3-evolve readiness is $status, expected ready" >&2
+  echo "v1.3.5-evolve readiness is $status, expected ready" >&2
   exit 1
 fi

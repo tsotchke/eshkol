@@ -12,7 +12,8 @@ klass is a first-pass classification:
   illustrative  - explicitly marked non-runnable, or contains placeholder/ellipsis
                   syntax that cannot parse
 
-expects is the list of `; =>`-style expected-value annotations found inline.
+expects is the list of `;; =>`, `;; returns`, and `;; prints` expected-value
+annotations found inline.
 """
 
 import json
@@ -40,6 +41,24 @@ FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)\s*$")
 PLACEHOLDER = re.compile(r"(\.\.\.|<[a-z][a-z0-9 _-]*>|\bTODO\b|\bXXX\b)")
 REPL_PROMPT = re.compile(r"^\s*(eshkol>|>>>|\$ )")
 EXPECT_RE = re.compile(r";+\s*(?:=>|⇒|returns?:?|Returns?:?|prints?:?|Prints?:?)\s*(.+)$")
+
+
+def closing_fence(lines, opening_index, opening_match):
+    """Return the closing fence index for one opening fence, or ``None``.
+
+    Markdown permits a longer fence to close a shorter one, but the fence
+    character must match and a closing fence has no info string. Keeping this
+    rule in one helper prevents the example extractor and output checker from
+    disagreeing about where a block ends.
+    """
+    fence = opening_match.group(2)
+    for index in range(opening_index + 1, len(lines)):
+        candidate = FENCE_RE.match(lines[index])
+        if (candidate and candidate.group(2)[0] == fence[0]
+                and len(candidate.group(2)) >= len(fence)
+                and not candidate.group(3)):
+            return index
+    return None
 
 
 def iter_files(root):
@@ -145,15 +164,7 @@ def main():
                 i += 1
                 continue
             indent, fence, lang = m.group(1), m.group(2), m.group(3).lower()
-            # find closing fence of at least the same length + same char
-            j = i + 1
-            close = None
-            while j < n:
-                m2 = FENCE_RE.match(lines[j])
-                if m2 and m2.group(2)[0] == fence[0] and len(m2.group(2)) >= len(fence) and not m2.group(3):
-                    close = j
-                    break
-                j += 1
+            close = closing_fence(lines, i, m)
             if close is None:
                 i += 1
                 continue

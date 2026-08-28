@@ -4252,7 +4252,9 @@ entries:
 
   - id: PR-11
     bucket: PARITY-RATCHET
-    status: open
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "repository threshold companion gate"
     title: "The invariant named for silent wrong answers is an existence check, not a threshold check"
     measured: >-
       icc architecture-verify at 9f2da2ab: INV-engine-semantic-parity, kind "exercise",
@@ -4260,9 +4262,18 @@ entries:
       detail "capability 'engine_semantic_parity' exercised within 30d (1 event(s))".
       The single event it accepted carries the payload "113/1114 constructs with differential
       evidence (10.14%), 10 divergent program(s), 0 new".
-    evidence: "icc architecture-verify --repo eshkol-v134-release --model .icc/architecture-model.yaml"
+    evidence: "scripts/check_engine_parity_threshold.py validates the structured engine_semantic_parity threshold payload; self-test passed and the remote full probe exercised the threshold at c459f292"
     caught_by: [direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    observed_after: >-
+      The parity runner now emits structured differential_fraction, minimum floor,
+      divergent-program and regression counts. scripts/check_engine_parity_threshold.py
+      fails closed when that payload is absent, below its floor, or exceeds the allowed
+      new-divergence count of zero. The architecture model documents that ICC's generic
+      exercise checker remains presence-only and requires this companion threshold gate.
+      The full remote probe measured 151/1131 (13.35%) against the 10.95% floor and
+      correctly blocked on two new divergent test outputs; those underlying test
+      divergences are outside this invariant-shape fix and remain visible.
     notes: >-
       The invariant whose incident name is literally vm-parity-silent-wrong-answer is
       satisfied by ONE event existing inside a 30-day window, whatever that event says. It
@@ -4276,12 +4287,19 @@ entries:
 
   - id: DD-01
     bucket: DOC-DEBT
-    status: open
-    title: "74 doc claims are allowlisted against ICC's doc-typed-claims detector"
-    count: 74
-    evidence: ".icc/doc-claims-allowlist.yaml carried by PR #416 final source measurement cleanup; regenerated 2026-08-26 (N5, B5 audit) via scripts/check_doc_claims_residual.py"
-    breakdown: "66 DETECTOR-MISATTRIBUTION, 8 EXEMPT-HISTORICAL; zero describe a runtime defect"
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "v1.3.5 documentation claim audit"
+    title: "Doc-typed-claims allowlist entries are reviewed exceptions, not unexplained debt"
+    count: 76
+    evidence: ".icc/doc-claims-allowlist.yaml; scripts/check_doc_claims_residual.py; ICC doc-typed-claims rerun at c459f292"
+    breakdown: "63 DETECTOR-MISATTRIBUTION, 13 EXEMPT-HISTORICAL; all retained entries carry a disposition and reason, and none describes a runtime defect"
     caught_by: [pr-record-416]
+    observed_after: >-
+      The allowlist is line-drift tolerant through stable path/type/subject/value
+      keys, every retained entry has a reviewed disposition and reason, and the
+      residual checker reports no unexplained current wrong claim after the final
+      document corrections.
     notes: >-
       Re-verified 2026-08-26 at afbaaf5b (still 74/74, same disposition split, after this pass regenerated
       the allowlist: 8 entries had merely drifted (CHANGELOG.md/ROADMAP.md/the press sheet grew new content
@@ -4301,7 +4319,7 @@ entries:
     evidence: "PR #416 headline finding; docs/DESIGN.md, docs/ESHKOL_V1_ARCHITECTURE.md, press/ESHKOL_PRESS_INFORMATION_SHEET.md, docs/breakdown/COMPILER_ARCHITECTURE.md"
     closed_at: "4c35c0f8"
     closed_by: "PR #416 final source measurement cleanup"
-    observed_after: "All genuine current numeric residual was corrected; the remaining 74 are exactly DD-01 detector/historical dispositions with zero unexplained findings."
+    observed_after: "All genuine current numeric residual was corrected; the remaining 76 are exactly DD-01 detector/historical dispositions with zero unexplained findings."
     caught_by: [pr-record-416, icc-doc-typed-claims]
     notes: "Two of the affected files are press copy that ships with the release."
 
@@ -4350,16 +4368,22 @@ entries:
 
   - id: DD-07
     bucket: DOC-DEBT
-    status: open
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "documentation example harness hardening"
     title: "The merged doc-example harness has three defects that make it miss the files it was built to check"
-    evidence: "scripts/doc_audit/extract_examples.py EXPECT_RE matches only =>; check_output_blocks.py collect() skips only blank lines between fences; neither runner sets ESHKOL_JIT_CACHE=0. PR #411 is merged."
+    evidence: "scripts/doc_audit/test_harness.py; scripts/doc_audit/extract_examples.py; scripts/doc_audit/check_output_blocks.py; scripts/doc_audit/run_examples.py; remote self-test at c459f292"
+    observed_after: "Expectation extraction covers =>, returns and prints; fence matching requires the correct character and length; output fences may be text/output or bare with intervening blank lines; every documentation runner disables the persistent JIT cache and uses worktree .scratch."
     caught_by: [pr-record-416]
 
   - id: DD-08
     bucket: DOC-DEBT
-    status: open
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "generated test-suite inventory gate"
     title: "docs/TEST_COVERAGE.md per-suite counts are the v1.1-era inventory and have drifted"
-    evidence: "docs/TEST_COVERAGE.md:85-90 provenance note; #417 merged as ebee6a4a"
+    evidence: "scripts/generate_test_coverage.py; scripts/check_test_coverage.py; docs/TEST_COVERAGE.md; remote checker at c459f292"
+    observed_after: "The documented suite table contains the current 46 scripts, rejects hand-entered per-suite counts, and is checked in CI against the TEST_SCRIPTS array."
     caught_by: [pr-record-417]
 
   - id: DD-09
@@ -4374,34 +4398,37 @@ entries:
 
   - id: DD-10
     bucket: DOC-DEBT
-    status: open
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "documented no-op surface truth audit"
     title: "Documented no-ops in shipped surface"
     items:
-      - "eshkol-run -D NAME[=VALUE] accepted, no macro, no warning (docs/reference/runtime/eshkol-run.md:79)"
-      - "eshkol-run -fPIC accepted as a no-op (docs/reference/runtime/eshkol-run.md:39)"
+      - "eshkol-run -D NAME[=VALUE] accepted for compatibility; it does not define Eshkol source macros"
+      - "eshkol-run -fPIC selects the position-independent object contract; the LLVM object path already emits PIC relocations"
       - "provide is advisory; the compiler generates no linkage restriction (docs/breakdown/MODULE_SYSTEM.md:444)"
       - "manifold gyro-transport ships a first-order approximation with no signal (docs/reference/stdlib/manifold.md:144)"
     caught_by: [doc-source-crosscheck]
+    evidence: "docs/reference/runtime/eshkol-run.md; docs/breakdown/COMPILATION_GUIDE.md; docs/reference/stdlib/module-system.md; docs/reference/stdlib/manifold.md; source cross-check at c459f292"
+    observed_after: "All four surfaces state their shipped behavior: -D is compatibility-only, -fPIC is already honored by object emission, provide is advisory rather than private, and manifold parallel transport is first-order while exact gyro-transport is not implemented."
 
   - id: DD-12
     bucket: DOC-DEBT
-    status: open
-    title: "13 of the 38 filed vm_parity reproducers are stale and nothing re-verifies them"
+    status: closed
+    closed_at: "c459f292"
+    closed_by: "execution-backed found-corpus reclassification"
+    title: "Filed vm_parity reproducers are rerun and stale cases are reclassified"
     measured: >-
-      Every file under tests/vm_parity/found/ was re-run on both engines at 9f2da2ab.
-      25 still diverge; 13 now AGREE and print the CORRECT value: exact_division_lost (1/3),
-      expt_bignum_to_float, float_display_1e10 (1e+10), force_returns_promise (3),
-      iota_returns_empty, map_two_lists_eskb_route, modulo_inexact_collapsed_vm,
-      splice_middle_order, tensor_nested_collection_native, tensor_ref_component_oob_native,
-      tensor_set_oob_silent_native, write_does_not_quote, and one further row.
-    evidence: ".scratch/flaw-ledger/found/results.txt"
+      Every file under tests/vm_parity/found/ was re-run on both engines at c459f292.
+      18 active/control files remain under found/; 21 now agree after normalization and
+      were reclassified under tests/vm_parity/resolved/ with their original headers.
+    evidence: "BUILD_DIR=build scripts/run_vm_parity.sh on old-donkey; found-recheck: 39 checked, 23 stale/agreed, 0 infra; 21 non-control files moved to tests/vm_parity/resolved/"
     caught_by: [direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, parity-baselines]
+    observed_after: "The parity gate has a dedicated found-recheck stage: normalized agreement fails the gate while the file remains under found/, except for CONTROL fixtures and the documented display-newline case."
     notes: >-
-      found/ is documented as evidence rather than gate input, so no harness ever re-runs it.
-      A filed reproducer that silently becomes stale is the mirror image of a silent defect:
-      it makes the project look worse than it is and, more dangerously, trains readers to
-      discount the 25 that are still real. Re-running found/ belongs in the parity gate.
+      found/ remains the active divergence evidence directory, while resolved/ records
+      measured cases that no longer reproduce. This prevents stale filed claims from
+      silently accumulating and keeps active divergences visible to the gate.
 
   - id: SW-53
     bucket: SILENT-WRONG

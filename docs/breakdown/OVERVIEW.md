@@ -88,23 +88,23 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (42,974 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 33 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
+**Phase 4: LLVM IR Generation** (43,959 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 35 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,974 | Main codegen, dispatch, builtins |
+| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 43,959 | Main codegen, dispatch, builtins |
 | [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse mode AD |
 | [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | Numeric ops, bignum, rational, complex |
 | [string_io_codegen.cpp](../../lib/backend/string_io_codegen.cpp) | 3,860 | String, I/O, JSON, CSV operations |
 | [collection_codegen.cpp](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, hash table operations |
 | [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) | 2,626 | Work-stealing parallelism codegen |
 | [system_codegen.cpp](../../lib/backend/system_codegen.cpp) | 2,039 | System, environment, time, process |
-| [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 1,867 | Tensor-op dispatch shell; per-domain ops live in twelve `tensor_*_codegen.cpp` siblings (~22,100 lines combined) |
+| [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 1,867 | Tensor-op dispatch shell; per-domain ops live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) |
 | [binding_codegen.cpp](../../lib/backend/binding_codegen.cpp) | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | [thread_pool.cpp](../../lib/backend/thread_pool.cpp) | 1,524 | Work-stealing thread pool |
-| [tensor_backward.cpp](../../lib/backend/tensor_backward.cpp) | 1,446 | Backward-mode AD gradients |
+| [tensor_backward.cpp](../../lib/backend/tensor_backward.cpp) | 1,572 | Backward-mode AD gradients |
 | [blas_backend.cpp](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model |
 | [call_apply_codegen.cpp](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application |
 | [control_flow_codegen.cpp](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/call-cc |
@@ -228,7 +228,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (1,867 lines after the v1.2 split); the per-domain implementations live in twelve `tensor_*_codegen.cpp` siblings (~22,100 lines combined) with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (1,867 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss
@@ -529,7 +529,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,359 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,435 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 1,019 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry

@@ -54,7 +54,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 42,974 | Main codegen, dispatch, builtins |
+| llvm_codegen.cpp | 43,959 | Main codegen, dispatch, builtins |
 | autodiff_codegen.cpp | 14,083 | Forward/reverse mode AD |
 | arithmetic_codegen.cpp | 4,012 | Numeric ops, bignum, rational, complex |
 | string_io_codegen.cpp | 3,860 | String, I/O, JSON, CSV operations |
@@ -64,7 +64,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | tensor_codegen.cpp | 1,867 | Tensor ops dispatch shell (post v1.2 split) |
 | binding_codegen.cpp | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | thread_pool.cpp | 1,524 | Work-stealing thread pool |
-| tensor_backward.cpp | 1,446 | Backward-mode AD gradients |
+| tensor_backward.cpp | 1,572 | Backward-mode AD gradients |
 | blas_backend.cpp | 1,281 | BLAS dispatch, GPU cost model |
 | call_apply_codegen.cpp | 1,270 | Function calls, apply, partial application |
 | control_flow_codegen.cpp | 1,107 | if/cond/case/match/call-cc |
@@ -76,7 +76,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | hash_codegen.cpp | 671 | Hash operations |
 | complex_codegen.cpp | 640 | Complex number ops (Smith's formula) |
 
-The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling roughly 22,400 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
 
 Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 199,200 lines indexed.
 
@@ -247,9 +247,9 @@ Interactive development via LLVM OrcJIT (4,354 lines). Preloads 237 stdlib funct
 
 Eshkol has two production execution backends serving different purposes:
 
-**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 21 specialized codegen modules. This is the default path for `eshkol-run`.
+**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,378 lines; roughly 49,200 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,390 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
@@ -278,7 +278,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 | Component | Lines | Files |
 |:---|---:|---:|
 | LLVM backend (main + modules) | ~87,300 | 21 |
-| Bytecode VM + runtime libs | ~49,200 | 33 |
+| Bytecode VM + runtime libs | ~51,092 | 33 |
 | XLA/StableHLO backend | ~3,960 | 6 |
 | GPU/Metal backend | ~11,800 | 5 |
 | Frontend (parser, macro, types) | ~16,400 | 3 |

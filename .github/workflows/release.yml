@@ -1060,7 +1060,7 @@ jobs:
 
   # Release-blocking readiness gate (ADR-0010 section 2.5; closes AR1 gap A5).
   # Regenerates the oracle evidence AT THE TAGGED SHA and runs the canonical
-  # v1.3-evolve readiness check. `publish-release` needs this job, so no asset
+  # v1.3.5-evolve readiness check. `publish-release` needs this job, so no asset
   # is published on a real tag push unless ICC certifies ready/100. This turns
   # "readiness=100" from a workstation verdict into a property of the released
   # artifact.
@@ -1093,10 +1093,6 @@ jobs:
       # job-level env of the same name would shadow that write in later steps.
       ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
       ICC_REPO: ${{ vars.ICC_REPO || 'eshkol_lang' }}
-      # Arms release-blocking enforcement.  Set to 1 in the same change that
-      # provisions ICC on the release runner; until then the gate reports
-      # loudly without blocking a release it cannot certify.
-      REQUIRE_READINESS_GATE: ${{ vars.ESHKOL_REQUIRE_READINESS_GATE }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1116,15 +1112,6 @@ jobs:
           fi
           echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
           msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
-          # Enforcement is armed by the repository variable ESHKOL_REQUIRE_READINESS_GATE=1.
-          # Until ICC is provisioned on the release runner, an unarmed gate warns loudly
-          # rather than blocking a release it cannot yet certify: a gate that always
-          # blocks would be turned off, and a gate that is off is worse than one that
-          # is honest about not running.  Arm it in the same change that provisions ICC.
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${REQUIRE_READINESS_GATE}" != "1" ]]; then
-            echo "::warning title=Release readiness gate NOT ARMED::$msg Publication continues because ESHKOL_REQUIRE_READINESS_GATE is not set to 1. This release is certified by the maintainer-side battery instead."
-            exit 0
-          fi
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             echo "::error title=Release readiness gate: ICC unavailable::$msg Publication is BLOCKED (never fail-open)."
             exit 1
@@ -1264,7 +1251,7 @@ jobs:
             --emit-trace
 
       # The gate. run_v1_3_readiness.sh refreshes the smoke trace, asks ICC for
-      # trace-aware v1.3-evolve readiness, and exits nonzero unless status ==
+      # trace-aware v1.3.5-evolve readiness, and exits nonzero unless status ==
       # ready. The explicit re-read then asserts score == 100 so the gate is
       # literally "ready/100"; a wrong/absent score field leaves the canonical
       # status check as the sole bar (never a spurious block). On a tag push an
@@ -1287,24 +1274,24 @@ jobs:
           }
 
           if ! scripts/run_v1_3_readiness.sh; then
-            verdict "scripts/run_v1_3_readiness.sh reported v1.3-evolve is not ready."
+            verdict "scripts/run_v1_3_readiness.sh reported v1.3.5-evolve is not ready."
           fi
 
           readiness_json="$(mktemp)"
           "$ICC_BIN" readiness \
             --repo "$ICC_REPO" \
-            --target v1.3-evolve \
+            --target v1.3.5-evolve \
             --trace-dir scripts/icc_traces \
             --format json > "$readiness_json"
           status="$(jq -r '.status // ""' "$readiness_json")"
           score="$(jq -r '.score // .readiness // empty' "$readiness_json")"
-          echo "v1.3-evolve readiness: status=$status score=${score:-<none>}"
+          echo "v1.3.5-evolve readiness: status=$status score=${score:-<none>}"
 
           if [[ "$status" != "ready" ]]; then
-            verdict "v1.3-evolve readiness is '$status', expected 'ready'."
+            verdict "v1.3.5-evolve readiness is '$status', expected 'ready'."
           fi
           if [[ -n "$score" && "$score" != "100" ]]; then
-            verdict "v1.3-evolve readiness score is '$score', expected 100."
+            verdict "v1.3.5-evolve readiness score is '$score', expected 100."
           fi
 
       - name: Upload readiness evidence

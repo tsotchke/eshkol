@@ -119,25 +119,10 @@ header. Filed while building this gate, 2026-07:
 | repro | divergence |
 |---|---|
 | `display_newline_per_call.esk` | display appends a newline per call |
-| `exact_division_lost.esk` | `(/ 1 3)` → `0.333333`, not `1/3` |
-| `expt_bignum_to_float.esk` | `(expt 2 100)` → float, not bignum |
-| `force_returns_promise.esk` | `force` returns the promise object |
 | `case_lambda_wrong_clause.esk` | `case-lambda` picks the wrong clause |
-| `dynamic_wind_after_twice.esk` | after-thunk runs twice |
 | `char_type_collapsed.esk` | chars display as integers |
-| `equal_eq_structural_false.esk` | `equal?`/`eq?` → `#f` on equal lists / same symbols |
-| `symbol_string_unhandled_fid.esk` | `symbol->string`/`string->symbol` fids 184/185 unimplemented |
-| `write_does_not_quote.esk` | `write` emits display syntax |
-| `iota_returns_empty.esk` | `iota` returns `()` |
-| `recursive_macro_zero.esk` | recursive syntax-rules macros → wrong value |
-| `macro_set_top_level.esk` | set!-mutating macro: three-way divergence (native side suspect too) |
 | `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
 | `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
-| `float_display_1e10.esk` | large-float format `1e+10` vs `10000000000` |
-| `map_two_lists_eskb_route.esk` | multi-list `map` correct on vm-src, drops lists on the ESKB route (stale prelude cache) |
-| `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
-| `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
-| `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
 | `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the exit-0 half is fixed; the depth limit remains) |
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
 | `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
@@ -145,7 +130,6 @@ header. Filed while building this gate, 2026-07:
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
 | `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
-| `modulo_inexact_collapsed_vm.esk` | `(modulo <inexact> …)` with an integral result comes back **exact** — invisible to the corpus, which compares printed output |
 | `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |
 
 Divergences where **native is the wrong side** (filed rather than "fixed" in
@@ -153,9 +137,6 @@ the VM to match a native bug; native codegen is not VM-owned):
 
 | repro | divergence |
 |---|---|
-| `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
-| `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
-| `tensor_ref_component_oob_native.esk` | component past its dimension fabricates natively when the flat offset fits |
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
@@ -178,6 +159,16 @@ plus its VM-side counterpart `namedlet_escaped_closure_vm_routes.esk` →
 `corpus/46_tensor_literal_spellings.esk`. (`corpus/52` was claimed by
 `#394`'s `52_numeric_tag_dispatch.esk` on master; files were renumbered
 to the next free slot when the branches merged.)
+
+The parity gate also reruns every `.esk` file still under `found/` on native
+and VM. A file whose outputs now agree is reported as stale and fails the
+gate until it is moved to `resolved/` with its measured result, or promoted
+into `corpus/` when it is now part of the supported parity contract. The
+recheck is deliberately separate from the corpus baseline so a filed claim
+cannot silently become either a false defect or an untracked regression.
+Control fixtures are marked `CONTROL` in their header and remain in `found/`
+when they document an intentionally one-sided or non-defect behavior; the
+gate reruns them but does not treat them as stale defects.
 
 ## Regenerating
 

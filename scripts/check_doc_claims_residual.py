@@ -14,22 +14,45 @@ allowlist was regenerated in the same change (27 stale doc line-count
 mentions corrected in the doc text itself; 8 claims that had merely drifted
 line number as newer content was prepended above them, re-hashed in place).
 
+BI-19 (v1.3.5 docs audit, 2026-08-28): re-hashing by hand was not a fix, it
+was a recurring cost -- the same five dated CHANGELOG/RELEASE_NOTES entries
+needed it again on the very next release, and the one after that, for no
+reason but new content landing above them and shifting their line number.
+`claim_id` (sha1 of path+line+value, computed inside `icc`) is fundamentally
+NOT stable under that kind of drift. This gate now ALSO matches a wrong
+claim against the allowlist by `stable_claim_key` -- (path, claim_type,
+subject, value), with no line in it -- whenever an allowlist entry carries
+those fields (see `stable_claim_key` / `allowlisted_stable_keys`). Exact
+`claim_id` matching is tried first and kept working unchanged, so an entry
+that has not been enriched with claim_type/subject/value yet still matches
+by id alone during the transition; a fresh `claim_id` from a later `icc` run
+against the very same claim also still matches, by definition, on both keys
+at once.
+
 What this checks
     Given a `icc doc-typed-claims --format json` result (see
     `--doc-typed-claims-json`, or `--icc-bin`/`--repo` to run it directly):
       wrong_ids        = claim_ids with status == "wrong"
       allowlisted_ids   = claim_ids named in .icc/doc-claims-allowlist.yaml
+      allowlisted_keys  = stable_claim_key(...) of every allowlist entry that
+                          carries path/claim_type/subject/value
       open_build_ids    = residual_claim_ids named by an OPEN DOC-DEBT ledger
                           entry in .icc/silent-wrong-ledger.yaml (a maintainer
                           may explicitly track a real, not-yet-fixed doc
                           defect as ongoing work instead of allowlisting a
-                          claim the detector could otherwise ground)
-      explained_ids     = allowlisted_ids | open_build_ids
-      unexplained       = wrong_ids - explained_ids
-      stale             = explained_ids - wrong_ids  (an allowlist/ledger
-                          entry for a claim that is no longer wrong at all --
-                          not a failure, but worth surfacing so the allowlist
-                          does not silently accumulate dead entries forever)
+                          claim the detector could otherwise ground) -- matched
+                          by claim_id only; the ledger's own schema is out of
+                          this gate's scope to change
+      a wrong claim is EXPLAINED if its claim_id is in allowlisted_ids or
+                          open_build_ids, OR its own stable_claim_key(...) is
+                          in allowlisted_keys
+      unexplained       = wrong claims that are not explained
+      stale             = an allowlist/ledger entry whose claim_id no longer
+                          names a current wrong claim AND (for an allowlist
+                          entry) whose stable key no longer matches one
+                          either -- not a failure, but worth surfacing so the
+                          allowlist does not silently accumulate dead entries
+                          forever
 
 Grading (PASS / FAIL / NO_DATA)
     PASS      unexplained is empty (the identity holds exactly).
@@ -93,6 +116,25 @@ def _load_yaml(path: str, what: str) -> object:
         raise ResidualGateError(f"{what} at {path} is not parseable: {exc}") from exc
 
 
+def stable_claim_key(path: object, claim_type: object, subject: object, value: object) -> tuple | None:
+    """A line-independent identity for a claim: (path, claim_type, subject,
+    value). `claim_id` (sha1 of path+line+value, computed inside `icc`) is
+    NOT line-independent -- a dated CHANGELOG/RELEASE_NOTES/ROADMAP entry
+    re-hashes every time later content is prepended above it and shifts its
+    line number, with no change in what the claim actually says. This key
+    is what the allowlist should really be tracking; `claim_id` is kept
+    alongside it purely for cross-referencing a specific `icc` run.
+
+    Returns None when any component is missing -- callers must treat that
+    as "no stable key available", never as a wildcard match.
+    """
+    if path is None or claim_type is None or subject is None or value is None:
+        return None
+    if not isinstance(path, str) or not isinstance(claim_type, str) or not isinstance(subject, str):
+        return None
+    return (path, claim_type, subject, str(value))
+
+
 def allowlisted_claim_ids(allowlist_path: str) -> dict[str, dict]:
     data = _load_yaml(allowlist_path, "doc-claims allowlist")
     if not isinstance(data, dict):
@@ -107,6 +149,29 @@ def allowlisted_claim_ids(allowlist_path: str) -> dict[str, dict]:
         cid = entry.get("claim_id")
         if isinstance(cid, str) and cid:
             out[cid] = entry
+    return out
+
+
+def allowlisted_stable_keys(allowlist_path: str) -> dict[tuple, str]:
+    """stable_claim_key(...) -> claim_id, for every entry that carries the
+    path/claim_type/subject/value fields a stable key needs. An entry
+    missing any of those fields (e.g. a hand-written fixture, or a legacy
+    entry predating this field set) simply contributes no stable key --
+    it is still matched by exact `claim_id`, unchanged."""
+    data = _load_yaml(allowlist_path, "doc-claims allowlist")
+    if not isinstance(data, dict):
+        raise ResidualGateError("doc-claims allowlist is not a mapping")
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        raise ResidualGateError("doc-claims allowlist has no `entries` list")
+    out: dict[tuple, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        cid = entry.get("claim_id")
+        key = stable_claim_key(entry.get("path"), entry.get("claim_type"), entry.get("subject"), entry.get("value"))
+        if key is not None and isinstance(cid, str) and cid:
+            out[key] = cid
     return out
 
 
@@ -198,12 +263,52 @@ def check(
         }
 
     allow = allowlisted_claim_ids(allowlist_path)
+    allow_stable = allowlisted_stable_keys(allowlist_path)
     open_items = open_build_item_claim_ids(ledger_path)
     wrong = wrong_claim_ids_from_doc_typed_claims(doc_typed_claims_payload)
 
-    explained = set(allow) | set(open_items)
-    unexplained = sorted(set(wrong) - explained)
-    stale = sorted(explained - set(wrong))
+    # BI-19 (v1.3.5 docs audit, 2026-08-28): `claim_id` is sha1(path+line+
+    # value) computed inside `icc`, so a dated CHANGELOG/RELEASE_NOTES/
+    # ROADMAP entry re-hashes on every release simply because later content
+    # was prepended above it -- the third release running the same five
+    # entries needed re-hashing by hand. A wrong claim is now ALSO explained
+    # when its line-independent stable_claim_key(...) matches an allowlist
+    # entry, so a pure line shift with no change in path/claim_type/subject/
+    # value stops being churn. Exact claim_id matching is kept (and tried
+    # first) as the migration path: an allowlist entry that has not yet
+    # been enriched with claim_type/subject/value still matches by id alone.
+    wrong_stable = {
+        cid: stable_claim_key(
+            claim.get("location", {}).get("path") if isinstance(claim.get("location"), dict) else None,
+            claim.get("claim_type"), claim.get("subject"), claim.get("value"),
+        )
+        for cid, claim in wrong.items()
+    }
+
+    def _explained(cid: str) -> bool:
+        if cid in allow or cid in open_items:
+            return True
+        key = wrong_stable.get(cid)
+        return key is not None and key in allow_stable
+
+    unexplained = sorted(cid for cid in wrong if not _explained(cid))
+
+    # `stale`: an allowlist/ledger entry that no longer corresponds to any
+    # CURRENT wrong claim, by id NOR by stable key -- true dead weight, safe
+    # to prune. An entry whose id has drifted but whose stable key still
+    # matches a current wrong claim is NOT stale; it is doing its job.
+    live_stable_keys = {k for k in wrong_stable.values() if k is not None}
+    explained_ids = set(allow) | set(open_items)
+
+    def _still_relevant(cid: str) -> bool:
+        if cid in wrong:
+            return True
+        entry = allow.get(cid)
+        key = stable_claim_key(entry.get("path"), entry.get("claim_type"), entry.get("subject"),
+                                entry.get("value")) if entry else None
+        return key is not None and key in live_stable_keys
+
+    stale = sorted(cid for cid in explained_ids if not _still_relevant(cid))
 
     errors = [
         f"{cid}: {wrong[cid]['location']['path']}:{wrong[cid]['location']['line']} "
@@ -299,6 +404,57 @@ def self_test() -> bool:
         result = check(allow_path, ledger_path, None)
         cases.append(("missing_payload_is_no_data_not_pass", result["passed"] is False
                       and result["status"] == "NO_DATA"))
+
+        # BI-19 (2026-08-28): the whole point of stable_claim_key -- an
+        # allowlist entry enriched with path/claim_type/subject/value
+        # explains a wrong claim whose claim_id and line have both moved,
+        # as long as the (path, claim_type, subject, value) tuple is
+        # unchanged. "eee" here is a DIFFERENT claim_id than any allowlist
+        # entry's claim_id (simulating the exact re-hash-on-every-release
+        # churn this fix retires); it must still be explained.
+        stable_allow_path = os.path.join(tmp, "allowlist_stable.yaml")
+        with open(stable_allow_path, "w", encoding="utf-8") as f:
+            f.write(
+                "entries:\n"
+                "- claim_id: old_id_at_a_stale_line\n"
+                "  path: CHANGELOG.md\n"
+                "  line: 42\n"
+                "  claim_type: numeric\n"
+                "  subject: some_file.cpp\n"
+                "  value: 1234\n"
+                "  disposition: EXEMPT-HISTORICAL\n"
+            )
+
+        def _fake_payload_full(claims: list[dict]) -> dict:
+            return {"claims_truncated": False, "claims": claims}
+
+        drifted_claim = {
+            "claim_id": "eee", "status": "wrong", "claim_type": "numeric",
+            "subject": "some_file.cpp", "value": 1234,
+            "location": {"path": "CHANGELOG.md", "line": 917},  # line drifted, everything else didn't
+        }
+        result = check(stable_allow_path, ledger_path, _fake_payload_full([drifted_claim]))
+        cases.append(("line_drifted_claim_explained_by_stable_key", result["passed"] is True
+                      and result["status"] == "PASS" and not result["unexplained"]))
+
+        # A claim with the SAME path/type/subject but a DIFFERENT value is a
+        # genuinely different claim and must NOT be explained by the stable
+        # key of an unrelated one.
+        different_value_claim = dict(drifted_claim, claim_id="fff", value=9999)
+        result = check(stable_allow_path, ledger_path, _fake_payload_full([different_value_claim]))
+        cases.append(("different_value_not_explained_by_stable_key", result["passed"] is False
+                      and result["unexplained"] == ["fff"]))
+
+        # Once no wrong claim's stable key matches the entry at all, the
+        # entry is genuinely `stale` -- id AND stable key both dead. (An
+        # empty ledger here, not the shared one above, which still has its
+        # own open DOC-DEBT item that would independently show up stale too.)
+        empty_ledger_path = os.path.join(tmp, "empty_ledger.yaml")
+        with open(empty_ledger_path, "w", encoding="utf-8") as f:
+            f.write("entries: []\n")
+        result = check(stable_allow_path, empty_ledger_path, _fake_payload_full([]))
+        cases.append(("fully_dead_entry_is_stale", result["passed"] is True
+                      and result["stale"] == ["old_id_at_a_stale_line"]))
 
         # Case 6: a truncated claims list is a hard error (FAIL), never a
         # silent undercount.
