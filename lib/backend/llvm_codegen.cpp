@@ -23029,6 +23029,26 @@ private:
                     raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
                     raise_func->setDoesNotReturn();
                 }
+                // R7RS 4.2.7: this re-raises THE SAME CONDITION, so the value an
+                // enclosing guard binds must still be the object originally
+                // raised — the very value `raised_tagged` above was bound to.
+                //
+                // Re-asserting it here is not redundant. eshkol_raise() only
+                // keeps a caller-supplied payload when
+                // g_raised_value_set_by_user is set, and it CLEARS that flag on
+                // every raise (runtime_exceptions_hosted.cpp). The original
+                // raise consumed the flag, so this second raise took the
+                // fallback branch and overwrote g_raised_tagged_value with the
+                // exception STRUCT pointer. The condition survived; its payload
+                // did not, and an enclosing guard that looked at its variable
+                // got the opaque `#<exception>` instead of what was raised —
+                // silently, exit 0. (Ledger: SW-82.)
+                Function* set_raised_fn = module->getFunction("eshkol_set_raised_value");
+                if (!set_raised_fn) {
+                    FunctionType* set_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
+                    set_raised_fn = Function::Create(set_type, Function::ExternalLinkage, "eshkol_set_raised_value", module.get());
+                }
+                builder->CreateCall(set_raised_fn, {raised_alloca});
                 // Re-get exception pointer and re-raise it
                 Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
                 builder->CreateCall(raise_func, {fallthrough_exc});
