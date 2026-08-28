@@ -312,6 +312,14 @@ self-testing CI gates:
   no-open-silent-wrong gate gained a self-test mode; it graded the ledger
   already but had never actually been wired into any CI workflow before
   this wave.
+- **`scripts/gen_api_docs.py --check`** fails when `docs/api/` would
+  regenerate to different content than what's committed — a stale or
+  missing generated page for a public header. It is build-free (it reads
+  headers, not compiled output), so it runs in the same `assurance-gates`
+  job as the three gates above rather than only being a `make api-docs`
+  step contributors are asked to remember. Motivating incident: four PRs
+  in the v1.3.5 wave added public headers without regenerating
+  `docs/api/`, leaving six headers with no generated page at all.
 
 Each gate's self-test feeds it deliberately-broken fixtures (malformed
 YAML, a duplicate id, a missing required field) plus one well-formed one,
