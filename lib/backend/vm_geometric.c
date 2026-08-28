@@ -206,13 +206,33 @@ static void vm_push_geometric_manifold(VM* vm, int type, int dim, double curvatu
     vm_push_manifold(vm, m);
 }
 
+/**
+ * @brief Riemannian-Adam optimizer state: the first moment as a TANGENT VECTOR
+ *        at the current point, the second moment as ONE SCALAR, and the step
+ *        counter driving bias correction.
+ *
+ * The second moment used to be a per-coordinate array, and the delta a
+ * per-coordinate quotient. That is not an intrinsic operation on a manifold and
+ * it does not preserve a tangent space: on the unit sphere at
+ * x = (1,1,1)/sqrt(3) with the perfectly valid tangent gradient g = (1,1,-2),
+ * dividing coordinate by coordinate gives a delta proportional to (1,1,-1),
+ * whose inner product with x is -eta/sqrt(3) != 0 -- so the exponential map
+ * refused a valid optimizer input. The intrinsic construction (Becigneul-Ganea,
+ * and geoopt's RiemannianAdam, which the docs previously mis-cited as doing the
+ * coordinate-wise thing) keeps ONE adaptivity scalar per manifold factor,
+ *
+ *     s_t = beta2 s_{t-1} + (1 - beta2) ||g_t||^2_{x_t},
+ *
+ * measured in the manifold's own metric, so the delta stays PARALLEL to the
+ * first moment and therefore tangent.
+ */
 typedef struct {
     int      n_dims;
     int64_t  shape[VM_TENSOR_MAX_DIMS];
     int64_t  total;
     int64_t  step;
-    double*  m;
-    double*  v;
+    double*  m;    /* first moment: a tangent vector at the current point */
+    double   v2;   /* second moment: one scalar in the Riemannian metric  */
 } VmRiemannianAdamState;
 
 /** @brief Allocate @p size bytes either from the VM-lifetime global arena
@@ -241,10 +261,9 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
     st->total = ref->total;
     memcpy(st->shape, ref->shape, (size_t)ref->n_dims * sizeof(int64_t));
     st->m = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
-    st->v = (double*)vm_geometric_alloc(vm, (size_t)ref->total * sizeof(double), vm_lifetime);
-    if (!st->m || !st->v) return NULL;
+    if (!st->m) return NULL;
     memset(st->m, 0, (size_t)ref->total * sizeof(double));
-    memset(st->v, 0, (size_t)ref->total * sizeof(double));
+    st->v2 = 0.0;
     return st;
 }
 
@@ -285,59 +304,60 @@ static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
 }
 
 /**
- * @brief Find (or lazily create) a VM-lifetime Riemannian-Adam state
- *        matching @p ref's shape from the VM's fixed-size
- *        geometric_adam_states pool (VM_GEOMETRIC_ADAM_SLOTS slots,
- *        reusing the first empty or, failing that, slot 0), used by
- *        opcodes that need an implicit/default optimizer state.
+ * @brief Compute one INTRINSIC Riemannian-Adam delta from @p grad and the
+ *        optimizer state @p st, WITHOUT MUTATING @p st.
+ *
+ * The proposed moments and step counter go to @p m_next, @p v2_next and
+ * @p step_next; the caller commits them only once the exponential map and the
+ * moment transport have both succeeded. They used to be written straight into
+ * the state before either could refuse, so a call that ended in a raise still
+ * advanced the step counter and both moments -- and a retry with corrected
+ * arguments then produced a different answer from the same inputs.
+ *
+ * The second moment is the SCALAR
+ * s_t = beta2 s_{t-1} + (1 - beta2) ||g||^2_x, measured in the manifold's
+ * metric, so the delta is parallel to the first moment and therefore tangent.
+ * See VmRiemannianAdamState for why the coordinate-wise form it replaces is not
+ * an operation on a manifold at all.
+ *
+ * @param m_next    @p grad->total doubles, the proposed first moment.
+ * @param v2_next   the proposed second moment.
+ * @param step_next the proposed step counter.
+ * @return the delta tensor, or NULL on a shape/allocation failure.
  */
-static VmRiemannianAdamState* vm_default_riemannian_adam_state(VM* vm,
-                                                               const VmTensor* ref) {
-    enum { VM_GEOMETRIC_ADAM_SLOTS = 16 };
-    if (!vm || !ref) return NULL;
-    int empty = -1;
-    for (int i = 0; i < VM_GEOMETRIC_ADAM_SLOTS; i++) {
-        VmRiemannianAdamState* state =
-            (VmRiemannianAdamState*)vm->geometric_adam_states[i];
-        if (vm_riemannian_adam_state_matches(state, ref)) return state;
-        if (!state && empty < 0) empty = i;
-    }
-    if (empty < 0) empty = 0;
-    vm->geometric_adam_states[empty] =
-        vm_riemannian_adam_state_new_with_lifetime(vm, ref, 1);
-    return (VmRiemannianAdamState*)vm->geometric_adam_states[empty];
-}
-
-/**
- * @brief Compute one Adam-style update delta from @p grad and optimizer
- *        state @p st (standard bias-corrected first/second moment
- *        estimates), without any manifold-specific retraction — the
- *        result is a plain Euclidean step vector.
- */
-static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* grad,
-                                          VmRiemannianAdamState* st,
-                                          double lr, double beta1, double beta2) {
-    if (!vm || !grad || !st || !grad->data || grad->total != st->total) return NULL;
+static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* point,
+                                          const VmTensor* grad,
+                                          const VmRiemannianAdamState* st,
+                                          double lr, double beta1, double beta2,
+                                          double K, double* m_next,
+                                          double* v2_next, int64_t* step_next) {
+    if (!vm || !point || !grad || !st || !grad->data || grad->total != st->total)
+        return NULL;
     if (beta1 < 0.0 || beta1 >= 1.0) beta1 = 0.9;
     if (beta2 < 0.0 || beta2 >= 1.0) beta2 = 0.999;
     if (lr < 0.0) lr = -lr;
 
     VmTensor* delta = vm_tensor_zeros(&vm->heap.regions, grad->shape, grad->n_dims);
     if (!delta) return NULL;
-    st->step++;
-    double b1_corr = 1.0 - pow(beta1, (double)st->step);
-    double b2_corr = 1.0 - pow(beta2, (double)st->step);
+
+    int64_t step = st->step + 1;
+    double b1_corr = 1.0 - pow(beta1, (double)step);
+    double b2_corr = 1.0 - pow(beta2, (double)step);
     if (b1_corr <= 0.0) b1_corr = 1.0;
     if (b2_corr <= 0.0) b2_corr = 1.0;
 
+    double gn2 = eshkol_rm_metric_norm2(grad->data, point->data, K,
+                                        (int)grad->total);
+    double v2 = beta2 * st->v2 + (1.0 - beta2) * gn2;
+    double s_hat = v2 / b2_corr;
+    double scale = -lr / (sqrt(s_hat) + 1e-8);
+
     for (int64_t i = 0; i < grad->total; i++) {
-        double g = grad->data[i];
-        st->m[i] = beta1 * st->m[i] + (1.0 - beta1) * g;
-        st->v[i] = beta2 * st->v[i] + (1.0 - beta2) * g * g;
-        double m_hat = st->m[i] / b1_corr;
-        double v_hat = st->v[i] / b2_corr;
-        delta->data[i] = -lr * m_hat / (sqrt(v_hat) + 1e-8);
+        m_next[i] = beta1 * st->m[i] + (1.0 - beta1) * grad->data[i];
+        delta->data[i] = scale * (m_next[i] / b1_corr);
     }
+    *v2_next = v2;
+    *step_next = step;
     return delta;
 }
 
@@ -369,27 +389,45 @@ static VmTensor* vm_riemannian_adam_geodesic_step(VM* vm, const VmTensor* point,
                                                   double beta2, double K,
                                                   const char** why_out) {
     if (why_out) *why_out = NULL;
-    if (!point || !grad || point->total != grad->total || point->total <= 0 ||
-        !vm_riemannian_adam_state_matches(st, point))
+    if (!point || !grad || !point->data || point->total != grad->total ||
+        point->total <= 0 || !vm_riemannian_adam_state_matches(st, point))
         return NULL;
-    VmTensor* delta = vm_riemannian_adam_delta(vm, grad, st, lr, beta1, beta2);
-    if (!delta) return NULL;
-    if (K == 0.0)
-        return vm_tensor_linear_combo_for_geometry(vm, point, 1.0, delta, 1.0);
 
     int n = (int)point->total;
-    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, point->shape, point->n_dims);
+    const char* why = eshkol_rm_check_point(point->data, K, n);
+    if (!why) why = eshkol_rm_check_tangent(point->data, grad->data, K, n);
+    if (why) { if (why_out) *why_out = why; return NULL; }
+
+    /* Proposed state, held in scratch until BOTH the retraction and the moment
+     * transport have succeeded. Nothing below writes through `st` before then:
+     * a call that ends in a refusal must leave the optimizer exactly as it was,
+     * or the retry that follows it answers a different question. */
+    double* m_next = vm_geometric_scratch(vm, n, 1);
+    double* moved  = vm_geometric_scratch(vm, n, 1);
     double* scratch = vm_geometric_scratch(vm, n, VM_GEOMETRIC_SCRATCH_MULT);
-    double* moved   = vm_geometric_scratch(vm, n, 1);
-    if (!out || !scratch || !moved) return NULL;
+    if (!m_next || !moved || !scratch) return NULL;
 
-    const char* why = eshkol_rm_exp_map(point->data, delta->data, K, n,
-                                        out->data, scratch);
+    double v2_next = 0.0;
+    int64_t step_next = 0;
+    VmTensor* delta = vm_riemannian_adam_delta(vm, point, grad, st, lr, beta1,
+                                               beta2, K, m_next, &v2_next,
+                                               &step_next);
+    if (!delta) return NULL;
+
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, point->shape, point->n_dims);
+    if (!out) return NULL;
+
+    why = eshkol_rm_exp_map(point->data, delta->data, K, n, out->data, scratch);
     if (why) { if (why_out) *why_out = why; return NULL; }
 
-    why = eshkol_rm_transport(point->data, out->data, st->m, K, n, moved, scratch);
+    /* The first moment is a tangent vector at the OLD point and is meaningless
+     * at the new one until transported. */
+    why = eshkol_rm_transport(point->data, out->data, m_next, K, n, moved, scratch);
     if (why) { if (why_out) *why_out = why; return NULL; }
+
     memcpy(st->m, moved, (size_t)n * sizeof(double));
+    st->v2 = v2_next;
+    st->step = step_next;
     return out;
 }
 
@@ -859,7 +897,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        eshkol_rm_mobius_add(x->data, y->data, -K, (int)x->total, out->data);
+        eshkol_rm_mobius_add(x->data, y->data, eshkol_rm_ball_param(-K),
+                             (int)x->total, out->data);
+        why = eshkol_rm_require_interior(out->data, K, (int)x->total);
+        if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -882,7 +923,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (why) { vm_geometric_raise(vm, "mobius-scalar-mul", why, K); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        why = eshkol_rm_mobius_scalar(r, x->data, -K, (int)x->total, out->data);
+        why = eshkol_rm_mobius_scalar(r, x->data, K, (int)x->total, out->data);
         if (why) { vm_geometric_raise(vm, "mobius-scalar-mul", why, K); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -1228,18 +1269,29 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         break;
     }
     case 840: { /* riemannian-adam-step(point, gradient, lr, beta1, beta2, curvature) */
+        /* REFUSES. This op carried an IMPLICIT optimizer state, drawn from a
+         * sixteen-slot pool keyed by the point tensor's SHAPE. Adam state
+         * belongs to a parameter, not to a shape: two independent parameters of
+         * the same shape shared one set of moments and one step counter, so
+         * each one's update depended on the other's history with nothing in the
+         * returned tensor to show it. At K = 0, lr = 0.1, beta1 = 0.9,
+         * beta2 = 0.999, a first parameter with g = +1 steps by -0.1 and a
+         * SECOND, INDEPENDENT parameter with g = -1 should step by +0.1; the
+         * shared pool gave it +0.00526316.
+         *
+         * There is no repair inside this arity. Keying by the point tensor's
+         * identity instead of its shape does not work either, because this op
+         * RETURNS A NEW TENSOR each call, so a per-iteration parameter would
+         * never match its own state and Adam would silently degrade to a
+         * bias-corrected SGD. The state has to be named by the caller, which is
+         * exactly what riemannian-adam-step! (861) takes. */
         double K = as_number(vm_pop(vm));
-        double beta2 = as_number(vm_pop(vm));
-        double beta1 = as_number(vm_pop(vm));
-        double lr = as_number(vm_pop(vm));
-        VmTensor* grad = vm_get_tensor(vm, vm_pop(vm));
-        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
-        VmRiemannianAdamState* st = vm_default_riemannian_adam_state(vm, point);
-        const char* why = NULL;
-        VmTensor* out = vm_riemannian_adam_geodesic_step(
-            vm, point, grad, st, lr, beta1, beta2, K, &why);
-        if (why) { vm_geometric_raise(vm, "riemannian-adam-step", why, K); break; }
-        vm_push_tensor_or_nil(vm, out);
+        for (int i = 0; i < 5; i++) (void)vm_pop(vm);
+        vm_geometric_raise(vm, "riemannian-adam-step",
+            "an implicit state pool cannot tell two same-shaped parameters "
+            "apart, so they would share moments and step count; use "
+            "riemannian-adam-step! with a state from "
+            "make-riemannian-adam-state", K);
         break;
     }
     case 860: { /* make-riemannian-adam-state(point) */
@@ -1488,11 +1540,14 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
             break;
         }
         if (!accepted) {
+            /* Kept short deliberately: vm_geometric_raise appends the
+             * curvature convention to a 320-byte buffer, and a reason long
+             * enough to push the convention out of the message would cost the
+             * reader the one fact that says which geometry K names. */
             vm_geometric_raise(vm, "adaptive-curvature-step",
-                "no damped Newton step of the geodesic-distance objective is "
-                "admissible from this curvature: every backtracked step either "
-                "changed the sign of K, left a supplied point off the manifold, "
-                "or increased the objective", K);
+                "no backtracked damped Newton step is admissible (each either "
+                "flipped the sign of K, moved a point off the manifold, or "
+                "raised the objective)", K);
             break;
         }
         vm_push(vm, mv);
