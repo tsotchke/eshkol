@@ -1,0 +1,69 @@
+# DD-11 reviewed public header symbols: path, source line, kind, symbol, description
+inc/eshkol/agent_capabilities.h	26	extern_c	eshkol_compression_available	Returns whether the bounded compression capability is available.
+inc/eshkol/agent_capabilities.h	27	extern_c	eshkol_deflate	Compresses input bytes with the deflate codec into a caller-provided buffer.
+inc/eshkol/agent_capabilities.h	28	extern_c	eshkol_inflate_data	Decompresses deflate data into a caller-provided buffer.
+inc/eshkol/agent_capabilities.h	29	extern_c	eshkol_gzip	Compresses input bytes into gzip format.
+inc/eshkol/agent_capabilities.h	30	extern_c	eshkol_gunzip	Decompresses gzip data into a caller-provided buffer.
+inc/eshkol/agent_capabilities.h	41	extern_c	eshkol_gunzip_alloc	Allocates and returns decompressed gzip data subject to the output limit.
+inc/eshkol/agent_capabilities.h	43	extern_c	eshkol_compression_free	Releases memory returned by an allocating compression entry point.
+inc/eshkol/agent_capabilities.h	52	extern_c	eshkol_ts_parser_free	Releases a tree-sitter parser handle.
+inc/eshkol/agent_capabilities.h	53	extern_c	eshkol_ts_parse	Parses source text with a tree-sitter parser handle.
+inc/eshkol/agent_capabilities.h	54	extern_c	eshkol_ts_tree_free	Releases a tree-sitter syntax-tree handle.
+inc/eshkol/agent_capabilities.h	55	extern_c	eshkol_ts_tree_root	Writes the root node information for a parsed tree.
+inc/eshkol/agent_capabilities.h	56	extern_c	eshkol_ts_node_info	Writes information for a tree-sitter node.
+inc/eshkol/agent_capabilities.h	58	extern_c	eshkol_ts_node_children	Writes the children of a tree-sitter node.
+inc/eshkol/agent_capabilities.h	60	extern_c	eshkol_ts_node_text	Writes the source text represented by a tree-sitter node.
+inc/eshkol/agent_capabilities.h	62	extern_c	eshkol_ts_query_new	Creates a tree-sitter query handle from a language and query string.
+inc/eshkol/agent_capabilities.h	63	extern_c	eshkol_ts_query_free	Releases a tree-sitter query handle.
+inc/eshkol/agent_capabilities.h	64	extern_c	eshkol_ts_query_matches	Writes matches for a tree-sitter query against a syntax tree.
+inc/eshkol/agent_capabilities.h	66	extern_c	eshkol_ts_tree_sexp	Writes an S-expression representation of a syntax tree.
+inc/eshkol/agent_capabilities.h	68	extern_c	eshkol_yoga_available	Returns whether the Yoga layout capability is available.
+inc/eshkol/agent_capabilities.h	69	extern_c	eshkol_yoga_node_create	Creates an opaque Yoga layout node handle.
+inc/eshkol/agent_capabilities.h	70	extern_c	eshkol_yoga_node_free	Releases an opaque Yoga layout node handle.
+inc/eshkol/agent_capabilities.h	71	extern_c	eshkol_yoga_node_set_float	Sets a floating-point Yoga node property.
+inc/eshkol/agent_capabilities.h	72	extern_c	eshkol_yoga_node_set_int	Sets an integer Yoga node property.
+inc/eshkol/agent_capabilities.h	73	extern_c	eshkol_yoga_node_add_child	Adds a child node at a requested Yoga index.
+inc/eshkol/agent_capabilities.h	74	extern_c	eshkol_yoga_node_calculate	Calculates a Yoga node layout for the supplied dimensions.
+inc/eshkol/agent_capabilities.h	75	extern_c	eshkol_yoga_node_get_computed	Reads a computed Yoga node layout value.
+inc/eshkol/agent_http.h	10	struct	qllm_http_response	Opaque response object owned by the HTTP ABI until it is freed.
+inc/eshkol/agent_http.h	11	struct	eshkol_sse_event	Opaque server-sent-event object owned by the caller until it is freed.
+inc/eshkol/agent_http.h	51	extern_c	eshkol_http_stream_done	Reports whether an HTTP event stream has reached completion.
+inc/eshkol/agent_http.h	53	extern_c	eshkol_http_stream_close	Closes an HTTP event stream and releases its transport state.
+inc/eshkol/agent_http.h	58	extern_c	eshkol_sse_event_retry_ms	Returns the retry delay carried by an SSE event in milliseconds.
+inc/eshkol/agent_http.h	59	extern_c	eshkol_sse_event_free	Releases an SSE event returned by the streaming API.
+inc/eshkol/backend/gpu/gpu_memory.h	289	constant	ESHKOL_ELEMWISE_NEG	Selects elementwise negation for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	290	constant	ESHKOL_ELEMWISE_ABS	Selects elementwise absolute value for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	291	constant	ESHKOL_ELEMWISE_EXP	Selects elementwise exponential for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	292	constant	ESHKOL_ELEMWISE_LOG	Selects elementwise natural logarithm for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	293	constant	ESHKOL_ELEMWISE_SIN	Selects elementwise sine for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	294	constant	ESHKOL_ELEMWISE_COS	Selects elementwise cosine for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	295	constant	ESHKOL_ELEMWISE_TANH	Selects elementwise hyperbolic tangent for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	296	constant	ESHKOL_ELEMWISE_RELU	Selects elementwise ReLU for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	297	constant	ESHKOL_ELEMWISE_SIGMOID	Selects elementwise sigmoid for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	298	constant	ESHKOL_ELEMWISE_SQRT	Selects elementwise square root for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	299	constant	ESHKOL_ELEMWISE_RECIPROCAL	Selects elementwise reciprocal for the GPU elementwise dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	303	constant	ESHKOL_REDUCE_SUM	Selects sum reduction for the GPU reduction dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	304	constant	ESHKOL_REDUCE_PROD	Selects product reduction for the GPU reduction dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	305	constant	ESHKOL_REDUCE_MIN	Selects minimum reduction for the GPU reduction dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	306	constant	ESHKOL_REDUCE_MAX	Selects maximum reduction for the GPU reduction dispatcher.
+inc/eshkol/backend/gpu/gpu_memory.h	307	constant	ESHKOL_REDUCE_MEAN	Selects mean reduction for the GPU reduction dispatcher.
+inc/eshkol/core/i128.h	79	function	eshkol_i128_mul	Multiplies two signed 128-bit values with wrapping two's-complement semantics.
+inc/eshkol/core/i128.h	82	function	eshkol_i128_neg	Negates a signed 128-bit value with wrapping semantics.
+inc/eshkol/core/i128.h	102	function	eshkol_i128_lshr	Performs a logical right shift on a signed 128-bit bit pattern.
+inc/eshkol/llvm_backend.h	400	macro	eshkol_set_shared_library_exports	No-op fallback macro when the LLVM backend is disabled.
+inc/eshkol/llvm_backend.h	401	macro	eshkol_get_shared_library_exports	Returns the disabled-backend fallback value for shared-library exports.
+inc/eshkol/tensorcore_adapter.h	42	extern_c	eshkol_tc_known_capability_mask	Returns the TensorCore capability bits known to this adapter.
+inc/eshkol/tensorcore_adapter.h	43	extern_c	eshkol_tc_available_capability_mask	Returns the TensorCore capabilities available in the context.
+inc/eshkol/tensorcore_adapter.h	44	extern_c	eshkol_tc_compiled_backend_mask	Returns the backend bits compiled into TensorCore.
+inc/eshkol/tensorcore_adapter.h	45	extern_c	eshkol_tc_available_backend_mask	Returns the backend bits available at runtime.
+inc/eshkol/tensorcore_adapter.h	51	extern_c	eshkol_tc_device_family	Returns the TensorCore device-family code for a context.
+inc/eshkol/tensorcore_adapter.h	52	extern_c	eshkol_tc_device_unified_memory	Reports whether the device exposes unified memory.
+inc/eshkol/tensorcore_adapter.h	53	extern_c	eshkol_tc_device_supports_bf16	Reports whether the device supports BF16 operations.
+inc/eshkol/tensorcore_adapter.h	54	extern_c	eshkol_tc_device_supports_i8	Reports whether the device supports int8 operations.
+inc/eshkol/tensorcore_adapter.h	55	extern_c	eshkol_tc_device_supports_tensorops_m5	Reports whether the device supports TensorOps M5.
+inc/eshkol/tensorcore_adapter.h	97	extern_c	eshkol_tc_last_backend_code	Returns the last TensorCore backend status code.
+lib/math/fixed_point/eshkol_fixed_point.h	168	extern_c	esk_fixed_to_double	Converts a fixed-point value to double and reports exactness when requested.
+lib/math/fixed_point/eshkol_fixed_point.h	169	extern_c	esk_fixed_from_f32	Constructs a fixed-point value from a float with explicit rounding and overflow policy.
+lib/math/fixed_point/eshkol_fixed_point.h	172	extern_c	esk_fixed_to_f32	Converts a fixed-point value to float and reports exactness when requested.
+lib/math/fixed_point/eshkol_fixed_point.h	196	function	esk_accum128_add_i64	Adds an int64 value to an exact 128-bit accumulation and advances its count.
+lib/math/fixed_point/eshkol_fixed_point.h	197	function	esk_accum128_add_i128	Adds an int128 value to an exact 128-bit accumulation and advances its count.
