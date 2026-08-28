@@ -17,6 +17,7 @@
 #include "../../inc/eshkol/backend/work_stealing_deque.h"
 #include "../core/arena_memory.h"
 #include "../../inc/eshkol/core/runtime.h"
+#include "../../inc/eshkol/core/resource_limits.h"
 #include "../../inc/eshkol/logger.h"
 
 #include <thread>
@@ -525,10 +526,9 @@ static size_t thread_pool_default_worker_stack_size(void) {
     size_t stack_size = 16 * 1024 * 1024;
     const char* env = std::getenv("ESHKOL_WORKER_STACK_BYTES");
     if (env && env[0] != '\0') {
-        char* end = nullptr;
-        unsigned long long parsed = std::strtoull(env, &end, 10);
-        if (end && *end == '\0' && parsed > 0) {
-            stack_size = static_cast<size_t>(parsed);
+        size_t parsed = 0;
+        if (eshkol_parse_size(env, &parsed) && parsed > 0) {
+            stack_size = parsed;
         }
     }
 

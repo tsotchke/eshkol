@@ -169,13 +169,11 @@ check "a tensor ceiling above the tensor is inert" 0 "-" -- \
 
 # --- ESHKOL_MAX_STACK -------------------------------------------------------
 #
-# The depth guard is emitted at lambda entry, so this uses the eval path where
-# the recursive function is compiled as one. Codegen does not yet emit the
-# guard for every top-level `define`d function — that gap is ESH-0101 (see
-# tests/stress/found/deep_recursion_270k_no_diagnostic.esk) and is deliberately
-# NOT closed here: tests/stress/rec_deep_nontco_250k.esk pins plain non-tail
-# recursion working to 250000 frames, which the documented 100000 default would
-# break. What this case pins is that the VARIABLE is live where the guard runs.
+# The software depth guard is emitted at lambda entry, and the native byte
+# guard is emitted at every generated user-function entry. This case continues
+# to pin that ESHKOL_MAX_STACK is live where the software guard runs; the
+# deep native-byte hard gate is driven separately by
+# scripts/run_stack_overflow_diagnostic.sh.
 
 unset_all_limits
 ESHKOL_MAX_STACK=100 \
