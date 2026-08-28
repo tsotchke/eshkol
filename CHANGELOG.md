@@ -165,6 +165,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Curried gradient-of-gradient is exact (ESH-0096, ledger SW-05).** With
+  `(define g (gradient f))`, `(jacobian g point)` answered a zero matrix —
+  silently, exit 0 — where `(hessian f point)` returns the correct Hessian on
+  the same build, and for `f(v) = v0*v0` the same route read a tape pointer as a
+  double and crashed. It was subsequently made to raise. It now answers the
+  Hessian, entry-for-entry identical to `(hessian f point)`, off-diagonals
+  included.
+
+  The reverse-tensor arm of `emitRuntimeClosureGradient()` read each point
+  component with a raw bitcast to `double`. When an enclosing reverse pass
+  (`jacobian`) hands the curried gradient its point, those element slots hold
+  `ad_node_t*` tape nodes, so the cast turned a heap pointer into a subnormal
+  ~1e-310: the inner gradient was evaluated at ~0 *and* its result carried no
+  edge back to the outer tape.
+
+  Reverse-over-reverse is not representable on this tape — `ad_node_t::value` is
+  a single double — so the inner pass now runs **forward**, the same
+  forward-over-reverse composition the direct `hessian` performs. One residency
+  probe over the point decides the route; the new arm then evaluates `f` once
+  per output component `i` on a vector of 8-jets
+  `x_k = value_k + [k == i]·e1 + [k is the active seed]·ep`, so the returned
+  jet's `e1` coefficient is `grad_i` and its `e1·ep` coefficient is exactly
+  `H[i][seed]`. `eshkol_ad_mixed_record` writes that exact local linearization
+  onto the outer tape. No finite differences and no second reverse tape — this
+  did not require the dense resident tape spine.
+
+  A point *computed* from the enclosing pass's variables still **raises**: no
+  component IS the published seed there, so no edge can be established, and a
+  loud refusal beats a disconnected zero. (Which guard speaks depends on the
+  spelling — a `(vector …)` of AD nodes is rejected by the point coercion, a
+  tensor of non-seed nodes by `unsupported nested differentiation`.) New regression `tests/ad/ad_curried_gradient_nested_test.esk` (renamed
+  from `..._loud_test.esk`) pins both halves on the native JIT and AOT ctest
+  lanes, cross-checking every entry against `hessian` on the same build.
+  Closes `.icc/silent-wrong-ledger.yaml` SW-05.
+
 - **Python bindings: NumPy capsule keeps the tensor buffer alive (#458,
   audit H1).** A NumPy array exported from a tensor `eval()` held no
   reference back to its owning `Context`; deleting (or losing the last

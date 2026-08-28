@@ -3417,33 +3417,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: cross-carrier AD composition"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
-    # again with an enclosing REVERSE pass is not supported — the runtime-closure
-    # gradient reads its point components as raw doubles, so the outer pass's
-    # tape-node components were bitcast into a subnormal. It answered `#((0))`
-    # where `(hessian f point)` answers `#((12))`, and crashed for other shapes.
-    # It now RAISES. This pins the raise so a regression to the silent zero (or
-    # to the memory-unsafe read) fails instead of shipping a wrong derivative.
+    # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
+    # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`
+    # on the same build, and SIGBUSed for other shapes: the runtime-closure
+    # gradient bitcast its point components to raw doubles, so the outer pass's
+    # `ad_node_t*` components became a subnormal. The vector arm now detects an
+    # enclosing pass's tape nodes and evaluates the inner gradient FORWARD (the
+    # forward-over-reverse composition the direct `hessian` performs), so the
+    # curried route answers the Hessian exactly. This asserts every entry
+    # against the direct `hessian` on the same build, and pins the one residual
+    # shape (a point COMPUTED from the outer variables) as LOUD.
     add_test(
-        NAME ad_curried_gradient_nested_loud_runtime_smoke
+        NAME ad_curried_gradient_nested_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
-                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk"
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_test.esk"
                 -L"${CMAKE_CURRENT_BINARY_DIR}"
     )
-    set_tests_properties(ad_curried_gradient_nested_loud_runtime_smoke
+    set_tests_properties(ad_curried_gradient_nested_runtime_smoke
         PROPERTIES
             TIMEOUT 300
             ENVIRONMENT "ESHKOL_JIT_CACHE=0"
-            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient-of-gradient is exact"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     add_test(
-        NAME ad_curried_gradient_nested_loud_aot_smoke
+        NAME ad_curried_gradient_nested_aot_smoke
         COMMAND sh -c
-            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_loud_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_loud_aot'"
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/ad_curried_gradient_nested_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_curried_gradient_nested_aot'"
     )
-    set_tests_properties(ad_curried_gradient_nested_loud_aot_smoke
+    set_tests_properties(ad_curried_gradient_nested_aot_smoke
         PROPERTIES
             TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "PASS: curried gradient nesting is loud"
+            PASS_REGULAR_EXPRESSION "PASS: curried gradient-of-gradient is exact"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)

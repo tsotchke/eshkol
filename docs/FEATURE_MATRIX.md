@@ -135,7 +135,7 @@ from the manifest again.
 | Computational graphs | Yes | Reverse | Tape-based |
 | Gradient computation | Yes | Reverse | `gradient` |
 | Backpropagation | Yes | Reverse | Full backward pass |
-| Nested gradients | Yes | Reverse | Exact for nested scalar `derivative` and for the direct vector-point gradient-of-gradient (the ESH-0096 shape); the *curried* `(define g (gradient f))` route raises `unsupported nested differentiation` instead of silently answering zeros (SW-05) — use `hessian` for exact second order |
+| Nested gradients | Yes | Reverse + forward-over-reverse | Exact for nested scalar `derivative`, for the direct vector-point gradient-of-gradient (the ESH-0096 shape), and for the *curried* `(define g (gradient f))` route: `(jacobian g point)` answers the Hessian entry-for-entry identically to `(hessian f point)` (SW-05 closed). A point *computed* from the enclosing pass's variables still raises — loud, never a silent zero |
 | Double backward | Yes | Reverse | Second derivatives via `hessian` (tensor-literal, vector, and variable-bound points, #343) or nested scalar `derivative` |
 | Jacobian matrices | Yes | Reverse | `jacobian` |
 | Hessian matrices | Yes | Reverse | `hessian` |

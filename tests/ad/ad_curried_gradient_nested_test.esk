@@ -1,0 +1,115 @@
+;; ESH-0096 / ledger SW-05 — a first-class `gradient` closure differentiated
+;; again by an enclosing REVERSE-mode pass.
+;;
+;; Was: `(jacobian (gradient f) point)` answered `#((0))`, silently, where the
+;; direct `(hessian f point)` answers `#((12))` on the same build; and for
+;; `f(v) = v0*v0` the same route read a tape pointer as a double and SIGBUSed.
+;; The runtime-closure gradient bitcast its point's components to raw doubles,
+;; so an enclosing reverse pass's `ad_node_t*` components became a subnormal
+;; ~1e-310 — the inner gradient was evaluated at ~0 AND its result carried no
+;; edge back to the outer tape. It was then made to RAISE.
+;;
+;; Now: the runtime-closure gradient detects a point made of the enclosing
+;; pass's tape nodes and evaluates the inner gradient FORWARD — the exact
+;; forward-over-reverse composition `(hessian f point)` already performs — so
+;; the curried route answers the Hessian, exactly, with no finite differences.
+;; Every assertion below is an EXACT equality against the direct `hessian` or
+;; against the closed-form second derivative.
+;;
+;; The one shape that remains unsupported — a point COMPUTED from the enclosing
+;; pass's variables, where no component IS the published active seed — must
+;; still be LOUD, never a silent zero. That is pinned at the end.
+
+(define failures 0)
+
+(define (check name got want)
+  (if (<= (abs (- got want)) 1e-12)
+      (begin (display "  ok   ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; ── 1-D cubic: f(v) = v0^3, f'' = 6*v0 ────────────────────────────────────
+(define (f3 v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 0)))
+(define g3 (gradient f3))
+
+;; Supported before and after — must not regress.
+(check "cubic curried gradient value" (vector-ref (g3 (vector 2.0)) 0) 12.0)
+(check "cubic direct gradient value"  (vector-ref (gradient f3 (vector 2.0)) 0) 12.0)
+(check "cubic direct hessian value"   (tensor-ref (hessian f3 (vector 2.0)) 0 0) 12.0)
+
+;; SW-05: the composed route. 6*2 = 12.
+(check "cubic jacobian of curried gradient"
+       (tensor-ref (jacobian g3 (vector 2.0)) 0 0) 12.0)
+(check "cubic jacobian of wrapped curried gradient"
+       (tensor-ref (jacobian (lambda (v) (g3 v)) (vector 2.0)) 0 0) 12.0)
+(check "cubic curried == direct hessian"
+       (- (tensor-ref (jacobian g3 (vector 2.0)) 0 0)
+          (tensor-ref (hessian f3 (vector 2.0)) 0 0))
+       0.0)
+;; At a second point, so a constant answer cannot pass: 6*3 = 18.
+(check "cubic jacobian of curried gradient at 3.0"
+       (tensor-ref (jacobian g3 (vector 3.0)) 0 0) 18.0)
+
+;; ── the SIGBUS shape: f(v) = v0*v0, f'' = 2 ───────────────────────────────
+(define (f2 v) (* (vector-ref v 0) (vector-ref v 0)))
+(define g2 (gradient f2))
+(check "square curried gradient value" (vector-ref (g2 (vector 2.0)) 0) 4.0)
+(check "square jacobian of curried gradient"
+       (tensor-ref (jacobian g2 (vector 2.0)) 0 0) 2.0)
+(check "square curried == direct hessian"
+       (- (tensor-ref (jacobian g2 (vector 2.0)) 0 0)
+          (tensor-ref (hessian f2 (vector 2.0)) 0 0))
+       0.0)
+
+;; ── 2-D, non-symmetric-looking: f(v) = v0^2 * v1 ──────────────────────────
+;; H = [[2*v1, 2*v0], [2*v0, 0]]; at (2,3) that is [[6,4],[4,0]].
+;; The off-diagonals are EXACTLY 4 and the (1,1) entry EXACTLY 0 — a finite
+;; difference would not deliver either.
+(define (fm v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)))
+(define gm (gradient fm))
+(define pm (vector 2.0 3.0))
+(define jm (jacobian gm pm))
+
+(check "2d curried gradient [0]" (vector-ref (gm pm) 0) 12.0)
+(check "2d curried gradient [1]" (vector-ref (gm pm) 1) 4.0)
+(check "2d jacobian-of-gradient [0][0]" (tensor-ref jm 0 0) 6.0)
+(check "2d jacobian-of-gradient [0][1]" (tensor-ref jm 0 1) 4.0)
+(check "2d jacobian-of-gradient [1][0]" (tensor-ref jm 1 0) 4.0)
+(check "2d jacobian-of-gradient [1][1]" (tensor-ref jm 1 1) 0.0)
+
+;; Cross-check every entry against the direct Hessian on the same build.
+(define hm (hessian fm pm))
+(check "2d curried == direct hessian [0][0]" (- (tensor-ref jm 0 0) (tensor-ref hm 0 0)) 0.0)
+(check "2d curried == direct hessian [0][1]" (- (tensor-ref jm 0 1) (tensor-ref hm 0 1)) 0.0)
+(check "2d curried == direct hessian [1][0]" (- (tensor-ref jm 1 0) (tensor-ref hm 1 0)) 0.0)
+(check "2d curried == direct hessian [1][1]" (- (tensor-ref jm 1 1) (tensor-ref hm 1 1)) 0.0)
+
+;; ── the ordinary (non-nested) curried gradient still works afterwards ─────
+;; i.e. the nested route did not disturb the single-pass reverse arm.
+(check "post-nesting curried gradient still exact" (vector-ref (gm pm) 0) 12.0)
+(check "post-nesting direct gradient still exact"
+       (vector-ref (gradient fm pm) 1) 4.0)
+
+;; ── residual: a point COMPUTED from the outer pass's variables ────────────
+;; No component of the inner point IS the enclosing pass's published seed, so
+;; the dependence cannot be threaded back onto the outer tape. That must RAISE,
+;; not answer a disconnected zero.
+(define raised 0)
+(guard (e (#t (set! raised 1)))
+  (let ((jd (jacobian (lambda (v) (g3 (vector (* 2.0 (vector-ref v 0))))) (vector 2.0))))
+    (display "FAIL: derived-point curried gradient answered ")
+    (display jd)
+    (display " instead of raising")
+    (newline)
+    (set! failures (+ failures 1))))
+
+(if (= raised 1)
+    (begin (display "  ok   derived-point curried gradient raises") (newline))
+    (begin (display "FAIL: derived-point curried gradient did not raise") (newline)
+           (set! failures (+ failures 1))))
+
+(if (= failures 0)
+    (begin (display "PASS: curried gradient-of-gradient is exact") (newline))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)))

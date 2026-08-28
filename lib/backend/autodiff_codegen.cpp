@@ -4719,6 +4719,91 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
                     Value* rvt_n = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 3));
 
+                    // ── ESH-0096 (ledger SW-05): which composition is this? ──
+                    // A tensor element slot holds either an f64 bit pattern or
+                    // an `ad_node_t*`, and the ranges overlap, so the residency
+                    // probe (never a raw dereference) decides. Two facts are
+                    // read in ONE pass over the point:
+                    //   nested — some component is a live tape node, i.e. an
+                    //            ENCLOSING reverse pass handed us its variables
+                    //            (`(jacobian (gradient f) v)`, the curried
+                    //            Hessian). Reverse-over-reverse is not
+                    //            representable on this tape (ad_node_t::value
+                    //            is one double), so the inner pass must run
+                    //            FORWARD — the rvt_fov arm below.
+                    //   seeded — one of those components IS the enclosing
+                    //            pass's published active seed
+                    //            (eshkol_ad_seed_flag). Only then can the
+                    //            composition be written back onto the outer
+                    //            tape. Nested WITHOUT a seed among our own
+                    //            components (the outer pass differentiates
+                    //            through intermediate nodes, or published no
+                    //            seed at all) still raises: loud, never a
+                    //            silent zero.
+                    // Non-nested points skip both and take the unchanged
+                    // single-pass reverse arm.
+                    FunctionCallee rvt_seed_flag_fn = ctx_.module().getOrInsertFunction(
+                        "eshkol_ad_seed_flag",
+                        FunctionType::get(ctx_.doubleType(), {ctx_.ptrType()}, false));
+                    Value* rvt_flag_zero = ConstantFP::get(ctx_.doubleType(), 0.0);
+                    llvm::AllocaInst* rvt_nested_slot;
+                    llvm::AllocaInst* rvt_seeded_slot;
+                    llvm::AllocaInst* rvt_pi;
+                    {
+                        llvm::IRBuilder<> eb(&current_func->getEntryBlock(),
+                                             current_func->getEntryBlock().begin());
+                        rvt_nested_slot = eb.CreateAlloca(ctx_.int1Type(), nullptr, "rvt_nested");
+                        rvt_seeded_slot = eb.CreateAlloca(ctx_.int1Type(), nullptr, "rvt_seeded");
+                        rvt_pi = eb.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_pi");
+                    }
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), rvt_nested_slot);
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), rvt_seeded_slot);
+                    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_pi);
+                    BasicBlock* rvt_pc = BasicBlock::Create(ctx_.context(), "rvt_probe_cond", current_func);
+                    BasicBlock* rvt_pb = BasicBlock::Create(ctx_.context(), "rvt_probe_body", current_func);
+                    BasicBlock* rvt_pm = BasicBlock::Create(ctx_.context(), "rvt_probe_node", current_func);
+                    BasicBlock* rvt_ps = BasicBlock::Create(ctx_.context(), "rvt_probe_seed", current_func);
+                    BasicBlock* rvt_pn = BasicBlock::Create(ctx_.context(), "rvt_probe_next", current_func);
+                    BasicBlock* rvt_pe = BasicBlock::Create(ctx_.context(), "rvt_probe_end", current_func);
+                    b.CreateBr(rvt_pc);
+                    b.SetInsertPoint(rvt_pc);
+                    Value* rvt_pv = b.CreateLoad(ctx_.int64Type(), rvt_pi);
+                    b.CreateCondBr(b.CreateICmpULT(rvt_pv, rvt_n), rvt_pb, rvt_pe);
+                    b.SetInsertPoint(rvt_pb);
+                    Value* rvt_pbits = b.CreateLoad(ctx_.int64Type(),
+                        b.CreateGEP(ctx_.int64Type(), rvt_elems, rvt_pv));
+                    b.CreateCondBr(emitAdNodeProbe(rvt_pbits, /*any type=*/-1), rvt_pm, rvt_pn);
+                    b.SetInsertPoint(rvt_pm);
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), rvt_nested_slot);
+                    // seed_flag only COMPARES the pointer (no dereference), and
+                    // this candidate is arena-resident anyway.
+                    Value* rvt_pflag = b.CreateCall(rvt_seed_flag_fn,
+                        {b.CreateIntToPtr(rvt_pbits, ctx_.ptrType())});
+                    b.CreateCondBr(b.CreateFCmpONE(rvt_pflag, rvt_flag_zero), rvt_ps, rvt_pn);
+                    b.SetInsertPoint(rvt_ps);
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), rvt_seeded_slot);
+                    b.CreateBr(rvt_pn);
+                    b.SetInsertPoint(rvt_pn);
+                    b.CreateStore(b.CreateAdd(rvt_pv, ConstantInt::get(ctx_.int64Type(), 1)), rvt_pi);
+                    b.CreateBr(rvt_pc);
+                    b.SetInsertPoint(rvt_pe);
+                    BasicBlock* rvt_nested_bb = BasicBlock::Create(ctx_.context(), "rvt_nested_route", current_func);
+                    BasicBlock* rvt_fov       = BasicBlock::Create(ctx_.context(), "rvt_fwd_over_rev", current_func);
+                    BasicBlock* rvt_unsup     = BasicBlock::Create(ctx_.context(), "rvt_nested_unsup", current_func);
+                    BasicBlock* rvt_plain     = BasicBlock::Create(ctx_.context(), "rvt_plain_reverse", current_func);
+                    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), rvt_nested_slot), rvt_nested_bb, rvt_plain);
+                    b.SetInsertPoint(rvt_nested_bb);
+                    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), rvt_seeded_slot), rvt_fov, rvt_unsup);
+                    b.SetInsertPoint(rvt_unsup);
+                    {
+                        FunctionCallee rvt_raise = ctx_.module().getOrInsertFunction(
+                            "eshkol_ad_curried_gradient_unsupported",
+                            FunctionType::get(ctx_.voidType(), {}, false));
+                        b.CreateCall(rvt_raise, {});
+                        b.CreateBr(rvt_plain);   // eshkol_raise does not return
+                    }
+                    b.SetInsertPoint(rvt_plain);
+
                     // Fresh tape for this gradient; publish as current so
                     // createADVariable / tensor-op recording target it.
                     Value* rvt_tape = b.CreateCall(mem_.getArenaAllocateTape(),
@@ -4775,26 +4860,11 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.SetInsertPoint(rvt_sb);
                     Value* rvt_ebits = b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), rvt_elems, rvt_jv));
                     // ESH-0096 (ledger SW-05): this bitcast reads the component
-                    // as a raw double. When an ENCLOSING reverse pass handed us
-                    // its tape nodes, the bits are an `ad_node_t*` and the cast
-                    // silently produces a subnormal ~1e-310 -- so the inner
-                    // gradient was evaluated at ~0, and its result carried no
-                    // edge back to the outer tape. Probe residency FIRST (the
-                    // probe never dereferences a non-resident candidate) and
-                    // raise instead of differentiating garbage.
-                    {
-                        Value* rvt_is_node = emitAdNodeProbe(rvt_ebits, /*any type=*/-1);
-                        BasicBlock* rvt_unsup = BasicBlock::Create(ctx_.context(), "rvt_nested_unsup", current_func);
-                        BasicBlock* rvt_ok    = BasicBlock::Create(ctx_.context(), "rvt_seed_ok", current_func);
-                        b.CreateCondBr(rvt_is_node, rvt_unsup, rvt_ok);
-                        b.SetInsertPoint(rvt_unsup);
-                        FunctionCallee rvt_raise = ctx_.module().getOrInsertFunction(
-                            "eshkol_ad_curried_gradient_unsupported",
-                            FunctionType::get(ctx_.voidType(), {}, false));
-                        b.CreateCall(rvt_raise, {});
-                        b.CreateBr(rvt_ok);   // eshkol_raise does not return
-                        b.SetInsertPoint(rvt_ok);
-                    }
+                    // as a raw double, which is correct ONLY when the component
+                    // really is one. The pre-scan above has already routed every
+                    // point carrying an enclosing pass's `ad_node_t*` away from
+                    // this block (to rvt_fov, or to the loud raise), so no tape
+                    // pointer can reach the cast and become a subnormal ~1e-310.
                     Value* rvt_edbl = b.CreateBitCast(rvt_ebits, ctx_.doubleType());
                     Value* rvt_node = createADVariable(rvt_edbl, 0);
                     b.CreateStore(rvt_node, b.CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_jv));
@@ -4941,6 +5011,218 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     current_tape_ptr_ = rvt_saved_tape;
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
+
+                    // ── ESH-0096 / ledger SW-05: forward-over-reverse ────────
+                    //
+                    // The point's components are the ENCLOSING reverse pass's
+                    // tape nodes, one of which is its published active seed.
+                    // The inner gradient therefore runs FORWARD — the exact
+                    // composition `(hessian f point)` already performs — so
+                    // that `(jacobian (gradient f) v)` answers the same matrix
+                    // as `(hessian f v)` instead of the zero matrix SW-05
+                    // recorded.
+                    //
+                    // For output component i, component k of the argument is
+                    // the 8-jet
+                    //
+                    //     { value_k, e1 = (k == i), 0, 0,
+                    //       ep = eshkol_ad_seed_flag(node_k), 0, 0, 0 }
+                    //
+                    // i.e. x_k = value_k + [k==i]·e1 + [k is seed]·ep. The e1
+                    // slot selects the output component, so f's returned jet's
+                    // e1 coefficient (field 1) is exactly grad_i; the ep slot is
+                    // an INDEPENDENT jet dimension (ESH-0117) that carries the
+                    // dependence on the outer seed, so the surviving e1·ep
+                    // coefficient (field 5) is exactly d(grad_i)/d(seed) =
+                    // H[i][seed]. Those are the same two fields
+                    // popAndExtractForwardCore reads at level 0, handed to the
+                    // same hook: eshkol_ad_mixed_record writes the exact local
+                    // linearization onto the OUTER tape and returns the node the
+                    // enclosing backward pass will traverse.
+                    //
+                    // Cost: n forward evaluations of f per enclosing pass (one
+                    // per output component), matching the direct Hessian's
+                    // forward-over-forward sweep. No second reverse tape is
+                    // built, so this does NOT depend on the dense resident tape
+                    // spine.
+                    {
+                        auto& fb = ctx_.builder();
+                        fb.SetInsertPoint(rvt_fov);
+
+                        // Result tensor (same shape) that receives one node (or
+                        // plain gradient double) per output component.
+                        Value* fov_res = fb.CreateCall(mem_.getArenaAllocateTensorFull(),
+                            {arena_ptr, rvt_ndim, rvt_n});
+                        Value* fov_res_dims = fb.CreateLoad(ctx_.ptrType(),
+                            fb.CreateStructGEP(rvt_tt, fov_res, 0));
+                        Value* fov_res_elems = fb.CreateLoad(ctx_.ptrType(),
+                            fb.CreateStructGEP(rvt_tt, fov_res, 2));
+
+                        llvm::AllocaInst* fov_di;
+                        llvm::AllocaInst* fov_i;
+                        llvm::AllocaInst* fov_k;
+                        {
+                            llvm::IRBuilder<> eb(&current_func->getEntryBlock(),
+                                                 current_func->getEntryBlock().begin());
+                            fov_di = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fov_di");
+                            fov_i  = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fov_i");
+                            fov_k  = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fov_k");
+                        }
+
+                        // Copy the shape.
+                        fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_di);
+                        BasicBlock* fov_dc = BasicBlock::Create(ctx_.context(), "fov_dcopy_cond", current_func);
+                        BasicBlock* fov_db = BasicBlock::Create(ctx_.context(), "fov_dcopy_body", current_func);
+                        BasicBlock* fov_de = BasicBlock::Create(ctx_.context(), "fov_dcopy_end", current_func);
+                        fb.CreateBr(fov_dc);
+                        fb.SetInsertPoint(fov_dc);
+                        Value* fov_div = fb.CreateLoad(ctx_.int64Type(), fov_di);
+                        fb.CreateCondBr(fb.CreateICmpULT(fov_div, rvt_ndim), fov_db, fov_de);
+                        fb.SetInsertPoint(fov_db);
+                        fb.CreateStore(
+                            fb.CreateLoad(ctx_.int64Type(), fb.CreateGEP(ctx_.int64Type(), rvt_dims, fov_div)),
+                            fb.CreateGEP(ctx_.int64Type(), fov_res_dims, fov_div));
+                        fb.CreateStore(fb.CreateAdd(fov_div, ConstantInt::get(ctx_.int64Type(), 1)), fov_di);
+                        fb.CreateBr(fov_dc);
+                        fb.SetInsertPoint(fov_de);
+
+                        // The enclosing pass's forward level, reverse tape and
+                        // AD-mode flag. The inner evaluation is PURE forward:
+                        // with the tape nulled, f's arithmetic cannot record
+                        // onto the outer tape (which would corrupt the enclosing
+                        // pass), and maybeJetLiftTapeOperand freezes any tape
+                        // node f captures into a jet instead. All three are
+                        // restored before the mixed record, which must target
+                        // the outer tape.
+                        Value* fov_saved_level = adPertLevelLoad();
+                        Value* fov_outer_tape  = fb.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+                        Value* fov_saved_mode  = fb.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+                        Value* fov_zero_d = ConstantFP::get(ctx_.doubleType(), 0.0);
+                        Value* fov_one_d  = ConstantFP::get(ctx_.doubleType(), 1.0);
+                        FunctionCallee fov_mixed = ctx_.module().getOrInsertFunction(
+                            "eshkol_ad_mixed_record",
+                            FunctionType::get(ctx_.ptrType(),
+                                {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()},
+                                false));
+
+                        // ── output-component loop: i ──
+                        fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_i);
+                        BasicBlock* fov_ic = BasicBlock::Create(ctx_.context(), "fov_i_cond", current_func);
+                        BasicBlock* fov_ib = BasicBlock::Create(ctx_.context(), "fov_i_body", current_func);
+                        BasicBlock* fov_ie = BasicBlock::Create(ctx_.context(), "fov_i_end", current_func);
+                        fb.CreateBr(fov_ic);
+                        fb.SetInsertPoint(fov_ic);
+                        Value* fov_iv = fb.CreateLoad(ctx_.int64Type(), fov_i);
+                        fb.CreateCondBr(fb.CreateICmpULT(fov_iv, rvt_n), fov_ib, fov_ie);
+                        fb.SetInsertPoint(fov_ib);
+
+                        // Scheme vector of n seeded jets — subtype VECTOR, so
+                        // f's `vector-ref` hands the tagged dual straight to the
+                        // forward-mode scalar arithmetic (a raw-double tensor
+                        // cannot carry a jet through its elements).
+                        Value* fov_vec = fb.CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+                            {arena_ptr, rvt_n});
+                        fb.CreateStore(rvt_n, fov_vec);          // length at offset 0
+                        Value* fov_vec_elems = fb.CreatePointerCast(
+                            fb.CreateGEP(ctx_.int8Type(), fov_vec, ConstantInt::get(ctx_.int64Type(), 8)),
+                            ctx_.ptrType());
+
+                        // ── fill loop: k ──
+                        fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_k);
+                        BasicBlock* fov_kc  = BasicBlock::Create(ctx_.context(), "fov_k_cond", current_func);
+                        BasicBlock* fov_kb  = BasicBlock::Create(ctx_.context(), "fov_k_body", current_func);
+                        BasicBlock* fov_kn  = BasicBlock::Create(ctx_.context(), "fov_k_node", current_func);
+                        BasicBlock* fov_kr  = BasicBlock::Create(ctx_.context(), "fov_k_raw", current_func);
+                        BasicBlock* fov_km  = BasicBlock::Create(ctx_.context(), "fov_k_merge", current_func);
+                        BasicBlock* fov_ke  = BasicBlock::Create(ctx_.context(), "fov_k_end", current_func);
+                        fb.CreateBr(fov_kc);
+                        fb.SetInsertPoint(fov_kc);
+                        Value* fov_kv = fb.CreateLoad(ctx_.int64Type(), fov_k);
+                        fb.CreateCondBr(fb.CreateICmpULT(fov_kv, rvt_n), fov_kb, fov_ke);
+
+                        fb.SetInsertPoint(fov_kb);
+                        Value* fov_bits = fb.CreateLoad(ctx_.int64Type(),
+                            fb.CreateGEP(ctx_.int64Type(), rvt_elems, fov_kv));
+                        Value* fov_is_node = emitAdNodeProbe(fov_bits, /*any type=*/-1);
+                        fb.CreateCondBr(fov_is_node, fov_kn, fov_kr);
+
+                        // Tape node: its value is the real coordinate, and its
+                        // ep seed is 1.0 exactly when it IS the enclosing pass's
+                        // active seed variable.
+                        fb.SetInsertPoint(fov_kn);
+                        Value* fov_np   = fb.CreateIntToPtr(fov_bits, ctx_.ptrType());
+                        Value* fov_nval = loadNodeValue(fov_np);
+                        Value* fov_nflg = fb.CreateCall(rvt_seed_flag_fn, {fov_np});
+                        BasicBlock* fov_kn_exit = fb.GetInsertBlock();
+                        fb.CreateBr(fov_km);
+
+                        // Ordinary coordinate: a plain double, no seed edge.
+                        fb.SetInsertPoint(fov_kr);
+                        Value* fov_rval = fb.CreateBitCast(fov_bits, ctx_.doubleType());
+                        BasicBlock* fov_kr_exit = fb.GetInsertBlock();
+                        fb.CreateBr(fov_km);
+
+                        fb.SetInsertPoint(fov_km);
+                        PHINode* fov_val = fb.CreatePHI(ctx_.doubleType(), 2, "fov_kval");
+                        fov_val->addIncoming(fov_nval, fov_kn_exit);
+                        fov_val->addIncoming(fov_rval, fov_kr_exit);
+                        PHINode* fov_flg = fb.CreatePHI(ctx_.doubleType(), 2, "fov_kseed");
+                        fov_flg->addIncoming(fov_nflg, fov_kn_exit);
+                        fov_flg->addIncoming(fov_zero_d, fov_kr_exit);
+                        Value* fov_e1 = fb.CreateSelect(fb.CreateICmpEQ(fov_kv, fov_iv),
+                            fov_one_d, fov_zero_d);
+                        Value* fov_jet = packDualToTagged(makeDual8(ctx_,
+                            fov_val, fov_e1, fov_zero_d, fov_zero_d,
+                            fov_flg, fov_zero_d, fov_zero_d, fov_zero_d));
+                        fb.CreateStore(fov_jet,
+                            fb.CreateGEP(ctx_.taggedValueType(), fov_vec_elems, fov_kv));
+                        fb.CreateStore(fb.CreateAdd(fov_kv, ConstantInt::get(ctx_.int64Type(), 1)), fov_k);
+                        fb.CreateBr(fov_kc);
+
+                        fb.SetInsertPoint(fov_ke);
+                        Value* fov_vec_tagged = tagged_.packPtr(
+                            fb.CreatePtrToInt(fov_vec, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+                        adPertLevelStore(ConstantInt::get(ctx_.int64Type(), 1));
+                        ctx_.builder().CreateStore(
+                            ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())),
+                            ctx_.currentAdTape());
+                        ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+                        Value* fov_out = closure_call_callback_(closure_val,
+                            std::vector<Value*>{fov_vec_tagged}, "autodiff", callback_context_);
+                        if (!fov_out) {
+                            eshkol_error("gradient: failed to call runtime function (forward-over-reverse)");
+                            return nullptr;
+                        }
+                        adPertLevelStore(fov_saved_level);
+                        ctx_.builder().CreateStore(fov_outer_tape, ctx_.currentAdTape());
+                        ctx_.builder().CreateStore(fov_saved_mode, ctx_.adModeActive());
+
+                        auto& fb2 = ctx_.builder();
+                        Value* fov_rd = safeUnpackDualFromTagged(fov_out);
+                        Value* fov_gi = dualField(ctx_, fov_rd, 1);   // grad_i
+                        Value* fov_ds = dualField(ctx_, fov_rd, 5);   // d(grad_i)/d(seed)
+                        // Exact local linearization on the OUTER tape. Returns
+                        // null when there is nothing to record (no tape, no
+                        // seed, or dseed == 0, i.e. this component genuinely
+                        // does not depend on the seed) — the plain gradient
+                        // double is then stored and the enclosing pass reads a
+                        // true zero partial, not a dropped edge.
+                        Value* fov_node = fb2.CreateCall(fov_mixed,
+                            {arena_ptr, fov_outer_tape, fov_gi, fov_ds});
+                        Value* fov_node_ok = fb2.CreateICmpNE(fov_node,
+                            ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+                        Value* fov_store = fb2.CreateSelect(fov_node_ok,
+                            fb2.CreatePtrToInt(fov_node, ctx_.int64Type()),
+                            fb2.CreateBitCast(fov_gi, ctx_.int64Type()));
+                        fb2.CreateStore(fov_store,
+                            fb2.CreateGEP(ctx_.int64Type(), fov_res_elems, fov_iv));
+                        fb2.CreateStore(fb2.CreateAdd(fov_iv, ConstantInt::get(ctx_.int64Type(), 1)), fov_i);
+                        fb2.CreateBr(fov_ic);
+
+                        fb2.SetInsertPoint(fov_ie);
+                        fb2.CreateStore(tagged_.packHeapPtr(fov_res), rt_result_slot);
+                        fb2.CreateBr(grad_rt_done);
+                    }
 
                     ctx_.builder().SetInsertPoint(rvt_not_tensor);
                 }

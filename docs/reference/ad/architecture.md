@@ -248,11 +248,33 @@ where each used to return zeros:
 ;; => #(12)
 ```
 
-This holds for the *direct* nested form shown above. The **curried** route —
-`(define g (gradient f))` then `(jacobian g point)` — raises
-`unsupported nested differentiation` rather than answering (a loud refusal,
-not a silent zero; SW-05); see KNOWN_ISSUES.md. Use `(hessian f point)` for
-exact second order.
+The **curried** route — `(define g (gradient f))` then `(jacobian g point)` —
+is exact as well, by a different mechanism (SW-05). Reverse-over-reverse is not
+representable on this tape, because `ad_node_t::value` is a single double, so
+when the runtime-closure gradient is handed a point whose components are the
+enclosing pass's tape nodes it evaluates the inner gradient **forward** instead:
+for output component `i`, component `k` of the argument becomes the 8-jet
+`x_k = value_k + [k == i]·e1 + [k is the active seed]·ep`. The returned jet's
+`e1` coefficient is `grad_i` and the surviving `e1·ep` coefficient is
+`d(grad_i)/d(seed) = H[i][seed]` — the same two fields `popAndExtractForward`
+reads at level 0 — and `eshkol_ad_mixed_record` writes that exact local
+linearization back onto the outer tape. This is the same forward-over-reverse
+composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
+
+```scheme
+(define (f v) (* (vref v 0) (vref v 0) (vref v 1)))
+(define g (gradient f))
+(jacobian g (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
+(hessian  f (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
+```
+
+The one shape that still refuses is a point *computed* from the enclosing pass's
+variables — `(jacobian (lambda (v) (g (vector (* 2.0 (vref v 0))))) point)` —
+where no component IS the published active seed, so no edge can be threaded
+back. That **raises** (a loud refusal, not a silent zero): the `(vector …)`
+spelling is caught by the point coercion, `evaluation point is not a number`,
+before the tensor arm is reached; a tensor of non-seed nodes is caught by the
+pre-scan itself, `unsupported nested differentiation`. See KNOWN_ISSUES.md.
 
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 
