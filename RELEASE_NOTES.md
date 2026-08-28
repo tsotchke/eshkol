@@ -1,3 +1,143 @@
+# Eshkol v1.3.5-evolve — Release Notes
+
+A re-entrant-continuations release. `call/cc` becomes multi-shot on every
+engine Eshkol ships — native JIT, native AOT, and the bytecode VM — and a
+continuation captured inside a `with-region` block stays safe to resume after
+that region has closed, on native and the VM alike. The bytecode VM gains its
+own region evacuator, so `with-region` reclaims memory there the way it
+already did natively; a workload that held flat across a sixteen-fold increase
+in iterations with the evacuator on grew to roughly thirty times its size with
+it switched off on the identical binary. Cloning a linear `Qubit` is now a
+rejected compile rather than a warning next to a runnable binary. Automatic
+The VM’s `curl` and `divergence` implementations are now exact forward-dual implementations for supported list/vector-returning fields, and a structural source gate checks the declared carrier for each listed operator. Exact-point, higher-order, tensor-returning Jacobian, and several cross-engine AD gaps remain recorded in `PARITY.tsv`.
+Mutual tail recursion now runs in constant stack space through
+every tail-position spelling — `cond`, `case`, `when`, `unless`, `and`, and
+`or` — not only `if`.
+
+Alongside the headline items, this release starts the object-ABI migration
+(a machine-generated, ratcheted inventory of detected layout-dependent sites, and a
+link-time guard that turns a mixed-ABI link into an undefined-symbol error
+instead of a silently wrong program), closes out a leak-detection lane that
+had been unable to fail since it shipped, makes `gensym` reachable on every
+engine, fixes a reader gap that let certain quoted vectors and quasiquoted
+forms silently produce the wrong value, and adds a public, one-command,
+reproducible benchmark suite over the axes where Eshkol claims something
+distinctive. The assurance surface gained two waves of new detectors this
+cycle: a self-verdict scanner that catches a test printing its own failure
+inside a run graded PASS, build-fingerprint checks that catch a binary that
+was never rebuilt after its source changed, and CI wiring that makes
+ordinary PR CI now generates and uploads ICC trace evidence; it runs `icc
+readiness` only on a runner where ICC is installed.
+
+**Release Date**: August 28, 2026.
+
+**Release gates**: the full gate matrix (aggregate suite, CTest, SICP
+full-book gate, reference-Scheme differential oracle, VM parity, qLLM oracle,
+ICC readiness) will be measured and stated here against the final release commit.
+<!-- readiness: fill from final battery -->
+
+## Highlights
+
+### Re-entrant continuations, on every engine
+
+- **Multi-shot `call/cc`.** A captured continuation can now be invoked any
+  number of times, from any dynamic extent, including after the procedure
+  that captured it has already returned — the shape generators, coroutines,
+  and `amb`-style backtracking search all need. Native gives a capture that
+  may outlive its frame a durable copy of the live C stack, restored to the
+  same addresses before resuming, so every interior pointer stays valid with
+  no relocation; the bytecode VM snapshots its own operand stack and
+  call-frame array. `dynamic-wind` reroots correctly on both engines per
+  R7RS 6.10.
+- **Safe across a resumed region.** A continuation captured inside
+  `with-region` and resumed after that region had already exited used to
+  read the region's freed, poison-filled arena on native. Both engines now
+  pin every open region at capture time and promote a pinned region into its
+  parent on pop instead of freeing it, so the failure direction is a bounded
+  leak, never a dangling read.
+
+### Region reclamation reaches the bytecode VM
+
+- **`with-region` now reclaims on the VM.** It previously lowered to `begin`
+  — the body ran, its value came back, and not one byte was reclaimed. A
+  mark-and-sweep evacuator at arena-block granularity now reclaims there
+  too, matching native's semantics without native's copying-collector
+  implementation (a VM value addresses the heap by index rather than by
+  pointer, so nothing needs to move and no index needs rewriting). Measured
+  on the same fixture: flat across a sixteen-fold increase in loop
+  iterations with the evacuator enabled, versus roughly thirty times larger
+  on the identical binary with it disabled.
+
+### Linear types you can rely on
+
+- **Cloning a `Qubit` is a rejected compile, not a warning.** The
+  documented claim — that Eshkol's linear no-cloning discipline is a type
+  error — is now true in the default build: a linearity violation stops
+  compilation before code generation and writes no artifact, closing a gap
+  where the checker both missed real clones and, separately, flagged some
+  correct programs.
+
+### Exact automatic differentiation, proven structurally
+
+- **A carrier manifest closes a gap an output differential cannot see.**
+  Two independently correct AD implementations can agree on output while
+  one of them silently uses finite differences — which is exactly how
+  `curl` went uncompared for so long. A new manifest declares, per operator
+  and per engine, which differentiation carrier answers it, and a gate
+  re-derives that declaration from the corresponding implementation source
+  blocks in `autodiff_codegen.cpp` and `vm_native.c` rather than trusting it. The same change replaced the VM's last two
+  central-difference operators, `curl` and `divergence`, with exact
+  forward-dual implementations: a gradient field's curl now returns exactly
+  zero where the difference quotient returned 1.1e-09, and the VM builds its
+  3x3 Jacobian from three closure calls where the quotient needed six. The
+  existing no-finite-differences counter also gained its first real caller,
+  so `(= (ad-finite-difference-evals) 0)` is now an assertion that can fail
+  instead of one that was true by construction.
+
+### Tail calls that do not care how they were spelled
+
+- **Every tail-position form gets the same constant-stack guarantee `if`
+  already had.** A mutual tail call written with `cond`, `case`, `when`,
+  `unless`, or as the last operand of `and`/`or` used to grow one native
+  frame per hop and exhaust the stack; a tail-transfer dispatcher now runs
+  all of them — including calls with differing signatures, and on
+  non-AArch64 targets — in a reused, constant-size frame. Tail calls through
+  `guard` remain deliberately un-optimized, because R7RS does not make that
+  a tail context; the differential that established this also surfaced a
+  pre-existing wrong answer in that shape, filed as SW-58 and tracked open.
+
+### Hardening and tooling
+
+- **Object-ABI migration, stage zero (ADR-0012).** A machine-verified
+  inventory of 1,273 sites that depend on the current object-header layout —
+  816 of them found by lexical scanning across 98 files, the rest by
+  semantic resolution — with the lexical layer ratcheted so new sites fail
+  the build, plus a link-time guard that fails a mixed-ABI link with a named
+  undefined symbol instead of a silently wrong program.
+- **A leak-detection lane that could actually fail.** The ASan/LSan CI lane
+  had been unable to report a leak since it shipped — a runtime override
+  forced the process to exit 0 regardless of what LeakSanitizer found, and
+  the REPL's fast-exit path skipped the leak check entirely. Both are fixed,
+  and every leak the now-live lane found is fixed with it.
+- **`gensym` reachable on every engine.** Implemented but wired into no
+  dispatch table anywhere, so `(gensym)` failed — loudly, not silently — on
+  native and the VM alike; now works identically on both.
+- **A reader gap closed.** Certain quoted vectors and quasiquoted forms
+  could silently produce the wrong value or desynchronize the reader
+  entirely; the native and VM compile-time readers now preserve quoted vectors, quasiquote, unquote, character tags, and inexactness; the VM runtime reader handles all quote prefixes, while native runtime `read` still handles only `'` shorthand.
+- **A public, reproducible benchmark suite.** After building Eshkol, one
+  benchmark command runs the configured axes where Eshkol claims something distinctive —
+  exact-AD cost curves, Ozaki-II CRT exact f64 GEMM, flat RSS under resident
+  load, and differentiable quantum kernels — and emits machine-readable
+  results anyone can reproduce.
+- **Assurance, two waves.** A self-verdict scanner catches a test that
+  prints its own failure inside a run graded PASS; build-fingerprint checks
+  catch a binary that was never rebuilt after its source changed; ordinary PR
+  CI now generates and uploads ICC trace evidence; it runs `icc readiness` only
+  on a runner where ICC is installed.
+
+---
+
 # Eshkol v1.3.4-evolve — Release Notes
 
 A resident-correctness release. Every defect surfaced by long-duration resident

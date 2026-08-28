@@ -8,18 +8,19 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.4--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.5--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
-**v1.3.4-evolve** — a resident-correctness release. On the native engine,
-automatic per-iteration memory reclamation now matches explicit `with-region`
-even for loops that mutate persistent state; `parallel-map` is race-free for collection-valued closures;
-gradients are exact through every callable form (indirect and curried, no
-finite-difference fallback); printed floats round-trip (R7RS 6.2.6); and the
-strict type checker accepts idiomatic dynamic-but-validated code. It also lands
-the high-precision numerics wave (Ozaki-II exact and reduced-precision GEMM
-tiers, a mixed-precision linear solver, and a native 128-bit integer type
-`i128`), a Moonlab v1.2.0 quantum pin, and full hosted-VM tensor-matmul parity.
-The full release-gate record and exact platform matrix are in
+**v1.3.5-evolve** — continuations that survive the scope they were captured
+in. `call/cc` is multi-shot re-entrant on the native engine (JIT and AOT) and
+the bytecode VM alike, and resuming one that was captured inside a
+`with-region` block no longer reads freed memory. The VM gains its own region
+evacuator, so `with-region` reclaims there the way it already did natively.
+Cloning a linear `Qubit` is now a rejected compile, not a warning. Automatic
+differentiation on the VM is exact and machine-checked against a structural
+gate that proves only one differentiation carrier answers each operator, on
+either engine. Mutual tail recursion now runs flat through every
+tail-position spelling — `cond`/`case`/`when`/`unless`/`and`/`or` — not only
+`if`. The full release-gate record and exact platform matrix are in
 [RELEASE_NOTES.md](RELEASE_NOTES.md); see
 [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 
@@ -671,6 +672,37 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
+### v1.3.5-evolve Release
+
+- **Multi-shot re-entrant continuations, on every engine.** `call/cc` is now
+  re-entrant on native JIT, native AOT, and the bytecode VM, including a
+  continuation captured inside `with-region` and resumed after that region
+  has closed — both engines pin every open region at capture time so a
+  resume never reads reclaimed memory.
+- **Region reclamation reaches the bytecode VM.** `with-region` previously
+  lowered to `begin` there; a mark-and-sweep evacuator now reclaims on the
+  VM too. A workload held flat across a sixteen-fold increase in iterations
+  with the evacuator on, versus roughly thirty times larger on the identical
+  binary with it disabled.
+- **Cloning a linear `Qubit` is a rejected compile, not a warning.** The
+  no-cloning discipline is now enforced before code generation in the
+  default build, with no artifact written on a violation.
+- **Exact automatic differentiation on the VM, proven structurally.** A
+  carrier manifest and a machine-checked gate re-derive, from the emitted
+  native code and VM bytecode handler for every AD operator, which
+  differentiation carrier actually answers it — closing a class of gap an
+  output differential alone cannot see.
+- **Mutual tail recursion in every tail-position spelling.** `cond`, `case`,
+  `when`, `unless`, `and`, and `or` all now run tail calls in constant
+  native stack space, matching `if`.
+- **Object-ABI migration, stage zero.** A machine-verified inventory of
+  every site depending on the current object-header layout, and a link-time
+  guard that fails a mixed-ABI link with a named undefined symbol instead of
+  a silently wrong program (ADR-0012).
+
+See [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES.md](RELEASE_NOTES.md) for
+full detail.
+
 ### v1.3.4-evolve Release
 
 - **Consumer-hardening correctness wave**: an emitted compile-time error now
@@ -800,7 +832,7 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.3.4-evolve
+Welcome to Eshkol REPL v1.3.5-evolve
 Type :help for commands, :quit to exit
 
 eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
@@ -981,7 +1013,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.4-evolve},
+  version = {1.3.5-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}

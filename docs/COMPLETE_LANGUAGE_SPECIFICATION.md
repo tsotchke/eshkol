@@ -1,6 +1,6 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.4
+**Version:** v1.3.5
 **Generated:** 2026-07-08
 **Status:** Comprehensive implementation documentation from source code
 
@@ -4356,9 +4356,19 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.4
+**Current Version:** v1.3.5
 
 **Version History:**
+- v1.3.5-evolve - Re-entrant continuations wave: multi-shot `call/cc` on the
+  native (JIT and AOT) and bytecode-VM engines, region-safe across a resumed
+  `with-region` capture; the bytecode VM's own region evacuator so
+  `with-region` reclaims there too; compile-time-fatal linear `Qubit`
+  enforcement (no-cloning is a rejected compile, not a warning); exact VM
+  automatic differentiation with a structural single-implementation gate
+  proving it; mutual tail recursion across every tail-position spelling
+  (`cond`/`case`/`when`/`unless`/`and`/`or`, not only `if`); and the first
+  stage of the object-ABI migration (a link-time mixed-ABI guard and a
+  machine-verified header-layout inventory). See [CHANGELOG.md](../CHANGELOG.md).
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
   memory reclamation on the native engine that matches explicit `with-region`,
   race-free
