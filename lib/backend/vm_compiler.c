@@ -432,16 +432,40 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
             }
             break;
         }
+        /* R7RS 4.2.1 `(test => receiver)`: apply the receiver to the TEST's
+         * value. The native backend has had this since
+         * ControlFlowCodegen::codegenCond; the VM compiled `=>` as an
+         * ordinary body expression, so `(cond ((assoc k al) => cdr))`
+         * silently answered the receiver's own value instead of applying it.
+         * Same DUP/JUMP_IF_FALSE shape as the no-body clause above.
+         * (Ledger: SW-78.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+
         /* Test → if false, jump to next clause */
         compile_expr(c, clause->children[0], 0);
+        if (is_arrow) chunk_emit(c, OP_DUP, 0);
         int jnext = placeholder(c);
-        /* Body */
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, clause->children[j], tail);
+        if (is_arrow) {
+            /* OP_SWAP has no VM dispatch entry, and the receiver may not be
+             * evaluated when the test is false, so park the test value in a
+             * frame slot rather than reordering the two evaluations. */
+            int tmp = add_local(c, "__cond_arrow_test__");
+            chunk_emit(c, OP_SET_LOCAL, tmp);              /* pops test  */
+            compile_expr(c, clause->children[2], 0);        /* receiver   */
+            chunk_emit(c, OP_GET_LOCAL, tmp);               /* argument   */
+            chunk_emit(c, tail ? OP_TAIL_CALL : OP_CALL, 1);
+        } else {
+            /* Body */
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                else compile_expr(c, clause->children[j], tail);
+            }
         }
         if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
         patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
+        if (is_arrow) chunk_emit(c, OP_POP, 0); /* falsy: discard the copy */
     }
     /* Patch all end jumps */
     for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
@@ -1553,15 +1577,57 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
             chunk_emit(&handler_func, OP_RETURN, 0);
             break;
         }
+        /* R7RS 4.2.7: guard clauses ARE cond clauses, so all three shapes are
+         * legal, not just (test body ...):
+         *
+         *   (test)          value is the TEST's own value
+         *   (test => recv)  value is (recv <the test's value>)
+         *   (test body ...) value is the last body expression
+         *
+         * Only the last was compiled here. `(test)` fell through the body
+         * loop and left OP_RETURN with nothing pushed for it; `=>` compiled
+         * the literal identifier `=>` as an ordinary body expression. Both
+         * are silent wrong answers with no diagnostic. The DUP/JUMP_IF_FALSE
+         * shape below is the same one compile_form_cond() already uses for
+         * its no-body clause, so the two clause readers stay in step.
+         * (Ledger: SW-78 arrow, SW-79 test-only.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+        int is_test_only = (clause->n_children == 1);
+
         compile_expr(&handler_func, clause->children[0], 0);
+        if (is_arrow || is_test_only) {
+            /* Keep the test's value: JUMP_IF_FALSE consumes exactly one
+             * stack slot on both paths, so DUP first and POP the survivor
+             * on the fall-through side. */
+            chunk_emit(&handler_func, OP_DUP, 0);
+        }
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-            else compile_expr(&handler_func, clause->children[j], 1);
+        if (is_test_only) {
+            /* TOS is already the test value — that IS the clause's value. */
+        } else if (is_arrow) {
+            /* Stash the test value, evaluate the receiver, then apply it.
+             * OP_SWAP is not implemented by the VM's dispatch loop, and the
+             * receiver must not be evaluated unless the test was truthy, so
+             * a frame slot is the only ordering that preserves both. */
+            int tmp = add_local(&handler_func, "__guard_arrow_test__");
+            chunk_emit(&handler_func, OP_SET_LOCAL, tmp);      /* pops test */
+            compile_expr(&handler_func, clause->children[2], 0); /* receiver */
+            chunk_emit(&handler_func, OP_GET_LOCAL, tmp);      /* argument  */
+            chunk_emit(&handler_func, OP_CALL, 1);
+        } else {
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                else compile_expr(&handler_func, clause->children[j], 1);
+            }
         }
         chunk_emit(&handler_func, OP_RETURN, 0);
         patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
+        if (is_arrow || is_test_only) {
+            chunk_emit(&handler_func, OP_POP, 0); /* falsy: discard the copy */
+        }
     }
     /* If no clause matched: re-raise */
     chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */

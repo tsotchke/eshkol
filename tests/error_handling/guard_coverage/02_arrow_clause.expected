@@ -1,0 +1,1 @@
+PASS:arrow-named-proc PASS:arrow-lambda PASS:arrow-receives-test-value PASS:arrow-false-falls-through PASS:arrow-after-plain PASS:arrow-before-else PASS:arrow-then-else

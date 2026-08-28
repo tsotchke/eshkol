@@ -1,0 +1,8 @@
+;; ESH-0101 guard coverage — FAIL-CLOSED probe.
+;; A raise that no guard catches must terminate the program: nonzero exit, a
+;; diagnostic on stderr, and NOTHING printed past the raising form. The
+;; MUST-NOT-PRINT sentinel makes a fail-open regression (a swallowed raise
+;; that lets execution continue) impossible to miss.
+(display "BEFORE ")
+(raise (quote unhandled-condition))
+(display "MUST-NOT-PRINT")

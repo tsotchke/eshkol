@@ -1,0 +1,47 @@
+;; ESH-0101 guard coverage — every value KIND survives `raise` -> guard var
+;; intact. This is the ESH-0101/ESH-0102 lineage: the caught value used to be
+;; garbage and to differ per clause path.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+(chk "int"      (equal? (guard (e (#t e)) (raise 42)) 42))
+(chk "negative" (equal? (guard (e (#t e)) (raise -7)) -7))
+(chk "zero"     (equal? (guard (e (#t e)) (raise 0)) 0))
+(chk "float"    (equal? (guard (e (#t e)) (raise 2.5)) 2.5))
+(chk "string"   (equal? (guard (e (#t e)) (raise "text")) "text"))
+(chk "empty-string" (equal? (guard (e (#t e)) (raise "")) ""))
+(chk "true"     (equal? (guard (e (#t e)) (raise #t)) #t))
+(chk "false"    (equal? (guard (e (#t e)) (raise #f)) #f))
+(chk "symbol"   (equal? (guard (e (#t e)) (raise (quote boom))) (quote boom)))
+(chk "sugar-symbol" (equal? (guard (e (#t e)) (raise 'sugar)) 'sugar))
+(chk "char"     (equal? (guard (e (#t e)) (raise #\a)) #\a))
+(chk "null"     (equal? (guard (e (#t e)) (raise (list))) (list)))
+(chk "list"     (equal? (guard (e (#t e)) (raise (list 1 2 3))) (list 1 2 3)))
+(chk "nested-list"
+     (equal? (guard (e (#t e)) (raise (list 1 (list 2 3)))) (list 1 (list 2 3))))
+(chk "pair"     (equal? (guard (e (#t e)) (raise (cons 1 2))) (cons 1 2)))
+(chk "vector"   (equal? (guard (e (#t (vector-ref e 1))) (raise (vector 7 8 9))) 8))
+(chk "procedure"
+     (equal? (guard (e ((procedure? e) (e 20))) (raise (lambda (x) (* x 2)))) 40))
+
+;; the SAME raised value read through several different clause paths must be
+;; identical every time (the per-path divergence of the original finding)
+(define (via-first v) (guard (e ((number? e) e) (else 'no)) (raise v)))
+(define (via-else v)  (guard (e ((string? e) 'no) (else e)) (raise v)))
+(define (via-arrow v) (guard (e ((and (number? e) e) => (lambda (x) x))) (raise v)))
+(chk "path-agreement" (and (equal? (via-first 1234) 1234)
+                           (equal? (via-else 1234) 1234)
+                           (equal? (via-arrow 1234) 1234)))
+
+;; consecutive guard forms do not corrupt each other (ESH-0102 lineage)
+(define c1 (guard (e (#t e)) (raise 111)))
+(define c2 (guard (e (#t e)) (raise 222)))
+(define c3 (guard (e (#t e)) (raise 333)))
+(chk "consecutive-guards" (and (equal? c1 111) (equal? c2 222) (equal? c3 333)))
+
+;; a displayed catching guard followed by another guard (ESH-0102 repro shape)
+(display (guard (e (#t "")) (raise 'x)))
+(chk "displayed-then-guard" (equal? (guard (e (#t e)) (raise 'after)) 'after))

@@ -1,0 +1,98 @@
+;; ESH-0101 guard coverage — `guard` in every non-tail expression context.
+;; (Tail position is deliberately excluded: it belongs to the SW-58
+;; TCO-in-guard lane, fix/tco-guard-tail-position.)
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; operand of an arithmetic operator
+(chk "operand" (equal? (+ 100 (guard (e (#t 1)) (raise 'x))) 101))
+(chk "operand-both"
+     (equal? (+ (guard (e (#t 1)) (raise 'a)) (guard (e (#t 2)) (raise 'b))) 3))
+
+;; argument to a procedure call
+(define (twice n) (* 2 n))
+(chk "argument" (equal? (twice (guard (e (#t 21)) (raise 'x))) 42))
+
+;; let / let* initializer
+(chk "let-init"
+     (equal? (let ((v (guard (e (#t 5)) (raise 'x)))) (* v v)) 25))
+(chk "let*-init"
+     (equal? (let* ((a (guard (e (#t 2)) (raise 'x))) (b (* a 3))) b) 6))
+
+;; inside a list constructor
+(chk "in-list"
+     (equal? (list 'a (guard (e (#t 'b)) (raise 'x)) 'c) (list 'a 'b 'c)))
+
+;; the test position of an if
+(chk "if-test"
+     (equal? (if (guard (e (#t #t)) (raise 'x)) "yes" "no") "yes"))
+
+;; a branch of an if
+(chk "if-branch"
+     (equal? (if #t (guard (e (#t "t")) (raise 'x)) "f") "t"))
+
+;; inside a cond clause body
+(chk "cond-body"
+     (equal? (cond (#t (guard (e (#t "c")) (raise 'x)))) "c"))
+
+;; inside a `begin`, non-final position
+(chk "begin-nonfinal"
+     (equal? (begin (guard (e (#t 'ignored)) (raise 'x)) "last") "last"))
+
+;; guard body containing internal defines
+(chk "internal-defines"
+     (equal? (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)) 42))
+
+;; raise from inside and/or, let, case, do — all caught by one guard
+(chk "raise-in-and" (equal? (guard (e (#t e)) (and #t (raise 'in-and))) 'in-and))
+(chk "raise-in-or"  (equal? (guard (e (#t e)) (or #f (raise 'in-or))) 'in-or))
+(chk "raise-in-let" (equal? (guard (e (#t e)) (let ((z 1)) (raise 'in-let))) 'in-let))
+(chk "raise-in-cond"
+     (equal? (guard (e (#t e)) (cond (#f 1) (else (raise 'in-cond)))) 'in-cond))
+(chk "raise-in-case"
+     (equal? (guard (e (#t e)) (case 2 ((2) (raise 'in-case)) (else 0))) 'in-case))
+
+;; guard inside a NON-TAIL recursive call chain
+(define (depth n)
+  (if (= n 0)
+      (raise 'bottom)
+      (+ 0 (depth (- n 1)))))
+(chk "deep-nontail-raise" (equal? (guard (e (#t e)) (depth 50)) 'bottom))
+
+;; a guard INSIDE a loop body, catching once per iteration
+(define caught 0)
+(define (loop i acc)
+  (if (= i 10)
+      acc
+      (loop (+ i 1)
+            (+ acc (guard (e (#t (set! caught (+ caught 1)) 1))
+                     (if (even? i) (raise 'even) 0))))))
+(define loop-total (loop 0 0))
+(chk "guard-in-loop-total" (equal? loop-total 5))
+(chk "guard-in-loop-count" (equal? caught 5))
+
+;; a guard OUTSIDE a loop catching a raise from deep inside it
+(chk "guard-around-loop"
+     (equal? (guard (e (#t (list 'stopped e)))
+               (let lp ((i 0)) (if (= i 6) 'never (if (= i 4) (raise i) (lp (+ i 1))))))
+             (list 'stopped 4)))
+
+;; a `cond` `=>` clause inside a guard body (the native backend has had the
+;; arrow form in cond since ControlFlowCodegen::codegenCond; the VM compiled
+;; `=>` as an ordinary body expression) — SW-78's other half.
+(chk "cond-arrow-in-guard-body"
+     (equal? (guard (e (#t 'unreached))
+               (cond ((assoc 'b (list (cons 'a 1) (cons 'b 2))) => cdr)
+                     (else 'no)))
+             2))
+(chk "cond-arrow-false-in-guard-body"
+     (equal? (guard (e (#t 'unreached))
+               (cond ((assoc 'z (list (cons 'a 1))) => cdr) (else 'no)))
+             'no))
+(chk "cond-test-only-in-guard-body"
+     (equal? (guard (e (#t 'unreached))
+               (cond ((assoc 'a (list (cons 'a 1)))) (else 'no)))
+             (cons 'a 1)))

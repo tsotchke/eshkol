@@ -1,0 +1,13 @@
+# tests/error_handling/guard_coverage/ENGINES.tsv — ESH-0101 engine manifest.
+#
+# The DEFAULT is that every case runs on every axis (jit, aot-o0, aot-o2,
+# vm-src, vm-eskb) and must match its hand-authored golden. This file is the
+# only way to exempt a (case, axis) pair, and every row needs a justification,
+# so an engine losing a `guard` form has to be written down rather than
+# quietly dropped. scripts/run_guard_coverage.sh fails on a row naming a case
+# or axis that does not exist (a stale waiver) and on a row with no
+# justification.
+#
+# Format: case<TAB>axis<TAB>not-required<TAB>justification
+#   case  — basename without .esk (corpus or fatal/)
+#   axis  — jit | aot-o0 | aot-o2 | vm-src | vm-eskb
