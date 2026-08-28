@@ -31,13 +31,12 @@ was never rebuilt after its source changed, and CI wiring that makes
 `icc readiness` reachable from an ordinary pull request rather than only from
 a human running every pillar script by hand.
 
-**Release Date**: to be set at tag.
+**Release Date**: August 28, 2026.
 
 **Release gates**: the full gate matrix (aggregate suite, CTest, SICP
 full-book gate, reference-Scheme differential oracle, VM parity, qLLM oracle,
-ICC readiness) is measured and stated here against the final release commit,
-once every item above has landed and the pre-tag battery has been re-run
-end to end.
+ICC readiness) is measured and stated here against the final release commit.
+<!-- readiness: fill from final battery -->
 
 ## Highlights
 
