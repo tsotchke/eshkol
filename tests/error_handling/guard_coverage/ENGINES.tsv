@@ -11,3 +11,5 @@
 # Format: case<TAB>axis<TAB>not-required<TAB>justification
 #   case  — basename without .esk (corpus or fatal/)
 #   axis  — jit | aot-o0 | aot-o2 | vm-src | vm-eskb
+11_error_irritants	vm-src	not-required	The VM's `error` is a fixed 1-argument native (fid 237) and its error-object-irritants always answers '(): a divergence already filed upstream at tests/vm_parity/found/error_object_irritants_empty.esk. error-object? / -message / the empty-irritants case are all required on this axis and pass, in 06_error_objects.esk; only the variadic-irritant checks are exempt here.
+11_error_irritants	vm-eskb	not-required	Same VM `error` arity limit as the vm-src row above; the ESKB route runs the same native. See tests/vm_parity/found/error_object_irritants_empty.esk.

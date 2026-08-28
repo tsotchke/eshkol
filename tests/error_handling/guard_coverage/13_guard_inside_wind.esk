@@ -11,13 +11,12 @@
       (begin (display "PASS:") (display name) (display " "))
       (begin (display "FAIL:") (display name) (display " "))))
 
-;; no exception at all: before/after each run exactly once, body value returned
-(define b1 0) (define a1 0)
-(define r1
-  (guard (e (#t "unreached"))
-    (dynamic-wind (lambda () (set! b1 (+ b1 1)))
-                  (lambda () 42)
-                  (lambda () (set! a1 (+ a1 1))))))
-(chk "wind-normal-value" (equal? r1 42))
-(chk "wind-normal-before-once" (equal? b1 1))
-(chk "wind-normal-after-once" (equal? a1 1))
+;; a guard INSIDE the wind body catches, so the wind still exits NORMALLY:
+;; the after thunk must run once, not once per handler activation
+(define a2 0)
+(define r2
+  (dynamic-wind (lambda () #t)
+                (lambda () (guard (e (#t (list 'inner e))) (raise 'q)))
+                (lambda () (set! a2 (+ a2 1)))))
+(chk "guard-inside-wind-value" (equal? r2 (list 'inner 'q)))
+(chk "guard-inside-wind-after-once" (equal? a2 1))

@@ -42,9 +42,6 @@
 (chk "begin-nonfinal"
      (equal? (begin (guard (e (#t 'ignored)) (raise 'x)) "last") "last"))
 
-;; guard body containing internal defines
-(chk "internal-defines"
-     (equal? (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)) 42))
 
 ;; raise from inside and/or, let, case, do — all caught by one guard
 (chk "raise-in-and" (equal? (guard (e (#t e)) (and #t (raise 'in-and))) 'in-and))

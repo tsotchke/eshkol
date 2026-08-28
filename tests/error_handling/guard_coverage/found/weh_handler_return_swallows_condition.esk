@@ -1,0 +1,20 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-84.
+;; WRONG ON EVERY AXIS (jit, aot-o0, aot-o2, vm-src, vm-eskb) — not a
+;; divergence, a uniform conformance gap, which is exactly the class no
+;; native-vs-VM differential can see.
+;;
+;; R7RS 6.11: `raise` invokes the current exception handler; "if the handler
+;; returns, a secondary exception is raised in the same dynamic environment as
+;; the handler." So a handler that returns normally must NOT let the program
+;; continue as though nothing was raised.
+;;
+;; Observed: the enclosing guard never fires and the whole form quietly
+;; evaluates to the handler's return value. A raise disappears, exit 0.
+;;
+;; want: guard-fired
+;; got:  ignored
+(display
+  (guard (g (#t 'guard-fired))
+    (with-exception-handler (lambda (e) 'ignored)
+                            (lambda () (raise 'esc)))))
+(newline)

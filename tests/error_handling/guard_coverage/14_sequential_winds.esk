@@ -11,13 +11,13 @@
       (begin (display "PASS:") (display name) (display " "))
       (begin (display "FAIL:") (display name) (display " "))))
 
-;; no exception at all: before/after each run exactly once, body value returned
-(define b1 0) (define a1 0)
-(define r1
-  (guard (e (#t "unreached"))
-    (dynamic-wind (lambda () (set! b1 (+ b1 1)))
-                  (lambda () 42)
-                  (lambda () (set! a1 (+ a1 1))))))
-(chk "wind-normal-value" (equal? r1 42))
-(chk "wind-normal-before-once" (equal? b1 1))
-(chk "wind-normal-after-once" (equal? a1 1))
+;; two sequential winds inside one guard body: two befores, two afters
+(define b3 0) (define a3 0)
+(define (wound v)
+  (dynamic-wind (lambda () (set! b3 (+ b3 1)))
+                (lambda () v)
+                (lambda () (set! a3 (+ a3 1)))))
+(chk "sequential-winds-value"
+     (equal? (guard (e (#t 'unreached)) (+ (wound 1) (wound 2))) 3))
+(chk "sequential-winds-before-twice" (equal? b3 2))
+(chk "sequential-winds-after-twice" (equal? a3 2))
