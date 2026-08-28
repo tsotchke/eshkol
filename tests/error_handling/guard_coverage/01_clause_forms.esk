@@ -34,12 +34,15 @@
              6))
 
 ;; TEST-ONLY clause: `(test)` — the guard's value is the test's value.
+;; (`classify` is defined locally rather than reaching for a list builtin, so a
+;; missing builtin can never be mistaken for a guard-clause defect.)
+(define (classify v) (if (number? v) (cons 'num v) #f))
 (chk "test-only-clause"
-     (equal? (guard (e ((memq e (list 1 2 3)))) (raise 2)) (list 2 3)))
+     (equal? (guard (e ((classify e))) (raise 2)) (cons 'num 2)))
 
 ;; test-only clause that is #f falls through to the next clause
 (chk "test-only-false-falls-through"
-     (equal? (guard (e ((memq e (list 1 2 3))) (#t "fell")) (raise 9)) "fell"))
+     (equal? (guard (e ((classify e)) (#t "fell")) (raise "s")) "fell"))
 
 ;; the guard variable is bound to the raised object itself
 (chk "var-bound-to-raised"
