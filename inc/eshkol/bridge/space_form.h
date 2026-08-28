@@ -46,8 +46,10 @@
  *   spherical   (signed sectional curvature K > 0, radius R = 1/sqrt(K))
  *       points must already lie on the sphere within the shared core's
  *       tolerance; invalid points are refused rather than projected.
- *       1 - cos(theta) = D2/(2R^2) exactly, u_x = delta + (D2/(2R^2))*x
- *       theta = atan2(|u_x|/R, cos theta),  d^2 = R^2 theta^2
+ *       accepted points are canonicalized to radius R, then
+ *       E = |bar_y-bar_x|^2, s = 1-E/(2R^2),
+ *       u_x = (bar_y-bar_x) + (E/(2R^2))*bar_x,
+ *       theta = atan2(|u_x|/R, s),  d^2 = R^2 theta^2
  *       grad_x d^2 = -2 log_x(y), with the exact antipode refused.
  *
  *   euclidean

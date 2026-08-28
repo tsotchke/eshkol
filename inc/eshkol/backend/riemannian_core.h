@@ -103,10 +103,6 @@
  * model block above and docs/reference/stdlib/geometry.md. */
 #define ESHKOL_RM_FLAT_LAMBDA 1.0
 
-/* Below this Euclidean norm a tangent vector is treated as zero: exp returns its
- * base point and log returns the zero vector. Matches the bridge's 1e-15. */
-#define ESHKOL_RM_ZERO_NORM 1e-15
-
 /* Relative tolerance on |x| = R for a point claimed to lie on the sphere of
  * radius R. A point off the sphere has no geodesic relation to another point on
  * it, so the ops refuse rather than project silently; `manifold-project` is the
@@ -142,7 +138,55 @@ static double eshkol_rm_dot(const double* a, const double* b, int n) {
 }
 
 static double eshkol_rm_norm(const double* a, int n) {
-    return sqrt(eshkol_rm_dot(a, a, n));
+    double s = 0.0;
+    for (int i = 0; i < n; i++) s = hypot(s, a[i]);
+    return s;
+}
+
+/* Exact equality is the only coincidence predicate.  In particular, a
+ * nonzero separation must not be flattened just because its norm is small in
+ * absolute units: the metric and the point scale determine its gradient. */
+static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
+    for (int i = 0; i < n; i++)
+        if (x[i] != y[i]) return 0;
+    return 1;
+}
+
+/* Negative collinearity after normalization is the common, scale-aware
+ * antipode predicate used by both spherical distance and spherical log.  It
+ * refuses only an exactly representable antipode; a merely near-antipodal
+ * pair retains its finite direction and is evaluated. */
+static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+    for (int i = 0; i < n; i++)
+        if (y[i] / yn != -(x[i] / xn)) return 0;
+    return 1;
+}
+
+/* Cancellation-free spherical geometry.  The input points are first
+ * canonicalized to the requested radius.  If @p u is non-NULL it receives
+ * u_x = (bar_y - bar_x) + (E/(2R^2)) bar_x. */
+static double eshkol_rm_sphere_angle(const double* x, const double* y,
+                                     double R, int n, double* u) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    double chord = 0.0;
+    for (int i = 0; i < n; i++) {
+        double delta = R * (y[i] / yn) - R * (x[i] / xn);
+        chord = hypot(chord, delta);
+    }
+    double chord_over_R = chord / R;
+    double half_chord_sq = 0.5 * chord_over_R * chord_over_R;
+    double un = 0.0;
+    for (int i = 0; i < n; i++) {
+        double bar_x = R * (x[i] / xn);
+        double ux = R * (y[i] / yn) - bar_x + half_chord_sq * bar_x;
+        if (u) u[i] = ux;
+        un = hypot(un, ux);
+    }
+    return atan2(un / R, 1.0 - half_chord_sq);
 }
 
 /**
@@ -448,7 +492,7 @@ static void eshkol_rm_gyration(const double* a, const double* b, const double* w
 static const char* eshkol_rm_check_point(const double* x, double K, int n) {
     if (!(K == K)) return "curvature is NaN";
     for (int i = 0; i < n; i++)
-        if (!(x[i] == x[i])) return "a coordinate is NaN";
+        if (!isfinite(x[i])) return "a coordinate is not finite";
     if (K < 0.0) {
         double B = eshkol_rm_ball_param(-K);
         if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
@@ -495,7 +539,7 @@ static const char* eshkol_rm_check_tangent(const double* x, const double* v,
     if (K <= 0.0) return NULL;
     double R  = 1.0 / sqrt(K);
     double vn = eshkol_rm_norm(v, n);
-    if (vn < ESHKOL_RM_ZERO_NORM) return NULL;
+    if (vn == 0.0) return NULL;
     if (!(fabs(eshkol_rm_dot(x, v, n)) <= ESHKOL_RM_TANGENT_TOL * R * vn))
         return "the vector is not tangent to the sphere at this point (<x,v> "
                "must vanish)";
@@ -513,8 +557,9 @@ static const char* eshkol_rm_check_tangent(const double* x, const double* v,
  * form is not: arccosh(1 + eps) throws away every digit of a small separation,
  * returning exactly 0 for two points 2e-9 apart at B = 1.
  *
- * Spherical: R theta with theta = atan2(|y - cos(theta) x| / R, cos(theta)),
- * which is stable near both 0 and pi where acos(<x,y>/R^2) is not.
+ * Spherical: accepted points are first canonicalized to radius R and the
+ * cancellation-free chord/tangent construction is used for theta. This is
+ * stable near both 0 and pi and makes accepted bitwise coincidence exact.
  *
  * @return NULL on success, else a reason.
  */
@@ -525,31 +570,36 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
-    double E = 0.0;
-    for (int i = 0; i < n; i++) { double d = x[i] - y[i]; E += d * d; }
+    if (eshkol_rm_points_equal(x, y, n)) {
+        *out = 0.0;
+        return NULL;
+    }
 
     if (K == 0.0) {
-        *out = ESHKOL_RM_FLAT_LAMBDA * sqrt(E);
+        double delta = 0.0;
+        for (int i = 0; i < n; i++)
+            delta = hypot(delta, x[i] - y[i]);
+        *out = ESHKOL_RM_FLAT_LAMBDA * delta;
         return NULL;
     }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
+        double delta = 0.0;
+        for (int i = 0; i < n; i++)
+            delta = hypot(delta, x[i] - y[i]);
         double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
                     eshkol_rm_one_minus_bnorm2(y, B, n);
-        double R  = E / P;
-        double ps = eshkol_rm_psi(B * R, NULL, NULL);
-        *out = ESHKOL_RM_LAMBDA0 * sqrt(R) * ps;
+        double scaled_delta = delta / sqrt(P);
+        double ps = eshkol_rm_psi(B * scaled_delta * scaled_delta,
+                                  NULL, NULL);
+        *out = ESHKOL_RM_LAMBDA0 * scaled_delta * ps;
         return NULL;
     }
     {
         double R  = 1.0 / sqrt(K);
-        double cs = eshkol_rm_dot(x, y, n) / (R * R);
-        double sn = 0.0;
-        for (int i = 0; i < n; i++) {
-            double t = y[i] - cs * x[i];
-            sn += t * t;
-        }
-        *out = R * atan2(sqrt(sn) / R, cs);
+        if (eshkol_rm_sphere_antipodal(x, y, n))
+            return "the two points are antipodal: distance is not differentiable";
+        *out = R * eshkol_rm_sphere_angle(x, y, R, n, NULL);
         return NULL;
     }
 }
@@ -578,7 +628,7 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
     if (why) return why;
 
     double vn = eshkol_rm_norm(v, n);
-    if (vn < ESHKOL_RM_ZERO_NORM) {
+    if (vn == 0.0) {
         memcpy(out, x, (size_t)n * sizeof(double));
         return NULL;
     }
@@ -636,6 +686,11 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
+    if (eshkol_rm_points_equal(x, y, n)) {
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return NULL;
+    }
+
     if (K == 0.0) {
         for (int i = 0; i < n; i++) out[i] = y[i] - x[i];
         return NULL;
@@ -653,10 +708,6 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         double na = dn + B * y2 * nb;
         eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
         double Vn = eshkol_rm_norm(V, n);
-        if (Vn < ESHKOL_RM_ZERO_NORM) {
-            for (int i = 0; i < n; i++) out[i] = 0.0;
-            return NULL;
-        }
         double d = 0.0;
         why = eshkol_rm_distance(x, y, K, n, &d);
         if (why) return why;
@@ -665,16 +716,16 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         return NULL;
     }
     {
-        /* Sphere: log_x(y) = theta R * u/|u| with u = y - (<x,y>/R^2) x. */
+        /* Sphere: canonicalize both accepted inputs before forming the chord.
+         * This makes the diagonal and near-diagonal cases independent of the
+         * validator's radius tolerance. */
         double R  = 1.0 / sqrt(K);
-        double cs = eshkol_rm_dot(x, y, n) / (R * R);
         double* u = scratch;
-        for (int i = 0; i < n; i++) u[i] = y[i] - cs * x[i];
+        if (eshkol_rm_sphere_antipodal(x, y, n))
+            return "the two points are antipodal: log is not single-valued there";
+        double th = eshkol_rm_sphere_angle(x, y, R, n, u);
         double un = eshkol_rm_norm(u, n);
-        double th = atan2(un / R, cs);
-        if (un < ESHKOL_RM_ZERO_NORM) {
-            if (cs < 0.0) return "the two points are antipodal: log is not "
-                                 "single-valued there";
+        if (un == 0.0) {
             for (int i = 0; i < n; i++) out[i] = 0.0;
             return NULL;
         }
@@ -759,7 +810,7 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
         for (int i = 0; i < n; i++) out[i] = r * x[i];
         return NULL;
     }
-    if (xn < ESHKOL_RM_ZERO_NORM) {
+    if (xn == 0.0) {
         for (int i = 0; i < n; i++) out[i] = 0.0;
         return NULL;
     }
@@ -806,7 +857,7 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
     }
     {
         double R = 1.0 / sqrt(K);
-        if (xn < ESHKOL_RM_ZERO_NORM)
+        if (xn == 0.0)
             return "the origin has no projection onto the sphere";
         double s = R / xn;
         for (int i = 0; i < n; i++) out[i] = s * x[i];
@@ -967,4 +1018,3 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
 }
 
 #endif /* ESHKOL_BACKEND_RIEMANNIAN_CORE_H */
-

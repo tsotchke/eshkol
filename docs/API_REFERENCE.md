@@ -578,7 +578,7 @@ pairs use the shared stable core rather than an intermediate `t == 1` test.
 The spherical antipode is still rejected because it is the genuine cut locus.
 This is a native-only C bridge, not a Scheme builtin or VM opcode. Its
 backward is registered in `inc/eshkol/ad_node_registry.def` and covered by
-the 39-check `squared_distance_gradcheck` gate.
+the 45-check `squared_distance_gradcheck` gate.
 
 ---
 
