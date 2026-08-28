@@ -1479,6 +1479,20 @@ oracles:
         label: 'ad-note-finite-difference! counter is live on native and VM; run_ad_exactness_gate.sh proves both a positive case and a negative control (a planted difference quotient) are caught on JIT, AOT and the VM'
         action: ./scripts/run_ad_exactness_gate.sh
 
+      # SW-48 / ADR-0002 Position A: the dense tensor AD node had never
+      # executed -- its admitting guard was unsatisfiable and forcing it
+      # SIGSEGV'd -- so every matmul under AD recorded 2*M*N*K scalar tape
+      # nodes.  The risk in replacing an execution model that produced
+      # CORRECT answers is that the replacement produces different ones, so
+      # the gate is a DIFFERENTIAL: the same gradcheck program is compiled
+      # under both lowerings (the choice is made at codegen time, so they are
+      # two emitted programs) and their gradients must be byte-identical
+      # while the tape gets strictly smaller.
+      - test_evidence: true
+        severity: high
+        label: 'The dense tensor AD node executes: matmul / tensor-sum / tensor-mean record ONE tape node each, and the dense and scalarizing lowerings produce byte-identical gradients over square, non-square, 1-D-contraction, both-operand and dense-chain shapes while the 6x6 tape shrinks (run_dense_tensor_ad_gate.sh)'
+        action: ./scripts/run_dense_tensor_ad_gate.sh
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["ad_carrier_model_clean"]

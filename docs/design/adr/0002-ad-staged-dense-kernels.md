@@ -19,8 +19,18 @@
 
 ## 0. Attainment as of `4bf871a0` (2026-08-25)
 
-**CRITICAL — the dense tensor AD node path is unreachable dead code**
-(conformity audit item c4). In `lib/backend/llvm_codegen.cpp`:
+**RESOLVED (v1.3.5-evolve) — the dense tensor AD node path now executes.**
+The finding below is kept verbatim, because it is the record of what was wrong
+and of how it was found; what follows it is what was built. `matmul`,
+`tensor-sum` and `tensor-mean` each record ONE dense `ad_node_t` under AD, the
+node is what `matmul` returns, and the two lowerings are gated against each
+other for byte-identical gradients by `scripts/run_dense_tensor_ad_gate.sh`.
+The resolution is written out at the end of this section; the ledger entry is
+`.icc/silent-wrong-ledger.yaml` SW-48.
+
+**CRITICAL (as found, 2026-08-25) — the dense tensor AD node path is
+unreachable dead code** (conformity audit item c4). In
+`lib/backend/llvm_codegen.cpp`:
 
 ```cpp
 :32059  BasicBlock* after_matmul_compute = nullptr;
@@ -49,6 +59,47 @@ the dense `recordADNodeTensor` path is the AD path and the scalarizing
 loop is the fallback. This blocks ADR-0000 Stages 7-8's gate
 (`scalar_ad_nodes_from_matmul == 0`) and any tensor-training performance
 claim.
+
+**Resolution (v1.3.5-evolve).** The build item is done for `matmul` and the
+whole-tensor reductions — ADR-0002 Phase C.1 and C.2. Three things had to be
+finished, of which the guard was only the most visible:
+
+1. **Selection.** The reverse pass recognised a tensor node by a non-null
+   `tensor_gradient`, which `recordADNodeTensor` deliberately leaves null
+   because a node's gradient is not known until the reverse pass reaches it.
+   The discriminator is now `tensor_value` (set at record time; documented NULL
+   for scalar nodes) OR `tensor_gradient` (still honoured, because the qLLM
+   bridge seeds it directly). That is what the SIGSEGV was: a tensor node fell
+   into the scalar dispatch and dereferenced the `input1`/`input2` a tensor
+   node legitimately leaves null. A one-element tensor node seeded on the
+   scalar side is bridged into its tensor gradient by
+   `eshkol_tensor_backward_dispatch` rather than dropped in silence.
+2. **The node is the value.** Under AD, `matmul` returns the `AD_NODE_MATMUL`
+   node tagged `CALLABLE` with the AD-node subtype — the representation
+   `extractTensorAndADNode` already read on the operand side. Outside AD mode
+   it returns the plain tensor, unchanged.
+3. **Consumers, and the boundary.** `tensor-sum` and `tensor-mean` reduce a
+   dense operand's buffer and record one `AD_NODE_SUM` / `AD_NODE_MEAN`;
+   `matmul` reuses a dense operand's node instead of re-packing it, so a
+   dense→dense chain is one node per op. An operand that arrives *scalarized*
+   — the tensor of scalar AD nodes `(gradient f x)` seeds, or the output of a
+   still-scalarizing tensor op — is bridged by a new registry row,
+   `AD_NODE_TENSOR_PACK` (83, TENSOR, INLINE), whose backward is the identity
+   scatter from the dense gradient onto the scalar nodes. It performs no
+   arithmetic, which is why the two lowerings agree exactly and not merely
+   closely.
+
+§3.1's "dense op IDs are distinct from scalar op IDs" is respected: the dense
+path uses `AD_NODE_MATMUL` / `AD_NODE_SUM` / `AD_NODE_MEAN` (the tensor family,
+19-32), never a scalar op ID. Elementwise tensor arithmetic still scalarizes
+and still reuses scalar op IDs — that is Phase C.3/C.4, scheduled for v1.4, and
+it remains a build item.
+
+ADR-0000's Stage-7 gate `scalar_ad_nodes_from_matmul == 0` is now both meetable
+and measured: `tests/ad/matmul_tape_node_count_test.esk` ratchets the count and
+`tests/ad/dense_tensor_ad_gradcheck_test.esk` asserts that the per-op cost of a
+6×6 matmul equals that of a 2×2 once the gradient driver's per-input variable
+nodes are subtracted.
 
 **CRITICAL — `finite_difference_evals == 0` is a vacuous gate on the LLVM
 backend** (conformity audit item c3). `eshkol_ad_count_fd()`

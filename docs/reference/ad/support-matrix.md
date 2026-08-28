@@ -60,6 +60,41 @@ Tolerance: `|ad - fd| ≤ atol + rtol·|fd|`, `rtol = 1e-4`. First-order stencil
 
 ---
 
+## Execution model — how a tensor gradient is recorded
+
+The matrix above is about *answers*. This is about what the tape costs to get
+them, which ADR-0002 treats as a separate axis because a correct gradient
+computed through 2·M·N·K scalar tape nodes and the same gradient computed
+through one dense node are indistinguishable to the oracle and very different
+to a training loop.
+
+| Operation | Under AD, records | Status |
+|-----------|-------------------|--------|
+| `matmul` / `tensor-matmul` | ONE `AD_NODE_MATMUL`, backward by `eshkol_backward_matmul` | COMPLETE |
+| `tensor-sum` (whole tensor, dense operand) | ONE `AD_NODE_SUM` | COMPLETE |
+| `tensor-mean` (whole tensor, dense operand) | ONE `AD_NODE_MEAN` | COMPLETE |
+| dense/scalar boundary | ONE `AD_NODE_TENSOR_PACK` per operand that arrives scalarized; identity scatter backward | COMPLETE |
+| elementwise `tensor-add/sub/mul/div`, broadcast variants | one scalar node per element | Scalarizing — ADR-0002 Phase C.3/C.4, v1.4 |
+| `conv2d`, `attention`, norm layers | one scalar node per scalar operation | Scalarizing — dense kernels exist in `lib/backend/tensor_backward.cpp`, producers not yet routed |
+| `embedding` | nothing (plain gather) | Build item, see [architecture.md](architecture.md) |
+| VM (`eshkol-vm-standalone-test`) | scalar `AdNode` only; no `ad_node_t`, no tensor node types | Not implemented — see `tests/vm_parity/PARITY.tsv` |
+
+Both lowerings are kept and are differentially gated against each other:
+
+```
+scripts/run_dense_tensor_ad_gate.sh      # both lowerings, gradients must be identical
+ESHKOL_DENSE_TENSOR_AD_NODES=0           # select the scalarizing lowering
+```
+
+The variable is read at **codegen** time, so it selects which program is
+emitted rather than which branch a program takes. The gate compiles
+`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the
+printed gradients to agree byte-for-byte, across square and non-square shapes,
+either operand, the PEP-465 1-D contraction, `tensor-sum` and `tensor-mean`,
+and a dense→dense `matmul` chain — while the 6×6 tape gets strictly smaller.
+
+---
+
 ## Open cells (XKNOWN)
 
 **None on this build.** Every cell the oracle enumerates agrees with finite
