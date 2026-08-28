@@ -7971,7 +7971,18 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
         test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
     } else {
-        // Runtime closure path — captures are embedded inside the closure struct
+        // Runtime closure path — captures are embedded inside the closure struct.
+        //
+        // This path passes the point WHOLE, i.e. it implements the arity-1
+        // convention only. That is the documented shape (operators.md:30) and
+        // the one every doc example uses, so the documented program works when
+        // the field arrives as a runtime closure; the N-arg SPREAD form does
+        // not, because the closure's arity is only known at run time and
+        // spreading it would need the compile-time arity switch the gradient
+        // path has ("gradient: runtime-closure arity spread helper"). Recorded
+        // rather than silently narrowed: a spread field reached through a
+        // callable parameter is a known limitation of jacobian/divergence/curl,
+        // not of the operator's contract.
         test_output_tagged = closure_call_callback_(closure_val, {vector_tagged}, "jacobian-test", callback_context_);
     }
 
