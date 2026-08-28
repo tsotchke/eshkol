@@ -3820,6 +3820,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # These runtime tests import modules from the source-tree standard library.
+    # `-L` is a native linker search path; it is not an Eshkol module path.
+    # Keep the test environment explicit so CTest exercises the same modules as
+    # direct source-tree invocations.
+    set_tests_properties(
+        autodiff_tensor_reductions_runtime_smoke
+        ad_structural_int_guard_runtime_smoke
+        guw_multivariate_runtime_smoke
+        sparse_tensors_runtime_smoke
+        reverse_over_taylor_runtime_smoke
+        checkpointed_reverse_runtime_smoke
+        diff_control_flow_runtime_smoke
+        tensor_tower_runtime_smoke
+        taylor_numerics_runtime_smoke
+        taylor_models_runtime_smoke
+        PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # Every tensor operand is classified by its runtime tag before the op reads
     # the struct: a 1-D data operand accepts a numeric vector/list and coerces,
     # an operand written in place and a matrix operand reject a collection, and
@@ -5356,6 +5373,17 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 TIMEOUT 600
                 PASS_REGULAR_EXPRESSION "memory_store_durability_test.sh: PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
+
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py")
+        add_test(
+            NAME vm_frame_overflow_exit_status
+            COMMAND python3
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py"
+                    $<TARGET_FILE:eshkol-vm-standalone-test>
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/found/frame_overflow_exit_zero.esk")
+        set_tests_properties(vm_frame_overflow_exit_status PROPERTIES TIMEOUT 120)
+    endif()
     endif()
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero

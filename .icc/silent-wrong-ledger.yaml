@@ -2522,15 +2522,15 @@ entries:
     bucket: IN-FLIGHT
     silent_wrong_class: false
     status: closed
-    closed_at: "2026-08-28"
-    title: "A non-store value passed to a memory-store accessor SIGSEGVs at address 0"
+    closed_at: "9b3fd14d"
+    closed_by: "origin/master 9b3fd14d; regression reverified in tests/memory/memory_store_test.esk"
+    title: "Memory-store accessors did not guard non-store values"
     fix_lane: "closed"
     evidence: >-
-      lib/core/memory_store.esk now validates the mem-store tag and vector shape
-      before every public accessor and operation. tests/memory/memory_store_test.esk
-      exercises non-store, mistagged-vector, and real-store cases, including
-      memory-store-append!, memory-store-verify, count, and head; the same fixture
-      is run under native JIT and AOT by the cross-engine memory-store durability gate.
+      lib/core/memory_store.esk:194-200 validates the mem-store tag before field access;
+      tests/memory/memory_store_test.esk exercises direct and layered non-store rejection
+      under native JIT/AOT. The same fixture also covers memory-store-append!,
+      memory-store-verify, count, and head under the cross-engine durability gate.
     observed_after: >-
       Non-store inputs raise catchable errors instead of dereferencing an invalid
       vector address, and valid compatibility/durable stores remain usable.
@@ -2585,10 +2585,11 @@ entries:
   - id: IF-07
     bucket: IN-FLIGHT
     silent_wrong_class: false
-    status: open
-    title: "void* is not accepted as an extern type name; it warns and silently defaults to int64"
-    fix_lane: "PR #418 — OPEN"
-    evidence: "mapStringToType in lib/backend/llvm_codegen.cpp; PR #416 Escalation 6"
+    status: closed
+    closed_at: "9b3fd14d"
+    closed_by: "origin/master 9b3fd14d; regression reverified in tests/ffi/extern_void_star_test.esk"
+    title: "void* extern declarations used the wrong fallback ABI"
+    evidence: "lib/backend/llvm_codegen.cpp:26319-26335 and :26445-26468 map void* to PointerType and externTypeIsPointerLike applies the pointer guard; tests/ffi/extern_void_star_test.esk covers return and parameter positions under native JIT/AOT."
     caught_by: [pr-record-416]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
@@ -3011,13 +3012,15 @@ entries:
   - id: LE-04
     bucket: LOUD-ERROR
     subtag: cheap-fix
-    status: open
+    status: closed
+    closed_at: "fix/scope-parity-small-1"
+    closed_by: "fix/scope-parity-small-1; corpus/72_sort_argument_order.esk"
     title: "sort argument order is reversed between engines"
-    observed: "native accepts (sort lst <) and errors on (sort < lst) with 'cdr: argument is not a pair'; the VM is the exact mirror"
-    evidence: ".scratch/flaw-ledger/repro/sw_sort_order.esk, sw_sort_vmorder.esk; PR #418 body"
+    observed: "Both native and VM accept (sort lst <) and reject (sort < lst) with a catchable type error."
+    evidence: "lib/backend/vm_prelude_source.h and regenerated vm_prelude_cache.h use the documented list-first order; tests/vm_parity/corpus/72_sort_argument_order.esk"
     caught_by: [pr-record-418, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, KNOWN_ISSUES]
-    notes: "Same class as IF-02 take/drop, but sort is NOT fixed by #418 and has no test."
+    notes: "Same class as IF-02 take/drop; fixed here at the VM prelude root and pinned by corpus/72_sort_argument_order.esk."
 
   - id: LE-05
     bucket: LOUD-ERROR
@@ -3090,12 +3093,14 @@ entries:
   - id: LE-07
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "VM frame overflow prints to stderr and then exits 0 with empty stdout"
-    evidence: "tests/vm_parity/found/frame_overflow_exit_zero.esk; tests/vm_parity/found/when_tail_call_no_tco.esk"
+    status: closed
+    closed_at: "3ffbb24f"
+    closed_by: "origin/master 3ffbb24f; regression reverified in tests/vm_parity/frame_overflow_exit_status_test.py"
+    title: "VM frame overflow was not reflected in the process exit status"
+    evidence: "lib/backend/eshkol_vm.c:258-262 reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_overflow_exit_status_test.py verifies FRAME OVERFLOW and nonzero status with tests/vm_parity/found/frame_overflow_exit_zero.esk"
     caught_by: [parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Loud on stderr but exit 0 — silent to any caller that checks the exit status. Borderline SILENT-WRONG."
+    notes: "Loud on stderr and now nonzero; the remaining VM tail-position depth limit is tracked separately as LE-13."
 
   - id: LE-08
     bucket: LOUD-ERROR
@@ -3360,9 +3365,10 @@ entries:
       The `if` spelling and the differing-arity and indirect shapes are the
       controls and all answer 20000100000.
     observed: >-
-      `FRAME OVERFLOW` on stderr, empty stdout, **exit 0** — see LE-07, which is
-      why this is silent to any caller that checks the exit status. Measured at
-      200,000 hops; the real ceiling is ESHKOL_VM_MAX_FRAMES = 256
+      `FRAME OVERFLOW` on stderr, empty stdout, and a **nonzero exit**. LE-07's
+      exit-status defect is closed; the remaining failure is the missing tail
+      position optimization. Measured at 200,000 hops; the real ceiling is
+      ESHKOL_VM_MAX_FRAMES = 256
       (inc/eshkol/backend/vm_limits.h:30), so it fails at roughly depth 300.
     correct: >-
       20000100000. R7RS section 3.5 makes the `when`/`unless` body and the last
@@ -3410,9 +3416,8 @@ entries:
     caught_by: [esh-0102c-vm-assessment, parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
     notes: >-
-      Bucket LOUD-ERROR follows LE-07's classification of the same
-      exit-0-with-stderr shape, and LE-07's "Borderline SILENT-WRONG" note
-      applies here unchanged.
+      Bucket LOUD-ERROR follows the VM's deliberate finite-frame diagnostic;
+      LE-07 separately records and closes the process-status propagation defect.
 
   - id: SW-43
     bucket: SILENT-WRONG
@@ -4396,16 +4401,20 @@ entries:
 
   - id: PR-07
     bucket: PARITY-RATCHET
-    status: open
-    title: "inexact->exact is an accepted permanent engine divergence: the VM reports a fatal error where native promotes to bignum"
-    evidence: "tests/vm_parity/PARITY.tsv inexact->exact row (added by PR #419, OPEN)"
+    status: closed
+    closed_at: "fix/scope-parity-small-1"
+    closed_by: "fix/scope-parity-small-1; corpus/55_inexact_exact_exactness.esk"
+    title: "inexact->exact exact-value conversion diverges between engines"
+    evidence: "lib/backend/vm_native.c:14034-14102 now constructs bignum integers and bignum-backed rationals from the exact mantissa/exponent decomposition; tests/vm_parity/corpus/55_inexact_exact_exactness.esk covers ordinary, large, and subnormal round trips"
     caught_by: [pr-record-419]
 
   - id: PR-08
     bucket: PARITY-RATCHET
-    status: open
-    title: "Complex display format differs: native 2+i, VM 2+1i"
-    evidence: "tests/vm_parity/found/complex_display_format.esk (on #419's branch, OPEN)"
+    status: closed
+    closed_at: "fix/scope-parity-small-1"
+    closed_by: "fix/scope-parity-small-1; corpus/73_complex_display_canonical.esk"
+    title: "Complex display format differs between engines"
+    evidence: "lib/backend/vm_core.c:1188-1203 and lib/backend/vm_native.c:6560-6580 use the canonical zero-real and unit-imaginary representation; tests/vm_parity/corpus/73_complex_display_canonical.esk"
     caught_by: [pr-record-419]
 
   - id: PR-09

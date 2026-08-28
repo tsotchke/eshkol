@@ -1,0 +1,19 @@
+;; LE-04 regression: the documented order is (sort list comparator) on both
+;; engines. The opposite order must fail on both engines rather than being
+;; accepted by only one prelude.
+(require stdlib)
+
+(display "ascending ")
+(display (sort '(3 1 4 1 5 9 2 6) <))
+(newline)
+(display "descending ")
+(display (sort '(3 1 4 1 5 9 2 6) >))
+(newline)
+
+(define (rejected? thunk)
+  (guard (exn (#t #t))
+    (begin (thunk) #f)))
+
+(display "reverse-order-rejected ")
+(display (rejected? (lambda () (sort < '(3 1 2)))))
+(newline)

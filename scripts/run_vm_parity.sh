@@ -242,8 +242,8 @@ normalize() { # infile outfile
 }
 
 vm_stderr_clean() { # errfile -> 0 if no ERROR/abort markers
-    # The VM exits 0 even on fatal errors, so stderr markers are the only
-    # failure signal: ERROR, FRAME OVERFLOW (silent-empty-stdout death,
+    # Fatal VM errors are checked through both exit status and stderr markers:
+    # ERROR, FRAME OVERFLOW (empty-stdout death,
     # found/frame_overflow_exit_zero.esk) and unhandled-fid warnings
     # (found/symbol_string_unhandled_fid.esk) all mean the run is invalid.
     ! grep -qE "ERROR|OVERFLOW|unhandled native call|Assertion|Segmentation|abort" "$1"

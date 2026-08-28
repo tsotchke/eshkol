@@ -1,0 +1,6 @@
+;; PR-08 regression: complex display uses one canonical R7RS spelling on
+;; native and VM, including zero-real and unit-imaginary shorthand.
+(display (make-rectangular 2.0 1.0)) (newline)
+(display (make-rectangular 0.0 1.0)) (newline)
+(display (make-rectangular 2.0 -1.0)) (newline)
+(display (make-rectangular 3.0 4.0)) (newline)

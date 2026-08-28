@@ -37,6 +37,17 @@ Conversions: `exact->inexact` (a.k.a. `inexact`), `inexact->exact` (a.k.a. `exac
 0.25
 ```
 
+`inexact->exact` preserves the exact IEEE-754 value of a finite double,
+including values whose numerator or denominator requires the arbitrary-
+precision representation. For example, `0.1` becomes
+`3602879701896397/36028797018963968`, and the conversion round-trips through
+`exact->inexact` for large values and subnormals as well.
+
+Complex values use one external representation on both engines: a zero real
+part is omitted and an imaginary part of `+1` or `-1` is printed as `+i` or
+`-i`; other imaginary parts include their explicit sign (for example,
+`2+3i`).
+
 > **Display convention:** an inexact value with no fractional part prints without a
 > decimal point — `(+ 1.0 2)` prints `3`, and `(+ 1/2 0.5)` prints `1` — but it is
 > still inexact (`(inexact? (+ 1/2 0.5))` ⇒ `#t`).

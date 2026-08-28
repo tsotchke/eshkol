@@ -123,9 +123,15 @@ header. Filed while building this gate, 2026-07:
 | `char_type_collapsed.esk` | chars display as integers |
 | `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
 | `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
-| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the exit-0 half is fixed; the depth limit remains) |
+| `float_display_1e10.esk` | large-float format `1e+10` vs `10000000000` |
+| `map_two_lists_eskb_route.esk` | multi-list `map` correct on vm-src, drops lists on the ESKB route (stale prelude cache) |
+| `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
+| `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
+| `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
+| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the VM now exits nonzero; the depth limit remains) |
+| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the VM now exits nonzero; the depth limit remains) |
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
-| `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
+| `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
 | `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |

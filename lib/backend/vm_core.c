@@ -1192,10 +1192,14 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
                 char rb[48], ib[48];
                 eshkol_dtoa_shortest(rb, sizeof(rb), z->real);
                 eshkol_dtoa_shortest(ib, sizeof(ib), z->imag);
-                /* dtoa never emits a leading '+', so force an explicit sign on
-                 * the imaginary part (R7RS complex external representation). */
-                if (ib[0] == '+' || ib[0] == '-') printf("%s%si", rb, ib);
-                else                               printf("%s+%si", rb, ib);
+                /* R7RS external representation: omit a zero real part and
+                 * use the canonical +/-i shorthand for a unit imaginary
+                 * part, matching the native hosted serializer. */
+                if (z->real != 0.0) printf("%s", rb);
+                if (z->imag == 1.0) printf("+i");
+                else if (z->imag == -1.0) printf("-i");
+                else if (ib[0] == '+' || ib[0] == '-') printf("%si", ib);
+                else printf("+%si", ib);
             }
             else printf("<complex>");
             break;

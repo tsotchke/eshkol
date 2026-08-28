@@ -16,11 +16,13 @@
 ;;; is O(n) retained workspace and O(log n) tail-call depth.  The final
 ;;; vector->list allocation is the only output list allocation.
 (define (sort lst less?)
-  (if (null? lst)
-      '()
-      (if (null? (cdr lst))
-          lst
-          (let* ((values (list->vector lst))
+  (if (not (list? lst))
+      (error "sort: first argument must be a list")
+      (if (null? lst)
+          '()
+          (if (null? (cdr lst))
+              lst
+              (let* ((values (list->vector lst))
                  (n (vector-length values))
                  (scratch (make-vector n #f)))
             ;; Bound start + width at the end of the vector.
@@ -83,4 +85,4 @@
                                 source
                                 (* width 2))))
 
-            (vector->list (merge-passes values scratch 1))))))
+                (vector->list (merge-passes values scratch 1)))))))

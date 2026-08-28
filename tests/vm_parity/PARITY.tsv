@@ -389,7 +389,7 @@ image-read	vm-supported
 image-to-grayscale	vm-supported	
 image-write	vm-supported	
 inexact	gap	no VM name binding
-inexact->exact	vm-supported	returns the operand's EXACT value via the same mantissa*2^exp decomposition as the native runtime, so (inexact->exact 0.1) is 3602879701896397/36028797018963968 on both engines (it used to truncate to an int64, giving 0). VmRational is an int64 pair and VAL_INT is int64, so magnitudes needing a bignum numerator (|x| >= 2^62, e.g. 1e300) or a denominator past 2^62 (subnormals, e.g. 5e-324) have no exact VM representation: the VM reports a fatal error naming the value rather than pushing a wrong number, where native promotes to bignum
+inexact->exact	vm-supported	returns the operand's EXACT value via the same mantissa*2^exp decomposition as the native runtime, including bignum integers and bignum-backed rationals for values outside int64 and subnormal denominators; corpus/55_inexact_exact_exactness.esk covers ordinary, large, and subnormal round trips
 inexact?	vm-supported	
 infinite?	vm-supported	
 inject-left	gap	no VM name binding

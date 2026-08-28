@@ -36,7 +36,8 @@ constructor; most callers use `memory-store-open`.
 Predicate: is `s` a `mem-store` vector?
 
 ### `(memory-store-log s)` / `(memory-store-path s)`
-Accessors: the underlying `core.memory` log, and the file path.
+Accessors: the underlying `core.memory` log, and the file path. A non-store
+argument raises a catchable type error; it is not treated as a raw vector.
 
 ### `(memory-store-open node-id path)`
 Open (or create) the durable chain at `path` for `node-id`, **replaying** all existing
