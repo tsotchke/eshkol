@@ -230,6 +230,16 @@ ad_node_t* ad_tensor_embedding(
  * 1/sqrt(-curvature); the distance diverges at the boundary. On or outside, the
  * op returns NULL after a diagnostic naming the measured sqrt(c)|.| rather than
  * projecting or substituting (SW-76).
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE:
+ * K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry
+ * this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius
+ * 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the
+ * previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller
+ * asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0
+ * to a hyperbolic ball on the same inputs for which the VM selects a sphere
+ * (SW-76).
+ *
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
  * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
@@ -257,6 +267,15 @@ ad_node_t* ad_hyperbolic_distance(
  * factor lambda_x = 2/(1 - c||x||^2) is infinite on the boundary and NEGATIVE
  * outside it, so an unchecked out-of-ball x runs the map backwards and returns
  * a finite point that is not exp_x(v) of anything.
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE:
+ * K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry
+ * this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius
+ * 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the
+ * previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller
+ * asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0
+ * to a hyperbolic ball on the same inputs for which the VM selects a sphere
+ * (SW-76).
  */
 ad_node_t* ad_poincare_exp_map(
     ad_tape_t* tape,
@@ -284,6 +303,15 @@ ad_node_t* ad_poincare_exp_map(
  * says so. It does not clamp the argument: artanh(1 - 1e-12) is about 14.2, a
  * specific finite magnitude that no caller could tell from a real one, and in
  * the AD path it would become a fabricated gradient.
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE:
+ * K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry
+ * this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius
+ * 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the
+ * previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller
+ * asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0
+ * to a hyperbolic ball on the same inputs for which the VM selects a sphere
+ * (SW-76).
  */
 ad_node_t* ad_poincare_log_map(
     ad_tape_t* tape,
@@ -315,6 +343,15 @@ ad_node_t* ad_poincare_log_map(
  * off-manifold slice as infinitely distant: doing that dropped the key from the
  * softmax and returned a complete, finite attention output with no indication
  * that a row had been discarded (SW-76).
+ *
+ * CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE:
+ * K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry
+ * this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius
+ * 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the
+ * previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller
+ * asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0
+ * to a hyperbolic ball on the same inputs for which the VM selects a sphere
+ * (SW-76).
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,

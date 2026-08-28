@@ -263,6 +263,64 @@ bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
     return sn < 1.0;
 }
 
+/**
+ * @brief Convert a SECTIONAL CURVATURE K to the Poincare-ball parameter c = -K,
+ *        refusing every K this surface does not implement.
+ *
+ * The sign of K names the manifold, and the three signs are three different
+ * geometries: K < 0 is the Poincare ball of radius 1/sqrt(-K), K = 0 is
+ * Euclidean space, K > 0 is the sphere of radius 1/sqrt(K). The ops in this
+ * file implement the K < 0 branch and only that branch -- their forwards are
+ * Mobius/artanh formulas and their reverse rules in lib/bridge/tensor_backward.
+ * cpp are derived from those same formulas. So the honest contract is c = -K
+ * for K < 0 and an explicit refusal otherwise.
+ *
+ * This replaces `c = (curvature == 0.0) ? 1.0 : fabs(curvature)`, which was
+ * wrong in both directions and silent in both:
+ *
+ *   - K = 0 (Euclidean) selected c = 1, the UNIT HYPERBOLIC BALL. A caller
+ *     asking for flat space got hyperbolic answers: d(0, 0.5) came back
+ *     1.0986... instead of 0.5, exp_0(0.5) = 0.462..., log_0(0.5) = 0.549...
+ *   - K > 0 (sphere) selected c = |K|, i.e. a hyperbolic ball, on the same
+ *     inputs for which the VM's geometry opcodes select a SPHERE. Two surfaces
+ *     of the same engine answered the same question from different manifolds.
+ *
+ * Neither said anything. Both are the fabricated-value class this file's other
+ * refusals exist to exclude, so both refuse now (SW-76).
+ *
+ * Implementing the flat and spherical branches is a larger change than a fix:
+ * the reverse rules would need matching branches, and a forward that supports a
+ * geometry its backward does not is precisely how a fabricated gradient gets
+ * created. They are refused rather than half-supported.
+ *
+ * NOTE ON THE CONFORMAL FACTOR. This function deliberately does NOT touch the
+ * lambda = 2/(1 - c|x|^2) convention used throughout; a maintainer ruling on
+ * the K -> 0 continuity of that factor is pending. Keeping the curvature
+ * mapping in exactly this one place is what makes that ruling a one-line change
+ * here rather than an edit spread over four call sites.
+ *
+ * @param op  Entry-point name, for the diagnostic.
+ * @return true and writes c = -K when K < 0; false with a diagnostic otherwise
+ *         (K >= 0, or NaN -- `K < 0.0` is false for NaN, so NaN refuses).
+ */
+bool poincare_curvature(double K, const char* op, double* out_c) {
+    if (K < 0.0) { *out_c = -K; return true; }
+    if (!(K == K)) {
+        eshkol_error("qllm bridge: %s got curvature K = NaN; K must be < 0 "
+                     "(the Poincare ball of radius 1/sqrt(-K))", op);
+        return false;
+    }
+    eshkol_error("qllm bridge: %s needs a NEGATIVE sectional curvature K "
+                 "(got %.17g). K < 0 is the Poincare ball of radius 1/sqrt(-K), "
+                 "which is the only geometry this op implements; K = 0 is "
+                 "Euclidean space and K > 0 is the sphere of radius 1/sqrt(K), "
+                 "and both would need different formulas in the forward AND in "
+                 "the reverse rule. Refusing rather than answering from the "
+                 "hyperbolic ball as if it were the manifold you named.",
+                 op, K);
+    return false;
+}
+
 } /* namespace */
 
 /*******************************************************************************
@@ -806,7 +864,8 @@ extern "C" ad_node_t* ad_hyperbolic_distance(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* Y = (const double*)y->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
+    double c;
+    if (!poincare_curvature(curvature, "ad_hyperbolic_distance", &c)) return nullptr;
 
     double diff2 = 0.0;
     for (size_t i = 0; i < n; ++i) { double d = X[i] - Y[i]; diff2 += d * d; }
@@ -856,7 +915,8 @@ extern "C" ad_node_t* ad_poincare_exp_map(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* V = (const double*)v->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
+    double c;
+    if (!poincare_curvature(curvature, "ad_poincare_exp_map", &c)) return nullptr;
     double sc = std::sqrt(c);
 
     /* The conformal factor lambda = 2/(1 - c|x|^2) below is where an
@@ -912,7 +972,8 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     }
     const double* X = (const double*)x->tensor_value;
     const double* Y = (const double*)y->tensor_value;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
+    double c;
+    if (!poincare_curvature(curvature, "ad_poincare_log_map", &c)) return nullptr;
     double sc = std::sqrt(c);
 
     double snx = 0.0, sny = 0.0;
@@ -996,7 +1057,8 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         return nullptr;
     }
     size_t head_dim = dim / (size_t)num_heads;
-    double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
+    double c;
+    if (!poincare_curvature(curvature, "ad_geodesic_attention", &c)) return nullptr;
     double sc = std::sqrt(c);
 
     const double* Q = (const double*)q->tensor_value;

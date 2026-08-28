@@ -241,7 +241,7 @@ Output tensor node [num_indices, d_model], or NULL on error.
 
 ### `ad_hyperbolic_distance`
 
-*Function* — line 236
+*Function* — line 246
 
 ```c
 ad_node_t* ad_hyperbolic_distance(
@@ -252,11 +252,11 @@ ad_node_t* ad_hyperbolic_distance(
 );
 ```
 
-Hyperbolic distance in the Poincare ball model. d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2))) NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. DOMAIN. Both x and y must lie strictly inside the Poincare ball of radius 1/sqrt(-curvature); the distance diverges at the boundary. On or outside, the op returns NULL after a diagnostic naming the measured sqrt(c)|.| rather than projecting or substituting (SW-76). Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
+Hyperbolic distance in the Poincare ball model. d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2))) NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. DOMAIN. Both x and y must lie strictly inside the Poincare ball of radius 1/sqrt(-curvature); the distance diverges at the boundary. On or outside, the op returns NULL after a diagnostic naming the measured sqrt(c)|.| rather than projecting or substituting (SW-76). CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE: K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0 to a hyperbolic ball on the same inputs for which the VM selects a sphere (SW-76). Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
 
 ### `ad_poincare_exp_map`
 
-*Function* — line 261
+*Function* — line 280
 
 ```c
 ad_node_t* ad_poincare_exp_map(
@@ -267,11 +267,11 @@ ad_node_t* ad_poincare_exp_map(
 );
 ```
 
-Poincare exponential map. Maps a tangent vector at x to a point on the manifold. DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of radius 1/sqrt(-curvature). On or outside it the op returns NULL after a diagnostic naming the measured sqrt(c)|.|; it never projects the point back and never substitutes a value. Projection is a separate operation with a documented radius (`manifold-project`), so that a caller who wants it asks for it. See the ledger entry SW-76. The BASE POINT x is a point and is checked; v is a tangent vector, whose length is unconstrained -- exp_x scales it through tanh, so any finite v maps to an interior point. Checking x is not optional bookkeeping: the conformal factor lambda_x = 2/(1 - c||x||^2) is infinite on the boundary and NEGATIVE outside it, so an unchecked out-of-ball x runs the map backwards and returns a finite point that is not exp_x(v) of anything.
+Poincare exponential map. Maps a tangent vector at x to a point on the manifold. DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of radius 1/sqrt(-curvature). On or outside it the op returns NULL after a diagnostic naming the measured sqrt(c)|.|; it never projects the point back and never substitutes a value. Projection is a separate operation with a documented radius (`manifold-project`), so that a caller who wants it asks for it. See the ledger entry SW-76. The BASE POINT x is a point and is checked; v is a tangent vector, whose length is unconstrained -- exp_x scales it through tanh, so any finite v maps to an interior point. Checking x is not optional bookkeeping: the conformal factor lambda_x = 2/(1 - c||x||^2) is infinite on the boundary and NEGATIVE outside it, so an unchecked out-of-ball x runs the map backwards and returns a finite point that is not exp_x(v) of anything. CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE: K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0 to a hyperbolic ball on the same inputs for which the VM selects a sphere (SW-76).
 
 ### `ad_poincare_log_map`
 
-*Function* — line 288
+*Function* — line 316
 
 ```c
 ad_node_t* ad_poincare_log_map(
@@ -282,11 +282,11 @@ ad_node_t* ad_poincare_log_map(
 );
 ```
 
-Poincare logarithmic map. Maps a point y back to the tangent space at x. DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of radius 1/sqrt(-curvature). On or outside it the op returns NULL after a diagnostic naming the measured sqrt(c)|.|; it never projects the point back and never substitutes a value. Projection is a separate operation with a documented radius (`manifold-project`), so that a caller who wants it asks for it. See the ledger entry SW-76. There is a SECOND way this op has no answer, independent of the domain check above: log_x(y) needs artanh(sqrt(c)|(-x) (+)_c y|), and that argument can reach 1 for two points EACH STRICTLY INSIDE the ball -- u is formed by cancellation, so points roughly 19 units of hyperbolic distance apart drive it there in f64. No finite log exists at that pair. The op returns NULL and says so. It does not clamp the argument: artanh(1 - 1e-12) is about 14.2, a specific finite magnitude that no caller could tell from a real one, and in the AD path it would become a fabricated gradient.
+Poincare logarithmic map. Maps a point y back to the tangent space at x. DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of radius 1/sqrt(-curvature). On or outside it the op returns NULL after a diagnostic naming the measured sqrt(c)|.|; it never projects the point back and never substitutes a value. Projection is a separate operation with a documented radius (`manifold-project`), so that a caller who wants it asks for it. See the ledger entry SW-76. There is a SECOND way this op has no answer, independent of the domain check above: log_x(y) needs artanh(sqrt(c)|(-x) (+)_c y|), and that argument can reach 1 for two points EACH STRICTLY INSIDE the ball -- u is formed by cancellation, so points roughly 19 units of hyperbolic distance apart drive it there in f64. No finite log exists at that pair. The op returns NULL and says so. It does not clamp the argument: artanh(1 - 1e-12) is about 14.2, a specific finite magnitude that no caller could tell from a real one, and in the AD path it would become a fabricated gradient. CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE: K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0 to a hyperbolic ball on the same inputs for which the VM selects a sphere (SW-76).
 
 ### `ad_geodesic_attention`
 
-*Function* — line 319
+*Function* — line 356
 
 ```c
 ad_node_t* ad_geodesic_attention(
@@ -300,11 +300,11 @@ ad_node_t* ad_geodesic_attention(
 );
 ```
 
-Geodesic attention with curvature-adaptive scaling. Replaces dot-product with geodesic distance in attention scores: s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a value-weighted sum. The forward retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere. DOMAIN. Every Q and K HEAD-SLICE is a point of the Poincare ball and must lie strictly inside the ball of radius 1/sqrt(-curvature). If any does not, the op returns NULL after a diagnostic naming the (batch, position, head) and the measured sqrt(c)|.|. It does not project, and it does not score an off-manifold slice as infinitely distant: doing that dropped the key from the softmax and returned a complete, finite attention output with no indication that a row had been discarded (SW-76).
+Geodesic attention with curvature-adaptive scaling. Replaces dot-product with geodesic distance in attention scores: s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a value-weighted sum. The forward retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere. DOMAIN. Every Q and K HEAD-SLICE is a point of the Poincare ball and must lie strictly inside the ball of radius 1/sqrt(-curvature). If any does not, the op returns NULL after a diagnostic naming the (batch, position, head) and the measured sqrt(c)|.|. It does not project, and it does not score an off-manifold slice as infinitely distant: doing that dropped the key from the softmax and returned a complete, finite attention output with no indication that a row had been discarded (SW-76). CURVATURE. `curvature` is the SECTIONAL CURVATURE K and must be NEGATIVE: K < 0 is the Poincare ball of radius 1/sqrt(-K), which is the only geometry this op implements. K = 0 (Euclidean) and K > 0 (the sphere of radius 1/sqrt(K)) are refused rather than answered from the hyperbolic ball -- the previous mapping silently sent K = 0 to the unit hyperbolic ball, so a caller asking for flat space got d(0, 0.5) = 1.0986 instead of 0.5, and sent K > 0 to a hyperbolic ball on the same inputs for which the VM selects a sphere (SW-76).
 
 ### `ad_frechet_mean`
 
-*Function* — line 360
+*Function* — line 397
 
 ```c
 ad_node_t* ad_frechet_mean(
@@ -332,7 +332,7 @@ Mean tensor node [dim], or NULL on error.
 
 ### `eshkol_qllm_bridge_init`
 
-*Function* — line 380
+*Function* — line 417
 
 ```c
 bool eshkol_qllm_bridge_init(const char* library_path);
@@ -350,7 +350,7 @@ true on success
 
 ### `eshkol_qllm_bridge_shutdown`
 
-*Function* — line 385
+*Function* — line 422
 
 ```c
 void eshkol_qllm_bridge_shutdown(void);
@@ -360,7 +360,7 @@ Shutdown the qLLM bridge.
 
 ### `eshkol_qllm_bridge_ready`
 
-*Function* — line 390
+*Function* — line 427
 
 ```c
 bool eshkol_qllm_bridge_ready(void);
