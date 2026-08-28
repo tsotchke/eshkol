@@ -8,13 +8,16 @@
  * addition, `hyperbolic-log-map` subtraction, `geodesic-distance` and
  * `poincare-distance` the L2 distance, `mobius-add` addition, `mobius-scalar-mul`
  * a scale, `parallel-transport` and `riemannian-grad` the identity. Each of them
- * accepted a curvature argument and discarded it. No target in the repository
- * defines ESHKOL_GEOMETRIC_ENABLED, so that portable body is the one every
- * shipped VM build compiles — every CI lane, every release binary, the WASM
+ * accepted a curvature argument and discarded it. That body was the one every
+ * shipped VM build compiled — every CI lane, every release binary, the WASM
  * playground. The result was Euclidean answers returned under Riemannian names,
  * with nothing in the output showing the argument had been dropped: the same
  * plausible-wrong-number class `frechet_mean_core.h` documents for the Euclidean
- * weighted average that used to stand in for the Frechet mean.
+ * weighted average that used to stand in for the Frechet mean. That second
+ * body has since been deleted outright (it did not compile against the current
+ * libsemiclassical_qllm ABI and was fp32 throughout), so the forms below are
+ * the ONE implementation of this geometry on the VM engine, not the default of
+ * two.
  *
  * WHY A HEADER AND NOT A LIBRARY TU. Identical reason to
  * `inc/eshkol/backend/frechet_mean_core.h`: `lib/backend/vm_geometric.c` is a
@@ -469,6 +472,123 @@ static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
         double R = 1.0 / sqrt(K);
         double gx = eshkol_rm_dot(g, x, n) / (R * R);
         for (int i = 0; i < n; i++) out[i] = g[i] - gx * x[i];
+        return NULL;
+    }
+}
+
+/**
+ * @brief Geodesic distance between @p x and @p y AND its first two derivatives
+ *        with respect to the sectional curvature K, at fixed points.
+ *
+ * WHY THIS EXISTS. `curvature-gradient` (852) returned the plain SUM of a
+ * tensor's elements, `curvature-hessian` (855) returned the constant 0.0, and
+ * `adaptive-curvature-step` (856) moved K by a fixed 0.01 times that sum. None
+ * of the three differentiated anything: the first two are not derivatives of
+ * any objective, and a Hessian that is identically zero is the assertion that
+ * every objective is affine in K, made without looking at one. This function is
+ * the measurement they now report -- the exact closed-form d/dK and d^2/dK^2 of
+ * the geodesic distance, not a difference quotient, so there is no step size to
+ * choose and no truncation error to bound.
+ *
+ * HYPERBOLIC BRANCH (K < 0, c = -K). With a = |x|^2, b = |y|^2, D = |x-y|^2,
+ *
+ *   P(c) = (1 - c a)(1 - c b),  Q(c) = c / P(c),  A(c) = 1 + 2 D Q(c),
+ *   d(c) = arccosh(A) / sqrt(c),
+ *
+ * and the derivatives are the exact chain rule on that composition (W = arccosh
+ * A below). Coincident points are handled separately: D = 0 makes d identically
+ * zero in c, so every K-derivative is exactly zero, and taking the limit through
+ * the formula would divide by sqrt(A^2 - 1) = 0.
+ *
+ * SPHERICAL BRANCH (K > 0). A point of the sphere of radius 1/sqrt(K) is NOT a
+ * point of the sphere of a different radius, so "hold the points fixed and vary
+ * K" is not a curve in any single manifold. The family this branch differen-
+ * tiates instead holds the pair at FIXED ANGULAR POSITION and lets the radius
+ * follow K, which is the only reparametrisation under which the objective is
+ * defined in a neighbourhood of K: with theta = arccos(<x,y>/R^2) fixed,
+ * d = theta K^(-1/2), so d' = -theta K^(-3/2)/2 and d'' = 3 theta K^(-5/2)/4.
+ *
+ * K = 0 IS REFUSED, and the refusal is not squeamishness. The two curved
+ * branches do not agree with the flat one in the limit: the ball model of
+ * curvature -c has conformal factor lambda_x = 2/(1 - c|x|^2), so its distance
+ * tends to 2|x-y| as c -> 0, twice the Euclidean value the K = 0 branch of
+ * eshkol_rm_distance returns, while the spherical branch diverges. The family
+ * is genuinely discontinuous at K = 0, so no number is the derivative there and
+ * returning one would be the plausible-wrong-number case this surface exists to
+ * exclude.
+ *
+ * @param d_out   the distance itself (may be NULL).
+ * @param d1_out  d(distance)/dK.
+ * @param d2_out  d^2(distance)/dK^2.
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_distance_dK(const double* x, const double* y,
+                                         double K, int n, double* d_out,
+                                         double* d1_out, double* d2_out) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+
+    if (K == 0.0)
+        return "the curvature derivative is not defined at K = 0: the ball "
+               "branch tends to 2|x-y| as K -> 0- (its conformal factor is "
+               "lambda = 2 at the origin) and the spherical branch diverges as "
+               "K -> 0+, so the metric family is discontinuous there";
+
+    double D = 0.0;
+    for (int i = 0; i < n; i++) { double t = x[i] - y[i]; D += t * t; }
+
+    if (K < 0.0) {
+        double c = -K;
+        if (D <= 0.0) {
+            /* Coincident points: d(c) = 0 identically, so both derivatives are
+             * exactly 0 -- not a limit taken through a 0/0 form. */
+            if (d_out)  *d_out  = 0.0;
+            *d1_out = 0.0;
+            *d2_out = 0.0;
+            return NULL;
+        }
+        double a = eshkol_rm_dot(x, x, n);
+        double b = eshkol_rm_dot(y, y, n);
+        double P   = (1.0 - c * a) * (1.0 - c * b);
+        double Pp  = -(a + b) + 2.0 * c * a * b;
+        double N   = P - c * Pp;
+        double Np  = -2.0 * a * b * c;                 /* = -c * P'' */
+        double Q   = c / P;
+        double Qp  = N / (P * P);
+        double Qpp = (Np * P - 2.0 * N * Pp) / (P * P * P);
+        double A   = 1.0 + 2.0 * D * Q;
+        double Ap  = 2.0 * D * Qp;
+        double App = 2.0 * D * Qpp;
+        double s1  = sqrt(A * A - 1.0);
+        if (!(s1 > 0.0))
+            return "the two points are numerically coincident in the ball "
+                   "metric, where the curvature derivative degenerates";
+        double W   = acosh(A);
+        double W1  = Ap / s1;
+        double W2  = App / s1 - Ap * Ap * A / (s1 * s1 * s1);
+        double rc  = 1.0 / sqrt(c);
+        /* d/dc, then dK = -dc: the first derivative changes sign, the second
+         * does not. */
+        double dc1 = W1 * rc - 0.5 * W * rc / c;
+        double dc2 = W2 * rc - W1 * rc / c + 0.75 * W * rc / (c * c);
+        if (d_out) *d_out = W * rc;
+        *d1_out = -dc1;
+        *d2_out = dc2;
+        return NULL;
+    }
+
+    {
+        double R  = 1.0 / sqrt(K);
+        double cs = eshkol_rm_dot(x, y, n) / (R * R);
+        if (cs > 1.0) cs = 1.0;
+        if (cs < -1.0) cs = -1.0;
+        double th = acos(cs);
+        double rk = 1.0 / sqrt(K);
+        if (d_out) *d_out = th * rk;
+        *d1_out = -0.5 * th * rk / K;
+        *d2_out =  0.75 * th * rk / (K * K);
         return NULL;
     }
 }

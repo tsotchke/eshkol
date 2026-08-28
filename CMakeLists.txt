@@ -195,58 +195,32 @@ option(ESHKOL_QLLM_ENABLED
 set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
 
-# lib/backend/vm_geometric.c carries two dispatch bodies for the same 62 VM
-# builtins, selected by ESHKOL_GEOMETRIC_ENABLED.  Until this option existed NO
-# target defined that macro and nothing in the build system could: the
-# linked-library body was unreachable from every configuration of this
-# repository, so the portable body was the one every CI lane, every release
-# binary and the WASM playground compiled.  That is a supportable arrangement --
-# semiclassical_qllm is an out-of-tree library and Eshkol cannot require it --
-# but it has to be a CHOICE the build makes and states, not an accident of a
-# macro nobody defines.  The portable body is therefore the SHIPPED
-# implementation and is held to the same closed forms as the linked one
-# (inc/eshkol/backend/riemannian_core.h, gated by
-# tests/vm/geometric_riemannian_surface_regression.esk).
+# lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
+# 62 VM builtins (ids 804-861), selected by ESHKOL_GEOMETRIC_ENABLED and
+# dispatching through libsemiclassical_qllm.  No target defined that macro and
+# nothing in the build system could, so the closed-form body was the one every
+# CI lane, every release binary and the WASM playground compiled -- and the
+# other one was unreachable from every configuration of this repository.
 #
-# Turning this ON is an out-of-tree opt-in.  It is refused at configure time
-# rather than at compile time when the headers are not where it says, because a
-# silent fall-through to the portable body would make the option a no-op that
-# reports success.
+# It has been DELETED rather than wired up, and the option that briefly existed
+# to select it is gone with it.  Measured, not assumed: a syntax-only pass of
+# lib/backend/eshkol_vm.c with -DESHKOL_GEOMETRIC_ENABLED against a current
+# libsemiclassical_qllm include directory reported 19 errors inside
+# vm_geometric.c alone -- changed arities on qllm_hyperbolic_exp_map / _log_map
+# / _distance / _parallel_transport / _mobius_add / _mobius_scalar,
+# qllm_hyperbolic_project taking a qllm_tensor_t* where the call passed a
+# float*, and SO(3)/SE(3) arms naming types the library no longer declares --
+# and it was fp32 throughout, which inc/eshkol/backend/frechet_mean_core.h
+# already documents as unable to satisfy the exact-derivative gate.  An
+# unreachable body that does not compile is not a second implementation kept in
+# reserve; it is a second set of claims no gate in this repository can check.
 #
-# MEASURED, so that nobody turns this on expecting it to work: against a current
-# libsemiclassical_qllm checkout the linked-library body does NOT COMPILE.  A
-# syntax-only pass of lib/backend/eshkol_vm.c with -DESHKOL_GEOMETRIC_ENABLED and
-# that library's include directory reports 19 errors inside vm_geometric.c alone
-# -- changed arities on qllm_hyperbolic_exp_map / _log_map / _distance /
-# _parallel_transport / _mobius_add / _mobius_scalar, qllm_hyperbolic_project now
-# taking a qllm_tensor_t* where the call passes a float*, and the SO(3)/SE(3) arms
-# naming types (qllm_so3_algebra_t, qllm_so3_t) the library no longer declares.
-# That is the real reason this path was never selectable: it is not merely
-# unselected, it is stale against the API it names, and a build system option
-# could not have hidden that.  Bringing it back is its own change against the
-# current qLLM ABI; the portable body is what this repository tests and ships.
-option(ESHKOL_GEOMETRIC_QLLM
-       "Dispatch the VM geometric builtins (ids 804-861) through libsemiclassical_qllm instead of the portable closed forms (defines ESHKOL_GEOMETRIC_ENABLED)" OFF)
-
-if(ESHKOL_GEOMETRIC_QLLM)
-    if(NOT ESHKOL_QLLM_ROOT)
-        message(FATAL_ERROR
-            "ESHKOL_GEOMETRIC_QLLM=ON needs ESHKOL_QLLM_ROOT set to a root "
-            "containing include/semiclassical_qllm/manifold.h. Leave it OFF to "
-            "use the portable closed-form geometry, which is what every shipped "
-            "build uses.")
-    endif()
-    if(NOT EXISTS "${ESHKOL_QLLM_ROOT}/include/semiclassical_qllm/manifold.h")
-        message(FATAL_ERROR
-            "ESHKOL_GEOMETRIC_QLLM=ON but "
-            "${ESHKOL_QLLM_ROOT}/include/semiclassical_qllm/manifold.h does not "
-            "exist. Refusing to configure a build whose geometric dispatch would "
-            "silently fall back to the portable body.")
-    endif()
-    message(STATUS "VM geometric dispatch: libsemiclassical_qllm (${ESHKOL_QLLM_ROOT})")
-else()
-    message(STATUS "VM geometric dispatch: portable closed forms (riemannian_core.h)")
-endif()
+# The geometry the VM computes now lives in one place,
+# inc/eshkol/backend/riemannian_core.h and
+# inc/eshkol/backend/differential_form_core.h, gated by
+# tests/vm/geometric_riemannian_surface_regression.esk.  The DIFFERENTIABLE
+# route to the same geometry is lib/bridge/qllm_bridge.cpp, a live integration
+# that this deletion does not touch.
 
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
 # the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
@@ -2073,13 +2047,6 @@ function(eshkol_apply_vm_limit_definitions target_name)
         ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}
         ESHKOL_VM_MAX_CODE=${ESHKOL_VM_MAX_CODE}
     )
-    # The geometric dispatch selector (see the ESHKOL_GEOMETRIC_QLLM option).
-    # It belongs on exactly the targets that compile the VM unity build, which
-    # is exactly the set this function is called for.
-    if(ESHKOL_GEOMETRIC_QLLM)
-        target_compile_definitions(${target_name} PRIVATE ESHKOL_GEOMETRIC_ENABLED)
-        target_include_directories(${target_name} PRIVATE "${ESHKOL_QLLM_ROOT}/include")
-    endif()
 endfunction()
 
 set(ESHKOL_VM_UNITY_SRC)
