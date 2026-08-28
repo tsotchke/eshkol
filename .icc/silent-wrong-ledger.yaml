@@ -2953,7 +2953,12 @@ entries:
       the "#(4.42 0)" its own header names as the expected value, on the JIT and
       AOT alike; a 22-check battery over the full shape matrix (see `evidence`)
       passes 22/22 in both lanes; and the `gradient` slice of that matrix — the
-      part inside the VM subset — agrees byte-for-byte on the bytecode VM. The
+      part inside the VM subset — agrees byte-for-byte on the bytecode VM
+      (native and vm-src stdout identical after newline normalisation over the
+      whole of tests/vm_parity/corpus/32_gradient_reverse.esk). The five GROUP C
+      regressions in tests/ad/sweep_c_regressions_test.esk pass 27/27 in both
+      native lanes at the same time, which retires the same claim for
+      ESH-0078/0095/0096 as well. The
       code was fixed in the AD sweep C wave (autodiff_codegen.cpp:6975-6990 and
       :11381-11400, docs/design/AUDIT_2026_08_25_RESOLUTION.md item e1); this
       entry, and the tests/ad_oracle/README.md XKNOWN row it cited as its
