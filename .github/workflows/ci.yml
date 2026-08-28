@@ -594,18 +594,21 @@ jobs:
         shell: bash
         run: python3 scripts/check_ps1_encoding.py
 
-      # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
-      # in one week landed on master because a squash-merge commit body is
-      # assembled out of the PR's own branch commit messages, and nothing in
-      # review treats commit prose as a reviewable surface the way a diff
-      # hunk is. This step writes the maintainer's private DISCLOSURE_DENYLIST
-      # secret (real internal hostnames/aliases) to a runner-local file if the
-      # secret is configured, then runs the gate for real against this PR's
-      # own commit range. On any non-pull_request event (a push, e.g. to
-      # master) the range is already-reviewed, already-merged history with no
-      # PR title/body to check, so this reports a deliberate no-op PASS
-      # instead of re-scanning it.
-      - name: Write private disclosure denylist (if the maintainer has configured one)
+      # 2026-08-28: a squash-merge commit body is assembled out of the PR's
+      # own branch commit messages, and nothing in review treats commit prose
+      # as a reviewable surface the way a diff hunk is. This gate scans PR
+      # text and the diff for private IPv4 literals, ssh key-file references,
+      # ProxyCommand/`tailscale nc` recipes, and MAC addresses (maintainer
+      # ruling 2026-08-28: internal machine/hostnames by themselves are
+      # public-safe in this repo and are not in scope). This step optionally
+      # writes a maintainer's own private DISCLOSURE_DENYLIST secret (specific
+      # known-sensitive tokens) to a runner-local file if one is configured,
+      # then runs the gate for real against this PR's own commit range. On
+      # any non-pull_request event (a push, e.g. to master) the range is
+      # already-reviewed, already-merged history with no PR title/body to
+      # check, so this reports a deliberate no-op PASS instead of re-scanning
+      # it.
+      - name: Write private disclosure denylist (optional; if the maintainer has configured one)
         env:
           DISCLOSURE_DENYLIST: ${{ secrets.DISCLOSURE_DENYLIST }}
         shell: bash
@@ -615,7 +618,7 @@ jobs:
             printf '%s' "$DISCLOSURE_DENYLIST" > "$RUNNER_TEMP/disclosure-denylist.txt"
             echo "ESHKOL_DISCLOSURE_DENYLIST=$RUNNER_TEMP/disclosure-denylist.txt" >> "$GITHUB_ENV"
           else
-            echo "::warning::DISCLOSURE_DENYLIST repository secret is not set — the infrastructure-disclosure gate will run its GENERIC patterns only, with its private-identifier layer inactive. A maintainer with a real denylist file should run: gh secret set DISCLOSURE_DENYLIST < /path/to/local/denylist.txt"
+            echo "note: DISCLOSURE_DENYLIST repository secret is not set — this optional layer stays off and the gate runs its generic patterns only. Enable it any time with: gh secret set DISCLOSURE_DENYLIST < /path/to/local/denylist.txt"
           fi
 
       - name: No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier

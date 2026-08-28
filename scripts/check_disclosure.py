@@ -11,6 +11,14 @@ nothing in code review that treats commit *prose* as a reviewable surface the
 same way a diff hunk is. Nobody was reviewing for it because nothing failed
 when it happened.
 
+Scope narrowed by maintainer ruling (2026-08-28): internal machine/hostnames
+by themselves are FINE in this public repo and are no longer flagged --
+the two hostnames from the motivating incident above would not trip this
+gate today. What still matters, and what the gate below actually catches, is
+private IPv4 literals, ssh key-file references, ProxyCommand/`tailscale nc`
+recipes, MAC addresses, and (Layer 2, optional) a maintainer's own denylist
+of specific known-sensitive tokens.
+
 This gate treats three text surfaces as disclosure-reviewable, matching
 everywhere PR authorship text lands in this repo's public history:
     1. every commit message in `<base>..<head>` (`git log --format=%B`) --
@@ -24,7 +32,12 @@ Two independent detection layers:
 
   Layer 1 -- GENERIC patterns (hardcoded below; safe to publish, because they
   describe a STRUCTURAL shape -- "looks like a private IPv4 literal", "looks
-  like an ssh user@host target" -- never a specific real identifier):
+  like an ssh key-file reference" -- never a specific real identifier).
+  Internal machine/hostnames on their own are NOT in scope here (maintainer
+  ruling 2026-08-28: this repo treats hostnames as public-safe); what this
+  layer catches is the small set of shapes that are load-bearing regardless
+  of whose name is attached -- a route INTO a private network or a credential
+  a reader could act on:
       private_ipv4_10          10.0.0.0/8
       private_ipv4_172         172.16.0.0/12
       private_ipv4_192_168     192.168.0.0/16
@@ -36,26 +49,19 @@ Two independent detection layers:
       ssh_key_flag             `-i ~/.ssh/...`
       ssh_proxycommand         `ProxyCommand`
       tailscale_nc             `tailscale nc ...`
-      mdns_local_host          a `*.local` mDNS-style hostname
-      ssh_user_at_host         an `ssh`-shaped `user@host` target where `host`
-                                has no dotted TLD (excludes ordinary email
-                                addresses by construction -- see
-                                `SSH_USER_HOST_RE`'s docstring)
-      windows_tailnet_desktop  a Windows-style `DESKTOP-XXXXXXX` tailnet name
-      libvirt_windows_guest    a `win11 guest` / `win10 guest` libvirt
-                                reference
       mac_address              a colon- or hyphen-separated MAC address
 
-  Layer 2 -- a PRIVATE denylist of exact tokens (real hostnames, tailnet
-  names, aliases), loaded from a file OUTSIDE this repository:
+  Layer 2 -- an OPTIONAL PRIVATE denylist of exact tokens (real hostnames,
+  tailnet names, aliases) for a maintainer who wants to additionally flag
+  specific known identifiers, loaded from a file OUTSIDE this repository:
       path = $ESHKOL_DISCLOSURE_DENYLIST, else ~/.eshkol/disclosure-denylist.txt
       format = one token per line, `#`-prefixed lines and blank lines ignored
       match = case-insensitive substring
-  This file must never be committed here -- that would be the exact leak this
-  gate exists to prevent. In CI it is materialized from a repository secret
-  (see .github/workflows/ci.yml). If no denylist file is found, this gate
-  does NOT fail open silently: it prints a highly visible NOTE that the
-  private layer is inactive and runs Layer 1 only.
+  This file must never be committed here. In CI it is materialized from a
+  repository secret (see .github/workflows/ci.yml) when one is configured.
+  This layer is off by default and that is a normal, supported mode: if no
+  denylist file is found, the gate prints one neutral line noting that Layer
+  2 did not run and proceeds with Layer 1 alone.
 
 Allowlist (`scripts/disclosure_allow.txt`, tracked, public-safe): exact
 phrases that are permitted to remain even though a piece of them might
@@ -141,33 +147,6 @@ def _mac_address_pattern() -> "re.Pattern[str]":
     return re.compile(r"\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b")
 
 
-def _ssh_user_host_pattern() -> "re.Pattern[str]":
-    # An `ssh`-shaped `user@host` target, deliberately narrow: `host` must be
-    # a HYPHENATED multi-segment name (2+ segments, e.g. `old-donkey`,
-    # `build-box-3`, `jump-host`) -- the realistic shape of an ad hoc internal
-    # machine name this layer exists to catch structurally, since an exact
-    # KNOWN single-word internal name (a literal node name, a bare tailnet
-    # alias) is already the private denylist's job (Layer 2), not this
-    # generic layer's. Requiring a hyphen also throws out the dominant
-    # false-positive shapes this codebase is full of: `actions/checkout@v6`
-    # and Homebrew's `llvm@21` (versioned package refs), `MET@ICSE` (a
-    # conference acronym), ABI inline-code spans like `flags@1`, and shell
-    # interpolation labels like `arena@short` -- none of those have a
-    # hyphenated segment after the `@`.
-    #
-    # Also excludes ordinary email addresses (`user@host` only matches when
-    # `host` is NOT immediately followed by `.<letter>`, i.e. no dotted
-    # TLD/subdomain right after it -- every real email address has one,
-    # `foo@example.com`, `123+u@users.noreply.github.com`); and excludes
-    # matches immediately preceded by `/`, a quote, or a backtick, which is
-    # how `owner/repo@ref` package refs and inline-code/string-literal spans
-    # are written in this codebase.
-    return re.compile(
-        r"(?<![/\"'`])\b[A-Za-z][A-Za-z0-9_.+-]{0,31}"
-        r"@[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b(?!\.[A-Za-z0-9])"
-    )
-
-
 GENERIC_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("private_ipv4_10", re.compile(r"\b10\.(?:\d{1,3}\.){2}\d{1,3}\b")),
     ("private_ipv4_172", re.compile(r"\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b")),
@@ -177,10 +156,6 @@ GENERIC_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("ssh_key_flag", re.compile(r"-i\s+~/\.ssh/\S+")),
     ("ssh_proxycommand", re.compile(r"\bProxyCommand\b", re.IGNORECASE)),
     ("tailscale_nc", re.compile(r"\btailscale\s+nc\b", re.IGNORECASE)),
-    ("mdns_local_host", re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.local\b", re.IGNORECASE)),
-    ("ssh_user_at_host", _ssh_user_host_pattern()),
-    ("windows_tailnet_desktop", re.compile(r"\bdesktop-[A-Za-z0-9]{4,}\b", re.IGNORECASE)),
-    ("libvirt_windows_guest", re.compile(r"\bwin1[01][\s-]?guest\b", re.IGNORECASE)),
     ("mac_address", _mac_address_pattern()),
 ]
 
@@ -220,15 +195,16 @@ def is_allowlisted(start: int, end: int, allow_spans: list[tuple[int, int]]) -> 
 # ───────────────────────────── denylist (Layer 2) ─────────────────────────────
 
 def load_denylist(path: str | None) -> tuple[list[str], bool, str]:
-    """Returns (tokens, active, note). `active` is False -- and `note` is a
-    non-empty, must-be-printed warning -- whenever the private layer could
-    not be loaded, so a caller can never let that fact pass unremarked."""
+    """Returns (tokens, active, note). Layer 2 is optional: `active` is False
+    whenever no denylist file is configured, which is a normal, supported
+    mode, not a failure -- `note` is then a single neutral line (never
+    warning-toned) recording that fact for the caller to print."""
     resolved = path or os.environ.get(DENYLIST_ENV_VAR) or DEFAULT_DENYLIST_PATH
     if not os.path.isfile(resolved):
         note = (
-            f"NOTE: private disclosure-denylist layer is INACTIVE -- no file found at "
-            f"'{resolved}' (set ${DENYLIST_ENV_VAR} or place one at "
-            f"~/.eshkol/disclosure-denylist.txt). Running GENERIC patterns only."
+            f"note: private disclosure-denylist layer not configured (optional; "
+            f"set ${DENYLIST_ENV_VAR} or place a file at "
+            f"~/.eshkol/disclosure-denylist.txt to enable it) -- running generic patterns only."
         )
         return [], False, note
     tokens = []
@@ -409,10 +385,6 @@ _GENERIC_FIXTURES: list[tuple[str, str, str]] = [
     ("ssh_key_flag", "ssh -i ~/.ssh/id_ed25519_prod host", "the -i flag inverts the sense of the match"),
     ("ssh_proxycommand", "ProxyCommand ssh -W %h:%p jumpbox", "check the ProxyServer settings"),
     ("tailscale_nc", "tailscale nc some-host 22", "tailscale status looked healthy"),
-    ("mdns_local_host", "ssh admin@fileserver.local", "reachable at example.com instead"),
-    ("ssh_user_at_host", "ssh tyr@some-internal-box", "contact us at support@example.com"),
-    ("windows_tailnet_desktop", "found on DESKTOP-7F3K2Q1", "the Desktop folder holds the files"),
-    ("libvirt_windows_guest", "spun up the win11 guest for the repro", "Windows 11 support landed this release"),
     ("mac_address", "interface at b8:27:eb:12:34:56", "timestamp read 12:34:56 UTC"),
 ]
 
@@ -614,7 +586,6 @@ def main(argv: list[str] | None = None) -> int:
     denylist_tokens, denylist_active, denylist_note = load_denylist(args.denylist_path)
     if not denylist_active:
         print(denylist_note, file=sys.stderr)
-        print("=" * len(denylist_note.splitlines()[0]) if denylist_note else "", file=sys.stderr)
 
     findings: list[Finding] = []
 
@@ -648,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
     finding_lines = _format_findings(findings)
 
     if passed:
-        layer2 = "active" if denylist_active else "INACTIVE"
+        layer2 = "active" if denylist_active else "not configured"
         snippet = f"clean over {args.base}..{args.head} (private denylist layer: {layer2})"
     else:
         snippet = f"{len(finding_lines)} finding(s): " + "; ".join(finding_lines[:5])
@@ -664,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
         }, indent=2))
     else:
         print(f"{PROBE_ID}: {status}")
-        print(f"  private denylist layer: {'active' if denylist_active else 'INACTIVE'}")
+        print(f"  private denylist layer: {'active' if denylist_active else 'not configured (optional)'}")
         if finding_lines:
             print("  FINDINGS (matched token redacted; fix by removing/rewording the source line, "
                   "then force-push or amend before merge):")
