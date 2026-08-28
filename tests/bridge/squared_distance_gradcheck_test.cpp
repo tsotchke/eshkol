@@ -47,7 +47,8 @@
  * form: `d^2` must be evaluated in the log-map form, never as `sqrt(d^2)`
  * squared or differentiated.
  *
- * EVERYTHING RUNS THROUGH THE REAL PRODUCER AND THE REAL DISPATCH. Nodes are
+ * EVERYTHING RUNS THROUGH THE REAL PRODUCER in lib/bridge/space_form_ad.cpp
+ * AND THE REAL DISPATCH. Nodes are
  * recorded by `ad_squared_distance` / `ad_product_squared_distance` onto a real
  * tape and swept by `eshkol_tensor_backward_dispatch`, so the test covers the
  * two registration sites (the arm in lib/backend/tensor_backward.cpp and the
@@ -56,11 +57,11 @@
  * not see a producer that fills the contract wrongly.
  *
  */
-
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <limits>
 
 #include "eshkol/eshkol.h"
 #include "eshkol/bridge/space_form.h"
@@ -112,7 +113,8 @@ struct Run {
 
 /** @brief Record d^2 for a product spec, seed dL/d(d^2) = 1, sweep. */
 Run run_product(const double* X, const double* Y, size_t n,
-                const eshkol_manifold_factor_t* f, size_t k) {
+                const eshkol_manifold_factor_t* f, size_t k,
+                double upstream = 1.0) {
     Run r;
     ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, n);
@@ -120,7 +122,7 @@ Run run_product(const double* X, const double* Y, size_t n,
     ad_node_t* out = ad_product_squared_distance(tape, xn, yn, f, k);
     if (!out) return r;
     r.d2 = ((const double*)out->tensor_value)[0];
-    ((double*)out->tensor_gradient)[0] = 1.0;
+    ((double*)out->tensor_gradient)[0] = upstream;
     for (size_t i = tape->num_nodes; i-- > 0;)
         eshkol_tensor_backward_dispatch(tape->nodes[i]);
     r.gx.assign((const double*)xn->tensor_gradient,
@@ -131,14 +133,15 @@ Run run_product(const double* X, const double* Y, size_t n,
     return r;
 }
 
-Run run_single(const double* X, const double* Y, size_t n, int form, double c) {
+Run run_single(const double* X, const double* Y, size_t n, int form, double c,
+               double upstream = 1.0) {
     eshkol_manifold_factor_t f;
     f.form = form;
     f.reserved = 0;
     f.dim = (int64_t)n;
     f.curvature = c;
     f.weight = 1.0;
-    return run_product(X, Y, n, &f, 1);
+    return run_product(X, Y, n, &f, 1, upstream);
 }
 
 /** @brief Forward-only value, for finite differences. */
@@ -196,6 +199,22 @@ double ball_dist_ref(const double* x, const double* y, double c, size_t n) {
     return std::acosh(1.0 + 2.0 * c * dd / (a * b)) / std::sqrt(c);
 }
 
+/* Independent closed-form evaluation for the audit's rounded-t=1 case. This
+ * uses the audit's binary64 asinh route, not the shared core. */
+double ball_sq_audit_reference(const double* x, const double* y,
+                               double c, size_t n) {
+    double x2 = 0.0, y2 = 0.0, e = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double xi = x[i], yi = y[i], d = xi - yi;
+        x2 += xi * xi;
+        y2 += yi * yi;
+        e += d * d;
+    }
+    double q = std::sqrt(c * e / ((1.0 - c * x2) * (1.0 - c * y2)));
+    double h = std::asinh(q);
+    return 4.0 * h * h / c;
+}
+
 /** @brief log_x(y) on the sphere of radius R = 1/sqrt(c), arccos form. */
 void sphere_log_ref(const double* x, const double* y, double c, size_t n,
                     double* out) {
@@ -244,12 +263,14 @@ const double kSphY[3] = { 0.20628424925175867, 0.309426373877638,
 
 /* H^2(c=1,w=1) x S^2(ambient 3, c=1, w=2) x R^2(w=0.5) — 2+3+2 = 7. */
 const eshkol_manifold_factor_t kProdF[3] = {
-    { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, 1.0, 1.0 },
+    { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, -1.0, 1.0 },
     { ESHKOL_SPACE_FORM_SPHERICAL,  0, 3, 1.0, 2.0 },
     { ESHKOL_SPACE_FORM_EUCLIDEAN,  0, 2, 0.0, 0.5 },
 };
 const double kProdX[7] = {  0.25, -0.1,  0.6, -0.8, 0.0,  1.5,  0.25 };
-const double kProdY[7] = { -0.3,   0.2,  0.2,  0.3, 0.9, -0.5,  1.75 };
+const double kProdY[7] = { -0.3,   0.2,  0.20628424925175867,
+                           0.309426373877638, 0.9282791216329139,
+                           -0.5,  1.75 };
 
 /* ===== Golden vectors ====================================================
  * tests/qllm_oracle/golden/squared_distance.json, 17 significant digits, so
@@ -294,6 +315,63 @@ double fd_max_rel(const double* X, const double* Y, size_t n,
     return worst;
 }
 
+void project_sphere_factors(std::vector<double>& p,
+                            const eshkol_manifold_factor_t* f, size_t k) {
+    size_t off = 0;
+    for (size_t i = 0; i < k; ++i) {
+        size_t dim = (size_t)f[i].dim;
+        if (f[i].form == ESHKOL_SPACE_FORM_SPHERICAL) {
+            double norm = normv(p.data() + off, dim);
+            double radius = 1.0 / std::sqrt(f[i].curvature);
+            double scale = radius / norm;
+            for (size_t j = 0; j < dim; ++j) p[off + j] *= scale;
+        }
+        off += dim;
+    }
+}
+
+double fd_max_rel_y(const double* X, const double* Y, size_t n,
+                    const eshkol_manifold_factor_t* f, size_t k,
+                    const std::vector<double>& analytic, double h) {
+    std::vector<double> yp(Y, Y + n);
+    double worst = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double save = Y[i];
+        yp.assign(Y, Y + n);
+        yp[i] = save + h; project_sphere_factors(yp, f, k);
+        double vp = value_only(X, yp.data(), n, f, k);
+        yp.assign(Y, Y + n); yp[i] = save - h;
+        project_sphere_factors(yp, f, k);
+        double vm = value_only(X, yp.data(), n, f, k);
+        yp[i] = save;
+        double num = (vp - vm) / (2.0 * h);
+        worst = std::max(worst,
+                         std::fabs(num - analytic[i]) / (1.0 + std::fabs(num)));
+    }
+    return worst;
+}
+
+double fd_max_rel_projected_x(const double* X, const double* Y, size_t n,
+                              const eshkol_manifold_factor_t* f, size_t k,
+                              const std::vector<double>& analytic, double h) {
+    std::vector<double> xp(X, X + n);
+    double worst = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double save = X[i];
+        xp.assign(X, X + n);
+        xp[i] = save + h; project_sphere_factors(xp, f, k);
+        double vp = value_only(xp.data(), Y, n, f, k);
+        xp.assign(X, X + n); xp[i] = save - h;
+        project_sphere_factors(xp, f, k);
+        double vm = value_only(xp.data(), Y, n, f, k);
+        xp[i] = save;
+        double num = (vp - vm) / (2.0 * h);
+        worst = std::max(worst,
+                         std::fabs(num - analytic[i]) / (1.0 + std::fabs(num)));
+    }
+    return worst;
+}
+
 } /* namespace */
 
 int main() {
@@ -316,9 +394,62 @@ int main() {
         report("flat: d2 == |x-y|^2 and grad == 2(x-y), EXACTLY", ok);
     }
 
+    /* ---- audit P1: signed curvature is part of the manifold contract ----- */
+    {
+        const double zero[1] = { 0.0 };
+        const double half[1] = { 0.5 };
+        Run flat = run_single(zero, half, 1, ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        Run wrong_form = run_single(zero, half, 1,
+                                    ESHKOL_SPACE_FORM_HYPERBOLIC, 0.0);
+        bool ok = flat.ok && flat.d2 == 0.25 && flat.gx[0] == -1.0 &&
+                  flat.gy[0] == 1.0 && !wrong_form.ok;
+        report("audit: K=0 is Euclidean and hyperbolic K=0 is refused", ok);
+    }
+    {
+        Run bad = run_single(kBallX, kBallY, 3,
+                             ESHKOL_SPACE_FORM_HYPERBOLIC,
+                             std::numeric_limits<double>::quiet_NaN());
+        report("audit: non-finite curvature is refused", !bad.ok);
+    }
+
+    /* ---- audit P1: stable near-boundary Poincare distance ---------------- */
+    {
+        const double x[1] = { 0.999999999 };
+        const double y[1] = { -0.999999999 };
+        Run r = run_single(x, y, 1, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
+        const double audit_d2 = 1834.6509908199114;
+        double reference = ball_sq_audit_reference(x, y, 1.0, 1);
+        double rel = std::fabs(r.d2 - reference) / (1.0 + reference);
+        double audit_rel = std::fabs(r.d2 - audit_d2) / (1.0 + audit_d2);
+        bool finite = r.ok && std::isfinite(r.d2) && std::isfinite(r.gx[0]) &&
+                      std::isfinite(r.gy[0]);
+        char detail[128];
+        std::snprintf(detail, sizeof detail, "d2 %.17g ref %.17g rel %.3e",
+                      r.d2, reference, rel);
+        report("audit: valid near-boundary H pair is finite and exact",
+               finite && rel < 1e-9 && audit_rel < 1e-6, detail);
+    }
+    {
+        const double x[3] = { 0.6, -0.4, 0.2 };
+        const double y[3] = { -0.3, 0.5, 0.8 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -0.25);
+        double want = ball_sq_audit_reference(x, y, 0.25, 3);
+        double rel = std::fabs(r.d2 - want) / (1.0 + want);
+        report("audit: non-unit negative curvature keeps its scale", r.ok && rel < 1e-13);
+    }
+    {
+        const double x[3] = { 0.5 * kSphX[0], 0.5 * kSphX[1], 0.5 * kSphX[2] };
+        const double y[3] = { 0.5 * kSphY[0], 0.5 * kSphY[1], 0.5 * kSphY[2] };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_SPHERICAL, 4.0);
+        double theta = std::acos(dotv(x, y, 3) / 0.25);
+        double want = 0.25 * theta * theta;
+        double rel = std::fabs(r.d2 - want) / (1.0 + want);
+        report("audit: non-unit positive curvature keeps its radius", r.ok && rel < 1e-13);
+    }
+
     /* ---- 2. coincidence is a value, not a refusal, and it is exactly 0 --- */
     {
-        Run rh = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run rh = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         bool ok = rh.ok && rh.d2 == 0.0
                   && all_exactly(rh.gx, 0.0) && all_exactly(rh.gy, 0.0);
         report("hyperbolic: x == y gives d2 == 0 and grad == 0 exactly", ok);
@@ -344,7 +475,7 @@ int main() {
 
     /* ---- 3. the log-map identity, against an independent log ------------- */
     {
-        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         double lg[3];
         ball_log_ref(kBallX, kBallY, 1.0, 3, lg);
         double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
@@ -357,7 +488,7 @@ int main() {
         report("ball: grad_x == -2 lambda_x^2 log_x(y)", worst < 1e-14, detail);
     }
     {
-        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         /* Gauss lemma, with the distance as an independent third quantity.
          * The RIEMANNIAN norm of the gradient is |grad|_euclid / lambda_x,
          * because the Riemannian gradient is g^{-1} = lambda^{-2} times the
@@ -392,8 +523,8 @@ int main() {
          * restatement — the two arguments take different code paths (alpha vs
          * beta, x vs y in the numerator), so a sign or an index error in one
          * of them shows here and nowhere else. */
-        Run a = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
-        Run b = run_single(kBallY, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run a = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
+        Run b = run_single(kBallY, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         double dv = std::fabs(a.d2 - b.d2);
         double gv = std::max(maxabs_diff(a.gx, b.gy.data(), 3),
                              maxabs_diff(a.gy, b.gx.data(), 3));
@@ -411,7 +542,7 @@ int main() {
          * gradient checks above compare against: they share a file, and nearly
          * the algebra, with the backward they would be grading. */
         double got[3], want[3];
-        bool ok = eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+        bool ok = eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
                                             kBallX, kBallY, 3, got);
         ball_log_ref(kBallX, kBallY, 1.0, 3, want);
         double w1 = max_rel(std::vector<double>(got, got + 3), want, 3);
@@ -427,7 +558,7 @@ int main() {
                ok && w1 < 1e-14 && w2 < 1e-13, detail);
     }
     {
-        double db = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+        double db = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
                                                kBallX, kBallY, 3);
         double wb = ball_dist_ref(kBallX, kBallY, 1.0, 3);
         double ds = eshkol_space_form_distance(ESHKOL_SPACE_FORM_SPHERICAL, 1.0,
@@ -453,10 +584,10 @@ int main() {
         /* And the two agree with each other where the geometry says they must:
          * |log_x(y)|_g == d. On the ball that is lambda_x |log|_euclid. */
         double lg[3];
-        eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+        eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
                                   kBallX, kBallY, 3, lg);
         double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
-        double d = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+        double d = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
                                               kBallX, kBallY, 3);
         double rel = std::fabs(lam * normv(lg, 3) - d) / (1.0 + d);
         char detail[96];
@@ -468,7 +599,7 @@ int main() {
     {
         Run p = run_product(kProdX, kProdY, 7, kProdF, 3);
         Run h = run_single(kProdX + 0, kProdY + 0, 2,
-                           ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+                           ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         Run s = run_single(kProdX + 2, kProdY + 2, 3,
                            ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
         Run e = run_single(kProdX + 5, kProdY + 5, 2,
@@ -495,7 +626,7 @@ int main() {
         report("golden squared_distance.euclidean.d3", ok, detail);
     }
     {
-        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         double w = max_rel(r.gx, kGoldBallG, 3);
         double dv = std::fabs(r.d2 - kGoldBallD2) / kGoldBallD2;
         char detail[112];
@@ -527,7 +658,7 @@ int main() {
          * non-finite gradient with a finite value — recorded there as nulls
          * with all_finite: false. The shipped node reaches the same point
          * through the log map. This is the contrast the design rests on. */
-        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         bool finite = r.ok;
         for (size_t i = 0; i < r.gx.size() && finite; ++i)
             finite = std::isfinite(r.gx[i]);
@@ -567,7 +698,7 @@ int main() {
             for (int i = 0; i < 3; ++i) scaled[i] = coef * tang[i];
             mobius_add_ref(kBallX, scaled, 1.0, 3, y);
 
-            Run r = run_single(kBallX, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+            Run r = run_single(kBallX, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
             double gn = normv(r.gx.data(), 3);
             double want = 2.0 * lam * rr;
             double rel = std::fabs(gn - want) / want;
@@ -586,7 +717,7 @@ int main() {
         /* Outside the ball. Not a coincidence question: the point is off the
          * manifold and no distance exists, so the producer returns NULL. */
         const double out_of_ball[3] = { 1.5, 0.0, 0.0 };
-        Run r = run_single(out_of_ball, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run r = run_single(out_of_ball, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         report("refuses a point outside the Poincare ball", !r.ok);
     }
     {
@@ -603,7 +734,7 @@ int main() {
         /* Just inside the cut locus still answers, so the refusal above is a
          * boundary and not a blanket. */
         const double a[3] = { 1.0, 0.0, 0.0 };
-        const double b[3] = { -0.99999, 0.00447, 0.0 };  /* theta ~ pi - 4.5e-3 */
+        const double b[3] = { -std::cos(4.5e-3), std::sin(4.5e-3), 0.0 };
         Run r = run_single(a, b, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
         bool finite = r.ok;
         for (size_t i = 0; i < r.gx.size() && finite; ++i)
@@ -611,8 +742,51 @@ int main() {
         report("still answers just inside the sphere's cut locus", finite);
     }
     {
+        const double x[3] = { 2.0, 0.0, 0.0 };
+        const double y[3] = { 0.0, 3.0, 0.0 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        report("audit: off-sphere inputs are refused, not projected", !r.ok);
+    }
+    {
+        const double x[3] = { 1.0, 0.0, 0.0 };
+        const double eps = 1e-6;
+        const double y[3] = { -std::cos(eps), std::sin(eps), 0.0 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        const double theta = std::acos(-1.0) - eps;
+        double expected = theta * theta;
+        double drel = std::fabs(r.d2 - expected) / (1.0 + expected);
+        bool ok = r.ok && drel < 1e-14 &&
+                  std::fabs(r.gx[0]) < 1e-12 &&
+                  std::fabs(r.gx[1] + 2.0 * theta) < 1e-12;
+        char detail[128];
+        std::snprintf(detail, sizeof detail, "d2 %.17g rel %.3e gx1 %.17g",
+                      r.d2, drel, r.gx[1]);
+        report("audit: differentiable points arbitrarily near antipode answer", ok,
+               detail);
+    }
+    {
+        const double x[1] = { 0.0 };
+        const double y[1] = { 3.0 };
+        eshkol_manifold_factor_t f = {
+            ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 1, 0.0, 0.0 };
+        Run r = run_product(x, y, 1, &f, 1);
+        report("audit: zero factor weight contributes exact zero", r.ok &&
+               r.d2 == 0.0 && all_exactly(r.gx, 0.0) && all_exactly(r.gy, 0.0));
+    }
+    {
+        Run neg = run_single(kEucX, kEucY, 3,
+                             ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0, -0.7);
+        Run three = run_single(kEucX, kEucY, 3,
+                               ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0, 3.0);
+        bool ok = neg.ok && three.ok;
+        for (size_t i = 0; i < 3 && ok; ++i)
+            ok = neg.gx[i] == -0.7 * (2.0 * (kEucX[i] - kEucY[i])) &&
+                 three.gx[i] == 3.0 * (2.0 * (kEucX[i] - kEucY[i]));
+        report("audit: upstream cotangent scales both backward rules", ok);
+    }
+    {
         eshkol_manifold_factor_t bad[2] = {
-            { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, 1.0, 1.0 },
+            { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, -1.0, 1.0 },
             { ESHKOL_SPACE_FORM_EUCLIDEAN,  0, 2, 0.0, 1.0 },
         };
         Run r = run_product(kProdX, kProdY, 7, bad, 2);   /* 2+2 != 7 */
@@ -632,8 +806,8 @@ int main() {
 
     /* ---- 8. finite differences, last ------------------------------------ */
     {
-        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, 1.0, 1.0 };
-        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, -1.0, 1.0 };
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         double w = fd_max_rel(kBallX, kBallY, 3, &f, 1, r.gx, 1e-6);
         char detail[96];
         std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
@@ -642,10 +816,11 @@ int main() {
     {
         eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_SPHERICAL, 0, 3, 1.0, 1.0 };
         Run r = run_single(kSphX, kSphY, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
-        double w = fd_max_rel(kSphX, kSphY, 3, &f, 1, r.gx, 1e-6);
+        double w = fd_max_rel_projected_x(kSphX, kSphY, 3, &f, 1, r.gx, 1e-6);
+        double wy = fd_max_rel_y(kSphX, kSphY, 3, &f, 1, r.gy, 1e-6);
         char detail[96];
-        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
-        report("FD: spherical", w < 1e-8, detail);
+        std::snprintf(detail, sizeof detail, "x %.3e, y %.3e", w, wy);
+        report("FD: spherical x and y on the sphere", w < 1e-8 && wy < 1e-8, detail);
     }
     {
         eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 3, 0.0, 1.0 };
@@ -657,10 +832,11 @@ int main() {
     }
     {
         Run r = run_product(kProdX, kProdY, 7, kProdF, 3);
-        double w = fd_max_rel(kProdX, kProdY, 7, kProdF, 3, r.gx, 1e-6);
+        double w = fd_max_rel_projected_x(kProdX, kProdY, 7, kProdF, 3, r.gx, 1e-6);
+        double wy = fd_max_rel_y(kProdX, kProdY, 7, kProdF, 3, r.gy, 1e-6);
         char detail[96];
-        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
-        report("FD: product H2 x S2 x R2", w < 1e-8, detail);
+        std::snprintf(detail, sizeof detail, "x %.3e, y %.3e", w, wy);
+        report("FD: product H2 x S2 x R2, x and y", w < 1e-8 && wy < 1e-8, detail);
     }
     {
         /* FD AT COINCIDENCE. A central difference here steps to x +/- h, both
@@ -669,8 +845,8 @@ int main() {
          * place FD agrees with the exact answer for the wrong reason, and
          * saying so is cheaper than letting a reader assume it was the check
          * that carried the case. Checks 2 and 5 are what carry it. */
-        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, 1.0, 1.0 };
-        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, -1.0, 1.0 };
+        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
         double w = fd_max_rel(kBallX, kBallX, 3, &f, 1, r.gx, 1e-6);
         char detail[96];
         std::snprintf(detail, sizeof detail, "max rel = %.3e", w);

@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AG(8,3). The examples are discovered by the existing examples test suite and
   document the exact arithmetic and AD verification boundaries.
 
+  The bridge uses signed sectional curvature: `K < 0` is the Poincare ball,
+  `K = 0` is Euclidean, and `K > 0` is spherical. Form/sign mismatches,
+  non-finite inputs, off-manifold spherical points, and the actual spherical
+  antipode are refused. Near-boundary hyperbolic pairs use the shared stable
+  `asinh`/log-map core, and zero product weights contribute exactly zero.
+
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
   maps that id to a `SourceSpan` — the first column of the

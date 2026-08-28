@@ -27,10 +27,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <vector>
 
 #include "eshkol/eshkol.h"
 #include "eshkol/logger.h"
 #include "eshkol/bridge/space_form.h"
+#include "eshkol/backend/riemannian_core.h"
 
 /*******************************************************************************
  * Runtime allocation surface
@@ -89,26 +91,6 @@ void ensure_grad(ad_node_t* n) {
                                                count * sizeof(double));
 }
 
-/** @brief `artanh(t)/t`, the smooth even function behind the ball formulas.
- *
- *  `A(0) = 1` exactly. For `t` small enough that `artanh(t)` returns `t`
- *  unchanged the quotient is 1 to the last bit, so no series expansion is
- *  needed — only the `t == 0` case, where the quotient is `0/0`. */
-double artanh_over_t(double t) {
-    if (t == 0.0) return 1.0;
-    return std::atanh(t) / t;
-}
-
-/** @brief `theta/sin(theta)` expressed through the chord, for the sphere.
- *
- *  Given `sn = sin(theta)` and `theta` itself, this is a plain quotient
- *  everywhere except `sn == 0`, which is coincidence and where the limit is 1.
- */
-double theta_over_sin(double theta, double sn) {
-    if (sn == 0.0) return 1.0;
-    return theta / sn;
-}
-
 /*******************************************************************************
  * Single-factor kernels
  *
@@ -127,182 +109,97 @@ struct SfPair {
     bool   ok;          /* false: outside the model / past the cut locus */
 };
 
-/** @brief Flat `R^n`. `d^2 = |x-y|^2`, `grad_x = 2(x-y)`, exact to fp. */
-SfPair euclidean_sq(const double* x, const double* y, size_t n,
-                    double* grad_x, double* grad_y) {
-    double d2 = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        double delta = x[i] - y[i];
-        d2 += delta * delta;
-        if (grad_x) grad_x[i] =  2.0 * delta;
-        if (grad_y) grad_y[i] = -2.0 * delta;
+/** @brief Validate the redundant public form/K pair. */
+bool valid_form_curvature(int form, double K) {
+    if (!std::isfinite(K)) return false;
+    switch (form) {
+        case ESHKOL_SPACE_FORM_EUCLIDEAN:  return K == 0.0;
+        case ESHKOL_SPACE_FORM_HYPERBOLIC: return K < 0.0;
+        case ESHKOL_SPACE_FORM_SPHERICAL:  return K > 0.0;
+        default: return false;
     }
-    return SfPair{ d2, true };
 }
 
-/**
- * @brief `H^n` in the Poincare ball of curvature `-c`.
- *
- * Written entirely in `delta = y - x` so coincidence is reached by `delta`
- * going to zero rather than by two `O(1)` quantities cancelling. The two
- * identities that make this possible:
- *
- *     den   = (1-c|x|^2)(1-c|y|^2) + c|delta|^2      [ = the Mobius denominator
- *                                                       1 - 2c<x,y> + c^2|x|^2|y|^2,
- *                                                       but with every term
- *                                                       positive ]
- *     u     = (-x) (+)_c y = (alpha*delta - c*D2*x) / den
- *     |u|^2 = D2 / den                                [ exact ]
- *
- * The second is the standard expansion of Mobius addition with the `x` terms
- * collected; the third follows from `d = (2/sqrt c) artanh(sqrt c |u|)` and
- * `d = (1/sqrt c) arcosh(1 + 2c D2/(alpha beta))` being the same number.
- *
- * Then `d^2 = 4 A^2 D2 / den` with `A = artanh(t)/t`, `t = sqrt(c D2/den)`,
- * `log_x(y) = alpha * A * u`, and, since the ball metric is conformal with
- * `lambda_x = 2/alpha`,
- *
- *     grad_x d^2 = lambda_x^2 * (-2 log_x(y)) = -(8A/(alpha*den)) * num_x
- *
- * where `num_x = alpha*delta - c*D2*x`. Nothing in that chain divides by
- * anything that vanishes at `x == y`: `den >= alpha*beta > 0` strictly inside
- * the ball, and `A(0) = 1`.
- */
-SfPair hyperbolic_sq(const double* x, const double* y, size_t n, double c,
-                     double* grad_x, double* grad_y) {
-    double x2 = 0.0, y2 = 0.0, D2 = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        x2 += x[i] * x[i];
-        y2 += y[i] * y[i];
-        double delta = y[i] - x[i];
-        D2 += delta * delta;
-    }
-    double alpha = 1.0 - c * x2;
-    double beta  = 1.0 - c * y2;
-    if (!(alpha > 0.0) || !(beta > 0.0)) return SfPair{ 0.0, false };
+bool finite_point(const double* p, size_t n) {
+    if (!p) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (!std::isfinite(p[i])) return false;
+    return true;
+}
 
-    double den = alpha * beta + c * D2;
-    /* den > 0 whenever alpha and beta are, so this is a structural check that
-     * a NaN upstream has not made it here, not a clamp on a real zero. */
-    if (!(den > 0.0)) return SfPair{ 0.0, false };
+const char* form_name(int form);
 
-    double t = std::sqrt(c * D2 / den);
-    if (!(t < 1.0)) return SfPair{ 0.0, false };   /* |u| at or past the boundary */
-    double A = artanh_over_t(t);
-
-    double d2 = 4.0 * A * A * D2 / den;
-
-    if (grad_x || grad_y) {
-        double kx = -8.0 * A / (alpha * den);
-        double ky = -8.0 * A / (beta  * den);
+/** @brief Direct stable squared distance using the shared Riemannian core. */
+bool space_form_sq_value(int form, double K, const double* x, const double* y,
+                         size_t n, double* out) {
+    if (!valid_form_curvature(form, K) || !finite_point(x, n) ||
+        !finite_point(y, n) || eshkol_rm_check_point(x, K, (int)n) != nullptr ||
+        eshkol_rm_check_point(y, K, (int)n) != nullptr) return false;
+    if (K == 0.0) {
+        double e = 0.0;
         for (size_t i = 0; i < n; ++i) {
-            double delta = y[i] - x[i];
-            if (grad_x) grad_x[i] = kx * (alpha * delta - c * D2 * x[i]);
-            /* By the symmetry d^2(x,y) = d^2(y,x): swap the roles, which flips
-             * delta's sign and exchanges alpha for beta. */
-            if (grad_y) grad_y[i] = ky * (-beta * delta - c * D2 * y[i]);
+            double d = x[i] - y[i];
+            e += d * d;
         }
+        *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA * e;
+        return true;
     }
-    return SfPair{ d2, true };
-}
-
-/**
- * @brief `S^n` of curvature `+c`, radius `R = 1/sqrt(c)`, ambient `R^{n+1}`.
- *
- * Arguments are normalised onto the sphere first. That is not a convenience:
- * it makes the forward 0-homogeneous in each argument, so its ambient gradient
- * has no radial component and is exactly the tangent vector `-2 log_x(y)`
- * rather than that plus a normal term the caller would have to project away.
- *
- * Cancellation-free again, this time through `1 - cos(theta) = D2/(2R^2)`:
- *
- *     u_x   = y - cos(theta) x = delta + (D2/(2R^2)) x       [ delta = y - x ]
- *     |u_x| = R sin(theta)
- *     theta = atan2(|u_x|/R, cos theta)                       [ well conditioned
- *                                                               at BOTH ends,
- *                                                               unlike arccos ]
- *     d^2   = R^2 theta^2
- *     grad_x d^2 = -(2R/|x|_raw) * log_x(y)
- *                = -(2R^2/|x|_raw) * (theta/|u_x|) * u_x
- *
- * `theta/|u_x| = (1/R) * theta/sin(theta)` tends to `1/R`, so the gradient
- * tends to `-(2R/|x|) u_x`, which goes to zero with `u_x`. Smooth.
- *
- * REFUSES near the antipode. That is the cut locus, `log_x` has no value there
- * because every direction is a minimising geodesic, and `d^2` genuinely has no
- * derivative — a different refusal from the coincidence one, and a correct one.
- */
-SfPair spherical_sq(const double* x, const double* y, size_t n, double c,
-                    double* grad_x, double* grad_y) {
-    double R = 1.0 / std::sqrt(c);
-
-    double nx2 = 0.0, ny2 = 0.0;
-    for (size_t i = 0; i < n; ++i) { nx2 += x[i] * x[i]; ny2 += y[i] * y[i]; }
-    if (!(nx2 > 0.0) || !(ny2 > 0.0)) return SfPair{ 0.0, false };
-    double nx = std::sqrt(nx2), ny = std::sqrt(ny2);
-
-    /* Projected points, on the sphere of radius R. */
-    double sx = R / nx, sy = R / ny;
-
-    double D2 = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        double delta = y[i] * sy - x[i] * sx;
-        D2 += delta * delta;
+    if (K < 0.0) {
+        double B = eshkol_rm_ball_param(-K);
+        double a = eshkol_rm_one_minus_bnorm2(x, B, (int)n);
+        double b = eshkol_rm_one_minus_bnorm2(y, B, (int)n);
+        double e = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            double d = x[i] - y[i];
+            e += d * d;
+        }
+        double rr = e / (a * b);
+        double psi = eshkol_rm_psi(B * rr, nullptr, nullptr);
+        *out = ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0 * rr * psi * psi;
+        return std::isfinite(*out);
     }
-    double half = D2 / (2.0 * R * R);      /* = 1 - cos(theta), exactly */
-    double ca = 1.0 - half;
-
-    /* |u_x| = |u_y| = R sin(theta): compute it from the cancellation-free u. */
+    double R = 1.0 / std::sqrt(K);
+    double cs = eshkol_rm_dot(x, y, (int)n) / (R * R);
     double un2 = 0.0;
     for (size_t i = 0; i < n; ++i) {
-        double delta = y[i] * sy - x[i] * sx;
-        double ui = delta + half * (x[i] * sx);
-        un2 += ui * ui;
+        double u = y[i] - cs * x[i];
+        un2 += u * u;
     }
-    double un = std::sqrt(un2);
-    double theta = std::atan2(un / R, ca);
+    double theta = std::atan2(std::sqrt(un2) / R, cs);
+    if (un2 == 0.0 && cs < 0.0) return false;
+    *out = R * R * theta * theta;
+    return std::isfinite(*out);
+}
 
-    if (theta >= ESHKOL_SPHERE_INJECTIVITY_FRACTION * M_PI) {
-        return SfPair{ 0.0, false };       /* at or past the cut locus */
-    }
-
-    double d2 = R * R * theta * theta;
-
+/** @brief Shared-core squared distance and coordinate gradients. */
+SfPair factor_sq(int form, double K, const double* x, const double* y, size_t n,
+                 double* grad_x, double* grad_y) {
+    double d2 = 0.0;
+    if (!space_form_sq_value(form, K, x, y, n, &d2)) return SfPair{0.0, false};
     if (grad_x || grad_y) {
-        /* theta/|u_x| = (1/R) * theta/sin(theta), finite and equal to 1/R at
-         * coincidence. Taking the limit here rather than dividing by |u_x| is
-         * what keeps the diagonal a value rather than a NaN. */
-        double sn = un / R;
-        double ratio = theta_over_sin(theta, sn) / R;   /* = theta/|u_x| */
-        double kx = -(2.0 * R * R / nx) * ratio;
-        double ky = -(2.0 * R * R / ny) * ratio;
-        for (size_t i = 0; i < n; ++i) {
-            double delta = y[i] * sy - x[i] * sx;
-            if (grad_x) grad_x[i] = kx * ( delta + half * (x[i] * sx));
-            if (grad_y) grad_y[i] = ky * (-delta + half * (y[i] * sy));
+        if (K == 0.0) {
+            for (size_t i = 0; i < n; ++i) {
+                double d = x[i] - y[i];
+                if (grad_x) grad_x[i] = 2.0 * d;
+                if (grad_y) grad_y[i] = -2.0 * d;
+            }
+        } else {
+            std::vector<double> log_x(n), log_y(n), scratch(n);
+            if (eshkol_rm_log_map(x, y, K, (int)n, log_x.data(), scratch.data()) ||
+                eshkol_rm_log_map(y, x, K, (int)n, log_y.data(), scratch.data()))
+                return SfPair{0.0, false};
+            double sx = (K < 0.0) ? eshkol_rm_lambda(x, K, (int)n) : 1.0;
+            double sy = (K < 0.0) ? eshkol_rm_lambda(y, K, (int)n) : 1.0;
+            sx *= sx;
+            sy *= sy;
+            for (size_t i = 0; i < n; ++i) {
+                if (grad_x) grad_x[i] = -2.0 * sx * log_x[i];
+                if (grad_y) grad_y[i] = -2.0 * sy * log_y[i];
+            }
         }
     }
-    return SfPair{ d2, true };
+    return SfPair{d2, true};
 }
-
-/** @brief Route one factor to its kernel. */
-SfPair factor_sq(int form, double c, const double* x, const double* y, size_t n,
-                 double* grad_x, double* grad_y) {
-    switch (form) {
-        case ESHKOL_SPACE_FORM_EUCLIDEAN:  return euclidean_sq(x, y, n, grad_x, grad_y);
-        case ESHKOL_SPACE_FORM_HYPERBOLIC: return hyperbolic_sq(x, y, n, c, grad_x, grad_y);
-        case ESHKOL_SPACE_FORM_SPHERICAL:  return spherical_sq(x, y, n, c, grad_x, grad_y);
-        default: return SfPair{ 0.0, false };
-    }
-}
-
-/** @brief Normalise a descriptor's curvature and weight to their defaults. */
-double eff_curvature(int form, double c) {
-    if (form == ESHKOL_SPACE_FORM_EUCLIDEAN) return 0.0;
-    double a = std::fabs(c);
-    return (a == 0.0) ? 1.0 : a;
-}
-double eff_weight(double w) { return (w == 0.0) ? 1.0 : w; }
 
 /**
  * @brief Validate a factor list against a point's element count.
@@ -327,10 +224,20 @@ size_t validate_factors(const eshkol_manifold_factor_t* f, size_t k, size_t n) {
                          i, (int)f[i].form);
             return 0;
         }
-        if (f[i].weight < 0.0) {
-            eshkol_error("space form: factor %zu has negative weight %g; "
-                         "d^2_M = sum_f w_f d^2_f is a metric only for w_f >= 0",
-                         i, f[i].weight);
+        if (f[i].reserved != 0) {
+            eshkol_error("space form: factor %zu has non-zero reserved field", i);
+            return 0;
+        }
+        if (!valid_form_curvature(f[i].form, f[i].curvature)) {
+            eshkol_error("space form: factor %zu has curvature %g inconsistent "
+                         "with form %s (Euclidean requires K=0, hyperbolic K<0, "
+                         "spherical K>0)", i, f[i].curvature,
+                         form_name(f[i].form));
+            return 0;
+        }
+        if (!std::isfinite(f[i].weight) || f[i].weight < 0.0) {
+            eshkol_error("space form: factor %zu has invalid weight %g; "
+                         "weights must be finite and non-negative", i, f[i].weight);
             return 0;
         }
         total += (size_t)f[i].dim;
@@ -362,9 +269,9 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
     size_t off = 0;
     for (size_t i = 0; i < k; ++i) {
         size_t dim = (size_t)factors[i].dim;
-        double c = eff_curvature(factors[i].form, factors[i].curvature);
-        double w = eff_weight(factors[i].weight);
-        SfPair r = factor_sq(factors[i].form, c, X + off, Y + off, dim,
+        double K = factors[i].curvature;
+        double w = factors[i].weight;
+        SfPair r = factor_sq(factors[i].form, K, X + off, Y + off, dim,
                              grad_x ? grad_x + off : nullptr,
                              grad_y ? grad_y + off : nullptr);
         if (!r.ok) {
@@ -407,113 +314,25 @@ const char* form_name(int form) {
 extern "C" bool eshkol_space_form_log_map(int form, double curvature,
                                           const double* x, const double* y,
                                           size_t n, double* out) {
-    if (!x || !y || !out || n == 0) return false;
-    double c = eff_curvature(form, curvature);
-
-    switch (form) {
-        case ESHKOL_SPACE_FORM_EUCLIDEAN:
-            for (size_t i = 0; i < n; ++i) out[i] = y[i] - x[i];
-            return true;
-
-        case ESHKOL_SPACE_FORM_HYPERBOLIC: {
-            /* log_x(y) = alpha * A * u, the same alpha/A/u hyperbolic_sq uses.
-             * Kept as its own evaluation so a caller checking
-             * grad_x d^2 == -2 lambda_x^2 log_x(y) is comparing two
-             * expressions, not one expression against itself. */
-            double x2 = 0.0, y2 = 0.0, D2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                x2 += x[i] * x[i];
-                y2 += y[i] * y[i];
-                double d = y[i] - x[i];
-                D2 += d * d;
-            }
-            double alpha = 1.0 - c * x2, beta = 1.0 - c * y2;
-            if (!(alpha > 0.0) || !(beta > 0.0)) return false;
-            double den = alpha * beta + c * D2;
-            if (!(den > 0.0)) return false;
-            double t = std::sqrt(c * D2 / den);
-            if (!(t < 1.0)) return false;
-            double A = artanh_over_t(t);
-            for (size_t i = 0; i < n; ++i)
-                out[i] = alpha * A * (alpha * (y[i] - x[i]) - c * D2 * x[i]) / den;
-            return true;
-        }
-
-        case ESHKOL_SPACE_FORM_SPHERICAL: {
-            double R = 1.0 / std::sqrt(c);
-            double nx2 = 0.0, ny2 = 0.0;
-            for (size_t i = 0; i < n; ++i) { nx2 += x[i]*x[i]; ny2 += y[i]*y[i]; }
-            if (!(nx2 > 0.0) || !(ny2 > 0.0)) return false;
-            double sx = R / std::sqrt(nx2), sy = R / std::sqrt(ny2);
-            double D2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                double d = y[i]*sy - x[i]*sx;
-                D2 += d * d;
-            }
-            double half = D2 / (2.0 * R * R);
-            double ca = 1.0 - half;
-            double un2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                double ui = (y[i]*sy - x[i]*sx) + half * (x[i]*sx);
-                un2 += ui * ui;
-            }
-            double un = std::sqrt(un2);
-            double theta = std::atan2(un / R, ca);
-            if (theta >= ESHKOL_SPHERE_INJECTIVITY_FRACTION * M_PI) return false;
-            double ratio = theta_over_sin(theta, un / R) / R;   /* theta/|u| */
-            for (size_t i = 0; i < n; ++i)
-                out[i] = (R * R) * ratio * ((y[i]*sy - x[i]*sx) + half * (x[i]*sx));
-            return true;
-        }
-
-        default:
-            return false;
-    }
+    if (!out || n == 0 || !valid_form_curvature(form, curvature) ||
+        !finite_point(x, n) || !finite_point(y, n) ||
+        eshkol_rm_check_point(x, curvature, (int)n) != nullptr ||
+        eshkol_rm_check_point(y, curvature, (int)n) != nullptr) return false;
+    std::vector<double> scratch(n);
+    return eshkol_rm_log_map(x, y, curvature, (int)n, out, scratch.data()) == nullptr;
 }
 
 extern "C" double eshkol_space_form_distance(int form, double curvature,
                                              const double* x, const double* y,
                                              size_t n) {
-    if (!x || !y || n == 0) return -1.0;
-    double c = eff_curvature(form, curvature);
-    switch (form) {
-        case ESHKOL_SPACE_FORM_EUCLIDEAN: {
-            double s = 0.0;
-            for (size_t i = 0; i < n; ++i) { double d = x[i]-y[i]; s += d*d; }
-            return std::sqrt(s);
-        }
-        case ESHKOL_SPACE_FORM_HYPERBOLIC: {
-            double x2 = 0.0, y2 = 0.0, D2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                x2 += x[i]*x[i]; y2 += y[i]*y[i];
-                double d = y[i]-x[i]; D2 += d*d;
-            }
-            double alpha = 1.0 - c*x2, beta = 1.0 - c*y2;
-            if (!(alpha > 0.0) || !(beta > 0.0)) return -1.0;
-            double den = alpha*beta + c*D2;
-            double t = std::sqrt(c * D2 / den);
-            if (!(t < 1.0)) return -1.0;
-            return (2.0 / std::sqrt(c)) * std::atanh(t);
-        }
-        case ESHKOL_SPACE_FORM_SPHERICAL: {
-            double R = 1.0 / std::sqrt(c);
-            double nx2 = 0.0, ny2 = 0.0;
-            for (size_t i = 0; i < n; ++i) { nx2 += x[i]*x[i]; ny2 += y[i]*y[i]; }
-            if (!(nx2 > 0.0) || !(ny2 > 0.0)) return -1.0;
-            double sx = R/std::sqrt(nx2), sy = R/std::sqrt(ny2);
-            double D2 = 0.0;
-            for (size_t i = 0; i < n; ++i) { double d = y[i]*sy - x[i]*sx; D2 += d*d; }
-            double half = D2 / (2.0*R*R);
-            double un2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                double ui = (y[i]*sy - x[i]*sx) + half*(x[i]*sx);
-                un2 += ui*ui;
-            }
-            return R * std::atan2(std::sqrt(un2)/R, 1.0 - half);
-        }
-        default:
-            return -1.0;
-    }
+    if (n == 0 || !valid_form_curvature(form, curvature) ||
+        !finite_point(x, n) || !finite_point(y, n) ||
+        eshkol_rm_check_point(x, curvature, (int)n) != nullptr ||
+        eshkol_rm_check_point(y, curvature, (int)n) != nullptr) return -1.0;
+    double out = -1.0;
+    if (eshkol_rm_distance(x, y, curvature, (int)n, &out) != nullptr)
+        return -1.0;
+    return out;
 }
 
 /*******************************************************************************
@@ -609,7 +428,7 @@ extern "C" ad_node_t* ad_product_squared_distance(
                      "— a point outside the model, or a separation at or beyond "
                      "the injectivity radius where no logarithm exists",
                      bad, form_name(factors[bad].form),
-                     eff_curvature(factors[bad].form, factors[bad].curvature));
+                     factors[bad].curvature);
         return nullptr;
     }
     return make_sqdist_node(tape, x, y, d2, factors, num_factors);

@@ -34,21 +34,21 @@
  * coincidence is reached by `delta` becoming zero rather than by two `O(1)`
  * quantities cancelling:
  *
- *   hyperbolic  (Poincare ball, curvature -c)
- *       alpha = 1 - c|x|^2, beta = 1 - c|y|^2, D2 = |delta|^2
- *       den   = alpha*beta + c*D2                    (all terms positive)
- *       u     = ((-x) (+)_c y) = (alpha*delta - c*D2*x) / den
- *       |u|^2 = D2 / den                             (exact identity)
- *       d^2   = 4 * A^2 * D2 / den,  A = artanh(t)/t, t = sqrt(c*D2/den)
- *       grad_x d^2 = -(8A/(alpha*den)) * (alpha*delta - c*D2*x)
+ *   hyperbolic  (Poincare ball, signed sectional curvature K < 0)
+ *       c = -K, B = c * ESHKOL_RM_LAMBDA0^2 / 4, and
+ *       P = (1-B|x|^2)(1-B|y|^2), E = |delta|^2
+ *       d^2 = ESHKOL_RM_LAMBDA0^2 * (E/P) * psi(B*E/P)^2,
+ *       psi(z) = asinh(sqrt(z))/sqrt(z), psi(0) = 1.
+ *       The shared Riemannian core evaluates this form and its log map with
+ *       full-relative-precision boundary denominators; it never rejects a
+ *       valid pair because an intermediate artanh argument rounded to 1.
  *
- *   spherical   (radius R = 1/sqrt(c), ambient R^{n+1})
- *       points are normalised to the sphere first, so the forward is
- *       0-homogeneous in each argument and its ambient gradient is exactly
- *       tangent — no projection step, and no normal component to explain
+ *   spherical   (signed sectional curvature K > 0, radius R = 1/sqrt(K))
+ *       points must already lie on the sphere within the shared core's
+ *       tolerance; invalid points are refused rather than projected.
  *       1 - cos(theta) = D2/(2R^2) exactly, u_x = delta + (D2/(2R^2))*x
  *       theta = atan2(|u_x|/R, cos theta),  d^2 = R^2 theta^2
- *       grad_x d^2 = -(2R^2/|x|) * (theta/|u_x|) * u_x
+ *       grad_x d^2 = -2 log_x(y), with the exact antipode refused.
  *
  *   euclidean
  *       d^2 = |delta|^2, grad_x = 2*(x - y). Exact to floating point, and
@@ -71,10 +71,10 @@
  *
  * Coincidence is fine. The CUT LOCUS is not: on `S^n` the antipode is at
  * distance `pi R`, `log_x` is undefined there (every direction is a minimising
- * geodesic), and `d^2` genuinely has no derivative. The spherical rule refuses
- * beyond `injectivity_fraction * pi` rather than returning a member of the
- * subdifferential. `H^n` and `R^n` have infinite injectivity radius and refuse
- * only for arguments outside the model (a point on or beyond the ball
+ * geodesic), and `d^2` genuinely has no derivative. Every representable
+ * `theta < pi` is answered; only the actual/representationally singular
+ * antipode is refused. `H^n` and `R^n` have infinite injectivity radius and
+ * refuse only for arguments outside the model (a point on or beyond the ball
  * boundary).
  *
  */
@@ -107,13 +107,13 @@ typedef struct ad_node ad_node_t;
 typedef enum {
     /** Flat `R^n`. `d^2 = |x-y|^2`. Curvature ignored. */
     ESHKOL_SPACE_FORM_EUCLIDEAN = 0,
-    /** `H^n` in the Poincare ball model of curvature `-c`, `c > 0`. Points
-     *  live in the open ball of radius `1/sqrt(c)`. */
+    /** `H^n` in the Poincare ball model of signed sectional curvature `K < 0`.
+     *  Points live in the open ball of radius `1/sqrt(-K)` at the shipped
+     *  chart normalisation. */
     ESHKOL_SPACE_FORM_HYPERBOLIC = 1,
-    /** `S^n` of curvature `+c`, `c > 0`, as the sphere of radius `1/sqrt(c)`
-     *  in the ambient `R^{n+1}`. `dim` counts AMBIENT coordinates, so the
-     *  round 2-sphere is `dim = 3`. Arguments are normalised onto the sphere
-     *  by the forward. */
+    /** `S^n` of signed sectional curvature `K > 0`, as the sphere of radius
+     *  `1/sqrt(K)` in ambient `R^{n+1}`. `dim` counts AMBIENT coordinates,
+     *  so the round 2-sphere is `dim = 3`. Arguments must already be on it. */
     ESHKOL_SPACE_FORM_SPHERICAL = 2
 } eshkol_space_form_t;
 
@@ -133,14 +133,12 @@ typedef struct {
     int32_t reserved;
     /** Number of AMBIENT coordinates this factor owns. */
     int64_t dim;
-    /** `|c| > 0`, the curvature magnitude. Sign is implied by `form`. Ignored
-     *  for `ESHKOL_SPACE_FORM_EUCLIDEAN`. A value of `0.0` on a curved factor
-     *  is read as `1.0`, matching the convention the rest of the bridge uses.
-     */
+    /** Signed sectional curvature `K`: exactly `0` for Euclidean, negative for
+     *  hyperbolic, and positive for spherical. A form/sign mismatch and every
+     *  non-finite value are rejected. */
     double curvature;
-    /** `w_f >= 0` in `d^2_M = sum_f w_f d^2_f`. Rescales factor `f`'s metric.
-     *  A value of `0.0` is read as `1.0` so a zero-initialised descriptor is
-     *  the unweighted product. */
+    /** Finite `w_f >= 0` in `d^2_M = sum_f w_f d^2_f`. Zero is a genuine
+     *  zero-weight factor and contributes neither value nor gradient. */
     double weight;
 } eshkol_manifold_factor_t;
 
@@ -158,10 +156,12 @@ typedef struct {
  * @param x          first point
  * @param y          second point
  * @param form       one of `eshkol_space_form_t`
- * @param curvature  `|c|`; ignored when `form` is Euclidean, `0.0` reads as 1
+ * @param curvature  signed sectional curvature `K`; its sign must agree with
+ *                   `form` (Euclidean 0, hyperbolic negative, spherical positive)
  * @return the node, or NULL if the arguments are rejected (mismatched shapes,
- *         a point outside the Poincare ball, a spherical argument at the
- *         origin). Rejection is reported through `eshkol_error`.
+ *         a point outside the Poincare ball, a spherical argument not on the
+ *         required sphere, an antipodal pair, non-finite input, or a
+ *         form/curvature mismatch). Rejection is reported through `eshkol_error`.
  */
 ad_node_t* ad_squared_distance(
     ad_tape_t* tape,
@@ -243,12 +243,11 @@ double eshkol_space_form_distance(
  * @brief Fraction of `pi` beyond which the spherical rule refuses.
  *
  * The cut locus of `S^n` is the antipode, at `theta = pi`. `log_x` has no
- * value there and `d^2` no derivative, so a pair at or past
- * `ESHKOL_SPHERE_INJECTIVITY_FRACTION * pi` is refused rather than
- * approximated. The margin below `pi` is where `sin(theta)` has lost enough
- * significance that the returned gradient would be dominated by rounding.
+ * value there and `d^2` no derivative. The implementation refuses only the
+ * actual/representationally singular antipode; every representable `theta <
+ * pi` is answered.
  */
-#define ESHKOL_SPHERE_INJECTIVITY_FRACTION 0.999999
+#define ESHKOL_SPHERE_INJECTIVITY_FRACTION 1.0
 
 #ifdef __cplusplus
 }
