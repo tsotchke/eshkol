@@ -341,7 +341,21 @@ entries:
       cross-checked for EXACT equality against (hessian f point) on the same
       build, the unnested curried gradient is re-asserted afterwards so the
       single-pass reverse arm is shown undisturbed, and the residual derived-
-      point shape is asserted to raise.
+      point shape is asserted to raise. 23/23 checks ok on both lanes. Whole-
+      suite regression check at this SHA: ctest 217/218 (the one failure,
+      first_class_builtins_vm_smoke — `char-alphabetic?` / `char-numeric?` on
+      the VM — reproduces identically with the eshkol-vm-standalone-test binaries
+      of three unrelated branches on the same host, so it is pre-existing and
+      untouched by this change); the 20 AD/autodiff/forward-over-reverse/
+      exact-point lanes are 20/20.
+    vm_parity: >-
+      MEASURED on the same build (eshkol-vm-standalone-test, vm-src axis): the
+      VM does NOT silently answer zeros for this composition — it raises
+      `*: expected numeric operands`. So closing the native side introduces no
+      new silent divergence; it is a native-only capability, already covered by
+      the existing op:GRADIENT row in tests/vm_parity/PARITY.tsv ("higher-order
+      nesting stays native-only") and by op:JACOBIAN/op:HESSIAN, both already
+      recorded as gaps. No PARITY.tsv change needed, and none made.
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, pr-record-416]
     notes: >-
