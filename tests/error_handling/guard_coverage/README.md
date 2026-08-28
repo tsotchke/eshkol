@@ -30,19 +30,55 @@ Two AOT optimization levels are separate axes deliberately: the differential
 finding this corpus inherits was an **optimization-level-dependent** crash that
 `-O0` alone could never have reproduced.
 
-## What the first run found
+## What the first runs found
 
-Both defects were wrong on native **and** on the VM, which is exactly why no
-differential had ever seen them:
+Ten defects. The first four are **fixed in the same change** and are now green
+on all five axes; the rest are filed under `found/` (below).
+
+Every one of the fixed four was wrong on native **and** on the VM — which is
+exactly why no differential had ever seen them:
 
 * **SW-78** — `(test => receiver)`, the R7RS arrow clause, was not recognised by
-  either clause reader. Native code-generated the literal identifier `=>` as a
-  variable reference; the VM compiled it as an ordinary body expression. (The
-  same gap existed in the VM's `cond`, whose native counterpart has had `=>`
-  since ESH-0109 closed.)
+  any of the three clause readers. Native code-generated the literal identifier
+  `=>` as a variable reference; both bytecode compilers compiled it as an
+  ordinary body expression. (The same gap existed in the VM's `cond`, whose
+  native counterpart has had `=>` since ESH-0109 closed.)
 * **SW-79** — the test-only clause `(test)`, whose value R7RS defines as the
   test's own value, left the result unset: native substituted `'()` and the VM
   returned whatever happened to be on the stack.
+* **SW-82** — an **implicit re-raise lost its payload**. `eshkol_raise()` keeps a
+  caller-supplied value only while `g_raised_value_set_by_user` is set and
+  clears that flag on every raise, so the guard's own fall-through re-raise took
+  the fallback branch and overwrote the payload with the exception struct. An
+  enclosing guard inspecting its variable got the opaque `#<exception>` instead
+  of what was raised — `(guard (o (#t o)) (guard (i ((number? i) "n")) (raise
+  "payload")))` answered `#<exception>`, exit 0.
+* **SW-83** — a **closure built inside a guard clause pointed at the wrong code**.
+  The handler is inlined into its parent chunk, but only the handler's own entry
+  pc was relocated; a nested `lambda`'s pc constant was copied verbatim, so the
+  closure ran whatever sat at that unrelocated offset. `(define f (guard (e (#t
+  (lambda (x) (+ x 100)))) (raise 1)))` then `(f 1)` answered `1`. `=>` is what
+  made it loud: an arrow clause calls the closure immediately, so a lambda
+  receiver re-entered the top of the program until `STACK OVERFLOW`.
+
+## `found/` — real defects this gate found, filed, not yet fixed
+
+Same convention as `tests/vm_parity/found/`: one minimal repro per defect, with
+the expected and observed values in its header. These are **not** run by the
+gate; they are the work queue.
+
+| repro | axes | ledger |
+|---|---|---|
+| `weh_handler_return_swallows_condition.esk` | **all five** | SW-84 |
+| `vm_setbang_global_from_guard_clause_lost.esk` | vm-src, vm-eskb | SW-85 |
+| `vm_internal_defines_in_guard_body.esk` | vm-src, vm-eskb | SW-86 |
+| `native_setbang_on_guard_variable_rejected.esk` | jit, aot-o0, aot-o2 | SW-87 |
+| `guard_wind_multi_module_dominance.esk` | jit, aot-o0, aot-o2 | SW-88 |
+| `vm_eskb_wind_order_vs_clause.esk` | vm-eskb only | SW-89 |
+
+The first one is the notable one: it is wrong **identically on every axis**, so
+no amount of native-vs-VM differencing could ever have surfaced it. That is the
+whole argument for grading against a golden.
 
 ## Layout
 

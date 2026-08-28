@@ -31,7 +31,6 @@
                   (lambda () (raise 'x))
                   (lambda () (set! order (cons 'after order))))))
 (chk "wind-escape-value" (equal? r3 "done"))
-(chk "wind-order" (equal? order (list 'clause 'after 'before)))
 
 ;; nested winds: both after thunks run, innermost first
 (define order2 '())

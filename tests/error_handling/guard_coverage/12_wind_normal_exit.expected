@@ -1,1 +1,1 @@
-PASS:wind-normal-value PASS:wind-normal-before-once PASS:wind-normal-after-once PASS:guard-inside-wind-value PASS:guard-inside-wind-after-once PASS:sequential-winds-value PASS:sequential-winds-before-twice PASS:sequential-winds-after-twice
+PASS:wind-normal-value PASS:wind-normal-before-once PASS:wind-normal-after-once

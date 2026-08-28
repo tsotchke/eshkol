@@ -1,0 +1,19 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-85.
+;; VM ONLY (vm-src and vm-eskb); both native axes are correct.
+;;
+;; A `set!` to a top-level variable performed inside a guard CLAUSE body does
+;; not stick: the write is visible while still inside the clause, but the
+;; top-level binding is unchanged once the guard returns. The guard handler is
+;; compiled as its own closure with its own frame, and the write lands there
+;; instead of in the enclosing binding.
+;;
+;; This is silent: the clause returns the right value, so nothing signals that
+;; the side effect was dropped.
+;;
+;; want: caught 1
+;; got:  caught 0     (on vm-src and vm-eskb)
+(define fired 0)
+(display (guard (e (#t (set! fired (+ fired 1)) "caught")) (raise 7)))
+(display " ")
+(display fired)
+(newline)

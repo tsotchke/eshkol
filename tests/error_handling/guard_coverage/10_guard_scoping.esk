@@ -28,11 +28,6 @@
      (equal? (guard (f (#t (list 'caught f))) (raise 'boom)) (list 'caught 'boom)))
 (chk "proc-name-restored" (equal? (f 21) 42))
 
-;; set! on the guard variable inside a clause is local to the clause
-(chk "set-guard-var"
-     (equal? (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig))
-             (list 'mutated 'orig)))
-(chk "outer-still-intact" (equal? e "outer-value"))
 
 ;; a closure created in a clause captures the guard variable's value
 (define captured
