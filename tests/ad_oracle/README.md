@@ -78,7 +78,7 @@ operators — the LLVM verifier's `PtrToInt source must be pointer (ptrtoint
 %eshkol_tagged_value %a to i64)` when the AD lambda captured a LOCAL binding).
 Re-measured on both `-r` and AOT and on the bytecode VM: it does not
 reproduce. `found/esh0097_local_capture_vector_ad_ptrtoint.esk` prints the
-`#(4.42 0)` its own header names as the expected value, and the shapes are
+`#(4.42 0)` its own header names as the expected value; the shapes are
 gated by `tests/ad/captured_local_vector_param_test.esk` (CTest, JIT + AOT),
 `tests/ad/sweep_c_regressions_test.esk` and the captured-local section of
 `tests/vm_parity/corpus/32_gradient_reverse.esk`. Ledger entry LE-06.
