@@ -63,7 +63,7 @@ The full release-gate record and exact platform matrix are in
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
-- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on the LLVM backend. The bytecode VM's `divergence`/`curl` are still central-difference approximations (`h=1e-7`) — see [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — corrected 2026-08-25, conformity audit item f1
+- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on **both** engines: the LLVM backend and the bytecode VM. The VM's `divergence` and `curl` were central-difference approximations (`h=1e-7`) through v1.3.4-evolve and became exact forward-dual computations in v1.3.5-evolve (#487). Every AD operator now declares its differentiation carrier per engine in `.icc/ad-carrier-manifest.yaml`, and `scripts/gate_ad_shared_node_model.py` re-derives each declaration from the emitted source rather than trusting it, so a finite difference cannot back a VM-supported operator undetected
 - **Zero-overhead abstractions** - Arena allocation is O(1), no runtime penalties for safety. Ownership annotations (`owned`/`move`/`borrow`) and `(the <type> expr)` ascription are erased at compile time today, but this is *not yet* backed by discharged type-level proofs — no proof obligation is checked before erasure (`BorrowChecker` has zero production callers; `(the ...)` is a trusted no-op). Proof-carrying erasure is a build item under ADR-0004 (target v1.9.0/v2.0) — corrected 2026-08-25, conformity audit item f3
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
@@ -225,7 +225,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 43,232 lines — corrected 2026-08-25 from "21 specialized … components", conformity audit item f6
+- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 43,959 lines — corrected 2026-08-25 from "21 specialized … components", conformity audit item f6
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 

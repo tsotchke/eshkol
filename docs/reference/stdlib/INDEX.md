@@ -1,4 +1,4 @@
-# Eshkol Standard Library — v1.3.4 API Reference Index
+# Eshkol Standard Library — v1.3.5 API Reference Index
 
 Complete module-by-function map of the Eshkol standard library. Every symbol
 below links to a per-module reference page in this directory; every documented

@@ -557,7 +557,7 @@ block ordinary use.
   (`scripts/run_vm_parity.sh`) is **188/188** on the release cut, remeasured
   2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; corrects
   an earlier "140/140" figure — the corpus has grown, conformity audit item
-  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **328**
+  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **323**
   further names that native resolves and the VM does not, entirely outside
   the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
   see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit

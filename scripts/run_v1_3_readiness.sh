@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
-ICC_BIN="${ICC_BIN:-/Users/tyr/Desktop/infinite_context_coder/bin/icc}"
+ICC_BIN="${ICC_BIN:-icc}"
 ICC_REPO="${ICC_REPO:-eshkol_lang}"
 if eshkol_durable_enabled; then
   READINESS_WORK="$(eshkol_durable_prepare_dir v1-3-readiness)" || exit $?

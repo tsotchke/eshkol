@@ -1,6 +1,6 @@
 # Runtime Configuration
 
-**Status:** Production (v1.2.1-scale)
+**Status:** Production (v1.3.5-evolve)
 **Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
@@ -167,8 +167,9 @@ The maximum recursion depth (`ESHKOL_MAX_STACK` / `ESHKOL_DEFAULT_MAX_STACK_DEPT
 Eshkol searches for a TOML configuration file in these locations (first found wins):
 
 1. `./.eshkol.toml` -- project-local configuration
-2. `~/.config/eshkol/config.toml` -- XDG standard location
-3. `~/.eshkol/config.toml` -- home directory fallback
+2. `./eshkol.toml` -- project-local, no leading dot
+3. `~/.config/eshkol/config.toml` -- XDG standard location
+4. `~/.eshkol/config.toml` -- home directory fallback
 
 ### Example Config File
 
@@ -178,7 +179,7 @@ Eshkol searches for a TOML configuration file in these locations (first found wi
 [runtime]
 max_heap = "2G"
 timeout_ms = 60000
-max_stack_depth = 200000
+max_stack = 200000
 
 [logging]
 level = "info"
@@ -193,10 +194,17 @@ enable_gpu = false
 dump_ast = false
 dump_ir = false
 
-[types]
-strict = false
-unsafe = false
+[features]
+strict_mode = false
+enable_warnings = true
+color_output = true
 ```
+
+`[types] strict` / `[types] unsafe` are documented as configuration but are not
+yet read by `apply_config_section` in `lib/core/config.cpp`, which handles
+`runtime`, `logging`, `optimization`, `debug` and `features` only; today
+`--strict-types` and the unsafe flag are CLI-only. Wiring the section is an
+open build item.
 
 ---
 
@@ -228,7 +236,10 @@ bool eshkol_is_timed_out(void);
 uint64_t eshkol_get_remaining_time_ms(void);
 ```
 
-The default timeout is 30 seconds. Set `ESHKOL_TIMEOUT_MS=0` for unlimited execution.
+The execution timeout is opt-in: with `ESHKOL_TIMEOUT_MS` unset there is no
+timeout at all. Setting the variable arms the watchdog; `ESHKOL_TIMEOUT_MS=0`
+arms it with no ceiling, and any other value sets the ceiling in milliseconds
+(30000 when the variable is set but unparseable).
 
 ### Stack Depth
 

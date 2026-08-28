@@ -24,7 +24,7 @@ if the chosen backend fails, execution falls through to the next-best option.
 
 | File | Lines | Role |
 |------|-------|------|
-| `lib/backend/blas_backend.cpp` | 1,281 | Cost model, dispatch, SIMD/BLAS |
+| `lib/backend/blas_backend.cpp` | 1,316 | Cost model, dispatch, SIMD/BLAS |
 | `lib/backend/gpu/gpu_memory.mm` | 4,485 | Metal compute pipeline (Obj-C++) |
 | `lib/backend/gpu/metal_softfloat.h` | 4,469 | SF64 IEEE 754 f64 emulation (MSL) |
 | `lib/backend/gpu/gpu_memory_cuda.cpp` | 1,576 | CUDA backend (cuBLAS + kernels) |
@@ -1076,20 +1076,57 @@ Two separate things are gated, and it matters which one you're looking at:
   overriding only `CMAKE_CUDA_HOST_COMPILER` can mix libstdc++ ABI and search
   paths at final link time. These jobs run on GitHub-hosted runners, which have no GPU. The
   real backend compiles, but at runtime `eshkol_gpu_init()` finds zero devices, so
-  `tests/gpu/*.esk` all execute their CPU fallback path. These lanes
+  the real `tests/gpu/*.esk` tests all execute their CPU fallback path (the
+  must-fail canary is excluded from the graded loop). These lanes
   prove the GPU backend *builds*; they do not exercise a single GPU
   kernel.
 
 - **Execution** (`.github/workflows/gpu-execution-gate.yml`,
   `tests/gpu/gpu_correctness_gate.sh`): builds Eshkol twice — once with
   GPU acceleration on, once off — and diffs GPU-vs-CPU output on the
-  same differentiable workload within a numeric tolerance. This is the
-  gate that actually proves a Metal or CUDA kernel ran and produced a
-  correct answer. It exits 0 with a SKIP message on any host without a
-  real GPU device (which includes essentially all GitHub-hosted
-  runners), so it only ever produces a verdict where one is possible.
+  same differentiable workload. The tolerance is `GPU_GATE_TOL`, default
+  **1e-9** (`tests/gpu/gpu_correctness_gate.sh:71`), tightened from 1e-4
+  in v1.3.5-evolve (#501). That figure is not arbitrary: measured
+  Metal-vs-CPU divergence is 0 across every probe, the K=512 accumulation
+  noise floor is around 6e-14, and a real GPU-kernel defect corrupts by
+  1e-2 to 1e0, so 1e-9 sits well below the smallest real defect and well
+  above the noise. This is the gate that actually proves a Metal or CUDA
+  kernel ran and produced a correct answer. It exits 0 with a SKIP
+  message on any host without a real GPU device (which includes
+  essentially all GitHub-hosted runners), and a SKIP deliberately writes
+  **no** trace record at all, so an absent GPU is recorded as unmeasured
+  rather than credited as a pass (#472).
   It needs a self-hosted runner carrying `[self-hosted, gpu]` labels to
   run in CI; until one is registered it stays queued rather than
   failing anything. It can also be run by hand on any workstation with
   a real GPU (Metal on any Mac, CUDA with an NVIDIA driver present —
   including the Jetson AGX Xavier setup in `nix/jetson/`).
+
+**The gate has teeth, and proves it on every run.** Until v1.3.5-evolve (#501)
+this gate was vacuous: its probes printed diagnostics without asserting, and
+its tolerance was loose enough to accept anything. Three mechanisms now keep it
+honest.
+
+- **Verdict contract.** The exit code is the verdict. A probe that produces no
+  verdict at all is graded FAIL, not skipped.
+- **A must-fail canary.** `tests/gpu/gate_canary_must_fail.esk` asserts
+  something permanently false, and `scripts/run_gpu_tests.sh` forces the entire
+  run red if that probe exits 0, fails to compile, is missing, or exits
+  non-zero without emitting a `FAIL:` marker — checked before the ordinary
+  failure count, so a green canary cannot be outvoted by the passing tests
+  around it. Do not "fix" that file: a green canary is not a fixed test, it is
+  a broken verdict pipeline. The Windows judge applies the same inversion to
+  any `*_must_fail.esk`.
+- **A trace-contract self-test.** `gpu_correctness_gate.sh --self-test` runs
+  with no build and no GPU, and asserts that a SKIP writes no trace directory,
+  that a failure writes exactly one FAIL record, and that a PASS record does
+  not also read as FAIL. This is what stops the `gpu-execution` oracle target
+  from reading a SKIP as ready.
+
+Of the 19 files in `tests/gpu/`, 18 are real tests and one is the canary.
+
+Note for anyone reading the workflow: `.github/workflows/gpu-execution-gate.yml`
+still pins `GPU_GATE_TOL: '1e-4'`, which overrides the script default in the
+only lane that runs the gate. Flipping that lane to the script's own 1e-9 is
+tracked as a follow-up; until it lands, the tightened default is what a manual
+run enforces, not what CI enforces.
