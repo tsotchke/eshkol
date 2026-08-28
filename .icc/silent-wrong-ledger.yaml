@@ -6443,3 +6443,88 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-80
+    bucket: DOC-DEBT
+    status: closed
+    closed_at: "branch test/guard-coverage-esh-0101"
+    closed_by: "branch test/guard-coverage-esh-0101"
+    title: "docs/reference/language/error-handling.md described `raise-continuable` as VM-only and the error-object accessors as native-unavailable; both claims are inverted or unfounded, and the same page attributed two closed differential findings to ESH-0101/ESH-0102, which denote entirely different defects"
+    repro: >-
+      Read docs/reference/language/error-handling.md and
+      docs/reference/language/INDEX.md against the compiler sources. Three
+      independent claims, none of which any build supports:
+      (1) "raise-continuable ... is not available in the native path (Unknown
+      function); it is VM-only." The name occurs exactly ONCE in lib/ — as a
+      string in iterScopeBlacklist() in lib/backend/llvm_codegen.cpp, a list of
+      names whose control flow may skip a scope end. It is in no builtin table
+      (neither lib/backend/eshkol_compiler.c BUILTINS[] nor
+      lib/backend/eshkol_vm.c BUILTINS[]), no special-form dispatch
+      (lib/backend/vm_compiler.c handles only 2-child `raise`), no prelude, and
+      no test anywhere. It is unimplemented on BOTH substrates.
+      (2) "error-object?, error-object-message, and error-object-irritants are
+      implemented in the bytecode VM backend but are not available in the
+      native LLVM path (-r / AOT), where they report Unknown function." The
+      opposite is true today: llvm_codegen.cpp dispatches all three
+      (codegenErrorObjectPredicate / codegenErrorObjectAccessor) onto
+      lib/core/runtime_exceptions_hosted.cpp implementations, while it is the
+      VM whose error-object-irritants is a stub that always answers '()
+      (tests/vm_parity/found/error_object_irritants_empty.esk).
+      (3) A "Known issues - differential `guard` findings (ESH-0101 /
+      ESH-0102)" section described guard value corruption and an
+      optimization-level-dependent crash as OPEN under those two ids. Both
+      findings were fixed by #117 and are gated by
+      tests/differential/corpus/41_guard_value_and_double.esk; and neither id
+      ever denoted a guard defect - ESH-0101 is the recursion-depth stack-guard
+      coverage item (maintainer ruling 2026-08-13, see SW-10's residual) and
+      ESH-0102 is mutual tail-call optimization, since closed.
+    observed: >-
+      A reader following the page would hand-roll a structured-value workaround
+      for error objects that the native path has supported for releases, would
+      believe raise-continuable works if they targeted the VM (it works
+      nowhere), and would treat `guard` under -O2 as unhardened on the strength
+      of two ids that describe a stack-depth defect and a tail-call
+      optimization. The third claim also cost real time on this branch: the
+      lane was dispatched to close "ESH-0101 guard coverage" and the ESH-0101
+      task record in .swarm/tasks is a deep-recursion SIGILL, not a `guard`
+      defect at all.
+    correct: >-
+      A capability page states what the current build does. An unimplemented
+      form is named as unimplemented on every substrate it is missing from, and
+      is a build item; a limitation that has since been fixed is removed rather
+      than left standing (a stale limitation is as much a wrong claim as a
+      stale capability); and a ledger id in a doc must denote the defect the
+      ledger says it denotes.
+    observed_after: >-
+      error-handling.md now documents all four R7RS guard clause shapes
+      including `=>` and the test-only `(test)`, states that raise-continuable
+      is unimplemented on every substrate and is a build item, and replaces the
+      misattributed "known issues" section with the closed status of the two
+      differential findings plus an explicit note that ESH-0101/ESH-0102 never
+      denoted guard defects. INDEX.md's ESH-0101 row now describes the
+      recursion-depth item and its ESH-0109 row no longer claims a VM
+      raise-continuable. The error-object accessor paragraph is corrected in the
+      same pass and is now pinned by executable evidence rather than prose:
+      tests/error_handling/guard_coverage/06_error_objects.esk asserts
+      error-object? / -message / -irritants through a guard on the JIT, both AOT
+      levels and both VM axes.
+    evidence: >-
+      docs/reference/language/error-handling.md,
+      docs/reference/language/INDEX.md,
+      tests/error_handling/guard_coverage/06_error_objects.esk +
+      11_error_irritants.esk graded by scripts/run_guard_coverage.sh.
+    caught_by: [source-reading, guard-coverage-gate]
+    missed_by: [icc-smoke, icc-readiness, doc-audit]
+    notes: >-
+      Filed while building the ESH-0101 guard coverage gate. Claim (2) is the
+      instructive one: it is a limitation notice that reality OVERTOOK, and
+      nothing in the assurance stack notices when a documented gap quietly
+      closes - only when a documented capability breaks. The VM half of the same
+      claim is genuinely open and stays open, tracked at
+      tests/vm_parity/found/error_object_irritants_empty.esk and waived per-axis
+      in tests/error_handling/guard_coverage/ENGINES.tsv rather than deleted.
+      Separately: scripts/gen_language_surface.py categorises
+      "raise-continuable" as control_flow even though no extraction source
+      contains it, so the name is carried in the generator's category map while
+      never appearing in the emitted surface - harmless today, but the shape of
+      a vacuous surface entry if an extraction source ever picks the name up
+      from a blacklist.

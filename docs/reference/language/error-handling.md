@@ -140,13 +140,27 @@ native path.
 
 ```scheme
 (display
-  (with-exception-handler
-    (lambda (e) (display "handler ") 100)
-    (lambda () (+ 1 (raise-continuable 'warn)))))
+  (guard (e (#t (list 'caught e)))
+    (with-exception-handler
+      (lambda (e) (display "handler ") 100)
+      (lambda () (raise 'warn)))))
 ```
-The above uses `raise-continuable`, which is **not available** in the native path
-(`Unknown function`); it is VM-only. `with-exception-handler` combined with a plain
-`raise` (non-continuable, escaping) works in native code.
+
+### `raise-continuable` is not implemented
+
+`raise-continuable` is **not available on any substrate** — not the native LLVM
+path and not the bytecode VM. It appears in no builtin table, no special-form
+dispatch and no prelude; the name occurs exactly once in the compiler, as an
+entry in an iteration-scope blacklist, which is not an implementation.
+`docs/COMPLETE_LANGUAGE_SPECIFICATION.md` has this right ("all raises are
+non-continuable"); earlier revisions of *this* page and of
+[INDEX.md](INDEX.md) said it was "VM-only", which was never true of any build.
+The correction is ledgered as `SW-80`, and implementing it is a build item, not
+a documented limitation.
+
+`with-exception-handler` itself **works** in the native path, combined with a
+plain (non-continuable, escaping) `raise` — including under an enclosing
+`guard`, which the guard coverage gate checks on every engine.
 
 ## The capability-denied signal
 
