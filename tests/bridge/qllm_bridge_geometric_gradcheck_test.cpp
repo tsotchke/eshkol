@@ -492,6 +492,290 @@ static void check_leaf_still_silent(void) {
            "input variables carry tensor_value and must remain a legitimate no-op");
 }
 
+
+/* ================================================ boundary behaviour ===== */
+/* SW-76. ad_poincare_log_map used to clamp artanh's argument to 1 - 1e-12 and
+ * return a finite tangent vector where the map has none; ad_poincare_exp_map
+ * never checked its base point at all, so an out-of-ball x produced a NEGATIVE
+ * conformal factor and ran the map backwards; and ad_geodesic_attention scored
+ * an off-manifold head-slice as HUGE_VAL, silently dropping that key from the
+ * softmax. All three returned a full, finite, plausible answer with no
+ * diagnostic, and the reverse sweep then differentiated it.
+ *
+ * These checks pin the two halves of the fix. STRICTLY INSIDE still computes,
+ * and computes exactly -- including a hair from the boundary, where the whole
+ * point is that a real value exists and must not be traded for a fabricated
+ * one. ON OR OUTSIDE refuses, by returning NULL after a diagnostic naming the
+ * op and the measured sqrt(c)|.|; these ops signal with eshkol_error(), which
+ * logs and returns, so a refusal is a NULL node, not a process exit (that is
+ * why these are not fork()ed like the eshkol_fatal refusals above). */
+
+/* Direction is deliberately not axis-aligned so every component is live. */
+static void unit_dir(double* d) { d[0] = 0.6; d[1] = -0.8; d[2] = 0.0; }
+static void at_radius(double r, double* out) {
+    double d[3]; unit_dir(d);
+    for (int i = 0; i < 3; ++i) out[i] = r * d[i];
+}
+
+/** @brief |grad_x d| == lambda_x still holds exactly at |x| = 1 - 1e-6, where
+ *  lambda_x is about 1e6. The identity is a property of the geometry, so it is
+ *  the strong reference here; the finite-difference check below is the weak
+ *  one. */
+static void check_distance_near_boundary_identity(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], Y[3] = { -0.20, 0.25, 0.10 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    if (!o) {
+        report("boundary.distance_near_boundary_identity", false,
+               "forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
+        return;
+    }
+    ((double*)o->tensor_gradient)[0] = 1.0;
+    sweep(t);
+    const double* gx = (const double*)xn->tensor_gradient;
+    double nx = 0.0, xx = 0.0;
+    for (int i = 0; i < 3; ++i) { nx += gx[i]*gx[i]; xx += X[i]*X[i]; }
+    double lx = 2.0/(1.0 - c*xx);
+    double rel = std::fabs(std::sqrt(nx) - lx)/lx;
+    report("boundary.distance_near_boundary_identity", rel < 1e-9,
+           "|x| = 1-1e-6, lambda_x = %.6e, rel dev of |grad_x| = %.3e", lx, rel);
+}
+
+/** @brief The same point against central differences. The step is scaled to the
+ *  distance to the boundary (h = 1e-3 * (1 - c|x|^2)) rather than fixed: a
+ *  fixed 1e-6 step is larger than the whole remaining gap to the boundary here
+ *  and would measure a different function. */
+static void check_distance_near_boundary_fd(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], Y[3] = { -0.20, 0.25, 0.10 };
+    at_radius(1.0 - 1e-6, X);
+    double gap = 1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]);
+    double h = 1e-3 * gap;
+
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    if (!o) { report("boundary.distance_near_boundary_fd", false, "forward refused"); return; }
+    ((double*)o->tensor_gradient)[0] = 1.0; sweep(t);
+    double gx[3]; std::memcpy(gx, xn->tensor_gradient, sizeof gx);
+
+    auto fwd = [&](const double* a) {
+        ad_node_t* an = var_node(a, sh, 1), *bn = var_node(Y, sh, 1);
+        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, -c);
+        return r ? ((const double*)r->tensor_value)[0] : NAN;
+    };
+    RelAcc acc;
+    for (int i = 0; i < 3; ++i) {
+        double pl[3], mi[3];
+        std::memcpy(pl, X, sizeof pl); std::memcpy(mi, X, sizeof mi);
+        pl[i] += h; mi[i] -= h;
+        acc_add(&acc, (fwd(pl)-fwd(mi))/(2*h), gx[i]);
+    }
+    double r = acc_val(&acc);
+    report("boundary.distance_near_boundary_fd", r < 1e-6,
+           "|x| = 1-1e-6, h = %.3e, aggregate L2 rel err %.3e over 3 partials", h, r);
+}
+
+/** @brief exp and log remain mutually inverse with the BASE POINT at
+ *  |x| = 1 - 1e-6, where the conformal factor lambda_x is about 1e6 and the
+ *  two rules' Jacobian entries span twelve orders of magnitude. Nothing is
+ *  clamped, so J_log * J_exp must still be I. */
+static void check_log_map_near_boundary(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], V[3] = { 1.0e-7, -6.0e-8, 4.0e-8 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_node_t* xn = var_node(X, sh, 1), *vn = var_node(V, sh, 1);
+    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+    if (!e) {
+        report("boundary.exp_log_inverse_near_boundary", false,
+               "exp forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
+        return;
+    }
+    double Yv[3]; std::memcpy(Yv, e->tensor_value, sizeof Yv);
+
+    double Je[9], Jl[9];
+    exp_jacobian_wrt_v(X, V, 3, c, Je);
+    log_jacobian_wrt_y(X, Yv, 3, c, Jl);
+    double worst = 0.0;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double acc = 0.0;
+            for (int m = 0; m < 3; ++m) acc += Jl[(size_t)i*3+m] * Je[(size_t)m*3+j];
+            worst = std::fmax(worst, std::fabs(acc - (i==j ? 1.0 : 0.0)));
+        }
+    report("boundary.exp_log_inverse_near_boundary", worst < 1e-6,
+           "|x| = 1-1e-6, max |J_log * J_exp - I| = %.3e", worst);
+}
+
+/** @brief The artanh argument itself driven to a hair below 1, with both points
+ *  valid. sqrt(c)|u| approaches 1 when the two points are far apart in
+ *  HYPERBOLIC distance, not when either is near the boundary; the cleanest way
+ *  to arrange it is x at |x| = 1 - 1e-6 and y at the ORIGIN, which gives
+ *  u = (-x) (+)_c 0 = -x and therefore t = sqrt(c)|x| = 1 - 1e-6 exactly. That
+ *  is four orders of magnitude closer to 1 than the old clamp's 1 - 1e-12
+ *  substitute would have to be to matter, and a real value exists.
+ *
+ *  Checked against |log_x(y)| == d(x,y): the length of the log map IS the
+ *  geodesic distance, by definition of the exponential map. That is a fact
+ *  about the manifold, not about either implementation, and it pins the
+ *  artanh magnitude the clamp used to fabricate. */
+static void check_log_map_artanh_near_one(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double X[3], O[3] = { 0.0, 0.0, 0.0 };
+    at_radius(1.0 - 1e-6, X);
+
+    ad_node_t* xn = var_node(X, sh, 1), *on = var_node(O, sh, 1);
+    ad_node_t* l = ad_poincare_log_map(nullptr, xn, on, -c);
+    if (!l) {
+        report("boundary.log_map_artanh_near_one", false,
+               "refused at t = sqrt(c)|u| = 1 - 1e-6, which is INSIDE the domain");
+        return;
+    }
+    const double* L = (const double*)l->tensor_value;
+    double lm = std::sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
+
+    ad_node_t* x2 = var_node(X, sh, 1), *o2 = var_node(O, sh, 1);
+    ad_node_t* d = ad_hyperbolic_distance(nullptr, x2, o2, -c);
+    if (!d) { report("boundary.log_map_artanh_near_one", false, "distance refused"); return; }
+    double dv = ((const double*)d->tensor_value)[0];
+    double rel = std::fabs(lm - dv)/dv;
+    report("boundary.log_map_artanh_near_one", rel < 1e-9,
+           "t = 1-1e-6: |log_x(0)| = %.12f, d(x,0) = %.12f, rel dev = %.3e "
+           "(the clamp would have returned artanh(1-1e-12) ~ 14.2 here)",
+           lm, dv, rel);
+}
+
+/** @brief Two points each STRICTLY inside the ball, far enough apart in
+ *  hyperbolic distance that sqrt(c)|(-x) (+)_c y| rounds to exactly 1.0 in f64
+ *  (~43 units apart here). This is the case the clamp existed for, and the one
+ *  it fabricated: artanh(1 - 1e-12) is about 14.2, a specific finite magnitude
+ *  no caller could tell from a real one. There is no finite log here, so the
+ *  op must refuse -- note that BOTH inputs pass the in-ball test, so this
+ *  refusal cannot come from the membership check. */
+static void check_log_map_refuses_no_finite_log(void) {
+    const int64_t sh[1] = { 3 };
+    const double r = 1.0 - 1e-9;
+    double X[3], Y[3];
+    at_radius(r, X);
+    at_radius(-r, Y);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* o = ad_poincare_log_map(nullptr, xn, yn, -1.0);
+    report("boundary.log_map_refuses_when_no_finite_log", o == nullptr,
+           "|x| = |y| = 1-1e-9 antipodal (both inside): sqrt(c)|u| reaches 1, "
+           "op returned %s", o ? "a fabricated tangent vector" : "NULL");
+}
+
+/** @brief On the boundary and outside it, every geometric op refuses. |x| == 1
+ *  exactly is the boundary itself: no tangent space, no finite log, no
+ *  derivative. */
+static void check_ops_refuse_on_and_outside_boundary(void) {
+    const int64_t sh[1] = { 3 };
+    const double c = 1.0;
+    double Yin[3] = { -0.20, 0.25, 0.10 };
+    double Vt[3]  = { 0.01, 0.02, -0.03 };
+
+    struct { const char* label; double r; } radii[] = {
+        { "on_boundary",  1.0 },   /* sqrt(c)|x| == 1 exactly */
+        { "outside",      1.5 },
+    };
+    for (auto& rc : radii) {
+        double X[3]; at_radius(rc.r, X);
+        ad_node_t* xn = var_node(X, sh, 1);
+        ad_node_t* yn = var_node(Yin, sh, 1);
+        ad_node_t* vn = var_node(Vt, sh, 1);
+
+        char nm[128];
+        std::snprintf(nm, sizeof nm, "boundary.distance_refuses_%s", rc.label);
+        ad_node_t* d = ad_hyperbolic_distance(nullptr, xn, yn, -c);
+        report(nm, d == nullptr, "|x| = %.1f, got %s", rc.r, d ? "a value" : "NULL");
+
+        std::snprintf(nm, sizeof nm, "boundary.exp_map_refuses_%s", rc.label);
+        ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        report(nm, e == nullptr, "|x| = %.1f, got %s", rc.r, e ? "a value" : "NULL");
+
+        std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_%s", rc.label);
+        ad_node_t* l = ad_poincare_log_map(nullptr, xn, yn, -c);
+        report(nm, l == nullptr, "|x| = %.1f, got %s", rc.r, l ? "a value" : "NULL");
+
+        /* Second argument off-manifold too, not just the first. */
+        std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_y_%s", rc.label);
+        ad_node_t* yb = var_node(X, sh, 1);
+        ad_node_t* xi = var_node(Yin, sh, 1);
+        ad_node_t* l2 = ad_poincare_log_map(nullptr, xi, yb, -c);
+        report(nm, l2 == nullptr, "|y| = %.1f, got %s", rc.r, l2 ? "a value" : "NULL");
+    }
+}
+
+/** @brief A NaN coordinate must refuse rather than propagate onto the tape.
+ *  This is what the strict `sn < 1.0` in poincare_in_ball() buys: the
+ *  comparison is false for NaN, so NaN takes the refusal branch. Written as its
+ *  own check because a `!(sn >= 1.0)` spelling would pass every other test in
+ *  this file and silently admit NaN. */
+static void check_ops_refuse_nan_coordinate(void) {
+    const int64_t sh[1] = { 3 };
+    double Xn[3] = { 0.2, NAN, 0.1 };
+    double Y[3]  = { -0.20, 0.25, 0.10 };
+    ad_node_t* xn = var_node(Xn, sh, 1), *yn = var_node(Y, sh, 1);
+    report("boundary.distance_refuses_nan",
+           ad_hyperbolic_distance(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+    report("boundary.log_map_refuses_nan",
+           ad_poincare_log_map(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+    report("boundary.exp_map_refuses_nan",
+           ad_poincare_exp_map(nullptr, xn, yn, -1.0) == nullptr,
+           "NaN coordinate in x takes the refusal branch");
+}
+
+/** @brief Geodesic attention refuses an off-manifold head-slice instead of
+ *  scoring it HUGE_VAL and dropping it from the softmax. The slice is placed at
+ *  a non-zero head and a non-zero position so the pre-pass has to find it
+ *  rather than trip over the first row. */
+static void check_geodesic_refuses_off_manifold_slice(void) {
+    const int64_t sh[3] = { 1, 2, 4 };   /* batch 1, seq 2, dim 4, 2 heads */
+    const int heads = 2, head_dim = 2;
+    double Q[8], K[8], V[8];
+    for (int i = 0; i < 8; ++i) { Q[i] = 0.10; K[i] = -0.05; V[i] = 0.03 * i; }
+
+    /* Sanity: the all-interior version must still compute. */
+    {
+        ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_interior_still_computes", o != nullptr,
+               "all Q/K head-slices strictly inside the ball");
+    }
+
+    /* Position 1, head 1 of K pushed outside: offset (0*2+1)*4 + 1*2 = 6. */
+    double Kbad[8]; std::memcpy(Kbad, K, sizeof Kbad);
+    Kbad[6] = 0.9; Kbad[7] = 0.9;            /* |slice| = 1.2728 > 1 */
+    {
+        ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kbad, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_refuses_off_manifold_key", o == nullptr,
+               "K slice at position 1, head 1 has |k| = 1.2728; got %s",
+               o ? "an attention output with that key silently dropped" : "NULL");
+    }
+    /* And a query slice exactly ON the boundary: |slice| == 1. */
+    double Qbad[8]; std::memcpy(Qbad, Q, sizeof Qbad);
+    Qbad[2] = 0.6; Qbad[3] = 0.8;            /* |slice| = 1 exactly */
+    {
+        ad_node_t* q = var_node(Qbad, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        report("boundary.geodesic_refuses_on_boundary_query", o == nullptr,
+               "Q slice at position 0, head 1 has |q| = 1 exactly; got %s",
+               o ? "an attention output" : "NULL");
+    }
+}
+
 int main(void) {
     check_distance_conformal_identity();     /* 1 */
     check_distance_fd();                     /* 1 */
@@ -505,6 +789,15 @@ int main(void) {
     check_geodesic_refuses_coincident();     /* 1 */
     check_loud_default();                    /* 1 */
     check_leaf_still_silent();               /* 1 */
+    /* SW-76 boundary behaviour: inside computes exactly, on/outside refuses. */
+    check_distance_near_boundary_identity(); /* 1 */
+    check_distance_near_boundary_fd();       /* 1 */
+    check_log_map_near_boundary();           /* 1 */
+    check_log_map_artanh_near_one();         /* 1 */
+    check_log_map_refuses_no_finite_log();   /* 1 */
+    check_ops_refuse_on_and_outside_boundary(); /* 8 */
+    check_ops_refuse_nan_coordinate();       /* 3 */
+    check_geodesic_refuses_off_manifold_slice(); /* 3 */
     std::printf("Results: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
