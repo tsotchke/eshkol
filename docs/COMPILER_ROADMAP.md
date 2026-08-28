@@ -42,10 +42,9 @@ research-grade Noesis.
 consumer-hardening correctness wave. Release gates measured on the cut:
 aggregate suite 45/45 suites and 770 tests, CTest **190/190** (remeasured
 2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the
-stale 183/183 figure — the suite has grown), executable language coverage
-**1,106/1,106** (100.0%) — the canonical surface count, see
-[FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
-figure, conformity audit item b2/d3), SICP 88/88, reference differential
+stale 183/183 figure — the suite has grown), executable language coverage **1,108/1,108** (100.0%) — the canonical surface count, see
+[FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,106/1,106 and
+1,091/1,091 figures against `tests/coverage/coverage_policy.json`), SICP 88/88, reference differential
 34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
 (`scripts/run_vm_parity.sh`) is 188/188 (remeasured 2026-08-25,
 `evidence/audit/06_vm_parity.log`; corrects "184/184", which was the

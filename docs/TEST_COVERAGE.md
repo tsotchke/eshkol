@@ -6,8 +6,8 @@
 
 **Release gates, measured on the v1.3.4-evolve cut**: aggregate suite **45/45
 suites and 770 individual tests**; CTest **183/183**; the value-position and compound-accessor regression is green, and this result as of the release
-is completion-oracle evidence rather than advice; executable language coverage
-**1,091/1,091 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
+is completion-oracle evidence rather than advice; executable language coverage **1,108/1,108 (100.0%, floor PASS)** (corrects the stale 1,091/1,091 figure
+against `tests/coverage/coverage_policy.json`); SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
 **184/184** over a **956-row** manifest (581 `vm-supported`, 44
