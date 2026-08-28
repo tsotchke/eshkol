@@ -694,6 +694,13 @@ oracles:
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
+          event_names: ["taylor_tower_exactness_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Taylor-tower exactness stack, TOGETHER in one run (P1/P2/P5/P6/P11). Twelve CTest gates in one group with a member floor: the base runtime tower (taylor_tower, ESH-0186), the literal-K monomorphized tower held bit-identical to it (taylor_tower_mono, ESH-0187), the exact-coefficient tier at 68/68 (exact_taylor, ESH-0191/#163), the reverse-over-Taylor seed tangent at 18/18 (reverse_over_taylor, ESH-0190/#168-adjacent P5), the tower-based user numerics (taylor_numerics, ESH-0196/#168) and the exact tower''s region-escape deep-walk (region_evac_taylor_exact, SW-66/#499) — each in BOTH the JIT and the AOT lane. Jointness is the whole criterion: P5 and P6 rewrote the SAME tower-extraction point from two directions (P5 threading a first-order seed tangent onto the reverse tape, P6 keeping int64/bignum/rational coefficients exact), which is why they could not be union-merged and had to be layered P5-then-P6 by hand. Either one passing alone proves nothing about the other. Four of these twelve registrations did not exist — taylor_tower and taylor_tower_mono were run by NOTHING (tests/ad/ is not globbed by run_autodiff_tests.sh), and reverse_over_taylor and taylor_numerics had a JIT lane only despite both files'' headers asserting they run identically under -r and AOT. Every suite in the group now carries a COUNT RATCHET rather than a bare "0 failed", which a run that executed nothing satisfies.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
           event_names: ["runtime_closure_arity_spread_gate"]
           event_values: ["PASS"]
         severity: high

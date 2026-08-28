@@ -36,6 +36,19 @@
 #   gate: a criterion that silently stops being covered because its tests were
 #   renamed or configured out is exactly the hole this script closes.
 #
+#   A group may also declare a MEMBER FLOOR — the third column, or `-` for
+#   none. "Matched at least one" is the right rule for a pillar whose test set
+#   is configuration-dependent (the fixed-point engine's shared-ABI test only
+#   exists when the shared library is built), but it is the WRONG rule for a
+#   pillar whose whole claim is that several suites hold TOGETHER. The
+#   exact-coefficient Taylor tier (P6) and the reverse-over-Taylor seed tangent
+#   (P5) rewrote the SAME tower-extraction point from two directions, so
+#   "68/68 and 18/18 in one run" is the acceptance; with no floor, deleting the
+#   reverse-over-Taylor registration would leave the group matching, green, and
+#   no longer making that claim. The floor is a MINIMUM, not an equality, so
+#   adding tests to a pillar never fails the gate — a shrink-only ratchet, the
+#   same shape as the P8 baselines.
+#
 # USAGE
 #   scripts/run_ctest_gate.sh [--build-dir DIR] [-- <extra ctest args>]
 #   BUILD_DIR=build-quantum scripts/run_ctest_gate.sh
@@ -85,11 +98,12 @@ fi
 # Each line becomes one roll-up event of kind "ctest", consumed by one
 # criterion under `eshkol-compiler-readiness`.
 CTEST_GATE_GROUPS=$(cat <<'GROUPS'
-fixed_point_exact_accumulation_gate	^fixedpoint_	Fixed-point / i128 exact-accumulation engine
-exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor)_(runtime|aot)_smoke$	Exact-input AD identity tier
-runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	Runtime-closure gradient arity spread
-define_library_same_unit_gate	^define_library_same_unit_	R7RS same-unit define-library resolution
-module_load_path_engine_parity_gate	^load_path_engine_parity_test$	Relative (load …) resolves identically on every execution engine
+fixed_point_exact_accumulation_gate	^fixedpoint_	-	Fixed-point / i128 exact-accumulation engine
+exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor)_(runtime|aot)_smoke$	-	Exact-input AD identity tier
+taylor_tower_exactness_gate	^(taylor_tower|taylor_tower_mono|exact_taylor|reverse_over_taylor|taylor_numerics|region_evac_taylor_exact)_(runtime|aot)_smoke$	12	Taylor-tower exactness stack (P1/P2/P5/P6/P11) in one run
+runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closure gradient arity spread
+define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
+module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
 GROUPS
 )
 
@@ -274,7 +288,7 @@ fi
 # ── group roll-ups ───────────────────────────────────────────────────────
 GROUP_FAILURES=0
 GROUP_INFRA=0
-while IFS="$(printf '\t')" read -r event regex label; do
+while IFS="$(printf '\t')" read -r event regex floor label; do
     [ -n "${event:-}" ] || continue
     matched=0; g_pass=0; g_fail=0; g_infra=0; first_fail=""
     while IFS="$(printf '\t')" read -r name verdict detail; do
@@ -296,6 +310,16 @@ while IFS="$(printf '\t')" read -r event regex label; do
         emit_event "$event" FAIL "ABSENT: no configured test matches /$regex/ — $label is not covered by this build"
         emit_test_result "ctest-group::$event" FAIL "no test matches /$regex/"
         echo "FAILED ctest-group::$event — ABSENT (no test matches /$regex/)"
+        continue
+    fi
+    # Member floor (see GROUPS above). A pillar that claims several suites hold
+    # TOGETHER stops making that claim the moment one of them is unregistered,
+    # and it does so while still matching, still green and still reported.
+    if [ "$floor" != "-" ] && [ "$matched" -lt "$floor" ]; then
+        GROUP_FAILURES=$((GROUP_FAILURES + 1))
+        emit_event "$event" FAIL "SHRUNK: $matched configured test(s) match /$regex/, floor is $floor — $label no longer covers what it asserts"
+        emit_test_result "ctest-group::$event" FAIL "$matched < floor $floor"
+        echo "FAILED ctest-group::$event — SHRUNK ($matched < floor $floor)"
         continue
     fi
     if [ "$g_fail" -gt 0 ]; then

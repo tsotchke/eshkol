@@ -541,10 +541,22 @@ release).
   v1.4.0-connection item (implementation, not this fix).
 - AD: SW-05 forward-over-reverse; ESH-0101 (recursion-depth guard coverage
   for top-level `define`d self-recursive functions, maintainer ruling
-  2026-08-13 — see KNOWN_ISSUES.md); P6/P11 exact-coefficient and
-  user-numerics re-cut on post-P5 master (verify exact-coefficient and
-  reverse-Taylor suites together — both were shipped complete in
-  v1.3.0-evolve and this is a re-verification pass, not new staging).
+  2026-08-13 — see KNOWN_ISSUES.md). **The P6/P11 re-verification is DONE**
+  and no longer carried: the exact-coefficient tier (P6) and the
+  reverse-over-Taylor seed tangent (P5) — the two waves that rewrote the same
+  tower-extraction point from opposite directions and so had to be layered by
+  hand rather than union-merged — now pass **together, in one run**, along
+  with the base tower (P1), the monomorphized tower held bit-identical to it
+  (P2), the tower user-numerics (P11) and the exact tower's region-escape
+  deep-walk, in **both** the JIT and the AOT lane. The pass found that the
+  jointness had never been *gated*: four of the twelve registrations did not
+  exist — `taylor_tower` and `taylor_tower_mono` were executed by nothing at
+  all, and `reverse_over_taylor` and `taylor_numerics` had a JIT lane only,
+  though both files' headers assert they run identically under `-r` and AOT.
+  They are now one CTest group, `taylor_tower_exactness_gate`, with a member
+  floor so the group cannot shrink back to a subset and stay green, and every
+  suite in it carries a count ratchet rather than a bare "0 failed" — which a
+  run that executed nothing satisfies.
 - Correctness debt: the `(or X null)` miscompile lineage (#229), the REPL
   no-return verifier (#244), and an `ArithmeticCodegen::mod` srem-vs-modulo
   audit.

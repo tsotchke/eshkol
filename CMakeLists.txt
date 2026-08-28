@@ -3345,6 +3345,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0190 (P5) in the AOT lane. P5 and P6 rewrote the SAME tower-extraction
+    # point -- P5 to thread a seed tangent onto the reverse tape, P6 to keep
+    # coefficients exact -- and the joint P5+P6 acceptance is that both suites
+    # pass TOGETHER (see taylor_tower_exactness_gate in
+    # scripts/run_ctest_gate.sh). A gate that ran only the JIT lane could not
+    # make that claim: the AOT lane emits the extraction and the tape hook as
+    # compiled IR rather than through the JIT's resident tower.
+    add_test(
+        NAME reverse_over_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reverse_over_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/reverse_over_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/reverse_over_taylor_aot'"
+    )
+    set_tests_properties(reverse_over_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME checkpointed_reverse_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -3724,7 +3741,72 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_numerics_runtime_smoke
         PROPERTIES
             TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "taylor-numerics tests: [0-9]+ passed, 0 failed"
+            PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    # ESH-0196 (P11) in the AOT lane. The file's own header says "Runs
+    # identically under -r (JIT) and AOT", but only the JIT lane was ever
+    # registered -- and the AOT lane is the one that reaches codegen with the
+    # exact point as a compiled literal rather than a JIT-resident value, which
+    # is precisely the axis on which the exact tier can diverge (see the
+    # exact_point_ad both-lanes note above, which found that class).
+    add_test(
+        NAME taylor_numerics_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_numerics_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_numerics_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_numerics_aot'"
+    )
+    set_tests_properties(taylor_numerics_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    # ESH-0186 (P1) / ESH-0187 (P2): the BASE runtime Taylor tower and the
+    # literal-K monomorphized tower that must stay bit-identical to it. Both
+    # files existed since the P1/P2 waves and were run by NOTHING -- tests/ad/
+    # is not globbed by scripts/run_autodiff_tests.sh (tests/autodiff/ only) --
+    # so the substrate under the exact-coefficient tier (P6), the seed tangent
+    # (P5) and the user numerics (P11) was the one layer with no gate. Both
+    # lanes, for the same reason the exact tiers gate in both.
+    add_test(
+        NAME taylor_tower_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(taylor_tower_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower "
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_aot'"
+    )
+    set_tests_properties(taylor_tower_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower "
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_mono_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_mono_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(taylor_tower_mono_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
+            FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
+    add_test(
+        NAME taylor_tower_mono_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_mono_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_tower_mono_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/taylor_tower_mono_aot'"
+    )
+    set_tests_properties(taylor_tower_mono_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
         NAME taylor_models_runtime_smoke

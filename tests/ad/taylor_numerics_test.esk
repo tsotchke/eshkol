@@ -214,4 +214,24 @@
 (display "taylor-numerics tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
 
+;; Machine-readable verdict with a COUNT RATCHET. The CTest registration used
+;; to match on "taylor-numerics tests: [0-9]+ passed, 0 failed", which a run
+;; that executed NOTHING satisfies as "0 passed, 0 failed" -- and this file is
+;; the P11 user-numerics half of the P6/P11 pair, whose whole point is that the
+;; exact tier survives being consumed by ODE integration, Householder root
+;; refinement and series reversion. A suite that quietly stopped exercising the
+;; exact branches would still read green.
+;; 41 = 4 taylor-eval + 2 (y'=y) + 3 (y'=-y^2) + 3 root-order + 3 root-manual/cos
+;; + 9 inv-exp coefficients + 1 inv-exp round-trip + 9 exact Catalan coefficients
+;; + 7 exact binomial coefficients. The error-vs-order table is report-only.
+(define expected-checks 41)
+(if (and (= nfail 0) (= npass expected-checks))
+    (begin (display "PASS: tower user-numerics ")
+           (display npass) (display "/") (display expected-checks)
+           (display " checks") (newline))
+    (begin (display "FAIL: tower user-numerics ")
+           (display npass) (display "/") (display expected-checks)
+           (display " passed, ") (display nfail) (display " failed")
+           (newline)))
+
 (if (> nfail 0) (error "taylor-numerics tests failed"))

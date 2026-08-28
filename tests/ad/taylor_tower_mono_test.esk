@@ -80,3 +80,21 @@
 (display "----") (newline)
 (display "mono==runtime bit-exact tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
+
+;; Machine-readable verdict with a COUNT RATCHET. The monomorphized (literal-K)
+;; and runtime (let-bound-K) tower paths are two DIFFERENT code paths that this
+;; file is the only thing holding bit-identical; it was matched by no test
+;; registration at all, so the unrolled path could drift from the heap path
+;; silently. The count matters as much as the verdict, because every assertion
+;; here lives inside a loop over orders.
+;; 441 = 81 derivative-n comparisons (9 functions x orders k=0..8) + 360 taylor
+;; coefficient comparisons (8 functions x sum_{k=0}^{8} (k+1) = 8 x 45).
+(define expected-checks 441)
+(if (and (= nfail 0) (= npass expected-checks))
+    (begin (display "PASS: taylor tower mono==runtime ")
+           (display npass) (display "/") (display expected-checks)
+           (display " checks") (newline))
+    (begin (display "FAIL: taylor tower mono==runtime ")
+           (display npass) (display "/") (display expected-checks)
+           (display " passed, ") (display nfail) (display " failed")
+           (newline)))

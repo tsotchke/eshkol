@@ -138,6 +138,22 @@
 ;; exact-coefficient tier that `derivative`/`gradient`/`hessian` now route to at
 ;; an exact point (ESH-0394) -- so a regression here would silently become a
 ;; regression in those three.
-(if (= nfail 0)
-    (begin (display "PASS: exact-coefficient Taylor tier") (newline))
-    (begin (display "FAIL: exact-coefficient Taylor tier") (newline)))
+;; The verdict is a COUNT RATCHET, not merely `nfail = 0`. `(= nfail 0)` alone
+;; is satisfied by a run in which nothing ran at all -- the "0 passed, 0 failed"
+;; false green -- and by a run in which a `let loop` bound its limit wrong and
+;; silently executed fewer iterations than the gate's name claims. Both are
+;; live risks here: every gate below is a loop, and the exact tier this file
+;; certifies is the oracle `derivative`/`gradient`/`hessian` route to at an
+;; exact point, so a quietly-shrunken suite would take those three with it.
+;; 68 = 18 (x^5 mul/pow, n=0..8) + 9 (x^5 taylor coefficients) + 11 (geometric
+;; at 1/2, n=0..10) + 21 (x^20 at 3, n=0..20) + 2 (x^30 bignum) + 5
+;; (transcendental demotion) + 2 (inexact point stays inexact).
+(define expected-checks 68)
+(if (and (= nfail 0) (= npass expected-checks))
+    (begin (display "PASS: exact-coefficient Taylor tier ")
+           (display npass) (display "/") (display expected-checks)
+           (display " checks") (newline))
+    (begin (display "FAIL: exact-coefficient Taylor tier ")
+           (display npass) (display "/") (display expected-checks)
+           (display " passed, ") (display nfail) (display " failed")
+           (newline)))
