@@ -427,7 +427,8 @@ fix. Verified:
 
 ## See also
 
-- [architecture.md](architecture.md) — forward 4-jet, reverse tape, `__ad_pert_level`, mixed-mode recording
+- [architecture.md](architecture.md) — forward 4-jet, reverse tape, `__ad_pert_level`, mixed-mode recording, the 83-row AD node registry and the exact geometric backwards
+- [tape.md](tape.md) — the explicit `ad-*` tape builtins (record the graph yourself, run one reverse sweep) and the AD instrumentation counters
 - [support-matrix.md](support-matrix.md) — full oracle matrix, open cells, running the oracle
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — modes, node opcodes, tensor backward, numeric boundary
 - [../tensors/INDEX.md](../tensors/INDEX.md) — tensor operations that AD flows through
