@@ -2285,7 +2285,10 @@ extern "C" void eshkol_region_unwind_to(uint64_t mark,
         // 3. Pop and destroy: frees the region arena (poisoning it with 0xCB
         //    first when ESHKOL_ARENA_POISON is set, see arena_destroy), so any
         //    value we failed to promote out reads as an obvious sentinel rather
-        //    than as plausible stale data.
+        //    than as plausible stale data. A PINNED region is the exception:
+        //    region_destroy() promotes its blocks into the enclosing arena
+        //    instead (SW-74), because a continuation captured inside it may
+        //    still read them.
         region_pop();
     }
 }

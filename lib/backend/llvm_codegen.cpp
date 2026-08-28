@@ -23159,18 +23159,27 @@ private:
 
         // A continuation that may outlive its frame may also outlive the
         // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and region exit FREES that arena — native
-        // regions reclaim by escape-promoting values that leave, not by
-        // pinning. Putting the continuation's state, closure or stack image
-        // there would leave the resume path reading freed memory; it happens
-        // to survive only while the freed blocks are not yet reused, which is
-        // the dangling-reference failure in its purest form. Allocate from the
+        // eshkol_current_arena(), and an UNPINNED region reclaims that arena at
+        // exit — native regions reclaim by escape-promoting the values that
+        // leave, and the continuation's own state is not one of them. Putting
+        // the continuation's state, closure or stack image there would leave
+        // the resume path reading reclaimed memory; it happens to survive only
+        // while the freed blocks are not yet reused, which is the
+        // dangling-reference failure in its purest form. Allocate from the
         // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes a leak, never a dangle, matching the
+        // failure direction becomes retention, never a dangle, matching the
         // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region. Escape-only captures keep the current
-        // arena — such a continuation cannot outlive the region body that
-        // created it, so its state is correctly reclaimed with the region.
+        // does by pinning the region.
+        //
+        // Escape-only captures keep the current arena, and SW-74 is why that is
+        // still right even though such a capture no longer pins: the
+        // continuation cannot be invoked after the frame that created it
+        // returns, and every enclosing `with-region`'s extent contains that
+        // frame's, so its state dies with the region and is never read
+        // afterwards. The one region that CAN close inside the capture's extent
+        // — a handle-owned one, via `(region-close h)` — makes the runtime pin
+        // after all (eshkol_region_any_handle_owned_open()), so the arena is
+        // promoted and the state stays readable there too.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
             Function* shared_arena_func = module->getFunction("get_global_arena_shared");
