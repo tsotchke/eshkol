@@ -1,17 +1,17 @@
 # Eshkol Language Update Brief — Full Modernization for GPU LLM Inference
 
 **To:** Eshkol language agent
-**From:** MoThRA / Kimi-on-mesh effort (computer_mesh, mothra)
+**From:** the local-model serving effort
 **Date:** 2026-06-17
 **Mandate:** Completely update the language. Eshkol is being adopted as the
 compute + control substrate for running **Kimi K2.6 as a fast, lossless,
-general-purpose LLM** on modest hardware (old-donkey: RTX 3050 6 GB + CPU + disk
+general-purpose LLM** on modest hardware (a small consumer GPU + CPU + disk
 streaming), accelerated by MoThRA and geometric inference. This work stressed
 Eshkol against a real, heavy GPU workload and surfaced concrete gaps. This brief
 is the punch-list to make Eshkol a first-class GPU-LLM language.
 
 Everything below was found empirically against **v1.2.3-scale** built with CUDA
-(`-DESHKOL_GPU_ENABLED=ON`, sm_86, cuBLAS) on old-donkey. Repro snippets are real.
+(`-DESHKOL_GPU_ENABLED=ON`, cuBLAS) on that host. Repro snippets are real.
 
 ---
 
@@ -27,7 +27,7 @@ We need Eshkol to express, and run fast on GPU:
   experts Q8_0, router/norms F32.
 
 Eshkol already nails the geometry: the KV-landmark relevance kernel
-(`computer_mesh/ops/kimi/eshkol/kv_landmark_relevance.esk`) runs correctly on the
+(`<serving-repo>/ops/kimi/eshkol/kv_landmark_relevance.esk`) runs correctly on the
 live bridge. The blockers are all in **numeric precision, GPU codegen, quantization,
 and toolchain**.
 
@@ -126,7 +126,7 @@ decode where startup dwarfs the GEMM.
   in the **runtime link of compiled programs**. The runtime/support lib appears to
   leak LLVM codegen symbols — **separate `libeshkol-runtime` (no LLVM) from the
   compiler lib** so compiled `a.out`s never need LLVM at link.
-- **Version drift:** old-donkey shipped v1.2.1 while we needed v1.2.3 (`gpu-matmul`,
+- **Version drift:** that host shipped v1.2.1 while we needed v1.2.3 (`gpu-matmul`,
   etc.). Tag releases and make `--version` + a `eshkol features` introspection
   command authoritative so deploys can assert capability.
 
@@ -156,10 +156,10 @@ The geometric/learnable layer is Eshkol's edge — don't lose it when adding GPU
 
 ## 8. How to verify (real artifacts)
 
-- `computer_mesh/ops/kimi/eshkol/kv_landmark_relevance.esk`, `kv_landmark_select.esk`
+- `<serving-repo>/ops/kimi/eshkol/kv_landmark_relevance.esk`, `kv_landmark_select.esk`
   — geometric kernels (work today, CPU).
-- `computer_mesh/ops/kimi/eshkol/moe_expert_ffn.esk` — the MoE FFN; today 3.90 ms/expert
+- `<serving-repo>/ops/kimi/eshkol/moe_expert_ffn.esk` — the MoE FFN; today 3.90 ms/expert
   (f64 softfloat). **Target after §1–§2: <0.5 ms/expert (fp16 cuBLAS).**
 - Bench harness pattern: `benchmarks/gpu_vs_cpu_bench.esk` (`time-it`, `random-tensor`).
 - Success metric: `moe_expert_ffn.esk` in **fp16** drives a 60-layer, 8-expert
-  chunk-verify at **≥150 lossless tok/s** on an RTX 3050, AOT-compiled.
+  chunk-verify at **≥150 lossless tok/s** on a small consumer GPU, AOT-compiled.

@@ -33,17 +33,20 @@ research-grade Noesis.
 
 ---
 
-## Current status (verified 2026-07-31)
+## Current status (verified 2026-08-28)
 
 **Branch**: `master`
-**Last shipped release**: v1.3.4-evolve (2026-07-31)
-**Base release**: v1.3.3-evolve (2026-07-16).
-**Status**: v1.3.4-evolve cut — a resident-correctness release followed by a
-consumer-hardening correctness wave. Release gates measured on the cut:
-aggregate suite 45/45 suites and 770 tests, CTest **190/190** (remeasured
-2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the
-stale 183/183 figure — the suite has grown), executable language coverage
-**1,106/1,106** (100.0%) — the canonical surface count, see
+**Last shipped release**: v1.3.5-evolve (2026-08-28)
+**Base release**: v1.3.4-evolve (2026-08-19, commit `694c3179`).
+**Status**: v1.3.5-evolve cut — a consolidation release: multi-shot re-entrant
+continuations on every engine, VM region reclamation, enforced linear typing,
+and exact AD proven structurally rather than differentially, on top of the
+v1.3.4 resident-correctness and consumer-hardening waves. Release gates:
+aggregate suite 46/46 suites, CTest **198/198** (remeasured 2026-08-26 against
+`afbaaf5b`; corrects the stale 183/183 and 190/190 figures — the suite has
+grown again since, so this must be regenerated on the release cut before it is
+quoted), executable language coverage
+**1,108/1,108** (100.0%) — the canonical surface count, see
 [FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
 figure, conformity audit item b2/d3), SICP 88/88, reference differential
 34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
@@ -51,7 +54,7 @@ figure, conformity audit item b2/d3), SICP 88/88, reference differential
 `evidence/audit/06_vm_parity.log`; corrects "184/184", which was the
 corpus-differential count, not the full manifest); the full manifest
 (`tests/vm_parity/PARITY.tsv`) is 956 rows — 581 `vm-supported`, 44
-`native-only-justified`, 331 `gap` — plus 328 further names in
+`native-only-justified`, 331 `gap` — plus 323 further names in
 `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see
 [VM_PARITY.md](VM_PARITY.md)); citing only "184/184" or "188/188" alone
 substitutes one narrow metric for the full parity picture — corrected
@@ -120,14 +123,16 @@ Verification snapshot:
 > (binding resolution)**, both PARTIAL/NOT STARTED as of `4bf871a0` — see
 > "ADR-0000 stage attainment" in `ROADMAP.md` and
 > `docs/design/adr/0000-unified-trajectory.md`. `ROADMAP.md` owns the
-> authoritative re-dating (in flight on PR #464); this table's codename/theme
-> columns remain accurate and are not re-dated here to avoid conflicting
-> with that PR.
+> authoritative re-dating and has since landed it (#464): the canonical ladder
+> is v1.4.0 Nov 2026, v1.4.1 Dec 2026, v1.5.0 Q1 2027, through v2.0 Q4 2028.
+> The dates in the table below are the original 2026-05-20 authoring and are
+> retained only as the as-planned record; read `ROADMAP.md` for the live
+> ladder. This table's codename and theme columns remain accurate.
 
 | Version | Codename | Target date (stale, see note above) | Theme |
 |---|---|---|---|
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
-| v1.3.0-evolve | evolve | Jul 2026 — **SHIPPED** | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
+| v1.3.0-evolve through v1.3.5-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.5-evolve tagged 2026-08-28) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
 | v1.4 | connection | Jul 2026 | Networking + concurrency + linear types |
 | v1.5 | intelligence | Aug 2026 | Neuro-symbolic bridge |
 | v1.6 | reasoning | Sep 2026 | Production logic engine |
@@ -212,7 +217,7 @@ Eshkol. The remaining work is v1.3+ productization.
 > both as `Planned`, and the only debug support shipped is `-g` DWARF
 > (`exe/eshkol-run.cpp:2285`). Both are kept as BUILD ITEMs: debugger,
 > target v1.9.1 (ADR-0000 Stage 13, session-protocol work); sampling
-> profiler, target v1.4.1. The task tiers below are retained as the
+> profiler, target v1.9.1 (ROADMAP.md places the AD-aware debugger and profiler together at v1.9.1). The task tiers below are retained as the
 > as-planned engineering record; see the canonical
 > [`../ROADMAP.md`](../ROADMAP.md) and [`../CHANGELOG.md`](../CHANGELOG.md)
 > for as-shipped contents.

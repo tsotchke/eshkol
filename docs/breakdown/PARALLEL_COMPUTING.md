@@ -508,11 +508,11 @@ For production use, parallel autodiff is safe when gradient computations are con
 
 | File | Lines | Role |
 |------|-------|------|
-| `lib/backend/parallel_codegen.cpp` | 945 | C runtime: task dispatch, list conversion, parallel-map/-fold/-filter/-execute |
-| `lib/backend/parallel_llvm_codegen.cpp` | 2,601 | LLVM codegen: closure dispatchers, workers, inline loops, futures |
-| `lib/backend/thread_pool.cpp` | 1,350 | Thread pool: work-stealing scheduler, futures, metrics, lazy future helpers |
-| `inc/eshkol/backend/thread_pool.h` | 371 | Thread pool API: C and C++ interfaces, configuration, metrics struct |
-| `inc/eshkol/backend/work_stealing_deque.h` | 667 | Chase-Lev deque, epoch-based reclamation, work-stealing scheduler |
+| `lib/backend/parallel_codegen.cpp` | 1,008 | C runtime: task dispatch, list conversion, parallel-map/-fold/-filter/-execute |
+| `lib/backend/parallel_llvm_codegen.cpp` | 2,626 | LLVM codegen: closure dispatchers, workers, inline loops, futures |
+| `lib/backend/thread_pool.cpp` | 1,524 | Thread pool: work-stealing scheduler, futures, metrics, lazy future helpers |
+| `inc/eshkol/backend/thread_pool.h` | 475 | Thread pool API: C and C++ interfaces, configuration, metrics struct |
+| `inc/eshkol/backend/work_stealing_deque.h` | 752 | Chase-Lev deque, epoch-based reclamation, work-stealing scheduler |
 
 ---
 
