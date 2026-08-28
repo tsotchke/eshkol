@@ -271,8 +271,10 @@ composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
 The one shape that still refuses is a point *computed* from the enclosing pass's
 variables — `(jacobian (lambda (v) (g (vector (* 2.0 (vref v 0))))) point)` —
 where no component IS the published active seed, so no edge can be threaded
-back. That raises `unsupported nested differentiation` (a loud refusal, not a
-silent zero); see KNOWN_ISSUES.md.
+back. That **raises** (a loud refusal, not a silent zero): the `(vector …)`
+spelling is caught by the point coercion, `evaluation point is not a number`,
+before the tensor arm is reached; a tensor of non-seed nodes is caught by the
+pre-scan itself, `unsupported nested differentiation`. See KNOWN_ISSUES.md.
 
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 

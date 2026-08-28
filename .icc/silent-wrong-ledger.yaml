@@ -321,9 +321,15 @@ entries:
       variables, e.g. (jacobian (lambda (v) (g (vector (* 2.0 (vector-ref v 0)))))
       point). No component of the inner point IS the published seed there, so no
       edge can be threaded back, and answering would be a disconnected zero.
-      eshkol_ad_curried_gradient_unsupported() (lib/core/runtime_taylor.c) is
-      kept for exactly that case, with its diagnostic narrowed to it, and the
-      raise is pinned by the same test.
+      MEASURED: which guard speaks depends on how the derived point is spelled.
+      The `(vector …)` spelling above never reaches the tensor arm at all — its
+      elements are tagged AD-node CALLABLEs, and the point coercion rejects them
+      first: "gradient: evaluation point is not a number (tagged type 9)". A
+      derived point that arrives as a TENSOR of non-seed nodes reaches the new
+      pre-scan, which finds nodes but no active seed and calls
+      eshkol_ad_curried_gradient_unsupported() (lib/core/runtime_taylor.c),
+      whose diagnostic is narrowed to exactly that case. Both are loud; the test
+      pins the raise, not the wording.
     evidence: >-
       tests/ad/ad_curried_gradient_nested_test.esk (renamed from
       ..._loud_test.esk) on the ad_curried_gradient_nested_runtime_smoke and

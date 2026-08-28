@@ -438,7 +438,10 @@ block ordinary use.
   pass's variables — e.g.
   `(jacobian (lambda (v) (g (vector (* 2.0 (vector-ref v 0))))) point)` — has no
   component that IS the pass's active seed, so no edge can be threaded back and
-  it raises rather than answering a disconnected zero. Pinned by
+  it **raises** rather than answering a disconnected zero. Which guard speaks
+  depends on the spelling: a `(vector …)` of AD nodes is rejected by the point
+  coercion (`evaluation point is not a number`), a tensor of non-seed nodes by
+  `unsupported nested differentiation`. Pinned by
   `tests/ad/ad_curried_gradient_nested_test.esk` on the JIT and AOT lanes.
 - **`derivative-n` / `taylor` applied to a derivative *closure* is exact (fixed,
   ESH-0402).** With `(define df (derivative f))`, `(derivative-n df x k)` used to

@@ -191,10 +191,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   onto the outer tape. No finite differences and no second reverse tape — this
   did not require the dense resident tape spine.
 
-  A point *computed* from the enclosing pass's variables still raises
-  `unsupported nested differentiation`: no component IS the published seed
-  there, so no edge can be established, and a loud refusal beats a disconnected
-  zero. New regression `tests/ad/ad_curried_gradient_nested_test.esk` (renamed
+  A point *computed* from the enclosing pass's variables still **raises**: no
+  component IS the published seed there, so no edge can be established, and a
+  loud refusal beats a disconnected zero. (Which guard speaks depends on the
+  spelling — a `(vector …)` of AD nodes is rejected by the point coercion, a
+  tensor of non-seed nodes by `unsupported nested differentiation`.) New regression `tests/ad/ad_curried_gradient_nested_test.esk` (renamed
   from `..._loud_test.esk`) pins both halves on the native JIT and AOT ctest
   lanes, cross-checking every entry against `hessian` on the same build.
   Closes `.icc/silent-wrong-ledger.yaml` SW-05.
