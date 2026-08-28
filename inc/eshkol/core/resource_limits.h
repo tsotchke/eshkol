@@ -222,6 +222,7 @@ const eshkol_resource_limits_t* eshkol_get_limits(void);
  * @return true on success, false on any parse failure (NULL/empty input,
  *         non-numeric value, negative value, unrecognized suffix, trailing
  *         garbage, or overflow of `size_t`).
+ * content fails the parse.
  */
 bool eshkol_parse_size(const char* str, size_t* out_bytes);
 

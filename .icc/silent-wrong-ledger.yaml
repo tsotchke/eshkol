@@ -4330,49 +4330,6 @@ entries:
     notes: >-
       This is a silent wrong boolean payload, not an uninitialized read: the
       ctype calls were defined as nonzero truth values but were not normalized.
-  - id: SW-84
-    bucket: SILENT-WRONG
-    status: closed
-    closed_at: "c459f292d210fc980c1520e37ed84ff103374e91 + working-tree fix"
-    title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
-    repro: >-
-      (display (guard (g (#t 'guard-fired))
-        (with-exception-handler (lambda (e) 'ignored)
-                                (lambda () (raise 'esc)))))
-    observed: >-
-      ignored, exit 0, with no diagnostic. The enclosing guard did not fire on
-      native JIT/AOT or either VM route.
-    correct: >-
-      guard-fired. R7RS 6.11 requires that if a handler returns from a
-      non-continuable raise, a secondary exception is raised in the handler's
-      dynamic environment. The secondary object's exact identity is
-      unspecified; the enclosing handler must observe the escape.
-    root_cause: >-
-      Native codegen and both VM compilers treated the handler's returned value
-      as the result of with-exception-handler. They had already removed the
-      handler before calling it, but emitted a normal merge/jump instead of
-      raising the required secondary condition.
-    fix: >-
-      Native codegen now calls eshkol_raise_secondary_exception with the
-      original condition after a returned handler; VM bytecode emits
-      OP_RAISE_SECONDARY after the handler call, and both VM dispatch paths
-      create and dispatch a diagnostic secondary condition after removing the
-      current handler. Enclosing handlers therefore receive it; a handler that
-      raises still propagates its own condition.
-    evidence: >-
-      tests/error_handling/sw84_noncontinuable_handler_test.esk is registered
-      as ctest on native JIT, native AOT -O0, native AOT -O2 and VM source;
-      tests/vm_parity/corpus/74_with_exception_handler_return.esk covers the
-      native-vm-src and native-vm-eskb parity routes. The five-axis output and
-      exit-status transcript is recorded in the task report.
-    caught_by: [guard-coverage-gate]
-    missed_by: [vm-parity, differential, error-handling-suite]
-    notes: >-
-      Copied from origin/test/guard-coverage-esh-0101 and closed here after
-      the root fix. That guard-coverage branch will merge its matching ledger
-      closure. The existing documented raise-continuable limitation remains
-      unchanged in this task.
-
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01
@@ -7332,3 +7289,103 @@ entries:
       only for capacity 268435455, and both 268435456 and 268435457 return
       NULL before allocation. The parity corpus prints `#t` for both rejected
       make-vector requests on native, VM, and WASM.
+  - id: SW-84
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c459f292d210fc980c1520e37ed84ff103374e91 + working-tree fix"
+    title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
+    repro: >-
+      (display (guard (g (#t 'guard-fired))
+        (with-exception-handler (lambda (e) 'ignored)
+                                (lambda () (raise 'esc)))))
+    observed: >-
+      ignored, exit 0, with no diagnostic. The enclosing guard did not fire on
+      native JIT/AOT or either VM route.
+    correct: >-
+      guard-fired. R7RS 6.11 requires that if a handler returns from a
+      non-continuable raise, a secondary exception is raised in the handler's
+      dynamic environment. The secondary object's exact identity is
+      unspecified; the enclosing handler must observe the escape.
+    root_cause: >-
+      Native codegen and both VM compilers treated the handler's returned value
+      as the result of with-exception-handler. They had already removed the
+      handler before calling it, but emitted a normal merge/jump instead of
+      raising the required secondary condition.
+    fix: >-
+      Native codegen now calls eshkol_raise_secondary_exception with the
+      original condition after a returned handler; VM bytecode emits
+      OP_RAISE_SECONDARY after the handler call, and both VM dispatch paths
+      create and dispatch a diagnostic secondary condition after removing the
+      current handler. Enclosing handlers therefore receive it; a handler that
+      raises still propagates its own condition.
+    evidence: >-
+      tests/error_handling/sw84_noncontinuable_handler_test.esk is registered
+      as ctest on native JIT, native AOT -O0, native AOT -O2 and VM source;
+      tests/vm_parity/corpus/74_with_exception_handler_return.esk covers the
+      native-vm-src and native-vm-eskb parity routes. The five-axis output and
+      exit-status transcript is recorded in the task report.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      Copied from origin/test/guard-coverage-esh-0101 and closed here after
+      the root fix. That guard-coverage branch will merge its matching ledger
+      closure. The existing documented raise-continuable limitation remains
+      unchanged in this task.
+
+  - id: SW-81
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: native-stack-overflow-diagnostic
+    status: guarded
+    closed_at: "d97eef43+working-tree"
+    title: "Deep non-tail user recursion exhausted the native stack as a silent SIGILL"
+    repro: >-
+      `tests/stress/found/deep_recursion_270k_no_diagnostic.esk` defines a
+      plain non-tail recursive function and calls it deeply. Before this
+      guard, the JIT/AOT process could die with SIGILL (exit 132) and no
+      stderr diagnostic; the existing `ESHKOL_MAX_STACK` frame counter did not
+      cover the top-level `define` entry.
+    observed: >-
+      On the pre-fix path, deep recursion consumed the native stack until the
+      processor reported SIGILL rather than reaching a runtime limit. The
+      signal's apparent illegal instruction was the failure manifestation of
+      executing after the stack/return state had been exhausted, not an
+      intentional Eshkol instruction trap.
+    correct: >-
+      Native JIT and AOT user recursion must either complete within the
+      configured stack or terminate nonzero with a diagnostic naming the
+      stack-size control. Runtime-created parallel-map workers must provide
+      the same guarantee on their own pthread stacks.
+    observed_after: >-
+      Every generated native user-function entry performs a stateless
+      headroom check with a diagnostic reserve. POSIX SIGSEGV/SIGBUS faults in
+      a thread's guard region are identified on that thread's sigaltstack.
+      Each runtime-created worker installs its own alternate stack. The
+      hard gate passed all 8 JIT/AOT main and worker diagnostic/completion
+      legs on old-donkey with `ulimit -s 1048576`: default main 512 MiB and
+      worker 16 MiB runs exited 121 with diagnostics; the same programs with
+      1G stacks completed.
+    fix: >-
+      `lib/backend/llvm_codegen.cpp` emits `eshkol_stack_guard_check()` at
+      top-level, nested, and lambda user-function entries. The hosted stack
+      runtime measures per-thread bounds and enforces ESHKOL_STACK_SIZE; the
+      hosted signal runtime recognizes guard-region SIGSEGV/SIGBUS faults on
+      an alternate stack; `lib/backend/thread_pool.cpp` parses
+      ESHKOL_WORKER_STACK_BYTES with the shared size parser and initializes
+      worker altstacks. The existing ESHKOL_MAX_STACK software depth guard
+      remains complementary for its instrumented paths.
+    evidence: >-
+      `bash scripts/run_stack_overflow_diagnostic.sh` on old-donkey, after a
+      RelWithDebInfo Linux build with system g++ and LLVM 21, printed exactly
+      `stack_overflow_diagnostic: pass=8 fail=0`; the default main diagnostic
+      was `eshkol: stack overflow: recursion depth exceeded the 512 MiB stack
+      (ESHKOL_STACK_SIZE); ...` and worker diagnostics named
+      `ESHKOL_WORKER_STACK_BYTES`.
+    caught_by: [direct-measurement, tests/stress-hard-gate]
+    missed_by: [icc-call-graph, icc-readiness]
+    notes: >-
+      ICC's tree-sitter index does not connect LLVM IR calls emitted by
+      `llvm_codegen.cpp` to the exported runtime symbol, and dispatch-table
+      liveness could not run without a compile database. The previous silent
+      SIGILL was therefore explained from the runtime evidence and code path,
+      not by treating the signal name as an intentional trap.

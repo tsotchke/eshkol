@@ -69,6 +69,7 @@ static uintptr_t eshkol_hosted_stack_base(void) {
  * lands on the fatal-signal handler, which is why both mechanisms exist.
  */
 constexpr uint64_t kEshkolStackGuardMargin = 256ULL * 1024ULL;
+constexpr uint64_t kEshkolDefaultStackSize = 512ULL * 1024ULL * 1024ULL;
 
 /**
  * @brief Linux keeps an unmapped gap below a growable stack VMA
@@ -81,8 +82,12 @@ constexpr uint64_t kEshkolLinuxStackGuardGap = 1024ULL * 1024ULL;
 // Per-thread guard state. 0 = not yet probed, 1 = floor is valid,
 // -1 = bounds unknown, guard disabled for this thread.
 thread_local int t_stack_guard_state = 0;
+thread_local uintptr_t t_stack_guard_region_low = 0;
+thread_local uintptr_t t_stack_guard_region_high = 0;
 thread_local uintptr_t t_stack_floor = 0;
+thread_local uint64_t t_stack_size = 0;
 thread_local uint64_t t_stack_usable = 0;
+thread_local bool t_stack_is_program_thread = false;
 
 #ifndef _WIN32
 // Which thread ESHKOL_STACK_SIZE describes. Worker stacks are sized by
@@ -107,9 +112,8 @@ uint64_t eshkol_stack_size_target(uint64_t fallback) {
     if (!env_val) {
         return fallback;
     }
-    char* end = nullptr;
-    unsigned long long parsed = std::strtoull(env_val, &end, 0);
-    if (end == env_val || parsed < 1024ULL * 1024ULL) {
+    size_t parsed = 0;
+    if (!eshkol_parse_size(env_val, &parsed) || parsed < 1024ULL * 1024ULL) {
         return fallback;
     }
     return (uint64_t)parsed;
@@ -275,8 +279,12 @@ void stack_guard_init_thread(void) {
     // can only ever move the floor UP (never claim stack the thread does not
     // have), so a smaller value bounds recursion sooner and a larger one is
     // allowed exactly as far as the OS actually granted.
-    if (g_program_thread_known && pthread_equal(pthread_self(), g_program_thread)) {
-        uint64_t requested = eshkol_stack_size_target(size);
+    t_stack_is_program_thread = g_program_thread_known &&
+        pthread_equal(pthread_self(), g_program_thread);
+    if (t_stack_is_program_thread) {
+        // The default is a real guard target even when the inherited OS limit
+        // is larger. This keeps the default and explicit 1G gate legs distinct.
+        uint64_t requested = eshkol_stack_size_target(kEshkolDefaultStackSize);
         if (requested < size) {
             low = (uintptr_t)((low + (uintptr_t)size) - (uintptr_t)requested);
             size = requested;
@@ -287,7 +295,12 @@ void stack_guard_init_thread(void) {
         }
     }
 
+    t_stack_size = size;
     t_stack_floor = low + (uintptr_t)kEshkolStackGuardMargin;
+    const uintptr_t guard_region_bytes = (uintptr_t)kEshkolLinuxStackGuardGap;
+    t_stack_guard_region_high = low;
+    t_stack_guard_region_low = low > guard_region_bytes
+        ? low - guard_region_bytes : 0;
     t_stack_usable = size - kEshkolStackGuardMargin;
     t_stack_guard_state = 1;
 #endif
@@ -311,12 +324,15 @@ uint64_t as_mib(uint64_t bytes) {
  */
 [[noreturn]] void stack_overflow_fatal(void) {
     std::fflush(stdout);
+    const char* stack_env = t_stack_is_program_thread
+        ? "ESHKOL_STACK_SIZE" : "ESHKOL_WORKER_STACK_BYTES";
     std::fprintf(stderr,
-                 "eshkol: fatal: stack overflow: recursion depth exceeded the "
-                 "%llu MiB stack (set by ESHKOL_STACK_SIZE); use tail "
-                 "recursion, or raise ESHKOL_STACK_SIZE and the OS stack "
+                 "eshkol: stack overflow: recursion depth exceeded the "
+                 "%llu MiB stack (%s); use tail "
+                 "recursion, or raise %s and the OS stack "
                  "limit to allow deeper recursion\n",
-                 (unsigned long long)as_mib(t_stack_usable));
+                 (unsigned long long)as_mib(t_stack_size), stack_env,
+                 stack_env);
     std::fflush(stderr);
     _Exit(ESHKOL_EXIT_LIMIT_STACK);
 }
@@ -355,7 +371,11 @@ extern "C" void eshkol_init_stack_size(void) {
     return;
 #else
     const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
+<<<<<<< HEAD
     const size_t floor_bytes = 1024ULL * 1024;           // 1MB
+=======
+    const size_t floor_bytes = 1024ULL * 1024ULL;        // 1MB
+>>>>>>> eadbc0bb (fix(runtime): stack overflow in user recursion reports a diagnostic instead of SIGILL (ESH-0101, SW-81))
     rlim_t target = default_stack;
 
     const char* env_val = std::getenv("ESHKOL_STACK_SIZE");
@@ -406,6 +426,22 @@ extern "C" void eshkol_stack_guard_check(void) {
     if ((uintptr_t)&probe <= t_stack_floor) {
         stack_overflow_fatal();
     }
+}
+
+/**
+ * @brief Signal-safe test for a fault address in this thread's stack guard.
+ *
+ * The returned value is meaningful only for SIGSEGV/SIGBUS fault addresses.
+ * It reads latched thread-local integers and performs no allocation, locking,
+ * I/O, or other work that could recurse on an exhausted stack.
+ */
+extern "C" bool eshkol_stack_guard_fault_in_region(const void* fault_address) {
+    if (t_stack_guard_state != 1 || fault_address == nullptr) {
+        return false;
+    }
+    uintptr_t address = (uintptr_t)fault_address;
+    return address >= t_stack_guard_region_low &&
+           address < t_stack_guard_region_high;
 }
 
 /** @copydoc eshkol_stack_guard_headroom */

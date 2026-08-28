@@ -260,11 +260,11 @@ void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/
     const char* name = "unknown";
     bool likely_overflow = false;
     switch (signum) {
-        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; likely_overflow = true; break;
+        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; break;
 #ifdef SIGBUS
-        case SIGBUS:  name = "SIGBUS (bus error)";           likely_overflow = true; break;
+        case SIGBUS:  name = "SIGBUS (bus error)";           break;
 #endif
-        case SIGILL:  name = "SIGILL (illegal instruction)"; likely_overflow = true; break;
+        case SIGILL:  name = "SIGILL (illegal instruction)"; break;
 #ifdef SIGFPE
         case SIGFPE:  name = "SIGFPE (arithmetic exception)";                        break;
 #endif
@@ -290,15 +290,17 @@ void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/
         static const char at[] = " at address ";
         eshkol_signal_safe_write(at, sizeof(at) - 1);
         eshkol_signal_safe_write_ptr(info->si_addr);
+        likely_overflow = eshkol_stack_guard_fault_in_region(info->si_addr);
     }
 
     if (likely_overflow) {
-        // SIGSEGV/SIGBUS/SIGILL from deep recursion are almost always the
-        // native stack being exhausted. Name that explicitly so the failure is
-        // diagnosable ("recursion too deep") rather than a bare crash.
+        // Only a fault address in this thread's guard region is identified as
+        // stack exhaustion. Other SIGSEGV/SIGBUS faults retain their signal
+        // diagnostic and are not mislabeled as recursion failures.
         static const char hint[] =
-            "\n[Eshkol] this is most likely a stack overflow (recursion too deep) — "
-            "use tail recursion or reduce the recursion depth\n";
+            "\n[Eshkol] stack overflow: recursion depth exceeded the native "
+            "stack guard (ESHKOL_STACK_SIZE); use tail recursion or reduce the "
+            "recursion depth\n";
         eshkol_signal_safe_write(hint, sizeof(hint) - 1);
     } else {
         static const char nl[] = "\n";
