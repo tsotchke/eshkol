@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5-evolve] - 2026-08-28
+
 ### Added
 
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
