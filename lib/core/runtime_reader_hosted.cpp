@@ -718,6 +718,17 @@ static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char)
     return read_atom_number_or_symbol(arena, fp, first_char);
 }
 
+// Wrap `datum` as (symbol_name datum) — the shared shape behind every
+// R7RS 7.1.2 <abbreviation>: 'x -> (quote x), `x -> (quasiquote x),
+// ,x -> (unquote x), ,@x -> (unquote-splicing x).
+static eshkol_tagged_value_t wrap_reader_abbreviation(
+    arena_t* arena, const char* symbol_name, size_t symbol_len,
+    eshkol_tagged_value_t datum) {
+    eshkol_tagged_value_t sym = make_symbol_tagged(arena, symbol_name, symbol_len);
+    eshkol_tagged_value_t inner = make_cons_tagged(arena, datum, make_null_tagged());
+    return make_cons_tagged(arena, sym, inner);
+}
+
 // Read a single S-expression datum from a FILE*
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char) {
     if (first_char == EOF) return make_eof_tagged();
@@ -732,9 +743,35 @@ static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char
     if (first_char == '\'') {
         int ch = read_skip_whitespace(fp);
         eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
-        eshkol_tagged_value_t quote_sym = make_symbol_tagged(arena, "quote", 5);
-        eshkol_tagged_value_t inner = make_cons_tagged(arena, quoted, make_null_tagged());
-        result = make_cons_tagged(arena, quote_sym, inner);
+        result = wrap_reader_abbreviation(arena, "quote", 5, quoted);
+    }
+    // Quasiquote shorthand: `x -> (quasiquote x). R7RS 7.1.2. Previously
+    // absent: '`' fell through to read_atom_number_or_symbol(), which read
+    // it (and everything up to the next delimiter) as an ordinary symbol,
+    // desynchronizing the reader on every subsequent datum in the stream —
+    // this is the runtime-`read` half of the SW-54/55/56 family (parser.cpp
+    // and vm_parser.c were fixed for the same class of hole in #466; this
+    // reader was not).
+    else if (first_char == '`') {
+        int ch = read_skip_whitespace(fp);
+        eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
+        result = wrap_reader_abbreviation(arena, "quasiquote", 10, quoted);
+    }
+    // Unquote / unquote-splicing shorthand: ,x -> (unquote x),
+    // ,@x -> (unquote-splicing x). R7RS 7.1.2. Same missing-case defect as
+    // '`' above: ',' fell through to the symbol reader.
+    else if (first_char == ',') {
+        int next = fgetc(fp);
+        if (next == '@') {
+            int ch = read_skip_whitespace(fp);
+            eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
+            result = wrap_reader_abbreviation(arena, "unquote-splicing", 16, quoted);
+        } else {
+            if (next != EOF) ungetc(next, fp);
+            int ch = read_skip_whitespace(fp);
+            eshkol_tagged_value_t quoted = read_datum(arena, fp, ch);
+            result = wrap_reader_abbreviation(arena, "unquote", 7, quoted);
+        }
     }
     else if (first_char == '(') {
         result = read_list(arena, fp);
