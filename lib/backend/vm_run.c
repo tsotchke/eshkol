@@ -120,6 +120,7 @@ void vm_run(VM* vm) {
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
         [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
+        [OP_RAISE_SECONDARY] = &&lbl_RAISE_SECONDARY,
     };
 
     #define DISPATCH() do { \
@@ -558,7 +559,13 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_CLOSE_UPVALUE: vm_exec_close_upvalue(vm, instr.operand); DISPATCH();
+    lbl_RAISE_SECONDARY:
+        vm_raise_secondary_exception(vm);
+        DISPATCH();
+
+    lbl_CLOSE_UPVALUE:
+        vm_exec_close_upvalue(vm, instr.operand);
+        DISPATCH();
 
     lbl_VEC_CREATE: vm_exec_vec_create(vm, instr.operand); DISPATCH();
 
@@ -1160,6 +1167,7 @@ vm_exit:
         case OP_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); break;
         case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }
         case OP_GET_EXN: { vm_push(vm, vm->current_exception); break; }
+        case OP_RAISE_SECONDARY: { vm_raise_secondary_exception(vm); break; }
         case OP_PACK_REST: {
             int n_fixed = instr.operand;
             int n_args = vm->sp - vm->fp;

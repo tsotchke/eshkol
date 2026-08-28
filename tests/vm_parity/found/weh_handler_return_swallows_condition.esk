@@ -1,0 +1,8 @@
+; FOUND by SW-84. R7RS 6.11 requires a secondary exception when this handler
+; returns from a non-continuable raise; before the fix the output was ignored
+; and the process exited 0 on native JIT/AOT and both VM routes.
+(display
+  (guard (g (#t 'guard-fired))
+    (with-exception-handler (lambda (e) 'ignored)
+                            (lambda () (raise 'original)))))
+(newline)

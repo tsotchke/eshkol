@@ -23401,6 +23401,8 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* setjmp_func = getOrDeclareSetjmpFunc();
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+        Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
+        Function* secondary_raise_func = module->getFunction("eshkol_raise_secondary_exception");
 
         if (!push_handler_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
@@ -23413,6 +23415,21 @@ private:
         if (!get_raised_func) {
             FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
             get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+        if (!get_exception_func) {
+            FunctionType* get_exception_type = FunctionType::get(
+                builder->getPtrTy(), {}, false);
+            get_exception_func = Function::Create(
+                get_exception_type, Function::ExternalLinkage,
+                "eshkol_get_current_exception", module.get());
+        }
+        if (!secondary_raise_func) {
+            FunctionType* secondary_raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            secondary_raise_func = Function::Create(
+                secondary_raise_type, Function::ExternalLinkage,
+                "eshkol_raise_secondary_exception", module.get());
+            secondary_raise_func->setDoesNotReturn();
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -23460,6 +23477,8 @@ private:
         // Handler block: pop handler, get raised value, call handler closure
         builder->SetInsertPoint(handler_block);
         builder->CreateCall(pop_handler_func, {});
+        Value* original_exception = builder->CreateCall(
+            get_exception_func, {}, "weh_original_exception");
 
         // Get the original raised value (R7RS-compliant)
         IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -23476,8 +23495,8 @@ private:
 
         BasicBlock* handler_exit_block = nullptr;
         if (!handler_terminated) {
-            handler_exit_block = builder->GetInsertBlock();
-            builder->CreateBr(done_block);
+            builder->CreateCall(secondary_raise_func, {original_exception});
+            builder->CreateUnreachable();
         }
 
         // Done block: merge results with PHI

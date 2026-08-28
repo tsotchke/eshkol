@@ -4227,6 +4227,49 @@ entries:
       was never at fault in any of the three — it recorded is_char, is_inexact and the
       vector origin correctly every time. The loss was always downstream, in a
       consumer that read a subset of what the reader had written down.
+  - id: SW-84
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "c459f292d210fc980c1520e37ed84ff103374e91 + working-tree fix"
+    title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
+    repro: >-
+      (display (guard (g (#t 'guard-fired))
+        (with-exception-handler (lambda (e) 'ignored)
+                                (lambda () (raise 'esc)))))
+    observed: >-
+      ignored, exit 0, with no diagnostic. The enclosing guard did not fire on
+      native JIT/AOT or either VM route.
+    correct: >-
+      guard-fired. R7RS 6.11 requires that if a handler returns from a
+      non-continuable raise, a secondary exception is raised in the handler's
+      dynamic environment. The secondary object's exact identity is
+      unspecified; the enclosing handler must observe the escape.
+    root_cause: >-
+      Native codegen and both VM compilers treated the handler's returned value
+      as the result of with-exception-handler. They had already removed the
+      handler before calling it, but emitted a normal merge/jump instead of
+      raising the required secondary condition.
+    fix: >-
+      Native codegen now calls eshkol_raise_secondary_exception with the
+      original condition after a returned handler; VM bytecode emits
+      OP_RAISE_SECONDARY after the handler call, and both VM dispatch paths
+      create and dispatch a diagnostic secondary condition after removing the
+      current handler. Enclosing handlers therefore receive it; a handler that
+      raises still propagates its own condition.
+    evidence: >-
+      tests/error_handling/sw84_noncontinuable_handler_test.esk is registered
+      as ctest on native JIT, native AOT -O0, native AOT -O2 and VM source;
+      tests/vm_parity/corpus/74_with_exception_handler_return.esk covers the
+      native-vm-src and native-vm-eskb parity routes. The five-axis output and
+      exit-status transcript is recorded in the task report.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      Copied from origin/test/guard-coverage-esh-0101 and closed here after
+      the root fix. That guard-coverage branch will merge its matching ledger
+      closure. The existing documented raise-continuable limitation remains
+      unchanged in this task.
+
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01

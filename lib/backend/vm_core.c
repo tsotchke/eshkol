@@ -112,7 +112,12 @@ typedef enum {
      * control state and `set!` mutations are silently undone (SW-52). */
     OP_GLOBAL_MARK = 66,
 
-    OP_COUNT = 67
+    /* A non-continuable with-exception-handler must not accept a returned
+     * handler value. This opcode raises the R7RS secondary condition after
+     * the handler has been removed, so an enclosing handler receives it. */
+    OP_RAISE_SECONDARY = 67,
+
+    OP_COUNT = 68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
