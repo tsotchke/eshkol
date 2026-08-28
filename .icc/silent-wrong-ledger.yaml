@@ -5537,7 +5537,9 @@ entries:
   - id: LE-12
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
+    status: closed
+    closed_at: "8dde82fa"
+    closed_by: "PR #518 (branch fix/native-curl-le12)"
     title: "native curl SIGSEGVs on a list-returning vector field"
     repro: >-
       (define (F v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))
@@ -5552,12 +5554,127 @@ entries:
     correct: "#(0 0 0) for that field, and a diagnostic rather than a crash for an arity it cannot accept"
     caught_by: [architectural-audit-2026-08-25, direct-measurement]
     missed_by: [icc-smoke, icc-readiness, vm-parity-differential]
+    root_cause: >-
+      FOUR defects, of which the entry booked two. The two booked ones share a
+      single site: curl and divergence both delegate to
+      AutodiffCodegen::jacobian, and it is jacobian that was wrong.
+
+      (1) THE CRASH. jacobian's OUTPUT-shape dispatch is a two-way split — "is
+      the heap subtype VECTOR? if not, read it as an eshkol_tensor_t". A
+      (list …) return is a HEAP_SUBTYPE_CONS cell, which IS a HEAP_PTR, so it
+      passed the enclosing type check, missed the VECTOR arm, and fell into the
+      tensor arm, where the cons cell's car/cdr words were loaded as the
+      tensor's `dims` and `elements` POINTERS. Address 0x2002 is a tagged
+      element being dereferenced. Both of the operator's output sites had it:
+      the test call that determines the output dimension m, and the per-row AD
+      call. This is the MIRROR IMAGE of ESH-0360/#343, which added the cons arm
+      to the POINT side of the same function and never touched the output side —
+      the "fixed at the symptom's location, not the bug class" shape this ledger
+      records elsewhere. The shape was documented as accepted the whole time
+      (docs/reference/ad/architecture.md: divergence and curl "accept a field
+      that returns a list or a vector").
+
+      (2) THE ARITY CONVENTION. jacobian called the field with exactly one
+      argument, unconditionally, so an N-parameter field did not produce a wrong
+      answer but an unbuildable module. The VM spread the point into N,
+      unconditionally, so the ARITY-1 field the docs prescribe could not be
+      called there at all. The engines disagreed about which programs exist,
+      which is precisely why no cross-engine differential could be taken.
+
+      (3) AN OUT-OF-BOUNDS READ, found while fixing (2) and NOT booked here.
+      curl admits n >= 2 (docs/API_REFERENCE.md: "Works for n>=2 (differential
+      2-forms)") but named row/column 2 unconditionally, so a 2-D field read a
+      full row past a 2x2 Jacobian's elements array. A SILENT WRONG ANSWER, not
+      a crash — whatever the arena held next.
+
+      (4) A SILENT () ON THE VM, found while taking the baseline and NOT booked
+      here. VM curl carried its own inline point extraction recognizing only
+      VAL_PAIR and VAL_TENSOR. A VAL_VECTOR point — what BOTH (vector 1.0 2.0
+      3.0) and the reader literal #(1.0 2.0 3.0) evaluate to, since
+      vm_compiler.c's "vector" form emits OP_VEC_CREATE and deliberately does
+      not build a tensor — matched neither branch, left n at 0, and fell into
+      the `n != 3` arm to push a silent (). Both forms are documented accepted
+      points and both already appear in the test corpus.
+    fix: >-
+      lib/core/runtime_list_helpers.cpp: NEW eshkol_list_to_svec_raw — converts
+      a cons list to a Scheme vector copying each car VERBATIM. It could not
+      reuse the existing eshkol_list_to_svec, and that distinction is the whole
+      of the fix's correctness: that one exists for the AD POINT and
+      deliberately forces every element to ESHKOL_VALUE_DOUBLE, so under AD mode
+      it would refuse each output component's AD node and substitute a
+      fabricated 0.0 — every partial derivative would read zero and curl would
+      return #(0 0 0) for EVERY field. That is the correct answer for a gradient
+      field, and a gradient field is what every worked example in the doc set
+      uses, so the quiet version of this bug would have passed the most likely
+      test. lib/backend/autodiff_codegen.cpp: NEW
+      AutodiffCodegen::normalizeFieldOutputList, applied at both output sites.
+
+      Arity: both engines now resolve the field's arity by the SAME rule
+      `gradient` already used on both sides (arity 1 takes the whole point,
+      arity N takes N spread scalars). Native gains it in jacobian via the
+      existing adResolveValueArity; the VM gains it in curl and divergence via a
+      new vm_ad_make_dual_vector, factored out of the gradient path so the
+      family shares one rule instead of writing it four times. Known limitation,
+      recorded at the call site: through a RUNTIME CLOSURE the native operators
+      implement arity-1 only, since the closure's arity is a runtime value.
+
+      (3) indices outside the Jacobian's own dims now yield an exact 0.0, which
+      is also the correct value — a 2-D field embedded in 3-space has F3 == 0
+      and no z-dependence. (4) VM curl now uses vm_ad_extract_point, the shared
+      helper every sibling already used, and admits n >= 2 with the same 2-form
+      embedding as native.
+    observed_after: >-
+      The ledger's own repro returns #(0 0 0) with rc=0 — no signal. The
+      spread-arity field it could not compile returns #(0 0 0) with rc=0. The
+      analytic reference curl(-y, x, 0) = (0, 0, 2) is #(0 0 2) in all FOUR
+      accepted spellings (arity-1/arity-3 x vector-return/list-return) on
+      native, and the identical four #(0 0 2) on the VM — the cross-engine
+      baseline this entry said did not exist.
+    evidence: >-
+      Measured on linux-x64 at 8dde82fa, LLVM 21, Release, mirroring ci.yml.
+      tests/autodiff/curl_field_shapes_test.esk — "SUMMARY 67/0" and the
+      terminal PASS on the native JIT lane AND the AOT lane; it carries the
+      ledger repro verbatim, the analytic reference, explicit
+      list-return==vector-return and arity-3==arity-1 cross-agreement cells, all
+      five point spellings, the n=2 2-form, and a field whose three curl
+      components are 4/6/2 so an all-zeros, permuted or sign-flipped result
+      cannot pass. Registered as curl_field_shapes_runtime_smoke and
+      curl_field_shapes_aot_smoke with "fatal signal" in
+      FAIL_REGULAR_EXPRESSION, so the original SIGSEGV cannot return green.
+      tests/vm_parity/corpus/72_curl_field_shapes.esk carries the same shapes as
+      a native-vs-VM differential, and scripts/run_vm_parity.sh reports
+      corpus_72_curl_field_shapes_vmsrc PASS and
+      corpus_72_curl_field_shapes_vmeskb PASS, both "identical
+      newline-normalized output" — the comparison this entry recorded as
+      impossible, now taken on both the interpreted-source and the compiled-
+      bytecode axis. The gate's AUDIT stage accepts the promoted rows.
+      tests/autodiff/field_ops_list_point_test.esk (the ESH-0360 sibling) still
+      reports "SUMMARY 32/0". PARITY.tsv op:CURL and op:DIVERGENCE promoted
+      gap -> vm-supported on that evidence.
+    caught_by: [architectural-audit-2026-08-25, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, vm-parity-differential, ctest, reference-diff]
     notes: >-
-      Found while establishing a cross-engine baseline for SW-46, and the reason
-      no such baseline exists: op:CURL cannot be measured on native at all today.
-      Loud, so not tag-blocking, but it is what keeps op:CURL a gap now that the
-      VM side is exact. Two separable defects: the crash, and the arity-convention
-      divergence between the engines.
+      Found while establishing a cross-engine baseline for SW-46, and it was the
+      reason no such baseline existed: op:CURL could not be measured on native
+      at all. Two lessons worth keeping.
+
+      First, the vm-parity differential was structurally unable to report any of
+      this. A `gap` row EXCLUDES an op from comparison, so the row that recorded
+      "we cannot compare these" was also the thing preventing the comparison
+      that would have found defects (3) and (4). Defect (4) in particular is a
+      silent wrong answer that sat under an operator whose row said it was
+      exact.
+
+      Second, this entry booked the crash and the arity split as "two separable
+      defects" and that framing was right but incomplete: both are the same
+      function reading a shape it was never taught, and once the operator was
+      actually exercised over its documented domain rather than its 3-D
+      vector-returning interior, two more of exactly that kind fell out. The
+      generalization worth carrying is that a two-way dispatch on a THREE-valued
+      space (vector / tensor / cons) is the recurring defect shape in this file —
+      ESH-0360/#343 on the point side, this entry on the output side — and the
+      remaining unaudited copies of the pattern should be read as latent rather
+      than absent.
   # ───────────────────────── VACUOUS-ASSURANCE ─────────────────────────
 
   - id: VA-01

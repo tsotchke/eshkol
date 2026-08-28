@@ -7524,6 +7524,79 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
 
 /**
+ * @brief LE-12. Rewrite a `(list …)`-returning field's result into a Scheme
+ *        vector, leaving every other result shape untouched.
+ *
+ * See the header for why this exists. The short version: the output dispatch
+ * downstream is "VECTOR subtype, else tensor", so a cons cell was read as an
+ * eshkol_tensor_t and its car/cdr words used as the dims/elements pointers.
+ * docs/reference/ad/architecture.md already documents a list return as an
+ * accepted field shape, so the fix is to accept it rather than to reject it.
+ *
+ * Uses eshkol_list_to_svec_raw (verbatim element copy), NOT the point-side
+ * eshkol_list_to_svec (which forces every element to a double and would
+ * silently replace each AD node with 0.0).
+ *
+ * @param out_tagged The field's result as a tagged value.
+ * @param tag        Block-name prefix.
+ * @return Tagged value guaranteed not to be a cons cell.
+ */
+llvm::Value* AutodiffCodegen::normalizeFieldOutputList(llvm::Value* out_tagged, const char* tag) {
+    using namespace llvm;
+    Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+
+    AllocaInst* slot;
+    {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                               std::string(tag) + "_out_slot");
+    }
+    ctx_.builder().CreateStore(out_tagged, slot);
+
+    BasicBlock* check_sub = BasicBlock::Create(ctx_.context(), std::string(tag) + "_out_check_sub", fn);
+    BasicBlock* conv      = BasicBlock::Create(ctx_.context(), std::string(tag) + "_out_list_conv", fn);
+    BasicBlock* done      = BasicBlock::Create(ctx_.context(), std::string(tag) + "_out_norm_done", fn);
+
+    // Only a HEAP_PTR can carry a subtype header; anything else (CALLABLE AD
+    // tensor, double, …) is already in a shape the callers handle.
+    Value* base = tagged_.getBaseType(tagged_.getType(out_tagged));
+    Value* is_heap = ctx_.builder().CreateICmpEQ(base,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    ctx_.builder().CreateCondBr(is_heap, check_sub, done);
+
+    ctx_.builder().SetInsertPoint(check_sub);
+    Value* heap_ptr = tagged_.unpackPtr(out_tagged);
+    Value* hdr = ctx_.builder().CreateGEP(ctx_.int8Type(), heap_ptr,
+        ConstantInt::get(ctx_.int64Type(), -8));
+    Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), hdr);
+    Value* is_cons = ctx_.builder().CreateICmpEQ(subtype,
+        ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    ctx_.builder().CreateCondBr(is_cons, conv, done);
+
+    ctx_.builder().SetInsertPoint(conv);
+    {
+        Value* arena = ctx_.builder().CreateLoad(
+            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Function* raw_fn = ctx_.module().getFunction("eshkol_list_to_svec_raw");
+        if (!raw_fn) {
+            FunctionType* ty = FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            raw_fn = Function::Create(ty, Function::ExternalLinkage,
+                "eshkol_list_to_svec_raw", &ctx_.module());
+        }
+        Value* svec = ctx_.builder().CreateCall(raw_fn, {arena, slot});
+        Value* svec_int = ctx_.builder().CreatePtrToInt(svec, ctx_.int64Type());
+        ctx_.builder().CreateStore(tagged_.packPtr(svec_int, ESHKOL_VALUE_HEAP_PTR), slot);
+        ctx_.builder().CreateBr(done);
+    }
+
+    ctx_.builder().SetInsertPoint(done);
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), slot);
+}
+
+
+/**
  * @brief Compute the Jacobian matrix of a vector-valued function at a point,
  *        via reverse-mode AD.
  *
@@ -7838,17 +7911,86 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // Call function once to determine output dimension m
     // CRITICAL FIX: Pack as TENSOR_PTR not INT64, so identity lambdas preserve type
     Value* vector_tagged = tagged_.packPtr(vector_ptr_int, ESHKOL_VALUE_HEAP_PTR);
+
+    // ── LE-12: resolve the field's ARITY, exactly as gradient does ──────────
+    //
+    // The documented convention (docs/reference/ad/operators.md:30, and every
+    // worked example in the doc set) is a ONE-argument field that unpacks the
+    // point with `vref`: (lambda (v) (vector (vref v 1) ...)). That shape is
+    // what this operator has always emitted — one argument, always.
+    //
+    // The VM, however, resolves the field's arity and ALSO accepts the N-arg
+    // spread form (as native's own `gradient` already does; see PARITY.tsv
+    // op:GRADIENT "arity-resolved (scalar / N-arg spread / arity-1
+    // whole-vector)"). Passing the whole point to a 3-parameter field is not a
+    // wrong ANSWER here, it is an unbuildable module: the LLVM verifier rejects
+    // it with "Incorrect number of arguments passed to called function". So the
+    // two engines disagreed on which programs exist at all, which is what kept
+    // op:CURL out of the cross-engine differential.
+    //
+    // Resolving the arity here makes the rule identical on both engines and
+    // makes the documented arity-1 form the unchanged default: arity <= 1 still
+    // takes the whole point.
+    uint64_t jac_func_arity = 0;
+    if (func_ptr) {
+        std::string jac_arity_key = func_ptr->getName().str();
+        // REPL hot-reload strips __rv<n> from the LLVM name — same normalization
+        // the gradient path applies before consulting the arity table.
+        auto jac_rv = jac_arity_key.rfind("__rv");
+        if (jac_rv != std::string::npos && jac_rv + 4 < jac_arity_key.size() &&
+            jac_arity_key.find_first_not_of("0123456789", jac_rv + 4) == std::string::npos) {
+            jac_arity_key.erase(jac_rv);
+        }
+        if (function_arity_table_) {
+            auto jac_ait = function_arity_table_->find(jac_arity_key);
+            if (jac_ait != function_arity_table_->end()) jac_func_arity = jac_ait->second;
+        }
+        // Trust the resolved signature over the (regeneration-fragile) table.
+        jac_func_arity = adResolveValueArity(func_ptr, jac_func_arity);
+    }
+
     Value* test_output_tagged;
     if (func_ptr) {
         // Compile-time resolved function: direct call with explicit captures
-        std::vector<Value*> test_call_args = {vector_tagged};
+        std::vector<Value*> test_call_args;
+        if (jac_func_arity > 1) {
+            // N-arg spread: hand the field its components as separate scalars.
+            // The merged input is in tensor form, so elements[p] is the int64
+            // bit pattern of the p-th coordinate.
+            for (uint64_t p = 0; p < jac_func_arity; p++) {
+                Value* ep = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_input_elements,
+                    ConstantInt::get(ctx_.int64Type(), p));
+                Value* bits = ctx_.builder().CreateLoad(ctx_.int64Type(), ep);
+                test_call_args.push_back(
+                    tagged_.packDouble(ctx_.builder().CreateBitCast(bits, ctx_.doubleType())));
+            }
+        } else {
+            test_call_args.push_back(vector_tagged);
+        }
         std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
         test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
         test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
     } else {
-        // Runtime closure path — captures are embedded inside the closure struct
+        // Runtime closure path — captures are embedded inside the closure struct.
+        //
+        // This path passes the point WHOLE, i.e. it implements the arity-1
+        // convention only. That is the documented shape (operators.md:30) and
+        // the one every doc example uses, so the documented program works when
+        // the field arrives as a runtime closure; the N-arg SPREAD form does
+        // not, because the closure's arity is only known at run time and
+        // spreading it would need the compile-time arity switch the gradient
+        // path has ("gradient: runtime-closure arity spread helper"). Recorded
+        // rather than silently narrowed: a spread field reached through a
+        // callable parameter is a known limitation of jacobian/divergence/curl,
+        // not of the operator's contract.
         test_output_tagged = closure_call_callback_(closure_val, {vector_tagged}, "jacobian-test", callback_context_);
     }
+
+    // LE-12: a field written (lambda (v) (list …)) returns a cons cell. Rewrite
+    // it to a Scheme vector BEFORE the shape dispatch below, which would
+    // otherwise fall through to the tensor arm and read the cons cell's car/cdr
+    // words as the tensor's dims/elements pointers.
+    test_output_tagged = normalizeFieldOutputList(test_output_tagged, "jac_test");
 
     // ENHANCED TYPE CHECK: Accept tensors, AD tensors, AND Scheme vectors as valid outputs
     Value* output_type = tagged_.getType(test_output_tagged);
@@ -8157,7 +8299,22 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_output_tagged;
     if (func_ptr) {
         // Compile-time resolved function: direct call with explicit captures
-        std::vector<Value*> jac_call_args = {jac_ad_tensor_tagged};
+        std::vector<Value*> jac_call_args;
+        if (jac_func_arity > 1) {
+            // LE-12: same arity rule as the test call above. Each element of the
+            // AD tensor is an AD NODE pointer, so it is handed over tagged
+            // CALLABLE — mirroring the reverse-mode gradient's spread path.
+            for (uint64_t p = 0; p < jac_func_arity; p++) {
+                Value* node_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+                    ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(),
+                        ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_jac_ad_tensor, 2)),
+                    ConstantInt::get(ctx_.int64Type(), p));
+                Value* node_int = ctx_.builder().CreateLoad(ctx_.int64Type(), node_ptr);
+                jac_call_args.push_back(tagged_.packPtr(node_int, ESHKOL_VALUE_CALLABLE));
+            }
+        } else {
+            jac_call_args.push_back(jac_ad_tensor_tagged);
+        }
         std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call");
         jac_call_args.insert(jac_call_args.end(), jac_captures.begin(), jac_captures.end());
         jac_output_tagged = ctx_.builder().CreateCall(func_ptr, jac_call_args);
@@ -8171,6 +8328,11 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+
+    // LE-12: normalize a (list …) return here too — under AD mode the elements
+    // are AD nodes, and eshkol_list_to_svec_raw copies them verbatim so the
+    // backpropagation below still finds them.
+    jac_output_tagged = normalizeFieldOutputList(jac_output_tagged, "jac_ad");
 
     Value* jac_output_int = tagged_.unpackInt64(jac_output_tagged);
     Value* jac_output_ptr = ctx_.builder().CreateIntToPtr(jac_output_int, ctx_.builder().getPtrTy());
@@ -10742,42 +10904,60 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     Value* jacobian_ptr_int = tagged_.unpackInt64(jacobian_tagged);
     Value* jacobian_ptr = ctx_.builder().CreateIntToPtr(jacobian_ptr_int, ctx_.builder().getPtrTy());
     Value* n_const = ConstantInt::get(ctx_.int64Type(), 3);
+
+    // LE-12 (second defect in this operator): the six extractions below name
+    // row/column 2 unconditionally, but the dimension check above admits n >= 2
+    // and the docs advertise the same ("Generalization: Works for n>=2
+    // (differential 2-forms)", docs/API_REFERENCE.md). On a 2-D field the
+    // Jacobian is 2x2, so J[2,1] and J[2,0] read one full row past the elements
+    // array — an out-of-bounds load whose value is whatever the arena happens to
+    // hold next, i.e. a wrong answer rather than a crash. Read the Jacobian's
+    // OWN dims and substitute an exact 0.0 for any index outside them, which is
+    // also the mathematically right value: a 2-D field embedded in 3-space has
+    // F3 == 0 and no z-dependence, so every partial naming index 2 vanishes and
+    // the curl reduces to (0, 0, dF2/dx - dF1/dy).
+    Value* curl_jac_dims_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), jacobian_ptr, 0);
+    Value* curl_jac_dims_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), curl_jac_dims_field);
+    Value* curl_jac_dims = ctx_.builder().CreatePointerCast(curl_jac_dims_ptr, ctx_.builder().getPtrTy());
+    Value* curl_jac_m = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateGEP(ctx_.int64Type(), curl_jac_dims, ConstantInt::get(ctx_.int64Type(), 0)));
+    Value* curl_jac_n = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateGEP(ctx_.int64Type(), curl_jac_dims, ConstantInt::get(ctx_.int64Type(), 1)));
+
+    // Clamp the indices so the LOAD itself is always in bounds, then select the
+    // real element or 0.0 on the result. Clamping (rather than branching) keeps
+    // this straight-line, and the select discards the clamped read.
+    auto curlPartial = [&](uint64_t row, uint64_t col) -> Value* {
+        Value* r = ConstantInt::get(ctx_.int64Type(), row);
+        Value* c = ConstantInt::get(ctx_.int64Type(), col);
+        Value* in_range = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateICmpULT(r, curl_jac_m),
+            ctx_.builder().CreateICmpULT(c, curl_jac_n));
+        Value* zero_idx = ConstantInt::get(ctx_.int64Type(), 0);
+        Value* safe_r = ctx_.builder().CreateSelect(in_range, r, zero_idx);
+        Value* safe_c = ctx_.builder().CreateSelect(in_range, c, zero_idx);
+        Value* elem = extractJacobianElement(jacobian_ptr, safe_r, safe_c, n_const);
+        return ctx_.builder().CreateSelect(in_range, elem,
+            ConstantFP::get(ctx_.doubleType(), 0.0));
+    };
     
     // Extract specific partial derivatives from Jacobian's nested list structure
     // J[i,j] = ∂Fᵢ/∂xⱼ (row i, column j)
     // Jacobian elements are LIST POINTERS (rows), not doubles!
     
     // curl_x = ∂F₃/∂y - ∂F₂/∂z = J[2,1] - J[1,2]
-    Value* dF3_dx2 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 2),  // row 2
-        ConstantInt::get(ctx_.int64Type(), 1),  // col 1
-        n_const);
-    Value* dF2_dx3 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 1),  // row 1
-        ConstantInt::get(ctx_.int64Type(), 2),  // col 2
-        n_const);
+    Value* dF3_dx2 = curlPartial(2, 1);
+    Value* dF2_dx3 = curlPartial(1, 2);
     Value* curl_x = ctx_.builder().CreateFSub(dF3_dx2, dF2_dx3);
-    
+
     // curl_y = ∂F₁/∂z - ∂F₃/∂x = J[0,2] - J[2,0]
-    Value* dF1_dx3 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 0),  // row 0
-        ConstantInt::get(ctx_.int64Type(), 2),  // col 2
-        n_const);
-    Value* dF3_dx1 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 2),  // row 2
-        ConstantInt::get(ctx_.int64Type(), 0),  // col 0
-        n_const);
+    Value* dF1_dx3 = curlPartial(0, 2);
+    Value* dF3_dx1 = curlPartial(2, 0);
     Value* curl_y = ctx_.builder().CreateFSub(dF1_dx3, dF3_dx1);
-    
+
     // curl_z = ∂F₂/∂x - ∂F₁/∂y = J[1,0] - J[0,1]
-    Value* dF2_dx1 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 1),  // row 1
-        ConstantInt::get(ctx_.int64Type(), 0),  // col 0
-        n_const);
-    Value* dF1_dx2 = extractJacobianElement(jacobian_ptr,
-        ConstantInt::get(ctx_.int64Type(), 0),  // row 0
-        ConstantInt::get(ctx_.int64Type(), 1),  // col 1
-        n_const);
+    Value* dF2_dx1 = curlPartial(1, 0);
+    Value* dF1_dx2 = curlPartial(0, 1);
     Value* curl_z = ctx_.builder().CreateFSub(dF2_dx1, dF1_dx2);
     
     // Create result 3D vector

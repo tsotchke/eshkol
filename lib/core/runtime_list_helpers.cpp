@@ -144,6 +144,56 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
     return vec;
 }
 
+// Convert a tagged cons-list to a Scheme vector (HEAP_SUBTYPE_VECTOR) WITHOUT
+// coercing any element — each car is copied verbatim, tag and all.
+//
+// This is the OUTPUT-side counterpart of eshkol_list_to_svec above, and the two
+// must not be interchanged. eshkol_list_to_svec exists for the AD *point*: it
+// deliberately forces every element to ESHKOL_VALUE_DOUBLE so an exact
+// rational/bignum seed becomes the double it denotes. Applying that to a
+// vector field's RESULT would be catastrophic in the quiet direction: under AD
+// mode each output component is an AD node (a HEAP_PTR/CALLABLE into the tape),
+// eshkol_ad_seed_to_double would refuse it, `ok` would come back 0, and the
+// component would be replaced by the fabricated 0.0 — every partial derivative
+// would read zero and (curl F pt) would return #(0 0 0) for EVERY field, which
+// is the correct answer for a gradient field and so would pass the very tests
+// most likely to be written for it. Preserving the tag verbatim is what keeps
+// the AD node reachable by the backpropagation that follows.
+//
+// LE-12: used by the jacobian/divergence/curl output path so a field written
+// `(lambda (v) (list …))` — the shape docs/reference/ad/architecture.md already
+// promises is accepted — is read as a vector instead of being misread as an
+// eshkol_tensor_t. Returns the vector DATA pointer (length at offset 0,
+// 16-byte tagged elements at offset 8; header with HEAP_SUBTYPE_VECTOR at -8),
+// or nullptr on failure. The head is passed by pointer (ABI-safe: avoids
+// 16-byte struct-by-value across the C boundary).
+void* eshkol_list_to_svec_raw(arena_t* arena, const eshkol_tagged_value_t* head_tv) {
+    if (!arena || !head_tv) return nullptr;
+
+    int64_t n = 0;
+    eshkol_tagged_value_t cur = *head_tv;
+    while (tagged_is_cons(&cur)) {
+        n++;
+        cur = ((arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+    }
+
+    void* vec = arena_allocate_vector_with_header(arena, (size_t)n);
+    if (!vec) return nullptr;
+    *(int64_t*)vec = n;  // length at offset 0
+    eshkol_tagged_value_t* elems =
+        (eshkol_tagged_value_t*)((char*)vec + sizeof(int64_t));
+
+    cur = *head_tv;
+    int64_t i = 0;
+    while (tagged_is_cons(&cur) && i < n) {
+        arena_tagged_cons_cell_t* cell =
+            (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+        elems[i++] = cell->car;   // verbatim — no numeric coercion
+        cur = cell->cdr;
+    }
+    return vec;
+}
+
 // ── (tensor X) collection unpacking ──────────────────────────────────────────
 //
 // A single-argument `(tensor X)` classifies X by its RUNTIME VALUE, not by the

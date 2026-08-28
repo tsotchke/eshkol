@@ -145,8 +145,8 @@ from the manifest again.
 | `jacobian` operator | Yes | Reverse | 15+ tests |
 | `hessian` operator | Yes | Reverse | 10+ tests |
 | **Vector Calculus** |
-| Divergence | Yes | Reverse (LLVM) / central-difference FD (VM) | ∇·F (trace of Jacobian); exact via `autodiff_codegen.cpp` on LLVM, but `vm_native.c:13552-13580` is `h=1e-7` central differences on the bytecode VM — corrected 2026-08-25, conformity audit item d5, see KNOWN_ISSUES.md |
-| Curl | Yes | Reverse (LLVM) / central-difference FD (VM) | ∇×F (3D + generalized 2-forms); exact on LLVM, `vm_native.c:13633-13649` is `h=1e-7` central differences on the VM — same caveat as Divergence |
+| Divergence | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇·F (trace of Jacobian); exact on both engines. The VM's `h=1e-7` central differences were replaced by one seeded forward dual per input variable on 2026-08-26; cross-engine agreement measured by `tests/vm_parity/corpus/72_curl_field_shapes.esk` (PARITY.tsv op:DIVERGENCE) |
+| Curl | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇×F (3D + generalized 2-forms, n≥2 on both engines); exact on both. Accepts a field of arity 1 (the whole point, the documented form) or arity N (spread components), and a field returning a vector or a list, identically on both engines (PARITY.tsv op:CURL, ledger LE-12). A field returning a `(tensor …)` stays native-only — the VM raises a named diagnostic rather than approximating it |
 | Laplacian | Yes | Reverse | ∇²f (trace of Hessian) |
 | Directional derivative | Yes | Reverse | D_v f = ∇f·v |
 | `divergence` operator | Yes | Reverse | 5+ tests |
