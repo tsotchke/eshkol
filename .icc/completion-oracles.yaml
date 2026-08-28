@@ -1688,6 +1688,23 @@ oracles:
         label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
         action: python3 scripts/gen_api_docs.py --check
 
+      # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
+      # in one week. GitHub assembles a squash-merge commit body out of the
+      # PR's individual commit messages, so a hostname mentioned in passing
+      # on a feature branch survives into permanent public history the
+      # moment the PR merges, with nothing in review treating commit prose
+      # as a reviewable surface. This gate scans commit messages, PR
+      # title/body, and added diff lines for both generic private-network
+      # patterns and a maintainer-private denylist of real identifiers
+      # (loaded from OUTSIDE this repository).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["disclosure_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier (scripts/check_disclosure.py)'
+        action: python3 scripts/check_disclosure.py --base origin/master --head HEAD
+
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:
           event_kinds: [eshkol_smoke]
