@@ -1,0 +1,222 @@
+;; LE-12 regression — `curl` over every documented field shape.
+;;
+;; The ledger booked TWO defects against this operator, and fixing them exposed
+;; a third. All three are pinned here.
+;;
+;;   1. A LIST-RETURNING field SIGSEGV'd on native. curl delegates to the
+;;      Jacobian, whose OUTPUT dispatch was "heap subtype VECTOR? else read it
+;;      as a tensor" — so a cons cell passed the type check, missed the vector
+;;      arm, and had its car/cdr words loaded as a tensor's dims/elements
+;;      pointers. docs/reference/ad/architecture.md documents a list return as
+;;      accepted, so this shape was documented and fatal at the same time.
+;;
+;;   2. The two engines disagreed on the field's ARITY. Native passed the point
+;;      whole (one argument) and the LLVM verifier rejected an N-parameter
+;;      field outright; the VM spread the point into N and so could not call
+;;      the ARITY-1 field the docs prescribe. Both now resolve arity the way
+;;      `gradient` already did on both engines.
+;;
+;;   3. curl admits n >= 2 (the generalized 2-form, per docs/API_REFERENCE.md)
+;;      but named row/column 2 unconditionally, reading a full row past a 2x2
+;;      Jacobian — a WRONG ANSWER rather than a crash, so nothing caught it.
+;;
+;; The strong invariant, which is what makes a regression visible rather than
+;; merely likely:
+;;   (G) every curl equals its CLOSED FORM, computed by hand below, and
+;;   (A) the value does not depend on how the field or the point was WRITTEN —
+;;       vector-return == list-return, arity-1 == arity-N spread, and
+;;       (vector …) == (list …) == #(…) point.
+;; A crash shows up as a missing terminal PASS: and a nonzero exit; a wrong
+;; answer as a FAIL: line naming the cell.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+(define (check name expected actual)
+  (if (close? expected actual)
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline))))
+
+(define (check3 name e0 e1 e2 c)
+  (check (string-append name " c0") e0 (vector-ref c 0))
+  (check (string-append name " c1") e1 (vector-ref c 1))
+  (check (string-append name " c2") e2 (vector-ref c 2)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 1. THE LE-12 REPRO, VERBATIM.
+;;
+;; The ledger's repro is a field that returns a (list …) of the point's own
+;; components — the identity field. Its Jacobian is the identity matrix, which
+;; is symmetric, so every curl component is exactly zero. Before the fix this
+;; line did not produce a wrong number, it produced
+;;   "[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address 0x2002".
+;; ══════════════════════════════════════════════════════════════════════════
+(define (F-le12 v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))
+(check3 "LE-12 repro: list-returning identity field" 0.0 0.0 0.0
+        (curl F-le12 (vector 1.0 2.0 3.0)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 2. THE ANALYTIC REFERENCE.
+;;
+;; R = (-y, x, 0) is the textbook rotational field. By hand:
+;;   curl R = (dR3/dy - dR2/dz, dR1/dz - dR3/dx, dR2/dx - dR1/dy)
+;;          = (0 - 0, 0 - 0, 1 - (-1))
+;;          = (0, 0, 2)
+;; Nonzero in exactly one component, so a curl that returned all zeros — the
+;; failure mode a naive fix produces by coercing AD nodes to 0.0 — cannot pass
+;; this cell even though it passes every cell in section 1.
+;; ══════════════════════════════════════════════════════════════════════════
+(define (R v) (vector (* -1.0 (vector-ref v 1)) (vector-ref v 0) 0.0))
+(check3 "analytic: curl of (-y, x, 0)" 0.0 0.0 2.0
+        (curl R (vector 1.0 1.0 0.0)))
+
+;; The same field's curl is point-independent (R is linear), so it must be
+;; (0,0,2) everywhere, not only at the point that happens to be tested.
+(check3 "analytic: same curl at a different point" 0.0 0.0 2.0
+        (curl R (vector -7.5 13.25 4.0)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 3. FIELD SHAPE INVARIANCE — vector return vs list return, arity 1 vs arity N.
+;;
+;; Four spellings of R. All four must give (0,0,2). Two of them could not even
+;; be COMPILED or RUN before: the list return crashed native, the 3-parameter
+;; form failed the LLVM verifier.
+;; ══════════════════════════════════════════════════════════════════════════
+(define (R-vec-1   v)     (vector (* -1.0 (vector-ref v 1)) (vector-ref v 0) 0.0))
+(define (R-list-1  v)     (list   (* -1.0 (vector-ref v 1)) (vector-ref v 0) 0.0))
+(define (R-vec-3   x y z) (vector (* -1.0 y) x 0.0))
+(define (R-list-3  x y z) (list   (* -1.0 y) x 0.0))
+
+(check3 "shape: arity-1 vector return" 0.0 0.0 2.0 (curl R-vec-1  (vector 1.0 1.0 0.0)))
+(check3 "shape: arity-1 list return"   0.0 0.0 2.0 (curl R-list-1 (vector 1.0 1.0 0.0)))
+(check3 "shape: arity-3 vector return" 0.0 0.0 2.0 (curl R-vec-3  (vector 1.0 1.0 0.0)))
+(check3 "shape: arity-3 list return"   0.0 0.0 2.0 (curl R-list-3 (vector 1.0 1.0 0.0)))
+
+;; Cross-agreement, stated directly rather than inferred from four equal
+;; constants: changing only the RETURN type, or only the ARITY, changes nothing.
+(check "shape: list return == vector return"
+       (vector-ref (curl R-vec-1  (vector 1.0 1.0 0.0)) 2)
+       (vector-ref (curl R-list-1 (vector 1.0 1.0 0.0)) 2))
+(check "shape: arity-3 == arity-1"
+       (vector-ref (curl R-vec-1 (vector 1.0 1.0 0.0)) 2)
+       (vector-ref (curl R-vec-3 (vector 1.0 1.0 0.0)) 2))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 4. POINT SHAPE INVARIANCE — (vector …), (list …), #(…), (tensor …), and a
+;;    variable-bound point all denote the same point.
+;; ══════════════════════════════════════════════════════════════════════════
+(define p-var (list 1.0 1.0 0.0))
+(check3 "point: (vector …)" 0.0 0.0 2.0 (curl R (vector 1.0 1.0 0.0)))
+(check3 "point: (list …)"   0.0 0.0 2.0 (curl R (list   1.0 1.0 0.0)))
+(check3 "point: #(…)"       0.0 0.0 2.0 (curl R #(1.0 1.0 0.0)))
+(check3 "point: (tensor …)" 0.0 0.0 2.0 (curl R (tensor 3 1.0 1.0 0.0)))
+(check3 "point: variable"   0.0 0.0 2.0 (curl R p-var))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 5. COMPONENT ORDER AND SIGN.
+;;
+;; Sections 1-4 leave two of the three components at zero, so they cannot tell
+;; a correct curl from one whose components are permuted or negated. H makes
+;; all three distinct and nonzero.
+;;   H = (z^2, x^2, y^2)
+;;   curl H = (dH3/dy - dH2/dz, dH1/dz - dH3/dx, dH2/dx - dH1/dy)
+;;          = (2y - 0,          2z - 0,          2x - 0)
+;;   at (1,2,3): (4, 6, 2) — three different numbers, so any permutation of the
+;;   output is a FAIL rather than a coincidence.
+;; ══════════════════════════════════════════════════════════════════════════
+(define (H v) (vector (* (vector-ref v 2) (vector-ref v 2))
+                      (* (vector-ref v 0) (vector-ref v 0))
+                      (* (vector-ref v 1) (vector-ref v 1))))
+(check3 "order/sign: curl of (z^2, x^2, y^2) at (1,2,3)" 4.0 6.0 2.0
+        (curl H (vector 1.0 2.0 3.0)))
+
+;; Same field written as a list return, to prove the list path carries the
+;; real partials rather than zeros.
+(define (H-list v) (list (* (vector-ref v 2) (vector-ref v 2))
+                         (* (vector-ref v 0) (vector-ref v 0))
+                         (* (vector-ref v 1) (vector-ref v 1))))
+(check3 "order/sign: list return carries real partials" 4.0 6.0 2.0
+        (curl H-list (vector 1.0 2.0 3.0)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 6. THE DOCUMENTED WORKED EXAMPLES, run exactly as the docs write them.
+;;
+;; Each of these appears in a published doc with its expected output. They are
+;; the contract, so they are executed rather than trusted.
+;; ══════════════════════════════════════════════════════════════════════════
+
+;; docs/reference/ad/operators.md and docs/breakdown/AUTODIFF.md — a gradient
+;; field, grad(xyz), documented as #(0 0 0).
+(define (F3-doc v) (vector (* (vref v 1) (vref v 2))
+                           (* (vref v 0) (vref v 2))
+                           (* (vref v 0) (vref v 1))))
+(check3 "doc operators.md: curl of grad(xyz) at (1,2,3)" 0.0 0.0 0.0
+        (curl F3-doc (vector 1.0 2.0 3.0)))
+
+;; docs/API_REFERENCE.md — documented as #(0.0 0.0 -2.0).
+(define (F-api v) (vector (vref v 1) (- (vref v 0)) 0.0))
+(check3 "doc API_REFERENCE.md: curl of (y, -x, 0) at (1,2,0)" 0.0 0.0 -2.0
+        (curl F-api #(1.0 2.0 0.0)))
+
+;; docs/guide/AUTOMATIC_DIFFERENTIATION.md — documented as #(0 0 -2).
+(define (G-guide v) (vector (vector-ref v 1) (- (vector-ref v 0)) 0.0))
+(check3 "doc AUTOMATIC_DIFFERENTIATION.md: curl of (y, -x, 0)" 0.0 0.0 -2.0
+        (curl G-guide #(1.0 2.0 0.0)))
+
+;; docs/COMPLETE_LANGUAGE_SPECIFICATION.md and docs/ESHKOL_LANGUAGE_GUIDE.md —
+;; documented as #(0 0 2).
+(define (rotating v) (vector (- 0.0 (vref v 1)) (vref v 0) 0.0))
+(check3 "doc COMPLETE_LANGUAGE_SPECIFICATION.md: curl of (-y, x, 0)" 0.0 0.0 2.0
+        (curl rotating (vector 1.0 1.0 0.0)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 7. THE 2-D GENERALIZATION (defect 3).
+;;
+;; docs/API_REFERENCE.md: "Generalization: Works for n>=2 (differential
+;; 2-forms)". A 2-D field embedded in 3-space has F3 == 0 and no z-dependence,
+;; so every partial naming index 2 vanishes and
+;;   curl = (0, 0, dF2/dx - dF1/dy).
+;; For P = (-y, x) that is (0, 0, 2), the same value the 3-D field gives.
+;; Before the fix this read one row past a 2x2 Jacobian's elements array, so
+;; the first two components were whatever the arena held next.
+;; ══════════════════════════════════════════════════════════════════════════
+(define (P2 v) (vector (* -1.0 (vector-ref v 1)) (vector-ref v 0)))
+(check3 "2-form: curl of the 2-D field (-y, x)" 0.0 0.0 2.0
+        (curl P2 (vector 1.0 1.0)))
+
+;; A 2-D field with a DIFFERENT nonzero 2-form, so the cell is not satisfied by
+;; the constant 2. Q = (3y, 5x) has dQ2/dx - dQ1/dy = 5 - 3 = 2... choose
+;; Q = (3y, 11x): 11 - 3 = 8.
+(define (Q2 v) (vector (* 3.0 (vector-ref v 1)) (* 11.0 (vector-ref v 0))))
+(check3 "2-form: curl of the 2-D field (3y, 11x)" 0.0 0.0 8.0
+        (curl Q2 (vector 2.0 7.0)))
+
+;; ══════════════════════════════════════════════════════════════════════════
+;; 8. SIBLING CONTROL — divergence shares the Jacobian path curl delegates to,
+;;    so the same crash fix must hold there, and a list-returning field must
+;;    give the same divergence as the vector-returning spelling.
+;; ══════════════════════════════════════════════════════════════════════════
+(define (D-vec  v) (vector (* 1.5 (vector-ref v 0)) (* 2.0 (vector-ref v 1)) (* 2.5 (vector-ref v 2))))
+(define (D-list v) (list   (* 1.5 (vector-ref v 0)) (* 2.0 (vector-ref v 1)) (* 2.5 (vector-ref v 2))))
+(define (D-3    x y z) (vector (* 1.5 x) (* 2.0 y) (* 2.5 z)))
+(check "sibling: divergence, vector return" 6.0 (divergence D-vec  (vector 1.0 2.0 3.0)))
+(check "sibling: divergence, list return"   6.0 (divergence D-list (vector 1.0 2.0 3.0)))
+(check "sibling: divergence, arity-3"       6.0 (divergence D-3    (vector 1.0 2.0 3.0)))
+(check "sibling: jacobian [1][1], list return" 2.0
+       (tensor-ref (jacobian D-list (vector 1.0 2.0 3.0)) 1 1))
+(check "sibling: jacobian [0][1] off-diagonal is zero" 0.0
+       (tensor-ref (jacobian D-list (vector 1.0 2.0 3.0)) 0 1))
+
+;; ── terminal marker: PASS only when every cell held ────────────────────────
+(display "SUMMARY ") (display tests-passed) (display "/") (display tests-failed) (newline)
+(if (= tests-failed 0)
+    (begin (display "PASS: curl matches its closed form on every documented field and point shape") (newline))
+    (begin (display "FAIL: curl regressed") (newline)))

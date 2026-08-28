@@ -108,14 +108,29 @@ Eight vector calculus operators are built in:
 ```scheme
 ;; Divergence of a vector field F(x,y,z) = (x^2, y^2, z^2)
 ;; div F = 2x + 2y + 2z
-(define (field-x x y z) (* x x))
-(define (field-y x y z) (* y y))
-(define (field-z x y z) (* z z))
+;; The field is ONE function returning all three components, and the operator
+;; takes exactly two arguments: the field and the point.
+(define (F v)
+  (vector (* (vref v 0) (vref v 0))
+          (* (vref v 1) (vref v 1))
+          (* (vref v 2) (vref v 2))))
 
-(display (divergence field-x field-y field-z 1.0 2.0 3.0))
+(display (divergence F (vector 1.0 2.0 3.0)))
 (newline)
-;; => 12.0  (2*1 + 2*2 + 2*3)
+;; => 12  (2*1 + 2*2 + 2*3)
+
+;; Curl of the rotational field R(x,y,z) = (-y, x, 0). curl R = (0, 0, 2).
+(define (R v) (vector (- 0.0 (vref v 1)) (vref v 0) 0.0))
+
+(display (curl R (vector 1.0 1.0 0.0)))
+(newline)
+;; => #(0 0 2)
 ```
+
+The field may equally be written with one parameter per coordinate —
+`(lambda (x y z) (vector (* x x) (* y y) (* z z)))` — and may return a
+`(list …)` instead of a `(vector …)`; see
+[the operator reference](../reference/ad/operators.md) for the full rule.
 
 Available operators: `derivative`, `gradient`, `jacobian`, `hessian`,
 `divergence`, `curl`, `laplacian`, `directional-derivative`.

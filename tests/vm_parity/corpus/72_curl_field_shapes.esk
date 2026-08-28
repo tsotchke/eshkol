@@ -1,0 +1,103 @@
+; VM<->native `curl` parity (ledger LE-12, PARITY.tsv op:CURL).
+;
+; This is the cross-engine baseline that could not be taken before: native curl
+; SIGSEGV'd on a list-returning field, the LLVM verifier rejected an N-arg
+; spread field, and the VM answered a silent `()` for a `(vector …)` point.
+; Each of the three shapes below is therefore load-bearing, not decoration.
+;
+; Every check prints a COMPONENT via vector-ref rather than displaying the curl
+; value whole, so the pre-existing vector/tensor display quirk is not exercised
+; and the comparison is on numbers.
+;
+; Field conventions, both of which both engines must now accept identically:
+;   arity-1  (lambda (v) …)      — the documented form (operators.md:30), the
+;                                  point arrives whole and is read with vref
+;   arity-N  (lambda (x y z) …)  — the spread form
+; and both a `(vector …)` and a `(list …)` RETURN
+; (docs/reference/ad/architecture.md).
+
+; ── R = (-y, x, 0). The textbook rotational field.
+;    curl R = (0, 0, dR2/dx - dR1/dy) = (0, 0, 1 - (-1)) = (0, 0, 2).
+;    This is the analytic reference; it is also the worked example in
+;    docs/COMPLETE_LANGUAGE_SPECIFICATION.md and docs/ESHKOL_LANGUAGE_GUIDE.md.
+(define (R v) (vector (* -1.0 (vref v 1)) (vref v 0) 0.0))
+(define cR (curl R (vector 1.0 1.0 0.0)))
+(display (vector-ref cR 0)) (newline)                    ; 0
+(display (vector-ref cR 1)) (newline)                    ; 0
+(display (vector-ref cR 2)) (newline)                    ; 2
+
+; ── the SAME field written to return a (list …) instead of a (vector …).
+;    This is the exact shape that used to SIGSEGV on native (LE-12). Same curl.
+(define (Rlist v) (list (* -1.0 (vref v 1)) (vref v 0) 0.0))
+(define cRl (curl Rlist (vector 1.0 1.0 0.0)))
+(display (vector-ref cRl 0)) (newline)                   ; 0
+(display (vector-ref cRl 1)) (newline)                   ; 0
+(display (vector-ref cRl 2)) (newline)                   ; 2
+
+; ── the SAME field written with THREE parameters (the spread convention).
+;    This is the shape the LLVM verifier used to reject on native. Same curl.
+(define (Rspread x y z) (vector (* -1.0 y) x 0.0))
+(define cRs (curl Rspread (vector 1.0 1.0 0.0)))
+(display (vector-ref cRs 0)) (newline)                   ; 0
+(display (vector-ref cRs 1)) (newline)                   ; 0
+(display (vector-ref cRs 2)) (newline)                   ; 2
+
+; ── spread convention AND a list return, together.
+(define (Rspreadlist x y z) (list (* -1.0 y) x 0.0))
+(define cRsl (curl Rspreadlist (vector 1.0 1.0 0.0)))
+(display (vector-ref cRsl 2)) (newline)                  ; 2
+
+; ── point shapes: (vector …), (list …) and the reader literal #(…) all denote
+;    the same point and must give the same curl. The literal and the (vector …)
+;    form are what the VM used to drop to `()`.
+(display (vector-ref (curl R (list 1.0 1.0 0.0)) 2)) (newline)   ; 2
+(display (vector-ref (curl R #(1.0 1.0 0.0)) 2)) (newline)       ; 2
+
+; ── a GRADIENT field has identically zero curl. G = (yz, xz, xy) = grad(xyz).
+;    This is the worked example in docs/reference/ad/operators.md and
+;    docs/breakdown/AUTODIFF.md, both of which give #(0 0 0).
+;    It is also the row that catches a finite difference pretending to be AD:
+;    the central-difference VM answered 1.1102230246251565e-09 here.
+(define (G v) (vector (* (vref v 1) (vref v 2))
+                      (* (vref v 0) (vref v 2))
+                      (* (vref v 0) (vref v 1))))
+(define cG (curl G (vector 1.0 2.0 3.0)))
+(display (vector-ref cG 0)) (newline)                    ; 0
+(display (vector-ref cG 1)) (newline)                    ; 0
+(display (vector-ref cG 2)) (newline)                    ; 0
+
+; ── docs/API_REFERENCE.md's worked example: F = (y, -x, 0) at (1,2,0),
+;    documented as #(0.0 0.0 -2.0).
+(define (Fapi v) (vector (vref v 1) (* -1.0 (vref v 0)) 0.0))
+(define cF (curl Fapi (vector 1.0 2.0 0.0)))
+(display (vector-ref cF 0)) (newline)                    ; 0
+(display (vector-ref cF 1)) (newline)                    ; 0
+(display (vector-ref cF 2)) (newline)                    ; -2
+
+; ── a field with all three curl components nonzero, so the component ORDER and
+;    the SIGN convention are pinned and not merely two zeros and a number.
+;    H = (z^2, x^2, y^2)
+;    curl H = (dH3/dy - dH2/dz, dH1/dz - dH3/dx, dH2/dx - dH1/dy)
+;           = (2y - 0, 2z - 0, 2x - 0) = (2y, 2z, 2x)
+;    at (1,2,3) that is (4, 6, 2).
+(define (H v) (list (* (vref v 2) (vref v 2))
+                    (* (vref v 0) (vref v 0))
+                    (* (vref v 1) (vref v 1))))
+(define cH (curl H (vector 1.0 2.0 3.0)))
+(display (vector-ref cH 0)) (newline)                    ; 4
+(display (vector-ref cH 1)) (newline)                    ; 6
+(display (vector-ref cH 2)) (newline)                    ; 2
+
+; ── divergence over the same shapes: it shares the native Jacobian path curl
+;    delegates to, so it is the direct sibling control for the crash fix.
+;    div R = 0 ; div H = 0 ; div D = 1.5 + 2.0 + 2.5 = 6.
+(define (D v) (list (* 1.5 (vref v 0)) (* 2.0 (vref v 1)) (* 2.5 (vref v 2))))
+(display (divergence D (vector 1.0 2.0 3.0))) (newline)  ; 6
+(display (divergence R (vector 1.0 1.0 0.0))) (newline)  ; 0
+(display (divergence H (vector 1.0 2.0 3.0))) (newline)  ; 0
+
+; ── curl of that same diagonal field is zero on every component.
+(define cD (curl D (vector 1.0 2.0 3.0)))
+(display (vector-ref cD 0)) (newline)                    ; 0
+(display (vector-ref cD 1)) (newline)                    ; 0
+(display (vector-ref cD 2)) (newline)                    ; 0

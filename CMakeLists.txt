@@ -3472,6 +3472,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # LE-12 — `curl` over every documented FIELD shape (the companion to the
+    # point-shape coverage above). The Jacobian's OUTPUT dispatch had the mirror
+    # image of the #343 defect: a (list …) RETURN was a cons cell read as a
+    # tensor, so the documented list-returning field SIGSEGV'd; the two engines
+    # also disagreed on the field's arity, so an N-parameter field failed the
+    # LLVM verifier here while the documented arity-1 field was uncallable on
+    # the VM. Asserts closed-form agreement across vector/list returns, arity-1
+    # and arity-N fields, every point spelling, the published doc examples, and
+    # the n=2 2-form, on both the JIT and the AOT lanes. FAIL_REGULAR_EXPRESSION
+    # carries "fatal signal" so the original crash cannot come back green.
+    add_test(
+        NAME curl_field_shapes_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/curl_field_shapes_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(curl_field_shapes_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curl matches its closed form on every documented field and point shape"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME curl_field_shapes_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/curl_field_shapes_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/curl_field_shapes_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/curl_field_shapes_aot'"
+    )
+    set_tests_properties(curl_field_shapes_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curl matches its closed form on every documented field and point shape"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # R7RS 5.3.1: a later top-level define wins. The regression covers, on both
     # the JIT and the AOT lane: value-then-procedure, procedure-then-value,
     # procedure-then-procedure at the same and at a different arity, a forward

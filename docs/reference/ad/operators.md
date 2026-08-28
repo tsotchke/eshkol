@@ -29,7 +29,27 @@ tensor-backward internals see
 
 `f` is a one-argument function (an inline `lambda`, a named `define`, or a
 variable bound to a lambda). `vref` is the tensor/vector element accessor and
-is an alias for `vector-ref` in AD bodies.
+is an alias for `vector-ref` in AD bodies. This one-argument form is the
+canonical one and is what every example below uses.
+
+**Field arity.** `gradient`, `jacobian`, `divergence` and `curl` resolve the
+differentiated function's arity and accept either spelling, identically on the
+LLVM backend and on the bytecode VM:
+
+| arity of `f` | what `f` receives | example |
+|---|---|---|
+| 1 | the whole point, read with `vref` | `(lambda (v) (vector (vref v 1) (vref v 0) 0.0))` |
+| N (= the point's dimension) | the N components as separate scalar arguments | `(lambda (x y z) (vector y x 0.0))` |
+
+The two give the same answer; pick whichever reads better. A field whose arity
+is neither 1 nor the point's dimension is an arity error, not a silent result.
+
+**Field return type.** A vector-valued field (`jacobian`, `divergence`, `curl`)
+may return a `(vector …)` **or** a `(list …)`; both carry the derivative
+exactly, on both engines. A field that returns a `(tensor …)` is differentiated
+on the LLVM backend but raises a named diagnostic on the VM, whose forward dual
+is a scalar carrier and whose tensors hold bare doubles — every tangent would be
+dropped at construction, so it reports instead of approximating.
 
 ---
 
@@ -200,6 +220,29 @@ so it too accepts `vector`, `tensor` and `#(…)` points interchangeably.
                 (* (vref v 0) (vref v 1))))   ; x·y
       (vector 1.0 2.0 3.0))
 ;; => #(0 0 0)
+```
+
+That field is `grad(xyz)`, and the curl of a gradient vanishes identically —
+which is also why it is the sharpest exactness check in the suite: a central
+difference at `h=1e-7` answers `#(1.1102230246251565e-09 …)` here.
+
+A field with a curl that does not vanish, in all four accepted spellings:
+
+```scheme
+;; R = (-y, x, 0) — the textbook rotational field. curl R = (0, 0, 2).
+(curl (lambda (v)   (vector (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl (lambda (v)   (list   (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl (lambda (x y z) (vector (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl (lambda (x y z) (list   (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+```
+
+For `n = 2` the result is the generalized 2-form embedded in 3-space — the
+field is taken to have `F₃ = 0` and no `z` dependence, so
+`curl = (0, 0, ∂F₂/∂x − ∂F₁/∂y)`:
+
+```scheme
+(curl (lambda (v) (vector (- 0.0 (vref v 1)) (vref v 0))) (vector 1.0 1.0))
+;; => #(0 0 2)
 ```
 
 ---
