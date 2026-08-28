@@ -34,7 +34,7 @@ detector_fix_references:
     (usually the nearest or last-named file in the sentence) instead of recognising the multi-file list
     and either (a) skipping the claim as an aggregate, or (b) checking N against the summed line count
     of every named file.
-  affected_count: 7
+  affected_count: 13
 - gap: cross-repo citation
   detail: doc-typed-claims has no notion of a document that deliberately cites another repository's files
     (design RFCs written against a dependency's source tree). Every non-indexed file_path claim is scored
@@ -866,3 +866,70 @@ entries:
     claimed ~7,478 against the FULL lib/ directory sum (316,093 across 346 files today), which was never
     the claim. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 190
     to 212 as newer press-sheet content was added above it; old claim_id 22ed7a44c534f409
+- claim_id: 61a139e8e6931ba2
+  path: docs/DESIGN.md
+  line: 252
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 51100
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "eshkol_vm.c, 2,390 lines; roughly 51,100 lines
+    across the full eshkol_vm.c + vm_*.c module family" -- two distinct claims, and the per-file one
+    (2,390) is grounded and correct. The detector binds the FAMILY aggregate to the single named file.
+    Measured on this tree, the family sums to 51,092 across 34 files, so "roughly 51,100" is accurate as
+    written. Added 2026-08-28 (public-surface documentation pass); the aggregate figure itself was
+    recomputed in the v1.3.5-evolve release audit, which is why the claim_id is new.
+- claim_id: 9fe68d60bbbaecc8
+  path: docs/API_REFERENCE.md
+  line: 7136
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "1,867-line dispatcher plus ~22,355 lines across
+    thirteen per-domain tensor_*_codegen.cpp modules"; the per-file figure (1,867) is grounded, and the
+    detector binds the thirteen-module aggregate to the dispatcher. The thirteen modules sum to exactly
+    22,355 lines on this tree. Added 2026-08-28.
+- claim_id: bf94127e76c4f9d9
+  path: docs/DESIGN.md
+  line: 79
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution, last-named-file variant. The sentence lists all thirteen per-domain
+    modules and then says "totalling roughly 22,355 lines"; the detector binds the aggregate to
+    tensorcore_codegen.cpp, the last file named before the number. tensorcore_codegen.cpp is 225 lines;
+    the thirteen named modules sum to exactly 22,355. Added 2026-08-28.
+- claim_id: d779d74d0cfe0b0d
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 391
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: identical to docs/DESIGN.md:79 -- the same thirteen-module list followed by "totalling
+    approximately 22,355 lines", bound by the detector to the last file named. Sum verified at 22,355.
+    Added 2026-08-28.
+- claim_id: d58186fc8cf5256c
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 518
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22130
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "1,867-line dispatcher; ~22,130 lines across
+    twelve sibling tensor_*_codegen.cpp files"; the dispatcher figure is grounded. Twelve siblings is the
+    thirteen-module set minus tensorcore_codegen.cpp, i.e. 22,355 - 225 = 22,130 exactly. Added 2026-08-28.
+- claim_id: d73fab66ac8246fb
+  path: ROADMAP.md
+  line: 323
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 1280
+  disposition: EXEMPT-HISTORICAL
+  reason: a completed [x] roadmap row recording a point-in-time fact -- "tensor_codegen.cpp 19,940 ->
+    1,280 lines AT THE TIME OF THE V1.2 SPLIT (94% reduction)". The sentence continues "re-measured for
+    this documentation wave at ...", so the current figure is stated separately and is grounded. The
+    detector checks the historical 1,280 against today's 1,867. Correcting it would misrepresent a dated
+    measurement as a current one. Added 2026-08-28.
