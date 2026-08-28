@@ -1107,7 +1107,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          ICC_BIN="${ICC_BIN_OVERRIDE:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+          ICC_BIN="${ICC_BIN_OVERRIDE:-}"
           if [[ -n "$ICC_BIN" && -x "$ICC_BIN" ]]; then
             echo "ICC_BIN=$ICC_BIN" >> "$GITHUB_ENV"
             echo "ICC_AVAILABLE=true" >> "$GITHUB_ENV"
