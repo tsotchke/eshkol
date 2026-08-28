@@ -74,11 +74,11 @@ jobs:
 
       - name: Run GPU execution correctness gate
         shell: bash
-        env:
-          # Fresh build every run — correctness is the point, not build
-          # caching. Self-hosted runners can set REUSE_BUILDS=1 in their
-          # own environment if they persist build-gpu-gate*/ between runs.
-          GPU_GATE_TOL: '1e-4'
+        # Fresh build every run — correctness is the point, not build
+        # caching. Self-hosted runners can set REUSE_BUILDS=1 in their
+        # own environment if they persist build-gpu-gate*/ between runs.
+        # GPU_GATE_TOL is intentionally left unset here so the gate uses
+        # the script's own default (tests/gpu/gpu_correctness_gate.sh).
         run: ./tests/gpu/gpu_correctness_gate.sh
 
       - name: Upload gate logs
