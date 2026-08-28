@@ -73,13 +73,13 @@
   (lambda ()
     (let* ((wire (msgpack-encode
                    (msgpack-map
-                     (list (list "node" "atlas")
+                     (list (list "node" "node-a")
                            (list "clock" 7)))))
            (decoded (msgpack-decode wire))
            (entries (msgpack-map-entries decoded)))
       (check-true (msgpack-map? decoded))
       (check-equal? (length entries) 2)
-      (check-equal? (car entries) (list "node" "atlas"))
+      (check-equal? (car entries) (list "node" "node-a"))
       (check-equal? (cadr entries) (list "clock" 7)))))
 
 (register-test "prefix decode returns cursor and full decode rejects trailing data"

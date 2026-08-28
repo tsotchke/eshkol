@@ -1,25 +1,28 @@
-# Windows 11 x64 test VM on Linux KVM (old-donkey / cosbox)
+# Windows 11 x64 test VM on Linux KVM (self-hosted mesh nodes)
 
-Status as of 2026-07-03: **scaffolding provisioned on old-donkey; awaiting a
-Windows 11 installer ISO** (manual download step below). No VM has been booted
-yet.
+Status as of 2026-07-03: **scaffolding provisioned on the primary Linux KVM
+host; awaiting a Windows 11 installer ISO** (manual download step below). No
+VM has been booted yet.
 
-The mesh has no native Windows x64 CI runner. jack-blupc covers Windows x64
-bare-metal, but a KVM guest on the Linux x64 nodes gives us a reproducible,
-snapshotable Windows environment for release testing.
+The mesh has no native Windows x64 CI runner. A dedicated Windows x64
+bare-metal host covers that case, but a KVM guest on the Linux x64 nodes gives
+us a reproducible, snapshotable Windows environment for release testing.
 
 ## Host inventory
 
+Two Linux x64 nodes on the mesh are KVM-capable; this doc refers to them as
+**Host A** (primary) and **Host B** (fallback).
+
 | Host | KVM | QEMU | OVMF (secure boot) | swtpm | Free disk | Fit |
 |------|-----|------|--------------------|-------|-----------|-----|
-| old-donkey | yes (user in `kvm`,`libvirt`) | 8.2.2 | yes (`OVMF_*_4M.ms.fd`) | yes | 358 G | **primary** |
-| cosbox | yes (device present, user NOT in `kvm` group) | 8.2.2 + virt-install | yes | untested | 21 G (96% full) | fallback only |
+| Host A | yes (user in `kvm`,`libvirt`) | 8.2.2 | yes (`OVMF_*_4M.ms.fd`) | yes | 358 G | **primary** |
+| Host B | yes (device present, user NOT in `kvm` group) | 8.2.2 + virt-install | yes | untested | 21 G (96% full) | fallback only |
 
-old-donkey note: outbound HTTPS to `github.com` and `vlscppe.microsoft.com`
+Host A note: outbound HTTPS to `github.com` and `vlscppe.microsoft.com`
 is blocked from this host; general internet (e.g. `microsoft.com`) works.
 Transfer files over SSH/scp from another mesh node when needed.
 
-## What is already provisioned (old-donkey)
+## What is already provisioned (Host A)
 
 ```
 ~/vms/win11-x64/
@@ -41,21 +44,21 @@ port 22222 and serves the console on VNC display `:11` (localhost only).
    - Visit <https://www.microsoft.com/en-us/software-download/windows11>
    - Select "Windows 11 (multi-edition ISO for x64 devices)", language
      "English (United States)", and download (~6.5 GB).
-   - Copy it to the host: `scp Win11_*.iso old-donkey:~/vms/win11-x64/`
+   - Copy it to the host: `scp Win11_*.iso host-a:~/vms/win11-x64/`
 2. **First boot / install**:
    ```
-   ssh old-donkey
+   ssh host-a
    cd ~/vms/win11-x64
    ./start-win11.sh ~/vms/win11-x64/Win11_*.iso
    ```
-   Tunnel VNC from your workstation: `ssh -L 5911:localhost:5911 old-donkey`,
+   Tunnel VNC from your workstation: `ssh -L 5911:localhost:5911 host-a`,
    then connect a VNC client to `localhost:5911`. Press a key at the "Press any
    key to boot from CD" prompt.
 3. **Inside Windows**: complete setup (a local account is fine), then
    - `Settings > System > Optional features > OpenSSH Server` (or
      `Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`), start the
      `sshd` service and set it to automatic. The guest is then reachable with
-     `ssh -p 22222 <user>@localhost` from old-donkey.
+     `ssh -p 22222 <user>@localhost` from Host A.
 4. **Toolchain for Eshkol CI-equivalent runs** (mirrors `.github/workflows/ci.yml`):
    - Visual Studio 2022 Build Tools with the "Desktop development with C++"
      workload, CMake, Git.
@@ -72,8 +75,8 @@ port 22222 and serves the console on VNC display `:11` (localhost only).
 6. **Snapshot before experiments**: `qemu-img snapshot -c clean-install
    ~/vms/win11-x64/win11.qcow2` (with the VM shut down).
 
-## cosbox caveats
+## Host B caveats
 
-cosbox has the QEMU/OVMF stack but `tyr` is not in the `kvm` group (needs
-`sudo usermod -aG kvm tyr` + re-login) and the disk is 96% full — clear space
-before hosting a VM there.
+Host B has the QEMU/OVMF stack but the configured user is not in the `kvm`
+group (needs `sudo usermod -aG kvm <user>` + re-login) and the disk is 96%
+full — clear space before hosting a VM there.

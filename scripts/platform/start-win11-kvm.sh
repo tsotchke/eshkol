@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Launch the Windows 11 x64 KVM guest on old-donkey (or any Linux KVM host
-# with OVMF + swtpm installed). First boot: pass the installer ISO as $1.
+# Launch the Windows 11 x64 KVM guest on the primary Linux KVM host on the
+# mesh (or any Linux KVM host with OVMF + swtpm installed). First boot: pass
+# the installer ISO as $1.
 #
 #   ./start-win11.sh ~/vms/win11-x64/Win11_25H2_English_x64.iso   # install
 #   ./start-win11.sh                                              # normal boot
 #
-# Console: VNC on localhost:5911 (tunnel with `ssh -L 5911:localhost:5911 old-donkey`).
+# Console: VNC on localhost:5911 (tunnel with `ssh -L 5911:localhost:5911 host-a`).
 # After install, enable OpenSSH Server inside Windows for headless use.
 set -euo pipefail
 

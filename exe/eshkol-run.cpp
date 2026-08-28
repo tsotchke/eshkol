@@ -240,7 +240,8 @@ static std::string captureCommandOutput(const std::string& command) {
 // time. That baked path (e.g. /opt/homebrew/Cellar/llvm/21.1.7/lib) does not
 // exist on a host whose LLVM is a different patch/prefix, so the link fails
 // with "search path '...' not found" / "library 'LLVM-NN' not found" and the
-// binary can't JIT off-builder (Noesis hit this copying atlas's binary to enki).
+// binary can't JIT off-builder (Noesis hit this copying one mesh node's
+// binary to another).
 //
 // We try `llvm-config --libdir` (and the versioned `llvm-config-NN`) from PATH,
 // then common prefixes. Returns empty if nothing resolves, in which case the
@@ -4225,7 +4226,7 @@ int main(int argc, char **argv)
             /* Authoritative capability introspection (GPU-LLM brief §5).
              * Machine-parseable KEY=VALUE lines so a mesh deploy can assert
              * a build has the capabilities a workload needs BEFORE scheduling
-             * it — the version-drift failure (old-donkey shipped a build
+             * it — the version-drift failure (a mesh node shipped a build
              * without gpu-matmul) becomes a one-line precondition check:
              *   eshkol-run --features | grep -q '^gpu=on'
              * Values are compile-time facts about THIS binary. */
