@@ -13664,27 +13664,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * F: R^3 → R^3, point must have exactly 3 components */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
 
-        double point[3];
-        int n = 0;
-        if (x_val.type == VAL_PAIR) {
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < 3) {
-                point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < 3 ? t->total : 3);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        }
+        /* LE-12: use the SHARED point extractor every sibling operator uses.
+         * Curl had its own inline block that recognized only VAL_PAIR and
+         * VAL_TENSOR, so a genuine VAL_VECTOR point — which is what both
+         * `(vector 1.0 2.0 3.0)` and the reader literal `#(1.0 2.0 3.0)`
+         * evaluate to (vm_compiler.c's "vector" form emits OP_VEC_CREATE, NOT
+         * a tensor) — matched neither branch, left n at 0, and fell into the
+         * `n != 3` arm to return a silent `()`. Both of those point forms are
+         * documented as accepted (docs/reference/ad/operators.md's accepted-
+         * point-types table) and both appear in the existing test corpus. */
+        int64_t curl_point_n = 0;
+        double* curl_pt = vm_ad_extract_point(vm, x_val, &curl_point_n, NULL);
+        int n = curl_pt ? (int)curl_point_n : 0;
 
-        if (n != 3) {
-            /* Curl requires exactly 3 dimensions */
+        /* n >= 2 mirrors the native operator, which admits the generalized
+         * exterior derivative for n != 3 ("Works for n>=2 (differential
+         * 2-forms)", docs/API_REFERENCE.md). A 2-D field is embedded in
+         * 3-space as F3 == 0 with no z-dependence: every partial naming index
+         * 2 is exactly zero, so the Jacobian rows/columns that do not exist
+         * stay zero and curl reduces to (0, 0, dF2/dx - dF1/dy) — the same
+         * value the native path now produces. */
+        if (n < 2) {
             vm_push(vm, NIL_VAL);
             break;
         }
+        int curl_nc = n < 3 ? n : 3;
+        double point[3] = { 0.0, 0.0, 0.0 };
+        for (int i = 0; i < curl_nc; i++) point[i] = curl_pt[i];
 
         /* Compute the 3×3 Jacobian by EXACT forward-mode AD:
          *   J[i][j] = ∂Fi/∂xj
@@ -13697,7 +13703,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * of nearby values. On a gradient field this now returns exactly
          * #(0 0 0) where the difference quotient returned
          * #(1.1102230246251565e-09 -3.3306690738754696e-09 0). */
-        double jac[3][3];
+        /* Zero-initialized so that for a 2-D field every entry naming index 2 —
+         * the row F3 and the column d/dz, neither of which exists — is already
+         * the exact 0.0 the embedding gives it, with no read past the point. */
+        double jac[3][3] = {{0}};
         int curl_ok = 1;
 
         /* LE-12: resolve the field's ARITY, by the same rule the gradient path
@@ -13710,21 +13719,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * and pick between them the same way. */
         int curl_arity = vm_closure_arity(vm, f_val);
 
-        for (int j = 0; j < 3 && curl_ok; j++) {
+        for (int j = 0; j < curl_nc && curl_ok; j++) {
             Value args[3];
             Value result;
             if (curl_arity == 1) {
-                Value arg = vm_ad_make_dual_vector(vm, point, 3, j);
+                Value arg = vm_ad_make_dual_vector(vm, point, curl_nc, j);
                 if (vm->error) { curl_ok = 0; break; }
                 result = vm_ad_call_closure(vm, f_val, &arg, 1);
             } else {
-                for (int k = 0; k < 3; k++) {
+                for (int k = 0; k < curl_nc; k++) {
                     VM_AD_MAKE_DUAL(vm, point[k], (k == j) ? 1.0 : 0.0, args[k]);
                 }
-                result = vm_ad_call_closure(vm, f_val, args, 3);
+                result = vm_ad_call_closure(vm, f_val, args, curl_nc);
             }
 
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < curl_nc; i++) {
                 double partial = 0.0;
                 if (!vm_ad_field_component_tangent(vm, result, i, &partial)) {
                     vm_ad_raise_tensor_field_unsupported(vm, "curl");
