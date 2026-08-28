@@ -135,6 +135,10 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
     if (!valid_form_curvature(form, K) || !finite_point(x, n) ||
         !finite_point(y, n) || eshkol_rm_check_point(x, K, (int)n) != nullptr ||
         eshkol_rm_check_point(y, K, (int)n) != nullptr) return false;
+    if (eshkol_rm_points_equal(x, y, (int)n)) {
+        *out = 0.0;
+        return true;
+    }
     if (K == 0.0) {
         double e = 0.0;
         for (size_t i = 0; i < n; ++i) {
@@ -142,31 +146,25 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
             e += d * d;
         }
         *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA * e;
-        return true;
+        return std::isfinite(*out);
     }
     if (K < 0.0) {
         double B = eshkol_rm_ball_param(-K);
         double a = eshkol_rm_one_minus_bnorm2(x, B, (int)n);
         double b = eshkol_rm_one_minus_bnorm2(y, B, (int)n);
-        double e = 0.0;
-        for (size_t i = 0; i < n; ++i) {
-            double d = x[i] - y[i];
-            e += d * d;
-        }
-        double rr = e / (a * b);
-        double psi = eshkol_rm_psi(B * rr, nullptr, nullptr);
-        *out = ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0 * rr * psi * psi;
+        double delta = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            delta = std::hypot(delta, x[i] - y[i]);
+        double scaled_delta = delta / std::sqrt(a * b);
+        double psi = eshkol_rm_psi(B * scaled_delta * scaled_delta,
+                                   nullptr, nullptr);
+        double d = ESHKOL_RM_LAMBDA0 * scaled_delta * psi;
+        *out = d * d;
         return std::isfinite(*out);
     }
     double R = 1.0 / std::sqrt(K);
-    double cs = eshkol_rm_dot(x, y, (int)n) / (R * R);
-    double un2 = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        double u = y[i] - cs * x[i];
-        un2 += u * u;
-    }
-    double theta = std::atan2(std::sqrt(un2) / R, cs);
-    if (un2 == 0.0 && cs < 0.0) return false;
+    if (eshkol_rm_sphere_antipodal(x, y, (int)n)) return false;
+    double theta = eshkol_rm_sphere_angle(x, y, R, (int)n, nullptr);
     *out = R * R * theta * theta;
     return std::isfinite(*out);
 }
@@ -271,6 +269,20 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
         size_t dim = (size_t)factors[i].dim;
         double K = factors[i].curvature;
         double w = factors[i].weight;
+        if (w == 0.0) {
+            /* A zero-weight factor still has to name a valid finite pair on
+             * its manifold, but it must not enter distance or gradient
+             * arithmetic: a valid finite pair can have an overflowing
+             * unweighted squared distance. */
+            if (!finite_point(X + off, dim) || !finite_point(Y + off, dim) ||
+                eshkol_rm_check_point(X + off, K, (int)dim) != nullptr ||
+                eshkol_rm_check_point(Y + off, K, (int)dim) != nullptr) {
+                if (out_bad_factor) *out_bad_factor = i;
+                return false;
+            }
+            off += dim;
+            continue;
+        }
         SfPair r = factor_sq(factors[i].form, K, X + off, Y + off, dim,
                              grad_x ? grad_x + off : nullptr,
                              grad_y ? grad_y + off : nullptr);
@@ -278,7 +290,12 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
             if (out_bad_factor) *out_bad_factor = i;
             return false;
         }
-        acc += w * r.d2;
+        double term = w * r.d2;
+        if (!std::isfinite(term) || !std::isfinite(acc + term)) {
+            if (out_bad_factor) *out_bad_factor = i;
+            return false;
+        }
+        acc += term;
         /* The product metric is block diagonal: factor f's coordinates appear
          * in no other factor's distance, so w_f scales that block of the
          * gradient and there are no cross terms to add. */
@@ -286,6 +303,15 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
             for (size_t j = 0; j < dim; ++j) {
                 if (grad_x) grad_x[off + j] *= w;
                 if (grad_y) grad_y[off + j] *= w;
+            }
+        }
+        if (grad_x || grad_y) {
+            for (size_t j = 0; j < dim; ++j) {
+                if ((grad_x && !std::isfinite(grad_x[off + j])) ||
+                    (grad_y && !std::isfinite(grad_y[off + j]))) {
+                    if (out_bad_factor) *out_bad_factor = i;
+                    return false;
+                }
             }
         }
         off += dim;

@@ -154,6 +154,109 @@ double value_only(const double* X, const double* Y, size_t n,
     return ((const double*)out->tensor_value)[0];
 }
 
+/* Independent high-precision oracle for the sensitive cases below.  The
+ * production path is binary64; this reference evaluates the defining
+ * formulas in the platform's extended long-double arithmetic and performs
+ * the finite difference there, without calling value_only or any shared
+ * geometry helper. */
+long double hp_dot(const long double* a, const long double* b, size_t n) {
+    long double s = 0.0L;
+    for (size_t i = 0; i < n; ++i) s += a[i] * b[i];
+    return s;
+}
+
+long double hp_norm(const long double* a, size_t n) {
+    long double s = 0.0L;
+    for (size_t i = 0; i < n; ++i) s = std::hypotl(s, a[i]);
+    return s;
+}
+
+void hp_project_sphere(long double* p, size_t n, long double K) {
+    long double radius = 1.0L / std::sqrt(K);
+    long double scale = radius / hp_norm(p, n);
+    for (size_t i = 0; i < n; ++i) p[i] *= scale;
+}
+
+long double hp_single_value(const long double* X, const long double* Y,
+                            size_t n, int form, long double K) {
+    if (form == ESHKOL_SPACE_FORM_EUCLIDEAN) {
+        long double e = 0.0L;
+        for (size_t i = 0; i < n; ++i) {
+            long double d = X[i] - Y[i];
+            e += d * d;
+        }
+        return e;
+    }
+    if (form == ESHKOL_SPACE_FORM_HYPERBOLIC) {
+        long double c = -K;
+        long double a = 1.0L - c * hp_dot(X, X, n);
+        long double b = 1.0L - c * hp_dot(Y, Y, n);
+        long double e = 0.0L;
+        for (size_t i = 0; i < n; ++i) {
+            long double d = X[i] - Y[i];
+            e += d * d;
+        }
+        long double q = std::sqrt(c * e / (a * b));
+        long double h = std::asinh(q);
+        return 4.0L * h * h / c;
+    }
+    long double radius = 1.0L / std::sqrt(K);
+    long double xn = hp_norm(X, n), yn = hp_norm(Y, n);
+    long double cs = 0.0L;
+    for (size_t i = 0; i < n; ++i)
+        cs += (X[i] / xn) * (Y[i] / yn);
+    if (cs > 1.0L) cs = 1.0L;
+    if (cs < -1.0L) cs = -1.0L;
+    long double theta = std::acos(cs);
+    return radius * radius * theta * theta;
+}
+
+long double hp_fd_component(const double* X, const double* Y, size_t n,
+                            int form, double K, size_t component,
+                            bool differentiate_x, long double h) {
+    std::vector<long double> xp(n), xm(n), yp(n), ym(n);
+    for (size_t i = 0; i < n; ++i) {
+        xp[i] = xm[i] = static_cast<long double>(X[i]);
+        yp[i] = ym[i] = static_cast<long double>(Y[i]);
+    }
+    if (differentiate_x) {
+        xp[component] += h;
+        xm[component] -= h;
+        if (form == ESHKOL_SPACE_FORM_SPHERICAL) {
+            hp_project_sphere(xp.data(), n, static_cast<long double>(K));
+            hp_project_sphere(xm.data(), n, static_cast<long double>(K));
+        }
+    } else {
+        yp[component] += h;
+        ym[component] -= h;
+        if (form == ESHKOL_SPACE_FORM_SPHERICAL) {
+            hp_project_sphere(yp.data(), n, static_cast<long double>(K));
+            hp_project_sphere(ym.data(), n, static_cast<long double>(K));
+        }
+    }
+    const long double vp = differentiate_x
+        ? hp_single_value(xp.data(), yp.data(), n, form, K)
+        : hp_single_value(xp.data(), yp.data(), n, form, K);
+    const long double vm = differentiate_x
+        ? hp_single_value(xm.data(), ym.data(), n, form, K)
+        : hp_single_value(xm.data(), ym.data(), n, form, K);
+    return (vp - vm) / (2.0L * h);
+}
+
+double hp_fd_max_rel(const double* X, const double* Y, size_t n, int form,
+                     double K, const std::vector<double>& analytic,
+                     bool differentiate_x, long double h) {
+    long double worst = 0.0L;
+    for (size_t i = 0; i < n; ++i) {
+        long double reference = hp_fd_component(X, Y, n, form, K, i,
+                                                differentiate_x, h);
+        long double error = std::fabs(reference - analytic[i]) /
+                            (1.0L + std::fabs(reference));
+        worst = std::max(worst, error);
+    }
+    return static_cast<double>(worst);
+}
+
 /* ===== This file's own geometry, written from the definitions ============ */
 
 double dotv(const double* a, const double* b, size_t n) {
@@ -445,6 +548,58 @@ int main() {
         double want = 0.25 * theta * theta;
         double rel = std::fabs(r.d2 - want) / (1.0 + want);
         report("audit: non-unit positive curvature keeps its radius", r.ok && rel < 1e-13);
+    }
+
+    /* The old shared 1e-15 direction cutoff erased this valid derivative.  The
+     * finite-difference reference is evaluated independently in long double,
+     * with an upstream chosen to keep the expected signal order one. */
+    {
+        const double x[1] = { 0.0 };
+        const double y[1] = { 1e-16 };
+        Run r = run_single(x, y, 1, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0, 1e16);
+        std::vector<double> want_x(1), want_y(1);
+        want_x[0] = static_cast<double>(hp_fd_component(
+            x, y, 1, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0, 0, true, 1e-18L)) * 1e16;
+        want_y[0] = static_cast<double>(hp_fd_component(
+            x, y, 1, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0, 0, false, 1e-18L)) * 1e16;
+        double ex = std::fabs(r.gx[0] - want_x[0]);
+        double ey = std::fabs(r.gy[0] - want_y[0]);
+        char detail[128];
+        std::snprintf(detail, sizeof detail, "gx %.17g ref %.17g, gy %.17g ref %.17g",
+                      r.gx[0], want_x[0], r.gy[0], want_y[0]);
+        report("audit: tiny nonzero H separation keeps its finite gradient",
+               r.ok && ex < 1e-12 && ey < 1e-12, detail);
+    }
+    {
+        const double x[3] = { 0.13, -0.21, 0.17 };
+        const double y[3] = { -0.19, 0.07, 0.22 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -0.25);
+        std::vector<double> gx = r.gx, gy = r.gy;
+        double wx = hp_fd_max_rel(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC,
+                                  -0.25, gx, true, 1e-7L);
+        double wy = hp_fd_max_rel(x, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC,
+                                  -0.25, gy, false, 1e-7L);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "x %.3e, y %.3e", wx, wy);
+        report("audit: non-unit H curvature backward matches high-precision FD",
+               r.ok && wx < 1e-10 && wy < 1e-10, detail);
+    }
+    {
+        const double R = 5e-16;
+        const double x[3] = { R, 0.0, 0.0 };
+        const double y[3] = { 0.0, R, 0.0 };
+        Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_SPHERICAL, 4e30);
+        const double pi = std::acos(-1.0);
+        const double expected_d2 = 0.25 * pi * pi * R * R;
+        const double expected = -pi * R;
+        char detail[128];
+        std::snprintf(detail, sizeof detail, "d2 %.17g, gy %.17g expected %.17g",
+                      r.d2, r.gx[1], expected);
+        report("audit: high-curvature tiny sphere keeps its direction gradient",
+               r.ok && std::fabs(r.d2 - expected_d2) < 1e-45 &&
+               std::fabs(r.gx[0]) < 1e-30 &&
+               std::fabs(r.gx[1] - expected) < 1e-30,
+               detail);
     }
 
     /* ---- 2. coincidence is a value, not a refusal, and it is exactly 0 --- */
@@ -748,6 +903,22 @@ int main() {
         report("audit: off-sphere inputs are refused, not projected", !r.ok);
     }
     {
+        /* This accepted point is not unit length in binary64.  Coincidence is
+         * nevertheless exact because the core checks equality before sphere
+         * normalization/cancellation. */
+        Run r = run_single(kSphY, kSphY, 3,
+                           ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        report("audit: non-exact-radius spherical coincidence is exactly zero",
+               r.ok && r.d2 == 0.0 && all_exactly(r.gx, 0.0) &&
+               all_exactly(r.gy, 0.0));
+    }
+    {
+        const double y[3] = { -kSphY[0], -kSphY[1], -kSphY[2] };
+        Run r = run_single(kSphY, y, 3,
+                           ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        report("audit: rounded spherical antipode is refused consistently", !r.ok);
+    }
+    {
         const double x[3] = { 1.0, 0.0, 0.0 };
         const double eps = 1e-6;
         const double y[3] = { -std::cos(eps), std::sin(eps), 0.0 };
@@ -772,6 +943,18 @@ int main() {
         Run r = run_product(x, y, 1, &f, 1);
         report("audit: zero factor weight contributes exact zero", r.ok &&
                r.d2 == 0.0 && all_exactly(r.gx, 0.0) && all_exactly(r.gy, 0.0));
+    }
+    {
+        const double x[1] = { 1e308 };
+        const double y[1] = { -1e308 };
+        eshkol_manifold_factor_t f = {
+            ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 1, 0.0, 0.0 };
+        Run zero = run_product(x, y, 1, &f, 1);
+        f.weight = 1.0;
+        Run positive = run_product(x, y, 1, &f, 1);
+        report("audit: zero weight skips overflowing distance arithmetic",
+               zero.ok && zero.d2 == 0.0 && all_exactly(zero.gx, 0.0) &&
+               all_exactly(zero.gy, 0.0) && !positive.ok);
     }
     {
         Run neg = run_single(kEucX, kEucY, 3,

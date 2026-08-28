@@ -6474,7 +6474,7 @@ entries:
       product producers, direct log-map gradients, exact diagonal and
       boundary checks, independent golden vectors, and finite differences.
     evidence: >-
-      squared_distance_gradcheck is pinned to 30 checks and runs the real
+      squared_distance_gradcheck is pinned to 45 checks and runs the real
       producers and reverse dispatcher. It covers exact Euclidean values,
       exact coincidence on all forms and a product, identities, boundary
       refusals, golden vectors, and finite differences.
