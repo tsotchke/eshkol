@@ -163,50 +163,6 @@ void update_peak(size_t current) {
 
 extern "C" {
 
-/** Parse a byte-size string with an optional K/M/G (or KiB/MiB/GiB) suffix.
- *  This is the one parser shared by every ESHKOL_* size environment variable,
- *  including ESHKOL_STACK_SIZE, which is read by the hosted stack module. */
-bool eshkol_parse_size(const char* str, size_t* out_bytes) {
-    if (!str || !out_bytes) return false;
-
-    const char* start = skip_space(str);
-    if (!*start) return false;
-
-    errno = 0;
-    char* end = nullptr;
-    double value = strtod(start, &end);
-    if (end == start || errno == ERANGE || !std::isfinite(value) || value < 0.0) {
-        return false;
-    }
-
-    end = const_cast<char*>(skip_space(end));
-
-    double multiplier = 1.0;
-    if (*end) {
-        switch (*end) {
-            case 'K': case 'k': multiplier = 1024.0; break;
-            case 'M': case 'm': multiplier = 1024.0 * 1024.0; break;
-            case 'G': case 'g': multiplier = 1024.0 * 1024.0 * 1024.0; break;
-            default: return false;
-        }
-        ++end;
-        if (*end == 'i' || *end == 'I') ++end;
-        if (*end == 'B' || *end == 'b') ++end;
-        end = const_cast<char*>(skip_space(end));
-    }
-
-    if (*end) return false;
-
-    const double bytes = value * multiplier;
-    if (!std::isfinite(bytes) ||
-        bytes > static_cast<double>(std::numeric_limits<size_t>::max())) {
-        return false;
-    }
-
-    *out_bytes = static_cast<size_t>(bytes);
-    return true;
-}
-
 // ----------------------------------------------------------------------------
 // Initialization
 // ----------------------------------------------------------------------------
