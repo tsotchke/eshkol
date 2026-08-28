@@ -1972,9 +1972,8 @@ Exports (`files.esk`):
 ```
 
 - `(path-directory path) → string` — returns the directory component (uses `"."` for relative paths without a slash).
-- `(file-stat path) → list or #f` — returns `(size mtime-seconds type mtime-nanoseconds device inode)`; `type` is `"f"`, `"d"`, `"l"`, or `"?"`. The first three fields retain the historical positional contract, while the appended nanosecond timestamp and device/inode identity are stable across the native and VM engines.
 - `(atomic-write-file path data)` — writes via a temp file in the same directory then `rename(2)`s into place; safe against torn writes on crash.
-- `(with-atomic-output-file path proc)` — opens a temp file, calls `(proc port)`, then atomically renames to `path` on normal return; returns `#f` if publication fails and deletes the temp on exception.
+- `(with-atomic-output-file path proc)` — opens a temp file, calls `(proc port)`, then atomically renames to `path` on normal return; deletes the temp on exception.
 
 ### B.10 `core.testing`
 
@@ -1987,13 +1986,13 @@ Exports (`testing.esk`):
 ```scheme
 (provide register-test
          check-equal? check-true check-false
-         check-approx assert-close certify-kernel check-raises
+         check-approx check-raises
          run-tests reset-tests!
          *tests* *test-pass-count* *test-fail-count*
          *current-test-fails* *current-test-name*)
 ```
 
-A minimal test harness. `(register-test name thunk)` adds a test to the global registry; `(run-tests)` invokes them all and returns `(values pass-count fail-count)`. Inside a thunk, `check-equal?`, `check-true`, `check-false`, `check-approx` (with tolerance), and `check-raises` (with expected exception kind) record per-test failure messages without aborting the whole batch. `(assert-close actual expected tolerance)` returns a boolean using absolute tolerance below magnitude one and relative tolerance otherwise. `(certify-kernel name actual expected tolerance)` returns that boolean for kernel gates whose exit code is the primary verdict; it is silent and leaves diagnostic `PASS:`/`FAIL:` reporting to its caller.
+A minimal test harness. `(register-test name thunk)` adds a test to the global registry; `(run-tests)` invokes them all and returns `(values pass-count fail-count)`. Inside a thunk, `check-equal?`, `check-true`, `check-false`, `check-approx` (with tolerance), and `check-raises` (with expected exception kind) record per-test failure messages without aborting the whole batch.
 
 Not auto-loaded because baking `core.testing` into `stdlib.o` triggers the symbol-renamer / external-decl path interactions documented at `lib/stdlib.esk:64-69` — embedded test fixtures end up with duplicate `_*tests*` globals in the user's object file.
 
@@ -2278,24 +2277,15 @@ Exports (`memory_store.esk`):
          memory-store-path
          memory-store-open
          memory-store-open-fast
-         memory-store-open-durable
-         memory-store-open-fast-durable
-         memory-store-close!
          memory-store-append!
          memory-store-verify
          memory-store-audit
-         memory-store-audit-linear
-         memory-store-linear-evidence
          memory-store-count
          memory-store-head
-         memory-store-tail
          memory-store-sanitize)
 ```
 
-The durable half of `core.memory`. The compatibility constructor keeps the
-three-vector shape `#(mem-store log path)`. Durable constructors return an
-opaque handle that owns a per-journal single-writer lock for its lifetime and
-retains the authoritative tail without retaining the historic RGA projection.
+The durable half of `core.memory`. A store is a vector `#(mem-store log path)`;
 `memory-store-log` and `memory-store-path` are its accessors, and both raise a
 diagnostic rather than fault when handed a non-store.
 
@@ -2307,22 +2297,14 @@ same canonical rendering the ids are hashed over, so the file *is* the chain: re
 re-parses each line and re-derives every hash.
 
 `(memory-store-open node-id path)` opens or creates the chain and replays any
-existing events strictly: a malformed, torn, hash-invalid, or broken-link row
-causes the open to fail closed rather than replaying a valid prefix.
-`(memory-store-open-fast node-id path)` is the compatibility sidecar path. The
-durable constructors `(memory-store-open-durable node-id path)` and
-`(memory-store-open-fast-durable node-id path)` additionally acquire exclusive
-ownership of the journal. The latter validates the complete file while keeping
-only count, vector-clock, head, and tail state, so its resident event projection
-is constant-size. The sidecar is never authoritative: a crash between append
-and sidecar publication is healed from the journal tail.
+existing events. `(memory-store-open-fast node-id path)` restores the head and vector
+clock from a sidecar file for append-only use, then validates that hint against the
+file tail — the file is the truth, the sidecar only a hint, because a crash between
+the append and the sidecar write leaves the sidecar one event behind.
 
 `(memory-store-append! store type payload)` is the durable counterpart of
-`memory-append!`. Every durable append writes the complete canonical row, flushes
-and syncs it before advancing the handle, and refuses writes after close.
-`(memory-store-close! store)` releases durable ownership. `(memory-store-count
-store)`, `(memory-store-head store)`, and `(memory-store-tail store)` report the
-logical count, last id, and complete last event (`#f` on an empty chain).
+`memory-append!`. `(memory-store-count store)` and `(memory-store-head store)` report
+the event count and the last event's id (`#f` on an empty chain).
 
 `(memory-store-verify store)` audits two layers: `core.memory`'s content hashes,
 which catch a *modified* event, and strict linear linkage, which catches a *deleted*
@@ -2334,18 +2316,6 @@ property; a merged multi-node chain has legitimate forks.
 `(memory-store-audit path)` streams the file without rebuilding the RGA and returns
 `(ms-audit-v1 #t count forks)`, or `(lineno . reason)` where `reason` is
 `unparseable`, `hash-mismatch` or `orphan-parent`.
-
-`(memory-store-audit-linear path)` is the strict single-writer evidence scan. It
-retains only the previous id, rejects a non-`#f` first parent, forks, broken
-links, malformed/torn rows, and content-hash mismatches, and returns
-`(ms-audit-linear-v1 #t count head bytes)`. A missing path is valid empty
-evidence. The byte count is checked before and after the pass; a changed size
-returns `(0 . source-changed)` as a diagnostic and does not grant ownership.
-
-`(memory-store-linear-evidence store)` is the ownership-aware form. It requires
-an open durable handle and cross-checks the scan's count and head against the
-handle before returning evidence. Use it before a rebuild or other mutable
-follow-up that needs both file truth and writer ownership.
 
 `(memory-store-sanitize str)` is the v1 payload-string sanitizer. The v1 payload
 contract is an alist of `(symbol . string|integer)`; strings must contain no double
