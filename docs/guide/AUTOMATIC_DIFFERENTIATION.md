@@ -794,3 +794,15 @@ your-file.esk`.
   the context of the whole language surface.
 - [`docs/reference/ad/INDEX.md`](../reference/ad/INDEX.md) — the machine-verified
   AD operator reference and support matrix.
+- [`docs/reference/ad/tape.md`](../reference/ad/tape.md) — the **explicit
+  reverse-mode tape builtins** (`ad-tape-new`, `ad-var`, `ad-mul`, `ad-backward`,
+  `ad-gradient`, …) and the AD instrumentation counters. These are the low-level
+  counterpart to the operators in §1: you record the graph by hand and run one
+  reverse sweep yourself. The same page documents
+  `(ad-finite-difference-evals)` and `(ad-note-finite-difference!)`, which are what
+  make "no finite-difference fallback anywhere in the gradient path" a measurement
+  a program can perform on itself rather than a claim it has to take on trust.
+- [`docs/reference/stdlib/ad_tape.md`](../reference/stdlib/ad_tape.md) — the
+  pure-Scheme `core.ad.tape` module listed in the table above: a separate tape that
+  records an explicit backward closure per operation, so custom ops and
+  vector-valued nodes differentiate alongside the builtin ones.
