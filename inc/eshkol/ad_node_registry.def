@@ -227,4 +227,9 @@ ESHKOL_AD_NODE(ATAN2,               81, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRI
  */
 ESHKOL_AD_NODE(CUSTOM,              82, SCALAR, CUSTOM_VJP,     ESHKOL_AD_NO_BRIDGE)
 
+/* Squared geodesic distance on space forms and their products.  The bridge
+ * backward uses the log-map form directly, so it remains differentiable at
+ * coincidence where ordinary geodesic distance is not. */
+ESHKOL_AD_NODE(SQUARED_DISTANCE,     83, TENSOR, BRIDGE,       tensor_squared_distance_backward)
+
 /* clang-format on */

@@ -32,6 +32,7 @@ point of the instrument.
 | `golden/poincare_exp_map_origin.json` | `exp_0` | `src/model/grr.c::fast_exp_map_origin` |
 | `golden/poincare_exp_log_basepoint.json` | `exp_x` / `log_x` — standard Möbius (Ganea) formulas | Möbius/Ganea, qLLM-clamped `artanh` |
 | `golden/sheaf_ee_step.json` | one explicit-Euler sheaf diffusion step, `S=3`, `d=2`, FIXED_ORIENT | `python/qllm/torch_geometric.py::sheaf_attention_ee` |
+| `golden/squared_distance.json` | `d²` on `H^n` / `S^n` / `R^n` and a product of them, and what the `sqrt` route does at the diagonal | `inc/eshkol/bridge/space_form.h` (`AD_NODE_SQUARED_DISTANCE`) |
 
 Every Jacobian is a full `m × d` matrix, assembled row by row as
 `gradient(⟨e_k, F⟩)`. A consumer can contract it with any cotangent to get
@@ -530,11 +531,39 @@ aborts naming itself instead of returning zero, while `LEAF` rows keep
   finiteness checks, JSON emission, verdict counters. Loaded by every
   exporter via `(load "qllm_oracle_lib.esk")`; not a probe itself.
 - `poincare_project.esk`, `poincare_retract.esk`, `sphere_ops.esk`,
-  `poincare_maps.esk`, `sheaf_ee_step.esk` — one exporter per primitive
-  family. Each self-checks, prints `PASS:`/`FAIL:` lines and a
+  `poincare_maps.esk`, `sheaf_ee_step.esk`, `squared_distance.esk` — one
+  exporter per primitive family. Each self-checks, prints `PASS:`/`FAIL:` lines and a
   `Passed:`/`Failed:` summary, exits nonzero on failure, and writes its JSON
   to `$QLLM_ORACLE_OUT` (default `tests/qllm_oracle/golden`).
 - `golden/*.json` — the committed golden vectors.
 
-Current corpus: **77 in-language checks across 5 exporters / 9 JSON files**,
+Current corpus: **82 in-language checks across 6 exporters / 10 JSON files**,
 green under both the JIT and AOT lanes.
+
+## `squared_distance.json` is a different kind of artifact
+
+Every other file here exports Eshkol's answer so that qLLM's fp32 kernels have
+something exact to assert against. `squared_distance.json` runs the other way:
+it exports a SECOND opinion on a primitive Eshkol itself now ships.
+
+`AD_NODE_SQUARED_DISTANCE` (`lib/bridge/space_form_ad.cpp`) computes `d²` in the
+log-map form and returns `grad_x d² = -2 log_x(y)`. The exporter computes `d`
+in each chart's textbook closed form — `arcosh` on the ball, `arccos` on the
+sphere — squares it, and lets Eshkol's generic reverse-mode AD differentiate
+the whole composition. Two routes, two languages, no shared line of code; away
+from the diagonal they agree to `1.5e-16` or better, and
+`tests/bridge/squared_distance_gradcheck_test.cpp` asserts exactly that, citing
+each case by id.
+
+The last case is the interesting one. `squared_distance.ball.coincident.d3.c1`
+differentiates the `arcosh` route at `x == y`, where `arcosh'(1)` is infinite
+and `d` is zero, so `2·d·d'` is `0·∞`. The value comes back a clean `0.0` and
+the gradient comes back **non-finite** — recorded as `null` entries with
+`all_finite: false`, beside an `expected_from_log_map_route` block holding the
+exact zeros the shipped node returns at the same point.
+
+That contrast is the artifact's whole reason for existing. `d²` is smooth
+across the diagonal and `d` is not, `d²` cannot be obtained from `d` by
+squaring, and this file is the executable record of why — sitting in the same
+directory as the golden vectors that would otherwise be the only evidence
+anyone read.

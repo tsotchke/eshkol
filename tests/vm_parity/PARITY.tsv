@@ -48,6 +48,7 @@ ad-relu	vm-supported
 ad-sigmoid	vm-supported	
 ad-sin	vm-supported	
 ad-sqrt	vm-supported	
+ad-squared-distance	native-only-justified	C bridge AD primitive only; the VM has no tensor-valued ad_node_t carrier or squared-distance opcode, and no Scheme builtin is exposed for parity
 ad-sub	vm-supported	
 ad-tanh	vm-supported	
 ad-tape-new	vm-supported	

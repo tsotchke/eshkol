@@ -1,0 +1,682 @@
+/**
+ * @file squared_distance_gradcheck_test.cpp
+ * @brief Gradient check for AD_NODE_SQUARED_DISTANCE — d^2 on the space forms
+ *        and on products of them.
+ *
+ * WHAT IS BEING DEFENDED
+ *
+ * `grad_x d^2(x,y) = -2 log_x(y)`, everywhere inside the injectivity ball,
+ * INCLUDING at `x == y` where it is exactly zero. That last clause is the
+ * whole reason this node exists separately from `ad_hyperbolic_distance`,
+ * whose backward correctly refuses at coincidence because `d` has a cone point
+ * there. `d^2` does not, and a node that inherited the refusal would be wrong
+ * — self-attention scores every query against itself, so the diagonal is the
+ * ordinary case rather than an edge one.
+ *
+ * ORDER OF EVIDENCE. Finite differences are the LAST check in this file, not
+ * the first. Four exact references are asserted before any difference quotient
+ * is taken:
+ *
+ *   1. THE FLAT CASE, BIT FOR BIT. On `R^n`, `d^2 = |x-y|^2` and
+ *      `grad_x = 2(x-y)`. Both are exact in floating point, so the comparison
+ *      is `==`, not a tolerance.
+ *
+ *   2. COINCIDENCE, BIT FOR BIT. `x == y` bitwise on every form and on the
+ *      product: the value is exactly `0.0` and every gradient component is
+ *      exactly `0.0`. No tolerance, no epsilon guard doing the work — the
+ *      separation `delta = y - x` is exactly zero and carries the zero
+ *      through.
+ *
+ *   3. THE LOG-MAP IDENTITY. `grad_x d^2` against `-2 log_x(y)` pushed through
+ *      the metric, with `log_x` evaluated by THIS FILE's own transcription of
+ *      the Mobius/Ganea form — a different expression from the one the
+ *      implementation uses, so an agreement is two derivations meeting rather
+ *      than one line read twice. Plus the Gauss lemma, `|grad d^2|_g = 2 d`,
+ *      which brings the distance in as an independent third quantity.
+ *
+ *   4. THE GOLDEN VECTORS. tests/qllm_oracle/golden/squared_distance.json,
+ *      produced by tests/qllm_oracle/squared_distance.esk, which computes
+ *      `d^2` the OTHER way — `arcosh`/`arccos` closed form, squared, then
+ *      differentiated by Eshkol's generic reverse-mode AD. Two routes, two
+ *      languages, no shared code. Cases are cited by id below.
+ *
+ * The same golden file also records what the arcosh route does AT the
+ * diagonal: value `0.0`, gradient non-finite, because `arcosh'(1)` is infinite
+ * and `2 d d'` is `0 * inf`. This file asserts that the shipped node returns
+ * exact zero at the same point. The pair is the design argument in executable
+ * form: `d^2` must be evaluated in the log-map form, never as `sqrt(d^2)`
+ * squared or differentiated.
+ *
+ * EVERYTHING RUNS THROUGH THE REAL PRODUCER AND THE REAL DISPATCH. Nodes are
+ * recorded by `ad_squared_distance` / `ad_product_squared_distance` onto a real
+ * tape and swept by `eshkol_tensor_backward_dispatch`, so the test covers the
+ * two registration sites (the arm in lib/backend/tensor_backward.cpp and the
+ * row in lib/bridge/tensor_backward.cpp's table) as well as the rule. A
+ * hand-built fixture would agree with the backward by construction and could
+ * not see a producer that fills the contract wrongly.
+ *
+ */
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+#include "eshkol/eshkol.h"
+#include "eshkol/bridge/space_form.h"
+
+extern "C" {
+    typedef struct arena arena_t;
+    arena_t* get_global_arena(void);
+    void* arena_allocate_zeroed(arena_t* arena, size_t size);
+    ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
+    ad_node_t* arena_allocate_ad_node(arena_t* arena);
+    void eshkol_tensor_backward_dispatch(void* ad_node_ptr);
+}
+
+namespace {
+
+int g_passed = 0;
+int g_failed = 0;
+
+void report(const char* name, bool ok, const char* detail = nullptr) {
+    std::printf("  %-56s %s", name, ok ? "PASS" : "FAIL");
+    if (detail) std::printf("   [%s]", detail);
+    std::printf("\n");
+    if (ok) ++g_passed; else ++g_failed;
+}
+
+/* ===== Tape plumbing ===================================================== */
+
+ad_node_t* var_node(const double* data, size_t n) {
+    ad_node_t* v = arena_allocate_ad_node(get_global_arena());
+    double* buf = (double*)arena_allocate_zeroed(get_global_arena(),
+                                                 n * sizeof(double));
+    int64_t* sh = (int64_t*)arena_allocate_zeroed(get_global_arena(),
+                                                  sizeof(int64_t));
+    std::memcpy(buf, data, n * sizeof(double));
+    sh[0] = (int64_t)n;
+    v->type = AD_NODE_VARIABLE;
+    v->tensor_value = buf;
+    v->shape = sh;
+    v->ndim = 1;
+    return v;
+}
+
+/** @brief Result of one producer + reverse sweep. */
+struct Run {
+    double d2 = 0.0;
+    std::vector<double> gx, gy;
+    bool ok = false;
+};
+
+/** @brief Record d^2 for a product spec, seed dL/d(d^2) = 1, sweep. */
+Run run_product(const double* X, const double* Y, size_t n,
+                const eshkol_manifold_factor_t* f, size_t k) {
+    Run r;
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, n);
+    ad_node_t* yn = var_node(Y, n);
+    ad_node_t* out = ad_product_squared_distance(tape, xn, yn, f, k);
+    if (!out) return r;
+    r.d2 = ((const double*)out->tensor_value)[0];
+    ((double*)out->tensor_gradient)[0] = 1.0;
+    for (size_t i = tape->num_nodes; i-- > 0;)
+        eshkol_tensor_backward_dispatch(tape->nodes[i]);
+    r.gx.assign((const double*)xn->tensor_gradient,
+                (const double*)xn->tensor_gradient + n);
+    r.gy.assign((const double*)yn->tensor_gradient,
+                (const double*)yn->tensor_gradient + n);
+    r.ok = true;
+    return r;
+}
+
+Run run_single(const double* X, const double* Y, size_t n, int form, double c) {
+    eshkol_manifold_factor_t f;
+    f.form = form;
+    f.reserved = 0;
+    f.dim = (int64_t)n;
+    f.curvature = c;
+    f.weight = 1.0;
+    return run_product(X, Y, n, &f, 1);
+}
+
+/** @brief Forward-only value, for finite differences. */
+double value_only(const double* X, const double* Y, size_t n,
+                  const eshkol_manifold_factor_t* f, size_t k) {
+    ad_node_t* xn = var_node(X, n);
+    ad_node_t* yn = var_node(Y, n);
+    ad_node_t* out = ad_product_squared_distance(nullptr, xn, yn, f, k);
+    if (!out) return NAN;
+    return ((const double*)out->tensor_value)[0];
+}
+
+/* ===== This file's own geometry, written from the definitions ============ */
+
+double dotv(const double* a, const double* b, size_t n) {
+    double s = 0.0;
+    for (size_t i = 0; i < n; ++i) s += a[i] * b[i];
+    return s;
+}
+double normv(const double* a, size_t n) { return std::sqrt(dotv(a, a, n)); }
+
+/** @brief Mobius addition a (+)_c b on the ball of curvature -c, written in
+ *  the standard expanded form rather than in the delta-collected one the
+ *  implementation uses. */
+void mobius_add_ref(const double* a, const double* b, double c, size_t n,
+                    double* out) {
+    double ab = dotv(a, b, n), aa = dotv(a, a, n), bb = dotv(b, b, n);
+    double na = 1.0 + 2.0 * c * ab + c * bb;
+    double nb = 1.0 - c * aa;
+    double den = 1.0 + 2.0 * c * ab + c * c * aa * bb;
+    for (size_t i = 0; i < n; ++i) out[i] = (na * a[i] + nb * b[i]) / den;
+}
+
+/** @brief log_x(y) on the ball, Ganea form:
+ *  ((1-c|x|^2)/sqrt(c)) * artanh(sqrt(c)|u|) u/|u|, u = (-x) (+)_c y. */
+void ball_log_ref(const double* x, const double* y, double c, size_t n,
+                  double* out) {
+    std::vector<double> nx(n), u(n);
+    for (size_t i = 0; i < n; ++i) nx[i] = -x[i];
+    mobius_add_ref(nx.data(), y, c, n, u.data());
+    double un = normv(u.data(), n);
+    if (un == 0.0) { for (size_t i = 0; i < n; ++i) out[i] = 0.0; return; }
+    double sc = std::sqrt(c);
+    double lam = 2.0 / (1.0 - c * dotv(x, x, n));
+    double coef = (2.0 / (sc * lam)) * std::atanh(sc * un) / un;
+    for (size_t i = 0; i < n; ++i) out[i] = coef * u[i];
+}
+
+/** @brief d on the ball, arcosh form — a third expression again. */
+double ball_dist_ref(const double* x, const double* y, double c, size_t n) {
+    double dd = 0.0;
+    for (size_t i = 0; i < n; ++i) { double d = x[i]-y[i]; dd += d*d; }
+    double a = 1.0 - c * dotv(x, x, n);
+    double b = 1.0 - c * dotv(y, y, n);
+    return std::acosh(1.0 + 2.0 * c * dd / (a * b)) / std::sqrt(c);
+}
+
+/** @brief log_x(y) on the sphere of radius R = 1/sqrt(c), arccos form. */
+void sphere_log_ref(const double* x, const double* y, double c, size_t n,
+                    double* out) {
+    double R = 1.0 / std::sqrt(c);
+    double sx = R / normv(x, n), sy = R / normv(y, n);
+    std::vector<double> xp(n), yp(n), u(n);
+    for (size_t i = 0; i < n; ++i) { xp[i] = x[i]*sx; yp[i] = y[i]*sy; }
+    double ca = dotv(xp.data(), yp.data(), n) / (R * R);
+    if (ca >  1.0) ca =  1.0;
+    if (ca < -1.0) ca = -1.0;
+    for (size_t i = 0; i < n; ++i) u[i] = yp[i] - ca * xp[i];
+    double un = normv(u.data(), n);
+    double th = std::acos(ca);
+    if (un == 0.0) { for (size_t i = 0; i < n; ++i) out[i] = 0.0; return; }
+    for (size_t i = 0; i < n; ++i) out[i] = (R * th) * u[i] / un;
+}
+
+double maxabs_diff(const std::vector<double>& a, const double* b, size_t n) {
+    double w = 0.0;
+    for (size_t i = 0; i < n; ++i) w = std::max(w, std::fabs(a[i] - b[i]));
+    return w;
+}
+double max_rel(const std::vector<double>& a, const double* b, size_t n) {
+    double w = 0.0;
+    for (size_t i = 0; i < n; ++i)
+        w = std::max(w, std::fabs(a[i] - b[i]) / (1.0 + std::fabs(b[i])));
+    return w;
+}
+bool all_exactly(const std::vector<double>& a, double v) {
+    for (double e : a) if (e != v) return false;
+    return true;
+}
+
+/* ===== Fixtures, matching tests/qllm_oracle/squared_distance.esk ========= */
+
+const double kEucX[3] = {  0.5, -1.25,  2.0   };
+const double kEucY[3] = { -0.75, 0.5,   0.125 };
+
+const double kBallX[3] = {  0.3, -0.2, 0.1 };
+const double kBallY[3] = { -0.15, 0.25, 0.4 };
+
+/* Already on the unit sphere, as the .esk seeds are after vwith-norm. */
+const double kSphX[3] = { 0.6, -0.8, 0.0 };
+const double kSphY[3] = { 0.20628424925175867, 0.309426373877638,
+                          0.9282791216329139 };
+
+/* H^2(c=1,w=1) x S^2(ambient 3, c=1, w=2) x R^2(w=0.5) — 2+3+2 = 7. */
+const eshkol_manifold_factor_t kProdF[3] = {
+    { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, 1.0, 1.0 },
+    { ESHKOL_SPACE_FORM_SPHERICAL,  0, 3, 1.0, 2.0 },
+    { ESHKOL_SPACE_FORM_EUCLIDEAN,  0, 2, 0.0, 0.5 },
+};
+const double kProdX[7] = {  0.25, -0.1,  0.6, -0.8, 0.0,  1.5,  0.25 };
+const double kProdY[7] = { -0.3,   0.2,  0.2,  0.3, 0.9, -0.5,  1.75 };
+
+/* ===== Golden vectors ====================================================
+ * tests/qllm_oracle/golden/squared_distance.json, 17 significant digits, so
+ * these round-trip exactly. Each block names the case id it was taken from. */
+
+/* case squared_distance.euclidean.d3 */
+const double kGoldEucD2 = 8.140625;
+const double kGoldEucG[3] = { 2.5, -3.5, 3.75 };
+
+/* case squared_distance.ball.d3.c1 */
+const double kGoldBallD2 = 2.488583550322671;
+const double kGoldBallG[3] = { 5.220650016932333, -4.738068922930185,
+                              -2.0326900626151105 };
+
+/* case squared_distance.sphere.d3.c1 */
+const double kGoldSphD2 = 2.872635450625902;
+const double kGoldSphG[3] = { -0.9583573646009185, -0.7187680234506886,
+                              -3.171035397576568 };
+
+/* case squared_distance.product.h2s2r2 */
+const double kGoldProdD2 = 10.563201437978517;
+const double kGoldProdG[7] = { 4.974407747741088, -2.596587685832792,
+                              -1.916714729201836, -1.4375360469013774,
+                              -6.342070795153134,  2.0, -1.5 };
+
+/* ===== Finite differences (last line of defence) ========================= */
+
+double fd_max_rel(const double* X, const double* Y, size_t n,
+                  const eshkol_manifold_factor_t* f, size_t k,
+                  const std::vector<double>& analytic, double h) {
+    std::vector<double> xp(X, X + n);
+    double worst = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double save = xp[i];
+        xp[i] = save + h; double vp = value_only(xp.data(), Y, n, f, k);
+        xp[i] = save - h; double vm = value_only(xp.data(), Y, n, f, k);
+        xp[i] = save;
+        double num = (vp - vm) / (2.0 * h);
+        worst = std::max(worst,
+                         std::fabs(num - analytic[i]) / (1.0 + std::fabs(num)));
+    }
+    return worst;
+}
+
+} /* namespace */
+
+int main() {
+    std::printf("=== squared-distance backward gradcheck ===\n");
+
+    /* ---- 1. flat case, bit for bit -------------------------------------- */
+    {
+        Run r = run_single(kEucX, kEucY, 3, ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        double want_d2 = 0.0;
+        std::vector<double> wx(3), wy(3);
+        for (size_t i = 0; i < 3; ++i) {
+            double d = kEucX[i] - kEucY[i];
+            want_d2 += d * d;
+            wx[i] =  2.0 * d;
+            wy[i] = -2.0 * d;
+        }
+        bool ok = r.ok && r.d2 == want_d2;
+        for (size_t i = 0; i < 3 && ok; ++i)
+            ok = (r.gx[i] == wx[i]) && (r.gy[i] == wy[i]);
+        report("flat: d2 == |x-y|^2 and grad == 2(x-y), EXACTLY", ok);
+    }
+
+    /* ---- 2. coincidence is a value, not a refusal, and it is exactly 0 --- */
+    {
+        Run rh = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        bool ok = rh.ok && rh.d2 == 0.0
+                  && all_exactly(rh.gx, 0.0) && all_exactly(rh.gy, 0.0);
+        report("hyperbolic: x == y gives d2 == 0 and grad == 0 exactly", ok);
+    }
+    {
+        Run rs = run_single(kSphX, kSphX, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        bool ok = rs.ok && rs.d2 == 0.0
+                  && all_exactly(rs.gx, 0.0) && all_exactly(rs.gy, 0.0);
+        report("spherical: x == y gives d2 == 0 and grad == 0 exactly", ok);
+    }
+    {
+        Run re = run_single(kEucX, kEucX, 3, ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        bool ok = re.ok && re.d2 == 0.0
+                  && all_exactly(re.gx, 0.0) && all_exactly(re.gy, 0.0);
+        report("euclidean: x == y gives d2 == 0 and grad == 0 exactly", ok);
+    }
+    {
+        Run rp = run_product(kProdX, kProdX, 7, kProdF, 3);
+        bool ok = rp.ok && rp.d2 == 0.0
+                  && all_exactly(rp.gx, 0.0) && all_exactly(rp.gy, 0.0);
+        report("product: x == y gives d2 == 0 and grad == 0 exactly", ok);
+    }
+
+    /* ---- 3. the log-map identity, against an independent log ------------- */
+    {
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        double lg[3];
+        ball_log_ref(kBallX, kBallY, 1.0, 3, lg);
+        double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
+        double want[3];
+        /* Coordinate gradient = g * (Riemannian gradient) = lambda^2 * (-2 log). */
+        for (int i = 0; i < 3; ++i) want[i] = -2.0 * lam * lam * lg[i];
+        double worst = max_rel(r.gx, want, 3);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", worst);
+        report("ball: grad_x == -2 lambda_x^2 log_x(y)", worst < 1e-14, detail);
+    }
+    {
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        /* Gauss lemma, with the distance as an independent third quantity.
+         * The RIEMANNIAN norm of the gradient is |grad|_euclid / lambda_x,
+         * because the Riemannian gradient is g^{-1} = lambda^{-2} times the
+         * coordinate one. Getting lambda onto the other side is off by
+         * lambda^2 and this check is exactly where that shows. */
+        double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
+        double gn = normv(r.gx.data(), 3);
+        double d = ball_dist_ref(kBallX, kBallY, 1.0, 3);
+        double rel = std::fabs(gn / lam - 2.0 * d) / (1.0 + 2.0 * d);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "rel = %.3e", rel);
+        report("ball: Gauss lemma |grad|/lambda_x == 2 d", rel < 1e-14, detail);
+    }
+    {
+        Run r = run_single(kSphX, kSphY, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        double lg[3];
+        sphere_log_ref(kSphX, kSphY, 1.0, 3, lg);
+        double want[3];
+        for (int i = 0; i < 3; ++i) want[i] = -2.0 * lg[i];
+        double worst = max_rel(r.gx, want, 3);
+        /* The ambient metric on the sphere is the identity, so no radial part
+         * may appear: <grad, x> is zero for a map that is 0-homogeneous in x. */
+        double radial = std::fabs(dotv(r.gx.data(), kSphX, 3));
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e, radial = %.3e",
+                      worst, radial);
+        report("sphere: grad_x == -2 log_x(y), no radial component",
+               worst < 1e-13 && radial < 1e-14, detail);
+    }
+    {
+        /* Symmetry: d^2(x,y) == d^2(y,x) and the two gradients swap. Not a
+         * restatement — the two arguments take different code paths (alpha vs
+         * beta, x vs y in the numerator), so a sign or an index error in one
+         * of them shows here and nowhere else. */
+        Run a = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run b = run_single(kBallY, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        double dv = std::fabs(a.d2 - b.d2);
+        double gv = std::max(maxabs_diff(a.gx, b.gy.data(), 3),
+                             maxabs_diff(a.gy, b.gx.data(), 3));
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "d2 %.3e, grad %.3e", dv, gv);
+        report("ball: d2 and its gradients are symmetric in x, y",
+               dv == 0.0 && gv == 0.0, detail);
+    }
+
+    /* ---- 3b. the exported helpers agree with the independent references -- */
+    {
+        /* eshkol_space_form_log_map and eshkol_space_form_distance are public
+         * API. They are checked here against this file's own transcriptions
+         * rather than being trusted, and they are deliberately NOT what the
+         * gradient checks above compare against: they share a file, and nearly
+         * the algebra, with the backward they would be grading. */
+        double got[3], want[3];
+        bool ok = eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+                                            kBallX, kBallY, 3, got);
+        ball_log_ref(kBallX, kBallY, 1.0, 3, want);
+        double w1 = max_rel(std::vector<double>(got, got + 3), want, 3);
+
+        ok = ok && eshkol_space_form_log_map(ESHKOL_SPACE_FORM_SPHERICAL, 1.0,
+                                             kSphX, kSphY, 3, got);
+        sphere_log_ref(kSphX, kSphY, 1.0, 3, want);
+        double w2 = max_rel(std::vector<double>(got, got + 3), want, 3);
+
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "ball %.3e, sphere %.3e", w1, w2);
+        report("exported log map matches the independent transcriptions",
+               ok && w1 < 1e-14 && w2 < 1e-13, detail);
+    }
+    {
+        double db = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+                                               kBallX, kBallY, 3);
+        double wb = ball_dist_ref(kBallX, kBallY, 1.0, 3);
+        double ds = eshkol_space_form_distance(ESHKOL_SPACE_FORM_SPHERICAL, 1.0,
+                                               kSphX, kSphY, 3);
+        double ws = std::acos(dotv(kSphX, kSphY, 3));
+        double de = eshkol_space_form_distance(ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0,
+                                               kEucX, kEucY, 3);
+        double we = 0.0;
+        for (int i = 0; i < 3; ++i) {
+            double d = kEucX[i] - kEucY[i];
+            we += d * d;
+        }
+        we = std::sqrt(we);
+        double worst = std::max(std::max(std::fabs(db - wb) / wb,
+                                         std::fabs(ds - ws) / ws),
+                                std::fabs(de - we) / we);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", worst);
+        report("exported distance matches arcosh / arccos / |x-y|",
+               worst < 1e-14, detail);
+    }
+    {
+        /* And the two agree with each other where the geometry says they must:
+         * |log_x(y)|_g == d. On the ball that is lambda_x |log|_euclid. */
+        double lg[3];
+        eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+                                  kBallX, kBallY, 3, lg);
+        double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
+        double d = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0,
+                                              kBallX, kBallY, 3);
+        double rel = std::fabs(lam * normv(lg, 3) - d) / (1.0 + d);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "rel = %.3e", rel);
+        report("ball: |log_x(y)|_g == d", rel < 1e-15, detail);
+    }
+
+    /* ---- 4. product additivity, exactly --------------------------------- */
+    {
+        Run p = run_product(kProdX, kProdY, 7, kProdF, 3);
+        Run h = run_single(kProdX + 0, kProdY + 0, 2,
+                           ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        Run s = run_single(kProdX + 2, kProdY + 2, 3,
+                           ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        Run e = run_single(kProdX + 5, kProdY + 5, 2,
+                           ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        double sum = 1.0 * h.d2 + 2.0 * s.d2 + 0.5 * e.d2;
+        bool ok = p.ok && std::fabs(p.d2 - sum) <= 4.0 * 2.22e-16 * std::fabs(sum);
+        /* The gradient is the concatenation of w_f times each factor's own —
+         * the product metric is block diagonal, so no cross term exists. */
+        for (size_t i = 0; i < 2 && ok; ++i) ok = (p.gx[i]     == 1.0 * h.gx[i]);
+        for (size_t i = 0; i < 3 && ok; ++i) ok = (p.gx[2 + i] == 2.0 * s.gx[i]);
+        for (size_t i = 0; i < 2 && ok; ++i) ok = (p.gx[5 + i] == 0.5 * e.gx[i]);
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "d2 %.17g vs %.17g", p.d2, sum);
+        report("product: d2 and grad are the weighted factor sum", ok, detail);
+    }
+
+    /* ---- 5. golden vectors ---------------------------------------------- */
+    {
+        Run r = run_single(kEucX, kEucY, 3, ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        double w = max_rel(r.gx, kGoldEucG, 3);
+        bool ok = r.ok && r.d2 == kGoldEucD2 && w == 0.0;
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("golden squared_distance.euclidean.d3", ok, detail);
+    }
+    {
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        double w = max_rel(r.gx, kGoldBallG, 3);
+        double dv = std::fabs(r.d2 - kGoldBallD2) / kGoldBallD2;
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "d2 rel %.3e, grad rel %.3e", dv, w);
+        report("golden squared_distance.ball.d3.c1",
+               r.ok && dv < 1e-15 && w < 1e-14, detail);
+    }
+    {
+        Run r = run_single(kSphX, kSphY, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        double w = max_rel(r.gx, kGoldSphG, 3);
+        double dv = std::fabs(r.d2 - kGoldSphD2) / kGoldSphD2;
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "d2 rel %.3e, grad rel %.3e", dv, w);
+        report("golden squared_distance.sphere.d3.c1",
+               r.ok && dv < 1e-14 && w < 1e-13, detail);
+    }
+    {
+        Run r = run_product(kProdX, kProdY, 7, kProdF, 3);
+        double w = max_rel(r.gx, kGoldProdG, 7);
+        double dv = std::fabs(r.d2 - kGoldProdD2) / kGoldProdD2;
+        char detail[112];
+        std::snprintf(detail, sizeof detail, "d2 rel %.3e, grad rel %.3e", dv, w);
+        report("golden squared_distance.product.h2s2r2",
+               r.ok && dv < 1e-14 && w < 1e-13, detail);
+    }
+    {
+        /* The other half of case squared_distance.ball.coincident.d3.c1. The
+         * .esk exporter differentiates the arcosh route at x == y and gets a
+         * non-finite gradient with a finite value — recorded there as nulls
+         * with all_finite: false. The shipped node reaches the same point
+         * through the log map. This is the contrast the design rests on. */
+        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        bool finite = r.ok;
+        for (size_t i = 0; i < r.gx.size() && finite; ++i)
+            finite = std::isfinite(r.gx[i]);
+        report("golden ...ball.coincident: log-map route is finite and zero",
+               finite && r.d2 == 0.0 && all_exactly(r.gx, 0.0));
+    }
+
+    /* ---- 6. smoothness through the diagonal ----------------------------- */
+    {
+        /* Walk in along a fixed direction and check the gradient magnitude
+         * against the closed form 2*lambda_x*d, which is what the Gauss lemma
+         * gives in coordinates. `d` here is the ball's own distance at the
+         * constructed separation, so the check is the shape of the decay, not
+         * a re-derivation of the point.
+         *
+         * The bound loosens with r on purpose: T10 of the study measures the
+         * ball chart's own distance resolution as ~eps/r, so at r = 1e-12 no
+         * implementation can do better than ~1e-4 relative. What must hold at
+         * every radius is that the gradient stays FINITE, keeps shrinking, and
+         * tracks 2*lambda*r to that floor — rather than converging to lambda,
+         * which is what the gradient of `d` itself does. */
+        const double dir[3] = { 0.8017837257372732,   /* unit direction */
+                                0.5345224838248488,
+                               -0.2672612419124244 };
+        double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
+        bool ok = true;
+        double prev = 1e300;
+        std::printf("      r          |grad|            2*lambda*r        rel\n");
+        for (int e = 2; e <= 12; ++e) {
+            double rr = std::pow(10.0, -e);
+            /* y = exp_x(rr * unit-Riemannian direction). In the conformal ball
+             * metric a Riemannian unit vector is dir/lambda in coordinates. */
+            double tang[3], scaled[3], y[3];
+            for (int i = 0; i < 3; ++i) tang[i] = dir[i] / lam;
+            double vn = normv(tang, 3);
+            double coef = std::tanh(lam * vn * rr / 2.0) / vn;
+            for (int i = 0; i < 3; ++i) scaled[i] = coef * tang[i];
+            mobius_add_ref(kBallX, scaled, 1.0, 3, y);
+
+            Run r = run_single(kBallX, y, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+            double gn = normv(r.gx.data(), 3);
+            double want = 2.0 * lam * rr;
+            double rel = std::fabs(gn - want) / want;
+            double bar = (e <= 10) ? 1e-6 : 1e-3;
+            bool step_ok = r.ok && std::isfinite(gn) && gn < prev && rel < bar;
+            prev = gn;
+            ok = ok && step_ok;
+            std::printf("      1e-%-3d  %.12e  %.12e  %.2e%s\n",
+                        e, gn, want, rel, step_ok ? "" : "   <-- FAIL");
+        }
+        report("diagonal: |grad| tracks 2*lambda*r from 1e-2 down to 1e-12", ok);
+    }
+
+    /* ---- 7. refusals ---------------------------------------------------- */
+    {
+        /* Outside the ball. Not a coincidence question: the point is off the
+         * manifold and no distance exists, so the producer returns NULL. */
+        const double out_of_ball[3] = { 1.5, 0.0, 0.0 };
+        Run r = run_single(out_of_ball, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        report("refuses a point outside the Poincare ball", !r.ok);
+    }
+    {
+        /* The antipode is the sphere's cut locus. Every direction there is a
+         * minimising geodesic, log_x has no value, and d^2 has no derivative —
+         * a refusal that is correct for the SAME reason the coincidence
+         * refusal is wrong. */
+        const double a[3] = {  0.6, -0.8, 0.0 };
+        const double b[3] = { -0.6,  0.8, 0.0 };
+        Run r = run_single(a, b, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        report("refuses an antipodal pair on the sphere", !r.ok);
+    }
+    {
+        /* Just inside the cut locus still answers, so the refusal above is a
+         * boundary and not a blanket. */
+        const double a[3] = { 1.0, 0.0, 0.0 };
+        const double b[3] = { -0.99999, 0.00447, 0.0 };  /* theta ~ pi - 4.5e-3 */
+        Run r = run_single(a, b, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        bool finite = r.ok;
+        for (size_t i = 0; i < r.gx.size() && finite; ++i)
+            finite = std::isfinite(r.gx[i]);
+        report("still answers just inside the sphere's cut locus", finite);
+    }
+    {
+        eshkol_manifold_factor_t bad[2] = {
+            { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 2, 1.0, 1.0 },
+            { ESHKOL_SPACE_FORM_EUCLIDEAN,  0, 2, 0.0, 1.0 },
+        };
+        Run r = run_product(kProdX, kProdY, 7, bad, 2);   /* 2+2 != 7 */
+        report("refuses factor dimensions that do not cover the point", !r.ok);
+    }
+    {
+        eshkol_manifold_factor_t bad[1] = { { 7, 0, 3, 1.0, 1.0 } };
+        Run r = run_product(kBallX, kBallY, 3, bad, 1);
+        report("refuses an unknown space form", !r.ok);
+    }
+    {
+        eshkol_manifold_factor_t bad[1] = {
+            { ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 3, 0.0, -1.0 } };
+        Run r = run_product(kEucX, kEucY, 3, bad, 1);
+        report("refuses a negative factor weight", !r.ok);
+    }
+
+    /* ---- 8. finite differences, last ------------------------------------ */
+    {
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, 1.0, 1.0 };
+        Run r = run_single(kBallX, kBallY, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        double w = fd_max_rel(kBallX, kBallY, 3, &f, 1, r.gx, 1e-6);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("FD: hyperbolic", w < 1e-8, detail);
+    }
+    {
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_SPHERICAL, 0, 3, 1.0, 1.0 };
+        Run r = run_single(kSphX, kSphY, 3, ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        double w = fd_max_rel(kSphX, kSphY, 3, &f, 1, r.gx, 1e-6);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("FD: spherical", w < 1e-8, detail);
+    }
+    {
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 3, 0.0, 1.0 };
+        Run r = run_single(kEucX, kEucY, 3, ESHKOL_SPACE_FORM_EUCLIDEAN, 0.0);
+        double w = fd_max_rel(kEucX, kEucY, 3, &f, 1, r.gx, 1e-6);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("FD: euclidean", w < 1e-8, detail);
+    }
+    {
+        Run r = run_product(kProdX, kProdY, 7, kProdF, 3);
+        double w = fd_max_rel(kProdX, kProdY, 7, kProdF, 3, r.gx, 1e-6);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("FD: product H2 x S2 x R2", w < 1e-8, detail);
+    }
+    {
+        /* FD AT COINCIDENCE. A central difference here steps to x +/- h, both
+         * at distance ~h from x, so both values are ~h^2 and the quotient is
+         * ~0 — which happens to be right. It is included because it is the one
+         * place FD agrees with the exact answer for the wrong reason, and
+         * saying so is cheaper than letting a reader assume it was the check
+         * that carried the case. Checks 2 and 5 are what carry it. */
+        eshkol_manifold_factor_t f = { ESHKOL_SPACE_FORM_HYPERBOLIC, 0, 3, 1.0, 1.0 };
+        Run r = run_single(kBallX, kBallX, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, 1.0);
+        double w = fd_max_rel(kBallX, kBallX, 3, &f, 1, r.gx, 1e-6);
+        char detail[96];
+        std::snprintf(detail, sizeof detail, "max rel = %.3e", w);
+        report("FD: hyperbolic at coincidence", w < 1e-8, detail);
+    }
+
+    std::printf("=== Results: %d passed, %d failed ===\n", g_passed, g_failed);
+    return g_failed == 0 ? 0 : 1;
+}

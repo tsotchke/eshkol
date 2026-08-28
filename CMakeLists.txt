@@ -2221,6 +2221,8 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   # already knows how to differentiate; without it those backward rules are unreachable.
   lib/bridge/qllm_bridge.cpp
   lib/bridge/tensor_backward.cpp
+  # Native AD primitive for squared geodesic distance and its product factors.
+  lib/bridge/space_form_ad.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
   lib/core/dnc_api.c
@@ -6216,6 +6218,29 @@ if(ESHKOL_BUILD_TESTS AND
         # "0 failed" would stay green if a check silently stopped running.
         PASS_REGULAR_EXPRESSION "Results: 13 passed, 0 failed"
     )
+endif()
+
+# ===== Squared geodesic distance (SW-68) =====================================
+# The closed-form log-map rule is checked through the real producer and
+# reverse sweep.  Exact diagonal cases, independent identities, qLLM golden
+# vectors, boundary refusals, and finite differences cover the native bridge.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/squared_distance_gradcheck_test.cpp")
+    add_executable(squared_distance_gradcheck_test
+        tests/bridge/squared_distance_gradcheck_test.cpp)
+    target_compile_features(squared_distance_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(squared_distance_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(squared_distance_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(squared_distance_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(squared_distance_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME squared_distance_gradcheck
+             COMMAND squared_distance_gradcheck_test)
+    set_tests_properties(squared_distance_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 30 passed, 0 failed")
 endif()
 
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
