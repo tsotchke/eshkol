@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2190/3955 public symbols documented (55.4%), 1765 undocumented.
+**Coverage:** 2191/3956 public symbols documented (55.4%), 1765 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -105,7 +105,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `core/`
 
-281/535 symbols documented.
+282/536 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -124,7 +124,7 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
 | [`core/rational.h`](core/rational.md) | 35 | 10 |
-| [`core/resource_limits.h`](core/resource_limits.md) | 64 | 39 |
+| [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 62 | 50 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |

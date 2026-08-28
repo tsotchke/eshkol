@@ -276,7 +276,7 @@ from the manifest again.
 | S-expression parser | Yes | Recursive descent | Fast |
 | Macro system | Yes | Hygenic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 21 | 43,959 lines (`lib/backend/llvm_codegen.cpp`) |
+| LLVM IR generation | Yes | LLVM 21 | 43,964 lines (`lib/backend/llvm_codegen.cpp`) |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
