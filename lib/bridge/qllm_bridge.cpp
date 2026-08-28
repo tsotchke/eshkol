@@ -42,6 +42,7 @@
 #include "eshkol/logger.h"
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/frechet_mean_core.h"
+#include "eshkol/backend/riemannian_core.h"
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -196,37 +197,6 @@ double norm_sq(const double* v, size_t n) {
 }
 
 /**
- * @brief Mobius addition on the Poincare ball of curvature -c.
- *
- * x (+)_c y = ((1 + 2c<x,y> + c||y||^2) x + (1 - c||x||^2) y)
- *             / (1 + 2c<x,y> + c^2 ||x||^2 ||y||^2)
- */
-void mobius_add(const double* x, const double* y, double c, size_t n, double* out) {
-    double xy = 0.0;
-    for (size_t i = 0; i < n; ++i) xy += x[i] * y[i];
-    double x2 = norm_sq(x, n);
-    double y2 = norm_sq(y, n);
-    double num_x = 1.0 + 2.0 * c * xy + c * y2;
-    double num_y = 1.0 - c * x2;
-    /* Floor on the DENOMINATOR's magnitude, not a perturbation of anything:
-     * the Mobius quotient is undefined where den vanishes, and this keeps the
-     * value finite with the sign the expression had. The floor is a named
-     * constant reached through a comparison rather than a bare literal bound
-     * to `den`, which is what distinguishes a guard from a difference quotient
-     * both to a reader and to the structural no-finite-differences scan
-     * (scripts/gate_ad_shared_node_model.py, INV-ad-exact-no-finite-
-     * differences); this file is on that scan's path list because it records
-     * AD tape nodes. Same convention as the Poincare-ball divisor clamps in
-     * lib/backend/autodiff_codegen.cpp. */
-    static const double kMobiusDenFloor = 1e-15;
-    double den_raw = 1.0 + 2.0 * c * xy + c * c * x2 * y2;
-    double den = den_raw;
-    if (std::fabs(den_raw) < kMobiusDenFloor)
-        den = (den_raw < 0.0) ? -kMobiusDenFloor : kMobiusDenFloor;
-    for (size_t i = 0; i < n; ++i) out[i] = (num_x * x[i] + num_y * y[i]) / den;
-}
-
-/**
  * @brief Poincare-ball membership: is @p p strictly inside the ball of
  *        curvature -c, i.e. sqrt(c)|p| < 1?
  *
@@ -260,7 +230,7 @@ void mobius_add(const double* x, const double* y, double c, size_t n, double* ou
 bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
     double sn = std::sqrt(c) * std::sqrt(norm_sq(p, n));
     if (out_sn) *out_sn = sn;
-    return sn < 1.0;
+    return eshkol_rm_check_point(p, -c, (int)n) == nullptr;
 }
 
 /**
@@ -867,8 +837,6 @@ extern "C" ad_node_t* ad_hyperbolic_distance(ad_tape_t* tape, ad_node_t* x,
     double c;
     if (!poincare_curvature(curvature, "ad_hyperbolic_distance", &c)) return nullptr;
 
-    double diff2 = 0.0;
-    for (size_t i = 0; i < n; ++i) { double d = X[i] - Y[i]; diff2 += d * d; }
     double snx = 0.0, sny = 0.0;
     if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
         eshkol_error("qllm bridge: ad_hyperbolic_distance got a point that is "
@@ -882,15 +850,13 @@ extern "C" ad_node_t* ad_hyperbolic_distance(ad_tape_t* tape, ad_node_t* x,
                      c, 1.0 / std::sqrt(c), snx, sny);
         return nullptr;
     }
-    double dx = 1.0 - c * norm_sq(X, n);
-    double dy = 1.0 - c * norm_sq(Y, n);
-    double arg = 1.0 + 2.0 * c * diff2 / (dx * dy);
-    /* arg = 1 + 2c|x-y|^2/(dx*dy) is >= 1 exactly whenever both points are in
-     * the ball (dx, dy > 0), which the check above has just established. Only
-     * rounding can put it a few ulp below 1, where acosh is NaN. This lifts
-     * that rounding, and only that: it is not a boundary substitution. */
-    if (arg < 1.0) arg = 1.0;
-    double dist = std::acosh(arg) / std::sqrt(c);
+    double dist = 0.0;
+    const char* why = eshkol_rm_distance(X, Y, -c, (int)n, &dist);
+    if (why) {
+        eshkol_error("qllm bridge: ad_hyperbolic_distance refused the operands: %s",
+                     why);
+        return nullptr;
+    }
 
     double* out = alloc_doubles(1);
     if (!out) return nullptr;
@@ -917,15 +883,9 @@ extern "C" ad_node_t* ad_poincare_exp_map(ad_tape_t* tape, ad_node_t* x,
     const double* V = (const double*)v->tensor_value;
     double c;
     if (!poincare_curvature(curvature, "ad_poincare_exp_map", &c)) return nullptr;
-    double sc = std::sqrt(c);
-
-    /* The conformal factor lambda = 2/(1 - c|x|^2) below is where an
-     * out-of-ball base point stops meaning anything: at |x| = 1/sqrt(c) the
-     * denominator is 0 and lambda is infinite, tanh saturates to 1, and the
-     * result is a finite point that was never exp_x(v) of anything; outside,
-     * lambda is NEGATIVE and the map runs backwards. Both cases return a
-     * plausible-looking number with no diagnostic, which is exactly what this
-     * refuses to do. */
+    /* The shared exp-map implementation checks the base point before using
+     * the conformal factor and checks that its computed result remains an
+     * interior point. */
     double snx = 0.0;
     if (!poincare_in_ball(X, c, n, &snx)) {
         eshkol_error("qllm bridge: ad_poincare_exp_map base point is not "
@@ -934,23 +894,18 @@ extern "C" ad_node_t* ad_poincare_exp_map(ad_tape_t* tape, ad_node_t* x,
                      "must be < 1. There is no tangent space at or beyond the "
                      "boundary, so exp_x(v) has no value and no derivative "
                      "there; refusing rather than substituting one.",
-                     c, 1.0 / sc, snx);
+                     c, 1.0 / std::sqrt(c), snx);
         return nullptr;
     }
 
     double* out = alloc_doubles(n);
-    if (!out) return nullptr;
-
-    double vn = std::sqrt(norm_sq(V, n));
-    if (vn < 1e-15) {
-        std::memcpy(out, X, n * sizeof(double));
-    } else {
-        double lam = 2.0 / (1.0 - c * norm_sq(X, n));
-        double coef = std::tanh(sc * lam * vn / 2.0) / (sc * vn);
-        double* scaled = (double*)alloc_doubles(n);
-        if (!scaled) return nullptr;
-        for (size_t i = 0; i < n; ++i) scaled[i] = coef * V[i];
-        mobius_add(X, scaled, c, n, out);
+    double* scratch = alloc_doubles(n);
+    if (!out || !scratch) return nullptr;
+    const char* why = eshkol_rm_exp_map(X, V, -c, (int)n, out, scratch);
+    if (why) {
+        eshkol_error("qllm bridge: ad_poincare_exp_map refused the operands: %s",
+                     why);
+        return nullptr;
     }
 
     ad_node_t* node = make_node(tape, AD_NODE_POINCARE_EXP_MAP, out,
@@ -974,8 +929,6 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     const double* Y = (const double*)y->tensor_value;
     double c;
     if (!poincare_curvature(curvature, "ad_poincare_log_map", &c)) return nullptr;
-    double sc = std::sqrt(c);
-
     double snx = 0.0, sny = 0.0;
     if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
         eshkol_error("qllm bridge: ad_poincare_log_map got a point that is not "
@@ -984,46 +937,20 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
                      "sqrt(c)|y| = %.17g, both of which must be < 1. log_x(y) "
                      "is defined only between interior points; refusing rather "
                      "than substituting a fabricated tangent vector.",
-                     c, 1.0 / sc, snx, sny);
+                     c, 1.0 / std::sqrt(c), snx, sny);
         return nullptr;
     }
 
     double* out = alloc_doubles(n);
     if (!out) return nullptr;
 
-    double* neg = (double*)alloc_doubles(n);
-    double* diff = (double*)alloc_doubles(n);
-    if (!neg || !diff) return nullptr;
-    for (size_t i = 0; i < n; ++i) neg[i] = -X[i];
-    mobius_add(neg, Y, c, n, diff);
-
-    double dn = std::sqrt(norm_sq(diff, n));
-    if (dn >= 1e-15) {
-        double lam = 2.0 / (1.0 - c * norm_sq(X, n));
-        double t = sc * dn;
-        /* artanh(t) diverges as t -> 1, and t CAN reach 1 from two points each
-         * strictly inside the ball: u = (-x) (+)_c y is formed by cancellation,
-         * so points roughly 19 units of hyperbolic distance apart drive it to 1
-         * in f64. This used to read `if (t >= 1.0) t = 1.0 - 1e-12;`, which
-         * returned artanh(1 - 1e-12) ~= 14.2 -- a finite log-map magnitude
-         * where the map has none. Nothing downstream could tell that number
-         * from a real one, and the reverse rule
-         * (tensor_poincare_log_map_backward) would have been differentiating a
-         * clamp. Refuse instead, on the same terms as eshkol_rm_log_map() in
-         * inc/eshkol/backend/riemannian_core.h. */
-        if (!(t < 1.0)) {
-            eshkol_error("qllm bridge: ad_poincare_log_map has no finite value "
-                         "at these operands: sqrt(c)|(-x) (+)_c y| = %.17g must "
-                         "be < 1 for artanh, and the two points are too far "
-                         "apart in hyperbolic distance for the ambient ball "
-                         "coordinates to separate them (c = %.17g, "
-                         "sqrt(c)|x| = %.17g, sqrt(c)|y| = %.17g). Refusing "
-                         "rather than substituting a fabricated log magnitude.",
-                         t, c, snx, sny);
-            return nullptr;
-        }
-        double coef = (2.0 / (sc * lam)) * std::atanh(t) / dn;
-        for (size_t i = 0; i < n; ++i) out[i] = coef * diff[i];
+    double* scratch = alloc_doubles(n);
+    if (!scratch) return nullptr;
+    const char* why = eshkol_rm_log_map(X, Y, -c, (int)n, out, scratch);
+    if (why) {
+        eshkol_error("qllm bridge: ad_poincare_log_map refused the operands: %s",
+                     why);
+        return nullptr;
     }
 
     ad_node_t* node = make_node(tape, AD_NODE_POINCARE_LOG_MAP, out,
@@ -1057,17 +984,20 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         return nullptr;
     }
     size_t head_dim = dim / (size_t)num_heads;
-    double c;
-    if (!poincare_curvature(curvature, "ad_geodesic_attention", &c)) return nullptr;
-    double sc = std::sqrt(c);
+    if (!(curvature == curvature)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention got curvature K = NaN; "
+                     "the Euclidean, hyperbolic, and spherical branches require "
+                     "a finite sectional curvature");
+        return nullptr;
+    }
 
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
     const double* V = (const double*)v->tensor_value;
 
-    /* Every Q and K head-slice is a point of the Poincare ball, and the score
-     * is a geodesic distance between two of them, so each slice must be
-     * strictly inside the ball before any score is computed. This used to be
+    /* Every Q and K head-slice is a point of the selected constant-curvature
+     * manifold, and the score is a geodesic distance between two of them, so
+     * each slice must be validated before any score is computed. This used to be
      * handled INSIDE the score loop by `if (dxq <= 0.0 || dxk <= 0.0) dist =
      * HUGE_VAL;` commented "outside the ball: unreachable", which silently
      * demoted an invalid point to an attention weight of exactly zero: the op
@@ -1085,20 +1015,32 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         for (size_t t = 0; t < seq; ++t) {
             for (int h = 0; h < num_heads; ++h) {
                 size_t off = (b * seq + t) * dim + (size_t)h * head_dim;
-                double snq = 0.0, snk = 0.0;
-                bool okq = poincare_in_ball(Q + off, c, head_dim, &snq);
-                bool okk = poincare_in_ball(K + off, c, head_dim, &snk);
+                const double norm_scale = curvature == 0.0
+                                               ? 1.0
+                                               : std::sqrt(std::fabs(curvature));
+                double snq = norm_scale * std::sqrt(norm_sq(Q + off, head_dim));
+                double snk = norm_scale * std::sqrt(norm_sq(K + off, head_dim));
+                bool okq = eshkol_rm_check_point(Q + off, curvature,
+                                                 (int)head_dim) == nullptr;
+                bool okk = eshkol_rm_check_point(K + off, curvature,
+                                                 (int)head_dim) == nullptr;
                 if (!okq || !okk) {
+                    const double radius = curvature > 0.0
+                                              ? 1.0 / std::sqrt(curvature)
+                                              : (curvature < 0.0
+                                                     ? 1.0 / std::sqrt(-curvature)
+                                                     : 0.0);
                     eshkol_error(
                         "qllm bridge: ad_geodesic_attention got a %s head-slice "
-                        "that is not strictly inside the Poincare ball of "
-                        "curvature -%.17g (radius 1/sqrt(c) = %.17g) at "
-                        "batch %zu, position %zu, head %d: sqrt(c)|q| = %.17g, "
-                        "sqrt(c)|k| = %.17g, both of which must be < 1. The "
-                        "geodesic score has no value there; refusing rather "
-                        "than scoring that slice as infinitely distant and "
-                        "dropping it from the softmax without saying so.",
-                        okq ? "key" : "query", c, 1.0 / sc, b, t, h, snq, snk);
+                        "that is not on the manifold for sectional curvature "
+                        "K = %.17g (radius %.17g) at "
+                        "batch %zu, position %zu, head %d: measured scaled "
+                        "norm(q) = %.17g, scaled norm(k) = %.17g. The first "
+                        "invalid query/key row "
+                        "has no geodesic score; refusing before softmax rather "
+                        "than creating a NaN or dropping it.",
+                        okq ? "key" : "query", curvature, radius, b, t, h,
+                        snq, snk);
                     return nullptr;
                 }
             }
@@ -1115,9 +1057,11 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     double* A = alloc_doubles(batch * (size_t)num_heads * seq * seq);
     if (!O || !scores || !A) return nullptr;
 
-    /* Score by NEGATIVE geodesic distance (closer => higher attention), with the
-     * curvature-adaptive 1/sqrt(c * head_dim) scaling. */
-    double scale = 1.0 / (sc * std::sqrt((double)head_dim));
+    /* Score by NEGATIVE geodesic distance (closer => higher attention), with
+     * the same branch scale as the VM: hyperbolic uses 1/sqrt(-K), while the
+     * Euclidean and spherical branches use one. */
+    double metric_scale = curvature < 0.0 ? std::sqrt(-curvature) : 1.0;
+    double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < num_heads; ++h) {
@@ -1128,20 +1072,14 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                 double mx = -HUGE_VAL;
                 for (size_t j = 0; j < limit; ++j) {
                     size_t kj = (b * seq + j) * dim + off;
-                    double diff2 = 0.0, qn = 0.0, kn = 0.0;
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        double dd = Q[qi + d] - K[kj + d];
-                        diff2 += dd * dd;
-                        qn += Q[qi + d] * Q[qi + d];
-                        kn += K[kj + d] * K[kj + d];
+                    double dist = 0.0;
+                    const char* why = eshkol_rm_distance(
+                        Q + qi, K + kj, curvature, (int)head_dim, &dist);
+                    if (why) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention refused "
+                                     "query/key row (%zu,%zu): %s", i, j, why);
+                        return nullptr;
                     }
-                    /* dxq, dxk > 0 by the in-ball pre-pass above. */
-                    double dxq = 1.0 - c * qn, dxk = 1.0 - c * kn;
-                    double arg = 1.0 + 2.0 * c * diff2 / (dxq * dxk);
-                    /* >= 1 exactly for in-ball points; this lifts rounding a
-                     * few ulp below 1, where acosh is NaN, and nothing else. */
-                    if (arg < 1.0) arg = 1.0;
-                    double dist = std::acosh(arg) / sc;
                     scores[j] = -dist * scale;
                     if (scores[j] > mx) mx = scores[j];
                 }
@@ -1172,7 +1110,7 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         /* params as int64[6], the layout tensor_geodesic_attention_backward
          * reads:
          *   [0] num_heads   [1] head_dim   [2] causal (0/1)
-         *   [3] curvature c bit-cast from double (the "scale_bits" convention
+         *   [3] sectional curvature K bit-cast from double (the "scale_bits" convention
          *       shared with ad_tensor_attention and the Frechet rule)
          *   [4] [5] reserved, zero
          * [0]/[1] deliberately coincide with the named attention_params fields
@@ -1183,7 +1121,7 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         p[0] = (int64_t)num_heads;
         p[1] = (int64_t)head_dim;
         p[2] = causal ? 1 : 0;
-        std::memcpy(&p[3], &c, sizeof c);
+        std::memcpy(&p[3], &curvature, sizeof curvature);
         p[4] = 0;
         p[5] = 0;
 

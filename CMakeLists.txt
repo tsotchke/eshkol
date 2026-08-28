@@ -6215,12 +6215,14 @@ if(ESHKOL_BUILD_TESTS AND
         # 3 distance + 5 exp/log + 3 geodesic + 2 structural, then 25 for the
         # SW-76 contract. Boundary (19): 4 near-boundary exactness (distance
         # identity, distance FD, exp/log inverse, artanh-near-1) + 1
-        # no-finite-log refusal + 8 on/outside-boundary refusals + 3 NaN
-        # refusals + 3 geodesic slice. Curvature sign (6): 4 ops refusing
-        # K >= 0 and NaN + 1 K=0-was-hyperbolic + 1 all-keys-off-manifold.
+        # stable near-antipodal log + 8 on/outside-boundary refusals + 3 NaN
+        # refusals + 3 geodesic slice. Curvature sign and branches: 3
+        # Poincare-only ops refusing K >= 0 and NaN + 1 K=0-was-hyperbolic + 1
+        # all-keys-off-manifold. Euclidean/spherical attention gradchecks and
+        # the VM/bridge agreement add 3 checks.
         # Pinned: a bare "0 failed" would stay green if a check silently
         # stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 38 passed, 0 failed"
+        PASS_REGULAR_EXPRESSION "Results: 40 passed, 0 failed"
     )
 endif()
 

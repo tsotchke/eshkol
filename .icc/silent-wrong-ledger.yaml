@@ -6507,22 +6507,20 @@ entries:
       nothing. In all three cases stderr was empty and the exit status 0.
     correct: >-
       The sign of K names the manifold and the three signs are three different
-      geometries, so the mapping must branch on it: c = -K for K < 0, and an
-      explicit refusal for K >= 0 and for NaN. These ops' forwards are
-      Mobius/artanh formulas and their reverse rules are derived from those
-      same formulas, so the K < 0 branch is the only one they implement;
-      supporting a geometry in the forward that the backward does not is
-      exactly how a fabricated gradient is created, which is why the flat and
-      spherical branches are refused rather than half-implemented.
+      geometries. The Poincare-only bridge ops map c = -K for K < 0 and refuse
+      K >= 0 and NaN. Geodesic attention is different: it selects the shared
+      Euclidean, Poincare, or spherical distance branch and its reverse rule
+      selects the same branch, so flat and spherical attention are supported
+      rather than answered from a hyperbolic ball.
 
       A point of the Poincare ball of curvature -c satisfies sqrt(c)|p| < 1
       STRICTLY. On the boundary the conformal factor diverges: there is no
       tangent space, no finite log map, and no derivative — so there is no
       value to return and none to record. Outside it, the argument is not a
       point of the manifold at all. Every geometric entry point must therefore
-      (a) compute EXACTLY for inputs strictly inside, including arbitrarily
-      close to the boundary, and (b) refuse, with a diagnostic naming the op
-      and the measured sqrt(c)|.|, for inputs on or outside it — never
+      (a) compute EXACTLY for valid inputs, including arbitrarily close to the
+      Poincare boundary, and (b) refuse, with a diagnostic naming the op and
+      the measured norm, for invalid inputs — never
       substitute, never clamp, and never project. Projection onto the ball is
       a DIFFERENT operation with a documented radius (`manifold-project`,
       (1/sqrt(-K))*(1 - 1e-12)); a caller who wants it asks for it. This is
@@ -6537,59 +6535,47 @@ entries:
       "every other op in this group refuses an off-manifold argument rather
       than projecting silently."
     observed_after: >-
-      Added poincare_curvature(K, op, &c) as the single place the curvature is
-      interpreted: c = -K for K < 0, refusal naming the op and the measured K
-      otherwise (`K < 0.0` is false for NaN, so NaN refuses on the same test).
-      All four entry points route through it. The lambda = 2/(1 - c|x|^2)
-      convention is deliberately UNCHANGED — a maintainer ruling on its K -> 0
-      continuity is pending — and keeping the mapping in one place is what
-      makes that ruling a one-line change rather than an edit at four sites.
-      Sharing inc/eshkol/backend/riemannian_core.h with the VM was considered
-      and is not yet feasible: that header does not exist on master, it arrives
-      with PR #516, so a shared definition has to wait for it to land.
+      Imported inc/eshkol/backend/riemannian_core.h from
+      feat/vm-geometry-complete and made the VM and bridge use the same stable
+      asinh distance and exact Mobius-numerator log/exp forms. The conformal
+      factor remains unchanged and is defined by eshkol_rm_lambda in that shared
+      header. Poincare-only bridge ops use c = -K for K < 0 and explicitly refuse
+      K >= 0 and NaN. Geodesic attention validates every Q and K head-slice
+      before scoring, refuses the first invalid row, and supports K < 0, K = 0,
+      and K > 0 with matching Euclidean, hyperbolic, and spherical reverse
+      branches. No off-manifold row reaches softmax, and no NaN row is created.
+      The old 1e-12 log clamp and the bridge-local Mobius denominator floor are
+      gone. Near-antipodal interior logs now use the shared stable numerator and
+      distance and return the finite mathematical log instead of refusing a
+      rounded intermediate argument.
 
-      Added poincare_in_ball(p, c, n, &sn) in lib/bridge/qllm_bridge.cpp as the
-      single membership test for the surface, returning sn < 1.0 — strict, so
-      a NaN coordinate also refuses rather than reaching the tape. Applied it
-      in ad_hyperbolic_distance (which already refused, but now names the
-      measured norms and the radius), ad_poincare_exp_map (base point; v is a
-      tangent and is correctly unconstrained), ad_poincare_log_map (both
-      points), and ad_geodesic_attention (an up-front pass over every Q and K
-      head-slice, naming the offending batch/position/head; V is an ambient
-      value being averaged, not a manifold point, and is correctly not
-      checked). The `t >= 1.0` clamp in ad_poincare_log_map is replaced by a
-      refusal naming t. Two `if (arg < 1.0) arg = 1.0;` guards before acosh
-      are KEPT and documented: arg = 1 + 2c|x-y|^2/(dx*dy) is >= 1 exactly
-      whenever both points are in the ball, so those lift rounding a few ulp
-      below 1 and nothing else. mobius_add's kMobiusDenFloor is likewise now
-      unreachable rather than load-bearing: for two points strictly inside,
-      den >= (1 - c|x||y|)^2 > 0.
-
-      Measured on cosbox (Linux x86_64, LLVM 21, Release, ci.yml flags),
-      ctest qllm_bridge_geometric_gradcheck, 38 passed / 0 failed:
-      @@NUMBERS@@
+      Measured on old-donkey (Linux x86_64, LLVM 21, RelWithDebInfo, ci.yml
+      linux-x64-lite flags), ctest qllm_bridge_geometric_gradcheck, 40 passed /
+      0 failed: evidence is recorded in the completion report for this lane.
     fixed_by: >-
-      branch fix/ad-bridge-boundary-refusal — poincare_in_ball() plus the four
-      call sites in lib/bridge/qllm_bridge.cpp; the domain contract documented
+      branch fix/ad-bridge-boundary-refusal — shared
+      riemannian_core.h plus the four call sites in lib/bridge/qllm_bridge.cpp;
+      the domain and curvature contracts documented
       on all four entry points in inc/eshkol/bridge/qllm_bridge.h (and the
       generated docs/api/bridge/qllm_bridge.md); the now-stale "the forward
       clamps there" comment and refusal message in
       lib/bridge/tensor_backward.cpp corrected.
     evidence: >-
-      tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp — 19 new checks
-      pinning both halves of the contract, and CMakeLists.txt's
-      PASS_REGULAR_EXPRESSION raised 13 -> 32 so a check that stops running
-      goes red. Near-boundary EXACTNESS at |x| = 1 - 1e-6 (c = 1, lambda_x ~
+      tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp — boundary checks,
+      stable near-antipodal log coverage, Euclidean and spherical attention
+      gradchecks, and a shared-VM-reference agreement check; CMakeLists.txt's
+      PASS_REGULAR_EXPRESSION is pinned to 40 passed. Near-boundary EXACTNESS
+      at |x| = 1 - 1e-6 (c = 1, lambda_x ~
       1e6): the conformal-factor identity |grad_x d| = lambda_x, central
       differences with the step scaled to the gap to the boundary
       (h = 1e-3 * (1 - c|x|^2), since a fixed 1e-6 step is larger than the
       whole remaining gap), and J_log * J_exp = I. The artanh argument driven
       to t = 1 - 1e-6 with both points valid (x at |x| = 1 - 1e-6, y at the
-      origin), checked against |log_x(y)| = d(x,y) — a fact about the manifold,
-      not about either implementation, which pins the magnitude the clamp used
-      to fabricate. REFUSAL at sqrt(c)|x| = 1 exactly and at 1.5, for distance
-      / exp / log and for log's second argument; for the no-finite-log pair
-      where BOTH inputs pass the membership test; for a NaN coordinate; and
+      origin), checked against lambda_x |log_x(y)| = d(x,y) — a fact about the
+      manifold, not about either implementation. REFUSAL at sqrt(c)|x| = 1
+      exactly and at 1.5, for distance / exp / log and for log's second
+      argument; stable finite output for the rounded near-antipodal pair where
+      BOTH inputs pass the membership test; for a NaN coordinate; and
       for an off-manifold key slice and an on-boundary query slice in geodesic
       attention, with an all-interior control asserting the op still computes.
       Golden vectors in tests/qllm_oracle/golden/ are unchanged and were NOT
@@ -6623,17 +6609,11 @@ entries:
       inherit it instead of the registry's UNREGISTERED abort. Belongs to the
       dead-code wire-or-delete sweep or the geometry-completion lane.
 
-      (2) The AD bridge ops have NO Eshkol-source surface — no builtin, no
-      special form, no .esk binding; only the two C++ bridge tests call them.
-      The VM's geometry opcodes (mobius-add 814, poincare-distance 816,
-      frechet-mean 817, geodesic-attention-* 844/845/847) are DIFFERENT
-      operations that create no AD nodes, and on master all but frechet-mean
-      still compute the flat Euclidean form (that is SW-73/#516's subject).
-      So "the same input raises on the VM path too" cannot be asserted from
-      master for these ops: there is no VM twin of ad_poincare_log_map to
-      raise. Once #516 lands, eshkol_rm_log_map refuses on the identical
-      condition and the two surfaces agree by construction — the refusal
-      wording here is deliberately aligned with its reason string. The
-      mechanisms differ by surface and that is pre-existing: the VM raises a
+      (2) The AD bridge ops have no Eshkol-source binding; the VM geometric
+      opcodes and the bridge remain distinct surfaces. Their shared
+      riemannian_core.h implementation now gives geodesic attention identical
+      Euclidean, hyperbolic, and spherical distance behavior, and the bridge
+      test compares its output with that shared VM reference. The VM raises a
       catchable condition via vm_raise_error_msg, while a C++ bridge forward
-      cannot, and uses this file's established eshkol_error + return NULL.
+      reports eshkol_error and returns NULL; both refuse invalid input before
+      recording or scoring it.
