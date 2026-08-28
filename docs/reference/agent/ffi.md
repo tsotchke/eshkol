@@ -190,6 +190,120 @@ Practical implication: always verify agent-FFI code under **AOT**, not just
 `-r` — the JIT can resolve a symbol the AOT link would miss if the link-args
 scan didn't fire.
 
+## The object-ABI guard symbol — `eshkol_object_abi_v*`
+
+If a link fails with an undefined symbol that looks like this —
+
+```
+Undefined symbols for architecture arm64:
+  "_eshkol_object_abi_v2_h32_s6_a16", referenced from: ...
+```
+
+on Mach-O, or
+
+```
+undefined reference to `eshkol_object_abi_v2_h32_s6_a16'
+```
+
+on ELF — **nothing is missing from your program.** You have linked two halves of
+one build that disagree about the layout of an Eshkol heap object, and the guard
+refused the link rather than let them run together.
+
+### What the symbol is
+
+`inc/eshkol/abi_fingerprint.h` token-pastes four numbers into a single symbol
+name: the object-ABI version, the object header size, the subtype byte offset and
+the payload alignment. There are two spellings today:
+
+| Build | Symbol |
+|---|---|
+| default (v1 layout) | `eshkol_object_abi_v1_h8_s0_a8` |
+| `-DESHKOL_MEMORY_ABI_V2=ON` | `eshkol_object_abi_v2_h32_s6_a16` |
+
+Exactly one translation unit **defines** it — `lib/core/abi_fingerprint.c`, part of
+the `eshkol-runtime` archive — and its value is the header size, so `nm` on a
+shipped binary answers "which ABI is this?" without the sources. Every emitted LLVM
+module **references** it: `MemoryCodegen::emitObjectAbiGuard` creates an
+external declaration plus a `llvm.used` reference so the reference survives `-O3`.
+C and C++ translation units opt in with the `ESHKOL_ABI_FINGERPRINT_ANCHOR` macro;
+merely including the header does not create the reference.
+
+Change the layout and the symbol's name changes with it, so every artifact built
+against the old one stops linking. That is the intended experience: the alternative
+is two halves of a build agreeing to disagree about where an object's subtype byte
+lives, which is a silently wrong read, not a crash.
+
+### The four causes
+
+An undefined `eshkol_object_abi_*` means one of:
+
+1. a **stale object file** — a `.o` compiled before the layout changed;
+2. a **stale cached JIT artifact** — clear the JIT object cache
+   (`ESHKOL_JIT_CACHE_DIR`, or `ESHKOL_JIT_CACHE=0` to bypass it);
+3. a **stale installed runtime** — the archive on the link line predates the
+   compiler that produced the object;
+4. a **`--shared-lib` artifact built by an older compiler** — the same problem,
+   one indirection out.
+
+The fix in every case is to rebuild the stale half. There is no flag that makes
+the link proceed; a link that proceeds is the failure this guard exists to prevent.
+
+### Diagnosing it
+
+There is **no CLI flag and no environment variable that prints the fingerprint** —
+not `--version`, not a `--print-abi`. Two surfaces exist:
+
+- `nm` the artifacts and compare the `eshkol_object_abi_*` names they carry. The
+  symbol's value is the header size that half was built with.
+- From C, call the two exported accessors declared in `inc/eshkol/abi_fingerprint.h`:
+
+  ```c
+  const char *eshkol_abi_fingerprint_name(void);   /* what the RUNTIME was built with */
+  size_t      eshkol_abi_runtime_header_size(void);
+  ```
+
+  Compare the first against the `ESHKOL_ABI_FINGERPRINT_NAME` macro your own
+  translation unit sees. They differ exactly when you have a mixed link.
+
+### Three cases the guard does not cover
+
+The guard is a **link-time** check, so it is only as good as the link:
+
+- **The WASM lane.** `emitObjectAbiGuard` returns early for `wasm32` — a WASM
+  module resolves the runtime through JS imports, so there is no static link to
+  refuse.
+- **Freestanding objects.** Also skipped, because the freestanding object smoke
+  test asserts the emitted object has *no* undefined symbols at all.
+- **`dlopen()` consumers.** A library loaded at run time never went through a
+  static link. This is what the two accessors above are for: perform the
+  comparison yourself at load time, before you call anything else. Note that
+  `eshkol_abi_runtime_header_size()` reports the **active** header size, which is
+  the point — reporting v1's size unconditionally would defeat the check.
+
+All three are tracked as ADR-0012 Stage 2; see
+[`../../design/adr/0012-object-abi-staged-migration.md`](../../design/adr/0012-object-abi-staged-migration.md).
+
+### The compile-time half
+
+A layout change made *without* updating the numbers is caught earlier still, by a
+static assertion in `abi_fingerprint.h`, whose message tells you what to do:
+
+```
+ESHKOL_OBJECT_ABI_HEADER_SIZE no longer describes the active object header.
+Update inc/eshkol/abi_fingerprint.h and bump ESHKOL_OBJECT_ABI_VERSION so
+stale objects fail to link.
+```
+
+The header also `#error`s rather than assume an ABI if `ESHKOL_MEMORY_ABI_ACTIVE`
+was not supplied — "silently assuming an ABI here would let two halves of one
+build disagree."
+
+`tests/core/abi_layout_pin_test.cpp` (CTest `abi_layout_pin_test`) checks the other
+direction at run time: that the runtime archive's header size matches the test's
+own translation unit, that the guard symbol name agrees, and that the guard symbol
+actually resolved. The static assertions check what the *compiler* was told; that
+test checks what the *runtime archive* actually does.
+
 ## FFI marshalling gotchas
 
 Established behaviors worth knowing before you hit them the hard way. None of
