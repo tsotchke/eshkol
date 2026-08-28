@@ -22,10 +22,13 @@ block are still listed (as "Undocumented" entries) so coverage is visible
 and the reference stays complete.
 
 Usage:
-    scripts/gen_api_docs.py [--repo-root PATH] [--check]
+    scripts/gen_api_docs.py [--repo-root PATH] [--check] [--trace-dir DIR] [--no-trace]
 
-    --check   Do not write files; exit 1 if the generated output would
-              differ from what's on disk (drift check for CI/local use).
+    --check      Do not write files; exit 1 if the generated output would
+                 differ from what's on disk (drift check for CI/local use).
+    --trace-dir  Where --check deposits its eshkol_smoke evidence trace
+                 (api_docs_clean); default scripts/icc_traces.
+    --no-trace   --check: grade only, write no trace.
 
 Output layout (mirrors inc/eshkol/):
     docs/api/README.md              Index grouped by subsystem + coverage
@@ -42,12 +45,30 @@ against an unchanged tree produces byte-identical output.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_TRACE_DIR = REPO_ROOT / "scripts" / "icc_traces"
+TRACE_BASENAME = "api_docs_gate.jsonl"
+PROBE_ID = "api_docs_clean"
+
+
+def emit_trace(trace_dir: Path, status: str, snippet: str) -> Path:
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    path = trace_dir / TRACE_BASENAME
+    event = {
+        "kind": "eshkol_smoke",
+        "name": PROBE_ID,
+        "value": status,
+        "snippet": snippet[:2000],
+        "confidence": 1.0,
+    }
+    path.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 INC_ROOT = REPO_ROOT / "inc" / "eshkol"
 OUT_ROOT = REPO_ROOT / "docs" / "api"
 
@@ -785,6 +806,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     ap.add_argument("--check", action="store_true", help="Check output is up to date; don't write.")
+    ap.add_argument("--trace-dir", type=Path, default=DEFAULT_TRACE_DIR,
+                     help="Where --check writes its eshkol_smoke evidence trace.")
+    ap.add_argument("--no-trace", action="store_true", help="--check: grade only, write no trace.")
     args = ap.parse_args()
 
     inc_root = args.repo_root / "inc" / "eshkol"
@@ -824,8 +848,13 @@ def main() -> int:
                 print(f"stale/missing: {p.relative_to(args.repo_root)}", file=sys.stderr)
             for p in sorted(stale):
                 print(f"orphaned: {p.relative_to(args.repo_root)}", file=sys.stderr)
+            if not args.no_trace:
+                names = [str(p.relative_to(args.repo_root)) for p in (sorted(drift) + sorted(stale))]
+                emit_trace(args.trace_dir, "FAIL", f"{len(names)} stale/orphaned page(s): " + "; ".join(names[:5]))
             return 1
         print("docs/api/ is up to date.")
+        if not args.no_trace:
+            emit_trace(args.trace_dir, "PASS", f"{len(planned)} generated page(s) match tracked headers")
         return 0
 
     # Remove stale generated files from a previous run, then write fresh output.
