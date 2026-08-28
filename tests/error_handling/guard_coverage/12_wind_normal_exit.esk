@@ -1,0 +1,43 @@
+;; ESH-0101 guard coverage — `dynamic-wind` NORMAL exit, inside and around a
+;; `guard`. Split from 05 so that the VM's filed double-after divergence
+;; (tests/vm_parity/found/dynamic_wind_after_twice.esk, PARITY.tsv
+;; `op:DYNAMIC_WIND gap`: the after-thunk runs TWICE on normal exit) costs one
+;; narrow ENGINES.tsv waiver rather than the whole guard x dynamic-wind
+;; surface on the VM axes. Everything here is a normal exit; nothing escapes.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; no exception at all: before/after each run exactly once, body value returned
+(define b1 0) (define a1 0)
+(define r1
+  (guard (e (#t "unreached"))
+    (dynamic-wind (lambda () (set! b1 (+ b1 1)))
+                  (lambda () 42)
+                  (lambda () (set! a1 (+ a1 1))))))
+(chk "wind-normal-value" (equal? r1 42))
+(chk "wind-normal-before-once" (equal? b1 1))
+(chk "wind-normal-after-once" (equal? a1 1))
+
+;; a guard INSIDE the wind body catches, so the wind still exits NORMALLY:
+;; the after thunk must run once, not once per handler activation
+(define a2 0)
+(define r2
+  (dynamic-wind (lambda () #t)
+                (lambda () (guard (e (#t (list 'inner e))) (raise 'q)))
+                (lambda () (set! a2 (+ a2 1)))))
+(chk "guard-inside-wind-value" (equal? r2 (list 'inner 'q)))
+(chk "guard-inside-wind-after-once" (equal? a2 1))
+
+;; two sequential winds inside one guard body: two befores, two afters
+(define b3 0) (define a3 0)
+(define (wound v)
+  (dynamic-wind (lambda () (set! b3 (+ b3 1)))
+                (lambda () v)
+                (lambda () (set! a3 (+ a3 1)))))
+(chk "sequential-winds-value"
+     (equal? (guard (e (#t 'unreached)) (+ (wound 1) (wound 2))) 3))
+(chk "sequential-winds-before-twice" (equal? b3 2))
+(chk "sequential-winds-after-twice" (equal? a3 2))

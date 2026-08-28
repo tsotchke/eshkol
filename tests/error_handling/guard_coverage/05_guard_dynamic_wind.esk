@@ -1,24 +1,16 @@
 ;; ESH-0101 guard coverage — `guard` x `dynamic-wind`.
-;; A raise that escapes a dynamic-wind body into an enclosing guard must run
-;; the AFTER thunk exactly once, and must not re-run the BEFORE thunk.
-;; (tests/vm_parity/found/dynamic_wind_after_twice.esk records a VM
-;; divergence in this area; this case pins the contract on every engine.)
+;; A raise that ESCAPES a dynamic-wind body into an enclosing guard must run
+;; the AFTER thunk exactly once and must not re-run the BEFORE thunk. No
+;; fixture anywhere exercised that combination before this case, on either
+;; substrate. The NORMAL-exit thunk counts live in 12_wind_normal_exit.esk,
+;; where the VM's filed double-after divergence
+;; (tests/vm_parity/found/dynamic_wind_after_twice.esk) can be waived narrowly
+;; without costing the escape paths their VM coverage.
 
 (define (chk name ok)
   (if ok
       (begin (display "PASS:") (display name) (display " "))
       (begin (display "FAIL:") (display name) (display " "))))
-
-;; no exception: before/after each run once, body value returned
-(define b1 0) (define a1 0)
-(define r1
-  (guard (e (#t "unreached"))
-    (dynamic-wind (lambda () (set! b1 (+ b1 1)))
-                  (lambda () 42)
-                  (lambda () (set! a1 (+ a1 1))))))
-(chk "wind-normal-value" (equal? r1 42))
-(chk "wind-normal-before-once" (equal? b1 1))
-(chk "wind-normal-after-once" (equal? a1 1))
 
 ;; raise escaping the wind body: guard catches, after runs EXACTLY once
 (define b2 0) (define a2 0)
@@ -40,15 +32,6 @@
                   (lambda () (set! order (cons 'after order))))))
 (chk "wind-escape-value" (equal? r3 "done"))
 (chk "wind-order" (equal? order (list 'clause 'after 'before)))
-
-;; guard INSIDE the wind body: no escape at all, after still runs once
-(define a4 0)
-(define r4
-  (dynamic-wind (lambda () #t)
-                (lambda () (guard (e (#t (list 'inner e))) (raise 'q)))
-                (lambda () (set! a4 (+ a4 1)))))
-(chk "guard-inside-wind-value" (equal? r4 (list 'inner 'q)))
-(chk "guard-inside-wind-after-once" (equal? a4 1))
 
 ;; nested winds: both after thunks run, innermost first
 (define order2 '())

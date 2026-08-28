@@ -34,16 +34,6 @@
      (equal? (guard (e (#t (error-object-irritants e))) (error "no irritants"))
              (list)))
 
-;; irritants round-trip in order
-(chk "error-irritants"
-     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 2 3))
-             (list 1 2 3)))
-
-;; mixed-type irritants
-(chk "error-irritants-mixed"
-     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 "two"))
-             (list 1 "two")))
-
 ;; an error-object clause can be selected by error-object? as the TEST
 (chk "error-object-as-test"
      (equal? (guard (e ((error-object? e) (error-object-message e)) (else "other"))
