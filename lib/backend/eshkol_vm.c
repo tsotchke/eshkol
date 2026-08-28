@@ -346,7 +346,12 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
 #endif
 }
 /* Builtin function table: name → (native_id, arity) */
-typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
+typedef struct {
+    const char* name;
+    int native_id;
+    int arity;
+    int variadic;
+} BuiltinDef;
 
 static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
@@ -436,7 +441,7 @@ static const BuiltinDef BUILTINS[] = {
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     {"string-byte-length", 571, 1},
     /* Misc — IDs 236-238 */
-    {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
+    {"boolean=?", 236, 2}, {"error", 237, 1, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},
     /* gensym — ID 2227. Was implemented in lib/core/introspection.cpp
      * (eshkol_gensym) but never registered in this table, so `(gensym)`
@@ -989,7 +994,8 @@ static void emit_builtin_preamble(FuncChunk* c) {
         int jover = placeholder(c);
 
         int func_pc = c->code_len;
-        c->constants[cfunc].as.i = func_pc;
+        c->constants[cfunc].as.i = VM_PACK_FUNC_ARITY(
+            func_pc, def->variadic ? 255 : def->arity);
 
         /* Function body: load args from local slots, call native, return */
         for (int a = 0; a < def->arity; a++) {

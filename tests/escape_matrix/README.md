@@ -13,7 +13,8 @@ its originating fix and its retro-catch evidence.
 
 | Path | What |
 |------|------|
-| `arity_parity_baseline.json` | axis-3 shrink-only ratchet — known native-vs-VM parity gaps; a NEW divergence fails the gate. Regenerate with `python3 scripts/p8/p8_arity_sweep.py --native build/eshkol-run --vm build/eshkol-vm-standalone-test --full --update-baseline`. |
+| `arity_parity_baseline.json` | axis-3 shrink-only ratchet — known native-vs-VM parity gaps; a NEW divergence fails the gate. Regenerate with `python3 scripts/p8/p8_arity_sweep.py --native build/eshkol-run --vm build/eshkol-vm-standalone-test --full --aot --update-baseline`. |
+| `../vm_parity/GAP_DISPOSITIONS.tsv` | Canonical one-row disposition and live reproducer route for every VM `gap` row; checked by `scripts/canonicalize_vm_gaps.py` and `run_vm_parity.sh` stage 1. |
 | `five_way_baseline.json` | axis-6 shrink-only ratchet — known doc/manifest/native/VM/provide disagreements; a NEW one fails the gate. Regenerate with `python3 scripts/p8/five_way_surface.py --update-baseline`. |
 | `found/` | minimal repros for REAL bugs the pillar surfaced that are not yet fixed (tracked-open). Do not delete while the bug is open — each flips its generator/suite cell from XKNOWN to a hard gate when the bug is fixed, and is retired only once a permanent regression test replaces it (see "Closed" below). |
 
