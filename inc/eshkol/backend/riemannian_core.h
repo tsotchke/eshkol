@@ -205,6 +205,30 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
     return eshkol_rm_one_minus_dot(x, x, B, n);
 }
 
+/**
+ * @brief p*a + q*b, componentwise, with the two products formed exactly and
+ *        summed with their residuals.
+ *
+ * The Mobius numerator is p x + q y with p and q BOTH of size 1 - B|x|^2, and
+ * for two nearly-antipodal near-boundary points the two terms cancel down to
+ * the square of that. Rounding each product to a double first throws the answer
+ * away even when p and q are themselves exact: at B = 1,
+ * x = 0.999999999, y = -0.999999998 the terms are 2e-9 and the numerator is
+ * 3e-18, so a 1e-25 rounding in each product is a 1e-7 relative error in the
+ * result. Two-product plus two-sum keeps it.
+ */
+static void eshkol_rm_axpby_exact(double p, const double* a, double q,
+                                  const double* b, int n, double* out) {
+    for (int i = 0; i < n; i++) {
+        double p1 = p * a[i], e1 = fma(p, a[i], -p1);
+        double p2 = q * b[i], e2 = fma(q, b[i], -p2);
+        double s  = p1 + p2;
+        double bb = s - p1;
+        double err = (p1 - (s - bb)) + (p2 - bb) + e1 + e2;
+        out[i] = s + err;
+    }
+}
+
 /** @brief The ball parameter B of the chart of curvature -c: the number for
  *         which the ball is |x|^2 < 1/B and Mobius addition is (+)_B. */
 static double eshkol_rm_ball_param(double c) {
@@ -382,7 +406,8 @@ static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
      * being formed by its own cancelling sum 1 + 2B<x,y> + B|y|^2. */
     double num_y = eshkol_rm_one_minus_bnorm2(x, B, n);
     double num_x = den + B * y2 * num_y;
-    for (int i = 0; i < n; i++) out[i] = (num_x * x[i] + num_y * y[i]) / den;
+    eshkol_rm_axpby_exact(num_x, x, num_y, y, n, out);
+    for (int i = 0; i < n; i++) out[i] /= den;
 }
 
 /**
@@ -632,7 +657,7 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
         double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
         double na = dn + B * y2 * nb;
-        for (int i = 0; i < n; i++) V[i] = nb * y[i] - na * x[i];
+        eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
         double Vn = eshkol_rm_norm(V, n);
         if (Vn < ESHKOL_RM_ZERO_NORM) {
             for (int i = 0; i < n; i++) out[i] = 0.0;
