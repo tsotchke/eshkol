@@ -598,11 +598,14 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   an earlier "140/140" figure). The parity-backlog Linux lane remeasured it at
   **194/194**, including the gap-canonicalization and arity-fatal checks.
   The corresponding surface baselines were **323** at the release cut and
-  **328** on the parity-backlog lane.
-  further names that native resolves and the VM does not, entirely outside
-  the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
-  see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
-  item e6/g6).
+  **328** on the parity-backlog lane. PR-02 separately retested the historical
+  `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now
+  loads the canonical stdlib on the source, REPL and ESKB paths, and the
+  retest found 0 native-resolved/VM-missing entries — the baseline is now
+  header-only, and the 956-row ledger has no remaining untracked surface
+  backlog (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) — see
+  [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
+  (conformity audit items e6/g6).
 - Of the 330 `gap` rows, every row has a canonical disposition in
   `tests/vm_parity/GAP_DISPOSITIONS.tsv`; rows with a historical reproducer
   reference a live file under

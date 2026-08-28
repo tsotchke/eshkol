@@ -930,7 +930,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). But `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956; PR-02 retired the historical 323-entry `SURFACE_BASELINE.tsv` backlog after a 323-entry execution-backed VM resolution pass (0 native-resolved/VM-missing). See [VM_PARITY.md](VM_PARITY.md) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
