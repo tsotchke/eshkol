@@ -684,7 +684,7 @@ static void check_log_map_refuses_no_finite_log(void) {
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
     ad_node_t* o = ad_poincare_log_map(nullptr, xn, yn, -1.0);
     report("boundary.log_map_refuses_when_no_finite_log", o == nullptr,
-           "|x| = |y| = 1-1e-9 antipodal (both inside): sqrt(c)|u| reaches 1, "
+           "|x| = |y| = 1-1e-12 antipodal (both inside): sqrt(c)|u| reaches 1, "
            "op returned %s", o ? "a fabricated tangent vector" : "NULL");
 }
 
