@@ -5343,13 +5343,14 @@ entries:
 
   - id: SW-48
     bucket: DOC-DEBT
-    status: open
+    status: closed
     family: ad/architecture
     title: "ADR-0002's dense tensor AD node has never executed: the guard admitting it is unsatisfiable, and the node it would build is routed to the scalar backward and crashes"
     bucket_justification: >-
       Not SILENT-WRONG: measured on this branch, every matmul gradient is exact
-      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal call,
-      one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE: there
+      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal
+      call, one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE:
+      there
       was no green check here proving nothing, because ADR-0000's Stage-7 gate
       (`scalar_ad_nodes_from_matmul == 0`) was never implemented at all — nothing
       counted the nodes. What diverges is the ARCHITECTURE from the ADRs that
@@ -5404,31 +5405,43 @@ entries:
       a dense matmul writing plain doubles there would sever the chain at the
       next tensor op.
     interim: >-
-      The deadness is now DECLARED rather than accidental: the block is gated on
-      a named `constexpr bool kDenseTensorADNodesEnabled = false` with the three
-      blockers and the crash evidence recorded beside it, and stays compiled and
-      type-checked so it cannot bit-rot. The divergence is now MEASURED:
-      tests/ad/matmul_tape_node_count_test.esk records today's scalar node
-      counts as a shrink-only ratchet (33 / 100 / 225 for 2x2 / 3x3 / 4x4)
-      alongside exactness of the gradients, so the day the dense path lands the
-      drop is provable and a regression that inflates the tape is caught. Run by
-      scripts/run_ad_exactness_gate.sh.
+      The former deadness was replaced by a satisfiable, runtime-guarded dense
+      path.  The existing matmul ratchet and the dense differential gate now
+      measure both exactness and the tape-size reduction.
     close_condition: >-
-      recordADNodeTensor allocates tensor_gradient so its nodes reach the tensor
+      recordADNodeTensor sets tensor_value so its nodes reach the tensor
       backward; the dense node is returned as an AD-node-tagged tensor value and
       consumed by the downstream tensor ops; matmul under AD records ONE node;
       the ratchet ceilings in tests/ad/matmul_tape_node_count_test.esk drop to
       O(1) per matmul with the gradients unchanged. That is ADR-0002 Position A
-      ("dense resident tape"), scheduled for v1.6 and unstarted.
+      ("dense resident tape"), now implemented for the ADR-0002 matmul,
+      reduction and elementwise scope.
+    observed_after: >-
+      The compiled LLVM path now takes a satisfiable AD-mode branch.  Matmul,
+      tensor-sum and tensor-mean record one dense node per tensor operation;
+      dense add/sub/mul/div and their broadcast forms record AD_NODE values
+      84-91 and dispatch to the exact shape-aware VJP.  The dense gradcheck
+      covers square, non-square, one-dimensional contraction, dense chains,
+      both matmul operands, elementwise arithmetic and broadcast accumulation.
+      Its finite-difference comparisons and closed-form vectors pass, and the
+      2x2 and 6x6 matmul tape counts are both 4 under the dense lowering.
+    evidence: >-
+      tests/ad/dense_tensor_ad_gradcheck_test.esk;
+      scripts/run_dense_tensor_ad_gate.sh;
+      scripts/gate_exhaustive_dispatch.py;
+      inc/eshkol/ad_node_registry.def rows 84-91;
+      lib/backend/tensor_backward.cpp dense elementwise VJP and dispatcher
+      cases.  The dense gate runs the JIT dense and scalar lowerings and
+      requires byte-identical GRAD lines plus a smaller dense tape.
     caught_by: [architecture-audit-2026-08-25]
     missed_by: [icc-readiness, icc-smoke, ad-adversarial, ctest, vm-parity]
     notes: >-
       Checked for the same dead-guard SHAPE elsewhere: `!after_*_compute`
-      appears exactly once in the tree. conv2d, batch-norm, layer-norm,
-      attention, elementwise tensor arithmetic and the reductions do not carry a
-      dead dense block — they have no dense block at all, scalarizing through
-      recordADNodeBinary/recordADNodeUnary in live loops. So the count of this
-      bug shape is ONE; the count of tensor ops still scalarizing is all of them.
+      appears exactly once in the tree. conv2d, batch-norm, layer-norm and
+      attention do not carry a dead dense block; they remain scalarizing until
+      their own exact VJPs are routed. The dense path now covers the ADR-0002
+      matmul, reduction and elementwise scope. So the count of this specific
+      dead-guard shape is ONE.
 
   - id: SW-49
     bucket: LOUD-ERROR

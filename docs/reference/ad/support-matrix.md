@@ -74,7 +74,8 @@ to a training loop.
 | `tensor-sum` (whole tensor, dense operand) | ONE `AD_NODE_SUM` | COMPLETE |
 | `tensor-mean` (whole tensor, dense operand) | ONE `AD_NODE_MEAN` | COMPLETE |
 | dense/scalar boundary | ONE `AD_NODE_TENSOR_PACK` per operand that arrives scalarized; identity scatter backward | COMPLETE |
-| elementwise `tensor-add/sub/mul/div`, broadcast variants | one scalar node per element | Scalarizing — ADR-0002 Phase C.3/C.4, v1.4 |
+| elementwise `tensor-add/sub/mul/div` | ONE dense node (`AD_NODE_TENSOR_*_DENSE`) | COMPLETE |
+| broadcast elementwise variants | ONE dense node (`AD_NODE_TENSOR_BROADCAST_*_DENSE`), summed VJP over broadcast axes | COMPLETE |
 | `conv2d`, `attention`, norm layers | one scalar node per scalar operation | Scalarizing — dense kernels exist in `lib/backend/tensor_backward.cpp`, producers not yet routed |
 | `embedding` | nothing (plain gather) | Build item, see [architecture.md](architecture.md) |
 | VM (`eshkol-vm-standalone-test`) | scalar `AdNode` only; no `ad_node_t`, no tensor node types | Not implemented — see `tests/vm_parity/PARITY.tsv` |
