@@ -93,8 +93,10 @@ each degrades toward retaining memory:
 - an escaping object with an **out-of-line payload** (a vector's element array,
   a bignum's limbs) keeps the arena block that payload occupies; escaping
   cons/closure structure is copied out exactly;
-- a **continuation captured inside a region** pins that region, so it is
-  promoted whole rather than freed;
+- a **continuation captured inside a region** pins every region open at capture
+  time, so each is promoted whole rather than freed. Native narrows this to
+  captures that can outlive their frame; the VM pins on region depth alone. See
+  [Continuations and regions](#continuations-and-regions) below;
 - a subtype the evacuator does not classify pins its region and says so once.
 
 **Unless a section says otherwise, every reclamation statement on this page
@@ -485,6 +487,42 @@ There is exactly **one teardown path**. Explicit close, out-of-order close,
 `eshkol_region_unwind_to()` primitive — promote the kept values one level out,
 restore the allocation slot, pop — so the structured and unstructured surfaces
 cannot drift apart.
+
+### Continuations and regions
+
+A `call/cc` captured inside an open region is the one case where a region is not
+reclaimed at its exit. The rule on both engines: **a capture that may outlive the
+frame it was taken in pins every region open at that moment**, and a pinned
+region is **promoted** — its arena blocks are spliced whole into the enclosing
+arena rather than returned to the allocator. Nothing moves, so a resumed
+continuation's interior pointers stay valid; nothing is allocated from those
+blocks again, so nothing it reads can be overwritten; and they are freed when the
+enclosing scope ends, which at the outermost level means process exit. The
+failure direction is retained memory, never a dangling reference.
+
+Two things narrow that cost, and only the first is engine-specific.
+
+**Native does not pin an escape-only capture.** When the compiler can prove the
+continuation cannot outlive its frame — `(call/cc (lambda (k) … (k v) …))`, `k`
+only ever in operator position — no enclosing region can outlive the
+continuation's usable extent, so no pin is taken and the region reclaims in full.
+`tests/memory/region_callcc_flat_rss_test.sh` gates that resident shape at
+**exactly 0.000 bytes/tick** across an 8× horizon. The exception is a region
+opened through the **handle API**: `(region-close h)` is an ordinary call and can
+run inside the `call/cc` procedure, so a handle-owned open region makes even an
+escape-only capture pin. The bytecode VM pins on region depth alone and so
+retains the region in all of these cases; the printed answer is identical on
+every engine.
+
+**A pin is per capture, not per region exit.** Once taken it is never lifted —
+deciding that a first-class continuation can no longer be invoked would need a
+tracing collector — so the decision that matters is whether a capture takes one
+at all.
+
+Both engines announce a pin once per process on stderr, and
+`ESHKOL_VM_REGION_QUIET=1` silences both. Full detail, including what the VM's
+note's parenthetical reason means, is in
+[Continuations › Interaction with regions](../language/continuations.md#interaction-with-regions).
 
 ### Interaction with the automatic nursery
 

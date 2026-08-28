@@ -126,6 +126,7 @@ arena_t* arena_create(size_t default_block_size) {
         return nullptr;
     }
 
+    arena->adopted_blocks = nullptr;   // SW-74: filled only by arena_adopt_blocks()
     arena->current_scope = nullptr;
     arena->default_block_size = default_block_size;
     arena->total_allocated = default_block_size;
@@ -215,6 +216,22 @@ void arena_destroy(arena_t* arena) {
         free_arena_block(block);
         block = next;
     }
+
+    // SW-74: blocks promoted into this arena from a pinned region
+    // (arena_adopt_blocks) are owned here and die here. They are poisoned on
+    // the same terms as the allocation chain, which is what makes a stale
+    // continuation-held pointer into a promoted region read as 0xCB rather
+    // than as plausible data once the enclosing scope has ended.
+    block = arena->adopted_blocks;
+    while (block) {
+        arena_block_t* next = block->next;
+        if (poison && block->memory && block->used > 0) {
+            std::memset(block->memory, 0xCB, block->used);
+        }
+        free_arena_block(block);
+        block = next;
+    }
+    arena->adopted_blocks = nullptr;
 
     // Free all scopes
     arena_scope_t* scope = arena->current_scope;
@@ -548,6 +565,21 @@ void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* va
 void arena_reset(arena_t* arena) {
     if (!arena) return;
 
+    // SW-74: a reset discards everything this arena holds, and adopted blocks
+    // (promoted from a pinned region) are held by this arena, so they go too.
+    // Keeping them would make reset a partial rewind and leave the promoted
+    // bytes unreachable but still charged.
+    {
+        arena_block_t* adopted = arena->adopted_blocks;
+        while (adopted) {
+            arena_block_t* next = adopted->next;
+            arena->total_allocated -= adopted->size;
+            free_arena_block(adopted);
+            adopted = next;
+        }
+        arena->adopted_blocks = nullptr;
+    }
+
     // Reset all blocks except the first one
     arena_block_t* first_block = nullptr;
     arena_block_t* block = arena->current_block;
@@ -587,6 +619,60 @@ void arena_reset(arena_t* arena) {
     arena->current_scope = nullptr;
 
     eshkol_debug("Reset arena");
+}
+
+// SW-74: zero-copy promotion of a pinned region's arena into the arena that
+// encloses it. See arena_memory.h for the contract and the VM analogue
+// (vm_evac_promote_all_blocks, lib/backend/vm_region_evac.c).
+//
+// The moved chain is spliced onto dst->adopted_blocks rather than onto
+// dst->current_block for one reason that matters: dst is usually still being
+// allocated into, and both allocation (arena_allocate_aligned) and rewind
+// (arena_pop_scope, arena_reset) walk the current_block chain. Splicing there
+// would either hand a later allocation a pointer INTO memory a live
+// continuation still reads, or let a scope pop free it early. The adopted list
+// is walked by nothing but teardown.
+size_t arena_adopt_blocks(arena_t* dst, arena_t* src) {
+    if (!dst || !src || dst == src) return 0;
+
+    arena_lock(src);
+    arena_block_t* chain = src->current_block;
+    arena_block_t* also = src->adopted_blocks;
+    src->current_block = nullptr;
+    src->adopted_blocks = nullptr;
+    arena_unlock(src);
+
+    if (!chain && !also) return 0;
+
+    // A region that was itself a promotion target (nested pinned regions pop
+    // innermost-first) carries adopted blocks of its own; they promote onward
+    // in the same move, so an N-deep pinned nest costs one splice per level and
+    // never a copy.
+    arena_block_t* tail = chain;
+    if (tail) {
+        while (tail->next) tail = tail->next;
+        tail->next = also;
+    } else {
+        chain = also;
+    }
+
+    size_t moved = 0;
+    arena_block_t* last = chain;
+    for (arena_block_t* b = chain; b; b = b->next) {
+        moved += b->size;
+        last = b;
+    }
+
+    arena_lock(dst);
+    last->next = dst->adopted_blocks;
+    dst->adopted_blocks = chain;
+    dst->total_allocated += moved;
+    arena_unlock(dst);
+
+    // src->total_allocated is deliberately left alone: src is on its way to
+    // arena_destroy(), and decrementing it would only make the debug line
+    // printed there disagree with what the arena actually held.
+    return moved;
 }
 
 // Statistics

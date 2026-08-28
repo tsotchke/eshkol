@@ -944,6 +944,7 @@ class EshkolRuntime {
                 // continuation will throw at runtime via setjmp/longjmp
                 // stubs above, which is detectable by the user.
                 eshkol_make_continuation_state:   () => 0,
+                eshkol_make_continuation_state_flags: () => 0,
                 eshkol_make_continuation_closure: () => 0,
 
                 // === DOM API ===

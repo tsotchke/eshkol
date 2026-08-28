@@ -1132,6 +1132,29 @@ oracles:
         label: 'ESH-0214e: resident tick loop that mutates persistent state every tick (hash-table-set!/vector-set!/set-cdr!) reclaims transient garbage automatically via a nursery region — AOT flat RSS, correct read-back, clean under ESHKOL_ARENA_POISON=1, within 10x of the with-region baseline'
         action: ./scripts/run_icc_smoke.sh
 
+      # SW-74: the continuation region pin gets a lifecycle. codegenCallCC
+      # already classified every capture as escape-only or possibly-escaping,
+      # and used that classification for exactly one decision — whether to
+      # snapshot the C stack. The REGION PIN was taken on nothing but "is a
+      # region open", and a pinned region's arena was then not freed at all:
+      # region_destroy skipped arena_destroy and dropped the block chain. So an
+      # escape-only `call/cc` inside `with-region`, in a loop, leaked one whole
+      # region arena per iteration, forever, for a continuation the compiler had
+      # already proven could not outlive its frame — and SW-59's own
+      # measurements scoped `with-region` out, so the combination was ungated.
+      # Two changes, gated here: an escape-only capture does not pin (unless a
+      # handle-owned region is open, the one case that can be closed
+      # out-of-line), and a pin that IS taken promotes the region's blocks into
+      # the enclosing arena instead of leaking them, which is what the bytecode
+      # VM has always done.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["region_callcc_pin_lifecycle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SW-74: an escape-only `call/cc` inside `with-region` retains byte-identical arena bytes across an 8x horizon (0.000 bytes/tick) and prints no pin note; a capture that escapes still pins, is promoted into the enclosing arena rather than leaked, and still announces itself'
+        action: ./scripts/run_icc_smoke.sh
+
       # SW-57 long-horizon residency. The gate above, and every other flat-memory
       # gate in tests/memory/, stops at 100k ticks and asserts a peak-RSS
       # CEILING — which cannot distinguish "flat" from "linear with a small

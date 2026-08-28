@@ -666,6 +666,21 @@ probe native_region_pin_diagnostic 'SW-59 follow-up: native gets the same stderr
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/native_region_pin_diagnostic_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "native_region_pin_diagnostic_test.sh: PASS"'
 
+probe region_callcc_pin_lifecycle 'SW-74: an escape-only `call/cc` inside `with-region` no longer pins, so its region reclaims in full (byte-identical arena retention across an 8x horizon), and a capture that DOES escape still pins and is promoted into the enclosing arena rather than leaked' \
+    'cd "$REPO_ROOT";
+     ## Before this: codegenCallCC classified every capture as escape-only or
+     ## escaping and used that for one decision (the stack snapshot). The region
+     ## pin was taken on nothing but "is a region open", and a pinned region had
+     ## its arena dropped on the floor rather than freed. A with-region plus
+     ## escape-only call/cc loop therefore leaked one region arena per
+     ## iteration, forever. The SW-59 measurements scoped with-region out, so
+     ## the combination was ungated. Gates 0.000 bytes/tick for the escape-only
+     ## shape, strictly positive retention for the no-region control (so the
+     ## zero cannot be an instrument artifact), and a still-taken pin plus its
+     ## stderr note for the escaping shape.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_callcc_flat_rss_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "region_callcc_flat_rss_test.sh: PASS"'
+
 probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
     'cd "$REPO_ROOT";
      ## ESH-0214e: iter-scope partial reclamation. A guard-wrapped self-tail

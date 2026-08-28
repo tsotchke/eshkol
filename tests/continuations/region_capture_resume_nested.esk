@@ -1,0 +1,53 @@
+;; SW-74: a continuation captured TWO `with-region`s deep and resumed after
+;; BOTH have exited.
+;;
+;; region_capture_resume.esk covers one region. This covers the nesting, which
+;; is what forced "pin every open region" rather than "pin the innermost": the
+;; capture's saved stack may hold interior pointers into either arena, so
+;; reclaiming the outer one would dangle just as surely as reclaiming the inner.
+;;
+;; It is also the fixture that exercises native's PROMOTION CHAIN. A pinned
+;; region no longer leaks its arena; it hands the block chain to the arena that
+;; encloses it (arena_adopt_blocks, lib/core/runtime_arena_core.cpp), exactly as
+;; the VM splices a pinned region behind its parent's bump block. Regions pop
+;; innermost-first, so the inner arena is adopted by the OUTER region's arena
+;; and then promoted onward to the process arena when the outer region pops —
+;; a two-hop move of the same blocks, with no copy and no change of address.
+;; `inner` and `outer` below are allocated one level apart and must both still
+;; read correctly after that chain has run and after heavy post-exit churn that
+;; would reuse any arena actually returned to the allocator.
+;;
+;; Every top-level define is deliberately placed ABOVE the call/cc, for the same
+;; reason as in region_capture_resume.esk: the VM binds top-level names to
+;; operand-stack slots, so a binding established after a capture would sit above
+;; the continuation's saved stack top and the VM refuses that resume loudly.
+;;
+;; EXPECTED (all three engines):
+;;   pass 1..3 of "outer=(1 2 3) inner=(4 5 6)", then the final line and ALL PASS
+(define k #f)
+(define n 0)
+(define outer '())
+(define inner '())
+(define junk '())
+
+(define (churn i acc)
+  (if (= i 0) acc (churn (- i 1) (list i (* i 7) (* i 13) acc))))
+
+(with-region
+  (set! outer (list 1 2 3))
+  (with-region
+    (set! inner (list 4 5 6))
+    (call/cc (lambda (c) (set! k c) 'captured))))
+
+;; Both regions have exited. If either arena had been returned to the allocator
+;; instead of promoted, this churn would alias `outer` or `inner`.
+(set! junk (churn 20000 '()))
+
+(display "outer=") (display outer) (display " inner=") (display inner) (newline)
+(set! n (+ n 1))
+(if (< n 3) (k 'again))
+
+(display "final outer=") (display outer) (display " inner=") (display inner) (newline)
+(if (and (equal? outer (list 1 2 3)) (equal? inner (list 4 5 6)))
+    (begin (display "ALL PASS") (newline))
+    (begin (display "FAIL: nested region memory was reused under a live continuation") (newline)))

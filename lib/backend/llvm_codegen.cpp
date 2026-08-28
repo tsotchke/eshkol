@@ -23119,13 +23119,18 @@ private:
         // Declare setjmp if needed
         Function* setjmp_func = getOrDeclareSetjmpFunc();
 
-        // Declare continuation runtime functions
-        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
+        // Declare continuation runtime functions.
+        //
+        // SW-74: the _flags form is what codegen emits, because codegen is the
+        // only place that knows whether this particular capture can outlive its
+        // frame. The 2-argument eshkol_make_continuation_state() still exists
+        // for callers with no classification; it forwards with flags = 0.
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state_flags");
         if (!make_state_func) {
             FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
-                {builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getInt64Ty()}, false);
             make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
-                "eshkol_make_continuation_state", module.get());
+                "eshkol_make_continuation_state_flags", module.get());
         }
 
         Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
@@ -23178,8 +23183,20 @@ private:
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
 
-        // Create continuation state on arena
-        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
+        // Create continuation state on arena.
+        //
+        // SW-74: hand the runtime the same classification the arena choice above
+        // was made with. It decides whether the capture pins the open regions.
+        // An escape-only continuation cannot be invoked after its frame returns,
+        // and every enclosing `with-region`'s dynamic extent contains that
+        // frame's, so it can never read a closed region — pinning it retained
+        // one whole region arena per capture for nothing, which is the leak
+        // SW-74 records. Anything the classifier does not model reads as "may
+        // escape" and pins exactly as before.
+        Value* cont_flags = ConstantInt::get(builder->getInt64Ty(),
+            stays_local ? ESHKOL_CONT_FLAG_ESCAPE_ONLY : 0);
+        Value* state_ptr = builder->CreateCall(make_state_func,
+            {cont_arena, jmp_buf_alloc, cont_flags}, "cont_state");
 
         // Create continuation closure
         Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");
