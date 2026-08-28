@@ -1,0 +1,123 @@
+;; runtime_reader_quasiquote_test.esk — SW-80 regression.
+;;
+;; CHANGELOG/RELEASE_NOTES for v1.3.5-evolve claim "all four readers now
+;; handle the full quoted-datum grammar" (the #466 reader-gap entry,
+;; SW-54/55/56). That PR fixed the two COMPILE-TIME readers — the frontend
+;; parser's parse_quoted_data_with_token() (lib/frontend/parser.cpp) and the
+;; VM's compile_quote() (lib/backend/vm_parser.c) — for `#(` vectors,
+;; backquote and comma. It never touched the RUNTIME reader,
+;; eshkol_read_sexpr() in lib/core/runtime_reader_hosted.cpp, which backs the
+;; `(read)` procedure for native JIT, AOT, and the REPL alike (see
+;; docs/platform/DECISIONS.md: "eshkol_read_sexpr unchanged for generated
+;; code and REPL/JIT callers").
+;;
+;; Before this fix, read_datum() special-cased only `'` (quote) and `(`
+;; (list); every other first character — including `` ` ``, `,`, and `,@` —
+;; fell through to read_atom_number_or_symbol(), which reads characters up
+;; to the next delimiter and returns them as a SYMBOL. Concretely:
+;;
+;;   (read (open-input-string "`(a ,b)"))
+;;
+;; read backquote as the one-character symbol `` `  ``, left "(a ,b)" sitting
+;; unconsumed in the stream, and handed that leftover text to the PORT'S
+;; *next* read — silently returning the wrong datum with no diagnostic and
+;; desynchronizing every subsequent (read) on the same port. That is the
+;; runtime-`read` half of the SW-54/55/56 family: same defect shape (a
+;; reader's datum-dispatch has no branch for a legal token kind and treats
+;; it as an ordinary atom instead), one substrate lower.
+;;
+;; Methodology: for a raw datum TEXT with no active evaluation, R7RS 7.1.2's
+;; <abbreviation> production means `(read T)` and evaluating the SOURCE
+;; expression `'T` (T with one quote prepended, forcing the FRONTEND's
+;; quoted-data parser rather than its live-quasiquote-expression codegen)
+;; must produce the identical structure — both are pure, non-evaluating datum
+;; construction. Every check below compares the runtime reader's output
+;; against the frontend parser's output on byte-identical text, so a
+;; divergence between the two readers fails loudly rather than needing a
+;; hand-transcribed expected value that could itself be wrong.
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; --- Quasiquote: `x -> (quasiquote x) ---
+(check "read `x matches frontend '`x"
+       (equal? (read (open-input-string "`x")) '`x))
+(check "read `x car is 'quasiquote"
+       (eq? (car (read (open-input-string "`x"))) 'quasiquote))
+
+;; --- Unquote: ,x -> (unquote x) ---
+(check "read ,x matches frontend ',x"
+       (equal? (read (open-input-string ",x")) ',x))
+(check "read ,x car is 'unquote"
+       (eq? (car (read (open-input-string ",x"))) 'unquote))
+
+;; --- Unquote-splicing: ,@x -> (unquote-splicing x) ---
+(check "read ,@x matches frontend ',@x"
+       (equal? (read (open-input-string ",@x")) ',@x))
+(check "read ,@x car is 'unquote-splicing"
+       (eq? (car (read (open-input-string ",@x"))) 'unquote-splicing))
+;; ,@ must not be split into a bare comma followed by a leftover @-symbol.
+(check "read ,@x is NOT (unquote @x)"
+       (not (eq? (car (cadr (read (open-input-string ",@x")))) '@x)))
+
+;; --- The exact shape named in the audit: `(a ,b ,@c) ---
+(check "read `(a ,b ,@c) matches frontend '`(a ,b ,@c)"
+       (equal? (read (open-input-string "`(a ,b ,@c)"))
+               '`(a ,b ,@c)))
+(check "`(a ,b ,@c) unquote element is (unquote b)"
+       (equal? (cadr (read (open-input-string "`(a ,b ,@c)")))
+               '(unquote b)))
+(check "`(a ,b ,@c) unquote-splicing element is (unquote-splicing c)"
+       (equal? (caddr (read (open-input-string "`(a ,b ,@c)")))
+               '(unquote-splicing c)))
+
+;; --- Nesting: double backquote, backquote-of-quote, quote-of-backquote ---
+(check "read ``x matches frontend '``x"
+       (equal? (read (open-input-string "``x")) '``x))
+(check "read '`x matches frontend ''`x"
+       (equal? (read (open-input-string "'`x")) ''`x))
+(check "read `(a `(b ,c)) matches frontend '`(a `(b ,c))"
+       (equal? (read (open-input-string "`(a `(b ,c))"))
+               '`(a `(b ,c))))
+
+;; --- Quasiquoted vector: R7RS 4.2.8 allows unquote inside #(...) ---
+(check "read `#(a ,b c) matches frontend '`#(a ,b c)"
+       (equal? (read (open-input-string "`#(a ,b c)"))
+               '`#(a ,b c)))
+
+;; --- No stream desync: a leftover unconsumed token used to corrupt the
+;;     NEXT (read) on the same port. Two datums, one port. ---
+(let ((p (open-input-string "`(a ,b) 99")))
+  (define d1 (read p))
+  (define d2 (read p))
+  (check "desync guard: first datum is the quasiquote form"
+         (equal? d1 '`(a ,b)))
+  (check "desync guard: second read is unaffected (no leftover tokens)"
+         (= d2 99)))
+
+;; A second desync guard using comma directly (not inside backquote).
+(let ((p (open-input-string ",x 7 8")))
+  (define d1 (read p))
+  (define d2 (read p))
+  (define d3 (read p))
+  (check "comma desync guard: first datum"  (equal? d1 ',x))
+  (check "comma desync guard: second datum" (= d2 7))
+  (check "comma desync guard: third datum"  (= d3 8)))
+
+;; --- Ordinary symbols and quote are unaffected (no regression) ---
+(check "read plain symbol still works" (eq? (read (open-input-string "abc")) 'abc))
+(check "read quote shorthand still works"
+       (equal? (read (open-input-string "'abc")) ''abc))
+
+;; --- Summary ---
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: runtime_reader_quasiquote_test") (newline) (exit 0))
+    (begin (display "FAIL: runtime_reader_quasiquote_test") (newline) (exit 1)))
