@@ -74,6 +74,45 @@ static void eshkol_arena_report_at_exit(void) {
                  arena ? arena_get_total_memory(arena) : (size_t)0);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// SW-59: native-engine parity for the bytecode VM's region-pin stderr note.
+//
+// A continuation captured inside `with-region` pins every region open at
+// capture time on both engines (heap_region_pin_all() in lib/backend/vm_core.c
+// for the VM, eshkol_region_pin_all() in runtime_regions.cpp for native): the
+// region's arena is promoted/leaked rather than freed, because the
+// continuation's saved state may hold interior pointers into it. The VM has
+// always announced this unconditionally on stderr (vm_evac_pin_notice(),
+// lib/backend/vm_region_evac.c); native only ever logged it through
+// eshkol_debug(), which is silent unless the process log level is raised to
+// DEBUG. That asymmetry meant the same event was visible on one engine and
+// invisible on the other by default.
+//
+// This gives native the same unconditional stderr note, gated by the same
+// ESHKOL_VM_REGION_QUIET=1 the VM already honors (reused rather than given a
+// native-specific name, since it already means "quiet about region pinning"
+// regardless of which engine is asking) and read here rather than in
+// runtime_regions.cpp because that file is ESHKOL_RUNTIME_CORE_SRC and must
+// not call getenv()/fprintf() directly (see eshkol_arena_poison_enabled()
+// above for the same split, applied to ESHKOL_ARENA_POISON).
+// ───────────────────────────────────────────────────────────────────────────
+extern "C" void eshkol_region_pin_notice(void) {
+    static std::atomic<int> said{0};
+    int expected = 0;
+    if (!said.compare_exchange_strong(expected, 1, std::memory_order_relaxed)) return;
+    const char* quiet = std::getenv("ESHKOL_VM_REGION_QUIET");
+    if (quiet && quiet[0] && quiet[0] != '0') return;
+    std::fprintf(stderr,
+            "eshkol: note: a `with-region` body could not be reclaimed because "
+            "a continuation was captured inside it; its arena is leaked instead "
+            "of freed (the continuation's saved stack may hold interior "
+            "pointers into it that this call site cannot see and therefore "
+            "cannot promote). The answer is unaffected: nothing is dangling, "
+            "but the memory is not returned for the rest of the process "
+            "(lib/core/runtime_regions.cpp). Set ESHKOL_VM_REGION_QUIET=1 to "
+            "silence this note.\n");
+}
+
 namespace {
 struct EshkolArenaReportInstaller {
     EshkolArenaReportInstaller() {

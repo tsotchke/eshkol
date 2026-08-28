@@ -654,6 +654,18 @@ probe vm_region_growth_watchdog 'The VM heap growth watchdog after the SW-14 clo
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_growth_watchdog_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "vm_region_growth_watchdog_test.sh: PASS"'
 
+probe native_region_pin_diagnostic 'SW-59 follow-up: native gets the same stderr region-pin note the VM has always printed, under ESHKOL_VM_REGION_QUIET parity — a continuation captured inside with-region pins the region on both engines, but until now only the VM said so unconditionally; native logged it only through eshkol_debug (silent by default)' \
+    'cd "$REPO_ROOT";
+     ## Before this: the only trace of a native region pin was eshkol_debug(),
+     ## invisible unless the process log level is raised to DEBUG, so a native
+     ## program that pinned a region gave no signal at all. Checks the note on
+     ## both native JIT (-r) and AOT, that ESHKOL_VM_REGION_QUIET=1 silences it
+     ## on both, that a with-region body which never pins stays silent, that
+     ## the note fires at most once despite three continuation resumes, and
+     ## that none of this changes the printed answer.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/native_region_pin_diagnostic_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "native_region_pin_diagnostic_test.sh: PASS"'
+
 probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
     'cd "$REPO_ROOT";
      ## ESH-0214e: iter-scope partial reclamation. A guard-wrapped self-tail

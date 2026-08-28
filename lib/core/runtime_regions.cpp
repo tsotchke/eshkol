@@ -28,6 +28,14 @@
 
 void eshkol_arena_global_once(void (*init)(void));
 
+// Defined in lib/core/runtime_arena_diagnostics_hosted.cpp (ESHKOL_RUNTIME_HOSTED_SRC).
+// Forward-declared rather than called through a header because this
+// translation unit is ESHKOL_RUNTIME_CORE_SRC and must not itself read the
+// environment or touch stdio -- the same reason eshkol_arena_poison_enabled()
+// (also defined in that hosted file) is forward-declared locally further down
+// in this file instead of included from a header.
+extern "C" void eshkol_region_pin_notice(void);
+
 // Thread-local region stack (safe for parallel-map + with-region).
 thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH] = {nullptr};
 thread_local uint64_t __region_stack_depth = 0;
@@ -464,6 +472,7 @@ void region_destroy(eshkol_region_t* region) {
     if (region->pinned) {
         eshkol_debug("Region '%s' is pinned (continuation captured inside it); "
                      "leaking %zu bytes of arena instead of freeing", name, used);
+        eshkol_region_pin_notice();
     } else {
         eshkol_debug("Destroying region '%s', freeing %zu bytes", name, used);
         if (region->arena) {
