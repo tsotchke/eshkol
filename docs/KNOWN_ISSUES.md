@@ -577,11 +577,14 @@ block ordinary use.
   (`scripts/run_vm_parity.sh`) is **188/188** on the release cut, remeasured
   2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; corrects
   an earlier "140/140" figure — the corpus has grown, conformity audit item
-  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **323**
-  further names that native resolves and the VM does not, entirely outside
-  the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
-  see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
-  item e6/g6).
+  e3). PR-02 retested the historical `tests/vm_parity/SURFACE_BASELINE.tsv`
+  surface on both engines. The historical baseline tracked **323** names that
+  native resolved while the VM did not, entirely outside the 956-row ledger
+  (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`); the retest found 0
+  native-resolved/VM-missing entries, and the baseline is now header-only.
+  The 956-row ledger therefore has no remaining untracked surface backlog; see
+  [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
+  (conformity audit items e6/g6).
 - Of the 331 `gap` rows, 14 reference a reproducer file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
   -l`). The active `found/` corpus now holds 18 filed-divergence/control

@@ -1063,6 +1063,7 @@ static int compile_and_run(const char* source) {
      * instruction is emitted, exactly as the native engine decides it before
      * code generation. A violating program must not run on ANY engine. */
     vm_clear_compile_failure();
+    vm_reset_compilation_unit_modules();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
@@ -1087,6 +1088,10 @@ static int compile_and_run(const char* source) {
             chunk_emit(&main_chunk, OP_POP, 0);
         free_node(expr);
     }
+
+    /* Match native's always-loaded stdlib namespace before user definitions
+     * establish their local slots. */
+    vm_compile_standard_library(&main_chunk);
 
     /* stack_depth synced via n_locals */
     /* Everything registered so far belongs to the builtin preamble and the
@@ -1480,6 +1485,8 @@ static void compile_source_to_chunk_with_options(const char* source,
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
 
+    vm_reset_compilation_unit_modules();
+
     if (include_desktop_prelude) {
         emit_builtin_preamble(chunk);
 
@@ -1498,6 +1505,7 @@ static void compile_source_to_chunk_with_options(const char* source,
             if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
             free_node(expr);
         }
+        vm_compile_standard_library(chunk);
     }
 
     /* Compile user source.
@@ -1700,6 +1708,7 @@ static ReplSession* repl_session_create(void) {
     ReplSession* rs = (ReplSession*)calloc(1, sizeof(ReplSession));
     if (!rs) return NULL;
 
+    vm_reset_compilation_unit_modules();
     chunk_init_arrays(&rs->chunk);
 
     /* Try loading prelude from cache first (skips ~50ms recompilation) */
@@ -1722,6 +1731,8 @@ static ReplSession* repl_session_create(void) {
             free_node(expr);
         }
     }
+
+    vm_compile_standard_library(&rs->chunk);
 
     /* Add HALT so we can run the prelude */
     int halt_pos = rs->chunk.code_len;

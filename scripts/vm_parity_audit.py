@@ -11,7 +11,9 @@ Eshkol has two executable surfaces:
     the VM compiler's inline special-form dispatch (lib/backend/vm_compiler.c
     + lib/backend/vm_parser.c `is_sym(head, ...)` / `strcmp(head->symbol,...)`),
     and the Scheme prelude compiled into every VM
-    (lib/backend/vm_prelude_source.h).  vm_native.c / vm_tensor_ops.c /
+    (lib/backend/vm_prelude_source.h), plus the canonical stdlib dependency
+    closure loaded by the desktop VM before user source.  vm_native.c /
+    vm_tensor_ops.c /
     vm_logic.c implement numeric fids only — every NAME binding to those fids
     flows through the tables above, so names are the honest VM surface.
 
@@ -199,10 +201,41 @@ def extract_vm_prelude_defines():
     return names
 
 
+def extract_vm_stdlib_defines():
+    """Scheme names loaded by the desktop VM's always-available stdlib.
+
+    The desktop compiler loads ``lib/stdlib.esk`` before user source, and
+    follows its dotted ``require`` edges through the canonical library tree.
+    Keep this extractor on the same dependency closure so the structural
+    audit describes the runtime surface rather than only the embedded string
+    prelude.  Filesystem loading is deliberately excluded from the WASM
+    prelude path; its smaller surface remains represented by the existing
+    source-header extractor.
+    """
+    names = set()
+    pending = ["stdlib"]
+    seen = set()
+    while pending:
+        mod_name = pending.pop()
+        if mod_name in seen or mod_name == "scheme":
+            continue
+        seen.add(mod_name)
+        path = os.path.join(REPO, "lib", *mod_name.split(".")) + ".esk"
+        if not os.path.exists(path):
+            continue
+        src = read(path)
+        names.update(re.findall(r"^\(define\s+\(([^\s()]+)", src, re.M))
+        names.update(re.findall(r"^\(define\s+([^\s()]+)\s", src, re.M))
+        for required in re.findall(r"^\(require\s+([^\s()]+)", src, re.M):
+            pending.append(required)
+    return names
+
+
 def vm_surface():
     return (extract_vm_builtins_table()
             | extract_vm_compiler_dispatch()
-            | extract_vm_prelude_defines())
+            | extract_vm_prelude_defines()
+            | extract_vm_stdlib_defines())
 
 
 def codegen_surface():

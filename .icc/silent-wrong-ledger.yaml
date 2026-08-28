@@ -4349,12 +4349,68 @@ entries:
 
   - id: PR-02
     bucket: PARITY-RATCHET
-    status: open
-    title: "SURFACE_BASELINE.tsv excuses 323 names native resolves and the VM does not"
+    status: closed
+    closed_at: "2026-08-28"
+    title: "SURFACE_BASELINE.tsv no longer contains names native resolves and the VM does not"
+    count: 0
+    historical_count: 323
+    evidence: >-
+      tests/vm_parity/SURFACE_BASELINE.tsv is header-only after the
+      execution-backed baseline probe: 323 entries probed, 0
+      native-resolves/VM-does-not divergences, 323 baseline entries fixed.
+      The probe ran native and vm-src with `(require stdlib)` in durable
+      workdirs under `.scratch`.
+    fixed_by: >-
+      lib/backend/vm_compiler.c now loads the canonical lib/stdlib.esk
+      dependency closure during desktop VM source compilation, REPL setup and
+      ESKB emission; top-level extern declarations are skipped during this
+      bootstrap because they are native declarations, not VM expressions.
+    guarded_by: >-
+      scripts/run_surface_parity.py --baseline-only, which requires stdlib on
+      both engines, uses durable probe files, and rewrites the baseline only
+      from a complete run; scripts/vm_parity_audit.py follows the same stdlib
+      require closure for structural surface accounting.
+    caught_by: [parity-baselines, execution-backed-surface-probe]
+    notes: >-
+      The five header lines are not names; the prior wc -l value of 328 was
+      323 names plus those headers. The 956-row PARITY.tsv behavioral gap
+      accounting remains a separate open contract.
+
+  - id: SW-99
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "2026-08-28"
+    title: "Desktop VM did not establish the canonical stdlib namespace before user source"
     count: 323
-    evidence: "tests/vm_parity/SURFACE_BASELINE.tsv"
-    caught_by: [parity-baselines]
-    notes: "All carry ledger status NO-ROW, i.e. absent from PARITY.tsv entirely, so the 956-row parity accounting understates the real delta by about a third."
+    evidence: >-
+      The complete baseline probe initially resolved no historical stdlib
+      names on the VM; after the bootstrap loader landed, the same 323-name
+      run reported 0 native-resolves/VM-does-not divergences and 323 fixed.
+    fixed_by: "lib/backend/vm_compiler.c; lib/backend/eshkol_vm.c"
+    guarded_by: "tests/vm_parity/SURFACE_BASELINE.tsv; scripts/run_surface_parity.py"
+    caught_by: [execution-backed-surface-probe]
+    notes: >-
+      This is a parity-ratchet namespace defect, not a silent-wrong value
+      defect: the old VM path emitted an undefined-variable diagnostic or a
+      failed call rather than fabricating a result.
+
+  - id: SW-100
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "2026-08-28"
+    title: "Surface parity probes omitted the stdlib import required for native resolution"
+    count: 323
+    evidence: >-
+      Adding `(require stdlib)` to every native and VM probe batch made the
+      native control measure the documented public stdlib namespace and
+      produced the final 323-entry closure result.
+    fixed_by: "scripts/run_surface_parity.py"
+    guarded_by: "scripts/run_surface_parity.py --baseline-only"
+    caught_by: [execution-backed-surface-probe]
+    notes: >-
+      This is a measurement-contract defect, not a compiler semantic defect;
+      without the import the control arm falsely reported native missing names
+      and could not support a parity disposition.
 
   - id: PR-03
     bucket: PARITY-RATCHET

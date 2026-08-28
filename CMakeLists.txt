@@ -5490,6 +5490,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: first-class builtins on the VM — 0 failures"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 
+    # PR-02: the desktop VM establishes the same canonical stdlib namespace
+    # before user source as the native compiler. The complete 323-name
+    # execution-backed ratchet runs outside CTest; this deterministic fixture
+    # keeps representative calls in the ordinary VM test graph.
+    add_test(
+        NAME vm_stdlib_surface_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/stdlib_surface.esk"
+    )
+    set_tests_properties(vm_stdlib_surface_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: PR-02 stdlib surface"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+
     # SW-38/SW-39: VM builtin families must retain the same value semantics
     # when passed to a higher-order procedure or stored in a binding.
     add_test(
