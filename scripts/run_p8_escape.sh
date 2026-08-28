@@ -204,7 +204,8 @@ fi
 if want 3 && [ -x "$VM_BIN" ]; then
   if [ "$MODE" = full ]; then A3="--full"; else A3="--sample 30 --seed 8803"; fi
   if python3 scripts/p8/p8_arity_sweep.py --native "$ESHKOL_RUN" --vm "$VM_BIN" \
-       $A3 --trace "$TRACE_FILE" --workdir "$WORK/arity" --timeout 8 >/dev/null 2>&1; then
+       $A3 $( [ "$MODE" = full ] && echo --aot ) \
+       --trace "$TRACE_FILE" --workdir "$WORK/arity" --timeout 8 >/dev/null 2>&1; then
     echo "  axis-3 arity-sweep     PASS (native-vs-VM parity ratchet, no NEW divergence)"
   else
     echo "  axis-3 arity-sweep     FAIL (NEW native-vs-VM divergence — see trace)"; note_fail

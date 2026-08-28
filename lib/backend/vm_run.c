@@ -439,6 +439,8 @@ void vm_run(VM* vm) {
 
         HeapObject* cl = vm->heap.objects[func.as.ptr];
 
+        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
+
         if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
@@ -486,6 +488,8 @@ void vm_run(VM* vm) {
         }
         if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
         HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
 
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
@@ -955,6 +959,8 @@ vm_exit:
 
             HeapObject* cl = vm->heap.objects[func.as.ptr];
 
+            if (!vm_validate_closure_arity(vm, cl, argc)) break;
+
             /* Save call frame */
             if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; break; }
             vm->frames[vm->frame_count].return_pc = vm->pc;
@@ -1005,6 +1011,8 @@ vm_exit:
             }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
+
+            if (!vm_validate_closure_arity(vm, cl, argc)) break;
 
             /* Move args to current frame position (reuse frame) */
             for (int i = 0; i < argc; i++) {
