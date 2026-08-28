@@ -74,6 +74,17 @@ CODEGEN_NAME_DENYLIST = {
     "__eshkol_parameter_pop",
 }
 
+# Alternate spellings that dispatch to the exact same codegen path as another
+# name in this file (`if (func_name == "X" || func_name == "Y") ...`) are one
+# construct, not two, so the alias is folded into its canonical name below
+# rather than requiring its own PARITY.tsv row. Mirrors
+# scripts/gen_language_surface.py's ALIASES (kept in sync by hand; both are
+# tiny maps of the same handful of dispatch aliases). Keyed alias ->
+# canonical.
+CODEGEN_ALIASES = {
+    "dataloader-has-next": "dataloader-has-next?",
+}
+
 
 def read(path):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -124,6 +135,12 @@ def extract_codegen_builtins():
         names.update(re.findall(r'"([^"]+)"', body))
 
     names = {n for n in names if n and n not in CODEGEN_NAME_DENYLIST}
+    for alias, canonical in CODEGEN_ALIASES.items():
+        if alias in names:
+            if canonical not in names:
+                die("alias %r names canonical %r, which is not on the "
+                    "codegen surface" % (alias, canonical))
+            names.discard(alias)
     if len(names) < 300:
         die("codegen builtin extraction found only %d names (expected 300+) "
             "— dispatch shape drift in %s?" % (len(names), CODEGEN_CPP))
