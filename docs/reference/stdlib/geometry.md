@@ -59,37 +59,84 @@ See [`../runtime/eshkol-run.md`](../runtime/eshkol-run.md) for `--profile` and
 - **`#if defined(ESHKOL_GEOMETRIC_ENABLED)`** — calls out to the
   `semiclassical_qllm` library (`<semiclassical_qllm/manifold.h>` and friends).
 
-**No target in this repository defines `ESHKOL_GEOMETRIC_ENABLED`.** `grep -rn
-ESHKOL_GEOMETRIC_ENABLED` finds hits only inside `vm_geometric.c` itself, so every
-shipped build — every CI lane, every release binary, the WASM playground — takes the
-portable path, and that is the path documented here. The linked-library path is an
+**The portable path is the shipped implementation.** `ESHKOL_GEOMETRIC_ENABLED` is
+defined only when the `ESHKOL_GEOMETRIC_QLLM` CMake option is turned ON, which
+requires `ESHKOL_QLLM_ROOT` to point at an installed `libsemiclassical_qllm` and
+`FATAL_ERROR`s at configure time if the headers are not there. It is OFF by default,
+so every CI lane, every release binary and the WASM playground take the portable
+path, and that is the path documented here. The linked-library path is an
 out-of-tree opt-in and is *not* covered by this page or by any gate in this
-repository.
+repository — and, measured against a current `libsemiclassical_qllm`, it does not
+currently compile: the arities of `qllm_hyperbolic_exp_map` and its siblings have
+moved and the SO(3)/SE(3) arms name types the library no longer declares. Bringing
+it back is its own change against the current qLLM ABI.
 
-The consequence is worth stating plainly, because the names promise more than the
-default build delivers. In the portable path several ops are **flat (Euclidean)
-approximations that ignore the curvature argument they accept**: `hyperbolic-exp-map`
-is vector addition, `hyperbolic-log-map` is subtraction, `geodesic-distance` and
-`poincare-distance` are the L2 distance, `mobius-add` is addition,
-`parallel-transport` is the identity, `manifold-project` and `riemannian-grad` are
-copies, `exterior-derivative` returns zeros and `hodge-star` returns its input. Each
-entry below says exactly what its op computes. The one op that is genuinely
-Riemannian in the portable path is [`frechet-mean`](#frechet-mean-points-weights-curvature--id-817), which runs
-a real Karcher iteration in f64 behind a stationarity gate.
+The portable path computes the **closed forms of constant-curvature geometry in
+f64**, in `inc/eshkol/backend/riemannian_core.h`. It is not an approximation of the
+linked-library path: it is the same mathematics the AD bridge computes
+(`lib/bridge/qllm_bridge.cpp`: `ad_hyperbolic_distance`, `ad_poincare_exp_map`,
+`ad_poincare_log_map`, `ad_geodesic_attention`), so the VM engine and the AD tape
+agree on what these operations mean.
+
+This used not to be true, and the difference is worth stating because a reader of an
+older build's output needs to know. Before `SW-73` these ops computed their **flat
+(Euclidean) counterparts and discarded the curvature argument they accept**:
+`hyperbolic-exp-map` was vector addition, `hyperbolic-log-map` subtraction,
+`geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition,
+`parallel-transport` and `riemannian-grad` the identity. At K = 0 those forms are
+exactly right — every op below reduces to its flat form there — and at every other
+curvature they were wrong without bound: two points of the unit ball a tenth of a
+unit inside the boundary are 1.8 apart in L2 and 5.8888779583328814 apart in the
+metric the name promises. `tests/vm/geometric_riemannian_surface_regression.esk`
+pins each of these against its closed form, with every assertion chosen so that the
+flat answer fails it.
+
+Two ops are **not implemented on the VM engine** and raise rather than return a
+plausible value: `exterior-derivative` and `hodge-star`. See
+[Engine availability per builtin](#engine-availability-per-builtin).
 
 ## Error convention
 
-With one exception, these ops **do not raise**. An argument of the wrong type, a
-shape mismatch, a non-positive dimension or an allocation failure pushes the empty
-list `()` and execution continues; an unhandled id falls through to a `default:` arm
-that pops `vm_geometric_arity(fid)` arguments and pushes `()`, so the stack stays
-balanced either way. Check for `(null? result)` if you need to distinguish a failure
-from a value.
+**Shape and type failures return `()`.** An argument of the wrong type, a shape
+mismatch, a non-positive dimension or an allocation failure pushes the empty list
+`()` and execution continues; an unhandled id falls through to a `default:` arm that
+pops `vm_geometric_arity(fid)` arguments and pushes `()`, so the stack stays balanced
+either way. Check for `(null? result)` if you need to distinguish a failure from a
+value.
 
-The exception is `frechet-mean`, which raises a catchable Scheme condition (via
-`vm_raise_error_msg`, so `guard` can catch it) rather than return a non-stationary
-iterate. The reasoning is in the source: a mean that has not reached stationarity is
-exactly the input whose implicit derivative is a plausible wrong gradient.
+**Domain failures raise a catchable Scheme condition** (via `vm_raise_error_msg`, so
+`guard` can catch it), naming the builtin, the reason and the curvature. They raise
+rather than return a number because the alternative is the case this whole surface
+exists to exclude — a plausible value the caller cannot tell from a real one. The
+conditions a caller can hit:
+
+- a point that is not **strictly inside** the Poincaré ball of radius `1/√−K`, for
+  any op taking K < 0;
+- a point that is not **on** the sphere of radius `1/√K`, for any op taking K > 0
+  (`manifold-project` is the op that moves it there);
+- `log`, when the two points are too far apart in hyperbolic distance for the
+  ambient ball coordinates to separate them — roughly 19 units, reachable from two
+  points each strictly inside the ball. No finite log exists there, and clamping the
+  argument would return a fabricated magnitude;
+- `mobius-add` and `mobius-scalar-mul` with K > 0: they are the gyrogroup operations
+  of the ball and are not defined on the sphere;
+- `frechet-mean`, when the Karcher iteration has not reached stationarity. A mean
+  that has not is exactly the input whose implicit derivative is a plausible wrong
+  gradient;
+- `exterior-derivative` and `hodge-star`, always: they are not implemented on the VM
+  engine.
+
+## Engine availability per builtin
+
+Sixty of the sixty-two names execute on the bytecode VM. Two do not, and say so:
+
+| Name | Id | Status on the VM engine |
+|---|---:|---|
+| `exterior-derivative` | 835 | **Raises `not implemented on the VM engine`.** The argument is a form's coefficient array at a single point, which carries no derivative information; computing `d` needs the coefficients as differentiable functions of position. It previously returned zeros of the input's shape, which asserts that every form handed to it is closed. |
+| `hodge-star` | 836 | **Raises `not implemented on the VM engine`.** The star of a k-form depends on k and on the dimension, and a flat coefficient array records neither, so the op cannot tell which duality is being asked for. It previously returned its argument unchanged, which asserts that the star is trivial. |
+
+Neither has a native AOT or REPL/JIT implementation either — see
+[Engine availability](#engine-availability) above, which applies to all 62 names.
 
 ## Data model
 
@@ -121,19 +168,19 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `make-spherical-manifold` | 806 | 1 | manifold | type 2, K = 1.0 |
 | `make-product-manifold` | 807 | 2 | manifold | type 3, dim = d1+d2, K = mean of the two |
 | `manifold-curvature` | 808 | 1 | float | stored K |
-| `hyperbolic-exp-map` / `manifold-exp-map` | 809 | 3 | tensor | `base + tangent` (K discarded) |
-| `hyperbolic-log-map` / `manifold-log-map` | 810 | 3 | tensor | `point - base` (K discarded) |
-| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | L2 distance (K discarded) |
-| `parallel-transport` / `manifold-parallel-transport` | 812 | 4 | tensor | copy of `v` (identity transport) |
-| `manifold-project` | 813 | 2 | tensor | copy of `x` |
-| `mobius-add` | 814 | 3 | tensor | `x + y` (K discarded) |
-| `mobius-scalar-mul` | 815 | 3 | tensor | `r * x` (K discarded) |
-| `poincare-distance` | 816 | 3 | float | L2 distance (same case as 811) |
+| `hyperbolic-exp-map` / `manifold-exp-map` | 809 | 3 | tensor | exp_base(tangent): Möbius (K<0) / great-circle (K>0) / `base + tangent` (K=0) |
+| `hyperbolic-log-map` / `manifold-log-map` | 810 | 3 | tensor | log_base(point), the inverse of 809; `point - base` at K=0 |
+| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | `arccosh(…)/√c` (K<0) / `R·acos` (K>0) / L2 (K=0) |
+| `parallel-transport` / `manifold-parallel-transport` | 812 | 4 | tensor | `(λ_x/λ_y)·gyr[y,−x]v` (K<0) / geodesic rotation (K>0) / identity (K=0) |
+| `manifold-project` | 813 | 2 | tensor | rescales onto the ball (K<0) or the sphere (K>0); a copy at K=0 |
+| `mobius-add` | 814 | 3 | tensor | the gyrogroup sum `x ⊕_c y`; `x + y` at K=0; **raises for K>0** |
+| `mobius-scalar-mul` | 815 | 3 | tensor | `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`; `r·x` at K=0; **raises for K>0** |
+| `poincare-distance` | 816 | 3 | float | the geodesic distance (same op as 811) |
 | `frechet-mean` | 817 | 3 | tensor | **real** weighted Karcher mean, gated; raises |
 | `great-circle-distance` | 819 | 2 | float | `acos` of the clamped normalised dot |
 | `slerp` | 820 | 3 | tensor | normalised `(1-t)x + t y` |
-| `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | normalised `base + tangent` |
-| `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `point - base` |
+| `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | `cos‖v‖·base + sin‖v‖·v/‖v‖` on the unit sphere |
+| `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `θ·u/‖u‖`, `u = point − cosθ·base`, on the unit sphere |
 | `spherical-project` | 823 | 1 | tensor | L2-normalised copy |
 | `so3-exp` | 824 | 1 | tensor | axis-angle → unit quaternion, shape `(4)` |
 | `so3-log` | 825 | 1 | tensor | quaternion → axis-angle, shape `(3)` |
@@ -146,19 +193,19 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `ricci-scalar` | 832 | 1 | float | `dim·(dim-1)·K` |
 | `sectional-curvature` | 833 | 3 | float | stored K (u, v discarded) |
 | `wedge-product` | 834 | 2 | tensor | the `n(n-1)/2` 2×2 minors |
-| `exterior-derivative` | 835 | 1 | tensor | zeros of the input's shape |
-| `hodge-star` | 836 | 2 | tensor | copy of the form (metric discarded) |
+| `exterior-derivative` | 835 | 1 | tensor | **not implemented on the VM engine — raises** |
+| `hodge-star` | 836 | 2 | tensor | **not implemented on the VM engine — raises** |
 | `interior-product` | 837 | 2 | tensor | shape `(1)` holding the dot product |
 | `pullback` | 838 | 2 | tensor | `formᵀ · jacobian`, shape `(cols)` |
-| `riemannian-sgd-step` | 839 | 4 | tensor | `point - lr · grad` (K discarded) |
-| `riemannian-adam-step` | 840 | 6 | tensor | Euclidean Adam, **implicit pooled state** |
-| `riemannian-grad` | 841 | 3 | tensor | copy of the Euclidean gradient |
-| `retraction` | 842 | 3 | tensor | `base + tangent` (same case as 809) |
-| `vector-transport` | 843 | 4 | tensor | copy of `v` (same case as 812) |
-| `geodesic-attention-scores` | 844 | 3 | tensor | `-‖q_i - k_j‖`, shape `(nq nk)` |
+| `riemannian-sgd-step` | 839 | 4 | tensor | `exp_point(−lr·grad)`; `point − lr·grad` at K=0 |
+| `riemannian-adam-step` | 840 | 6 | tensor | Adam delta retracted with `exp`, moment transported, **implicit pooled state** |
+| `riemannian-grad` | 841 | 3 | tensor | `((1−c‖x‖²)²/4)·grad` (K<0) / tangent projection (K>0) / a copy (K=0) |
+| `retraction` | 842 | 3 | tensor | the exponential map (same op as 809) |
+| `vector-transport` | 843 | 4 | tensor | parallel transport (same op as 812) |
+| `geodesic-attention-scores` | 844 | 3 | tensor | `−d_K(q_i, k_j)`, shape `(nq nk)` |
 | `geodesic-attention-values` | 845 | 3 | tensor | score-weighted average of `V`'s rows |
 | `curvature-softmax` | 846 | 2 | tensor | softmax scaled by `1/√|K|` |
-| `geodesic-attention-forward` | 847 | 4 | tensor | `exp(-distance)` attention, shape `(nq vdim)` |
+| `geodesic-attention-forward` | 847 | 4 | tensor | softmax over `−d_K/(√c·√dim)` then a weighted sum of `V`, shape `(nq vdim)` |
 | `set-curvature!` | 850 | 2 | manifold | mutates K, returns the manifold |
 | `get-curvature` | 851 | 1 | float | stored K (same case as 808) |
 | `curvature-gradient` | 852 | 2 | float | sum of the gradient's elements |
@@ -170,7 +217,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `manifold-dim` / `manifold-dimension` | 858 | 1 | int | stored dim |
 | `manifold-destroy!` | 859 | 1 | `()` | invalidates the handle |
 | `make-riemannian-adam-state` | 860 | 1 | state | zeroed moments shaped like the point |
-| `riemannian-adam-step!` | 861 | 7 | tensor | Euclidean Adam with an **explicit** state |
+| `riemannian-adam-step!` | 861 | 7 | tensor | same as 840 with an **explicit** state |
 
 Ids 818, 848 and 849 have no name bound to them.
 
@@ -279,54 +326,109 @@ belongs to the VM region stack and is reclaimed when the region is popped.
 
 ## Maps, distances and gyrovector operations
 
-Every op in this group accepts a trailing `curvature` argument and, in the portable
-build, **discards it**.
+Every op in this group takes a trailing `curvature` argument, read as the
+**sectional curvature K**: `K < 0` is the Poincaré ball of radius `1/√−K`, `K = 0` is
+Euclidean space, `K > 0` is the sphere of radius `1/√K`. Each op reduces **exactly**
+to its flat form at `K = 0`. Arguments must lie on the manifold the curvature names —
+strictly inside the ball for `K < 0`, on the sphere for `K > 0` — or the op raises;
+see [Error convention](#error-convention).
 
 ### `(hyperbolic-exp-map base tangent curvature)` / `(manifold-exp-map …)` / `(retraction base tangent curvature)` — id 809 / 842
 
-`base`, `tangent` tensors of equal total size; `curvature` real. Returns a fresh
-tensor `base + tangent`, or `()` on a shape mismatch. `retraction` is a separate
-name on the same case.
+`base`, `tangent` tensors of equal total size; `curvature` real. Returns
+`exp_base(tangent)`, the point reached by following the geodesic from `base` in the
+direction `tangent` for the Riemannian length of `tangent`; `()` on a shape mismatch.
+`retraction` is a second name on the same op — and it is a true exponential map, not
+merely a retraction.
+
+- `K < 0`: `base ⊕_c tanh(√c·λ·‖v‖/2)·v/(√c‖v‖)` with `λ = 2/(1−c‖base‖²)`, `c = −K`.
+- `K = 0`: `base + tangent`, exactly.
+- `K > 0`: `cos(‖v‖/R)·base + R·sin(‖v‖/R)·v/‖v‖` with `R = 1/√K`; `v` must be
+  tangent (`⟨base, v⟩ = 0`).
 
 ```scheme
-(define t (make-tensor '(2) 0.0))
-(hyperbolic-exp-map t t -1.0)
+(define base (make-tensor '(2) 0.0))
+(tensor-set! base 0 0.3)
+(define v (make-tensor '(2) 0.2))
+(hyperbolic-exp-map base v -1.0)
 ```
 
 ### `(hyperbolic-log-map base point curvature)` / `(manifold-log-map …)` — id 810
 
-Returns `point - base`, the inverse of id 809's flat exp map.
+Returns `log_base(point)`, the inverse of id 809: the tangent vector at `base`
+whose exponential map is `point`. Its **Riemannian** length `λ_base·‖log‖` is the
+geodesic distance; its ambient Euclidean length is not.
+
+- `K < 0`: `(2/(√c·λ))·artanh(√c‖u‖)·u/‖u‖` with `u = (−base) ⊕_c point`.
+- `K = 0`: `point − base`, exactly.
+- `K > 0`: `θR·u/‖u‖` with `u = point − cos θ·base`, `θ = acos(⟨base,point⟩/R²)`.
+
+Raises when no finite log exists — see [Error convention](#error-convention).
 
 ```scheme
-(define t (make-tensor '(2) 0.0))
-(hyperbolic-log-map t t -1.0)
+(define base (make-tensor '(2) 0.0))
+(tensor-set! base 0 0.3)
+(define p (make-tensor '(2) 0.0))
+(tensor-set! p 0 -0.5)
+(hyperbolic-log-map base p -1.0)
 ```
 
 ### `(geodesic-distance x y curvature)` / `(manifold-distance …)` / `(poincare-distance x y curvature)` — id 811 / 816
 
-Returns the Euclidean L2 distance `‖x − y‖` as a float. `()` unless both arguments
-are tensors of the same total size. `poincare-distance` is a second name on the same
-case, so in the portable build it is **not** the Poincaré metric.
+Returns the geodesic distance as a float; `()` unless both arguments are tensors of
+the same total size. `poincare-distance` is a second name on the same op, and it IS
+the Poincaré metric.
+
+- `K < 0`: `arccosh(1 + 2c‖x−y‖²/((1−c‖x‖²)(1−c‖y‖²)))/√c`, the same closed form
+  `ad_hyperbolic_distance` computes on the AD tape.
+- `K = 0`: `‖x − y‖`, exactly.
+- `K > 0`: `R·acos(⟨x,y⟩/R²)`, the great-circle distance.
+
+The hyperbolic distance is not bounded by the ball diameter the way the chord is: it
+diverges as either point approaches the boundary.
 
 ```scheme
 (define a (make-tensor '(2) 0.0))
-(define b (make-tensor '(2) 1.0))
-(display (geodesic-distance a b -1.0)) (newline)
+(tensor-set! a 0 0.9)
+(define b (make-tensor '(2) 0.0))
+(tensor-set! b 0 -0.9)
+(display (geodesic-distance a b -1.0)) (newline)   ; 5.888877958332881
+(display (geodesic-distance a b 0.0)) (newline)    ; 1.8
 ```
 
 ### `(parallel-transport x y v curvature)` / `(manifold-parallel-transport …)` / `(vector-transport x y v curvature)` — id 812 / 843
 
-Pops and discards `x`, `y` and `curvature` and returns a copy of the tangent vector
-`v` — the identity transport.
+Transports the tangent vector `v` from `x` to `y` along the connecting geodesic.
+
+- `K < 0`: `(λ_x/λ_y)·gyr[y, −x]v`, the gyration expanded through Möbius addition as
+  `gyr[u,w]z = (−(u ⊕ w)) ⊕ (u ⊕ (w ⊕ z))`.
+- `K = 0`: the identity, exactly.
+- `K > 0`: the component of `v` along the geodesic direction rotated by the arc
+  angle.
+
+Transport is an isometry of the Riemannian metric — `λ_y‖P v‖ = λ_x‖v‖` — even
+though it changes the ambient components. Transport from a point to itself is the
+identity.
 
 ```scheme
-(define t (make-tensor '(2) 1.0))
-(parallel-transport t t t -1.0)
+(define x (make-tensor '(2) 0.0)) (tensor-set! x 0 0.3)
+(define y (make-tensor '(2) 0.0)) (tensor-set! y 0 -0.5)
+(define v (make-tensor '(2) 0.2))
+(parallel-transport x y v -1.0)
 ```
 
 ### `(manifold-project x curvature)` — id 813
 
-Returns a copy of `x`. No projection is performed in the portable build.
+Moves `x` onto the manifold of curvature `K`.
+
+- `K < 0`: rescales onto the open ball of radius `1/√−K` when `x` is on or outside
+  it; interior points are returned unchanged. The result is **strictly** inside, so
+  that `λ` stays finite and the log map does not degenerate.
+- `K = 0`: a copy.
+- `K > 0`: rescales to radius `1/√K`. Raises for the origin, which has no projection.
+
+This is the op to call when a point may have drifted off the manifold: every other op
+in this group refuses an off-manifold argument rather than projecting silently.
 
 ```scheme
 (manifold-project (make-tensor '(2) 3.0) -1.0)
@@ -334,19 +436,30 @@ Returns a copy of `x`. No projection is performed in the portable build.
 
 ### `(mobius-add x y curvature)` — id 814
 
-The gyrovector addition of the Poincaré ball model. In the portable build it returns
-`x + y`; the curvature is discarded, so it degenerates to the Euclidean group
-operation.
+The gyrovector addition of the Poincaré ball model, `c = −K`:
+
+```
+x ⊕_c y = ((1 + 2c⟨x,y⟩ + c‖y‖²)x + (1 − c‖x‖²)y) / (1 + 2c⟨x,y⟩ + c²‖x‖²‖y‖²)
+```
+
+It is **neither commutative nor associative** — `gyr[x,y]` is exactly the failure of
+commutativity, and it is what `parallel-transport` is built from. At `K = 0` it is
+`x + y`, exactly. It **raises for `K > 0`**: Möbius addition is the gyrogroup
+operation of the ball and is not defined on the sphere.
 
 ```scheme
 (define x (make-tensor '(2) 0.1))
 (define y (make-tensor '(2) 0.2))
-(mobius-add x y -1.0)
+(mobius-add x y -1.0)     ; not equal to (mobius-add y x -1.0)
 ```
 
 ### `(mobius-scalar-mul r x curvature)` — id 815
 
-Note the argument order: the **scalar comes first**. Returns `r · x`.
+Note the argument order: the **scalar comes first**. Returns the gyrovector scalar
+multiple `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`, which agrees with `mobius-add` — for
+example `2 ⊗ x = x ⊕ x`. Because `tanh` is bounded, the result cannot leave the ball
+for any `r`, which `r · x` does. At `K = 0` it is `r · x`, exactly. It **raises for
+`K > 0`**, for the same reason `mobius-add` does.
 
 ```scheme
 (mobius-scalar-mul 0.5 (make-tensor '(2) 0.4) -1.0)
@@ -417,19 +530,32 @@ usually denotes; the two agree in direction but not in parameterisation.
 
 ### `(spherical-exp base tangent)` / `(spherical-exp-map …)` — id 821
 
-Two tensors. Returns `normalize(base + tangent)`.
+Two tensors. Returns the exponential map on the **unit sphere** (K = +1):
+`cos‖v‖·base + sin‖v‖·v/‖v‖`. `base` must lie on the unit sphere and `v` must be
+tangent to it (`⟨base, v⟩ = 0`), or the op raises.
+
+It used to return `normalize(base + tangent)`, a retraction: the right geodesic at
+the wrong arc length (`atan‖v‖` instead of `‖v‖`), so it agreed to first order and
+disagreed at every order after.
 
 ```scheme
-(spherical-exp (make-tensor '(3) 1.0) (make-tensor '(3) 0.1))
+(define e1 (make-tensor '(3) 0.0)) (tensor-set! e1 0 1.0)
+(define v  (make-tensor '(3) 0.0)) (tensor-set! v  1 1.0)
+(spherical-exp e1 v)   ; (0.5403023058681398 0.8414709848078965 0)
 ```
 
 ### `(spherical-log base point)` / `(spherical-log-map …)` — id 822
 
-Returns `point − base`. Shares a case with id 810 but takes **two** arguments, not
-three — there is no curvature argument.
+Returns the logarithmic map on the **unit sphere**, the inverse of id 821:
+`θ·u/‖u‖` with `u = point − cos θ·base` and `θ = acos⟨base, point⟩`, so its length is
+the great-circle angle. Shares a case with id 810 but takes **two** arguments, not
+three — the curvature is fixed at K = +1. Both arguments must lie on the unit sphere.
+Antipodal points raise: the log is not single-valued there.
 
 ```scheme
-(spherical-log (make-tensor '(3) 1.0) (make-tensor '(3) 2.0))
+(define e1 (make-tensor '(3) 0.0)) (tensor-set! e1 0 1.0)
+(define e2 (make-tensor '(3) 0.0)) (tensor-set! e2 1 1.0)
+(spherical-log e1 e2)   ; length pi/2
 ```
 
 ### `(spherical-project x)` — id 823
@@ -557,20 +683,35 @@ is not a tensor.
 
 ### `(exterior-derivative form)` — id 835
 
-Returns a **zero** tensor of the input's shape. The portable build carries no
-coordinate information from which to differentiate a form, so `d` is the zero map
-here — not an identity, and not an error.
+**Not implemented on the VM engine.** Raises a catchable condition naming itself.
+
+`form` is a coefficient array evaluated at a single point, and `d` is a derivative:
+it cannot be computed from the values of the coefficients, only from the coefficients
+as differentiable functions of position. Nothing in this op's arguments carries that.
+
+It used to return a zero tensor of the input's shape, which is not "no information
+available" — it is the assertion that `d(form) = 0`, i.e. that every form handed to
+it is closed, made without examining one.
 
 ```scheme
-(exterior-derivative (make-tensor '(3) 1.0))
+(guard (e (#t 'not-implemented))
+  (exterior-derivative (make-tensor '(3) 1.0)))
 ```
 
 ### `(hodge-star form metric)` — id 836
 
-Pops and discards `metric` and returns a copy of `form`.
+**Not implemented on the VM engine.** Raises a catchable condition naming itself.
+
+The star of a k-form depends on `k` and on the ambient dimension. A flat coefficient
+array records neither, so the op has no way to tell which duality is being asked for.
+
+It used to return its argument unchanged, which is the Hodge star only for a
+self-dual middle-degree form in a Euclidean metric — the identity map presented under
+the name of a duality.
 
 ```scheme
-(hodge-star (make-tensor '(3) 1.0) (make-tensor '(3 3) 0.0))
+(guard (e (#t 'not-implemented))
+  (hodge-star (make-tensor '(3) 1.0) (make-tensor '(3 3) 0.0)))
 ```
 
 ### `(interior-product vector form)` — id 837
@@ -598,23 +739,32 @@ count and `cols` inferred by division. `()` if the shapes cannot be reconciled
 
 ## Riemannian optimizers
 
-All three step ops accept a trailing curvature argument and discard it: the update is
-Euclidean, with no retraction back onto the manifold.
+All three step ops read their trailing curvature argument and **retract onto the
+manifold with the exponential map**, so the iterate cannot leave it. `gradient` is
+the **Riemannian** gradient — a tangent vector; `riemannian-grad` is the op that
+converts a Euclidean one, which is why they are separate names. At `K = 0` every step
+reduces exactly to the ambient update.
 
 ### `(riemannian-sgd-step point gradient lr curvature)` — id 839
 
-Returns `point − lr · gradient` as a fresh tensor. `()` on a shape mismatch.
+Returns `exp_point(−lr · gradient)` as a fresh tensor; `point − lr · gradient` at
+`K = 0`. `()` on a shape mismatch, and raises if `point` is not on the manifold.
 
 ```scheme
-(define p (make-tensor '(4) 1.0))
-(define g (make-tensor '(4) 0.5))
-(riemannian-sgd-step p g 0.01 -1.0)
+(define p (make-tensor '(2) 0.25))
+(define g (make-tensor '(2) 0.5))
+(riemannian-sgd-step p g 0.25 -1.0)
 ```
 
 ### `(riemannian-adam-step point gradient lr beta1 beta2 curvature)` — id 840
 
 Bias-corrected Adam with `ε = 1e-8`. `beta1` outside `[0, 1)` falls back to `0.9`,
-`beta2` outside `[0, 1)` to `0.999`, and a negative `lr` is negated.
+`beta2` outside `[0, 1)` to `0.999`, and a negative `lr` is negated. The Adam delta is
+formed in the tangent space, retracted with `exp_point`, and the **first moment is
+parallel-transported** to the new point — it is a tangent vector at the old one and
+is meaningless at the new one until it is moved. The second moment is a
+per-coordinate scale rather than a tangent vector and is left as is, which is the
+same choice `geoopt`'s `RiemannianAdam` makes.
 
 The optimizer state is **implicit and pooled**. `vm_default_riemannian_adam_state`
 keeps 16 VM-lifetime slots and hands back the first whose shape matches `point`,
@@ -655,11 +805,18 @@ moment buffers and step counter. `()` if the state's shape does not match `point
 
 ### `(riemannian-grad euclidean-grad point curvature)` — id 841
 
-Pops and discards `point` and `curvature` and returns a copy of `euclidean-grad`. No
-tangent-space projection is applied in the portable build.
+Converts a Euclidean gradient at `point` into the Riemannian one.
+
+- `K < 0`: `((1 − c‖x‖²)² / 4) · grad`. The ball's metric is conformal with factor
+  `λ_x = 2/(1 − c‖x‖²)`, so the Riemannian gradient is `grad / λ_x²`; the factor goes
+  to zero at the boundary.
+- `K = 0`: a copy, exactly.
+- `K > 0`: the ambient gradient projected onto the tangent space at `point`.
 
 ```scheme
-(riemannian-grad (make-tensor '(4) 0.5) (make-tensor '(4) 1.0) -1.0)
+(define p (make-tensor '(2) 0.0)) (tensor-set! p 0 0.3) (tensor-set! p 1 -0.1)
+(define g (make-tensor '(2) 0.0)) (tensor-set! g 0 1.0)
+(riemannian-grad g p -1.0)   ; (0.2025 0)
 ```
 
 ---
@@ -670,8 +827,10 @@ tangent-space projection is applied in the portable build.
 
 `Q` and `K` tensors. A rank-≥2 tensor is read as `(n, d)`; a rank-1 tensor is read as
 a single row of dimension `total`. The two feature dimensions must agree. Returns a
-tensor of shape `(nq nk)` whose entries are the **negated** Euclidean distances
-`−‖qᵢ − kⱼ‖`. `()` if either argument is not a tensor or the dimensions disagree.
+tensor of shape `(nq nk)` whose entries are the **negated geodesic distances**
+`−d_K(qᵢ, kⱼ)` — closer keys score higher — which is the convention
+`ad_geodesic_attention` uses on the AD tape. `()` if either argument is not a tensor
+or the dimensions disagree; raises if a row is off the manifold.
 
 ```scheme
 (geodesic-attention-scores (make-tensor '(2 3) 0.1) (make-tensor '(2 3) 0.2) -1.0)
@@ -705,9 +864,12 @@ the input's shape. `()` if `scores` is not a non-empty tensor.
 
 The fused path. `Q`, `K` and `V` must all have rank ≥ 2; `K`'s feature dimension must
 equal `Q`'s and `V` must have at least as many rows as `K`. Returns a tensor of shape
-`(nq vdim)` where row `i` is the average of `V`'s rows weighted by
-`exp(−‖qᵢ − kⱼ‖)`, normalised by the weight sum. Note this is **not** the composition
-of ids 844/846/845: the weights are `exp(−d)` with no curvature scaling.
+`(nq vdim)` where row `i` is the average of `V`'s rows weighted by the softmax of
+`−d_K(qᵢ, kⱼ)/(√c·√dim)`, the curvature-adaptive scaling `ad_geodesic_attention`
+applies. The maximum is subtracted before exponentiating. The aggregation of `V` is a
+Euclidean weighted sum, which is what the AD bridge also computes — only the SCORES
+carry the metric. Note this is still **not** the composition of ids 844/846/845,
+whose scalings differ.
 
 ```scheme
 (geodesic-attention-forward (make-tensor '(2 3) 0.1)
@@ -789,8 +951,8 @@ Six spellings exist in both surfaces, and they are **not** the same functions:
 | `make-euclidean-manifold` | arity 1, opaque handle | arity 1, `#(type dim)` vector |
 | `make-hyperbolic-manifold` | **arity 2** — `(dim curvature)` | **arity 1** — `(dim)`, K fixed at −1 |
 | `make-spherical-manifold` | arity 1, opaque handle | arity 1, `#(type dim)` vector |
-| `manifold-exp-map` / `-log-map` | tensors; flat in the portable build | Scheme vectors; closed-form Möbius / great-circle |
-| `manifold-distance` | tensors; L2 in the portable build | Scheme vectors; Poincaré `arccosh` / spherical `acos` |
+| `manifold-exp-map` / `-log-map` | tensors; closed-form Möbius / great-circle | Scheme vectors; closed-form Möbius / great-circle |
+| `manifold-distance` | tensors; Poincaré `arccosh` / spherical `acos` | Scheme vectors; Poincaré `arccosh` / spherical `acos` |
 | `manifold-type` / `manifold-dimension` | integer type code | symbol type, integer dimension |
 
 Which one a call reaches depends on whether `core.manifold` has been loaded.
@@ -806,10 +968,13 @@ the ambiguity for you** — pick one surface per program deliberately, and note 
 the two disagree on arity for `make-hyperbolic-manifold`, so a program that reaches
 the wrong one fails at the call rather than quietly.
 
-`core.manifold` is the better default: it is engine-independent (it runs on native
-AOT and REPL/JIT as well as the VM), its points are ordinary Scheme vectors, and its
-maps and distances are genuine closed forms rather than the flat approximations
-above. Reach for these builtins when you need the tensor-shaped surface, the
+`core.manifold` is the better default when portability across engines is what you
+need: it runs on native AOT and REPL/JIT as well as the VM, and its points are
+ordinary Scheme vectors. Both surfaces now compute the same closed forms, so the
+choice is about engine reach and data representation rather than about correctness —
+note that `core.manifold` fixes K at −1 for the hyperbolic case while these builtins
+take K as an argument. Reach for these builtins when you need the tensor-shaped
+surface, the
 Lie-group ops (`so3-*`, `se3-*`, `quaternion-mul`), the differential forms, the
 optimizers, geodesic attention, or the gated `frechet-mean` — none of which
 `core.manifold` provides.
@@ -818,7 +983,12 @@ optimizers, geodesic attention, or the gated `frechet-mean` — none of which
 
 None of these builtins is differentiable through Eshkol's AD operators: they are VM
 natives, and AD is a native-engine facility. The qLLM bridge
-(`lib/bridge/qllm_bridge.cpp`) is the differentiable route to the same geometry, and
+(`lib/bridge/qllm_bridge.cpp`) is the differentiable route to the same geometry — and
+it is now the same geometry in the strict sense: the closed forms these opcodes
+compute live in `inc/eshkol/backend/riemannian_core.h` and are the ones the bridge's
+`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map` and
+`ad_geodesic_attention` evaluate, so a value computed on the VM and a value computed
+on the tape agree. The
 the exact backwards it registers are documented in
 [`../ad/architecture.md`](../ad/architecture.md) and
 [`../ad/support-matrix.md`](../ad/support-matrix.md). `frechet-mean`'s forward pass is

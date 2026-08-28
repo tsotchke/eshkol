@@ -28,11 +28,22 @@
 (frechet-mean frechet-pts frechet-w -1.0)
 (great-circle-distance t t)
 (slerp t t 0.5)
-(spherical-exp t t)
-(spherical-exp-map t t)
-(spherical-log t t)
-(spherical-log-map t t)
-(spherical-project t)
+;; The spherical ops are the UNIT SPHERE (K = +1), so their base point must lie
+;; ON it and their tangent vector must be tangent to it -- `t` is the origin,
+;; which is on no sphere. They used to accept it because they were
+;; normalize(base + tangent) and (point - base), which have no domain. Same
+;; reason the frechet-mean probe above takes in-domain arguments.
+(define sphere-base (make-tensor '(2) 0.0))
+(tensor-set! sphere-base 0 1.0)
+(define sphere-other (make-tensor '(2) 0.0))
+(tensor-set! sphere-other 1 1.0)
+(define sphere-tangent (make-tensor '(2) 0.0))
+(tensor-set! sphere-tangent 1 0.5)
+(spherical-exp sphere-base sphere-tangent)
+(spherical-exp-map sphere-base sphere-tangent)
+(spherical-log sphere-base sphere-other)
+(spherical-log-map sphere-base sphere-other)
+(spherical-project sphere-base)
 (so3-exp t)
 (so3-log t)
 (se3-exp t)
@@ -44,8 +55,13 @@
 (ricci-scalar h)
 (sectional-curvature h t t)
 (wedge-product t t)
-(exterior-derivative t)
-(hodge-star t t)
+;; exterior-derivative and hodge-star are NOT implemented on the VM engine and
+;; raise a catchable condition naming themselves. They used to return zeros and
+;; the identity respectively, which asserted that every form is closed and that
+;; the star is trivial. Probed here through `guard` so this file stays an
+;; arity/resolution probe.
+(guard (e (#t 'refused)) (exterior-derivative t))
+(guard (e (#t 'refused)) (hodge-star t t))
 (interior-product t t)
 (pullback t t)
 (riemannian-sgd-step t t 0.01 -1.0)

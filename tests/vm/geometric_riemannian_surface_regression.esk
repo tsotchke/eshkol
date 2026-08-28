@@ -1,0 +1,194 @@
+;; Standalone VM Riemannian-geometry numeric regression (SW-73).
+;;
+;; The geometric builtins used to compute their FLAT counterparts on every
+;; engine that ships: `hyperbolic-exp-map` was vector addition,
+;; `hyperbolic-log-map` subtraction, `geodesic-distance` and `poincare-distance`
+;; the L2 distance, `mobius-add` addition, `mobius-scalar-mul` a scale,
+;; `parallel-transport` and `riemannian-grad` the identity. Each accepted a
+;; curvature argument and discarded it, so the results were Euclidean answers
+;; returned under Riemannian names with nothing in the output to show it.
+;;
+;; Every assertion below is chosen so that THE FLAT ANSWER FAILS IT. The
+;; expected values are the closed forms in inc/eshkol/backend/riemannian_core.h,
+;; which are the same formulas the AD bridge computes
+;; (lib/bridge/qllm_bridge.cpp: ad_hyperbolic_distance, ad_poincare_exp_map,
+;; ad_poincare_log_map). Curvature is the SECTIONAL curvature K: K < 0 is the
+;; Poincare ball of radius 1/sqrt(-K), K = 0 is Euclidean, K > 0 is the sphere
+;; of radius 1/sqrt(K).
+
+(define (near? a b) (< (abs (- a b)) 0.000000001))
+(define (far? a b) (> (abs (- a b)) 0.001))
+(define (report ok name)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+
+(define (vec2 a b)
+  (let ((t (make-tensor '(2) 0.0)))
+    (tensor-set! t 0 a)
+    (tensor-set! t 1 b)
+    t))
+
+(define (vec3 a b c)
+  (let ((t (make-tensor '(3) 0.0)))
+    (tensor-set! t 0 a)
+    (tensor-set! t 1 b)
+    (tensor-set! t 2 c)
+    t))
+
+;; ── geodesic distance is not the chord ───────────────────────────────────────
+;; Two points 1.8 apart in L2, one tenth of a unit inside the boundary of the
+;; unit ball. The hyperbolic distance between them is 4 artanh(0.9) = 5.8889 —
+;; more than three times the flat answer, and it diverges as the points approach
+;; the boundary while the chord stays bounded by the diameter.
+(define near-a (vec2 0.9 0.0))
+(define near-b (vec2 -0.9 0.0))
+(define d-boundary (geodesic-distance near-a near-b -1.0))
+(report (near? d-boundary 5.8888779583328814) "geodesic-distance near the ball boundary")
+(report (far? d-boundary 1.8) "geodesic-distance is not the L2 chord")
+
+;; poincare-distance is the same op under its other name.
+(report (near? (poincare-distance near-a near-b -1.0) 5.8888779583328814)
+        "poincare-distance agrees with geodesic-distance")
+
+;; At K = 0 the geodesic distance IS the chord, exactly. The old body was right
+;; for this one value of the argument and wrong for every other.
+(report (near? (geodesic-distance near-a near-b 0.0) 1.8)
+        "geodesic-distance reduces to L2 at K = 0")
+
+;; ── exp and log are mutually inverse, and neither is +/- ─────────────────────
+(define px (vec2 0.3 -0.1))
+(define py (vec2 -0.5 0.2))
+(define lg (hyperbolic-log-map px py -1.0))
+(report (near? (tensor-ref lg 0) -0.78553136001518009) "log-map component 0")
+(report (near? (tensor-ref lg 1) 0.28694063523451202) "log-map component 1")
+(report (far? (tensor-ref lg 0) -0.8) "log-map is not the difference y - x")
+
+(define back (hyperbolic-exp-map px lg -1.0))
+(report (near? (tensor-ref back 0) -0.5) "exp-map inverts log-map, component 0")
+(report (near? (tensor-ref back 1) 0.2) "exp-map inverts log-map, component 1")
+
+;; The Riemannian length of log_x(y) is the geodesic distance: the tangent space
+;; carries the conformal metric lambda_x^2 <.,.>, lambda_x = 2/(1 - |x|^2).
+(define lam-x (/ 2.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))))
+(define lg-len (sqrt (+ (* (tensor-ref lg 0) (tensor-ref lg 0))
+                        (* (tensor-ref lg 1) (tensor-ref lg 1)))))
+(report (near? (* lam-x lg-len) (geodesic-distance px py -1.0))
+        "lambda_x * |log_x(y)| equals the geodesic distance")
+
+;; ── Mobius addition is not commutative ───────────────────────────────────────
+;; This is the whole content of the gyrogroup structure: gyr[x,y] is exactly the
+;; failure of commutativity. Plain vector addition, the old body, commutes.
+(define xy (mobius-add px py -1.0))
+(define yx (mobius-add py px -1.0))
+(report (near? (tensor-ref xy 0) -0.23947750362844705) "mobius-add component 0")
+(report (near? (tensor-ref xy 1) 0.12336719883889698) "mobius-add component 1")
+(report (far? (tensor-ref xy 1) (tensor-ref yx 1)) "mobius-add is NOT commutative")
+(report (far? (tensor-ref xy 0) (+ 0.3 -0.5)) "mobius-add is not vector addition")
+
+;; 2 (x) x = x (+) x — the gyrovector scalar multiple agrees with the addition.
+(define twice (mobius-scalar-mul 2.0 px -1.0))
+(define selfsum (mobius-add px px -1.0))
+(report (near? (tensor-ref twice 0) (tensor-ref selfsum 0)) "2 (x) x = x (+) x, component 0")
+(report (near? (tensor-ref twice 1) (tensor-ref selfsum 1)) "2 (x) x = x (+) x, component 1")
+(report (far? (tensor-ref twice 0) 0.6) "mobius-scalar-mul is not r*x")
+
+;; ── parallel transport is not the identity ───────────────────────────────────
+;; It was, for every curvature. Transport IS the holonomy of the connection: the
+;; identity map is the statement that the manifold is flat.
+(define tv (vec2 0.2 0.4))
+(define pt (parallel-transport px py tv -1.0))
+(report (near? (tensor-ref pt 0) 0.16314844574304069) "parallel-transport component 0")
+(report (near? (tensor-ref pt 1) 0.31281259638016379) "parallel-transport component 1")
+(report (far? (tensor-ref pt 0) 0.2) "parallel-transport is NOT the identity")
+
+;; Transport is an isometry of the Riemannian metric even though it changes the
+;; ambient components: lambda_y |P v| = lambda_x |v|.
+(define lam-y (/ 2.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2)))))
+(define v-len (sqrt (+ (* 0.2 0.2) (* 0.4 0.4))))
+(define pt-len (sqrt (+ (* (tensor-ref pt 0) (tensor-ref pt 0))
+                        (* (tensor-ref pt 1) (tensor-ref pt 1)))))
+(report (near? (* lam-y pt-len) (* lam-x v-len))
+        "parallel-transport preserves Riemannian length")
+
+;; Transporting from a point to itself is the identity.
+(define pt-self (parallel-transport px px tv -1.0))
+(report (near? (tensor-ref pt-self 0) 0.2) "parallel-transport x -> x is the identity")
+
+;; At K = 0 transport IS the identity, exactly.
+(define pt-flat (parallel-transport px py tv 0.0))
+(report (near? (tensor-ref pt-flat 0) 0.2) "parallel-transport is the identity at K = 0")
+
+;; ── riemannian-grad rescales by the metric ───────────────────────────────────
+;; Was a copy of the Euclidean gradient with the point discarded. On the ball the
+;; conversion factor is (1 - |x|^2)^2 / 4, which vanishes at the boundary.
+(define eg (vec2 1.0 0.0))
+(define rg (riemannian-grad eg px -1.0))
+(report (near? (tensor-ref rg 0) 0.2025) "riemannian-grad applies the inverse metric")
+(report (far? (tensor-ref rg 0) 1.0) "riemannian-grad is not a copy")
+(report (near? (tensor-ref (riemannian-grad eg px 0.0) 0) 1.0)
+        "riemannian-grad is a copy at K = 0")
+
+;; ── manifold-project puts a point back on the manifold ───────────────────────
+;; Was a copy, so a point outside the ball stayed outside.
+(define outside (vec2 3.0 4.0))
+(define projected (manifold-project outside -1.0))
+(report (near? (tensor-ref projected 0) 0.59999999999940001) "manifold-project component 0")
+(report (< (sqrt (+ (* (tensor-ref projected 0) (tensor-ref projected 0))
+                    (* (tensor-ref projected 1) (tensor-ref projected 1)))) 1.0)
+        "manifold-project lands strictly inside the ball")
+
+;; ── the SGD step follows the geodesic ────────────────────────────────────────
+;; Was point - lr*grad, which leaves the ball for a large enough step.
+(define sgd (riemannian-sgd-step px tv 0.5 -1.0))
+(report (near? (tensor-ref sgd 0) 0.2166917684430178) "riemannian-sgd-step component 0")
+(report (near? (tensor-ref sgd 1) -0.30456057908269812) "riemannian-sgd-step component 1")
+(report (far? (tensor-ref sgd 0) 0.2) "riemannian-sgd-step is not the flat update")
+(report (near? (tensor-ref (riemannian-sgd-step px tv 0.5 0.0) 0) 0.2)
+        "riemannian-sgd-step is the flat update at K = 0")
+
+;; ── the sphere branch is the round sphere, not a normalization ───────────────
+;; spherical-exp was normalize(base + tangent), a retraction that lands on the
+;; right geodesic at the wrong arc length: atan|v| instead of |v|.
+(define e1 (vec3 1.0 0.0 0.0))
+(define e2 (vec3 0.0 1.0 0.0))
+(define unit-tangent (vec3 0.0 1.0 0.0))
+(define sph (spherical-exp e1 unit-tangent))
+(report (near? (tensor-ref sph 0) 0.54030230586813977) "spherical-exp is cos|v| x + sin|v| v/|v|")
+(report (near? (tensor-ref sph 1) 0.8414709848078965) "spherical-exp arc length is |v|")
+(report (far? (tensor-ref sph 0) 0.70710678118654746) "spherical-exp is not normalize(x + v)")
+
+(define slog (spherical-log e1 e2))
+(report (near? (sqrt (+ (* (tensor-ref slog 0) (tensor-ref slog 0))
+                        (* (tensor-ref slog 1) (tensor-ref slog 1))
+                        (* (tensor-ref slog 2) (tensor-ref slog 2))))
+               1.5707963267948966)
+        "spherical-log length is the great-circle angle")
+(report (far? (tensor-ref slog 0) -1.0) "spherical-log is not the difference")
+
+(report (near? (geodesic-distance e1 e2 1.0) 1.5707963267948966)
+        "geodesic-distance on the unit sphere is the great-circle distance")
+
+;; ── refusals name the builtin instead of returning a flat answer ─────────────
+;; A point outside the ball has no geodesic relation to one inside it. The op
+;; raises a catchable condition rather than falling back to the chord.
+(define outside-guarded
+  (guard (e (#t 'refused))
+    (geodesic-distance outside near-a -1.0)))
+(report (eq? outside-guarded 'refused) "geodesic-distance refuses a point outside the ball")
+
+(define mobius-sphere-guarded
+  (guard (e (#t 'refused))
+    (mobius-add px py 1.0)))
+(report (eq? mobius-sphere-guarded 'refused) "mobius-add refuses positive curvature")
+
+;; exterior-derivative and hodge-star are NOT implemented on the VM engine: the
+;; data they receive (a coefficient array at one point, with no degree recorded)
+;; does not determine an answer. They refuse by name rather than returning zeros
+;; and the identity, which is what they used to do.
+(define d-guarded (guard (e (#t 'refused)) (exterior-derivative px)))
+(report (eq? d-guarded 'refused) "exterior-derivative refuses instead of returning zeros")
+
+(define star-guarded (guard (e (#t 'refused)) (hodge-star px py)))
+(report (eq? star-guarded 'refused) "hodge-star refuses instead of returning its argument")
+
+(display "PASS: Riemannian geometry numeric regression complete")
+(newline)

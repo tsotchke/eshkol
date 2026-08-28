@@ -9,17 +9,37 @@
 
 (display (if st "PASS" "FAIL")) (display ": make-riemannian-adam-state") (newline)
 
-(define step1 (riemannian-adam-step! st p g 0.1 0.9 0.999 -1.0))
+;; These three assertions used to pass CURVATURE -1.0 with p = (1.0, 1.0), a
+;; point of norm sqrt(2) that is not in the Poincare ball of radius 1 -- they
+;; held only because the step ignored the curvature and added the Adam delta in
+;; the ambient space. The moment bookkeeping they actually test is curvature-
+;; independent, so they now say K = 0, where the ambient addition IS the
+;; exponential map and the expected values are unchanged.
+(define step1 (riemannian-adam-step! st p g 0.1 0.9 0.999 0.0))
 (display (if (near? (tensor-ref step1 0) 0.9) "PASS" "FAIL"))
 (display ": adam stateful first step") (newline)
 
-(define step2 (riemannian-adam-step! st step1 g 0.1 0.9 0.999 -1.0))
+(define step2 (riemannian-adam-step! st step1 g 0.1 0.9 0.999 0.0))
 (display (if (near? (tensor-ref step2 0) 0.8) "PASS" "FAIL"))
 (display ": adam stateful second step keeps moments") (newline)
 
-(define legacy1 (riemannian-adam-step p g 0.1 0.9 0.999 -1.0))
+(define legacy1 (riemannian-adam-step p g 0.1 0.9 0.999 0.0))
 (display (if (near? (tensor-ref legacy1 0) 0.9) "PASS" "FAIL"))
 (display ": legacy riemannian-adam-step uses Adam update") (newline)
+
+;; On the ball the step is a geodesic one: the delta is retracted with the
+;; exponential map and the first moment is parallel-transported to the new point.
+;; The iterate must differ from the ambient sum and must stay in the ball.
+(define ball-p (make-tensor '(2) 0.25))
+(define ball-g (make-tensor '(2) 0.5))
+(define ball-st (make-riemannian-adam-state ball-p))
+(define curved (riemannian-adam-step! ball-st ball-p ball-g 0.1 0.9 0.999 -1.0))
+(display (if (> (abs (- (tensor-ref curved 0) 0.15)) 0.0001) "PASS" "FAIL"))
+(display ": adam on the ball is not the ambient update") (newline)
+(display (if (< (+ (* (tensor-ref curved 0) (tensor-ref curved 0))
+                   (* (tensor-ref curved 1) (tensor-ref curved 1))) 1.0)
+             "PASS" "FAIL"))
+(display ": adam on the ball stays on the manifold") (newline)
 
 (display "PASS: Riemannian Adam state regression complete")
 (newline)
