@@ -1974,6 +1974,12 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
 
 typedef void (*backward_fn_t)(ad_node_t*);
 
+/* The squared-distance bridge is implemented with its forward producer and
+ * manifold kernels in lib/bridge/space_form_ad.cpp.  The registry generates
+ * this table, so the external symbol must be declared before its row expands
+ * into the table initializer. */
+extern "C" void tensor_squared_distance_backward(ad_node_t* node);
+
 /* The backward-function table, GENERATED from inc/eshkol/ad_node_registry.def.
  *
  * This replaces a hand-written switch with a `default:` that returned NULL and

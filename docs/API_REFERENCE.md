@@ -555,6 +555,26 @@ Computes gradient vector using reverse-mode AD (backpropagation).
 - Backward pass propagates gradients via chain rule
 - Supports nested gradients (arbitrary depth) with tape stack
 
+#### Native squared geodesic-distance bridge
+
+The native bridge provides `ad_squared_distance` and
+`ad_product_squared_distance` for callers that already own native AD point
+tensors. They record `AD_NODE_SQUARED_DISTANCE`, a scalar-valued
+tensor-payload node, and the reverse sweep evaluates the log-map form
+directly:
+
+```
+grad_x d²(x,y) = -2 log_x(y)
+```
+
+The primitive covers Euclidean, Poincare-ball hyperbolic, spherical, and
+factorwise product manifolds. At `x == y`, its value and gradients are exactly
+zero; it does not inherit ordinary geodesic distance's cone-point refusal.
+The spherical antipode is still rejected because it is the genuine cut locus.
+This is a native-only C bridge, not a Scheme builtin or VM opcode. Its
+backward is registered in `inc/eshkol/ad_node_registry.def` and covered by
+the 30-check `squared_distance_gradcheck` gate.
+
 ---
 
 #### `jacobian`

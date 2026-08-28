@@ -267,5 +267,9 @@ ESHKOL_AD_NODE(TENSOR_BROADCAST_DIV_DENSE,   91, TENSOR, INLINE, ESHKOL_AD_NO_BR
 /* Dense whole-tensor max uses the documented last-winner subgradient at ties. */
 ESHKOL_AD_NODE(TENSOR_MAX_DENSE,              92, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(BATCH_MATMUL,                  93, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+/* Squared geodesic distance on space forms and their products.  The bridge
+ * backward uses the log-map form directly, so it remains differentiable at
+ * coincidence where ordinary geodesic distance is not. */
+ESHKOL_AD_NODE(SQUARED_DISTANCE,     94, TENSOR, BRIDGE,       tensor_squared_distance_backward)
 
 /* clang-format on */
