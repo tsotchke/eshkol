@@ -37,8 +37,8 @@ v1.3 is the self-contained core evolution release. It should ship when these are
 green:
 
 - ICC `readiness --repo eshkol_lang --target v1.3-evolve` is backed by a real
-  smoke command, not only static evidence. Current status is ready/100 on atlas
-  using `scripts/run_v1_3_readiness.sh` and `scripts/icc_traces`.
+  smoke command, not only static evidence. Current status is ready/100 on a
+  macOS node on the mesh using `scripts/run_v1_3_readiness.sh` and `scripts/icc_traces`.
 - SICP gate is part of the normal release smoke. PR #85 landed the corpus,
   smoke harness, and ICC oracle.
 - R7RS library compatibility is not partial. ROADMAP still calls out the full
@@ -149,13 +149,14 @@ The v1.5 artifact path should be:
 ## Ordered Work Plan
 
 1. Finish the v1.3 core gate.
-   - ICC smoke evidence for `v1.3-evolve` is fixed on atlas.
+   - ICC smoke evidence for `v1.3-evolve` is fixed on a macOS node on the mesh.
    - SICP gate is merged in #85; PR #87 removed stale xfails after #86.
    - Windows ARM64 is green after PR #77 / 6d57ab8f.
    - Close ESH-0075 and ESH-0080.
    - Add the static-link capability/env CTest from ESH-0077.
-   - ESH-0087 mesh certification is complete: cosbox, old-donkey, jack-blupc,
-     and xavier all have focused v1.3 feature + AD/input2 PASS evidence.
+   - ESH-0087 mesh certification is complete: two Linux x64 nodes, a Windows
+     node, and a Linux ARM64 node on the mesh all have focused v1.3 feature +
+     AD/input2 PASS evidence.
 
 2. Make Noesis first-party in the release machinery.
    - Add a Noesis v1.5 release gate script under Eshkol orchestration.
@@ -219,5 +220,5 @@ v1.7 should be distributed intelligence:
 - ESH-0084: attention/GeoRefine `qllm_bundle.json` integration gate.
 - ESH-0085: crypto symbol hygiene for Noesis recursive/session gates.
 - ESH-0086 and ESH-0087 are done locally: ICC smoke evidence is fixed and mesh
-  certification has PASS evidence on Linux, Windows, and xavier Nix paths.
+  certification has PASS evidence on Linux, Windows, and Linux ARM64 Nix paths.
 - Continue existing ESH-0075, ESH-0076, ESH-0077, ESH-0080, and ESH-0081.

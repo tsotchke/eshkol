@@ -5,13 +5,14 @@
 **Date:** 2026-06-17
 **Mandate:** Completely update the language. Eshkol is being adopted as the
 compute + control substrate for running **Kimi K2.6 as a fast, lossless,
-general-purpose LLM** on modest hardware (old-donkey: RTX 3050 6 GB + CPU + disk
-streaming), accelerated by MoThRA and geometric inference. This work stressed
-Eshkol against a real, heavy GPU workload and surfaced concrete gaps. This brief
-is the punch-list to make Eshkol a first-class GPU-LLM language.
+general-purpose LLM** on modest hardware (a self-hosted Linux CUDA node on the
+mesh: RTX 3050 6 GB + CPU + disk streaming), accelerated by MoThRA and
+geometric inference. This work stressed Eshkol against a real, heavy GPU
+workload and surfaced concrete gaps. This brief is the punch-list to make
+Eshkol a first-class GPU-LLM language.
 
 Everything below was found empirically against **v1.2.3-scale** built with CUDA
-(`-DESHKOL_GPU_ENABLED=ON`, sm_86, cuBLAS) on old-donkey. Repro snippets are real.
+(`-DESHKOL_GPU_ENABLED=ON`, sm_86, cuBLAS) on that node. Repro snippets are real.
 
 ---
 
@@ -126,9 +127,10 @@ decode where startup dwarfs the GEMM.
   in the **runtime link of compiled programs**. The runtime/support lib appears to
   leak LLVM codegen symbols — **separate `libeshkol-runtime` (no LLVM) from the
   compiler lib** so compiled `a.out`s never need LLVM at link.
-- **Version drift:** old-donkey shipped v1.2.1 while we needed v1.2.3 (`gpu-matmul`,
-  etc.). Tag releases and make `--version` + a `eshkol features` introspection
-  command authoritative so deploys can assert capability.
+- **Version drift:** a self-hosted Linux CUDA node on the mesh shipped v1.2.1
+  while we needed v1.2.3 (`gpu-matmul`, etc.). Tag releases and make `--version`
+  + a `eshkol features` introspection command authoritative so deploys can
+  assert capability.
 
 ---
 

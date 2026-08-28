@@ -117,7 +117,8 @@ public:
     // pipeline runs its own PostPrune stub/GOT builders whose materialization
     // our extra pass perturbs, wedging in-process JIT materialization
     // (lookupLinkerMangled -> pthread_cond_wait). ELF/COFF are the real,
-    // tested problem scope (xavier = arm64-Linux/ELF). Gate on object format,
+    // tested problem scope (a Linux ARM64 node on the mesh = arm64-Linux/ELF).
+    // Gate on object format,
     // not just arch.
     if (TT.getObjectFormat() != llvm::Triple::ELF &&
         TT.getObjectFormat() != llvm::Triple::COFF)

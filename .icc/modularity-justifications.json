@@ -76,7 +76,7 @@
     "status": "temporary_legacy_boundary",
     "task_id": "eshkol-v1.4-agent-platform-modularization",
     "reason": "agent_platform.c is the existing portability facade for filesystem, time, path, text-width, encoding, hashing, and security helpers. Its public surface is stable and fully cross-platform tested, but its domains are broader than one ideal module; a release-time textual split would add linkage and platform risk without changing behavior.",
-    "mitigation": "Do not add new domains to this file. During the v1.4 agent-platform boundary pass, extract filesystem/path, time/identity, terminal-text, and encoding/crypto helpers behind focused internal headers while preserving the current exported ABI and validating every extraction on macOS, Linux, and old-donkey Windows."
+    "mitigation": "Do not add new domains to this file. During the v1.4 agent-platform boundary pass, extract filesystem/path, time/identity, terminal-text, and encoding/crypto helpers behind focused internal headers while preserving the current exported ABI and validating every extraction on macOS, Linux, and Windows."
    }
   ]
 }
