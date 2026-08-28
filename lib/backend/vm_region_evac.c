@@ -47,12 +47,14 @@
  * `default:` arm that PINS the region rather than guessing.
  *
  * DEGRADATION IS ALWAYS TOWARD THE LEAK. Every case this file is not certain
- * about — an unknown subtype, a continuation captured inside a region, an
- * outer heap too large to scan within budget, a bookkeeping allocation that
- * failed — PINS the region: its blocks are promoted into the parent and nothing
- * is freed or retired. That is exactly the pre-evacuator behaviour, which the
- * ruling calls a leak and not a defect. Nothing in this file may degrade toward
- * a dangling index.
+ * about — an unknown subtype, a continuation captured inside or crossing out
+ * of a region, a bookkeeping allocation that failed — PINS the region: its
+ * blocks are promoted into the parent and nothing is freed or retired. That is
+ * exactly the pre-evacuator behaviour, which the ruling calls a leak and not a
+ * defect. Nothing in this file may degrade toward a dangling index. (There is
+ * no scan budget: the mark phase always walks the whole reachable graph from
+ * the VM root set, however large; an earlier draft of this comment claimed one
+ * that was never implemented.)
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
