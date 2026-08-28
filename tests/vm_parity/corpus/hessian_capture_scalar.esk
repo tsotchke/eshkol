@@ -1,0 +1,23 @@
+;; Scalar captured-parameter Hessian parity probe.
+;; Keep this fixture in the VM corpus: the VM supports scalar hessian capture,
+;; while the larger native regression also includes tensor-only shapes.
+
+(define pass 0)
+(define fail 0)
+(define (check label got expected)
+  (if (< (abs (- got expected)) 1e-9)
+      (set! pass (+ pass 1))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display label) (newline))))
+
+(define (h1 q)
+  (hessian (lambda (t) (* q t t t)) 2.0))
+(define (h2 a b)
+  (hessian (lambda (t) (+ (* a t t) (* b t t t))) 2.0))
+
+(check "one captured parameter" (h1 1.5) 18.0)
+(check "two captured parameters" (h2 3.0 0.5) 12.0)
+(check "exact scalar point" (hessian (lambda (t) (* 2.0 t t t)) 2) 24.0)
+(display "hessian_capture_scalar: ")
+(if (= fail 0)
+    (begin (display "PASS ") (display pass) (newline))
+    (begin (display "FAIL ") (display fail) (newline) (exit 1)))

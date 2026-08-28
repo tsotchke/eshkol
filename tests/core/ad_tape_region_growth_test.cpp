@@ -168,6 +168,34 @@ int main() {
                     "(global arena flat: +%zu bytes over %d region-scoped tape grows)\n", grew, steps);
     }
 
+    // Part 3: the lightweight mark/release API used by resident native AD
+    // loops. Each tape owns a nested scope, and release must return the arena
+    // to the exact pre-tape mark without a surrounding region.
+    {
+        const int steps = 200;
+        const size_t before = arena_get_used_memory(global);
+        for (int s = 0; s < steps; ++s) {
+            ad_tape_t* t = arena_allocate_tape(global, 4);
+            if (!t) return fail("Part 3: tape allocation failed");
+            for (size_t i = 0; i < 300; ++i) {
+                ad_node_t* n = (ad_node_t*)arena_allocate_aligned(global, sizeof(ad_node_t), 8);
+                if (!n) return fail("Part 3: node allocation failed");
+                arena_tape_add_node(t, n);
+            }
+            arena_tape_release(t);
+        }
+        const size_t after = arena_get_used_memory(global);
+        const size_t grew = (after > before) ? (after - before) : 0;
+        if (grew > 64 * 1024) {
+            std::fprintf(stderr,
+                "ad_tape_region_growth_test: FAIL: mark/release loop grew global arena by %zu bytes\n",
+                grew);
+            return 1;
+        }
+        std::printf("ad_tape_region_growth_test: mark/release OK "
+                    "(global arena +%zu bytes over %d resident tape passes)\n", grew, steps);
+    }
+
     std::printf("ad_tape_region_growth_test: PASS "
                 "(tape grown inside a region from its owning global arena survives region_pop; "
                 "%zu nodes intact; per-step region grows fully reclaimed)\n", N);
