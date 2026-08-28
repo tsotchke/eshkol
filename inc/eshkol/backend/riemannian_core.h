@@ -135,6 +135,12 @@
 /* Below this |z| the series for tanh(z)/z is used. */
 #define ESHKOL_RM_TAU_SMALL 1e-4
 
+/* Dimensions up to this always evaluate the Mobius denominator's Gram term by
+ * Lagrange's identity, which is O(n^2) but cancellation-free. Above it the O(n)
+ * form is used unless the denominator is small enough for its rounding error to
+ * matter, so the quadratic cost is paid only in the regime that needs it. */
+#define ESHKOL_RM_GRAM_EXACT_DIM 32
+
 static double eshkol_rm_dot(const double* a, const double* b, int n) {
     double s = 0.0;
     for (int i = 0; i < n; i++) s += a[i] * b[i];
@@ -225,6 +231,55 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
 }
 
 /**
+ * @brief The Gram determinant |x|^2|y|^2 - <x,y>^2 by LAGRANGE'S IDENTITY,
+ *        sum_{i<j} (x_i y_j - x_j y_i)^2 -- a sum of squares, so it has no
+ *        cancellation and is exactly zero for collinear vectors.
+ */
+static double eshkol_rm_gram_lagrange(const double* x, const double* y, int n) {
+    double s = 0.0;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            double t = x[i] * y[j] - x[j] * y[i];
+            s += t * t;
+        }
+    return s;
+}
+
+/**
+ * @brief The Mobius denominator 1 + 2B<x,y> + B^2 |x|^2 |y|^2, evaluated as
+ *
+ *     (1 + B<x,y>)^2 + B^2 (|x|^2|y|^2 - <x,y>^2)
+ *
+ * which is the same number and is accurate where the direct sum is not.
+ *
+ * WHY. For two interior points the denominator is bounded below by
+ * (1 - sqrt(B)|x| sqrt(B)|y|)^2 > 0, so it never vanishes -- but it can be
+ * ARBITRARILY SMALL, and the direct sum computes it as a difference of terms of
+ * size 1. At B = 1, x = 0.999999999, y = -0.999999998 the true denominator is
+ * about 9e-18 and every digit of it is lost; the old code then floored the
+ * result at 1e-15 without scaling the numerator, turning an exact quotient of
+ * 1/3 into 0.003. The grouping above is exact instead: 1 + B<x,y> is a
+ * subtraction of two nearby numbers, hence exact in f64, and the Gram term is
+ * non-negative and computed without cancellation.
+ */
+static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
+                                   int n) {
+    double xy = eshkol_rm_dot(x, y, n);
+    double x2 = eshkol_rm_dot(x, x, n);
+    double y2 = eshkol_rm_dot(y, y, n);
+    double q  = 1.0 + B * xy;
+    double scale = B * B * x2 * y2;
+    double gram;
+    if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
+        gram = eshkol_rm_gram_lagrange(x, y, n);
+    } else {
+        gram = x2 * y2 - xy * xy;
+        if (gram < 0.0) gram = 0.0;   /* non-negative by Cauchy-Schwarz */
+    }
+    return q * q + B * B * gram;
+}
+
+/**
  * @brief Mobius addition on the ball of parameter @p B > 0:
  *
  *   x (+)_B y = ((1 + 2B<x,y> + B|y|^2) x + (1 - B|x|^2) y)
@@ -250,7 +305,7 @@ static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
     double y2 = eshkol_rm_dot(y, y, n);
     double num_x = 1.0 + 2.0 * B * xy + B * y2;
     double num_y = 1.0 - B * x2;
-    double den   = 1.0 + 2.0 * B * xy + B * B * x2 * y2;
+    double den   = eshkol_rm_mobius_den(x, y, B, n);
     for (int i = 0; i < n; i++) out[i] = (num_x * x[i] + num_y * y[i]) / den;
 }
 
@@ -284,7 +339,7 @@ static void eshkol_rm_gyration(const double* a, const double* b, const double* w
     double b2 = eshkol_rm_dot(b, b, n);
     double aw = eshkol_rm_dot(a, w, n);
     double bw = eshkol_rm_dot(b, w, n);
-    double D  = 1.0 + 2.0 * B * ab + B * B * a2 * b2;
+    double D  = eshkol_rm_mobius_den(a, b, B, n);
     double A  = -B * B * aw * b2 + B * bw + 2.0 * B * B * ab * bw;
     double C  = -B * B * bw * a2 - B * aw;
     for (int i = 0; i < n; i++)
