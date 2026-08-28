@@ -12,7 +12,9 @@ the event ids are hashed over — so the file *is* the chain: replay re-parses e
 line and re-derives every hash; a flipped bit anywhere breaks verification. No
 external DB.
 
-**Store shape**: `#(mem-store log path)`, where `log` is a `core.memory` log vector.
+**Compatibility store shape**: `#(mem-store log path)`, where `log` is a `core.memory`
+log vector. Durable constructors return an opaque eight-field handle that owns the
+journal lock and retains only the authoritative tail and counters for compact opens.
 
 An O(1)-open **head sidecar** (`<path>.head`, holding
 `(ms-head-v1 <prev-hash> <vclock>)`) is written atomically after each append and used
@@ -38,22 +40,42 @@ Accessors: the underlying `core.memory` log, and the file path.
 
 ### `(memory-store-open node-id path)`
 Open (or create) the durable chain at `path` for `node-id`, **replaying** all existing
-events into an in-memory log (full RGA rebuild). If the file does not exist, returns
-a fresh store. Unparseable lines are skipped with a warning. Argument order is
+events into an in-memory log (full RGA rebuild). Existing files are strict: a malformed,
+torn, hash-invalid, or broken-link row fails closed instead of being skipped. If the
+file does not exist, returns a fresh compatibility store. Argument order is
 `(node-id path)`.
+
+### `(memory-store-open-durable node-id path)` /
+`(memory-store-open-fast-durable node-id path)`
+Acquire exclusive ownership of `path` for the handle lifetime using a journal lock.
+The full durable open rebuilds the RGA; the fast durable open validates the whole
+canonical journal while retaining only the vector-clock, count, head, and complete
+tail event. The sidecar is only a cache and is healed from journal truth. Both return
+`#f` when ownership cannot be acquired or strict replay fails.
 
 ### `(memory-store-append! store type payload)`
 Append an event of `type` with `payload` (a `(symbol . string|integer)` alist):
 sanitize string values, append to the in-memory chain, then persist + `fsync` before
-returning, and refresh the head sidecar. Returns the new event, or `#f` (with a
-`DURABILITY FAILURE` message) if the disk write failed. Argument order is
+returning, and refresh the head sidecar. Durable handles advance only after the
+complete row is flushed, synced, and closed; a failed sidecar publication does not
+roll back an already committed journal row. Returns the new event, or `#f` if
+persistence failed. An ambiguous first-file parent-directory sync poisons the
+durable handle and raises, requiring restart from journal truth. Argument order is
 `(store type payload)`.
 
+### `(memory-store-close! store)`
+Release the durable journal lock. A closed durable handle refuses further appends.
+
 ### `(memory-store-count store)`
-Number of events currently in the store's in-memory log.
+Number of committed events. Compact durable handles report the journal count without
+rebuilding the historic RGA.
 
 ### `(memory-store-head store)`
-Content-id (hex string) of the last event in the in-memory log, or `#f` if empty.
+Content-id (hex string) of the last committed event, or `#f` if empty.
+
+### `(memory-store-tail store)`
+Return the complete last committed event, or `#f` if empty. Compact durable handles
+retain this one event as their authoritative tail.
 
 ### `(memory-store-verify store)`
 Full two-layer audit of the loaded chain: (1) `core.memory` content hashes catch a
@@ -63,13 +85,13 @@ event (`linkage-broken`) — the first event's `prev` must be `#f` and each even
 for single-node chains; merged multi-node logs have legitimate forks.
 
 The log is **append-only**, so these two examples assume a fresh
-`/tmp/events.log` — re-running them without deleting the file first replays the
+`.scratch/events.log` — re-running them without deleting the file first replays the
 previous run's events too and the counts grow accordingly.
 
 ```scheme
-;; memory_store.esk  (writes to /tmp/events.log)
+;; memory_store.esk  (writes to .scratch/events.log)
 (require core.memory_store)
-(define P "/tmp/events.log")
+(define P ".scratch/events.log")
 (define st (memory-store-open 'node-A P))
 (display (memory-store? st))                              (newline)
 (memory-store-append! st 'episodic (list (cons 'note "hello world")))
@@ -110,7 +132,7 @@ sidecar or no file.
 ```scheme
 ;; memory_store.esk
 (require core.memory_store)
-(define P "/tmp/events.log")            ; from the example above (2 events on disk)
+(define P ".scratch/events.log")        ; from the example above (2 events on disk)
 (define st (memory-store-open-fast 'node-A P))
 (display (memory-store? st))            (newline)
 (memory-store-append! st 'value (list (cons 'x "y")))
@@ -154,6 +176,19 @@ orphan-parent` on the first problem.
 (memory-store-audit "/path/to/events.log")
 ;; => (ms-audit-v1 #t <links> <forks>)
 ```
+
+### `(memory-store-audit-linear path)` / `(memory-store-linear-evidence store)`
+
+`memory-store-audit-linear` is the strict canonical-journal evidence scanner:
+it retains only the prior id while it streams, rejects a non-`#f` first parent,
+any fork/link discontinuity, torn/trailing row, or content-hash mismatch, and
+returns `(ms-audit-linear-v1 #t count head bytes)`. A missing path is valid
+empty evidence. It compares file size before and after scanning and returns
+`(0 . source-changed)` if it changed; that is diagnostic only, not ownership.
+
+`memory-store-linear-evidence` requires an open durable writer handle and also
+cross-checks the scanner's count/head against that handle. Use it when evidence
+will authorize a rebuild or other mutable follow-up.
 
 ## Known issues
 

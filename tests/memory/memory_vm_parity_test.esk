@@ -1,0 +1,24 @@
+;;; VM parity fixture for the dependency substrate used by core.memory.
+;;;
+;;; core.memory_store's libc file boundary is native-only. The pure clock
+;;; substrate used by the event-log CRDT is exercised here on the standalone VM
+;;; so the cross-engine gate does not claim unsupported native FFI on the VM.
+
+(require core.distributed)
+
+(define a (vector-clock-tick (vector-clock-empty) 'node-a))
+(define b (vector-clock-tick a 'node-a))
+(define c (vector-clock-tick (vector-clock-empty) 'node-b))
+
+(if (and (= (vector-clock-ref b 'node-a) 2)
+         (= (vector-clock-ref c 'node-b) 1)
+         (vector-clock-before? a b)
+         (vector-clock-concurrent? b c)
+         (vector-clock-equal? (vector-clock-merge b c)
+                              (vector-clock-merge c b)))
+    (begin
+      (display "PASS: VM vector-clock substrate for core.memory")
+      (newline))
+    (begin
+      (display "FAIL: VM vector-clock substrate for core.memory")
+      (newline)))
