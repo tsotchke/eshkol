@@ -1778,6 +1778,14 @@ void eshkol_stack_guard_check(void);
  */
 uint64_t eshkol_stack_guard_headroom(void);
 
+/**
+ * @brief Test whether a POSIX fault address lies in this thread's stack guard.
+ *
+ * Signal-handler-only backstop for SIGSEGV/SIGBUS. The implementation reads
+ * latched thread-local bounds and performs no allocation, locking, or I/O.
+ */
+bool eshkol_stack_guard_fault_in_region(const void* fault_address);
+
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
 // This enables full homoiconicity: (display (list double)) shows the lambda source

@@ -6244,12 +6244,12 @@ private:
      * matching decrement before returns and therefore cannot interfere with
      * tail-call optimization.
      *
-     * Not emitted for wasm: there is no OS stack, no RLIMIT_STACK to read, and
-     * the engine traps on its own shadow-stack exhaustion. Emitting it would
-     * also add a runtime import the JS glue would have to stub.
+     * Not emitted for freestanding native or wasm objects: those profiles do
+     * not link the hosted stack runtime. A freestanding object must remain
+     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
      */
     void emitStackGuardCheck() {
-        if (module->getTargetTriple().isWasm()) {
+        if (freestanding_codegen_ || module->getTargetTriple().isWasm()) {
             return;
         }
         Function* guard_func = module->getFunction("eshkol_stack_guard_check");

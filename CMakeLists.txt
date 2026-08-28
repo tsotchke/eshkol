@@ -4868,6 +4868,19 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
     endif()
 endif()
 
+if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh")
+    find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
+    if(ESHKOL_BASH_EXECUTABLE)
+        add_test(
+            NAME stack_overflow_diagnostic_gate
+            COMMAND "${ESHKOL_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh"
+        )
+        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES TIMEOUT 900)
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/machine_integer_types_test.cpp")
     add_executable(machine_integer_types_test tests/toolchain/machine_integer_types_test.cpp)
     target_compile_features(machine_integer_types_test PRIVATE cxx_std_17)

@@ -6416,3 +6416,60 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-81
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: native-stack-overflow-diagnostic
+    status: guarded
+    closed_at: "d97eef43+working-tree"
+    title: "Deep non-tail user recursion exhausted the native stack as a silent SIGILL"
+    repro: >-
+      `tests/stress/found/deep_recursion_270k_no_diagnostic.esk` defines a
+      plain non-tail recursive function and calls it deeply. Before this
+      guard, the JIT/AOT process could die with SIGILL (exit 132) and no
+      stderr diagnostic; the existing `ESHKOL_MAX_STACK` frame counter did not
+      cover the top-level `define` entry.
+    observed: >-
+      On the pre-fix path, deep recursion consumed the native stack until the
+      processor reported SIGILL rather than reaching a runtime limit. The
+      signal's apparent illegal instruction was the failure manifestation of
+      executing after the stack/return state had been exhausted, not an
+      intentional Eshkol instruction trap.
+    correct: >-
+      Native JIT and AOT user recursion must either complete within the
+      configured stack or terminate nonzero with a diagnostic naming the
+      stack-size control. Runtime-created parallel-map workers must provide
+      the same guarantee on their own pthread stacks.
+    observed_after: >-
+      Every generated native user-function entry performs a stateless
+      headroom check with a diagnostic reserve. POSIX SIGSEGV/SIGBUS faults in
+      a thread's guard region are identified on that thread's sigaltstack.
+      Each runtime-created worker installs its own alternate stack. The
+      hard gate passed all 8 JIT/AOT main and worker diagnostic/completion
+      legs on old-donkey with `ulimit -s 1048576`: default main 512 MiB and
+      worker 16 MiB runs exited 121 with diagnostics; the same programs with
+      1G stacks completed.
+    fix: >-
+      `lib/backend/llvm_codegen.cpp` emits `eshkol_stack_guard_check()` at
+      top-level, nested, and lambda user-function entries. The hosted stack
+      runtime measures per-thread bounds and enforces ESHKOL_STACK_SIZE; the
+      hosted signal runtime recognizes guard-region SIGSEGV/SIGBUS faults on
+      an alternate stack; `lib/backend/thread_pool.cpp` parses
+      ESHKOL_WORKER_STACK_BYTES with the shared size parser and initializes
+      worker altstacks. The existing ESHKOL_MAX_STACK software depth guard
+      remains complementary for its instrumented paths.
+    evidence: >-
+      `bash scripts/run_stack_overflow_diagnostic.sh` on old-donkey, after a
+      RelWithDebInfo Linux build with system g++ and LLVM 21, printed exactly
+      `stack_overflow_diagnostic: pass=8 fail=0`; the default main diagnostic
+      was `eshkol: stack overflow: recursion depth exceeded the 512 MiB stack
+      (ESHKOL_STACK_SIZE); ...` and worker diagnostics named
+      `ESHKOL_WORKER_STACK_BYTES`.
+    caught_by: [direct-measurement, tests/stress-hard-gate]
+    missed_by: [icc-call-graph, icc-readiness]
+    notes: >-
+      ICC's tree-sitter index does not connect LLVM IR calls emitted by
+      `llvm_codegen.cpp` to the exported runtime symbol, and dispatch-table
+      liveness could not run without a compile database. The previous silent
+      SIGILL was therefore explained from the runtime evidence and code path,
+      not by treating the signal name as an intentional trap.

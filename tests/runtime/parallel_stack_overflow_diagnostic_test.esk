@@ -1,0 +1,9 @@
+; ESH-0101: a native stack overflow on a parallel-map worker must be loud.
+; The gate disables the JIT warmup so every mapped call runs on a pool worker;
+; that worker owns its pthread stack and its own sigaltstack.
+(define (down n)
+  (if (= n 0) 0 (+ 1 (down (- n 1)))))
+
+(define inputs (list 300000 300000 300000 300000))
+(define results (parallel-map (lambda (n) (down n)) inputs))
+(display "OK ") (display (length results)) (newline)

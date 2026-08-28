@@ -393,29 +393,15 @@ block ordinary use.
   v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
   tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
   DOCUMENTED-LIMITATION.
-- **Very deep non-tail recursion through a top-level `define`d function
-  lacks the early depth guard that a `lambda` gets, so it runs much deeper
-  before failing, and then fails as a signal rather than a clean diagnostic.**
-  The recursion-depth check (`eshkol_check_recursion_depth`) is emitted only
-  in the lambda-expression codegen path, not in top-level function-definition
-  codegen (`codegenFunctionDefinition`), so a self-recursive top-level
-  `define` never hits the guard's clean "maximum recursion depth exceeded"
-  message the way an equivalent `lambda` would. This is narrower than once
-  measured: the runtime's SIGILL/SIGBUS handler (ESH-0119) now catches the
-  eventual stack overflow on an alternate signal stack and prints a clear
-  "fatal signal … most likely a stack overflow" diagnostic rather than dying
-  with no output at all, and the practical depth at which that happens has
-  moved well past the ~270k frames originally filed — 1,000,000 frames of
-  plain non-tail recursion complete cleanly on the current build, and 3,000,000
-  fails loudly rather than silently. The guard-coverage gap itself is real
-  and unchanged (confirmed by reading the codegen, not by one program's
-  behavior): a `lambda`-bound self-recursive function still gets the early,
-  precise diagnostic that a top-level `define`d one does not. Wiring the
-  guard into every top-level function entry, not just lambdas, is ruled v1.3.5
-  scope (maintainer ruling 2026-08-13, filed as ESH-0101, recorded as a
-  residual of the resource-limits closure in `.icc/silent-wrong-ledger.yaml`
-  under SW-10); not a blocker for v1.3.4, since the failure mode is now loud
-  either way.
+- **Very deep non-tail recursion through a top-level `define`d function used
+  to bypass the early native-stack guard and die with a silent SIGILL.**
+  Closed by ESH-0101: every generated native user-function entry now performs
+  a stack-headroom check, and POSIX SIGSEGV/SIGBUS faults in the guard region
+  have a per-thread alternate-stack backstop. The hard gate
+  `scripts/run_stack_overflow_diagnostic.sh` covers JIT, AOT, and parallel-map
+  workers: the default stack fails with the named `ESHKOL_STACK_SIZE`
+  diagnostic, while the same 2000000-frame source completes with a 1 GiB
+  stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
