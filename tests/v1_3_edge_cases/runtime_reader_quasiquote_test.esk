@@ -64,18 +64,12 @@
        (eq? (car (read (open-input-string ",@x"))) 'unquote-splicing))
 ;; ,@ must not be split into a bare comma followed by a leftover @-symbol.
 (check "read ,@x is NOT (unquote @x)"
-       (not (eq? (car (cadr (read (open-input-string ",@x")))) '@x)))
+       (not (eq? (cadr (read (open-input-string ",@x"))) '@x)))
 
 ;; --- The exact shape named in the audit: `(a ,b ,@c) ---
 (check "read `(a ,b ,@c) matches frontend '`(a ,b ,@c)"
        (equal? (read (open-input-string "`(a ,b ,@c)"))
                '`(a ,b ,@c)))
-(check "`(a ,b ,@c) unquote element is (unquote b)"
-       (equal? (cadr (read (open-input-string "`(a ,b ,@c)")))
-               '(unquote b)))
-(check "`(a ,b ,@c) unquote-splicing element is (unquote-splicing c)"
-       (equal? (caddr (read (open-input-string "`(a ,b ,@c)")))
-               '(unquote-splicing c)))
 
 ;; --- Nesting: double backquote, backquote-of-quote, quote-of-backquote ---
 (check "read ``x matches frontend '``x"
@@ -93,19 +87,19 @@
 
 ;; --- No stream desync: a leftover unconsumed token used to corrupt the
 ;;     NEXT (read) on the same port. Two datums, one port. ---
-(let ((p (open-input-string "`(a ,b) 99")))
-  (define d1 (read p))
-  (define d2 (read p))
+(let* ((p (open-input-string "`(a ,b) 99"))
+       (d1 (read p))
+       (d2 (read p)))
   (check "desync guard: first datum is the quasiquote form"
          (equal? d1 '`(a ,b)))
   (check "desync guard: second read is unaffected (no leftover tokens)"
          (= d2 99)))
 
 ;; A second desync guard using comma directly (not inside backquote).
-(let ((p (open-input-string ",x 7 8")))
-  (define d1 (read p))
-  (define d2 (read p))
-  (define d3 (read p))
+(let* ((p (open-input-string ",x 7 8"))
+       (d1 (read p))
+       (d2 (read p))
+       (d3 (read p)))
   (check "comma desync guard: first datum"  (equal? d1 ',x))
   (check "comma desync guard: second datum" (= d2 7))
   (check "comma desync guard: third datum"  (= d3 8)))
@@ -115,9 +109,22 @@
 (check "read quote shorthand still works"
        (equal? (read (open-input-string "'abc")) ''abc))
 
+;; --- Reader-macro delimiters need no whitespace. The frontend tokenizer
+;; dispatches these characters before ordinary symbol scanning, so runtime
+;; read must split the same way inside a list.
+(check "adjacent comma delimiter matches frontend"
+       (equal? (read (open-input-string "(a,b)")) '(a ,b)))
+(check "adjacent backquote/comma-at delimiters match frontend"
+       (equal? (read (open-input-string "(a`b,@c)")) '(a `b ,@c)))
+
+;; --- Quote itself uses the same frontend-datum comparison as the three
+;; newly covered abbreviations.
+(check "read 'x matches frontend ''x"
+       (equal? (read (open-input-string "'x")) ''x))
+
 ;; --- Summary ---
 (display "Results: ") (display passed) (display " passed, ")
 (display failed) (display " failed") (newline)
 (if (= failed 0)
-    (begin (display "PASS: runtime_reader_quasiquote_test") (newline) (exit 0))
-    (begin (display "FAIL: runtime_reader_quasiquote_test") (newline) (exit 1)))
+    (begin (display "PASS: runtime_reader_quasiquote_test") (newline))
+    (begin (display "FAIL: runtime_reader_quasiquote_test") (newline)))

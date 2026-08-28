@@ -6408,3 +6408,86 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-80
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "7d5cb1f9"
+    closed_by: "branch fix/runtime-reader-quasiquote"
+    family: reader/quoted-data
+    title: "native runtime `read` treats backquote/comma/comma-at as ordinary symbol characters instead of R7RS abbreviations, silently misreading the datum and desynchronizing the port for every subsequent read"
+    repro: >-
+      (let ((p (open-input-string "`(a ,b ,@c)")))
+        (display (read p)) (newline)
+        (display (read p)) (newline))
+      — via `eshkol-run -r`, AOT, or the REPL (all three call the same
+      eshkol_read_sexpr()). Also
+      tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk, which is the
+      committed regression battery for this entry.
+    observed: >-
+      Before the fix: the first (read) returned the one-character symbol
+      `` ` `` and left "(a ,b ,@c)" sitting unconsumed in the input stream;
+      the second (read) on the same port then consumed that leftover text as
+      an unrelated datum instead of hitting end-of-file. Exit 0, no
+      diagnostic. Every downstream consumer of `(read)` on text containing
+      backquote/comma/comma-at got a silently wrong datum AND a corrupted
+      port for every read that followed.
+    correct: >-
+      (quasiquote (a (unquote b) (unquote-splicing c))) then #<eof> — R7RS
+      7.1.2's <abbreviation> production makes `` `x ``, `,x`, and `,@x`
+      reader sugar for `(quasiquote x)`, `(unquote x)`, and
+      `(unquote-splicing x)` respectively, unconditionally (the reader does
+      not need an active quasiquote context to expand them — only a
+      consumer that later EVALUATES the result cares about that).
+    root_cause: >-
+      lib/core/runtime_reader_hosted.cpp's read_datum() special-cased
+      exactly two first-characters — `'` (quote) and `(` (list) — and
+      dispatched everything else, including `` ` ``, `,`, and `,@`, to
+      read_atom() -> read_atom_number_or_symbol(), which has no concept of
+      reader macros: it reads characters up to the next delimiter and
+      returns whatever it collected as a SYMBOL. This is the identical
+      "reader dispatch has no branch for a legal token kind, so it falls
+      through to the generic atom/symbol path" shape that SW-54/55/56 (#466)
+      fixed in the two COMPILE-TIME readers — lib/frontend/parser.cpp's
+      parse_quoted_data_with_token() and lib/backend/vm_parser.c's
+      compile_quote() — one substrate lower, in the RUNTIME reader those
+      fixes never touched. The v1.3.5-evolve CHANGELOG/RELEASE_NOTES entry
+      for #466 claims "all four readers now handle the full quoted-datum
+      grammar"; true of the frontend parser, the VM parser, and the REPL
+      (which parses through the frontend parser), not of this one — an
+      audit of that claim is what surfaced this entry.
+    fix: >-
+      lib/core/runtime_reader_hosted.cpp: read_datum() gains branches for
+      `` ` ``, `,`, and `,@` (comma followed by a peeked `@`), each building
+      the same `(symbol datum)` two-element-list shape the existing `'`
+      branch already built for quote — factored into a shared
+      wrap_reader_abbreviation(arena, symbol_name, symbol_len, datum)
+      helper so all four abbreviations construct their expansion identically
+      rather than four independent hand-rolled cons chains.
+    evidence: >-
+      tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk — cross-checks
+      (read (open-input-string TEXT)) against evaluating the source
+      expression 'TEXT (which forces the SAME non-evaluating
+      parse_quoted_data_with_token() path the frontend parser uses for
+      quoted data) on byte-identical TEXT, covering plain
+      quasiquote/unquote/unquote-splicing, the exact `(a ,b ,@c)` shape
+      above, nesting (double backquote, quote-of-backquote,
+      backquote-of-quote), a quasiquoted vector literal, adjacent reader
+      delimiters, and two stream-desync regression guards (a second (read)
+      on the same port after a backquote/comma-bearing datum). Registered as
+      CTest v1_3_runtime_reader_quasiquote_runtime_smoke (JIT),
+      _aot_smoke (AOT), and _vm_smoke (standalone VM); the full VM parity
+      gate also passed 107 checks with 0 failures.
+    caught_by: [manual-audit-of-release-notes-claim]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, run_reference_differential.sh, run_reader_fuzz.sh]
+    notes: >-
+      The standalone VM's own `(read)` builtin (lib/backend/vm_native.c case
+      588) does not implement R7RS `read` at all — it is declared arity 0,
+      ignores any port argument, and returns one raw character via
+      getchar(). tests/vm_parity/PARITY.tsv nonetheless marks `read` as
+      "vm-supported". This is a separate, pre-existing gap: it predates this
+      fix, is not caused by it, and is not closed by it. Flagged here rather
+      than fixed because closing it means wiring the VM's bytecode execution
+      model to eshkol_read_sexpr (arena/port bridging it does not currently
+      have) — a materially larger change than this entry's scope. Left as a
+      lead for the next reader of tests/vm_parity/PARITY.tsv or this ledger,
+      not filed as its own SW id by this branch.

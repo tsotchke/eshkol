@@ -5357,6 +5357,24 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    # SW-80: run the same runtime-reader/frontend-datum agreement battery on
+    # the VM's independent source and runtime readers. The native JIT and AOT
+    # legs are registered above; this third leg closes the engine-parity gap.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk")
+        add_test(
+            NAME v1_3_runtime_reader_quasiquote_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk"
+        )
+        set_tests_properties(v1_3_runtime_reader_quasiquote_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: runtime_reader_quasiquote_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
