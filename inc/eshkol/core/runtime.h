@@ -125,6 +125,17 @@ bool eshkol_unregister_shutdown_hook(uint32_t hook_id);
 void eshkol_runtime_init_signals(void);
 
 /**
+ * @brief Give the calling thread its own alternate signal stack (ESH-0101).
+ *
+ * sigaltstack() is per thread while the fatal-signal handlers installed by
+ * eshkol_runtime_init_signals() are per process, so a runtime thread that
+ * never calls this dies silently on stack exhaustion where the main thread
+ * would print a diagnostic. Call it at the top of every runtime-created
+ * thread that runs user code. Idempotent; the stack is freed at thread exit.
+ */
+void eshkol_runtime_init_thread_signals(void);
+
+/**
  * @brief Restore the platform's default signal handlers.
  *
  * Call before exec() or fork() so a child process does not inherit
