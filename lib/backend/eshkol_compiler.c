@@ -1671,7 +1671,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int hfunc_pc = c->code_len;
         c->constants[hfunc_const].as.i = hfunc_pc;
 
-        /* Copy handler function code with remapping */
+        /* Copy handler function code with remapping.
+         *
+         * A `lambda` inside a guard CLAUSE stores its entry pc in a constant
+         * that OP_CLOSURE names by index. The index was remapped here; the pc
+         * it points at never was, even though it is relative to handler_func
+         * and handler_func is being relocated to hfunc_pc. Every closure built
+         * inside a guard clause therefore pointed at unrelated code near the
+         * start of the program — silently, producing a callable that runs the
+         * wrong thing rather than failing. Identical to the fix in
+         * compile_form_guard() in lib/backend/vm_compiler.c; this file is the
+         * ESKB emitter's own copy of that compiler and the two must not answer
+         * differently. (Ledger: SW-83.)
+         *
+         * reloc_seen[] keeps the += idempotent when two OP_CLOSURE
+         * instructions share one constant. */
+        unsigned char reloc_seen[MAX_CONSTS];
+        memset(reloc_seen, 0, sizeof(reloc_seen));
         for (int i = 0; i < handler_func.code_len; i++) {
             Instr fi = handler_func.code[i];
             if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
@@ -1680,7 +1696,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (fi.op == OP_CLOSURE) {
                 int ci2 = fi.operand & 0xFFFF;
                 int nu2 = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map_h[ci2] | (nu2 << 16);
+                int mapped = const_map_h[ci2];
+                if (mapped >= 0 && mapped < MAX_CONSTS && !reloc_seen[mapped]) {
+                    c->constants[mapped].as.i += hfunc_pc;
+                    reloc_seen[mapped] = 1;
+                }
+                fi.operand = mapped | (nu2 << 16);
             }
             c->code[c->code_len++] = fi;
         }

@@ -1672,7 +1672,29 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int hfunc_pc = c->code_len;
     c->constants[hfunc_const].as.i = hfunc_pc;
 
-    /* Copy handler function code with remapping */
+    /* Copy handler function code with remapping.
+     *
+     * A `lambda` written inside a guard CLAUSE compiles into handler_func with
+     * its body emitted inline and its entry pc stored in a CONSTANT, which
+     * OP_CLOSURE names by index. The loop below used to remap that index but
+     * never the pc it points at — and the pc is relative to handler_func,
+     * which is about to be relocated to hfunc_pc. So every closure built
+     * inside a guard clause pointed at whatever happened to live at its
+     * unrelocated offset near the start of the program.
+     *
+     * It did not crash: it silently produced a callable that runs the wrong
+     * code. `(define f (guard (e (#t (lambda (x) (+ x 100)))) (raise 1)))`
+     * then `(f 1)` answered 1 instead of 101, exit 0. The `=>` receiver form
+     * is what finally made it loud — an arrow clause CALLS the closure
+     * immediately, so a lambda receiver re-entered the top of the program and
+     * ran until STACK OVERFLOW instead of quietly returning a wrong value.
+     * (Ledger: SW-83.)
+     *
+     * relocated[] keeps the += idempotent: two OP_CLOSURE instructions may
+     * share one constant, and adding hfunc_pc twice would be a fresh bug of
+     * exactly the same shape. */
+    unsigned char reloc_seen[MAX_CONSTS];
+    memset(reloc_seen, 0, sizeof(reloc_seen));
     for (int i = 0; i < handler_func.code_len; i++) {
         Instr fi = handler_func.code[i];
         if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
@@ -1681,7 +1703,12 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (fi.op == OP_CLOSURE) {
             int ci2 = fi.operand & 0xFFFF;
             int nu2 = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map_h[ci2] | (nu2 << 16);
+            int mapped = const_map_h[ci2];
+            if (mapped >= 0 && mapped < MAX_CONSTS && !reloc_seen[mapped]) {
+                c->constants[mapped].as.i += hfunc_pc;
+                reloc_seen[mapped] = 1;
+            }
+            fi.operand = mapped | (nu2 << 16);
         }
         chunk_emit_instr(c, fi);
     }
