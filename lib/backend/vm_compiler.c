@@ -442,20 +442,31 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
         int is_arrow = (clause->n_children == 3 &&
                         clause->children[1]->type == N_SYMBOL &&
                         strcmp(clause->children[1]->symbol, "=>") == 0);
+        int saved_clause_locals = c->n_locals;
 
         /* Test → if false, jump to next clause */
         compile_expr(c, clause->children[0], 0);
         if (is_arrow) chunk_emit(c, OP_DUP, 0);
+        /* `n_locals` is this compiler's stack-depth counter, so the slot
+         * claimed here — test value on top, nothing emitted since — is the
+         * frame offset that value already occupies. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
         int jnext = placeholder(c);
         if (is_arrow) {
-            /* OP_SWAP has no VM dispatch entry, and the receiver may not be
-             * evaluated when the test is false, so park the test value in a
-             * frame slot rather than reordering the two evaluations. */
-            int tmp = add_local(c, "__cond_arrow_test__");
-            chunk_emit(c, OP_SET_LOCAL, tmp);              /* pops test  */
-            compile_expr(c, clause->children[2], 0);        /* receiver   */
-            chunk_emit(c, OP_GET_LOCAL, tmp);               /* argument   */
-            chunk_emit(c, tail ? OP_TAIL_CALL : OP_CALL, 1);
+            /* The receiver is evaluated only on the truthy path (R7RS), then
+             * the test value is re-pushed on top of it so OP_CALL 1 reads
+             * [.., receiver, argument]. Unlike the guard handler — where
+             * OP_RETURN resets sp to fp-1 and swallows anything left below —
+             * `cond` is an expression that must leave EXACTLY ONE value, so
+             * the trailing OP_SET_LOCAL writes the result down over the stale
+             * copy and pops, collapsing [.., test, result] to [.., result].
+             * That collapse is also why this call is never OP_TAIL_CALL: a
+             * tail call leaves the frame and the collapse would not run. */
+            compile_expr(c, clause->children[2], 0);
+            chunk_emit(c, OP_GET_LOCAL, arrow_tmp);
+            chunk_emit(c, OP_CALL, 1);
+            chunk_emit(c, OP_SET_LOCAL, arrow_tmp);
         } else {
             /* Body */
             for (int j = 1; j < clause->n_children; j++) {
@@ -466,6 +477,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
         if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
         patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
         if (is_arrow) chunk_emit(c, OP_POP, 0); /* falsy: discard the copy */
+        c->n_locals = saved_clause_locals;
     }
     /* Patch all end jumps */
     for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
@@ -1595,27 +1607,36 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
                         clause->children[1]->type == N_SYMBOL &&
                         strcmp(clause->children[1]->symbol, "=>") == 0);
         int is_test_only = (clause->n_children == 1);
+        int saved_clause_locals = handler_func.n_locals;
 
         compile_expr(&handler_func, clause->children[0], 0);
         if (is_arrow || is_test_only) {
-            /* Keep the test's value: JUMP_IF_FALSE consumes exactly one
-             * stack slot on both paths, so DUP first and POP the survivor
-             * on the fall-through side. */
+            /* Both shapes need the test's VALUE, and OP_JUMP_IF_FALSE consumes
+             * exactly one stack slot on both paths, so keep a copy: the truthy
+             * path uses the survivor, the fall-through path pops it. */
             chunk_emit(&handler_func, OP_DUP, 0);
         }
+        /* `n_locals` in this compiler is the stack-depth counter (the generic
+         * call path does `compile_expr(arg); add_local(...)` per argument), so
+         * claiming the slot HERE — with the test value on top and nothing
+         * emitted since — makes `tmp` exactly the frame offset that value
+         * already occupies. Claiming it after a SET_LOCAL/pop instead would
+         * alias the slot the receiver is about to be pushed into, which is
+         * what the first cut of this fix did. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
         if (is_test_only) {
-            /* TOS is already the test value — that IS the clause's value. */
+            /* TOS is already the test's value — that IS the clause's value. */
         } else if (is_arrow) {
-            /* Stash the test value, evaluate the receiver, then apply it.
-             * OP_SWAP is not implemented by the VM's dispatch loop, and the
-             * receiver must not be evaluated unless the test was truthy, so
-             * a frame slot is the only ordering that preserves both. */
-            int tmp = add_local(&handler_func, "__guard_arrow_test__");
-            chunk_emit(&handler_func, OP_SET_LOCAL, tmp);      /* pops test */
-            compile_expr(&handler_func, clause->children[2], 0); /* receiver */
-            chunk_emit(&handler_func, OP_GET_LOCAL, tmp);      /* argument  */
+            /* Evaluate the receiver only now (R7RS: not evaluated when the
+             * test is false), then re-push the test value on top of it so the
+             * stack reads [.., receiver, argument] for OP_CALL 1, which takes
+             * its callee from sp-argc-1. The stale copy underneath is
+             * discarded by OP_RETURN, which resets sp to fp-1 regardless. */
+            compile_expr(&handler_func, clause->children[2], 0);
+            chunk_emit(&handler_func, OP_GET_LOCAL, arrow_tmp);
             chunk_emit(&handler_func, OP_CALL, 1);
         } else {
             for (int j = 1; j < clause->n_children; j++) {
@@ -1628,6 +1649,9 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (is_arrow || is_test_only) {
             chunk_emit(&handler_func, OP_POP, 0); /* falsy: discard the copy */
         }
+        /* Back to the pre-clause depth for the next clause, so a later
+         * clause's test lands on the slot its own add_local would name. */
+        handler_func.n_locals = saved_clause_locals;
     }
     /* If no clause matched: re-raise */
     chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
