@@ -1,0 +1,33 @@
+; SW-58 — which handler answers when a self tail call sits in a `guard` body.
+;
+; The native engines lower that call as a loop back edge; the VM compiles a
+; guard body with tail=0 and keeps one activation per level. The two engines
+; must still agree on WHICH of the live guards answers and with WHOSE
+; variables, because that is a property of the program, not of the engine.
+; Depths are kept small: the VM's handler stack holds 16 frames.
+
+; 1. innermost handler re-raises: the answer names the next guard out
+(define (s n)
+  (guard (e ((= n 0) (raise 'again)) (#t (list 'inner n)))
+    (if (= n 0) (raise 'boom) (s (- n 1)))))
+(display (guard (e (#t 'outer)) (s 3))) (newline)
+
+; 2. every level re-raises but the outermost, which answers with its own n
+(define (climb n)
+  (guard (e ((> n 0) (raise e)) (#t (list 'answered-at n)))
+    (if (>= n 5) (raise 'top) (climb (+ n 1)))))
+(display (climb 0)) (newline)
+
+; 3. a raise from inside a CLAUSE lands on the previous activation's guard,
+;    and each level rewrites the payload, so the value names the whole chain
+(define (relay n)
+  (guard (e ((> n 0) (raise (cons n e))) (#t (list 'bottom e)))
+    (if (>= n 3) (raise 'boom) (relay (+ n 1)))))
+(display (relay 0)) (newline)
+
+; 4. a catch-all boundary still catches a raise from a later iteration, with
+;    that iteration's own accumulator
+(define (stumble i acc)
+  (guard (e (#t (list 'caught-at i acc)))
+    (if (= i 200) (raise 'stumble) (stumble (+ i 1) (+ acc 2)))))
+(display (stumble 0 0)) (newline)
