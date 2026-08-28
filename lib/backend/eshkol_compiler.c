@@ -5773,6 +5773,7 @@ static const BuiltinDef BUILTINS[] = {
     {"dual?", 383, 1},
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
     {"derivative", 393, 2},
+    {"ad-scalar-ad-nodes", 2089, 0}, {"ad-tensor-ad-nodes", 2090, 0},
     /* Tensors (410-469) */
     {"make-tensor", 410, 2}, {"tensor-shape", 413, 1},
     {"tensor-reshape", 414, 2}, {"tensor-transpose", 415, 1},

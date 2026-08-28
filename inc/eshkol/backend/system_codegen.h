@@ -236,6 +236,10 @@ public:
     llvm::Value* adReversePasses(const eshkol_operations_t* op);
     /** @brief (ad-tape-allocations) — reverse-mode tapes allocated since reset. */
     llvm::Value* adTapeAllocations(const eshkol_operations_t* op);
+    /** @brief (ad-scalar-ad-nodes) — scalar reverse nodes since reset. */
+    llvm::Value* adScalarAdNodes(const eshkol_operations_t* op);
+    /** @brief (ad-tensor-ad-nodes) — tensor reverse nodes since reset. */
+    llvm::Value* adTensorAdNodes(const eshkol_operations_t* op);
     /** @brief (ad-finite-difference-evals) — finite-difference evaluations since reset. */
     llvm::Value* adFiniteDifferenceEvals(const eshkol_operations_t* op);
     /** @brief (ad-note-finite-difference!) — report ONE finite-difference
