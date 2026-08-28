@@ -68,12 +68,26 @@ event is consumed by `.icc/completion-oracles.yaml::ad-oracle`.
 
 ## Known-open cells (XKNOWN)
 
+The rows below are the historical record. `CRASH_TASKS` is empty and every
+`xc=` argument in `gen_ad_oracle.py` is `None` — nothing is currently marked
+XKNOWN, so every generated cell is expected to PASS and a regression FAILs
+loudly rather than being absorbed. Keep the table in step with those marks.
+
+**ESH-0097 is closed** (`*.caplocal` / `*.capvrefout` for the vector-param
+operators — the LLVM verifier's `PtrToInt source must be pointer (ptrtoint
+%eshkol_tagged_value %a to i64)` when the AD lambda captured a LOCAL binding).
+Re-measured on both `-r` and AOT and on the bytecode VM: it does not
+reproduce. `found/esh0097_local_capture_vector_ad_ptrtoint.esk` prints the
+`#(4.42 0)` its own header names as the expected value; the shapes are
+gated by `tests/ad/captured_local_vector_param_test.esk` (CTest, JIT + AOT),
+`tests/ad/sweep_c_regressions_test.esk` and the captured-local section of
+`tests/vm_parity/corpus/32_gradient_reverse.esk`. Ledger entry LE-06.
+
 | task | cell | symptom |
 |------|------|---------|
 | ESH-0078 | `nest.gofg.*.s.named/lamvar` | 2nd-order gradient through a NAMED inner function returns 0 (inline lambda works). NOTE: the ledger marks this merged via #95, but the acceptance shape still returns 0 on master — regressed or never fully fixed. |
 | ESH-0093 | `nest.gofd.*.v2` | vector-param gradient over inner derivative returns zeros (mixed forward/reverse). Fix in flight at time of writing. |
 | ESH-0096 | `nest.gofg.*.v1/v2` | vector-param gradient-of-gradient returns zeros (even the 1-d form documented in AUTODIFF.md). **Found by this oracle.** |
-| ESH-0097 | `*.caplocal / *.capvrefout` for vector-param ops (xc files) | LLVM verifier: `PtrToInt source must be pointer (ptrtoint %eshkol_tagged_value %a to i64)` on both -r and AOT when the AD lambda captures a LOCAL function parameter. **Found by this oracle.** |
 
 When a task is fixed, its probes print `PASS: … (fixed: ESH-NNNN)` and the
 xknown count drops — no oracle change needed. Then delete the task id from

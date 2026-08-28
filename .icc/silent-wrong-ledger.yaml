@@ -2938,12 +2938,57 @@ entries:
   - id: LE-06
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
+    status: closed
+    closed_at: "e7f2c685"
+    closed_by: "branch fix/ad-captured-vector-param-le06"
     title: "Vector-param AD op capturing a local function parameter fails LLVM verification (ESH-0097)"
     observed: "PtrToInt source must be pointer, on both -r and AOT"
-    evidence: "tests/ad_oracle/README.md XKNOWN; docs/KNOWN_ISSUES.md:299"
     caught_by: [KNOWN_ISSUES, ad-oracle-xknown]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+    remeasured: >-
+      DOES NOT REPRODUCE. Re-measured at e7f2c685 (origin/master) on a Linux x86-64 lane
+      configured with the ci.yml full-lane flags (Release, LLVM 21, XLA and GPU
+      off). The archived repro,
+      tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk, prints
+      the "#(4.42 0)" its own header names as the expected value, on the JIT and
+      AOT alike; a 22-check battery over the full shape matrix (see `evidence`)
+      passes 22/22 in both lanes; and the `gradient` slice of that matrix — the
+      part inside the VM subset — agrees byte-for-byte on the bytecode VM
+      (native and vm-src stdout identical after newline normalisation over the
+      whole of tests/vm_parity/corpus/32_gradient_reverse.esk). The five GROUP C
+      regressions in tests/ad/sweep_c_regressions_test.esk pass 27/27 in both
+      native lanes at the same time, which retires the same claim for
+      ESH-0078/0095/0096 as well. The
+      code was fixed in the AD sweep C wave (autodiff_codegen.cpp:6975-6990 and
+      :11381-11400, docs/design/AUDIT_2026_08_25_RESOLUTION.md item e1); this
+      entry, and the tests/ad_oracle/README.md XKNOWN row it cited as its
+      evidence, were never updated. Both are corrected here.
+    why_it_could_rot: >-
+      The acceptance test docs/KNOWN_ISSUES.md cites as the proof of the fix,
+      tests/ad/sweep_c_regressions_test.esk, was never registered in CTest and
+      is not globbed by scripts/run_autodiff_tests.sh (which globs tests/autodiff/
+      only) — nothing ran it, on any lane, ever. The same unwired-acceptance-test
+      defect ESH-0394 closed for the exact-coefficient Taylor tier. A ledger entry
+      whose closure evidence is a doc row rather than a gate can only be as
+      current as the last person who read the doc.
+    evidence: >-
+      tests/ad/captured_local_vector_param_test.esk — 22 checks, registered in
+      CTest as captured_local_vector_param_ad_runtime_smoke (JIT) and
+      _aot_smoke (AOT), both with FAIL_REGULAR_EXPRESSION naming "PtrToInt source
+      must be pointer" and "LLVM module verification failed" directly, so a
+      recurrence is reported as itself and not as an absent PASS. It covers the
+      axes sweep C does not: the `vref` spelling (codegenTensorVectorRef, a
+      different codegen path from `vector-ref`), a captured VECTOR local read
+      inside the AD lambda in both spellings (the oracle's `capvrefout` axis), a
+      captured `let` binding rather than a parameter, two captures in one lambda,
+      a capture that is inert in the AD-relevant path (the original failure did
+      not require the capture to participate in the derivative), the same builder
+      reused with different captured values, and `curl` — the sixth vector-param
+      operator, absent from sweep C. tests/ad/sweep_c_regressions_test.esk is now
+      registered in CTest on both lanes as well. The captured-local section of
+      tests/vm_parity/corpus/32_gradient_reverse.esk holds the third engine to the
+      same answers; those shapes had no VM counterpart while the native side
+      failed to compile.
 
   - id: LE-07
     bucket: LOUD-ERROR
