@@ -315,10 +315,12 @@ a `gap` row). **BUILD ITEM:** VM Taylor-tower builtins, target v1.4.1
       1,867 lines as of commit `694c3179` (still-active file, grown with
       subsequent feature work — the 94% reduction was a point-in-time
       measurement, not an invariant). The
-      remaining `llvm_codegen.cpp` extractions
-      (module_init_codegen.cpp, builtin_factory_codegen.cpp,
-      repl_resolution_codegen.cpp) need the `EshkolLLVMCodeGen` class
-      header exposed first and are tracked as v1.3 carry-forward.
+      remaining `llvm_codegen.cpp` extractions are complete: the
+      `EshkolLLVMCodeGen` class contract is exposed in
+      `inc/eshkol/backend/llvm_codegen.h`, with module initialization,
+      builtin-factory, and REPL-resolution implementations in
+      `module_init_codegen.cpp`, `builtin_factory_codegen.cpp`, and
+      `repl_resolution_codegen.cpp`.
 - [x] v1.2 edge-case + security regression suite (62 tests) wired into
       `run_all_tests.sh` and a new `linux-x64-asan-ubsan` CI lane.
       Includes 3 shell-style tests for compile-time diagnostics.

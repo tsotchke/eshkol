@@ -63,8 +63,8 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (44,003 lines)
-|    GENERATION    |  AST -> LLVM IR via 35 codegen modules (~108,400 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp plus the extracted codegen modules
+|    GENERATION    |  AST -> LLVM IR via 36 specialized codegen modules
 +------------------+
        |
        v
@@ -208,17 +208,17 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (44,003 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp), [`inc/eshkol/backend/llvm_codegen.h`](../../inc/eshkol/backend/llvm_codegen.h), and the extracted initialization, builtin-factory, and REPL-resolution modules.
 
-The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 36 specialized codegen modules.
+The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR through the public `EshkolLLVMCodeGen` class and its focused codegen modules.
 
 ### Code Generator Class Structure
 
 The main code generator holds `std::unique_ptr` member objects for each module -- not `std::function` callbacks:
 
 ```cpp
-// lib/backend/llvm_codegen.cpp (simplified)
-class LLVMCodeGenerator {
+// inc/eshkol/backend/llvm_codegen.h (simplified)
+class EshkolLLVMCodeGen {
     // LLVM infrastructure
     std::unique_ptr<LLVMContext> context;
     std::unique_ptr<Module> module;
@@ -255,7 +255,7 @@ class LLVMCodeGenerator {
 Each module is constructed via `std::make_unique` during initialization. Modules receive a `CodegenContext&` reference for shared LLVM state, and inter-module calls use **static wrapper callbacks** (via a `ControlFlowCallbacks` helper class), not `std::function` lambdas. For example:
 
 ```cpp
-// Module initialization (lib/backend/llvm_codegen.cpp)
+// Module initialization (lib/backend/module_init_codegen.cpp)
 tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
 tensor_->setCodegenCallbacks(
     ControlFlowCallbacks::codegenASTWrapper,
@@ -386,14 +386,17 @@ Subtypes 12-19 are new in v1.1-accelerate. The consolidation of 8 legacy pointer
 
 ## Modular Codegen Architecture
 
-The LLVM backend distributes code generation across 36 specialized modules. Each module is a C++ class instantiated as a `std::unique_ptr` member of the main `LLVMCodeGenerator`.
+The LLVM backend distributes code generation across 36 specialized modules. Each domain module is a C++ class instantiated as a `std::unique_ptr` member of `EshkolLLVMCodeGen`; orchestration, builtin declarations, and REPL resolution are separate translation units that share the exposed class contract.
 
 ### Complete Module Table
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 44,003 | Orchestrator, AST dispatch, builtins, consciousness engine |
-| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,545 | Forward/reverse/symbolic AD modes |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | Orchestrator and AST dispatch |
+| **Module Initialization** | [`module_init_codegen.cpp`](../../lib/backend/module_init_codegen.cpp) | Codegen construction and library initialization |
+| **Builtin Factory** | [`builtin_factory_codegen.cpp`](../../lib/backend/builtin_factory_codegen.cpp) | LLVM declarations for runtime, math, and builtin calls |
+| **REPL Resolution** | [`repl_resolution_codegen.cpp`](../../lib/backend/repl_resolution_codegen.cpp) | Cross-evaluation function and C-ABI thunk resolution |
+| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse/symbolic AD modes |
 | **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | +, -, *, /, bignum, rational, complex dispatch |
 | **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
 | **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, cons, bytevector operations |
@@ -431,7 +434,7 @@ The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domai
 
 ### Module Initialization Order
 
-Modules are initialized in dependency order during `LLVMCodeGenerator` construction:
+Modules are initialized in dependency order during `EshkolLLVMCodeGen` construction:
 
 ```
 TypeSystem -> MemoryCodegen -> CodegenContext -> TaggedValueCodegen
@@ -617,7 +620,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,546 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,435 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
