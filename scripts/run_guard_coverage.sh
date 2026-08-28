@@ -298,8 +298,15 @@ fi
 echo
 echo "== stage 1: golden-vs-engine ($(echo $AXES | tr ' ' ',')) =="
 
+# RUN_AXIS_PHASE is set by every run_axis call to `compile` or `run`, naming
+# the phase the returned rc came from. Stage 2 needs it: a fail-closed probe
+# that fails to COMPILE also exits nonzero with stderr, and would otherwise be
+# graded PASS for a reason that says nothing about whether an unhandled
+# condition is fatal at run time.
+RUN_AXIS_PHASE=run
 run_axis() { # axis srcfile outdir -> writes $outdir/$axis.out, returns rc
     local axis="$1" f="$2" d="$3" rc=0
+    RUN_AXIS_PHASE=run
     case "$axis" in
         jit)
             eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/$axis.raw" "$d/$axis.err" \
@@ -309,6 +316,7 @@ run_axis() { # axis srcfile outdir -> writes $outdir/$axis.out, returns rc
             if ! eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/$axis.compile.out" "$d/$axis.err" \
                     "$ESHKOL_RUN" "$opt" "$f" -L"$BUILD_DIR" -o "$d/$axis.bin"; then
                 rc=$?
+                RUN_AXIS_PHASE=compile
                 : > "$d/$axis.raw"
                 return $rc
             fi
@@ -321,6 +329,7 @@ run_axis() { # axis srcfile outdir -> writes $outdir/$axis.out, returns rc
             if ! eshkol_outcome_retry_guarded "$TIMEOUT_RUN" "$d/$axis.compile.out" "$d/$axis.err" \
                     "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$d/prog.eskb" "$f"; then
                 rc=$?
+                RUN_AXIS_PHASE=compile
                 : > "$d/$axis.raw"
                 return $rc
             fi
@@ -399,6 +408,9 @@ for f in "${fatal_files[@]}"; do
         if [ "$cls" = INFRA ]; then
             report INFRA "$nodeid::$axis" "guard_fatal_${base}_${axis}" \
                 "$axis timed out/infra after retry (rc=$rc)"
+        elif [ "$RUN_AXIS_PHASE" = compile ]; then
+            report FAIL "$nodeid::$axis" "guard_fatal_${base}_${axis}" \
+                "probe failed to COMPILE (rc=$rc) — it must reach the raising form and die there, not fail earlier: $(head -c 200 "$d/$axis.err" 2>/dev/null)"
         elif grep -q "MUST-NOT-PRINT" "$d/$axis.out" 2>/dev/null; then
             report FAIL "$nodeid::$axis" "guard_fatal_${base}_${axis}" \
                 "FAIL-OPEN: execution continued past the unhandled condition (stdout=<$got>)"
