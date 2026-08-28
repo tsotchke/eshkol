@@ -211,6 +211,13 @@ answer yes.
 
 `ci-mesh.yml` ships **off**. After at least one runner is online:
 
+Before enabling lanes, seed the shared FetchContent source cache on each Linux
+runner with `scripts/mesh/seed_fetchcontent_cache.sh`. The script populates
+`$HOME/lanes/_deps`; subsequent lane configurations use
+`-DFETCHCONTENT_BASE_DIR="$HOME/lanes/_deps"` and
+`-DFETCHCONTENT_FULLY_DISCONNECTED=ON` when the cache marker is present. If
+the marker is absent, CI retains its normal network-fetch fallback.
+
 ```bash
 gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body on
 ```

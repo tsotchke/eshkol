@@ -304,13 +304,23 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          fetchcontent_args=()
+          fetchcontent_cache="$HOME/lanes/_deps"
+          if [[ -f "$fetchcontent_cache/.eshkol-fetchcontent-cache-ready" ]]; then
+            echo "Using shared FetchContent cache: $fetchcontent_cache"
+            fetchcontent_args+=("-DFETCHCONTENT_BASE_DIR=$fetchcontent_cache")
+            fetchcontent_args+=("-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
+          else
+            echo "Shared FetchContent cache is not seeded; retaining network fallback"
+          fi
           cmake -S . -B "${{ matrix.build_dir }}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
-            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
+            "${fetchcontent_args[@]}"
 
       # Same guard ci.yml applies to its CUDA lanes: reject a build graph that
       # quietly picked up gpu_memory_stub.cpp instead of the real kernels.
