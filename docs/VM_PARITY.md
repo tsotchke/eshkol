@@ -16,8 +16,39 @@ to miss.
 
 > Status: the ratchet, manifest, and gate shipped with the v1.3.0-evolve
 > release (PR #118 — `scripts/run_vm_parity.sh`,
-> `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The counts below are from
-> the v1.3.4-evolve audit.
+> `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The manifest counts below
+> are measured on the v1.3.5-evolve tree; the differential pass count at the
+> end of this file is from the v1.3.4-evolve audit and must be remeasured on
+> the release cut (see "Differential stages").
+
+### v1.3.5-evolve parity changes
+
+- **`with-region` reclaims on the bytecode VM (#461, SW-14).** The Stage-1 VM
+  region evacuator lands, so `with-region` is no longer a `begin` on the VM.
+  `op:WITH_REGION` stays `native-only-justified` for one undocumented spelling
+  only — `(with-region (quote name))` with no other body — not for
+  reclamation. `region-open` / `region-close` remain `native-only-justified`:
+  a handle can be closed out of order, so wiring handles through the same
+  evacuator is Stage-2, and a VM handle close prints a one-time note saying it
+  frees nothing (`ESHKOL_VM_REGION_QUIET=1` silences it).
+- **Exact VM divergence and curl (#487).** `case 753` and `case 754` in
+  `lib/backend/vm_native.c` seed one forward dual per input variable and read
+  output tangents, with no step size anywhere. `op:CURL` and `op:DIVERGENCE`
+  remain `gap` because the two engines cannot yet be COMPARED — native `curl`
+  faults on a list-returning arity-1 vector field, and native passes the whole
+  point as one argument where the VM spreads it into N (ledger LE-12) — not
+  because the VM is approximate.
+- **Multi-shot re-entrant continuations on the VM (#491).** A capture
+  snapshots the VM's own operand stack and call-frame array, excluding
+  top-level binding slots (the store, not the control state), so `set!` and
+  `define` effects survive re-entry. `dynamic-wind` is rerooted on re-entry,
+  not merely unwound. `OP_GLOBAL_MARK` was appended as opcode 66, taking
+  `OP_COUNT` to 67.
+- **`gensym` on every engine (#491).** VM `BUILTINS[]` id 2227 alongside
+  native `codegenGensym`.
+- **Shared closure-upvalue capacity (#463, SW-45).** The compiler cap and the
+  runtime array are now one shared constant, `ESHKOL_VM_MAX_CLOSURE_UPVALUES`;
+  a large procedure no longer corrupts the next top-level `define`.
 
 ### v1.3.4-evolve parity changes
 
@@ -57,11 +88,14 @@ statuses:
 | `native-only-justified` | conscious, permanent waiver (FFI, OALR regions, static type syntax, OS/process, parallel runtime, front-end module machinery) — justification mandatory |
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
-**"Justification mandatory" is formally true (0 rows have an empty
-justification field) and substantively uneven** — corrected 2026-08-25,
-conformity audit item g2: 20 of the 44 `native-only-justified` rows share one
-boilerplate string, and roughly 55% of the 331 `gap` rows share four bulk
-strings; only a minority carry a per-symbol argument. Raising justification
+**"Justification mandatory" is formally true (no `gap` or
+`native-only-justified` row has an empty justification field; 6
+`vm-supported` rows carry no third field at all, which the schema does not
+require of them) and substantively uneven** — corrected 2026-08-25,
+conformity audit item g2, requantified 2026-08-28: 20 of the 44
+`native-only-justified` rows share one boilerplate string, and 200 of the 331
+`gap` rows (60%) share four bulk strings; only a minority carry a per-symbol
+argument. Raising justification
 specificity across the ledger is a low-priority build item — the field is
 present and non-empty everywhere, which is what the ledger schema enforces
 today.
@@ -89,7 +123,7 @@ programs under `tests/vm_parity/found/`.
 
 **`tests/vm_parity/SURFACE_BASELINE.tsv` — the delta the 956-row ledger does
 not count** (added 2026-08-25, conformity audit item g6, cross-referenced
-from FEATURE_MATRIX.md d9 and KNOWN_ISSUES.md e6). This file holds **328**
+from FEATURE_MATRIX.md d9 and KNOWN_ISSUES.md e6). This file holds **323**
 further names that native resolves and the VM does not, all tagged `NO-ROW`
 and entirely outside the `PARITY.tsv` ledger above — they were excused from
 the ratchet rather than entered into it. The project's own ledger (PR-02,
@@ -145,8 +179,11 @@ g4):
 4. **FATAL** (stage 4) — programs whose first failing form is fatal must fail
    closed (nonzero exit) on both substrates.
 
-Any divergence outside the manifest, at any stage, is a failure. Remeasured
-2026-08-25 against `4bf871a0`: **188 passed, 0 failed**, exit 0
+Any divergence outside the manifest, at any stage, is a failure. Last
+remeasured 2026-08-25 against `4bf871a0`: **188 passed, 0 failed**, exit 0.
+The corpus has grown since that commit (83 to 84 files, `found/` 36 to 39), so
+this figure must be regenerated by `BUILD_DIR=build scripts/run_vm_parity.sh`
+on the v1.3.5-evolve release cut before it is quoted as a release gate
 (`evidence/audit/06_vm_parity.log` in this resolution's evidence root;
 corrects the stale "140/140" figure carried in `docs/KNOWN_ISSUES.md`
 before this pass, conformity audit item e3).

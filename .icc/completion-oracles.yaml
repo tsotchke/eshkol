@@ -1557,6 +1557,18 @@ oracles:
         label: 'Every tracked *.ps1/*.psm1 file is ASCII, or opens with a UTF-8 BOM, so Windows PowerShell 5.1 and pwsh 7 decode it identically (scripts/check_ps1_encoding.py)'
         action: python3 scripts/check_ps1_encoding.py
 
+      # BI-21 (v1.3.5 docs audit, 2026-08-28): four PRs added public headers
+      # without regenerating docs/api/, leaving six headers with no generated
+      # page at all and 16 stale/missing pages. Build-free (reads headers,
+      # not compiled output), so it belongs in the fast assurance-gates job.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["api_docs_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
+        action: python3 scripts/gen_api_docs.py --check
+
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:
           event_kinds: [eshkol_smoke]

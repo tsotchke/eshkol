@@ -1,4 +1,4 @@
-# Eshkol Standard Library — v1.3.4 API Reference Index
+# Eshkol Standard Library — v1.3.5 API Reference Index
 
 Complete module-by-function map of the Eshkol standard library. Every symbol
 below links to a per-module reference page in this directory; every documented
@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 58** (plus `stdlib` itself and the module system page) — **provided symbols: 638** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 59** (plus `stdlib` itself and the module system page) — **provided symbols: 679** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -49,7 +49,7 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 | [`core.logic.predicates`](../../../lib/core/logic/predicates.esk) | yes | [logic_predicates.md](logic_predicates.md) | `is-zero?` `is-positive?` `is-negative?` `is-even?` `is-odd?` |
 | [`core.logic.types`](../../../lib/core/logic/types.esk) | yes | [logic_types.md](logic_types.md) | `is-null?` `is-pair?` |
 | [`core.manifold`](../../../lib/core/manifold.esk) | yes | [manifold.md](manifold.md) | `make-euclidean-manifold` `make-hyperbolic-manifold` `make-spherical-manifold` `manifold-exp-map` `manifold-log-map` `manifold-distance` `manifold-parallel-transport` `manifold-curvature` `manifold-dimension` `manifold-type` `metric-component` `manifold-metric` `manifold-metric-inverse` `christoffel-symbol` `manifold-christoffel` `manifold-sectional-curvature` `manifold-scalar-curvature` `ricci-component` `manifold-ricci` `riemann-component` |
-| [`core.memory`](../../../lib/core/memory.esk) | no | [memory.md](memory.md) | `make-memory-log` `memory-append!` `memory-events` `memory-merge` `memory-verify-chain` `memory-verify-events` `memory-fold-lww` `memory-event?` `memory-event-id` `memory-event-prev` `memory-event-vclock` `memory-event-node` `memory-event-type` `memory-event-payload` |
+| [`core.memory`](../../../lib/core/memory.esk) | no | [memory.md](memory.md) | `make-memory-log` `memory-append!` `memory-events` `memory-merge` `memory-verify-chain` `memory-verify-events` `memory-fold-lww` `memory-event?` `memory-event-id` `memory-event-prev` `memory-event-vclock` `memory-event-node` `memory-event-type` `memory-event-payload` `event-content-hash` |
 | [`core.memory_store`](../../../lib/core/memory_store.esk) | no | [memory_store.md](memory_store.md) | `make-memory-store` `memory-store?` `memory-store-log` `memory-store-path` `memory-store-open` `memory-store-open-fast` `memory-store-append!` `memory-store-verify` `memory-store-audit` `memory-store-count` `memory-store-head` `memory-store-sanitize` |
 | [`core.merkle`](../../../lib/core/merkle.esk) | no | [merkle.md](merkle.md) | `fnv1a-64` `hash->hex` `merkle-leaf` `merkle-leaf?` `merkle-inode?` `merkle-root` `merkle-data` `merkle-tree` `merkle-tree-with-hash` `merkle-leaves` `merkle-proof` `merkle-verify` `make-cas` `make-cas-with-hash` `cas?` `cas-put!` `cas-get` `cas-has?` `cas-size` `cas-keys` |
 | [`core.metrics`](../../../lib/core/metrics.esk) | no | [metrics.md](metrics.md) | `make-counter` `counter-inc!` `counter-add!` `make-gauge` `gauge-set!` `gauge-inc!` `gauge-dec!` `make-histogram` `histogram-observe!` `histogram-buckets` `metrics-register!` `metrics-render` `metrics-reset!` `metric-name` `metric-help` `metric-kind` |
@@ -73,6 +73,17 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 | [`ml.optimization`](../../../lib/ml/optimization.esk) | yes | [ml_optimization.md](ml_optimization.md) | `gradient-descent` `adam` `l-bfgs` `conjugate-gradient` `line-search` `tensor-dot` `tensor-norm` |
 | [`signal.fft`](../../../lib/signal/fft.esk) | yes | [signal_fft.md](signal_fft.md) | `fft` `ifft` |
 | [`signal.filters`](../../../lib/signal/filters.esk) | yes | [signal_filters.md](signal_filters.md) | `hamming-window` `hann-window` `blackman-window` `kaiser-window` `apply-window` `convolve` `fast-convolve` `fir-filter` `iir-filter` `butterworth-lowpass` `butterworth-highpass` `butterworth-bandpass` `frequency-response` |
+
+## Builtin families
+
+Some public surfaces are compiler or VM **builtins** rather than `.esk` modules, so
+they have no `require` line and no `provide` block. They are documented here anyway,
+because from a user's side they are ordinary callable names.
+
+| Family | Reference | Names | Engines |
+|---|---|---|---|
+| Geometric manifolds, Lie groups, forms, geodesic attention (native ids 804-861) | [geometry.md](geometry.md) | 62 | bytecode VM only |
+| Explicit reverse-mode AD tape and its instrumentation counters (`ad-*`) | [../ad/tape.md](../ad/tape.md) | 33 | native AOT, native JIT, VM |
 
 ## Not covered here
 

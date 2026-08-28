@@ -67,15 +67,16 @@ this reason.
 
 ## 3. Which machines
 
-Measured against the mesh registry (`computer_mesh/nodes.json`) on 2026-08-25 by
-SSH probe, not assumed. Full survey and the raw per-node output live with the PR
-that introduced this document.
+Measured against the private fleet registry on 2026-08-25 by direct probe, not
+assumed. The survey and the raw per-node output are kept in the private evidence
+record, not in this repository; only capability labels appear here.
 
-| node | OS / arch | cores / RAM / free disk | GPU | suggested labels | provisioning still needed |
-|---|---|---|---|---|---|
+Per-node rows are deliberately not published here; see the private evidence
+record. What matters for CI is the capability labels a lane requires, which are
+listed in section 5.
 
-Every other node in the registry was unreachable at survey time: the GCP
-Blackwell/RTX-Pro nodes are stopped or spot-preempted, the on-prem boxes are
+Every other node in the registry was unreachable at survey time: the datacenter-GPU
+nodes are stopped or spot-preempted, the on-prem boxes are
 this machine. That volatility is the reason for §6.
 
 ---

@@ -604,15 +604,15 @@ The papers most directly cited by the construction:
 
 | File                                          | Lines  | Purpose                                                       |
 |-----------------------------------------------|-------:|---------------------------------------------------------------|
-| `lib/backend/vm_core.c`                       |    120 | Canonical opcode enum, value representation, `MEM_SIZE`, etc. |
-| `lib/backend/vm_run.c`                        |    ~80 | Computed-goto VM dispatch (production reference)              |
-| `lib/backend/weight_matrices.c`               |  6,772 | Weight construction, simulator, matrix forward pass, verifier |
-| `lib/backend/qllm_interpreter.c`              |  1,232 | qLLM tensor-engine loader for the QLMW artifact               |
-| `lib/backend/qllm_backward.c`                 |    736 | Reverse pass + AdamW + QLMW v4 checkpoint                      |
+| `lib/backend/vm_core.c`                       |  1,447 | Canonical opcode enum, value representation, `MEM_SIZE`, etc. |
+| `lib/backend/vm_run.c`                        |  2,163 | Computed-goto VM dispatch (production reference)              |
+| `lib/backend/weight_matrices.c`               |  7,365 | Weight construction, simulator, matrix forward pass, verifier |
+| `lib/backend/qllm_interpreter.c`              |  1,085 | qLLM tensor-engine loader for the QLMW artifact               |
+| `lib/backend/qllm_backward.c`                 |    436 | Reverse pass + AdamW + QLMW v4 checkpoint                      |
 | `lib/backend/eskb_format.h`                   |    223 | ESKB bytecode container header                                |
-| `lib/backend/eskb_writer.c`                   |    142 | ESKB serialiser                                               |
-| `lib/backend/eskb_reader.c`                   |    271 | ESKB deserialiser                                             |
-| `inc/eshkol/bridge/qllm_bridge.h`             |    260 | The Eshkol↔qLLM AD-aware tensor surface                       |
+| `lib/backend/eskb_writer.c`                   |    223 | ESKB serialiser                                               |
+| `lib/backend/eskb_reader.c`                   |    348 | ESKB deserialiser                                             |
+| `inc/eshkol/bridge/qllm_bridge.h`             |    355 | The Eshkol↔qLLM AD-aware tensor surface                       |
 | `scripts/paper/run_paper_suite.sh`            |     86 | End-to-end reproducibility harness                            |
 | `scripts/paper/compare_traces.py`             |    340 | Bit-identity comparator                                       |
 | `scripts/paper/gen_paper_tables.py`           |    156 | LaTeX table regenerator                                       |

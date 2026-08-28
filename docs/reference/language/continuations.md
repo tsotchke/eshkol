@@ -87,13 +87,75 @@ pre-multi-shot implementation.
 Eshkol has no garbage collector and reclaims by region at scope exit, so a
 continuation captured inside `with-region` and resumed after that region exits
 is an ownership question. **The rule on both engines: capturing a continuation
-inside a region pins it.** The region is promoted whole rather than reclaimed,
-so the failure direction is a leak, never a dangling reference. The VM says so
-on stderr ("a `with-region` body could not be reclaimed and was promoted
-whole"); set `ESHKOL_VM_REGION_QUIET=1` to silence the note.
+pins every region that is open at the moment of capture.** The failure
+direction is a leak, never a dangling reference.
 `tests/continuations/region_capture_resume.esk` resumes such a continuation
 three times after the region has exited, with heavy allocation churn in
 between, and checks that region-allocated data still reads correctly.
+
+Four properties of that rule are worth stating precisely, because each one is
+easy to assume the other way round.
+
+**It pins all of them, not the innermost one.** `eshkol_region_pin_all` walks
+the whole region stack and marks every frame. A `call/cc` nested two
+`with-region`s deep can be re-entered after both have exited, and either
+frame's locals may need either arena, so pinning only the innermost would leave
+the outer one free to be reclaimed out from under the resumed continuation.
+
+**The pin is never lifted.** Neither engine has an unpin path. It is a Stage-1
+policy that trades "this region's memory is never reclaimed" for "no
+continuation can ever observe a freed region", **for the remainder of the
+process**.
+
+**The two engines leak differently, and only one of them says so.** On the VM,
+the region's arena blocks are promoted whole into the parent — spliced behind
+the parent's bump block, so they stay valid for the parent's whole lifetime and
+no later allocation can land inside them. Memory is not returned until the
+enclosing scope ends, and if that scope is the global arena, never. On native,
+`region_destroy` skips `arena_destroy` for a pinned region and leaks the arena
+outright: the block chain is never freed. The VM announces this once per
+process on stderr —
+
+```
+eshkol-vm: note: a `with-region` body could not be reclaimed and was promoted
+whole (a continuation was captured inside a region). The answer is unaffected;
+the memory is not returned until the enclosing scope ends.
+```
+
+— and `ESHKOL_VM_REGION_QUIET=1` silences it. **Native prints nothing at
+default verbosity**; the leak is announced only at debug level. So a native
+program that pins a region gives no visible signal at all.
+
+**That VM note has five possible reasons, and only two of them are yours.** The
+reason string in parentheses distinguishes them: `a continuation was captured
+inside a region` and `a continuation crossed the region boundary` are the
+continuation cases; `ESHKOL_VM_REGION_EVAC=0`, `block table allocation failed`,
+`mark bitset allocation failed` and `an object or value type the evacuator does
+not classify` are not. Reading the parenthetical is the difference between
+"my program captured a continuation" and "the evacuator ran out of memory".
+
+##### Two native mechanisms, not one
+
+Native has a second, independent protection that the pin does not subsume, and
+it is what makes ["escape continuations pay nothing"](#escape-continuations-pay-nothing)
+true for regions as well as for stack copying.
+
+- **At codegen**, `codegenCallCC` chooses which arena the continuation's state,
+  closure and stack image are allocated from. `with-region` redirects
+  `eshkol_current_arena()`, so a capture the compiler classifies as *possibly
+  escaping* is allocated from the process-wide shared arena instead, which
+  outlives every region. A capture classified as escape-only keeps the current
+  arena, because such a continuation cannot outlive the region body that
+  created it and its state is correctly reclaimed with the region.
+- **At run time**, `eshkol_make_continuation_state` pins every open region when
+  the region depth is greater than zero, because the raw C-stack snapshot may
+  hold interior pointers into any open region's arena — pointers the codegen
+  path cannot see and therefore cannot redirect.
+
+The first protects what codegen can see; the second protects what it cannot.
+Note that the runtime pin is taken on region depth alone: it does not consult
+the escape-only classification, so an escape-only capture inside a
+`with-region` still pins.
 
 #### Limits
 

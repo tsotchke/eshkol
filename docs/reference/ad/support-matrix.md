@@ -125,5 +125,11 @@ is deterministic; regenerating reproduces the corpus byte-for-byte.
 ## See also
 
 - [operators.md](operators.md) — per-operator API, capture rules, nesting
-- [architecture.md](architecture.md) — forward jet, reverse tape, mixed mode
+- [architecture.md](architecture.md) — forward jet, reverse tape, mixed mode, and the
+  [83-row AD node registry](architecture.md#the-ad-node-registry): what `UNREGISTERED`
+  means, why the dispatcher has no `default:`, and the
+  [exact geometric backwards](architecture.md#exact-geometric-backwards) for node
+  types 33-40, which this oracle's scalar corpus does not reach
+- [tape.md](tape.md) — the explicit `ad-*` tape builtins and the instrumentation
+  counters, including `(ad-finite-difference-evals)` and its negative control
 - [`tests/ad_oracle/README.md`](../../../tests/ad_oracle/README.md) — oracle design

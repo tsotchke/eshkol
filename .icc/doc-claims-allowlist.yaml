@@ -34,7 +34,7 @@ detector_fix_references:
     (usually the nearest or last-named file in the sentence) instead of recognising the multi-file list
     and either (a) skipping the claim as an aggregate, or (b) checking N against the summed line count
     of every named file.
-  affected_count: 7
+  affected_count: 13
 - gap: cross-repo citation
   detail: doc-typed-claims has no notion of a document that deliberately cites another repository's files
     (design RFCs written against a dependency's source tree). Every non-indexed file_path claim is scored
@@ -73,52 +73,103 @@ detector_fix_references:
     claim, even when the same document''s explicit LOC column states the correct total two words later.'
   affected_count: 1
 entries:
-- claim_id: 83e3d96767009590
+- claim_id: 4fa2ebbac3a918ae
   path: CHANGELOG.md
-  line: 1010
+  line: 1119
   claim_type: file_path
   subject: entry.esk
   value: 6
   disposition: DETECTOR-MISATTRIBUTION
   reason: illustrative/hypothetical example filename used to explain a diagnostic-location bug ("a 3-line
     entry file... entry.esk:6:13") -- not a real file citation; no such file exists anywhere in the tree.
-    Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 730 to 1010 as
-    newer CHANGELOG entries were prepended above it; old claim_id 113a2c2fe899ec0a
-- claim_id: 52bdbeafc5f0dae0
+    Re-hashed 2026-08-28 (v1.3.5-evolve release documentation audit) -- same claim, line shifted from 1010
+    to 1119 as newer CHANGELOG entries were prepended above it; superseded claim_ids 83e3d96767009590,
+    113a2c2fe899ec0a
+- claim_id: 5a5741f34d28a4d5
   path: CHANGELOG.md
-  line: 2774
+  line: 1720
+  claim_type: file_path
+  subject: entry.esk
+  value: 6
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: the same claim as 4fa2ebbac3a918ae, at the line it occupies once the v1.3.5-evolve CHANGELOG
+    section is in place (601 lines added above it on release/v135-cut). Both ids are carried so the gate is
+    green whichever branch is measured; the branch that does not match reports its entry as stale, which
+    the gate treats as informational rather than a failure. See BUILD ITEM D1 -- claim identity is a hash
+    over path+line+value, so every dated historical entry re-hashes on every release that grows the file
+    above it.
+- claim_id: d1e20e2d36409aff
+  path: CHANGELOG.md
+  line: 2883
   claim_type: numeric
   subject: lib/backend/weight_matrices.c
   value: 3998
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size at the historical "Restored weight_matrices.c"
-    commit, not a claim about current size. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same
-    claim, line shifted from 2494 to 2774 as newer entries were prepended above it; old claim_id a40eeb1f4131fca1
-- claim_id: 4e87c5b0975ac7f9
+    commit, not a claim about current size. Re-hashed 2026-08-28 (v1.3.5-evolve release documentation
+    audit) -- same claim, line shifted from 2774 to 2883; superseded claim_ids 52bdbeafc5f0dae0,
+    a40eeb1f4131fca1
+- claim_id: 760c60c5555cae76
   path: CHANGELOG.md
-  line: 2832
+  line: 3484
+  claim_type: numeric
+  subject: lib/backend/weight_matrices.c
+  value: 3998
+  disposition: EXEMPT-HISTORICAL
+  reason: the same claim as d1e20e2d36409aff, at the line it occupies with the v1.3.5-evolve CHANGELOG
+    section in place.
+- claim_id: 6ee86ff8a787eb30
+  path: CHANGELOG.md
+  line: 2941
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
   value: 1280
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the file size immediately after a specific historical extraction
-    commit ("now ~1,280 lines, down from 19,940"). Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) --
-    same claim, line shifted from 2552 to 2832 as newer entries were prepended above it; old claim_id
-    0b957d56adc324fb
-- claim_id: c8a520fb5c6b3af7
+    commit ("now ~1,280 lines, down from 19,940"). Re-hashed 2026-08-28 (v1.3.5-evolve release
+    documentation audit) -- same claim, line shifted from 2832 to 2941; superseded claim_ids
+    4e87c5b0975ac7f9, 0b957d56adc324fb
+- claim_id: 3c980e48a8222406
   path: CHANGELOG.md
-  line: 3631
+  line: 3542
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 1280
+  disposition: EXEMPT-HISTORICAL
+  reason: the same claim as 6ee86ff8a787eb30, at the line it occupies with the v1.3.5-evolve CHANGELOG
+    section in place.
+- claim_id: b3063c1027206f10
+  path: CHANGELOG.md
+  line: 3740
   claim_type: numeric
   subject: lib/backend/eshkol_vm.c
   value: 8457
   disposition: EXEMPT-HISTORICAL
   reason: dated CHANGELOG entry describing the monolithic VM file size at the historical "Dual Backend
-    Architecture (NEW)" entry, before the later vm_*.c module split. Re-hashed 2026-08-26 (N5
-    doc-typed-claims-residual fix) -- same claim, line shifted from 3351 to 3631 as newer entries were
-    prepended above it; old claim_id bae9969294758239
-- claim_id: 57387765719ed7b5
+    Architecture (NEW)" entry, before the later vm_*.c module split. Re-hashed 2026-08-28 (v1.3.5-evolve
+    release documentation audit) -- same claim, line shifted from 3631 to 3740; superseded claim_ids
+    c8a520fb5c6b3af7, bae9969294758239
+- claim_id: 8e3bd92292adb0c4
+  path: CHANGELOG.md
+  line: 4341
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 8457
+  disposition: EXEMPT-HISTORICAL
+  reason: the same claim as b3063c1027206f10, at the line it occupies with the v1.3.5-evolve CHANGELOG
+    section in place.
+- claim_id: 3a80f15639711cde
   path: RELEASE_NOTES.md
-  line: 1145
+  line: 1292
+  claim_type: file_path
+  subject: arena_memory.cpp
+  value: 3908
+  disposition: EXEMPT-HISTORICAL
+  reason: the same claim as c7553ac5b1b11c8a below, at the line it occupies with the v1.3.5-evolve
+    RELEASE_NOTES section in place.
+- claim_id: c7553ac5b1b11c8a
+  path: RELEASE_NOTES.md
+  line: 1155
   claim_type: file_path
   subject: arena_memory.cpp
   value: 3908
@@ -815,3 +866,70 @@ entries:
     claimed ~7,478 against the FULL lib/ directory sum (316,093 across 346 files today), which was never
     the claim. Re-hashed 2026-08-26 (N5 doc-typed-claims-residual fix) -- same claim, line shifted from 190
     to 212 as newer press-sheet content was added above it; old claim_id 22ed7a44c534f409
+- claim_id: 61a139e8e6931ba2
+  path: docs/DESIGN.md
+  line: 252
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 51100
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "eshkol_vm.c, 2,390 lines; roughly 51,100 lines
+    across the full eshkol_vm.c + vm_*.c module family" -- two distinct claims, and the per-file one
+    (2,390) is grounded and correct. The detector binds the FAMILY aggregate to the single named file.
+    Measured on this tree, the family sums to 51,092 across 34 files, so "roughly 51,100" is accurate as
+    written. Added 2026-08-28 (public-surface documentation pass); the aggregate figure itself was
+    recomputed in the v1.3.5-evolve release audit, which is why the claim_id is new.
+- claim_id: 9fe68d60bbbaecc8
+  path: docs/API_REFERENCE.md
+  line: 7136
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "1,867-line dispatcher plus ~22,355 lines across
+    thirteen per-domain tensor_*_codegen.cpp modules"; the per-file figure (1,867) is grounded, and the
+    detector binds the thirteen-module aggregate to the dispatcher. The thirteen modules sum to exactly
+    22,355 lines on this tree. Added 2026-08-28.
+- claim_id: bf94127e76c4f9d9
+  path: docs/DESIGN.md
+  line: 79
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution, last-named-file variant. The sentence lists all thirteen per-domain
+    modules and then says "totalling roughly 22,355 lines"; the detector binds the aggregate to
+    tensorcore_codegen.cpp, the last file named before the number. tensorcore_codegen.cpp is 225 lines;
+    the thirteen named modules sum to exactly 22,355. Added 2026-08-28.
+- claim_id: d779d74d0cfe0b0d
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 391
+  claim_type: numeric
+  subject: lib/backend/tensorcore_codegen.cpp
+  value: 22355
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: identical to docs/DESIGN.md:79 -- the same thirteen-module list followed by "totalling
+    approximately 22,355 lines", bound by the detector to the last file named. Sum verified at 22,355.
+    Added 2026-08-28.
+- claim_id: d58186fc8cf5256c
+  path: docs/breakdown/COMPILER_ARCHITECTURE.md
+  line: 518
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 22130
+  disposition: DETECTOR-MISATTRIBUTION
+  reason: family-sum misattribution. The sentence states "1,867-line dispatcher; ~22,130 lines across
+    twelve sibling tensor_*_codegen.cpp files"; the dispatcher figure is grounded. Twelve siblings is the
+    thirteen-module set minus tensorcore_codegen.cpp, i.e. 22,355 - 225 = 22,130 exactly. Added 2026-08-28.
+- claim_id: d73fab66ac8246fb
+  path: ROADMAP.md
+  line: 323
+  claim_type: numeric
+  subject: lib/backend/tensor_codegen.cpp
+  value: 1280
+  disposition: EXEMPT-HISTORICAL
+  reason: a completed [x] roadmap row recording a point-in-time fact -- "tensor_codegen.cpp 19,940 ->
+    1,280 lines AT THE TIME OF THE V1.2 SPLIT (94% reduction)". The sentence continues "re-measured for
+    this documentation wave at ...", so the current figure is stated separately and is grounded. The
+    detector checks the historical 1,280 against today's 1,867. Correcting it would misrepresent a dated
+    measurement as a current one. Added 2026-08-28.

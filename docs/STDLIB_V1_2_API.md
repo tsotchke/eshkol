@@ -1,16 +1,16 @@
 # Eshkol Standard Library — v1.2-scale surfaces (API Reference)
 
-**Version**: current as of 1.3.4-evolve (original v1.2 surfaces closed out
+**Version**: current as of 1.3.5-evolve (original v1.2 surfaces closed out
 2026-05-20, base 2026-05-01)
 **Audience**: implementers and library authors writing against the public
 stdlib surface.
 **Scope**: this document covers the modules added or significantly expanded in
-the v1.2-scale cycle. For the **complete, per-module v1.3.4 stdlib API
+the v1.2-scale cycle. For the **complete, per-module v1.3.5 stdlib API
 reference** — every provided symbol of every module with run-verified examples
 — see [`reference/stdlib/INDEX.md`](reference/stdlib/INDEX.md).
 
 This document is a source-verified reference for the v1.2-scale public
-surfaces, still current in v1.3.4-evolve. Every signature, default, and edge
+surfaces, still current in v1.3.5-evolve. Every signature, default, and edge
 case below is read directly from the implementing `.esk`, `.c`, or `.cpp` file;
 every example exercises only symbols listed in the corresponding `(provide …)`
 block or in the codegen builtin table. Where a feature listed in
@@ -1779,7 +1779,7 @@ name:
 
 ## Appendix B: Infrastructure stdlib modules
 
-The current stdlib also ships fifteen infrastructure-oriented modules that
+The current stdlib also ships seventeen infrastructure-oriented modules that
 the main sections above only listed by name. The signatures below come
 directly from each module's `(provide …)` block (cited in the table).
 The "Auto-loaded" column says whether `(require stdlib)` pulls the
@@ -1801,9 +1801,11 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.sexp` | `lib/core/sexp.esk` | Yes | S-expression string + canonical-string formatters |
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
 | `core.testing` | `lib/core/testing.esk` | **No** — `(require core.testing)` | `check-*` assertions + `run-tests` |
-| `core.manifold` | `lib/core/manifold.esk` | **No** — `(require core.manifold)` | Manifold operations (placeholders pending native VM ops) |
+| `core.manifold` | `lib/core/manifold.esk` | Yes | Constant-curvature Riemannian manifolds: exp/log maps, geodesic distance, metric, Christoffel, Ricci, Riemann |
 | `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence |
 | `core.msgpack` | `lib/core/msgpack.esk` | **No** — `(require core.msgpack)` | MessagePack bytevector encoder/decoder substrate |
+| `core.memory` | `lib/core/memory.esk` | **No** — `(require core.memory)` | Append-only, content-addressed, hash-chained, CRDT-merged event log |
+| `core.memory_store` | `lib/core/memory_store.esk` | **No** — `(require core.memory_store)` | Durable fsync-on-append file backing for a `core.memory` log |
 
 ### B.1 `core.merkle`
 
@@ -2161,3 +2163,170 @@ arrays. Array decode returns lists. Arbitrary vectors are intentionally not an
 encode surface yet; vector numeric-slot lowering is tracked separately, so the
 wire-format module avoids a lossy vector path until that compiler/runtime
 boundary is fixed.
+
+### B.16 `core.memory`
+
+```scheme
+(require core.memory)
+```
+
+Exports (`memory.esk`):
+
+```scheme
+(provide
+  make-memory-log
+  memory-append!
+  memory-events
+  memory-merge
+  memory-verify-chain
+  memory-verify-events
+  memory-fold-lww
+  memory-event?
+  memory-event-id memory-event-prev memory-event-vclock
+  memory-event-node memory-event-type memory-event-payload
+  event-content-hash)
+```
+
+An append-only event log that is **content-addressed**, **hash-chained** and
+**CRDT-merged** at once, composed from three modules that already ship:
+`sha256` from `agent.crypto` for the addressing, `sexp->canonical-string` from
+`core.sexp` for a stable rendering to hash, and the RGA / LWW-register /
+vector-clock layer from `core.distributed` for the convergence. It is not a
+wrapper around a database; it is event sourcing expressed in Eshkol values.
+
+Two shapes are all there is to know:
+
+- **Event** — an immutable list `(mem-ev-v1 id prev-hash vclock node type payload)`.
+  `id` is `(sha256 (sexp->canonical-string (list node prev vclock type payload)))`,
+  the hash of everything *except* the id. Because the body embeds `prev-hash`, the
+  log is a hash chain as well as a content-addressed set: change any field of any
+  event and its recomputed id no longer matches.
+- **Log** — a mutable vector `#(mem-log node-id rga vclock prev-hash)`. Treat it as
+  opaque; the accessors below are the interface.
+
+`(make-memory-log node-id)` creates an empty log owned by `node-id` (any
+`equal?`-comparable value; a symbol is typical). It takes exactly one argument.
+
+`(memory-append! log type payload)` ticks the log's vector clock, computes the
+content hash, chains it to the previous id and RGA-appends. It **mutates `log`** and
+returns **the new event**, not the log. The argument order is `(log type payload)`.
+
+`(memory-events log)` returns the events in RGA convergent order.
+
+`(memory-event? ev)` is the predicate. `memory-event-id`, `-prev`, `-vclock`,
+`-node`, `-type` and `-payload` are the field accessors; `-id` is a lowercase hex
+sha256 string and `-prev` is `#f` for the first event of a chain.
+
+`(memory-verify-events events)` recomputes every event's id from its body and
+returns `#t`, or `(offending-event . reason)` where `reason` is one of
+`not-an-event`, `no-id`, `hash-mismatch`. `(memory-verify-chain log)` is the
+convenience form over `(memory-events log)`. Verification is independent of
+interleave order, so it holds on merged multi-node logs as well as single-node ones.
+`(memory-verify-events '())` is `#t`.
+
+`(memory-merge a b)` returns a **new** log whose RGA is the union of the two
+(dedup-by-id is inherent to the RGA) and whose vector clock is the pairwise merge.
+It is commutative, idempotent, associative and lossless, and the result still passes
+`memory-verify-chain`. Note that the merged log inherits `a`'s node id.
+
+`(memory-fold-lww log key)` folds the `value`-typed events whose payload is a pair
+`(key . value)` into an LWW register, using append position as the timestamp, and
+returns the last-written value for `key` — or `#f` if the key never appears. Because
+events are totally ordered even after a merge, this is genuinely last-write-wins over
+the log.
+
+`(event-content-hash node prev vclock type payload)` re-derives an event's content
+hash from its body fields. It is exported so a cross-module consumer can verify
+integrity without rebuilding an RGA — `core.memory_store`'s streaming
+`memory-store-audit` is the reason it is public.
+
+```scheme
+(require core.memory)
+(define la (make-memory-log 'node-A))
+(define lb (make-memory-log 'node-B))
+(memory-append! la 'episodic '(saw cat))
+(memory-append! la 'fact     '(cat is-a animal))
+(memory-append! la 'value    (cons 'mood 0.7))
+(memory-append! lb 'episodic '(heard dog))
+(define m (memory-merge la lb))
+(display (length (memory-events m)))   (newline)   ; 4 — lossless
+(display (memory-verify-chain m))      (newline)   ; #t
+(display (memory-fold-lww m 'mood))    (newline)   ; 0.7
+```
+
+The module works under `eshkol-run -r` (JIT) and AOT. It compiles clean under
+`--strict-types` as of #494, which split `memory-fold-lww` into a Boolean-only
+key-presence scan and a register-only fold so that neither named-let accumulator
+changes shape across iterations — the ledger entry is SW-63, closed.
+
+Run-verified examples with stamped output, including the tamper-detection case, are
+in [`reference/stdlib/memory.md`](reference/stdlib/memory.md).
+
+### B.17 `core.memory_store`
+
+```scheme
+(require core.memory_store)
+```
+
+Exports (`memory_store.esk`):
+
+```scheme
+(provide make-memory-store
+         memory-store?
+         memory-store-log
+         memory-store-path
+         memory-store-open
+         memory-store-open-fast
+         memory-store-append!
+         memory-store-verify
+         memory-store-audit
+         memory-store-count
+         memory-store-head
+         memory-store-sanitize)
+```
+
+The durable half of `core.memory`. A store is a vector `#(mem-store log path)`;
+`memory-store-log` and `memory-store-path` are its accessors, and both raise a
+diagnostic rather than fault when handed a non-store.
+
+Every append is written to an append-only text file and **`fsync`'d before the append
+returns**, and the in-memory head advances only after that `fsync` succeeds — the
+order matters, because advancing first leaves the chain referencing a parent that
+never reached disk if the write fails. One canonical s-expression per line, in the
+same canonical rendering the ids are hashed over, so the file *is* the chain: replay
+re-parses each line and re-derives every hash.
+
+`(memory-store-open node-id path)` opens or creates the chain and replays any
+existing events. `(memory-store-open-fast node-id path)` restores the head and vector
+clock from a sidecar file for append-only use, then validates that hint against the
+file tail — the file is the truth, the sidecar only a hint, because a crash between
+the append and the sidecar write leaves the sidecar one event behind.
+
+`(memory-store-append! store type payload)` is the durable counterpart of
+`memory-append!`. `(memory-store-count store)` and `(memory-store-head store)` report
+the event count and the last event's id (`#f` on an empty chain).
+
+`(memory-store-verify store)` audits two layers: `core.memory`'s content hashes,
+which catch a *modified* event, and strict linear linkage, which catches a *deleted*
+one — the first event's `prev` must be `#f` and each event's `prev` must equal its
+predecessor's id. It returns `#t`, a `core.memory` failure pair, or
+`((event ID expected-prev PREV) . linkage-broken)`. Linkage is a single-node
+property; a merged multi-node chain has legitimate forks.
+
+`(memory-store-audit path)` streams the file without rebuilding the RGA and returns
+`(ms-audit-v1 #t count forks)`, or `(lineno . reason)` where `reason` is
+`unparseable`, `hash-mismatch` or `orphan-parent`.
+
+`(memory-store-sanitize str)` is the v1 payload-string sanitizer. The v1 payload
+contract is an alist of `(symbol . string|integer)`; strings must contain no double
+quotes, no newlines and no non-printable ASCII, because `core.sexp`'s canonical
+rendering does not escape them and the write path's length argument counts
+characters rather than UTF-8 bytes. Sanitize at ingest.
+
+The libc bindings are deliberately fixed-arity (`fopen`, `fwrite`, `fflush`,
+`fileno`, `fsync`, `fclose`) rather than variadic: a variadic `open` is not safe
+through the FFI on ARM64, where variadic arguments go to the stack while a
+fixed-signature extern passes them in registers.
+
+Per-function detail with stamped output is in
+[`reference/stdlib/memory_store.md`](reference/stdlib/memory_store.md).

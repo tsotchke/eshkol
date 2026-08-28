@@ -586,6 +586,14 @@ jobs:
         shell: bash
         run: python3 scripts/check_ps1_encoding.py
 
+      # Build-free (reads headers, not compiled output), so it belongs here
+      # rather than only in a contributor-run `make api-docs` step. Four PRs
+      # in the v1.3.5 wave added public headers without regenerating
+      # docs/api/, leaving six headers with no generated page at all.
+      - name: Generated API docs (docs/api/) are up to date with tracked headers
+        shell: bash
+        run: python3 scripts/gen_api_docs.py --check
+
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
       # --trace-dir). --require-trace-dir turns "the directory is empty" or

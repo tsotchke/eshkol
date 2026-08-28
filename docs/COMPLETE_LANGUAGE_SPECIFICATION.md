@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
 **Version:** v1.3.4
-**Generated:** 2026-07-08
+**Generated:** 2026-08-28
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -2042,7 +2042,8 @@ mechanisms. On the **bytecode VM** all three spellings evaluate the body
 identically and return the same value — the form is value- and
 effect-transparent — **and reclaim**, through the Stage-1 region evacuator
 (`lib/backend/vm_region_evac.c`): measured flat at 26 MB across
-1 000/4 000/16 000 iterations against 796 MB with the evacuator disabled. The VM
+1 000/4 000/16 000 iterations against 793 MB with the evacuator disabled and
+704 MB for an unwrapped control (commit `487c2a62`, #461). The VM
 sweeps at arena-block granularity rather than copying the escaping subgraph, so
 an escaping value with an out-of-line payload retains a little more there.
 Outside a region the VM heap still grows monotonically, and says so when the
@@ -3406,7 +3407,10 @@ Eshkol implements first-class continuations and dynamic extent management per R7
 
 `(call-with-current-continuation proc)` (abbreviated `call/cc`) captures the current continuation as a first-class callable object.
 
-**Implementation:** Single-shot capture via `setjmp`/`longjmp`.
+**Implementation:** Multi-shot. An escape-only capture keeps the plain
+`setjmp`/`longjmp` path; a capture that may outlive its frame takes a durable
+stack image on native or an operand-stack/call-frame snapshot on the bytecode
+VM. See 16.1.2.
 
 **Type Identification:**
 - **Type tag:** `ESHKOL_VALUE_CALLABLE` (9)
@@ -4499,17 +4503,17 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.3, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.3.5-evolve, documenting **every** feature, function, operator, and capability found in the implementation.
 
-**Total Coverage:**
-- All 101 special forms and parser operations
-- All 555+ LLVM-compiled built-in functions
+**Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
+- All 116 special forms and 113 parser AST operations
+- All 1,042 built-in functions (1,108 declared constructs in total)
 - 250+ VM native call IDs
 - 63-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)
 - Full memory management system (OALR arenas)
 - Entire standard library (40 modules)
-- Complete autodiff system (forward, reverse, symbolic, 73 AD node types)
+- Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in `inc/eshkol/ad_node_registry.def`)
 - Dual backend architecture (LLVM + bytecode VM)
 - Weight matrix transformer (3-way verified)
 - Module system with `require`, `provide`, `load`
