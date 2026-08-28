@@ -4096,6 +4096,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: noreturn_terminator_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|Terminator found|fatal signal")
     endif()
+    # SW-80: the RUNTIME reader (lib/core/runtime_reader_hosted.cpp,
+    # `eshkol_read_sexpr` — backs `(read)` for native JIT, AOT, and the REPL)
+    # had no dispatch case for `` ` ``, `,`, or `,@`. They fell through to the
+    # symbol reader, so `(read (open-input-string "`(a ,b)"))` returned the
+    # one-character symbol `` ` `` and left "(a ,b)" sitting unconsumed in the
+    # stream — a silent wrong datum with no diagnostic that also corrupted the
+    # next `(read)` on the same port. This is the runtime-`read` half of the
+    # SW-54/55/56 family (#466), which fixed only the two COMPILE-TIME readers
+    # (lib/frontend/parser.cpp, lib/backend/vm_parser.c). Registered on both
+    # engines that actually share this code path (JIT and AOT both call the
+    # same `eshkol_read_sexpr`); the standalone VM's own `(read)` builtin does
+    # not implement R7RS `read` at all (it ignores its port argument and
+    # returns one raw character) and is a separate, pre-existing gap outside
+    # this fix.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk")
+        add_test(
+            NAME v1_3_runtime_reader_quasiquote_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_runtime_reader_quasiquote_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: runtime_reader_quasiquote_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME v1_3_runtime_reader_quasiquote_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/runtime_reader_quasiquote_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/runtime_reader_quasiquote_aot'"
+        )
+        set_tests_properties(v1_3_runtime_reader_quasiquote_aot_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: runtime_reader_quasiquote_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # R7RS 6.2.6 integer-division SIGN pinning (PR #197's latent srem-vs-modulo
     # concern). The negative-DIVISOR rows are the load-bearing ones: a bare
     # `srem` passes every positive-divisor case.
@@ -5319,6 +5356,24 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+
+    # SW-80: run the same runtime-reader/frontend-datum agreement battery on
+    # the VM's independent source and runtime readers. The native JIT and AOT
+    # legs are registered above; this third leg closes the engine-parity gap.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk")
+        add_test(
+            NAME v1_3_runtime_reader_quasiquote_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk"
+        )
+        set_tests_properties(v1_3_runtime_reader_quasiquote_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: runtime_reader_quasiquote_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
