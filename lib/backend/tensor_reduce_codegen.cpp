@@ -1863,15 +1863,24 @@ llvm::Value* TensorCodegen::emitDenseADReduce(
     llvm::Function* fn = b.GetInsertBlock()->getParent();
     std::string pfx(name);
 
+    llvm::BasicBlock* dn_callable = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_callable", fn);
     llvm::BasicBlock* dn_probe = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_probe", fn);
     llvm::BasicBlock* dn_red   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_reduce", fn);
     llvm::BasicBlock* dn_not   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_not", fn);
 
+    // The subtype lives in the object HEADER, so it may only be read once the
+    // value is known to be CALLABLE: an int or a double operand would be
+    // unpacked as an address and the header load would fault on it. Hence
+    // control flow rather than an `and` of two eagerly evaluated conditions --
+    // the same discipline TaggedValueCodegen::isClosure follows, for the same
+    // reason.
     llvm::Value* base_ty = tagged_.getBaseType(tagged_.getType(src_val));
     llvm::Value* is_callable = b.CreateICmpEQ(base_ty,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-    llvm::Value* is_ad = b.CreateAnd(is_callable,
-        tagged_.checkCallableSubtype(src_val, CALLABLE_SUBTYPE_AD_NODE));
+    b.CreateCondBr(is_callable, dn_callable, dn_not);
+
+    b.SetInsertPoint(dn_callable);
+    llvm::Value* is_ad = tagged_.checkCallableSubtype(src_val, CALLABLE_SUBTYPE_AD_NODE);
     b.CreateCondBr(is_ad, dn_probe, dn_not);
 
     // A SCALAR AD node reaching a whole-tensor reduction is a type error, not a
