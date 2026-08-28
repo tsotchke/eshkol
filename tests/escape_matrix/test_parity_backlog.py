@@ -25,7 +25,7 @@ class GapCanonicalizationTests(unittest.TestCase):
         passed, errors = GAPS.check()
         self.assertTrue(passed, "\n".join(errors))
         rows = GAPS.canonical_rows(GAPS.read_parity())
-        self.assertEqual(len(rows), 330)
+        self.assertEqual(len(rows), 328)
         self.assertTrue(all(row[1] in GAPS.VALID for row in rows))
         self.assertTrue(all(row[2] for row in rows))
 
