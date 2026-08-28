@@ -38,6 +38,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
 #include <sstream>
@@ -15726,39 +15727,42 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
-            // Truncate to i8 for character classification
-            Value* ch = builder->CreateTrunc(char_val, int8_type);
             Value* result = nullptr;
-            if (func_name == "char-alphabetic?") {
-                // (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                Value* upper = builder->CreateAnd(ge_A, le_Z);
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                Value* lower = builder->CreateAnd(ge_a, le_z);
-                result = builder->CreateOr(upper, lower);
-            } else if (func_name == "char-numeric?") {
-                Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
-                Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
-                result = builder->CreateAnd(ge_0, le_9);
-            } else if (func_name == "char-whitespace?") {
-                // space, tab, newline, carriage return, form feed
-                Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
-                Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
-                Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
-                Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
-                Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
-                result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
-                    builder->CreateOr(is_nl, is_cr)), is_ff);
-            } else if (func_name == "char-upper-case?") {
-                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                result = builder->CreateAnd(ge_A, le_Z);
-            } else { // char-lower-case?
-                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                result = builder->CreateAnd(ge_a, le_z);
+            if (func_name == "char-alphabetic?" || func_name == "char-numeric?") {
+                const char* predicate_name = func_name == "char-alphabetic?"
+                    ? "eshkol_unicode_is_alphabetic"
+                    : "eshkol_unicode_is_numeric";
+                llvm::Function* predicate = builder->GetInsertBlock()->getModule()->getFunction(predicate_name);
+                if (!predicate) {
+                    llvm::FunctionType* predicate_type = llvm::FunctionType::get(
+                        builder->getInt32Ty(), {int64_type}, false);
+                    predicate = llvm::Function::Create(
+                        predicate_type, llvm::Function::ExternalLinkage,
+                        predicate_name, builder->GetInsertBlock()->getModule());
+                }
+                Value* classified = builder->CreateCall(predicate, {char_val});
+                result = builder->CreateICmpNE(
+                    classified, ConstantInt::get(builder->getInt32Ty(), 0));
+            } else {
+                Value* ch = builder->CreateTrunc(char_val, int8_type);
+                if (func_name == "char-whitespace?") {
+                    // space, tab, newline, carriage return, form feed
+                    Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
+                    Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
+                    Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
+                    Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
+                    Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
+                    result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
+                        builder->CreateOr(is_nl, is_cr)), is_ff);
+                } else if (func_name == "char-upper-case?") {
+                    Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                    Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                    result = builder->CreateAnd(ge_A, le_Z);
+                } else { // char-lower-case?
+                    Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                    Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                    result = builder->CreateAnd(ge_a, le_z);
+                }
             }
             return packBoolToTaggedValue(result);
         }

@@ -14587,8 +14587,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Character operations (1680-1691)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 1680: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isalpha(c))); break; }
-    case 1681: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isdigit(c))); break; }
+    case 1680: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_alphabetic((int64_t)as_number(a)))); break; }
+    case 1681: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_numeric((int64_t)as_number(a)))); break; }
     case 1682: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isspace(c))); break; }
     case 1683: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isupper(c))); break; }
     case 1684: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(islower(c))); break; }

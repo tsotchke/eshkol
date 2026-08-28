@@ -27,6 +27,11 @@ A
 (#t #t)
 ```
 
+`char-alphabetic?` classifies Unicode letters and `char-numeric?` classifies
+Unicode decimal digits by codepoint. The result is locale-independent, so
+Latin-1, non-Latin, and multibyte UTF-8 characters have the same meaning on
+the native and VM engines.
+
 Comparison predicates: `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?`
 (and case-insensitive `char-ci=?` etc.).
 

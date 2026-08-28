@@ -1,0 +1,12 @@
+; Character classification parity: Unicode codepoints, not host ctype bytes.
+; The Latin-1, Greek, and Arabic-Indic cases are literal multibyte UTF-8
+; characters, so these checks exercise codepoint classification directly.
+(display (char-alphabetic? #\a)) (newline)
+(display (char-alphabetic? #\Z)) (newline)
+(display (char-alphabetic? #\é)) (newline)
+(display (char-alphabetic? #\λ)) (newline)
+(display (char-alphabetic? #\5)) (newline)
+(display (char-numeric? #\0)) (newline)
+(display (char-numeric? #\٥)) (newline)
+(display (char-numeric? #\é)) (newline)
+(display (char-numeric? #\λ)) (newline)
