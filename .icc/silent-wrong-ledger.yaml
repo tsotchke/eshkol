@@ -2939,14 +2939,14 @@ entries:
     bucket: LOUD-ERROR
     subtag: structural
     status: closed
-    closed_at: "REPLACE_SHA"
+    closed_at: "e7f2c685"
     closed_by: "branch fix/ad-captured-vector-param-le06"
     title: "Vector-param AD op capturing a local function parameter fails LLVM verification (ESH-0097)"
     observed: "PtrToInt source must be pointer, on both -r and AOT"
     caught_by: [KNOWN_ISSUES, ad-oracle-xknown]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
     remeasured: >-
-      DOES NOT REPRODUCE. Re-measured at REPLACE_SHA on a Linux x86-64 lane
+      DOES NOT REPRODUCE. Re-measured at e7f2c685 (origin/master) on a Linux x86-64 lane
       configured with the ci.yml full-lane flags (Release, LLVM 21, XLA and GPU
       off). The archived repro,
       tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk, prints
