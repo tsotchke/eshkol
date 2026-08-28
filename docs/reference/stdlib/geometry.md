@@ -887,8 +887,10 @@ is
       jet(ω_I) = [ ω_I | ∂_j ω_I  (n) | ∂_j ∂_l ω_I  (n²) | … ]
 
   The order-`s` block is the **full** `nˢ` array of `s`-th partials, stored
-  redundantly (it is symmetric). The redundancy buys a contiguous slice, which is
-  what makes `d` an addition over slices;
+  redundantly (it is symmetric). The validator requires every payload entry
+  to be finite and every derivative block to be exactly symmetric under
+  permutation of its partial indices. The redundancy buys a contiguous slice,
+  which is what makes `d` an addition over slices;
 - the stride of one coefficient is `S(n,r) = 1 + n + n² + … + nʳ`, and a
   well-formed form holds **exactly** `3 + m·S(n,r)` elements.
 
@@ -946,13 +948,16 @@ exterior derivative: a `(k+1)`-form of jet order `r−1`, on the same `n`.
 over increasing `(k+1)`-multi-indices `J`, and the order-`s` block of each output
 coefficient is the order-`(s+1)` block of the corresponding input coefficient,
 sliced at its leading index. **The result is exact** — no difference quotient, no
-step size, no truncation. If the supplied jet is exact (as it is for polynomial
-coefficients differentiated by hand, or by Eshkol's AD before the values are
-packed), `d` is exact.
+step size, no truncation. The supplied payload must be finite and its redundant
+derivative blocks must be exactly symmetric; a non-symmetric jet is refused
+rather than accepted as a representation of a differentiable coefficient. For
+every accepted jet, `d` is exact.
 
 `d` consumes one jet order, so `d(d(ω))` is computable from an `r ≥ 2` form and
 comes out **bit-equal zero**: the two mixed partials that cancel are the same
-stored double, not two separately-computed approximations of it.
+stored double, not two separately-computed approximations of it. Applying `d` to
+the canonical zero `(n+1)`-form produced from an `n`-form returns that canonical
+zero form again.
 
 **Raises** on a 0-jet form (`r = 0`) — the partials it would need were not
 supplied, and substituting zeros for them is the assertion of closedness this op
@@ -1335,6 +1340,12 @@ mutating `m`, and returns the manifold:
 2. every supplied point is still a point of the manifold at it — on the ball,
    `c·|x|² < 1` can fail as `|K|` grows;
 3. it does **not increase** `L`.
+
+On the spherical branch, each trial first rescales every supplied point by
+`sqrt(K / K_trial)`. This keeps its angular position fixed while the sphere
+radius changes, which is the documented objective family; evaluating the old
+coordinates directly would test points from the old sphere and reject the
+correct trial.
 
 The floor on `L''` is Levenberg damping: where the objective is flat or concave
 in `K` the Newton quotient is meaningless or points uphill, and flooring the

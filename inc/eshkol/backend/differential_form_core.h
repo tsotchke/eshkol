@@ -49,7 +49,12 @@
  * slice, which is what makes `d` an addition over slices below). The stride of
  * one coefficient is S(n,r) = 1 + n + n^2 + ... + n^r, and a well-formed form
  * has EXACTLY 3 + m*S(n,r) elements. A tensor of any other length is not a form
- * and the opcode reports a shape failure rather than guessing a degree.
+ * and the opcode reports a shape failure rather than guessing a degree. The
+ * payload must also be finite, and every stored derivative block must be
+ * symmetric under permutation of its partial indices. Those are representation
+ * invariants, not optional promises from the caller: without them the same
+ * coefficient can have different mixed partials and the exact cancellation in
+ * d(d(w)) is not defined.
  *
  * WHY THE JET ORDER IS PART OF THE VALUE. `d` consumes one order: the r-jet of
  * a k-form determines the (r-1)-jet of the (k+1)-form d(w), and no more. A
@@ -125,6 +130,50 @@ static long eshkol_form_total(int k, int n, int r) {
     return (long)ESHKOL_FORM_HEADER + eshkol_form_binom(n, k) * eshkol_form_stride(n, r);
 }
 
+/** @brief Validate the finite, symmetric jet payload of a form.
+ *
+ * The layout stores mixed partials redundantly so that d can slice a
+ * contiguous block. Redundancy is useful only when all copies represent the
+ * same derivative. Exact equality is intentional: accepting an approximate
+ * symmetry would permit a nonzero d^2 caused by the accepted representation's
+ * own rounding, contradicting the exact d(d(w)) contract. The maximum jet
+ * order is three, so the two nontrivial symmetry blocks are explicit. */
+static const char* eshkol_form_validate_jets(const double* data, int k, int n,
+                                             int r, long total) {
+    for (long i = ESHKOL_FORM_HEADER; i < total; i++)
+        if (!isfinite(data[i]))
+            return "every coefficient-jet entry must be finite";
+
+    if (r < 2) return NULL;
+    long m = eshkol_form_binom(n, k);
+    long S = eshkol_form_stride(n, r);
+    long second = 1 + n;
+    long third = second + (long)n * n;
+    for (long t = 0; t < m; t++) {
+        const double* jet = data + ESHKOL_FORM_HEADER + t * S;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                if (jet[second + (long)i * n + j] !=
+                    jet[second + (long)j * n + i])
+                    return "the second-partial jet block must be symmetric: "
+                           "partial_i partial_j equals partial_j partial_i";
+        if (r < 3) continue;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                for (int l = 0; l < n; l++) {
+                    double v = jet[third + ((long)i * n + j) * n + l];
+                    if (v != jet[third + ((long)i * n + l) * n + j] ||
+                        v != jet[third + ((long)j * n + i) * n + l] ||
+                        v != jet[third + ((long)j * n + l) * n + i] ||
+                        v != jet[third + ((long)l * n + i) * n + j] ||
+                        v != jet[third + ((long)l * n + j) * n + i])
+                        return "the third-partial jet block must be symmetric "
+                               "under every permutation of its indices";
+                }
+    }
+    return NULL;
+}
+
 /**
  * @brief Read and validate a form's header.
  *
@@ -138,6 +187,8 @@ static const char* eshkol_form_header(const double* data, long total,
         return "a differential form is [k, n, r, coefficient jets...] and needs "
                "at least the three header cells";
     double kd = data[0], nd = data[1], rd = data[2];
+    if (!isfinite(kd) || !isfinite(nd) || !isfinite(rd))
+        return "the form header cells k, n and r must be finite integers";
     if (kd != floor(kd) || nd != floor(nd) || rd != floor(rd))
         return "the form header cells k, n and r must be integers";
     int k = (int)kd, n = (int)nd, r = (int)rd;
@@ -152,6 +203,8 @@ static const char* eshkol_form_header(const double* data, long total,
     if (want != total)
         return "the form's element count does not match its header: a (k, n, r) "
                "form holds exactly 3 + C(n,k) * (1 + n + ... + n^r) elements";
+    const char* why = eshkol_form_validate_jets(data, k, n, r, total);
+    if (why) return why;
     *k_out = k; *n_out = n; *r_out = r;
     return NULL;
 }
@@ -212,10 +265,12 @@ static int eshkol_form_perm_sign(const int* perm, int n) {
  * for storing the full n^s blocks rather than the symmetric-reduced ones.
  *
  * The result is EXACT for the data supplied: no difference quotient, no step
- * size, no truncation. If the caller's jet is exact -- as it is for polynomial
- * coefficients differentiated by hand or by Eshkol's AD -- then d(w) is exact,
- * and d(d(w)) is exactly zero rather than zero to a tolerance, because the two
- * mixed partials that cancel are the SAME stored double.
+ * size, no truncation. The form validator requires finite, symmetric
+ * derivative blocks before this routine accepts them. Thus d(w) is exact for
+ * every accepted representation, and d(d(w)) is exactly zero rather than zero
+ * to a tolerance, because the two mixed partials that cancel are the SAME
+ * stored double. A non-symmetric jet is rejected instead of being treated as a
+ * form with an arbitrary d^2.
  *
  * @param in     the input form, already validated by eshkol_form_header.
  * @param out    zero-initialised output of eshkol_form_total(k+1, n, r-1).
@@ -226,14 +281,18 @@ static const char* eshkol_form_d(const double* in, long in_total,
     int k, n, r;
     const char* why = eshkol_form_header(in, in_total, &k, &n, &r);
     if (why) return why;
+    if (k > n) {
+        if (out_total != ESHKOL_FORM_HEADER)
+            return "internal: the canonical zero top-degree form was sized wrongly";
+        out[0] = (double)k;
+        out[1] = (double)n;
+        out[2] = (double)r;
+        return NULL;
+    }
     if (r < 1)
         return "the exterior derivative of a 0-jet form is not determined: d is "
                "a derivative, so the coefficients' first partials must be "
                "supplied (a form of jet order r >= 1)";
-    if (k > n)
-        return "the form is already the zero top-degree form; it has no "
-               "coefficients to differentiate";
-
     int kk = k + 1;
     long want = eshkol_form_total(kk, n, r - 1);
     if (want < 0 || want != out_total)

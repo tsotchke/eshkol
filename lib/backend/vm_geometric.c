@@ -706,6 +706,42 @@ static const char* vm_curvature_objective(const VmTensor* pairs, int n, double K
     return NULL;
 }
 
+/** @brief Evaluate a curvature trial in the family named by the objective.
+ *
+ * For K <= 0 the objective holds the supplied coordinates fixed. On the
+ * spherical branch, changing K changes the sphere radius, so the documented
+ * trial family holds each pair's angular positions fixed by rescaling every
+ * point by sqrt(K/current_trial_K) before evaluating the trial distance. */
+static const char* vm_curvature_trial_objective(const VmTensor* pairs, int n,
+                                                double current_K, double trial_K,
+                                                double* L) {
+    if (!(current_K > 0.0 && trial_K > 0.0))
+        return vm_curvature_objective(pairs, n, trial_K, L, NULL, NULL);
+
+    double scale = sqrt(current_K / trial_K);
+    if (!(scale > 0.0) || !isfinite(scale))
+        return "the spherical curvature trial has a non-finite radius scale";
+    int64_t stride = (int64_t)2 * n;
+    int64_t np = pairs->total / stride;
+    double total = 0.0;
+    double x_trial[n > 0 ? n : 1];
+    double y_trial[n > 0 ? n : 1];
+    for (int64_t p = 0; p < np; p++) {
+        const double* x = pairs->data + p * stride;
+        const double* y = x + n;
+        for (int i = 0; i < n; i++) {
+            x_trial[i] = scale * x[i];
+            y_trial[i] = scale * y[i];
+        }
+        double d = 0.0;
+        const char* why = eshkol_rm_distance(x_trial, y_trial, trial_K, n, &d);
+        if (why) return why;
+        total += d;
+    }
+    if (L) *L = total;
+    return NULL;
+}
+
 /**
  * @brief Pop the (manifold, pairs) arguments the three curvature-objective ops
  *        share and validate that the pairs tensor packs whole point pairs of
@@ -1178,6 +1214,17 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         const char* why = eshkol_form_header(form->data, (long)form->total, &k, &n, &r);
         if (why) { vm_push(vm, NIL_VAL); break; }
         if (r < 1 || k > n) {
+            if (k > n) {
+                long out_total = ESHKOL_FORM_HEADER;
+                int64_t oshape[1] = { (int64_t)out_total };
+                VmTensor* out = vm_tensor_zeros(&vm->heap.regions, oshape, 1);
+                if (!out) { vm_push(vm, NIL_VAL); break; }
+                why = eshkol_form_d(form->data, (long)form->total,
+                                    out->data, out_total);
+                if (why) { vm_form_raise(vm, "exterior-derivative", why); break; }
+                VM_PUSH_TENSOR(vm, out);
+                break;
+            }
             vm_form_raise(vm, "exterior-derivative",
                           r < 1 ? "d is a derivative, so the coefficients' "
                                   "first partials must be supplied: this form "
@@ -1541,7 +1588,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
             double kn = K - t * delta;
             if (!((K < 0.0 && kn < 0.0) || (K > 0.0 && kn > 0.0))) continue;
             double ln = 0.0;
-            if (vm_curvature_objective(pairs, n, kn, &ln, NULL, NULL)) continue;
+            if (vm_curvature_trial_objective(pairs, n, K, kn, &ln)) continue;
             if (!(ln <= L0)) continue;
             m->curvature = kn;
             accepted = 1;

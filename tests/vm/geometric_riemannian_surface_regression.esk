@@ -25,6 +25,12 @@
 (define (report ok name)
   (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
 
+;; Keep the convention-sensitive assertions parameterised by the two named
+;; constants they measure. The implementation has one corresponding ruling in
+;; riemannian_core.h; these values are declared before the first K = 0 assertion.
+(define flat-lambda 1.0)
+(define lambda0 2.0)
+
 (define (vec2 a b)
   (let ((t (make-tensor '(2) 0.0)))
     (tensor-set! t 0 a)
@@ -354,10 +360,8 @@
 ;; flat space with the metric 4<.,.>, i.e. distance 2|x-y|. The K = 0 branch
 ;; uses ESHKOL_RM_FLAT_LAMBDA, which is 1 -- the canonical Euclidean metric.
 ;; Those two cannot both hold, and which to keep is a convention ruling; see
-;; docs/reference/stdlib/geometry.md. `flat-lambda` below mirrors the header
+;; docs/reference/stdlib/geometry.md. `flat-lambda` above mirrors the header
 ;; constant and is the ONE line to change if the ruling equalises them.
-(define flat-lambda 1.0)
-(define lambda0 2.0)
 (report (near? (geodesic-distance near-a near-b 0.0) (* flat-lambda 1.8))
         "the K = 0 distance is flat-lambda times the chord")
 (report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) px 0.0) 0)
@@ -416,6 +420,11 @@
 (define sp-ok (spherical-project (vec3 3.0 0.0 4.0)))
 (report (near? (tensor-ref sp-ok 0) 0.6) "spherical-project normalises component 0")
 (report (near? (tensor-ref sp-ok 2) 0.8) "spherical-project normalises component 2")
+(define sp-large (spherical-project (vec2 1e200 0.0)))
+(report (near? (tensor-ref sp-large 0) 1.0)
+        "spherical-project scales before normalising a 1e200 vector")
+(report (near? (tensor-ref sp-large 1) 0.0)
+        "spherical-project keeps the direction of a large finite vector")
 
 ;; ═══ Differential forms ══════════════════════════════════════════════════════
 ;; A k-form on R^n known to jet order r at a point is the tensor
@@ -457,6 +466,17 @@
 (report (= (tensor-ref ddf 0) 2.0) "d(d(f)) is a 2-form")
 (report (= (tensor-ref ddf 3) 0.0) "d(d(f)) = 0 exactly")
 
+;; The representation must not accept independently supplied mixed partials:
+;; f_xy = 1 and f_yx = 0 is an invalid accepted counterexample, for which the
+;; old implementation returned d(d(f)) = -dx^dy. Refuse the form at the
+;; boundary where the invalid mathematical claim enters the VM.
+(define bad-jet
+(exterior-derivative
+  (fill! (make-tensor '(10) 0.0)
+         '(0.0 2.0 2.0  0.0 0.0 0.0  0.0 1.0 0.0 0.0))))
+(report (null? bad-jet)
+        "exterior-derivative refuses an asymmetric mixed-partial jet")
+
 ;; A form whose coefficients are NOT closed: w = y dx on R^2, 1-jet.
 ;;   w_dx = y = 2, d_x w_dx = 0, d_y w_dx = 1;  w_dy = 0, both partials 0.
 ;; d(w) = -dx^dy, so the single 2-form coefficient is -1. The old zeros body
@@ -473,6 +493,19 @@
   (guard (e (#t 'refused))
     (exterior-derivative (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0 1.0 0.0 0.0)))))
 (report (eq? d-no-jet 'refused) "exterior-derivative refuses a 0-jet form")
+
+;; d of an n-form is the canonical zero (n+1)-form. Applying d to that zero
+;; must remain zero rather than raising merely because its degree is n+1.
+(define top-form
+  (fill! (make-tensor '(6) 0.0) '(2.0 2.0 1.0  1.0 0.0 0.0)))
+(define top-zero (exterior-derivative top-form))
+(define top-zero-again
+  (guard (e (#t 'refused)) (exterior-derivative top-zero)))
+(report (if (eq? top-zero-again 'refused) #f
+            (and (= (tensor-ref top-zero-again 0) 3.0)
+                 (= (tensor-ref top-zero-again 1) 2.0)
+                 (= (tensor-ref top-zero-again 2) 0.0)))
+        "d of the canonical zero top-degree form is zero")
 
 ;; A tensor that is not a form at all is a SHAPE failure, not a domain one:
 ;; per this surface's error convention it returns () rather than raising.
@@ -576,6 +609,19 @@
 (report (near? ch 0.0461814387233047) "curvature-hessian is d2L/dK2 on one pair")
 (report (far? ch 0.0) "curvature-hessian is not the constant 0.0")
 
+;; Small-argument curvature Hessian: w = 0.0099 for this pair. The second
+;; derivative series must include the a[5] term; the old Horner loop omitted it
+;; and returned 7.774090445633817e-6 instead of the analytic
+;; 7.774071860110411e-6.
+(define small-pair
+  (fill! (make-tensor '(4) 0.0)
+         '(0.0 0.0  0.09900985197043097 0.0)))
+(define small-h (curvature-hessian hm small-pair))
+(report (rel-near? small-h 0.000007774071860110411)
+        "curvature-hessian includes the small-argument a[5] series term")
+(report (> (abs (- small-h 0.000007774090445633817)) 0.000000000001)
+        "curvature-hessian is not the truncated small-argument series")
+
 ;; The objective is a SUM over pairs, so two copies of the pair double both.
 (define two-pairs (fill! (make-tensor '(8) 0.0) '(0.0 0.0  0.5 0.0  0.0 0.0  0.5 0.0)))
 (report (near? (curvature-gradient hm two-pairs) (* 2.0 -0.1173605223326118))
@@ -628,6 +674,23 @@
 (define step-flat (make-euclidean-manifold 2))
 (define step-guarded (guard (e (#t 'refused)) (adaptive-curvature-step step-flat one-pair)))
 (report (eq? step-guarded 'refused) "adaptive-curvature-step refuses K = 0")
+
+;; For K = 1 and x=e1,y=e2, L=pi/2, L'=-pi/4, L''=3pi/8. The full
+;; Newton trial is K=5/3. Its points are rescaled by sqrt(3/5) to remain on
+;; the same angular-position family, and L=pi/(2 sqrt(5/3)). An implementation
+;; that evaluates the old, unscaled points must reject the trial and fails the
+;; K assertion below.
+(define sphere-step (make-spherical-manifold 2))
+(adaptive-curvature-step sphere-step sphere-pair)
+(define sphere-k-after (get-curvature sphere-step))
+(report (near? sphere-k-after 1.6666666666666667)
+        "spherical adaptive-curvature-step uses the fixed-angle trial family")
+(define sphere-trial-distance
+  (geodesic-distance (vec2 0.7745966692414834 0.0)
+                     (vec2 0.0 0.7745966692414834)
+                     sphere-k-after))
+(report (near? sphere-trial-distance 1.2167336027920836)
+        "spherical adaptive trial has the rescaled fixed-angle distance")
 
 (display "PASS: Riemannian geometry numeric regression complete")
 (newline)

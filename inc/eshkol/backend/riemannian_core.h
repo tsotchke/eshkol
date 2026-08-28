@@ -291,7 +291,7 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
         double dpp = 30.0 * a[6];
         for (int k = 5; k >= 0; k--) psi = psi * w + a[k];
         for (int k = 5; k >= 1; k--) dp  = dp  * w + (double)k * a[k];
-        for (int k = 4; k >= 2; k--) dpp = dpp * w + (double)(k * (k - 1)) * a[k];
+        for (int k = 5; k >= 2; k--) dpp = dpp * w + (double)(k * (k - 1)) * a[k];
         if (d1) *d1 = dp;
         if (d2) *d2 = dpp;
         return psi;
@@ -794,8 +794,8 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
         memcpy(out, x, (size_t)n * sizeof(double));
         return NULL;
     }
-    double xn = eshkol_rm_norm(x, n);
     if (K < 0.0) {
+        double xn = eshkol_rm_norm(x, n);
         double R = 1.0 / sqrt(eshkol_rm_ball_param(-K));
         /* Leave a margin so the projected point is STRICTLY inside: a point
          * exactly on the boundary makes lambda infinite and every log map
@@ -812,10 +812,25 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
     }
     {
         double R = 1.0 / sqrt(K);
-        if (xn < ESHKOL_RM_ZERO_NORM)
+        double max_abs = 0.0;
+        for (int i = 0; i < n; i++) {
+            if (!isfinite(x[i])) return "a coordinate is not finite";
+            if (fabs(x[i]) > max_abs) max_abs = fabs(x[i]);
+        }
+        if (max_abs < ESHKOL_RM_ZERO_NORM)
             return "the origin has no projection onto the sphere";
-        double s = R / xn;
-        for (int i = 0; i < n; i++) out[i] = s * x[i];
+        double scaled_norm2 = 0.0;
+        for (int i = 0; i < n; i++) {
+            double z = x[i] / max_abs;
+            scaled_norm2 += z * z;
+        }
+        double scaled_norm = sqrt(scaled_norm2);
+        if (!(scaled_norm > 0.0) || !isfinite(scaled_norm))
+            return "the vector could not be normalised to the sphere";
+        double radius_scale = R / scaled_norm;
+        for (int i = 0; i < n; i++) out[i] = radius_scale * (x[i] / max_abs);
+        for (int i = 0; i < n; i++)
+            if (!isfinite(out[i])) return "the projected point is not finite";
         return NULL;
     }
 }
