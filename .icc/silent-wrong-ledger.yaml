@@ -6475,8 +6475,9 @@ entries:
       findings were fixed by #117 and are gated by
       tests/differential/corpus/41_guard_value_and_double.esk; and neither id
       ever denoted a guard defect - ESH-0101 is the recursion-depth stack-guard
-      coverage item (maintainer ruling 2026-08-13, see SW-10's residual) and
-      ESH-0102 is mutual tail-call optimization, since closed.
+      coverage item (maintainer ruling 2026-08-13, see SW-10's residual; that
+      item is tracked as SW-81 and owned by a separate lane) and ESH-0102 is
+      mutual tail-call optimization, since closed.
     observed: >-
       A reader following the page would hand-roll a structured-value workaround
       for error objects that the native path has supported for releases, would
