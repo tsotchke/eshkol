@@ -745,7 +745,7 @@ function Invoke-SimpleCompileRunSuite {
         # e.g. tests/gpu/gate_canary_must_fail.esk): a test file named
         # `*_must_fail.esk` is a deliberate, permanent failure used to prove
         # this harness can still fail a real defect. For that file alone the
-        # verdict is inverted — a nonzero exit (with a matching FAIL: marker,
+        # verdict is inverted - a nonzero exit (with a matching FAIL: marker,
         # when this suite configures one) is PASS, and an exit of 0 is FAIL.
         # $testName is already a leaf name (Split-Path -Leaf above), so this
         # match is path-separator agnostic on both Windows and POSIX inputs.
@@ -776,7 +776,7 @@ function Invoke-SimpleCompileRunSuite {
             if ($run.ExitCode -eq 0) {
                 Format-TestStatus $testName "CANARY DID NOT FAIL (exit 0)" Red
                 Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
-                Add-Fail $suite "$testName (must-fail canary did not fail — verdict pipeline is broken)"
+                Add-Fail $suite "$testName (must-fail canary did not fail - verdict pipeline is broken)"
                 continue
             }
             if ($FailRegex -and -not ($run.Output -match $FailRegex)) {
