@@ -6222,8 +6222,9 @@ endif()
 
 # ===== Squared geodesic distance (SW-68) =====================================
 # The closed-form log-map rule is checked through the real producer and
-# reverse sweep.  Exact diagonal cases, independent identities, qLLM golden
-# vectors, boundary refusals, and finite differences cover the native bridge.
+# reverse sweep. Exact diagonal cases, independent identities, audit numeric
+# counterexamples, qLLM golden vectors, boundary refusals, and finite
+# differences cover the native bridge.
 if(ESHKOL_BUILD_TESTS AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/squared_distance_gradcheck_test.cpp")
     add_executable(squared_distance_gradcheck_test
@@ -6240,7 +6241,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME squared_distance_gradcheck
              COMMAND squared_distance_gradcheck_test)
     set_tests_properties(squared_distance_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 30 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 39 passed, 0 failed")
 endif()
 
 # ===== SDNC runtime tool: execute programs through the weight matrices ========

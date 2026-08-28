@@ -129,7 +129,7 @@ bridge has one additional registered AD primitive:
 
 | Node / entry point | Status | Coverage | VM status |
 |---|---|---|---|
-| `AD_NODE_SQUARED_DISTANCE` / `ad_squared_distance` and `ad_product_squared_distance` | **COMPLETE** | `squared_distance_gradcheck`: 30 exact, identity, boundary, golden-vector, and finite-difference checks through the real producer and reverse sweep | Native-only, justified in `tests/vm_parity/PARITY.tsv`: the VM has no tensor-valued `ad_node_t` carrier or matching opcode |
+| `AD_NODE_SQUARED_DISTANCE` / `ad_squared_distance` and `ad_product_squared_distance` | **COMPLETE** | `squared_distance_gradcheck`: 39 exact, identity, audit-counterexample, boundary, golden-vector, and finite-difference checks through the real producer and reverse sweep | Native-only, justified in `tests/vm_parity/PARITY.tsv`: the VM has no tensor-valued `ad_node_t` carrier or matching opcode |
 
 The node is not a Scheme builtin, so it does not add a row to the Scheme
 operator axes. Its registered row in `inc/eshkol/ad_node_registry.def` is the

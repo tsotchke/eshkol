@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   New: `inc/eshkol/bridge/space_form.h`, `lib/bridge/space_form_ad.cpp`
   (`ad_squared_distance` / `ad_product_squared_distance` and their backward),
-  `tests/bridge/squared_distance_gradcheck_test.cpp` (30 checks,
+  `tests/bridge/squared_distance_gradcheck_test.cpp` (audit regression checks,
   `ctest -R squared_distance_gradcheck`) and
   `tests/qllm_oracle/squared_distance.esk` with its golden vectors. The golden
   exporter deliberately takes the *other* route — `arcosh`/`arccos` squared,
@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `1.5e-16` away from the diagonal, and its coincident case records that
   route returning a non-finite gradient for a finite value. The cut locus on
   `S^n` is still refused, because there the mathematics really does run out.
+
+  The bridge uses signed sectional curvature: `K < 0` is the Poincare ball,
+  `K = 0` is Euclidean, and `K > 0` is spherical. Form/sign mismatches,
+  non-finite inputs, off-manifold spherical points, and the actual spherical
+  antipode are refused. Near-boundary hyperbolic pairs use the shared stable
+  `asinh`/log-map core, and zero product weights contribute exactly zero.
 
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table

@@ -555,6 +555,12 @@ from the diagonal they agree to `1.5e-16` or better, and
 `tests/bridge/squared_distance_gradcheck_test.cpp` asserts exactly that, citing
 each case by id.
 
+The native bridge's public convention is signed sectional curvature (`K < 0`
+for the ball, `K = 0` for Euclidean, `K > 0` for the sphere), with spherical
+points supplied on-manifold. The exporter keeps its own closed-form route and
+uses only on-manifold spherical fixtures, so it remains an independent oracle
+rather than reproducing the bridge's projection or stable-core code.
+
 The last case is the interesting one. `squared_distance.ball.coincident.d3.c1`
 differentiates the `arcosh` route at `x == y`, where `arcosh'(1)` is infinite
 and `d` is zero, so `2·d·d'` is `0·∞`. The value comes back a clean `0.0` and
