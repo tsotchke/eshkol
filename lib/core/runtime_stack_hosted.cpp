@@ -371,11 +371,7 @@ extern "C" void eshkol_init_stack_size(void) {
     return;
 #else
     const rlim_t default_stack = 512ULL * 1024 * 1024;  // 512MB
-<<<<<<< HEAD
     const size_t floor_bytes = 1024ULL * 1024;           // 1MB
-=======
-    const size_t floor_bytes = 1024ULL * 1024ULL;        // 1MB
->>>>>>> eadbc0bb (fix(runtime): stack overflow in user recursion reports a diagnostic instead of SIGILL (ESH-0101, SW-81))
     rlim_t target = default_stack;
 
     const char* env_val = std::getenv("ESHKOL_STACK_SIZE");
