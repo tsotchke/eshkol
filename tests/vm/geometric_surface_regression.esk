@@ -79,8 +79,13 @@
 (interior-product t t)
 (pullback t t)
 (riemannian-sgd-step t t 0.01 -1.0)
-(riemannian-adam-step t t 0.01 0.9 0.999 -1.0)
+;; riemannian-adam-step (840) REFUSES: its implicit optimizer state was a pool
+;; keyed by tensor shape, which cannot tell two independent parameters apart.
+;; riemannian-adam-step! (861) below is the op that takes the state explicitly.
+(guard (e (#t 'refused)) (riemannian-adam-step t t 0.01 0.9 0.999 -1.0))
 (define adam-state (make-riemannian-adam-state t))
+;; `t` is the origin, which is a legal ball point; the gradient is zero there,
+;; so the step is the identity and the probe stays an arity check.
 (riemannian-adam-step! adam-state t t 0.01 0.9 0.999 -1.0)
 (riemannian-grad t t -1.0)
 (retraction t t -1.0)

@@ -17,6 +17,10 @@
 ;; of radius 1/sqrt(K).
 
 (define (near? a b) (< (abs (- a b)) 0.000000001))
+;; For quantities whose MAGNITUDE is what is being asserted, an absolute
+;; tolerance is no test at all: `near?` accepts 0 for a distance of 2e-9, which
+;; is exactly the near-coincident cancellation these probes exist to catch.
+(define (rel-near? a b) (< (abs (- a b)) (* 0.0000001 (abs b))))
 (define (far? a b) (> (abs (- a b)) 0.001))
 (define (report ok name)
   (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
@@ -132,9 +136,14 @@
 (define outside (vec2 3.0 4.0))
 (define projected (manifold-project outside -1.0))
 (report (near? (tensor-ref projected 0) 0.59999999999940001) "manifold-project component 0")
+;; Component 1 as well: a projection that returned (0.6, 0) would pass a
+;; component-0-and-norm check while pointing somewhere else entirely.
+(report (near? (tensor-ref projected 1) 0.79999999999920001) "manifold-project component 1")
 (report (< (sqrt (+ (* (tensor-ref projected 0) (tensor-ref projected 0))
                     (* (tensor-ref projected 1) (tensor-ref projected 1)))) 1.0)
         "manifold-project lands strictly inside the ball")
+(report (near? (/ (tensor-ref projected 0) (tensor-ref projected 1)) 0.75)
+        "manifold-project preserves the direction")
 
 ;; ── the SGD step follows the geodesic ────────────────────────────────────────
 ;; Was point - lr*grad, which leaves the ball for a large enough step.
@@ -163,6 +172,12 @@
                1.5707963267948966)
         "spherical-log length is the great-circle angle")
 (report (far? (tensor-ref slog 0) -1.0) "spherical-log is not the difference")
+;; Every component. log_{e1}(e2) is the great-circle initial velocity
+;; (0, pi/2, 0); a norm-only check accepts (0, 0, pi/2), which points along a
+;; completely different geodesic.
+(report (near? (tensor-ref slog 0) 0.0) "spherical-log component 0")
+(report (near? (tensor-ref slog 1) 1.5707963267948966) "spherical-log component 1")
+(report (near? (tensor-ref slog 2) 0.0) "spherical-log component 2")
 
 (report (near? (geodesic-distance e1 e2 1.0) 1.5707963267948966)
         "geodesic-distance on the unit sphere is the great-circle distance")
@@ -179,6 +194,216 @@
   (guard (e (#t 'refused))
     (mobius-add px py 1.0)))
 (report (eq? mobius-sphere-guarded 'refused) "mobius-add refuses positive curvature")
+
+;; ═══ Curvature scale: every assertion above uses |K| = 1 ═════════════════════
+;; At |K| = 1 every sqrt(c) and 1/sqrt(c) factor is 1, so an implementation that
+;; dropped all of them would pass every test above. These fix the scale.
+
+;; Ball of curvature K = -4: radius 1/2, and two points at +/- 1/4 on a diameter.
+;; d = (2/sqrt c) artanh(sqrt(c) |y|) doubled = 2 artanh(1/2) = ln 3, the SAME
+;; number the |x| = 0.5 pair gives at K = -1 -- because halving the radius and
+;; quadrupling the curvature is an isometry. An implementation missing the
+;; sqrt(c) scaling gets 2 artanh(1) = infinity or 2 artanh(1/4), not ln 3.
+(define k4-a (vec2 0.25 0.0))
+(define k4-b (vec2 -0.25 0.0))
+(report (rel-near? (geodesic-distance k4-a k4-b -4.0) 1.0986122886681098)
+        "K = -4 geodesic distance is ln 3 (the scale-invariance of the ball)")
+(report (far? (geodesic-distance k4-a k4-b -4.0)
+              (geodesic-distance k4-a k4-b -1.0))
+        "K = -4 and K = -1 disagree on the same coordinates")
+;; A point of the K = -4 ball at radius 0.6 is OUTSIDE it (the radius is 0.5).
+(define k4-out (guard (e (#t 'refused)) (geodesic-distance (vec2 0.6 0.0) k4-a -4.0)))
+(report (eq? k4-out 'refused) "the K = -4 ball has radius 1/2, not 1")
+;; riemannian-grad at K = -4: lambda = 2/(1 - 4|x|^2) = 8/3, so g/lambda^2 is
+;; 9/64 = 0.140625 of the Euclidean gradient.
+(report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) k4-a -4.0) 0) 0.140625)
+        "K = -4 riemannian-grad applies the inverse metric at that curvature")
+;; exp and log remain mutually inverse at a curvature that is not -1.
+(define k4-lg (hyperbolic-log-map k4-a (vec2 -0.1 0.2) -4.0))
+(define k4-back (hyperbolic-exp-map k4-a k4-lg -4.0))
+(report (near? (tensor-ref k4-back 0) -0.1) "K = -4 exp inverts log, component 0")
+(report (near? (tensor-ref k4-back 1) 0.2) "K = -4 exp inverts log, component 1")
+(report (near? (* (/ 2.0 (- 1.0 (* 4.0 0.0625)))
+                  (sqrt (+ (* (tensor-ref k4-lg 0) (tensor-ref k4-lg 0))
+                           (* (tensor-ref k4-lg 1) (tensor-ref k4-lg 1)))))
+               (geodesic-distance k4-a (vec2 -0.1 0.2) -4.0))
+        "K = -4 lambda_x |log_x(y)| equals the geodesic distance")
+
+;; Sphere of curvature K = 4: radius 1/2, quarter turn = R pi/2 = pi/4.
+(define s4-a (vec3 0.5 0.0 0.0))
+(define s4-b (vec3 0.0 0.5 0.0))
+(report (rel-near? (geodesic-distance s4-a s4-b 4.0) 0.7853981633974483)
+        "K = 4 sphere distance is R pi/2 with R = 1/2")
+(report (far? (geodesic-distance s4-a s4-b 4.0)
+              (geodesic-distance s4-a s4-b 1.0))
+        "K = 4 and K = 1 disagree on the great-circle distance")
+
+;; ═══ Near-coincident and near-boundary: where the old forms lost everything ══
+
+;; d(0, 1e-9) at K = -1 is 2 artanh(1e-9) = 2e-9. The arccosh(1 + 2c|x-y|^2/P)
+;; form computes 1 + 2e-18, which rounds to 1 in f64, and returns EXACTLY ZERO.
+;; The tolerance here is RELATIVE, so returning 0 fails it.
+(define tiny-a (vec2 0.0 0.0))
+(define tiny-b (vec2 0.000000001 0.0))
+(report (rel-near? (geodesic-distance tiny-a tiny-b -1.0) 0.000000002)
+        "a 2e-9 geodesic distance is not rounded away to zero")
+(report (> (geodesic-distance tiny-a tiny-b -1.0) 0.0)
+        "a near-coincident distance is strictly positive")
+
+;; Two points a billionth of a unit inside the boundary, on opposite sides. The
+;; geodesic distance is 4 artanh(0.999999999) = 42.83, and the LOG MAP HAS A
+;; FINITE VALUE -- every pair of strictly interior ball points does. This op used
+;; to refuse here, on the grounds that no finite log existed; the refusal was a
+;; numerical failure of the artanh route, not a fact about the manifold. (The AD
+;; bridge, on the same input, clamped and returned a fabricated 28.32.)
+(define far-a (vec2 0.999999999 0.0))
+(define far-b (vec2 -0.999999999 0.0))
+(define far-d (geodesic-distance far-a far-b -1.0))
+(report (rel-near? far-d 42.832826090576575) "a 42.8-unit interior distance is computed")
+(define far-lg (guard (e (#t 'refused)) (hyperbolic-log-map far-a far-b -1.0)))
+(report (not (eq? far-lg 'refused)) "the log of a far interior pair is not refused")
+(report (rel-near? (* (/ 2.0 (- 1.0 (* 0.999999999 0.999999999)))
+                      (abs (tensor-ref far-lg 0)))
+                   far-d)
+        "lambda_x |log_x(y)| equals the distance for the far pair")
+
+;; Mobius addition near the boundary. The denominator here is about 9e-18 and
+;; the numerator about 3e-18; the old body floored the denominator at 1e-15
+;; WITHOUT scaling the numerator and returned 0.003 for a sum whose value is
+;; about 1/3 -- a valid interior result, wrong by two orders of magnitude, with
+;; no diagnostic.
+(define mob-near (mobius-add (vec2 0.999999999 0.0) (vec2 -0.999999998 0.0) -1.0))
+(report (< (abs (- (tensor-ref mob-near 0) 0.33333335822717813)) 0.00000001)
+        "a near-boundary Mobius sum is computed, not floored")
+(report (far? (tensor-ref mob-near 0) 0.003)
+        "the near-boundary Mobius sum is not the floored answer")
+
+;; ═══ The excluded boundary ═══════════════════════════════════════════════════
+;; tanh rounds to exactly 1.0 for arguments beyond about 19, so both of these
+;; used to return a point ON the ball boundary -- not a point of the open ball,
+;; and the one place these ops could return a value outside their own codomain.
+(define exp-far (guard (e (#t 'refused))
+                  (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 20.0 0.0) -1.0)))
+(report (eq? exp-far 'refused) "exp refuses a step whose image is not strictly interior")
+(define scal-far (guard (e (#t 'refused))
+                   (mobius-scalar-mul 100.0 (vec2 0.5 0.0) -1.0)))
+(report (eq? scal-far 'refused) "mobius-scalar-mul refuses a result on the boundary")
+;; The same ops at representable magnitudes still work.
+(report (near? (tensor-ref (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 1.0 0.0) -1.0) 0)
+               0.76159415595576485)
+        "exp_0(1) = tanh(1) at K = -1")
+(report (near? (tensor-ref (mobius-scalar-mul 2.0 (vec2 0.5 0.0) -1.0) 0) 0.8)
+        "2 (x) 0.5 = 0.8 at K = -1")
+
+;; ═══ Parallel transport on a tangent vector OUTSIDE the ball ═════════════════
+;; A tangent vector is not constrained to the ball. The gyration used to be
+;; expanded through Mobius POINT addition, which fed the tangent vector into an
+;; operation whose denominator can then vanish: at K = -1, x = y = (0.5, 0) with
+;; v = (2, 0), every gyration in this direction is the identity and transport
+;; from a point to itself MUST return v -- the old body returned (0.5, 0),
+;; because the intermediate 0/0 was floored to zero.
+(define big-v (vec2 2.0 0.0))
+(define self-big (parallel-transport (vec2 0.5 0.0) (vec2 0.5 0.0) big-v -1.0))
+(report (near? (tensor-ref self-big 0) 2.0)
+        "transport x -> x returns a tangent vector of norm 2 unchanged")
+(report (far? (tensor-ref self-big 0) 0.5)
+        "transport does not collapse a large tangent vector")
+;; And it is still an isometry for such a vector between distinct points.
+(define big-pt (parallel-transport px py big-v -1.0))
+(report (near? (* (/ 2.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2))))
+                  (sqrt (+ (* (tensor-ref big-pt 0) (tensor-ref big-pt 0))
+                           (* (tensor-ref big-pt 1) (tensor-ref big-pt 1)))))
+               (* (/ 2.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))) 2.0))
+        "transport preserves Riemannian length for a vector outside the ball")
+
+;; ═══ Spherical tangency ══════════════════════════════════════════════════════
+;; The sphere's exp and transport require <x,v> = 0. The old tolerance was
+;; |<x,v>|/R <= tol (|v| + R), whose additive R made it ABSOLUTE: a wholly
+;; radial v of norm 1e-10 passed at R = 1. It is now relative to |v|.
+(define sph-x (vec3 1.0 0.0 0.0))
+(define sph-y (vec3 0.0 1.0 0.0))
+(define radial-tiny (vec3 0.0000000001 0.0 0.0))
+(define exp-radial (guard (e (#t 'refused)) (spherical-exp sph-x radial-tiny)))
+(report (eq? exp-radial 'refused) "spherical-exp refuses a wholly radial 1e-10 vector")
+(define tr-radial (guard (e (#t 'refused))
+                    (parallel-transport sph-x sph-y (vec3 1.0 0.0 0.0) 1.0)))
+(report (eq? tr-radial 'refused) "spherical transport refuses a radial vector")
+;; The closed form: P_{x->y} v = v - (<y,v>/(R^2 + <x,y>)) (x + y). For
+;; x = e1, y = e2, v = e2 that is (-1, 0, 0) -- tangent at y, norm preserved.
+;; The old code returned v unchanged, which is not even tangent at the
+;; destination.
+(define tr-ok (parallel-transport sph-x sph-y sph-y 1.0))
+(report (near? (tensor-ref tr-ok 0) -1.0) "spherical transport component 0")
+(report (near? (tensor-ref tr-ok 1) 0.0) "spherical transport component 1")
+(report (near? (tensor-ref tr-ok 2) 0.0) "spherical transport component 2")
+(report (near? (+ (* (tensor-ref tr-ok 0) (tensor-ref sph-y 0))
+                  (* (tensor-ref tr-ok 1) (tensor-ref sph-y 1))
+                  (* (tensor-ref tr-ok 2) (tensor-ref sph-y 2)))
+               0.0)
+        "the transported vector is tangent at the destination")
+;; Antipodal endpoints have no unique connecting geodesic.
+(define tr-anti (guard (e (#t 'refused))
+                  (parallel-transport sph-x (vec3 -1.0 0.0 0.0) sph-y 1.0)))
+(report (eq? tr-anti 'refused) "spherical transport refuses antipodal endpoints")
+
+;; ═══ The K = 0 branch and the K -> 0 limit ═══════════════════════════════════
+;; PARAMETERISED ON THE CONVENTION. The ball chart's conformal factor at the
+;; origin is ESHKOL_RM_LAMBDA0 = 2, so the K -> 0- limit of the ball branch is
+;; flat space with the metric 4<.,.>, i.e. distance 2|x-y|. The K = 0 branch
+;; uses ESHKOL_RM_FLAT_LAMBDA, which is 1 -- the canonical Euclidean metric.
+;; Those two cannot both hold, and which to keep is a convention ruling; see
+;; docs/reference/stdlib/geometry.md. `flat-lambda` below mirrors the header
+;; constant and is the ONE line to change if the ruling equalises them.
+(define flat-lambda 1.0)
+(define lambda0 2.0)
+(report (near? (geodesic-distance near-a near-b 0.0) (* flat-lambda 1.8))
+        "the K = 0 distance is flat-lambda times the chord")
+(report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) px 0.0) 0)
+               (/ 1.0 (* flat-lambda flat-lambda)))
+        "the K = 0 riemannian-grad is g / flat-lambda^2")
+;; Whatever the ruling, the K = 0 branch must be INTERNALLY consistent: the
+;; Riemannian length of log_x(y) is the distance, in the same metric. This holds
+;; for either value of the constant and is the assertion that catches a K = 0
+;; branch whose distance and gradient disagree about which metric it is in.
+(define flat-lg (hyperbolic-log-map px py 0.0))
+(report (near? (* flat-lambda
+                  (sqrt (+ (* (tensor-ref flat-lg 0) (tensor-ref flat-lg 0))
+                           (* (tensor-ref flat-lg 1) (tensor-ref flat-lg 1)))))
+               (geodesic-distance px py 0.0))
+        "at K = 0, flat-lambda |log_x(y)| equals the distance")
+;; The limit itself, measured: the ball branch at K = -1e-9 is lambda0 |x-y|,
+;; NOT flat-lambda |x-y|. This is the discontinuity, asserted rather than
+;; assumed, so the ruling flips one number here and nothing else.
+(report (< (abs (- (geodesic-distance near-a near-b -0.000000001) (* lambda0 1.8)))
+           0.0001)
+        "the K -> 0- limit of the ball branch is lambda0 times the chord")
+
+;; ═══ Accessors and attention ═════════════════════════════════════════════════
+(define acc-m (make-hyperbolic-manifold 3 -0.5))
+(report (= (manifold-type acc-m) 1) "manifold-type of a hyperbolic manifold is 1")
+(report (= (manifold-dim acc-m) 3) "manifold-dim returns the stored dimension")
+(report (near? (get-curvature acc-m) -0.5) "get-curvature returns the stored curvature")
+(report (near? (ricci-scalar acc-m) -3.0) "ricci-scalar is dim (dim - 1) K")
+(report (near? (sectional-curvature acc-m px py) -0.5) "sectional-curvature is K")
+(set-curvature! acc-m -2.0)
+(report (near? (get-curvature acc-m) -2.0) "set-curvature! mutates the handle")
+(report (= (manifold-type (make-spherical-manifold 2)) 2) "manifold-type of a sphere is 2")
+(report (= (manifold-dim (make-euclidean-manifold 5)) 5) "manifold-dim of a Euclidean manifold")
+
+;; geodesic-attention-scores is -d_K(q_i, k_j), row-major over (nq, nk). With one
+;; query at the origin and two keys, the scores are the negatives of two known
+;; geodesic distances -- and the second key is chosen so the ambient chord and
+;; the geodesic distance differ, which is what the old body returned.
+(define att-q (make-tensor '(1 2) 0.0))
+(define att-k (make-tensor '(2 2) 0.0))
+(tensor-set! att-k 0 0.5)      ; key 0 = (0.5, 0)
+(tensor-set! att-k 2 0.9)      ; key 1 = (0.9, 0)
+(define att (geodesic-attention-scores att-q att-k -1.0))
+(report (near? (tensor-ref att 0) -1.0986122886681098)
+        "attention score 0 is minus the geodesic distance to (0.5, 0)")
+(report (near? (tensor-ref att 1) -2.9444389791664407)
+        "attention score 1 is minus the geodesic distance to (0.9, 0)")
+(report (far? (tensor-ref att 1) -0.9) "attention is not scored by the ambient chord")
 
 ;; ── spherical-project refuses the origin ─────────────────────────────────────
 ;; It used to return the zero vector unchanged, which is not a point of the unit

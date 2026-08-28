@@ -7097,3 +7097,353 @@ entries:
       three curvature ops take a batch of point pairs rather than a gradient
       tensor — and both are stated in docs/reference/stdlib/geometry.md, which
       is the contract this branch was written against.
+
+  - id: SW-77
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/vm-geometry-complete"
+    closed_by: "branch feat/vm-geometry-complete"
+    title: "the Poincare ball's arithmetic returned plausible wrong numbers wherever the chart is tight: parallel transport of a tangent vector larger than the ball collapsed it, a near-boundary Mobius sum came back two orders of magnitude wrong, exp and Mobius scalar multiplication returned the EXCLUDED boundary, and a 2e-9 geodesic distance came back as exactly zero"
+    mechanism: >-
+      Four defects with one shape: the ball chart's formulas were transcribed in
+      the algebraically-correct-but-numerically-wrong grouping, and a floor was
+      added to hide the symptom rather than the cause. All four are in
+      inc/eshkol/backend/riemannian_core.h as SW-73 wrote it.
+
+      (1) PARALLEL TRANSPORT (812/843), and the moment transport inside
+      Riemannian Adam. gyr[a,b]w was expanded as
+      -(a (+) b) (+) (a (+) (b (+) w)), which feeds the TANGENT VECTOR w into
+      Mobius POINT addition. A tangent vector is not constrained to the ball, so
+      an intermediate denominator can vanish -- even though the gyration is a
+      globally defined linear isometry with no singularity there at all.
+
+      (2) THE MOBIUS DENOMINATOR FLOOR. eshkol_rm_mobius_add clamped |den| up to
+      1e-15 WITHOUT scaling the numerator. For two validated interior points the
+      denominator is bounded below by (1 - sqrt(B)|x| sqrt(B)|y|)^2 > 0 and never
+      needs a floor; what it needs is to be EVALUATED accurately, because the
+      direct sum 1 + 2B<x,y> + B^2|x|^2|y|^2 computes a value of 9e-18 as a
+      difference of terms of size 1 and loses every digit.
+
+      (3) tanh SATURATION. exp's coefficient is tanh(...)/... and Mobius scalar
+      multiplication's is tanh(r artanh(...)); tanh rounds to exactly 1.0 for
+      arguments beyond about 19, so both could return a point ON the ball
+      boundary. That is not a point of the open ball -- it is a value outside the
+      op's own codomain, at which lambda is infinite and every subsequent log
+      degenerates to zero.
+
+      (4) arccosh(1 + eps) CANCELLATION. The distance was
+      arccosh(1 + 2B|x-y|^2/P)/sqrt(B). For a small separation the argument
+      rounds to exactly 1 and the distance comes back as exactly 0.
+
+      Related and NOT a silent wrong, so recorded here rather than as its own
+      entry: log_x(y) REFUSED whenever sqrt(B)|(-x) (+) y| rounded to 1, on the
+      stated grounds that no finite log existed. Every pair of strictly interior
+      ball points has a unique finite log; the rounding was a numerical failure
+      of the artanh route. A false refusal is loud, so it never had this
+      defect's character -- but it had the same cause, and it is fixed with them.
+    repro: >-
+      tests/vm/geometric_riemannian_surface_regression.esk, run by
+      scripts/run_vm_surface_tests.sh:
+
+        (parallel-transport (vec2 0.5 0.0) (vec2 0.5 0.0) (vec2 2.0 0.0) -1.0)
+        (mobius-add (vec2 0.999999999 0.0) (vec2 -0.999999998 0.0) -1.0)
+        (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 20.0 0.0) -1.0)
+        (mobius-scalar-mul 100.0 (vec2 0.5 0.0) -1.0)
+        (geodesic-distance (vec2 0.0 0.0) (vec2 0.000000001 0.0) -1.0)
+        (hyperbolic-log-map (vec2 0.999999999 0.0) (vec2 -0.999999999 0.0) -1.0)
+    observed: >-
+      transport x -> x of (2, 0)      -> (0.5, 0). Every gyration in that
+                                         direction is the identity, so transport
+                                         from a point to itself MUST return the
+                                         vector; the intermediate 0/0 was floored
+                                         to zero and the result was the base
+                                         point's coordinate.
+      mobius-add near the boundary    -> 0.003, for a sum whose value is about
+                                         1/3.
+      exp_0((20, 0)) at K = -1        -> exactly (1.0, 0), a boundary point.
+      mobius-scalar-mul(100, 0.5)     -> exactly 1.0, likewise.
+      d((0,0), (1e-9,0)) at K = -1    -> exactly 0.0, for a distance of 2e-9.
+      log of the far interior pair    -> a raise, for a log whose value is finite.
+    correct: >-
+      transport x -> x of (2, 0)      -> (2, 0).
+      mobius-add near the boundary    -> 0.33333335822717813 (the exact quotient
+                                         for those two doubles).
+      exp_0((20, 0))                  -> a refusal: no strictly interior f64
+                                         point exists at that magnitude.
+      mobius-scalar-mul(100, 0.5)     -> the same refusal.
+      d((0,0), (1e-9,0))              -> 2e-9.
+      log of the far interior pair    -> a finite vector of Riemannian length
+                                         4 artanh(0.999999999) = 42.832826.
+    observed_after: >-
+      Every line above, measured by the committed regression. The near-boundary
+      Mobius sum lands within 5e-9 RELATIVE of the exact quotient; the residual
+      is the conditioning of the ball chart itself at 1e-9 from the boundary, and
+      it is a hundred million times better than the floored answer.
+    fixed_by: >-
+      branch feat/vm-geometry-complete, in inc/eshkol/backend/riemannian_core.h.
+
+      eshkol_rm_gyration computes gyr[a,b]w in its LINEAR closed form
+      w + 2(Aa + Cb)/D, whose only denominator is the Mobius denominator of the
+      two validated POINTS. Transport is (lambda_x/lambda_y) gyr[y,-x]v through
+      it, and nothing feeds a tangent vector into point addition any more.
+
+      eshkol_rm_mobius_den evaluates the denominator as
+      (1 + B<x,y>)^2 + B^2(|x|^2|y|^2 - <x,y>^2): the first term is a
+      subtraction of two nearby numbers and so is exact in f64, and the second is
+      a sum of squares by LAGRANGE'S IDENTITY and so has no cancellation.
+      Lagrange is O(n^2), so it is unconditional up to dimension 32 and above
+      that is reached only when the denominator is small enough to need it. The
+      floor is deleted.
+
+      eshkol_rm_dot_dd accumulates dot products in double-double and closes with
+      a fused multiply-add, giving 1 - B|x|^2 and 1 + B<x,y> to full RELATIVE
+      precision -- the two quantities the ball chart destroys near the boundary,
+      and the two everything else is built from. The Mobius numerator then comes
+      from the exact identity num_x = den + B|y|^2 (1 - B|x|^2) and is summed
+      with exact products, so it does not lose the cancellation either.
+
+      eshkol_rm_require_interior is checked on the way out of exp, mobius-add and
+      mobius-scalar-mul, and names the representability limit instead of
+      returning the boundary.
+
+      The distance is 2 sqrt(R) psi(B R) with psi(w) = asinh(sqrt w)/sqrt w,
+      evaluated by series below w = 1e-2 and in closed form above. This is the
+      same number as the arccosh form -- arccosh(1 + 2z^2) = 2 asinh(z) -- and
+      is stable where that is not. The spherical branch moves from
+      acos(<x,y>/R^2) to atan2 for the same reason.
+
+      log_x(y) takes its DIRECTION from the Mobius numerator alone, never divided
+      by the near-zero denominator, and its MAGNITUDE from the stable distance as
+      d/lambda_x. It no longer refuses any interior pair.
+    evidence: >-
+      tests/vm/geometric_riemannian_surface_regression.esk -- new sections
+      "Near-coincident and near-boundary", "The excluded boundary", "Parallel
+      transport on a tangent vector OUTSIDE the ball" and "Spherical tangency",
+      each asserting the correct value above AND `far?` from the observed one
+      where the old body produced a specific number. The near-coincident distance
+      is checked with a RELATIVE comparator, because an absolute 1e-9 tolerance
+      accepts zero for a distance of 2e-9 -- which is precisely the defect.
+
+      The two core headers are additionally exercised as C, outside the VM,
+      against hand-derived values and against central differences.
+    caught_by: [adversarial-model-audit-gpt-5.6-sol, direct-measurement]
+    missed_by: [run_vm_surface_tests.sh (pre-fix), run_vm_parity.sh, icc-readiness, sw-73]
+    notes: >-
+      Found by an adversarial audit of PR #516 (the branch that introduced these
+      formulas), not by a gate. That is the honest attribution and it is the
+      reason the regression grew the sections it did: SW-73's own suite asserted
+      transport only for a tangent vector INSIDE the ball, distances only for
+      well-separated points, and every curved case at |K| = 1, where every
+      sqrt(c) factor is 1. Those three blind spots are each closed by name.
+
+      No builtin names, ids or arities change. What changes is the numbers four
+      ops return in their extreme ranges, and two new refusals (a boundary result
+      from exp/mobius-scalar, a non-tangent vector on the sphere).
+
+  - id: SW-78
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/vm-geometry-complete"
+    closed_by: "branch feat/vm-geometry-complete"
+    title: "Riemannian Adam was not Riemannian and its implicit state was not the parameter's: a per-coordinate second moment produced deltas that leave the tangent space, one shape-keyed pool was shared between independent parameters, and a refused step still advanced the moments"
+    mechanism: >-
+      Three defects in the two Adam opcodes (840, 861) and their shared step,
+      lib/backend/vm_geometric.c.
+
+      (1) NON-INTRINSIC SECOND MOMENT. The update was
+      st->v[i] = beta2 st->v[i] + (1 - beta2) g_i^2 and
+      delta_i = -lr m_hat_i / (sqrt(v_hat_i) + 1e-8), i.e. a COORDINATE-WISE
+      quotient. That is not an operation on a manifold: it does not commute with
+      a change of chart, and it does not preserve a tangent space. The
+      documentation additionally claimed this was geoopt's choice, which it is
+      not -- geoopt's RiemannianAdam and Becigneul-Ganea keep ONE adaptivity
+      SCALAR per manifold factor, s_t = beta2 s + (1-beta2) ||g||^2_x, in the
+      manifold's own metric.
+
+      (2) IMPLICIT STATE KEYED BY SHAPE. vm_default_riemannian_adam_state kept
+      sixteen VM-lifetime slots and returned the first whose SHAPE matched the
+      point tensor, overwriting slot 0 when all sixteen were taken. Adam state
+      belongs to a parameter, not to a shape. Two independent optimisation loops
+      over same-shaped parameters shared one first moment, one second moment and
+      one step counter, so each one's update depended on the other's history --
+      and nothing in the returned tensor showed it.
+
+      (3) STATE MUTATED BEFORE THE GEOMETRY COULD REFUSE.
+      vm_riemannian_adam_delta incremented the step counter and wrote both
+      moments, and only then did the caller attempt the exponential map and the
+      moment transport, either of which can raise. A call that ended in a raise
+      had still advanced the optimizer, so the retry that followed answered a
+      different question from the same inputs.
+    repro: >-
+      tests/vm/riemannian_adam_state_regression.esk, run by
+      scripts/run_vm_surface_tests.sh.
+
+      (1) On the unit sphere at x = (1,1,1)/sqrt(3) with g = (1,1,-2). Note
+      <x,g> = 0 exactly, so g is a perfectly valid tangent vector:
+
+        (riemannian-adam-step! st x g 0.1 0.9 0.999 1.0)
+
+      (2) At K = 0, lr = 0.1, beta1 = 0.9, beta2 = 0.999: a first parameter of
+      shape (2) stepped with g = +1, then a SECOND, INDEPENDENT parameter of the
+      same shape stepped with g = -1, through riemannian-adam-step (840).
+
+      (3) A step refused for a non-tangent gradient, followed by a valid step,
+      compared against the same valid step from a fresh state.
+    observed: >-
+      (1) A REFUSAL. The coordinate-wise normalisation gave a delta
+      proportional to (1, 1, -1), whose inner product with x is -lr/sqrt(3) != 0,
+      so eshkol_rm_exp_map rejected it: the optimizer refused its own valid
+      input, and the message named the tangency of the delta rather than the
+      construction that broke it.
+
+      (2) +0.00526316 for the second parameter, where an independent Adam
+      instance gives +0.1. The number is plausible, has the right sign and the
+      right order of magnitude for a later Adam step, and is wrong because it is
+      a later step OF THE OTHER PARAMETER.
+
+      (3) The post-refusal step differed from the fresh-state step.
+    correct: >-
+      (1) The step is accepted, the iterate stays on the sphere, and its
+      geodesic distance from x is exactly lr -- on step 1 the bias corrections
+      cancel, so the delta is -lr g/||g||_x and its Riemannian length is lr on
+      every branch. The coordinate-wise form gives -lr sign(g) componentwise,
+      whose length is lr sqrt(n), and fails that for every n > 1.
+
+      (2) There is no correct answer inside that arity, so the op must refuse:
+      the state has to be named by the caller.
+
+      (3) A refused step must leave the optimizer exactly as it was.
+    observed_after: >-
+      (1) accepted; ||iterate|| = 1 and d(x, iterate) = 0.1 = lr.
+      (2) riemannian-adam-step (840) raises, naming riemannian-adam-step! (861)
+          and make-riemannian-adam-state.
+      (3) the post-refusal step equals the fresh-state step.
+    fixed_by: >-
+      branch feat/vm-geometry-complete.
+
+      VmRiemannianAdamState's second moment becomes a single double, updated with
+      eshkol_rm_metric_norm2(g, x, K, n) = lambda_x^2 |g|^2 on the conformal
+      branches and |g|^2 on the sphere. The delta is then a scalar multiple of
+      the first moment, hence tangent wherever the gradient is.
+
+      vm_riemannian_adam_delta writes its proposed moments and step counter to
+      caller-supplied temporaries and mutates nothing;
+      vm_riemannian_adam_geodesic_step commits them only after BOTH the
+      exponential map and the moment transport have returned NULL. It also checks
+      the gradient's tangency up front, so the message names the gradient rather
+      than the delta.
+
+      vm_default_riemannian_adam_state is deleted and 840 raises. There is no
+      repair inside its arity: keying the pool by the point tensor's identity
+      instead of its shape fails too, because the op RETURNS A NEW TENSOR each
+      call, so a per-iteration parameter would never match its own state and Adam
+      would silently degrade to a bias-corrected SGD -- trading one silent wrong
+      for another. 861 already takes the state explicitly and is unaffected.
+    evidence: >-
+      tests/vm/riemannian_adam_state_regression.esk, rewritten. The load-bearing
+      assertion is that the FIRST step's geodesic distance from the starting
+      point equals lr, on the Euclidean branch, on the ball and on the sphere:
+      it is exact, implementation-independent, and false for the coordinate-wise
+      construction at every dimension above one. Alongside it: the sphere
+      counterexample above is exercised directly and must be accepted; 840 must
+      refuse; and two states, one of which has survived a refused step, must
+      produce identical points from identical valid steps.
+    caught_by: [adversarial-model-audit-gpt-5.6-sol]
+    missed_by: [run_vm_surface_tests.sh (pre-fix), run_vm_parity.sh, icc-readiness]
+    notes: >-
+      The old riemannian_adam_state_regression.esk had no assertion that could
+      have caught any of the three: it checked one component of one step against
+      a number computed from the same coordinate-wise formula, and the curved
+      case only that the result differed from the ambient sum and stayed in the
+      ball. Both of those pass for a construction that is not intrinsic.
+
+      840 refusing is a deliberate REMOVAL of a documented behaviour, recorded
+      here so it is not mistaken for an oversight. The alternative was to keep
+      shipping an optimizer whose two callers silently interfere.
+
+  - id: SW-79
+    bucket: SILENT-WRONG
+    status: open
+    title: "the metric family is discontinuous at K = 0 -- the ball branch tends to 2|x-y| as K -> 0- while the K = 0 branch returns |x-y| -- and the AD bridge reads the same curvature argument as a BALL PARAMETER, so VM and tape disagree for every K >= 0"
+    waiver:
+      owner: tsotchke
+      reason: >-
+        Both halves are CONVENTION decisions, not transcription errors, and they
+        have to be ruled on together because they change published numbers. The
+        VM side is deliberately parked in one place so the ruling is a one-line
+        change: inc/eshkol/backend/riemannian_core.h defines the model in four
+        named places (ESHKOL_RM_LAMBDA0, ESHKOL_RM_FLAT_LAMBDA,
+        eshkol_rm_ball_param, eshkol_rm_lambda) and nothing else open-codes it.
+        The bridge half is owned by the branch fix/ad-bridge-boundary-refusal.
+        Meanwhile the three curvature-derivative ops REFUSE at K = 0 rather than
+        returning a one-sided derivative as if it were two-sided, so the
+        discontinuity cannot be laundered into a plausible number, and
+        docs/reference/stdlib/geometry.md states it in its own section.
+      expires: "2026-10-31"
+    mechanism: >-
+      TWO conventions that do not line up with each other or with the
+      documentation.
+
+      (1) K -> 0. The ball chart's conformal factor is
+      lambda_x = LAMBDA0/(1 - B|x|^2) with LAMBDA0 = 2 and B = c -- the
+      convention of Ganea et al., Nickel-Kiela and geoopt, and the one every
+      in-tree call site passes. Because lambda_0 = 2 for EVERY c, including in
+      the limit, the c -> 0 limit of the ball branch is flat space with the
+      metric 4<.,.>: distance 2|x-y| and Riemannian gradient g/4. The K = 0
+      branch instead uses lambda = 1, the canonical Euclidean metric. Both are
+      defensible; they are not both true at once, and
+      docs/reference/stdlib/geometry.md asserted all three of "sectional
+      curvature K", "ball of radius 1/sqrt(-K)" and "canonical Euclidean at
+      K = 0, continuously", which no single coordinate family satisfies.
+
+      (2) VM vs AD BRIDGE. lib/bridge/qllm_bridge.cpp's producers take a BALL
+      PARAMETER c > 0 and convert with c = (curvature == 0) ? 1 : |curvature|.
+      For K < 0 that is c = -K and the two agree exactly. For K = 0 the bridge
+      silently selects the c = 1 ball, and for K > 0 it selects a ball where the
+      VM selects a sphere. The page claimed "the VM engine and the AD tape agree
+      on what these operations mean" without qualification.
+    repro: >-
+      (1) (geodesic-distance (vec2 0.9 0.0) (vec2 -0.9 0.0) K) swept through
+          K = -1e-9, K = 0.
+      (2) x = 0, y = 0.5, K = 0: geodesic-distance / hyperbolic-exp-map /
+          hyperbolic-log-map on the VM against ad_hyperbolic_distance /
+          ad_poincare_exp_map / ad_poincare_log_map on the tape.
+    observed: >-
+      (1) 3.6000000012 at K = -1e-9 and 1.8 at K = 0: a factor-of-2 jump across
+          zero, with no diagnostic. riemannian-grad jumps by a factor of 4 at the
+          same point.
+      (2) distance     VM 0.5   bridge 2 artanh(0.5) = 1.098612289
+          exp_0(0.5)   VM 0.5   bridge tanh(0.5)     = 0.462117157
+          log_0(0.5)   VM 0.5   bridge artanh(0.5)   = 0.549306144
+    correct: >-
+      One convention, applied by both engines and stated once. Either
+      ESHKOL_RM_FLAT_LAMBDA becomes ESHKOL_RM_LAMBDA0 -- the K <= 0 family is
+      then real-analytic in K, geodesic-distance at K = 0 becomes 2|x-y| and
+      riemannian-grad becomes g/4 -- or ESHKOL_RM_LAMBDA0 becomes 1, re-charting
+      the ball to radius 2/sqrt(c) so the flat limit is canonical, which moves
+      every published hyperbolic constant. The bridge must in either case branch
+      on the SIGN of K and refuse K >= 0 on its Poincare-only producers.
+    fixed_by: >-
+      Not fixed. Parked, with the VM side centralized so the ruling is one line
+      and the tests parameterised on it: the regression defines `flat-lambda` and
+      `lambda0` at the top of its K = 0 section, asserts the shipped values
+      through them, AND asserts the internal consistency
+      flat-lambda |log_x(y)| = d(x,y) at K = 0, which must hold under EITHER
+      ruling and is what catches a K = 0 branch whose distance and gradient
+      disagree about the metric they are in. The K -> 0- limit is asserted
+      directly, so the discontinuity is a measured fact in the suite rather than
+      an inference.
+    evidence: >-
+      tests/vm/geometric_riemannian_surface_regression.esk, section
+      "The K = 0 branch and the K -> 0 limit". docs/reference/stdlib/geometry.md,
+      section "The K = 0 branch", states the question, both resolutions and what
+      each costs.
+    caught_by: [adversarial-model-audit-gpt-5.6-sol]
+    missed_by: [run_vm_surface_tests.sh (pre-fix), run_vm_parity.sh, icc-readiness]
+    notes: >-
+      Recorded as a SILENT-WRONG rather than a design note because a caller
+      annealing curvature toward zero -- which is what the three
+      curvature-adaptation ops exist to do -- crosses the discontinuity and gets
+      a factor-of-2 jump in the objective with nothing in the output to show it.
+      The waiver is on the RULING, not on the symptom: the derivative ops already
+      refuse at K = 0 rather than reporting a number there.

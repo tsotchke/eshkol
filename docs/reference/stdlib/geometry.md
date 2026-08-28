@@ -79,8 +79,18 @@ The **differentiable** route to this geometry is a different, live integration
 and is untouched: `lib/bridge/qllm_bridge.cpp` registers exact backward rules on
 the AD tape. What the VM opcodes compute is the same mathematics that bridge
 computes (`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`,
-`ad_geodesic_attention`), so the VM engine and the AD tape agree on what these
-operations mean.
+`ad_geodesic_attention`) — **for K < 0**, and only there.
+
+The qualification is not a hedge. The bridge's entry points take a **ball
+parameter c > 0**, not a sectional curvature, and convert with
+`c = (curvature == 0) ? 1 : |curvature|`. For K < 0 that is c = −K and the two
+agree exactly. For K = 0 the bridge silently selects the c = 1 ball — it returns
+`2 artanh(0.5) = 1.0986` where this page's `geodesic-distance` returns `0.5` —
+and for K > 0 it selects a ball where the VM selects a sphere. The bridge has to
+branch on the sign of K and refuse K ≥ 0 on its Poincaré-only producers; that is
+a change to `lib/bridge/qllm_bridge.cpp`, tracked on its own lane, and until it
+lands **do not differentiate a geometric computation at K ≥ 0 and expect the
+tape to agree with the opcode**.
 
 This used not to be true, and the difference is worth stating because a reader of an
 older build's output needs to know. Before `SW-73` these ops computed their **flat
@@ -88,10 +98,11 @@ older build's output needs to know. Before `SW-73` these ops computed their **fl
 `hyperbolic-exp-map` was vector addition, `hyperbolic-log-map` subtraction,
 `geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition,
 `parallel-transport` and `riemannian-grad` the identity. At K = 0 those forms are
-exactly right — every op below reduces to its flat form there — and at every other
-curvature they were wrong without bound: two points of the unit ball a tenth of a
-unit inside the boundary are 1.8 apart in L2 and 5.8888779583328814 apart in the
-metric the name promises. `tests/vm/geometric_riemannian_surface_regression.esk`
+what this page's K = 0 branch still computes (see
+[The K = 0 branch](#the-k--0-branch) for the convention question that raises), and
+at every other curvature they were wrong without bound: two points of the unit
+ball a tenth of a unit inside the boundary are 1.8 apart in L2 and
+5.8888779583328814 apart in the metric the name promises. `tests/vm/geometric_riemannian_surface_regression.esk`
 pins each of these against its closed form, with every assertion chosen so that the
 flat answer fails it.
 
@@ -106,6 +117,52 @@ Three more — `curvature-gradient`, `curvature-hessian` and
 update, none of which differentiated anything. They now measure the exact first
 and second derivatives of a **named objective** with respect to the curvature
 parameter: see [Curvature derivatives](#curvature-derivatives).
+
+## The K = 0 branch
+
+**There is an open convention question here, and it is stated rather than
+hidden.** The three promises "sectional curvature K", "ball of radius 1/√−K" and
+"canonical Euclidean geometry at K = 0, continuously" cannot all hold in one
+coordinate family, and this page used to make all three.
+
+The ball chart's conformal factor is `λ_x = λ₀/(1 − B‖x‖²)` with `λ₀ = 2` and
+`B = c·λ₀²/4 = c` — the convention of Ganea et al., Nickel–Kiela and `geoopt`,
+and the one every in-tree call site passes. Because `λ₀ = 2` for **every** `c`,
+including in the limit, the K → 0⁻ limit of the ball branch is flat space with
+the metric `4⟨·,·⟩`: `d(x,y) → 2‖x−y‖` and `riemannian-grad → g/4`. The K = 0
+branch instead uses `λ = 1`, the canonical Euclidean metric, which is what
+"K = 0 is Euclidean" means to a caller and what every flat-reduction example on
+this page asserts.
+
+So **the family is discontinuous at K = 0**: the geodesic distance jumps by a
+factor of 2 and the Riemannian gradient by a factor of 4 as K crosses zero. Two
+points a tenth of a unit inside the unit ball are `1.8` apart at K = 0 and
+`3.6000000012` apart at K = −1e−9.
+
+Which of the two to keep is a **ruling**, not a bug fix, because it changes
+published numbers and the AD bridge's contract with them. Both resolutions are
+one line in `inc/eshkol/backend/riemannian_core.h`, which is why the model is
+centralized in exactly four named places there — `ESHKOL_RM_LAMBDA0`,
+`ESHKOL_RM_FLAT_LAMBDA`, `eshkol_rm_ball_param` and `eshkol_rm_lambda`:
+
+- setting `ESHKOL_RM_FLAT_LAMBDA` to `ESHKOL_RM_LAMBDA0` keeps the standard ball
+  and makes the family real-analytic in K on K ≤ 0. `geodesic-distance` at K = 0
+  becomes `2‖x−y‖` and `riemannian-grad` becomes `g/4`, and the curvature
+  derivatives stop refusing at K = 0;
+- setting `ESHKOL_RM_LAMBDA0` to `1` keeps canonical Euclidean at K = 0 by
+  re-charting the ball to radius `2/√c`, and moves every published hyperbolic
+  constant.
+
+Until it is ruled on, the shipped behaviour is the second column of the table
+above — `λ₀ = 2`, `flat λ = 1` — and the three curvature-derivative ops
+(`curvature-gradient`, `curvature-hessian`, `adaptive-curvature-step`) **raise at
+K = 0**, naming the discontinuity, rather than returning a one-sided derivative
+as if it were two-sided.
+
+Nothing else moves with the constant. `exp`, `log`, `parallel-transport`,
+`manifold-project` and Möbius addition are the **same maps** under either choice:
+a constant conformal rescale of a metric leaves the Levi-Civita connection
+unchanged, so only distances, norms and the gradient conversion carry the factor.
 
 ## Error convention
 
@@ -126,10 +183,16 @@ conditions a caller can hit:
   any op taking K < 0;
 - a point that is not **on** the sphere of radius `1/√K`, for any op taking K > 0
   (`manifold-project` is the op that moves it there);
-- `log`, when the two points are too far apart in hyperbolic distance for the
-  ambient ball coordinates to separate them — roughly 19 units, reachable from two
-  points each strictly inside the ball. No finite log exists there, and clamping the
-  argument would return a fabricated magnitude;
+- a **tangent vector that is not tangent**, for any spherical op that takes one
+  (`spherical-exp`, `parallel-transport`/`vector-transport` at K > 0, the Adam
+  step): `⟨x,v⟩` must vanish, tested relative to `‖v‖`;
+- **antipodal endpoints** for spherical `log` and `parallel-transport`: neither
+  the connecting geodesic nor the transport along it is unique;
+- a result that would land **on** the ball boundary rather than strictly inside
+  it, for `hyperbolic-exp-map`, `mobius-add` and `mobius-scalar-mul`. `tanh`
+  rounds to exactly `1.0` beyond about 19, so `exp_0(20)` at K = −1 used to
+  return exactly `1.0` — not a point of the open ball, and the one place these
+  ops could return a value outside their own codomain;
 - `mobius-add` and `mobius-scalar-mul` with K > 0: they are the gyrogroup operations
   of the ball and are not defined on the sphere;
 - `frechet-mean`, when the Karcher iteration has not reached stationarity. A mean
@@ -239,7 +302,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `interior-product` | 837 | 2 | tensor | shape `(1)` holding the dot product |
 | `pullback` | 838 | 2 | tensor | `formᵀ · jacobian`, shape `(cols)` |
 | `riemannian-sgd-step` | 839 | 4 | tensor | `exp_point(−lr·grad)`; `point − lr·grad` at K=0 |
-| `riemannian-adam-step` | 840 | 6 | tensor | Adam delta retracted with `exp`, moment transported, **implicit pooled state** |
+| `riemannian-adam-step` | 840 | 6 | tensor | **raises** — an implicit pool cannot identify a parameter; use 861 |
 | `riemannian-grad` | 841 | 3 | tensor | `((1−c‖x‖²)²/4)·grad` (K<0) / tangent projection (K>0) / a copy (K=0) |
 | `retraction` | 842 | 3 | tensor | the exponential map (same op as 809) |
 | `vector-transport` | 843 | 4 | tensor | parallel transport (same op as 812) |
@@ -258,7 +321,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `manifold-dim` / `manifold-dimension` | 858 | 1 | int | stored dim |
 | `manifold-destroy!` | 859 | 1 | `()` | invalidates the handle |
 | `make-riemannian-adam-state` | 860 | 1 | state | zeroed moments shaped like the point |
-| `riemannian-adam-step!` | 861 | 7 | tensor | same as 840 with an **explicit** state |
+| `riemannian-adam-step!` | 861 | 7 | tensor | intrinsic Riemannian Adam: scalar second moment, geodesic retraction, moment transported |
 
 Ids 818, 848 and 849 have no name bound to them.
 
@@ -400,11 +463,24 @@ Returns `log_base(point)`, the inverse of id 809: the tangent vector at `base`
 whose exponential map is `point`. Its **Riemannian** length `λ_base·‖log‖` is the
 geodesic distance; its ambient Euclidean length is not.
 
-- `K < 0`: `(2/(√c·λ))·artanh(√c‖u‖)·u/‖u‖` with `u = (−base) ⊕_c point`.
+- `K < 0`: direction from the **Möbius numerator** of `(−base) ⊕_c point`,
+  magnitude `d(base, point)/λ_base`.
 - `K = 0`: `point − base`, exactly.
-- `K > 0`: `θR·u/‖u‖` with `u = point − cos θ·base`, `θ = acos(⟨base,point⟩/R²)`.
+- `K > 0`: `θR·u/‖u‖` with `u = point − cos θ·base` and `θ` from `atan2`.
 
-Raises when no finite log exists — see [Error convention](#error-convention).
+**Every pair of strictly interior ball points has a finite log, and this op
+returns it.** It used to compute `(2/(√c·λ))·artanh(√c‖u‖)·u/‖u‖` and *refuse*
+whenever `√c‖u‖` rounded to 1, on the stated grounds that no finite log existed
+there. That was wrong: the rounding was a numerical failure of the `artanh`
+route, not a fact about the manifold. For `x = 0.999999999`, `y = −0.999999999`
+at `c = 1` the true distance is `4·artanh(x) ≈ 42.83`; this op refused, and the
+AD bridge on the same input clamped to `1 − 1e−12` and returned a fabricated
+`28.32`. Splitting the computation — direction from the numerator alone, never
+divided by the near-zero Möbius denominator, magnitude from the stable distance
+below — removes both failures.
+
+The spherical branch raises for **antipodal** points, where the log is genuinely
+not single-valued.
 
 ```scheme
 (define base (make-tensor '(2) 0.0))
@@ -420,13 +496,22 @@ Returns the geodesic distance as a float; `()` unless both arguments are tensors
 the same total size. `poincare-distance` is a second name on the same op, and it IS
 the Poincaré metric.
 
-- `K < 0`: `arccosh(1 + 2c‖x−y‖²/((1−c‖x‖²)(1−c‖y‖²)))/√c`, the same closed form
-  `ad_hyperbolic_distance` computes on the AD tape.
-- `K = 0`: `‖x − y‖`, exactly.
-- `K > 0`: `R·acos(⟨x,y⟩/R²)`, the great-circle distance.
+- `K < 0`: `(2/√c)·asinh(√c‖x−y‖/√((1−c‖x‖²)(1−c‖y‖²)))`.
+- `K = 0`: `‖x − y‖` times the flat conformal factor — see
+  [The K = 0 branch](#the-k--0-branch).
+- `K > 0`: `R·θ` with `θ = atan2(‖y − cos θ·x‖/R, cos θ)`, the great-circle
+  distance.
 
 The hyperbolic distance is not bounded by the ball diameter the way the chord is: it
 diverges as either point approaches the boundary.
+
+Both curved branches are written in the **stable** form. The `asinh` expression
+is the same number as the `arccosh(1 + 2c‖x−y‖²/P)/√c` it replaces — the identity
+is `arccosh(1 + 2z²) = 2·asinh(z)` — but `arccosh(1 + ε)` throws away every digit
+of a small separation: at `c = 1`, `x = 0`, `y = 1e−9` the argument `1 + 2e−18`
+rounds to `1` and the old form returned **exactly zero** for a distance of
+`2e−9`. `atan2` does the same job for the sphere, where `acos(⟨x,y⟩/R²)` is
+ill-conditioned near both `0` and `π`.
 
 ```scheme
 (define a (make-tensor '(2) 0.0))
@@ -441,15 +526,28 @@ diverges as either point approaches the boundary.
 
 Transports the tangent vector `v` from `x` to `y` along the connecting geodesic.
 
-- `K < 0`: `(λ_x/λ_y)·gyr[y, −x]v`, the gyration expanded through Möbius addition as
-  `gyr[u,w]z = (−(u ⊕ w)) ⊕ (u ⊕ (w ⊕ z))`.
+- `K < 0`: `(λ_x/λ_y)·gyr[y, −x]v`, with the gyration in its **linear closed
+  form** `gyr[a,b]w = w + 2(A·a + C·b)/D`.
 - `K = 0`: the identity, exactly.
-- `K > 0`: the component of `v` along the geodesic direction rotated by the arc
-  angle.
+- `K > 0`: `v − (⟨y,v⟩/(R² + ⟨x,y⟩))·(x + y)`, the closed form, which is exactly
+  tangent at `y` by construction. `v` must be tangent at `x` and the endpoints
+  must not be antipodal, or the op raises.
 
 Transport is an isometry of the Riemannian metric — `λ_y‖P v‖ = λ_x‖v‖` — even
 though it changes the ambient components. Transport from a point to itself is the
-identity.
+identity, **for every tangent vector**, including one whose Euclidean norm is
+larger than the ball's radius.
+
+That last clause is the reason for the closed form. The gyration is also
+`gyr[a,b]w = −(a ⊕ b) ⊕ (a ⊕ (b ⊕ w))`, and this op used to compute it that way —
+which feeds a **tangent vector** into Möbius **point** addition. A tangent vector
+is not constrained to the ball, so an intermediate denominator can vanish even
+though the gyration is a globally defined linear isometry. At K = −1 with
+`x = y = (0.5)` and `v = (2)`, every gyration in one dimension is the identity, so
+the answer must be `(2)`; the intermediate `(−0.5) ⊕ 2` has denominator zero, the
+old denominator floor turned its exact `0/0` cancellation into zero, and the op
+returned `(0.5)`. The linear form is linear in `v` and its only denominator is
+the Möbius denominator of the two validated **points**.
 
 ```scheme
 (define x (make-tensor '(2) 0.0)) (tensor-set! x 0 0.3)
@@ -484,9 +582,27 @@ x ⊕_c y = ((1 + 2c⟨x,y⟩ + c‖y‖²)x + (1 − c‖x‖²)y) / (1 + 2c⟨
 ```
 
 It is **neither commutative nor associative** — `gyr[x,y]` is exactly the failure of
-commutativity, and it is what `parallel-transport` is built from. At `K = 0` it is
-`x + y`, exactly. It **raises for `K > 0`**: Möbius addition is the gyrogroup
-operation of the ball and is not defined on the sphere.
+commutativity. At `K = 0` it is `x + y`, exactly. It **raises for `K > 0`**: Möbius
+addition is the gyrogroup operation of the ball and is not defined on the sphere,
+and it raises when the result is not strictly interior.
+
+**Near the boundary the denominator is small but never zero**, and it is
+evaluated as `(1 + c⟨x,y⟩)² + c²(‖x‖²‖y‖² − ⟨x,y⟩²)` rather than as the sum
+above — the same number, but the first term is a subtraction of two nearby
+values (hence exact in f64) and the second is a sum of squares by Lagrange's
+identity (hence free of cancellation). The direct sum computes a denominator of
+`9e−18` as a difference of terms of size 1 and loses every digit of it, which is
+what made the old `1e−15` *floor* look necessary; flooring the denominator
+without scaling the numerator returned `0.003` for a sum whose value is about
+`1/3`. The floor is gone.
+
+The quantities `1 − c‖x‖²` and `1 + c⟨x,y⟩` are computed by a double-double dot
+product closed with a fused multiply-add, to full **relative** precision. That
+matters because the ball chart destroys them near the boundary: a point at
+Euclidean distance `ε` from the boundary has `1 − c‖x‖² ≈ 2ε`, and computing it
+as one minus a rounded sum of squares knows it only to an *absolute* `1e−16` —
+eight significant digits at `ε = 1e−9`, none at `ε = 1e−16`. Near-boundary points
+are not an edge case on the Poincaré ball; they are the reason to use it.
 
 ```scheme
 (define x (make-tensor '(2) 0.1))
@@ -500,7 +616,10 @@ Note the argument order: the **scalar comes first**. Returns the gyrovector scal
 multiple `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`, which agrees with `mobius-add` — for
 example `2 ⊗ x = x ⊕ x`. Because `tanh` is bounded, the result cannot leave the ball
 for any `r`, which `r · x` does. At `K = 0` it is `r · x`, exactly. It **raises for
-`K > 0`**, for the same reason `mobius-add` does.
+`K > 0`**, for the same reason `mobius-add` does, and it **raises when `tanh`
+saturates**: `tanh` rounds to exactly `1.0` beyond about 19, so
+`(mobius-scalar-mul 100 0.5 -1.0)` used to return exactly `1.0`, which is on the
+boundary and therefore not a point of the ball.
 
 ```scheme
 (mobius-scalar-mul 0.5 (make-tensor '(2) 0.4) -1.0)
@@ -579,6 +698,11 @@ tangent to it (`⟨base, v⟩ = 0`), or the op raises.
 It used to return `normalize(base + tangent)`, a retraction: the right geodesic at
 the wrong arc length (`atan‖v‖` instead of `‖v‖`), so it agreed to first order and
 disagreed at every order after.
+
+The tangency test is `|⟨base,v⟩| ≤ 1e−9·R·‖v‖` — **relative to `‖v‖`**. It used to
+be `|⟨base,v⟩|/R ≤ 1e−9·(‖v‖ + R)`, whose additive `R` made the threshold
+absolute, so a *wholly radial* `v` of norm `1e−10` passed at `R = 1`: 100% radial
+and accepted, because the threshold did not shrink with the vector.
 
 ```scheme
 (define e1 (make-tensor '(3) 0.0)) (tensor-set! e1 0 1.0)
@@ -931,33 +1055,34 @@ Returns `exp_point(−lr · gradient)` as a fresh tensor; `point − lr · gradi
 
 ### `(riemannian-adam-step point gradient lr beta1 beta2 curvature)` — id 840
 
-Bias-corrected Adam with `ε = 1e-8`. `beta1` outside `[0, 1)` falls back to `0.9`,
-`beta2` outside `[0, 1)` to `0.999`, and a negative `lr` is negated. The Adam delta is
-formed in the tangent space, retracted with `exp_point`, and the **first moment is
-parallel-transported** to the new point — it is a tangent vector at the old one and
-is meaningless at the new one until it is moved. The second moment is a
-per-coordinate scale rather than a tangent vector and is left as is, which is the
-same choice `geoopt`'s `RiemannianAdam` makes.
+**Raises.** Use `riemannian-adam-step!` (861) with an explicit state.
 
-The optimizer state is **implicit and pooled**. `vm_default_riemannian_adam_state`
-keeps 16 VM-lifetime slots and hands back the first whose shape matches `point`,
-creating one in the first empty slot otherwise — and **overwriting slot 0 when all 16
-are occupied by other shapes**. Two independent optimisation loops over
-same-shaped parameters therefore share one moment estimate. Use
-`make-riemannian-adam-state` and `riemannian-adam-step!` when you need the state to
-belong to one loop.
+This op drew its optimizer state from an **implicit pool keyed by the point
+tensor's shape**: 16 VM-lifetime slots, the first whose shape matched `point`,
+overwriting slot 0 when all 16 were taken. Adam state belongs to a *parameter*,
+not to a shape, so two independent optimisation loops over same-shaped
+parameters shared one set of moments and one step counter — each one's update
+depended on the other's history, with nothing in the returned tensor to show it.
+At K = 0, lr = 0.1, β₁ = 0.9, β₂ = 0.999, a first parameter with g = +1 steps by
+−0.1 and a second, independent parameter with g = −1 should step by +0.1; the
+shared pool gave it **+0.00526316**.
+
+There is no repair inside this arity, which is why the op refuses rather than
+being fixed in place. Keying by the point tensor's identity instead of its shape
+does not work either: this op **returns a new tensor** each call, so a
+per-iteration parameter would never match its own state and Adam would silently
+degrade to a bias-corrected SGD. The state has to be named by the caller.
 
 ```scheme
-(define p (make-tensor '(4) 1.0))
-(define g (make-tensor '(4) 0.5))
-(riemannian-adam-step p g 0.01 0.9 0.999 -1.0)
+(guard (e (#t 'use-the-explicit-state))
+  (riemannian-adam-step p g 0.01 0.9 0.999 -1.0))
 ```
 
 ### `(make-riemannian-adam-state point)` — id 860
 
-Allocates a zeroed state (first and second moment buffers shaped like `point`, step
-counter 0) and returns the handle. This state is **region-scoped**, unlike the pooled
-states id 840 creates, which are VM-lifetime. `()` if `point` is not a usable tensor.
+Allocates a zeroed state — a first-moment buffer shaped like `point`, a
+**scalar** second moment, and a step counter — and returns the handle. The state
+is region-scoped. `()` if `point` is not a usable tensor.
 
 ```scheme
 (define st (make-riemannian-adam-state (make-tensor '(4) 1.0)))
@@ -965,9 +1090,39 @@ states id 840 creates, which are VM-lifetime. `()` if `point` is not a usable te
 
 ### `(riemannian-adam-step! state point gradient lr beta1 beta2 curvature)` — id 861
 
-The same update as id 840 against an explicit `state`. Despite the `!`, the returned
-value is a **new** tensor — `point` is not mutated; what is mutated is `state`'s
-moment buffers and step counter. `()` if the state's shape does not match `point`.
+Bias-corrected **intrinsic** Riemannian Adam with `ε = 1e-8`. `beta1` outside
+`[0, 1)` falls back to `0.9`, `beta2` outside `[0, 1)` to `0.999`, and a negative
+`lr` is negated. The delta is formed in the tangent space at `point`, retracted
+with `exp_point`, and the **first moment is parallel-transported** to the new
+point — it is a tangent vector at the old one and is meaningless at the new one
+until it is moved. Despite the `!`, the returned value is a **new** tensor;
+`point` is not mutated, `state` is. `()` if the state's shape does not match
+`point`.
+
+**The second moment is one scalar**, not a per-coordinate array:
+
+    s_t = β₂ s_{t−1} + (1 − β₂) ‖g_t‖²_{x_t}
+
+measured in the manifold's own metric, so the delta stays **parallel to the first
+moment** and is therefore tangent wherever the gradient is. The per-coordinate
+form this replaces is not an operation on a manifold — it does not commute with a
+change of chart and it does not preserve a tangent space. On the unit sphere at
+`x = (1,1,1)/√3` with the perfectly valid tangent gradient `g = (1,1,−2)` (note
+`⟨x,g⟩ = 0`), dividing coordinate by coordinate gives a delta proportional to
+`(1,1,−1)`, whose inner product with `x` is `−lr/√3`, and the exponential map
+**refused a valid optimizer input**. The scalar construction is the one
+Bécigneul–Ganea give and the one `geoopt`'s `RiemannianAdam` implements; this
+page previously cited geoopt for the coordinate-wise version, which was wrong.
+
+A consequence worth testing against: on the first step the bias corrections
+cancel exactly, so the delta is `−lr·g/‖g‖_x` and **the step's Riemannian length
+is exactly `lr`**, on every branch.
+
+**A refused step changes nothing.** The moments and the step counter are held in
+temporaries and committed only after the exponential map and the moment
+transport have both succeeded. They used to be written first, so a call that
+ended in a raise still advanced the optimizer and the retry answered a different
+question.
 
 ```scheme
 (define p  (make-tensor '(4) 1.0))
@@ -1247,7 +1402,11 @@ it is now the same geometry in the strict sense: the closed forms these opcodes
 compute live in `inc/eshkol/backend/riemannian_core.h` and are the ones the bridge's
 `ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map` and
 `ad_geodesic_attention` evaluate, so a value computed on the VM and a value computed
-on the tape agree. The
+on the tape agree **at K < 0** — see
+[What the shipped build computes](#what-the-shipped-build-computes) for why the
+bridge's `c = |curvature|` conversion makes K ≥ 0 disagree, and note that
+`ad_poincare_log_map` additionally **clamps** `√c|u|` to `1 − 1e−12` where this
+page's `log` now computes the finite value that exists there. The
 the exact backwards it registers are documented in
 [`../ad/architecture.md`](../ad/architecture.md) and
 [`../ad/support-matrix.md`](../ad/support-matrix.md). `frechet-mean`'s forward pass is
