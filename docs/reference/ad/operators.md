@@ -382,16 +382,20 @@ first-order operators:
 (gradient sqv (vector 3.0))                                       ;; => #(6)
 ```
 
-> **Nesting caveat (ESH-0078).** For a *nested* second-order gradient, the
-> inner `gradient`/`derivative` must currently receive an **inline lambda**.
-> A named function or lambda-variable as the inner differentiand silently
-> returns `0`:
+> **Nesting through a named inner function works (formerly ESH-0078).** The
+> inner `gradient`/`derivative` accepts an inline lambda, a named `define`, or
+> a lambda bound to a variable, and all three agree:
 >
 > ```scheme
 > (define (L z) (* z (* z z)))
-> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18  ✅ inline
-> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; =>  0  ❌ named (ESH-0078)
+> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18  inline
+> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18  named
 > ```
+>
+> The *curried* route — `(define g (gradient f))` then `(jacobian g point)` —
+> is the one spelling that still refuses, loudly, with `unsupported nested
+> differentiation` (ESH-0096). Use `(hessian f point)`, which is exact. See
+> [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md).
 
 ---
 
@@ -401,10 +405,10 @@ What the differentiated lambda may close over depends on the mode:
 
 | Captured value | `derivative` (forward) | `gradient`/`jacobian`/`hessian`/`divergence`/`curl`/`laplacian` (reverse) |
 |----------------|------------------------|---------------------------------------------------------------------------|
-| top-level (global) scalar | ✅ | ✅ |
-| top-level (global) vector, via `vref` | ✅ | ✅ |
-| **local** / parameter scalar | ✅ | ❌ LLVM `PtrToInt` verification failure (**ESH-0072** scalar point, **ESH-0097** vector point) |
-| `vref` of an outer **local** vector param | ✅ | ❌ same failure (**ESH-0097** `capvrefout`) |
+| top-level (global) scalar | Yes | Yes |
+| top-level (global) vector, via `vref` | Yes | Yes |
+| **local** / parameter scalar | Yes | Yes (fixed: **ESH-0072** scalar point, **ESH-0097** vector point) |
+| `vref` of an outer **local** vector param | Yes | Yes (fixed: **ESH-0097** `capvrefout`) |
 
 Verified examples:
 
@@ -412,25 +416,27 @@ Verified examples:
 ;; GLOBAL capture — works in both modes
 (define a 8.0) (define t 5.0)
 (define (loss x) (let ((d (- x t))) (* a (* d d))))
-(derivative loss 7.0)                                    ;; => 32   ✅
+(derivative loss 7.0)                                    ;; => 32
 
 (define g 1.7)
 (gradient (lambda (v) (* g (vref v 0) (vref v 0))) (vector 1.3 -0.7))
-;; => #(4.42 0)   ✅
+;; => #(4.42 0)
 
 ;; LOCAL capture under `derivative` — works (forward mode)
 (define (step a t w0) (derivative (lambda (x) (loss2 a t x)) w0))
-;; (step 8.0 5.0 7.0) => 32   ✅
+;; (step 8.0 5.0 7.0) => 32
 
-;; LOCAL capture under `gradient` — FAILS at compile time (ESH-0072 / ESH-0097)
+;; LOCAL capture under `gradient` — works (ESH-0072 / ESH-0097, fixed)
 (define (mk a) (gradient (lambda (x) (* a x x)) 3.0))
-;; ERROR: LLVM module verification failed: PtrToInt source must be pointer
-;;        %N = ptrtoint %eshkol_tagged_value %a to i64
+(mk 2.0)                                                 ;; => 12
 ```
 
-**Workaround until ESH-0072/ESH-0097 land:** lift captured scalars to
-top-level `define`s (or pass them *inside* the point vector and `vref` them),
-so the reverse-mode lambda only closes over globals.
+No workaround is needed. The reverse-mode vector path funnels a value-typed
+capture through a temp slot instead of `ptrtoint`-ing a `tagged_value` struct
+(`lib/backend/autodiff_codegen.cpp:6975-6990`, `:11381-11400`); the regression
+is `tests/ad/sweep_c_regressions_test.esk:57-69`, which asserts exact values
+for gradient, jacobian, hessian, divergence and laplacian over a lambda
+capturing a local parameter.
 
 ---
 
@@ -438,15 +444,16 @@ so the reverse-mode lambda only closes over globals.
 
 | Composition | Status | Note |
 |-------------|--------|------|
-| `derivative` of `derivative` (scalar 2nd order) | ✅ | exact, 2 perturbation slots |
-| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | ✅ | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
-| `derivative-n` / `taylor` applied to a **derivative closure** — `(define df (derivative f))` then `(derivative-n df x k)` | ❌ returns 0 | The tower path seeds a heap **Taylor tower**, but the closure `(derivative f)` returns is jet-transparent, not tower-transparent: it reads the tower-tagged argument as a jet and the result carries no tower, so extraction yields 0. Making it exact needs a "differentiate a tower" runtime step (`c_k(f') = (k+1)·c_{k+1}(f)`) inside the emitted wrapper — a build item, not a limit of the mathematics. Use `(derivative-n f x k)` on the base function, or nest `derivative` — `(derivative (lambda (x) (df x)) x0)` is exact — both of which give the same value |
-| `gradient` of scalar `derivative`, scalar point | ✅ | forward-fast-path |
-| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | ✅ | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
-| `gradient` of `gradient`, **scalar** point | ✅ | e.g. `L''` returns correct value |
-| `gradient` of `gradient`, **vector** point | ❌ returns zeros (**ESH-0096**) |
-| `gradient` of a **named** inner function | ❌ returns 0 (**ESH-0078**) |
-| AD inside a bounded loop (reuse) | ✅ | stable over 1000+ iterations |
+| `derivative` of `derivative` (scalar 2nd order) | Yes | exact, 2 perturbation slots |
+| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | Yes | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
+| `derivative-n` / `taylor` applied to a **derivative closure** — `(define df (derivative f))` then `(derivative-n df x k)` | Yes | exact (fixed, **ESH-0402**). `(derivative df x)` and `(derivative (lambda (x) (df x)) x0)` answer exactly as well, and all three agree with `(derivative-n f x k)` on the base function. This was the closure-side view of one carrier-boundary defect, not a separate limitation. Gated by [tests/ad/ad_carrier_nesting_test.esk](../../../tests/ad/ad_carrier_nesting_test.esk) |
+| `gradient` of scalar `derivative`, scalar point | Yes | forward-fast-path |
+| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | Yes | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
+| `gradient` of `gradient`, **scalar** point | Yes | e.g. `L''` returns correct value |
+| `gradient` of `gradient`, **vector** point | Yes | returns the true second derivative — `#(12)` for the 1-D case, `#(8 6)` for the 2-D one (formerly **ESH-0096**) |
+| `gradient` of a **named** inner function | Yes | returns `18`, matching the inline-lambda form (formerly **ESH-0078**) |
+| `gradient`/`jacobian` of a **curried** `gradient` closure — `(define g (gradient f))` then `(jacobian g pt)` | Refuses | raises `unsupported nested differentiation` rather than answering. A loud refusal, not a silent zero. Use `(hessian f pt)`, which is exact on the same build (**ESH-0096**) |
+| AD inside a bounded loop (reuse) | Yes | stable over 1000+ iterations |
 
 Mixed reverse-over-forward (an outer vector `gradient` over an inner
 `derivative` that depends on captured tape parameters) is the headline v1.3 AD

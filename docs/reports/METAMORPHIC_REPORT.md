@@ -56,7 +56,7 @@ disabled; all repeated outputs were byte-identical.
 ICC oracle:
 
 ```sh
-/Users/tyr/Desktop/infinite_context_coder/bin/icc completion-oracle \
+icc completion-oracle \
   --repo eshkol_lang \
   --target metamorphic-laws \
   --trace-dir scripts/icc_traces \

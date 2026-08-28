@@ -94,7 +94,7 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 42,974 | Main codegen, dispatch, builtins |
+| [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) | 43,959 | Main codegen, dispatch, builtins |
 | [autodiff_codegen.cpp](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse mode AD |
 | [arithmetic_codegen.cpp](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | Numeric ops, bignum, rational, complex |
 | [string_io_codegen.cpp](../../lib/backend/string_io_codegen.cpp) | 3,860 | String, I/O, JSON, CSV operations |
@@ -104,8 +104,8 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 | [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 1,867 | Tensor-op dispatch shell; per-domain ops live in twelve `tensor_*_codegen.cpp` siblings (~22,100 lines combined) |
 | [binding_codegen.cpp](../../lib/backend/binding_codegen.cpp) | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | [thread_pool.cpp](../../lib/backend/thread_pool.cpp) | 1,524 | Work-stealing thread pool |
-| [tensor_backward.cpp](../../lib/backend/tensor_backward.cpp) | 1,446 | Backward-mode AD gradients |
-| [blas_backend.cpp](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model |
+| [tensor_backward.cpp](../../lib/backend/tensor_backward.cpp) | 1,572 | Backward-mode AD gradients |
+| [blas_backend.cpp](../../lib/backend/blas_backend.cpp) | 1,316 | BLAS dispatch, GPU cost model |
 | [call_apply_codegen.cpp](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application |
 | [control_flow_codegen.cpp](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/call-cc |
 | [map_codegen.cpp](../../lib/backend/map_codegen.cpp) | 1,142 | map/for-each/fold with closures |
@@ -113,7 +113,7 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 | [tagged_value_codegen.cpp](../../lib/backend/tagged_value_codegen.cpp) | 807 | Tagged value pack/unpack |
 | [tail_call_codegen.cpp](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation |
 | [homoiconic_codegen.cpp](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, eval |
-| [hash_codegen.cpp](../../lib/backend/hash_codegen.cpp) | 671 | Hash operations |
+| [hash_codegen.cpp](../../lib/backend/hash_codegen.cpp) | 734 | Hash operations |
 | [complex_codegen.cpp](../../lib/backend/complex_codegen.cpp) | 640 | Complex number ops (Smith's formula) |
 
 Additional backend components:
@@ -529,7 +529,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,359 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,435 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 1,019 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry

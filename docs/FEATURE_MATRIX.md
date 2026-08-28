@@ -6,7 +6,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 
 **Language surface count (canonical, reconciled 2026-08-26 against commit
 `afbaaf5b` — doc-truth audit finding N4):** the declared language surface is
-**1,107** constructs. Older cited figures — 1,091 and 1,106 here and in
+**1,108** constructs. Older cited figures — 1,091, 1,106 and 1,107 here and in
 `docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
 "550+ built-in functions"/"39 special forms" in `README.md` — were each
 correct on the day they were written but drifted as the surface grew; the
@@ -145,8 +145,8 @@ from the manifest again.
 | `jacobian` operator | Yes | Reverse | 15+ tests |
 | `hessian` operator | Yes | Reverse | 10+ tests |
 | **Vector Calculus** |
-| Divergence | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇·F (trace of Jacobian); exact on both engines. The VM's `h=1e-7` central differences were replaced by one seeded forward dual per input variable on 2026-08-26; cross-engine agreement measured by `tests/vm_parity/corpus/72_curl_field_shapes.esk` (PARITY.tsv op:DIVERGENCE) |
-| Curl | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇×F (3D + generalized 2-forms, n≥2 on both engines); exact on both. Accepts a field of arity 1 (the whole point, the documented form) or arity N (spread components), and a field returning a vector or a list, identically on both engines (PARITY.tsv op:CURL, ledger LE-12). A field returning a `(tensor …)` stays native-only — the VM raises a named diagnostic rather than approximating it |
+| Divergence | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇·F (trace of Jacobian); exact on both engines — `autodiff_codegen.cpp` on LLVM, and one forward dual seeded per input variable at `vm_native.c` case 753 on the bytecode VM. The former `h=1e-7` central differences were replaced on 2026-08-26; no step size remains. Cross-engine agreement is measured by `tests/vm_parity/corpus/72_curl_field_shapes.esk` (PARITY.tsv op:DIVERGENCE) |
+| Curl | Yes | Reverse (LLVM) / exact forward dual (VM) | ∇×F (3D + generalized 2-forms, n≥2 on both engines); exact on both. The VM builds its 3×3 Jacobian from three closure calls where the former central difference needed six. Accepts a field of arity 1 or arity N, and a field returning a vector or list, identically on both engines (PARITY.tsv op:CURL, ledger LE-12); tensor results remain native-only with a named VM diagnostic. A gradient field now returns exactly `#(0 0 0)` rather than difference-quotient residuals, and `(ad-finite-difference-evals)` reads 0 |
 | Laplacian | Yes | Reverse | ∇²f (trace of Hessian) |
 | Directional derivative | Yes | Reverse | D_v f = ∇f·v |
 | `divergence` operator | Yes | Reverse | 5+ tests |
@@ -276,7 +276,7 @@ from the manifest again.
 | S-expression parser | Yes | Recursive descent | Fast |
 | Macro system | Yes | Hygenic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 21 | 34,928 lines |
+| LLVM IR generation | Yes | LLVM 21 | 43,959 lines (`lib/backend/llvm_codegen.cpp`) |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -496,7 +496,7 @@ from the manifest again.
 | Type System Guide | Yes | HoTT types | Dependent types |
 | Examples | Yes | Demo programs | Neural networks, physics, ML |
 | **Testing** |
-| Unit tests | Yes | Component tests | 426 files |
+| Unit tests | Yes | Component tests | 1,812 `.esk` files |
 | Integration tests | Yes | End-to-end | Full programs |
 | AD verification | Yes | Numerical validation | Gradient checking |
 | Benchmark suite | Yes | Performance tracking | GPU + CPU benchmarks |
@@ -719,7 +719,7 @@ from the manifest again.
 | **Memory Management** | 20+ | Yes | Arena correctness |
 | **System Integration** | 15+ | Yes | File I/O, system calls |
 | **REPL/JIT** | 10+ | Yes | Cross-eval persistence |
-| **Total** | **426** | **Yes** | **High confidence** |
+| **Total** | **1,812** | **Yes** | **High confidence** |
 
 ---
 
@@ -903,8 +903,8 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 66-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 66` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
-| 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
+| 67-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 67` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-28 from "66" after #491 appended `OP_GLOBAL_MARK = 66` without renumbering; corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
+| 724 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-28 from "722"; corrected 2026-08-25 from "694" (conformity audit item d7) |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |
@@ -930,7 +930,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). But `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). But `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956, plus 323 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
