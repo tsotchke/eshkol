@@ -1790,9 +1790,14 @@ extern "C" void tensor_poincare_exp_map_backward(ad_node_t* node) {
  *  disagreement.
  *
  *  It returns false when sqrt(c)|u| >= 1, i.e. no finite log exists. The
- *  forward clamps there (`t >= 1 -> t = 1 - 1e-12`) and returns a value, but
- *  that value is fabricated — beyond the boundary the log map has no value to
- *  differentiate — so the rule refuses rather than differentiate the clamp. */
+ *  forward (ad_poincare_log_map in lib/bridge/qllm_bridge.cpp) now refuses on
+ *  exactly that condition too; it used to clamp there (`t >= 1 -> t = 1 -
+ *  1e-12`) and return a value anyway, and that value was fabricated — beyond
+ *  the boundary the log map has no value to differentiate — which is what
+ *  this rule was written to refuse to launder into a gradient (SW-76). The
+ *  check stays as this rule's own precondition rather than being retired with
+ *  the clamp: a node that reached the tape by some other route must still not
+ *  be differentiated past the boundary. */
 extern "C" void tensor_poincare_log_map_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* xn = node->input1;
@@ -1816,10 +1821,11 @@ extern "C" void tensor_poincare_log_map_backward(ad_node_t* node) {
     FrechetGeometry geo(-c, n);
     if (!geo.log_map_with_jacobians(X, Y)) {
         eshkol_fatal("poincare-log-map backward: sqrt(c)|(-x) (+) y| >= 1, so no "
-                     "finite log_x(y) exists at these operands. The forward "
-                     "clamps artanh's argument and returns a value anyway; that "
-                     "value is fabricated, and differentiating it would launder "
-                     "the fabrication into a gradient. Refusing.");
+                     "finite log_x(y) exists at these operands. Differentiating "
+                     "a substituted value there would launder a fabrication "
+                     "into a gradient. Refusing. (The forward refuses on the "
+                     "same condition, so reaching this means the node was "
+                     "recorded by some other route.)");
         return;
     }
 

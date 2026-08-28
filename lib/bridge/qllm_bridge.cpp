@@ -226,6 +226,43 @@ void mobius_add(const double* x, const double* y, double c, size_t n, double* ou
     for (size_t i = 0; i < n; ++i) out[i] = (num_x * x[i] + num_y * y[i]) / den;
 }
 
+/**
+ * @brief Poincare-ball membership: is @p p strictly inside the ball of
+ *        curvature -c, i.e. sqrt(c)|p| < 1?
+ *
+ * Every geometric op below asks this before it computes anything, and refuses
+ * when the answer is no. The reason it must be asked is that the formulas do
+ * NOT fail on their own outside the ball -- they keep returning finite
+ * doubles. The conformal factor lambda = 2/(1 - c|x|^2) is negative outside
+ * and infinite on the boundary; artanh's argument crosses 1; and each of those
+ * still lands on some number a caller cannot tell from a real one. On the
+ * boundary there is no tangent space and no finite log map, so there is no
+ * value to return and no derivative to record: a substituted one is a
+ * fabrication, and in the AD path it is a fabricated GRADIENT, which is the
+ * silent-wrong class this ledger exists to keep out (SW-76).
+ *
+ * The strict `<` is the whole point -- `sn < 1.0` is also false for NaN, so a
+ * NaN coordinate refuses here rather than propagating into the tape.
+ *
+ * This is the same test the VM path applies through
+ * eshkol_rm_check_point()/eshkol_rm_log_map() in
+ * inc/eshkol/backend/riemannian_core.h, and the same one
+ * eshkol_frechet_log_map() in inc/eshkol/backend/frechet_mean_core.h and
+ * FrechetGeometry::log_map_with_jacobians() in lib/bridge/tensor_backward.cpp
+ * already enforce. Projection onto the ball is a DIFFERENT operation with a
+ * documented radius (`manifold-project`); it is never applied here silently.
+ *
+ * @param out_sn  Receives sqrt(c)|p| so the caller can name the measured
+ *                value in its refusal message. Written even when the point is
+ *                rejected.
+ * @return true iff sqrt(c)|p| < 1.
+ */
+bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
+    double sn = std::sqrt(c) * std::sqrt(norm_sq(p, n));
+    if (out_sn) *out_sn = sn;
+    return sn < 1.0;
+}
+
 } /* namespace */
 
 /*******************************************************************************
@@ -773,13 +810,26 @@ extern "C" ad_node_t* ad_hyperbolic_distance(ad_tape_t* tape, ad_node_t* x,
 
     double diff2 = 0.0;
     for (size_t i = 0; i < n; ++i) { double d = X[i] - Y[i]; diff2 += d * d; }
-    double dx = 1.0 - c * norm_sq(X, n);
-    double dy = 1.0 - c * norm_sq(Y, n);
-    if (dx <= 0.0 || dy <= 0.0) {
-        eshkol_error("qllm bridge: ad_hyperbolic_distance argument outside the Poincare ball");
+    double snx = 0.0, sny = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
+        eshkol_error("qllm bridge: ad_hyperbolic_distance got a point that is "
+                     "not strictly inside the Poincare ball of curvature -%.17g "
+                     "(radius 1/sqrt(c) = %.17g): sqrt(c)|x| = %.17g, "
+                     "sqrt(c)|y| = %.17g, both of which must be < 1. The "
+                     "distance diverges at the boundary, so there is no value "
+                     "to return and no derivative to record; refusing rather "
+                     "than substituting one. Project explicitly first if that "
+                     "is the intent.",
+                     c, 1.0 / std::sqrt(c), snx, sny);
         return nullptr;
     }
+    double dx = 1.0 - c * norm_sq(X, n);
+    double dy = 1.0 - c * norm_sq(Y, n);
     double arg = 1.0 + 2.0 * c * diff2 / (dx * dy);
+    /* arg = 1 + 2c|x-y|^2/(dx*dy) is >= 1 exactly whenever both points are in
+     * the ball (dx, dy > 0), which the check above has just established. Only
+     * rounding can put it a few ulp below 1, where acosh is NaN. This lifts
+     * that rounding, and only that: it is not a boundary substitution. */
     if (arg < 1.0) arg = 1.0;
     double dist = std::acosh(arg) / std::sqrt(c);
 
@@ -808,6 +858,25 @@ extern "C" ad_node_t* ad_poincare_exp_map(ad_tape_t* tape, ad_node_t* x,
     const double* V = (const double*)v->tensor_value;
     double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
     double sc = std::sqrt(c);
+
+    /* The conformal factor lambda = 2/(1 - c|x|^2) below is where an
+     * out-of-ball base point stops meaning anything: at |x| = 1/sqrt(c) the
+     * denominator is 0 and lambda is infinite, tanh saturates to 1, and the
+     * result is a finite point that was never exp_x(v) of anything; outside,
+     * lambda is NEGATIVE and the map runs backwards. Both cases return a
+     * plausible-looking number with no diagnostic, which is exactly what this
+     * refuses to do. */
+    double snx = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx)) {
+        eshkol_error("qllm bridge: ad_poincare_exp_map base point is not "
+                     "strictly inside the Poincare ball of curvature -%.17g "
+                     "(radius 1/sqrt(c) = %.17g): sqrt(c)|x| = %.17g, which "
+                     "must be < 1. There is no tangent space at or beyond the "
+                     "boundary, so exp_x(v) has no value and no derivative "
+                     "there; refusing rather than substituting one.",
+                     c, 1.0 / sc, snx);
+        return nullptr;
+    }
 
     double* out = alloc_doubles(n);
     if (!out) return nullptr;
@@ -846,6 +915,18 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);
     double sc = std::sqrt(c);
 
+    double snx = 0.0, sny = 0.0;
+    if (!poincare_in_ball(X, c, n, &snx) || !poincare_in_ball(Y, c, n, &sny)) {
+        eshkol_error("qllm bridge: ad_poincare_log_map got a point that is not "
+                     "strictly inside the Poincare ball of curvature -%.17g "
+                     "(radius 1/sqrt(c) = %.17g): sqrt(c)|x| = %.17g, "
+                     "sqrt(c)|y| = %.17g, both of which must be < 1. log_x(y) "
+                     "is defined only between interior points; refusing rather "
+                     "than substituting a fabricated tangent vector.",
+                     c, 1.0 / sc, snx, sny);
+        return nullptr;
+    }
+
     double* out = alloc_doubles(n);
     if (!out) return nullptr;
 
@@ -859,7 +940,27 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     if (dn >= 1e-15) {
         double lam = 2.0 / (1.0 - c * norm_sq(X, n));
         double t = sc * dn;
-        if (t >= 1.0) t = 1.0 - 1e-12;
+        /* artanh(t) diverges as t -> 1, and t CAN reach 1 from two points each
+         * strictly inside the ball: u = (-x) (+)_c y is formed by cancellation,
+         * so points roughly 19 units of hyperbolic distance apart drive it to 1
+         * in f64. This used to read `if (t >= 1.0) t = 1.0 - 1e-12;`, which
+         * returned artanh(1 - 1e-12) ~= 14.2 -- a finite log-map magnitude
+         * where the map has none. Nothing downstream could tell that number
+         * from a real one, and the reverse rule
+         * (tensor_poincare_log_map_backward) would have been differentiating a
+         * clamp. Refuse instead, on the same terms as eshkol_rm_log_map() in
+         * inc/eshkol/backend/riemannian_core.h. */
+        if (!(t < 1.0)) {
+            eshkol_error("qllm bridge: ad_poincare_log_map has no finite value "
+                         "at these operands: sqrt(c)|(-x) (+)_c y| = %.17g must "
+                         "be < 1 for artanh, and the two points are too far "
+                         "apart in hyperbolic distance for the ambient ball "
+                         "coordinates to separate them (c = %.17g, "
+                         "sqrt(c)|x| = %.17g, sqrt(c)|y| = %.17g). Refusing "
+                         "rather than substituting a fabricated log magnitude.",
+                         t, c, snx, sny);
+            return nullptr;
+        }
         double coef = (2.0 / (sc * lam)) * std::atanh(t) / dn;
         for (size_t i = 0; i < n; ++i) out[i] = coef * diff[i];
     }
@@ -901,6 +1002,47 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
     const double* V = (const double*)v->tensor_value;
+
+    /* Every Q and K head-slice is a point of the Poincare ball, and the score
+     * is a geodesic distance between two of them, so each slice must be
+     * strictly inside the ball before any score is computed. This used to be
+     * handled INSIDE the score loop by `if (dxq <= 0.0 || dxk <= 0.0) dist =
+     * HUGE_VAL;` commented "outside the ball: unreachable", which silently
+     * demoted an invalid point to an attention weight of exactly zero: the op
+     * returned a full, finite, plausible attention output in which one key had
+     * simply been dropped, with no diagnostic, and the backward then produced
+     * gradients for that arrangement. "Unreachable" is a statement about
+     * hyperbolic geometry between valid points; a point outside the ball is
+     * not far away, it is not a point of the manifold at all. Refuse, and name
+     * the slice, so the caller learns which row is off-manifold instead of
+     * silently losing it. Checking up front also keeps the softmax honest: mx
+     * is then finite, so `sum` is >= 1 by its own max term and the downstream
+     * `if (sum <= 0.0) sum = 1.0;` guard becomes unreachable rather than
+     * papering over an all-off-manifold NaN row. */
+    for (size_t b = 0; b < batch; ++b) {
+        for (size_t t = 0; t < seq; ++t) {
+            for (int h = 0; h < num_heads; ++h) {
+                size_t off = (b * seq + t) * dim + (size_t)h * head_dim;
+                double snq = 0.0, snk = 0.0;
+                bool okq = poincare_in_ball(Q + off, c, head_dim, &snq);
+                bool okk = poincare_in_ball(K + off, c, head_dim, &snk);
+                if (!okq || !okk) {
+                    eshkol_error(
+                        "qllm bridge: ad_geodesic_attention got a %s head-slice "
+                        "that is not strictly inside the Poincare ball of "
+                        "curvature -%.17g (radius 1/sqrt(c) = %.17g) at "
+                        "batch %zu, position %zu, head %d: sqrt(c)|q| = %.17g, "
+                        "sqrt(c)|k| = %.17g, both of which must be < 1. The "
+                        "geodesic score has no value there; refusing rather "
+                        "than scoring that slice as infinitely distant and "
+                        "dropping it from the softmax without saying so.",
+                        okq ? "key" : "query", c, 1.0 / sc, b, t, h, snq, snk);
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     double* O = alloc_doubles(batch * seq * dim);
     double* scores = alloc_doubles(seq);
     /* Retain the softmax weights for the backward (SW-65). Recomputing them in
@@ -931,15 +1073,13 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                         qn += Q[qi + d] * Q[qi + d];
                         kn += K[kj + d] * K[kj + d];
                     }
+                    /* dxq, dxk > 0 by the in-ball pre-pass above. */
                     double dxq = 1.0 - c * qn, dxk = 1.0 - c * kn;
-                    double dist;
-                    if (dxq <= 0.0 || dxk <= 0.0) {
-                        dist = HUGE_VAL; /* outside the ball: unreachable */
-                    } else {
-                        double arg = 1.0 + 2.0 * c * diff2 / (dxq * dxk);
-                        if (arg < 1.0) arg = 1.0;
-                        dist = std::acosh(arg) / sc;
-                    }
+                    double arg = 1.0 + 2.0 * c * diff2 / (dxq * dxk);
+                    /* >= 1 exactly for in-ball points; this lifts rounding a
+                     * few ulp below 1, where acosh is NaN, and nothing else. */
+                    if (arg < 1.0) arg = 1.0;
+                    double dist = std::acosh(arg) / sc;
                     scores[j] = -dist * scale;
                     if (scores[j] > mx) mx = scores[j];
                 }
