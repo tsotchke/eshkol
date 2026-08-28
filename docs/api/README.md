@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2191/3956 public symbols documented (55.4%), 1765 undocumented.
+**Coverage:** 2192/3957 public symbols documented (55.4%), 1765 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -35,12 +35,12 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `backend/`
 
-1178/1990 symbols documented.
+1179/1991 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 49 | 42 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 180 | 115 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 181 | 116 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 57 | 21 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
