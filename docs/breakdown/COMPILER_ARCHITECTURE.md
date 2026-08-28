@@ -109,7 +109,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,337 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,402 lines)
 
 The parser is a recursive descent processor that builds an AST from S-expressions:
 
@@ -207,7 +207,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (43,232 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (43,959 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
@@ -515,7 +515,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; ~22,100 lines across twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,446 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; ~22,100 lines across twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,572 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -591,7 +591,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,359 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,435 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
