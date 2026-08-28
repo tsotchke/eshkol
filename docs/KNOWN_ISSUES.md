@@ -419,19 +419,27 @@ block ordinary use.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
-  *reverse* pass raises (ESH-0096).** With `(define g (gradient f))`,
+  *reverse* pass is exact (fixed, ESH-0096).** With `(define g (gradient f))`,
   `(jacobian g point)` used to return a zero matrix, silently, where
   `(hessian f point)` returns the correct Hessian on the same build — and for
-  some shapes it read a tape pointer as a double and crashed. It now raises
-  `unsupported nested differentiation`. The cause is specific and shallow: the
-  runtime-closure gradient reads its point's components as raw doubles, so the
-  `ad_node_t*` components an enclosing reverse pass hands it became a subnormal.
-  Closing it exactly means evaluating the inner gradient forward-over-reverse —
-  the route `(hessian f point)` already takes. **Use `(hessian f point)`; it is
-  exact.** The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
-  byte-identical to `(gradient f point)`, and `(gradient g)` still refuses with a
-  diagnostic naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined).
-  Curried *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
+  some shapes it read a tape pointer as a double and crashed. It was then made
+  to raise `unsupported nested differentiation`, an honest interim guard. It now
+  answers the Hessian, exactly: entry-for-entry identical to
+  `(hessian f point)`, off-diagonals included. The runtime-closure gradient
+  detects a point whose components are the enclosing pass's `ad_node_t*` tape
+  nodes and evaluates the inner gradient **forward**-over-reverse — the route
+  `(hessian f point)` already takes — recording the composition back onto the
+  outer tape. No finite differences. The curried gradient itself,
+  `(g point)` / `(g x y …)`, is exact and byte-identical to
+  `(gradient f point)`, and `(gradient g)` still refuses with a diagnostic
+  naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined). Curried
+  *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
+  **One shape stays loud on purpose:** a point *computed* from the enclosing
+  pass's variables — e.g.
+  `(jacobian (lambda (v) (g (vector (* 2.0 (vector-ref v 0))))) point)` — has no
+  component that IS the pass's active seed, so no edge can be threaded back and
+  it raises rather than answering a disconnected zero. Pinned by
+  `tests/ad/ad_curried_gradient_nested_test.esk` on the JIT and AOT lanes.
 - **`derivative-n` / `taylor` applied to a derivative *closure* is exact (fixed,
   ESH-0402).** With `(define df (derivative f))`, `(derivative-n df x k)` used to
   yield `0`; it now answers exactly, as do `(derivative df x)` and

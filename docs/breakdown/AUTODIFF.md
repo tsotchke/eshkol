@@ -328,7 +328,7 @@ confirmed by re-running its own minimal repro under
 
 | Cell | Was | Now |
 |------|-----|-----|
-| ESH-0096 | vector-param gradient-of-gradient returned zeros | direct nested form returns `#(12)` (1-D) / `#(8 6)` (2-D); the *curried* route (`(jacobian (gradient f) point)`) raises `unsupported nested differentiation` rather than answering (SW-05) |
+| ESH-0096 | vector-param gradient-of-gradient returned zeros | direct nested form returns `#(12)` (1-D) / `#(8 6)` (2-D); the *curried* route (`(jacobian (gradient f) point)`) now answers the Hessian too, via forward-over-reverse, identically to `(hessian f point)` (SW-05 closed). Only a point *computed* from the enclosing pass's variables still raises |
 | ESH-0095 | `hessian`/`laplacian` SIGSEGV at a `tensor`/`#(…)` point | every point form returns the same answer |
 | ESH-0078 | second-order gradient through a **named** inner function returned zeros | agrees with the inline-lambda form |
 | ESH-0097 | vector-param AD capturing a local failed IR verification (`PtrToInt`) | returns `#(4.42 0)` |
