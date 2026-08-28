@@ -1447,6 +1447,19 @@ void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint3
  * @param exception Exception to raise.
  */
 void eshkol_raise(eshkol_exception_t* exception);
+
+/**
+ * @brief Raise the secondary exception required when a non-continuable
+ *        handler returns.
+ * @param original The original condition, used to identify the failure in
+ *        the secondary exception message.
+ *
+ * R7RS 6.11 requires a handler that returns from `raise` to cause a new
+ * exception in the handler's dynamic environment. The handler itself has
+ * already been removed from the active stack when this is called, so an
+ * enclosing handler receives the secondary exception.
+ */
+void eshkol_raise_secondary_exception(eshkol_exception_t* original);
 // R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
 /**
  * @brief R7RS `error-object?` predicate.

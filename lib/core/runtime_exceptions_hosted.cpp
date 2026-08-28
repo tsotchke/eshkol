@@ -838,6 +838,24 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     }
 }
 
+extern "C" void eshkol_raise_secondary_exception(eshkol_exception_t* original) {
+    char message[512];
+    const char* original_message =
+        (original && original->message && original->message[0])
+            ? original->message : "unknown condition";
+    std::snprintf(message, sizeof(message),
+                  "handler returned from non-continuable raise: %s",
+                  original_message);
+    eshkol_exception_t* secondary = eshkol_make_exception_with_header(
+        ESHKOL_EXCEPTION_ERROR, message);
+    if (secondary) {
+        eshkol_raise(secondary);
+    }
+    // Allocation failure is itself fatal; do not let a failed secondary raise
+    // turn the original non-continuable raise into a normal return.
+    std::exit(1);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // SW-57: HANDLER-FRAME STORAGE IS LIFO, SO ITS ALLOCATOR MUST BE.
 //

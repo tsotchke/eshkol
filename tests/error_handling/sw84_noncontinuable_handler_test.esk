@@ -1,0 +1,30 @@
+; SW-84: returning from a non-continuable raise must raise a secondary
+; exception in the handler's dynamic environment. The checks below distinguish
+; recovery by an enclosing handler from the old silent return.
+
+(define direct
+  (guard (g (#t 'guard-fired))
+    (with-exception-handler
+      (lambda (e) 'ignored)
+      (lambda () (raise 'original)))))
+
+(define nested
+  (guard (g (#t 'nested-outer))
+    (with-exception-handler
+      (lambda (outer) 'outer-ignored)
+      (lambda ()
+        (with-exception-handler
+          (lambda (inner) 'inner-ignored)
+          (lambda () (raise 'original)))))))
+
+(define handler-raises
+  (guard (g (#t 'handler-raised))
+    (with-exception-handler
+      (lambda (e) (raise 'from-handler))
+      (lambda () (raise 'original)))))
+
+(if (and (eq? direct 'guard-fired)
+         (eq? nested 'nested-outer)
+         (eq? handler-raises 'handler-raised))
+    (display "PASS: SW-84 non-continuable handler return semantics\n")
+    (display "FAIL: SW-84 non-continuable handler return semantics\n"))

@@ -66,7 +66,15 @@ typedef enum {
     OP_WIND_PUSH=61,    /* push after thunk onto wind stack */
     OP_WIND_POP=62,     /* pop from wind stack */
 
-    OP_COUNT=63
+    /* Keep the standalone/ESKB emitter's numbering aligned with vm_core.c. */
+    OP_VOID=63,
+    OP_LANGUAGE_COVERAGE=64,
+    OP_LANGUAGE_COVERAGE_CALL=65,
+    OP_GLOBAL_MARK=66,
+    /* R7RS secondary exception after a returned non-continuable handler. */
+    OP_RAISE_SECONDARY=67,
+
+    OP_COUNT=68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -1466,6 +1474,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0); /* push handler closure */
         chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
         chunk_emit(c, OP_CALL, 1);
+        chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
         patch(c, end_patch, OP_JUMP, c->code_len);
         return;
@@ -4252,6 +4261,23 @@ static void execute_chunk(FuncChunk* chunk) {
         /* Push current exception value (set by most recent raise) */
         case OP_GET_EXN: {
             PUSH(current_exn);
+            break;
+        }
+
+        /* A returned handler is not a normal result for non-continuable
+         * raise. Re-dispatch the condition after removing this handler so an
+         * enclosing handler observes the secondary exception. */
+        case OP_RAISE_SECONDARY: {
+            if (handler_count <= 0) {
+                printf("ERROR: handler returned from non-continuable raise\n");
+                error = 1;
+                break;
+            }
+            handler_count--;
+            sp = exc_handlers[handler_count].saved_sp;
+            fp = exc_handlers[handler_count].saved_fp;
+            frame_count = exc_handlers[handler_count].saved_frame_count;
+            pc = exc_handlers[handler_count].handler_pc;
             break;
         }
 
