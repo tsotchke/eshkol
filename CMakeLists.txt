@@ -1924,6 +1924,19 @@ if(NOT "lib/backend/tensorcore_codegen.cpp" IN_LIST LIB_SRC)
     list(APPEND LIB_SRC lib/backend/tensorcore_codegen.cpp)
 endif()
 
+# The LLVM code generator's orchestration, builtin factory, and REPL resolver
+# are separate translation units. Keep them explicit so existing configure
+# trees pick up the extraction even when the recursive glob is not refreshed.
+foreach(_eshkol_codegen_src
+    lib/backend/module_init_codegen.cpp
+    lib/backend/builtin_factory_codegen.cpp
+    lib/backend/repl_resolution_codegen.cpp
+)
+    if(NOT "${_eshkol_codegen_src}" IN_LIST LIB_SRC)
+        list(APPEND LIB_SRC "${_eshkol_codegen_src}")
+    endif()
+endforeach()
+
 set(ESHKOL_VM_CORE_COMPONENT_SRC
   lib/backend/vm_core.c
   lib/backend/vm_run.c

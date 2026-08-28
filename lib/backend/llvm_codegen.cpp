@@ -38,7 +38,6 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/core/runtime.h>
-#include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
 #include <sstream>
@@ -203,11 +202,6 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/Passes/PassBuilder.h>
-#include <llvm/CodeGen/RegAllocRegistry.h>
-#include <llvm/CodeGen/MachineFunctionPass.h>
-#include <llvm/CodeGen/MachineFunction.h>
-#include <llvm/CodeGen/MachineRegisterInfo.h>
-#include <llvm/CodeGen/LiveIntervals.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -735,144 +729,11 @@ struct AotModuleStats {
     uint64_t instructions = 0;
 };
 
-// A top-level Eshkol program is lowered into one C-main wrapper when it has no
-// user-defined `main`. Keeping every initialization form in that wrapper
-// makes LLVM's register allocator solve one enormous live-range problem even
-// though the source forms are sequential and independently callable. The
-// outline size is a code-generation policy, not a source-language limit.
-static constexpr uint64_t kAotInitOutlineForms = 64;
-
-static uint64_t aot_init_outline_forms() {
-    const char* raw = std::getenv("ESHKOL_AOT_INIT_OUTLINE_FORMS");
-    if (!raw || raw[0] == '\0') return kAotInitOutlineForms;
-    char* end = nullptr;
-    unsigned long long parsed = std::strtoull(raw, &end, 10);
-    if (end && *end == '\0' && parsed > 0) {
-        return static_cast<uint64_t>(parsed);
-    }
-    eshkol_warn("Ignoring invalid ESHKOL_AOT_INIT_OUTLINE_FORMS=%s", raw);
-    return kAotInitOutlineForms;
-}
-
-static uint64_t aot_fast_regalloc_instruction_threshold() {
-    // RAGreedy's interference work grows super-linearly with live ranges. A
-    // 100k-IR-instruction function is already beyond the size where the fast
-    // allocator's linear-time tradeoff is preferable for O0/debug emission.
-    static constexpr uint64_t kDefaultThreshold = 100000;
-    const char* raw = std::getenv("ESHKOL_AOT_FAST_RA_THRESHOLD");
-    if (!raw || raw[0] == '\0') return kDefaultThreshold;
-    char* end = nullptr;
-    unsigned long long parsed = std::strtoull(raw, &end, 10);
-    if (end && *end == '\0' && parsed > 0) {
-        return static_cast<uint64_t>(parsed);
-    }
-    eshkol_warn("Ignoring invalid ESHKOL_AOT_FAST_RA_THRESHOLD=%s", raw);
-    return kDefaultThreshold;
-}
-
-static bool aot_module_needs_fast_regalloc(const Module& module) {
-    if (g_optimization_level != 0) return false;
-    const uint64_t threshold = aot_fast_regalloc_instruction_threshold();
-    for (const Function& function : module) {
-        if (function.isDeclaration()) continue;
-        uint64_t instructions = 0;
-        for (const BasicBlock& block : function) {
-            instructions += static_cast<uint64_t>(block.size());
-        }
-        if (instructions >= threshold) return true;
-    }
-    return false;
-}
-
 static bool env_flag_enabled(const char* name) {
     const char* raw = std::getenv(name);
     return raw && raw[0] != '\0' && std::strcmp(raw, "0") != 0 &&
            std::strcmp(raw, "false") != 0 && std::strcmp(raw, "FALSE") != 0;
 }
-
-static void trace_aot_function_ir_stats(const Module& module) {
-    if (!env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) return;
-    const std::string module_id = module.getModuleIdentifier();
-    const char* source = g_source_filepath.empty() ? "unknown" : g_source_filepath.c_str();
-    for (const Function& function : module) {
-        if (function.isDeclaration()) continue;
-        const auto started = std::chrono::steady_clock::now();
-        uint64_t blocks = 0;
-        uint64_t instructions = 0;
-        for (const BasicBlock& block : function) {
-            ++blocks;
-            instructions += static_cast<uint64_t>(block.size());
-        }
-        const DISubprogram* subprogram = function.getSubprogram();
-        const unsigned line = subprogram ? subprogram->getLine() : 0;
-        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        std::fprintf(stderr,
-                     "ESH-0088: AOT function telemetry stage=ir "
-                     "source=%s module=%s function=%s line=%u elapsed_ms=%lld "
-                     "ir_blocks=%llu ir_instructions=%llu "
-                     "machine_instructions=unavailable virtual_registers=unavailable "
-                     "live_intervals=unavailable allocator=pre-codegen\n",
-                     source,
-                     module_id.empty() ? "unknown" : module_id.c_str(),
-                     function.getName().str().c_str(), line,
-                     static_cast<long long>(elapsed_ms),
-                     static_cast<unsigned long long>(blocks),
-                     static_cast<unsigned long long>(instructions));
-    }
-}
-
-// The target backend owns MIR creation, so IR-only telemetry cannot name the
-// machine pressure that caused a register-allocation stall. This pass is
-// appended to the legacy emission pipeline only when function telemetry is
-// requested. It is observational and preserves the emitted object.
-class AotMachineTelemetryPass final : public MachineFunctionPass {
-public:
-    static char ID;
-
-    AotMachineTelemetryPass() : MachineFunctionPass(ID) {}
-
-    bool runOnMachineFunction(MachineFunction& function) override {
-        if (!env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) return false;
-        const auto started = std::chrono::steady_clock::now();
-        uint64_t instructions = 0;
-        for (const MachineBasicBlock& block : function) {
-            instructions += static_cast<uint64_t>(block.size());
-        }
-        const MachineRegisterInfo& registers = function.getRegInfo();
-        uint64_t live_intervals = 0;
-        if (auto* interval_wrapper =
-                getAnalysisIfAvailable<LiveIntervalsWrapperPass>()) {
-            const LiveIntervals& intervals = interval_wrapper->getLIS();
-            for (unsigned index = 0; index < registers.getNumVirtRegs(); ++index) {
-                if (intervals.hasInterval(Register::index2VirtReg(index))) {
-                    ++live_intervals;
-                }
-            }
-        }
-        const bool machine_metrics_available = instructions != 0 ||
-                                                registers.getNumVirtRegs() != 0;
-        const std::string machine_count = machine_metrics_available
-            ? std::to_string(instructions) : "unavailable";
-        const std::string virtual_count = machine_metrics_available
-            ? std::to_string(registers.getNumVirtRegs()) : "unavailable";
-        const std::string interval_count = machine_metrics_available
-            ? std::to_string(live_intervals) : "unavailable";
-        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        std::fprintf(stderr,
-                     "ESH-0088: AOT function telemetry stage=mir "
-                     "function=%s elapsed_ms=%lld machine_instructions=%s "
-                     "virtual_registers=%s live_intervals=%s\n",
-                     function.getName().str().c_str(),
-                     static_cast<long long>(elapsed_ms),
-                     machine_count.c_str(), virtual_count.c_str(),
-                     interval_count.c_str());
-        return false;
-    }
-};
-
-char AotMachineTelemetryPass::ID = 0;
 
 static unsigned int object_emit_timeout_seconds() {
     const char* raw = std::getenv("ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS");
@@ -1466,6 +1327,44 @@ static std::unordered_map<Function*, std::string> lambda_sexpr_map;
 // This prevents exponential IR generation when processing nested lambdas in S-expression generation
 static std::unordered_map<const eshkol_operations_t*, std::string> lambda_ast_to_name;
 
+namespace eshkol::llvm_codegen_detail {
+bool& replModeEnabled() { return g_repl_mode_enabled; }
+std::mutex& replMutex() { return g_repl_mutex; }
+std::unordered_map<std::string, uint64_t>& replFunctionAddresses() {
+    return g_repl_function_addresses;
+}
+std::unordered_map<std::string, size_t>& replFunctionArities() {
+    return g_repl_function_arities;
+}
+std::unordered_map<std::string, std::string>& replLambdaNames() {
+    return g_repl_lambda_names;
+}
+std::unordered_set<std::string>& replPrivateSymbols() {
+    return g_repl_private_symbols;
+}
+std::unordered_set<std::string>& replNativeCFunctions() {
+    return g_repl_native_c_functions;
+}
+std::unordered_map<std::string, std::vector<std::string>>& replLambdaCaptures() {
+    return g_repl_lambda_captures;
+}
+std::unordered_map<std::string, uint64_t>& replSymbolAddresses() {
+    return g_repl_symbol_addresses;
+}
+std::unordered_map<std::string, std::pair<size_t, bool>>& replVariadicFunctions() {
+    return g_repl_variadic_functions;
+}
+std::unordered_set<std::string>& replUserVariableNames() {
+    return g_repl_user_variable_names;
+}
+std::string& sourceFilepath() { return g_source_filepath; }
+std::string& sourceText() { return g_source_text; }
+std::string& lastGeneratedLambdaName() { return last_generated_lambda_name; }
+std::vector<LambdaSExprMetadata>& pendingLambdaSExprs() {
+    return pending_lambda_sexprs;
+}
+}
+
 static constexpr size_t LIB_INIT_AST_CHUNK_SIZE = 4;
 static constexpr size_t LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE = 4;
 
@@ -1516,54 +1415,54 @@ class EshkolLLVMCodeGen;
 // These allow the extracted module to call back into the main codegen
 namespace ControlFlowCallbacks {
     // Wrapper for codegenAST - returns LLVM Value*
-    static llvm::Value* codegenASTWrapper(const void* ast, void* context);
+    llvm::Value* codegenASTWrapper(const void* ast, void* context);
     // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
-    static void* codegenTypedASTWrapper(const void* ast, void* context);
+    void* codegenTypedASTWrapper(const void* ast, void* context);
     // Wrapper for typedValueToTaggedValue
-    static llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
+    llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
     // Wrapper for codegenNestedFunctionDefinition
-    static void codegenFuncDefineWrapper(const void* op, void* context);
+    void codegenFuncDefineWrapper(const void* op, void* context);
     // Wrapper for codegenVariableDefinition
-    static void codegenVarDefineWrapper(const void* op, void* context);
+    void codegenVarDefineWrapper(const void* op, void* context);
     // Wrapper for callBuiltinEqv
-    static llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
+    llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     // Wrapper for detectValueType + typedValueToTaggedValue
-    static llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
+    llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
     // Wrapper for codegenTaggedArenaConsCellFromTaggedValue
-    static llvm::Value* consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
+    llvm::Value* consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     // Wrapper to get TypedValue type
-    static int getTypedValueTypeWrapper(void* typed_value, void* context);
+    int getTypedValueTypeWrapper(void* typed_value, void* context);
     // Wrapper to register function binding
-    static void registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
+    void registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
     // Wrapper for extractConsCarAsTaggedValue (for CallApplyCodegen)
-    static llvm::Value* extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
+    llvm::Value* extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
     // Wrapper for getTaggedConsGetPtrFunc (for CallApplyCodegen)
-    static llvm::Function* getConsAccessorWrapper(void* context);
+    llvm::Function* getConsAccessorWrapper(void* context);
     // Wrapper for codegenAST with typed signature (for CallApplyCodegen)
-    static llvm::Value* codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
+    llvm::Value* codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
     // Wrappers for MapCodegen
-    static llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
-    static llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
-    static llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
-    static llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+    llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
+    llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
+    llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,
                                                   void* context);
-    static llvm::Function* getClosureAllocWrapper(void* context);
-    static llvm::Function* getConsSetPtrWrapper(void* context);
-    static llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
-    static llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
-    static void pushFunctionContextWrapper(void* context);
-    static void popFunctionContextWrapper(void* context);
+    llvm::Function* getClosureAllocWrapper(void* context);
+    llvm::Function* getConsSetPtrWrapper(void* context);
+    llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
+    void pushFunctionContextWrapper(void* context);
+    void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
-    static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
-    static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
+    llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
-    static llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
+    llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
     // Wrapper for applying tensor/vector builtin functions
-    static llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
+    llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     // Bug P (2026-04-23): wrapper for forward-ref apply (cross-file user defines)
-    static llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
 }
 
 class EshkolLLVMCodeGen {
@@ -2089,7 +1988,7 @@ private:
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
-    void markFatalCodegenError() {
+    void markFatalCodegenError() __attribute__((noinline, used)) {
         fatal_codegen_error_ = true;
     }
 
@@ -2206,552 +2105,7 @@ public:
     }
 
     // Register return types for builtin functions
-    void registerBuiltinReturnTypes() {
-        using namespace eshkol::hott;
-
-        // Arithmetic functions return Number (polymorphic)
-        function_return_types["+"] = BuiltinTypes::Number;
-        function_return_types["-"] = BuiltinTypes::Number;
-        function_return_types["*"] = BuiltinTypes::Number;
-        function_return_types["/"] = BuiltinTypes::Real;  // Division always returns real
-
-        // Comparison functions return Boolean
-        function_return_types["<"] = BuiltinTypes::Boolean;
-        function_return_types[">"] = BuiltinTypes::Boolean;
-        function_return_types["<="] = BuiltinTypes::Boolean;
-        function_return_types[">="] = BuiltinTypes::Boolean;
-        function_return_types["="] = BuiltinTypes::Boolean;
-        function_return_types["eq?"] = BuiltinTypes::Boolean;
-        function_return_types["equal?"] = BuiltinTypes::Boolean;
-        function_return_types["null?"] = BuiltinTypes::Boolean;
-        function_return_types["pair?"] = BuiltinTypes::Boolean;
-        function_return_types["list?"] = BuiltinTypes::Boolean;
-        function_return_types["number?"] = BuiltinTypes::Boolean;
-        function_return_types["zero?"] = BuiltinTypes::Boolean;
-        function_return_types["positive?"] = BuiltinTypes::Boolean;
-        function_return_types["negative?"] = BuiltinTypes::Boolean;
-        function_return_types["even?"] = BuiltinTypes::Boolean;
-        function_return_types["odd?"] = BuiltinTypes::Boolean;
-        function_return_types["nan?"] = BuiltinTypes::Boolean;
-        function_return_types["infinite?"] = BuiltinTypes::Boolean;
-        function_return_types["finite?"] = BuiltinTypes::Boolean;
-
-        // Math functions return Float64
-        function_return_types["sin"] = BuiltinTypes::Float64;
-        function_return_types["cos"] = BuiltinTypes::Float64;
-        function_return_types["tan"] = BuiltinTypes::Float64;
-        function_return_types["exp"] = BuiltinTypes::Float64;
-        function_return_types["log"] = BuiltinTypes::Float64;
-        function_return_types["sqrt"] = BuiltinTypes::Float64;
-        function_return_types["abs"] = BuiltinTypes::Number;
-        function_return_types["fabs"] = BuiltinTypes::Float64;
-
-        // List functions
-        function_return_types["list"] = BuiltinTypes::List;
-        function_return_types["cons"] = BuiltinTypes::List;
-        function_return_types["car"] = BuiltinTypes::Value;  // Can be any type
-        function_return_types["cdr"] = BuiltinTypes::List;
-        function_return_types["length"] = BuiltinTypes::Int64;
-        function_return_types["append"] = BuiltinTypes::List;
-        function_return_types["reverse"] = BuiltinTypes::List;
-        function_return_types["map"] = BuiltinTypes::List;
-        function_return_types["filter"] = BuiltinTypes::List;
-        function_return_types["take"] = BuiltinTypes::List;
-        function_return_types["drop"] = BuiltinTypes::List;
-        function_return_types["range"] = BuiltinTypes::List;
-        function_return_types["list-copy"] = BuiltinTypes::List;
-        function_return_types["list-set!"] = BuiltinTypes::List;
-        function_return_types["list*"] = BuiltinTypes::List;
-        function_return_types["acons"] = BuiltinTypes::List;
-
-        // eval returns any type
-        function_return_types["eval"] = BuiltinTypes::Value;
-
-        // Vector functions
-        function_return_types["vector"] = BuiltinTypes::Vector;
-        function_return_types["make-vector"] = BuiltinTypes::Vector;
-        function_return_types["vector-length"] = BuiltinTypes::Int64;
-        function_return_types["vector-ref"] = BuiltinTypes::Value;
-        function_return_types["vector-copy"] = BuiltinTypes::Vector;
-        function_return_types["vector-append"] = BuiltinTypes::Vector;
-
-        // R7RS error-object accessors
-        function_return_types["error-object?"] = BuiltinTypes::Boolean;
-        function_return_types["error-object-message"] = BuiltinTypes::Value;
-        function_return_types["error-object-irritants"] = BuiltinTypes::List;
-        function_return_types["vector->list"] = BuiltinTypes::List;
-        function_return_types["list->vector"] = BuiltinTypes::Vector;
-
-        // Type conversions
-        function_return_types["exact->inexact"] = BuiltinTypes::Float64;
-        // inexact->exact is NOT integer-valued: the exact value of a
-        // fractional double is a rational (and of a huge one, a bignum), so
-        // the static claim has to be the general Number, not Int64.
-        function_return_types["inexact->exact"] = BuiltinTypes::Number;
-        function_return_types["inexact"] = BuiltinTypes::Float64;
-        function_return_types["exact"] = BuiltinTypes::Number;
-        function_return_types["exact-integer?"] = BuiltinTypes::Boolean;
-        function_return_types["square"] = BuiltinTypes::Number;
-        function_return_types["volatile-load"] = BuiltinTypes::Value;
-        function_return_types["volatile-store!"] = BuiltinTypes::Null;
-        function_return_types["atomic-load"] = BuiltinTypes::Value;
-        function_return_types["atomic-store!"] = BuiltinTypes::Null;
-        function_return_types["atomic-exchange!"] = BuiltinTypes::Value;
-        function_return_types["atomic-compare-exchange!"] = BuiltinTypes::Value;
-        function_return_types["atomic-fetch-add!"] = BuiltinTypes::Value;
-        function_return_types["atomic-fetch-sub!"] = BuiltinTypes::Value;
-        function_return_types["atomic-fetch-and!"] = BuiltinTypes::Value;
-        function_return_types["atomic-fetch-or!"] = BuiltinTypes::Value;
-        function_return_types["atomic-fetch-xor!"] = BuiltinTypes::Value;
-        function_return_types["target-intrinsic"] = BuiltinTypes::Value;
-        function_return_types["compiler-fence"] = BuiltinTypes::Null;
-        function_return_types["memory-fence"] = BuiltinTypes::Null;
-        function_return_types["addr-of"] = BuiltinTypes::Pointer;
-        function_return_types["null-ptr"] = BuiltinTypes::Pointer;
-        function_return_types["ptr->usize"] = BuiltinTypes::USize;
-        function_return_types["usize->ptr"] = BuiltinTypes::Pointer;
-        function_return_types["ptr-add"] = BuiltinTypes::Pointer;
-
-        // R7RS division
-        function_return_types["floor-quotient"] = BuiltinTypes::Int64;
-        function_return_types["floor-remainder"] = BuiltinTypes::Int64;
-        function_return_types["floor/"] = BuiltinTypes::Value;
-        function_return_types["truncate-quotient"] = BuiltinTypes::Int64;
-        function_return_types["truncate-remainder"] = BuiltinTypes::Int64;
-        function_return_types["truncate/"] = BuiltinTypes::Value;
-
-        // R7RS port predicates
-        function_return_types["textual-port?"] = BuiltinTypes::Boolean;
-        function_return_types["binary-port?"] = BuiltinTypes::Boolean;
-
-        // R7RS binary I/O
-        function_return_types["open-binary-input-file"] = BuiltinTypes::Value;
-        function_return_types["open-binary-output-file"] = BuiltinTypes::Value;
-        function_return_types["read-u8"] = BuiltinTypes::Value;   // int or eof-object
-        function_return_types["peek-u8"] = BuiltinTypes::Value;  // int or eof-object
-        function_return_types["write-u8"] = BuiltinTypes::Null;
-        function_return_types["read-bytevector"] = BuiltinTypes::Value;  // bytevector or eof-object
-        function_return_types["write-bytevector"] = BuiltinTypes::Null;
-        function_return_types["read-bytevector!"] = BuiltinTypes::Value;
-        function_return_types["u8-ready?"] = BuiltinTypes::Boolean;
-
-        // R7RS system
-        function_return_types["eof-object"] = BuiltinTypes::Value;
-        function_return_types["emergency-exit"] = BuiltinTypes::Null;
-        function_return_types["current-second"] = BuiltinTypes::Float64;
-        function_return_types["current-jiffy"] = BuiltinTypes::Int64;
-        function_return_types["jiffies-per-second"] = BuiltinTypes::Int64;
-        function_return_types["features"] = BuiltinTypes::List;
-
-        // R7RS aliases
-        function_return_types["get-environment-variable"] = BuiltinTypes::String;
-        function_return_types["delete-file"] = BuiltinTypes::Boolean;
-        function_return_types["close-input-port"] = BuiltinTypes::Null;
-        function_return_types["close-output-port"] = BuiltinTypes::Null;
-        function_return_types["string-copy!"] = BuiltinTypes::Null;
-
-        // v1.2 system/path/process builtins
-        function_return_types["os-type"] = BuiltinTypes::String;
-        function_return_types["os-arch"] = BuiltinTypes::String;
-        function_return_types["hostname"] = BuiltinTypes::String;
-        function_return_types["username"] = BuiltinTypes::String;
-        function_return_types["cpu-count"] = BuiltinTypes::Integer;
-        function_return_types["getpid"] = BuiltinTypes::Integer;
-        function_return_types["home-directory"] = BuiltinTypes::String;
-        // Time API (#168)
-        function_return_types["current-timestamp"] = BuiltinTypes::Number;
-        function_return_types["current-time-ns"] = BuiltinTypes::Integer;
-        function_return_types["format-iso8601"] = BuiltinTypes::String;
-        function_return_types["parse-iso8601"] = BuiltinTypes::Integer;
-        function_return_types["format-relative"] = BuiltinTypes::String;
-        function_return_types["local-timezone-offset"] = BuiltinTypes::Integer;
-        function_return_types["sleep-ms"] = BuiltinTypes::Null;
-        function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
-        function_return_types["executable-path"] = BuiltinTypes::String;
-        function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
-        function_return_types["__arena-used"] = BuiltinTypes::Integer;
-        // #341: user-reachable region handles. The handle token is an opaque
-        // exact integer; region-close returns whatever was kept (so: Value).
-        function_return_types["region-open"] = BuiltinTypes::Integer;
-        function_return_types["region-close"] = BuiltinTypes::Value;
-        function_return_types["region-open?"] = BuiltinTypes::Boolean;
-        function_return_types["ad-reset-counters!"] = BuiltinTypes::Null;
-        function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
-        function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
-        function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
-        function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
-        function_return_types["ad-note-finite-difference!"] = BuiltinTypes::Null;
-        function_return_types["ad-counters"] = BuiltinTypes::List;
-        function_return_types["temp-directory"] = BuiltinTypes::String;
-        function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
-        function_return_types["allow-sleep"] = BuiltinTypes::Boolean;
-        function_return_types["path-join"] = BuiltinTypes::String;
-        function_return_types["path-dirname"] = BuiltinTypes::String;
-        function_return_types["path-basename"] = BuiltinTypes::String;
-        function_return_types["path-extname"] = BuiltinTypes::String;
-        function_return_types["path-is-absolute?"] = BuiltinTypes::Boolean;
-        function_return_types["path-normalize"] = BuiltinTypes::String;
-        function_return_types["realpath"] = BuiltinTypes::String;
-        function_return_types["file-stat"] = BuiltinTypes::List;
-        function_return_types["file-copy"] = BuiltinTypes::Boolean;
-        function_return_types["mkdir-recursive"] = BuiltinTypes::Boolean;
-        function_return_types["mkdtemp"] = BuiltinTypes::String;
-        function_return_types["make-temp-file"] = BuiltinTypes::String;
-        function_return_types["make-temp-dir"] = BuiltinTypes::String;
-        function_return_types["directory-delete-recursive"] = BuiltinTypes::Boolean;
-        function_return_types["shell-quote"] = BuiltinTypes::String;
-        function_return_types["fork"] = BuiltinTypes::Integer;
-        function_return_types["execv"] = BuiltinTypes::Boolean;
-        function_return_types["process-spawn"] = BuiltinTypes::Integer;
-        function_return_types["process-wait"] = BuiltinTypes::Integer;
-        function_return_types["poll-fd"] = BuiltinTypes::Boolean;
-        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
-        function_return_types["tensor-load"] = BuiltinTypes::Value;
-        // v1.2 batch 2
-        function_return_types["file-chmod"] = BuiltinTypes::Boolean;
-        function_return_types["symlink-create"] = BuiltinTypes::Boolean;
-        function_return_types["symlink-read"] = BuiltinTypes::String;
-        function_return_types["directory-walk"] = BuiltinTypes::String;
-        function_return_types["mkstemp"] = BuiltinTypes::String;
-        function_return_types["process-kill"] = BuiltinTypes::Boolean;
-        function_return_types["file-mtime"] = BuiltinTypes::Integer;
-        function_return_types["file-atime"] = BuiltinTypes::Integer;
-        function_return_types["file-lock"] = BuiltinTypes::Boolean;
-        function_return_types["file-unlock"] = BuiltinTypes::Boolean;
-        function_return_types["path-relative"] = BuiltinTypes::String;
-        function_return_types["path-resolve"] = BuiltinTypes::String;
-        function_return_types["glob-expand"] = BuiltinTypes::String;
-        function_return_types["glob-match"] = BuiltinTypes::Boolean;
-        // v1.2 batch 3
-        function_return_types["process-setpgid"] = BuiltinTypes::Boolean;
-        function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
-        function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
-        function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
-        // v1.2 batch 4
-        function_return_types["process-pid"] = BuiltinTypes::Integer;
-        function_return_types["file-mmap"] = BuiltinTypes::String;
-        function_return_types["file-munmap"] = BuiltinTypes::Boolean;
-        function_return_types["unix-socket-connect"] = BuiltinTypes::Integer;
-        function_return_types["socket-send"] = BuiltinTypes::Integer;
-        function_return_types["socket-recv"] = BuiltinTypes::String;
-        function_return_types["socket-close"] = BuiltinTypes::Boolean;
-        function_return_types["term-set-scroll-region"] = BuiltinTypes::Boolean;
-        function_return_types["term-reset-scroll-region"] = BuiltinTypes::Boolean;
-        function_return_types["term-enable-mouse"] = BuiltinTypes::Boolean;
-        function_return_types["term-disable-mouse"] = BuiltinTypes::Boolean;
-        function_return_types["term-read-mouse-event"] = BuiltinTypes::Value;
-        function_return_types["term-enable-alternate-screen"] = BuiltinTypes::Boolean;
-        function_return_types["term-disable-alternate-screen"] = BuiltinTypes::Boolean;
-        function_return_types["term-clipboard-write"] = BuiltinTypes::Boolean;
-        function_return_types["term-clipboard-read"] = BuiltinTypes::String;
-        function_return_types["term-hyperlink"] = BuiltinTypes::String;
-        function_return_types["term-detect-capabilities"] = BuiltinTypes::Value;
-        function_return_types["term-bell"] = BuiltinTypes::Boolean;
-        function_return_types["fs-watch-native"] = BuiltinTypes::Integer;
-        function_return_types["fs-watch-recursive"] = BuiltinTypes::Integer;
-        function_return_types["fs-watch-poll"] = BuiltinTypes::String;
-        function_return_types["fs-unwatch"] = BuiltinTypes::Boolean;
-        function_return_types["ansi-strip"] = BuiltinTypes::String;
-        function_return_types["string-display-width"] = BuiltinTypes::Integer;
-        function_return_types["string-truncate-display"] = BuiltinTypes::String;
-        function_return_types["url-encode"] = BuiltinTypes::String;
-        function_return_types["url-decode"] = BuiltinTypes::String;
-        function_return_types["url-parse"] = BuiltinTypes::Value;
-        function_return_types["base64-encode-string"] = BuiltinTypes::String;
-        function_return_types["base64-decode-string"] = BuiltinTypes::String;
-        function_return_types["base64url-encode"] = BuiltinTypes::String;
-        function_return_types["base64url-decode"] = BuiltinTypes::String;
-        function_return_types["uuid-v4"] = BuiltinTypes::String;
-        function_return_types["constant-time-equal?"] = BuiltinTypes::Boolean;
-        function_return_types["sha256-file"] = BuiltinTypes::String;
-        function_return_types["regex-compile"] = BuiltinTypes::Integer;
-        function_return_types["regex-free"] = BuiltinTypes::Boolean;
-        function_return_types["regex-match"] = BuiltinTypes::String;
-        function_return_types["regex-match?"] = BuiltinTypes::Boolean;
-        function_return_types["regex-match-groups"] = BuiltinTypes::Value;
-        function_return_types["regex-split"] = BuiltinTypes::Value;
-        function_return_types["diff-lines"] = BuiltinTypes::Value;
-        function_return_types["fuzzy-match"] = BuiltinTypes::Value;
-        function_return_types["semver-parse"] = BuiltinTypes::Value;
-        function_return_types["semver-compare"] = BuiltinTypes::Integer;
-        function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
-        function_return_types["make-pipe"] = BuiltinTypes::Value;
-        /* ESH-0011 event loop. make-event-loop is Value, not Integer: it
-         * returns an integer handle OR #f where the platform has no loop, so
-         * the tagged-value shape is the honest one. poll returns a list. */
-        function_return_types["make-event-loop"] = BuiltinTypes::Value;
-        function_return_types["event-loop-add-fd!"] = BuiltinTypes::Boolean;
-        function_return_types["event-loop-remove-fd!"] = BuiltinTypes::Boolean;
-        function_return_types["event-loop-poll"] = BuiltinTypes::Value;
-        function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
-        function_return_types["event-loop-backend"] = BuiltinTypes::String;
-        function_return_types["fd-write"] = BuiltinTypes::Integer;
-        function_return_types["make-line-reader"] = BuiltinTypes::Integer;
-        function_return_types["line-reader-poll"] = BuiltinTypes::String;
-        function_return_types["line-reader-close"] = BuiltinTypes::Boolean;
-        function_return_types["fd-close"] = BuiltinTypes::Boolean;
-        function_return_types["make-lru-cache"] = BuiltinTypes::Integer;
-        function_return_types["lru-get"] = BuiltinTypes::Value;
-        function_return_types["lru-set!"] = BuiltinTypes::Boolean;
-        function_return_types["lru-has?"] = BuiltinTypes::Boolean;
-        function_return_types["lru-delete!"] = BuiltinTypes::Boolean;
-        function_return_types["lru-clear!"] = BuiltinTypes::Boolean;
-        function_return_types["lru-size"] = BuiltinTypes::Integer;
-        function_return_types["format"] = BuiltinTypes::String;
-        function_return_types["_format-list"] = BuiltinTypes::String;
-        function_return_types["http-server-create"] = BuiltinTypes::Integer;
-        function_return_types["http-server-port"] = BuiltinTypes::Integer;
-        function_return_types["http-server-accept"] = BuiltinTypes::String;
-        function_return_types["http-server-respond"] = BuiltinTypes::Boolean;
-        function_return_types["http-server-close"] = BuiltinTypes::Boolean;
-        function_return_types["http-request"] = BuiltinTypes::Value;
-        function_return_types["websocket-connect"] = BuiltinTypes::Integer;
-        function_return_types["websocket-send"] = BuiltinTypes::Boolean;
-        function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
-        function_return_types["websocket-receive"] = BuiltinTypes::Value;
-        function_return_types["websocket-close"] = BuiltinTypes::Boolean;
-        function_return_types["compression-available"] = BuiltinTypes::Boolean;
-        function_return_types["deflate"] = BuiltinTypes::Value;
-        function_return_types["inflate"] = BuiltinTypes::Value;
-        function_return_types["gzip"] = BuiltinTypes::Value;
-        function_return_types["gunzip"] = BuiltinTypes::Value;
-        function_return_types["yoga-node-create"] = BuiltinTypes::Integer;
-        function_return_types["yoga-node-set!"] = BuiltinTypes::Boolean;
-        function_return_types["yoga-node-add-child!"] = BuiltinTypes::Boolean;
-        function_return_types["yoga-node-calculate!"] = BuiltinTypes::Boolean;
-        function_return_types["yoga-node-get-computed"] = BuiltinTypes::Float64;
-        function_return_types["yoga-node-free!"] = BuiltinTypes::Boolean;
-        function_return_types["ts-parser-new"] = BuiltinTypes::Integer;
-        function_return_types["ts-parser-free"] = BuiltinTypes::Boolean;
-        function_return_types["ts-parse"] = BuiltinTypes::Integer;
-        function_return_types["ts-tree-free"] = BuiltinTypes::Boolean;
-        function_return_types["ts-node-type"] = BuiltinTypes::String;
-        function_return_types["ts-node-text"] = BuiltinTypes::String;
-        function_return_types["ts-node-children"] = BuiltinTypes::Value;
-        function_return_types["ts-query-new"] = BuiltinTypes::Integer;
-        function_return_types["ts-query-matches"] = BuiltinTypes::Value;
-        function_return_types["ts-query-free"] = BuiltinTypes::Boolean;
-        function_return_types["ts-available"] = BuiltinTypes::Boolean;
-        function_return_types["ts-tree-root"] = BuiltinTypes::Integer;
-        function_return_types["http-set-proxy"] = BuiltinTypes::Boolean;
-        function_return_types["http-set-tls-client-cert"] = BuiltinTypes::Boolean;
-        function_return_types["display-error"] = BuiltinTypes::Boolean;
-        function_return_types["string-ends-with?"] = BuiltinTypes::Boolean;
-        function_return_types["string-index-of"] = BuiltinTypes::Integer;
-        function_return_types["string-pad-left"] = BuiltinTypes::String;
-        function_return_types["string-pad-right"] = BuiltinTypes::String;
-        function_return_types["kb-save"] = BuiltinTypes::Boolean;
-        function_return_types["kb-load"] = BuiltinTypes::Value;
-        function_return_types["tensor-token-estimate"] = BuiltinTypes::Integer;
-        function_return_types["tensor-rect-fill!"] = BuiltinTypes::Null;
-        function_return_types["tensor-disk-fill!"] = BuiltinTypes::Null;
-        // Noesis requirements
-        function_return_types["fg-marginal"] = BuiltinTypes::Value;
-        function_return_types["fg-entropy"] = BuiltinTypes::Value;
-        function_return_types["kb-retract!"] = BuiltinTypes::Boolean;
-        // Consciousness engine
-        function_return_types["make-substitution"] = BuiltinTypes::Value;
-        function_return_types["unify"] = BuiltinTypes::Value;
-        function_return_types["walk"] = BuiltinTypes::Value;
-        function_return_types["make-fact"] = BuiltinTypes::Value;
-        function_return_types["make-kb"] = BuiltinTypes::Value;
-        function_return_types["kb-assert!"] = BuiltinTypes::Boolean;
-        function_return_types["kb-query"] = BuiltinTypes::Value;
-        function_return_types["kb-query-prefix"] = BuiltinTypes::Value;
-        function_return_types["make-factor-graph"] = BuiltinTypes::Value;
-        function_return_types["fg-add-factor!"] = BuiltinTypes::Boolean;
-        function_return_types["fg-infer!"] = BuiltinTypes::Boolean;
-        function_return_types["free-energy"] = BuiltinTypes::Value;
-        function_return_types["expected-free-energy"] = BuiltinTypes::Value;
-        function_return_types["make-workspace"] = BuiltinTypes::Value;
-        function_return_types["ws-register!"] = BuiltinTypes::Boolean;
-        function_return_types["ws-step!"] = BuiltinTypes::Value;
-        // Differentiable external memory (core.dnc)
-        function_return_types["make-dnc-memory"] = BuiltinTypes::Value;
-        function_return_types["dnc-content-address"] = BuiltinTypes::Value;
-        function_return_types["dnc-loc-address"] = BuiltinTypes::Value;
-        function_return_types["dnc-read"] = BuiltinTypes::Value;
-        function_return_types["dnc-write!"] = BuiltinTypes::Value;
-        function_return_types["dnc-alloc-weights"] = BuiltinTypes::Value;
-        function_return_types["dnc-read-grad"] = BuiltinTypes::Value;
-        function_return_types["dnc-memory?"] = BuiltinTypes::Boolean;
-        // SDNC weight-program (core.sdnc)
-        function_return_types["sdnc-program"] = BuiltinTypes::Value;
-        function_return_types["sdnc-run"] = BuiltinTypes::Value;
-        function_return_types["sdnc-weight-grad"] = BuiltinTypes::Value;
-        function_return_types["sdnc-params"] = BuiltinTypes::Value;
-        function_return_types["sdnc-set-params!"] = BuiltinTypes::Value;
-        function_return_types["sdnc-improve!"] = BuiltinTypes::Value;
-        function_return_types["sdnc?"] = BuiltinTypes::Boolean;
-        // Reverse-mode AD tape
-        function_return_types["ad-tape-new"] = BuiltinTypes::Value;
-        function_return_types["ad-tape-release"] = BuiltinTypes::Value;
-        function_return_types["ad-const"] = BuiltinTypes::Integer;
-        function_return_types["ad-var"] = BuiltinTypes::Integer;
-        function_return_types["ad-add"] = BuiltinTypes::Integer;
-        function_return_types["ad-sub"] = BuiltinTypes::Integer;
-        function_return_types["ad-mul"] = BuiltinTypes::Integer;
-        function_return_types["ad-div"] = BuiltinTypes::Integer;
-        function_return_types["ad-pow"] = BuiltinTypes::Integer;
-        function_return_types["ad-tape-length"] = BuiltinTypes::Integer;
-        function_return_types["ad-sin"] = BuiltinTypes::Integer;
-        function_return_types["ad-cos"] = BuiltinTypes::Integer;
-        function_return_types["ad-exp"] = BuiltinTypes::Integer;
-        function_return_types["ad-log"] = BuiltinTypes::Integer;
-        function_return_types["ad-sqrt"] = BuiltinTypes::Integer;
-        function_return_types["ad-neg"] = BuiltinTypes::Integer;
-        function_return_types["ad-abs"] = BuiltinTypes::Integer;
-        function_return_types["ad-relu"] = BuiltinTypes::Integer;
-        function_return_types["ad-sigmoid"] = BuiltinTypes::Integer;
-        function_return_types["ad-tanh"] = BuiltinTypes::Integer;
-        function_return_types["ad-backward"] = BuiltinTypes::Null;
-        function_return_types["ad-gradient"] = BuiltinTypes::Value;
-        function_return_types["ad-gradient-of"] = BuiltinTypes::Value; // alias
-        function_return_types["ad-node-value"] = BuiltinTypes::Value;
-        function_return_types["ad-value"] = BuiltinTypes::Value; // user-facing alias
-        function_return_types["ad-value-of"] = BuiltinTypes::Value; // alias
-        function_return_types["onnx-export-tensor"] = BuiltinTypes::Boolean;
-        // Type predicates
-        function_return_types["logic-var?"] = BuiltinTypes::Boolean;
-        function_return_types["substitution?"] = BuiltinTypes::Boolean;
-        function_return_types["fact?"] = BuiltinTypes::Boolean;
-        function_return_types["kb?"] = BuiltinTypes::Boolean;
-        function_return_types["factor-graph?"] = BuiltinTypes::Boolean;
-        function_return_types["workspace?"] = BuiltinTypes::Boolean;
-        function_return_types["tensor?"] = BuiltinTypes::Boolean;
-        function_return_types["dual?"] = BuiltinTypes::Boolean;
-        function_return_types["fg-update-cpt!"] = BuiltinTypes::Boolean;
-        function_return_types["kb-count"] = BuiltinTypes::Integer;
-        // Image I/O
-        function_return_types["image-read"] = BuiltinTypes::Value;
-        function_return_types["image-write"] = BuiltinTypes::Boolean;
-        function_return_types["image-to-grayscale"] = BuiltinTypes::Value;
-
-        // R7RS Wave 2 functions
-        function_return_types["char-foldcase"] = BuiltinTypes::Value;  // char
-        function_return_types["string-foldcase"] = BuiltinTypes::String;
-        function_return_types["digit-value"] = BuiltinTypes::Value;  // int or #f
-        function_return_types["write-shared"] = BuiltinTypes::Null;
-        function_return_types["write-simple"] = BuiltinTypes::Null;
-        function_return_types["string-for-each"] = BuiltinTypes::Null;
-        function_return_types["string-map"] = BuiltinTypes::String;
-        function_return_types["vector-for-each"] = BuiltinTypes::Null;
-        function_return_types["vector-map"] = BuiltinTypes::Vector;
-        function_return_types["call-with-port"] = BuiltinTypes::Value;
-        function_return_types["call-with-input-file"] = BuiltinTypes::Value;
-        function_return_types["call-with-output-file"] = BuiltinTypes::Value;
-        function_return_types["with-input-from-file"] = BuiltinTypes::Value;
-        function_return_types["with-output-to-file"] = BuiltinTypes::Value;
-
-        // IO returns Null
-        function_return_types["display"] = BuiltinTypes::Null;
-        function_return_types["newline"] = BuiltinTypes::Null;
-
-        // Parallel primitives
-        function_return_types["parallel-map"] = BuiltinTypes::List;
-        function_return_types["parallel-fold"] = BuiltinTypes::Value;
-        function_return_types["parallel-filter"] = BuiltinTypes::List;
-        function_return_types["parallel-for-each"] = BuiltinTypes::Null;
-        function_return_types["thread-pool-info"] = BuiltinTypes::Int64;
-        function_return_types["thread-pool-size"] = BuiltinTypes::Int64;  // Alias for thread-pool-info
-        function_return_types["thread-pool-stats"] = BuiltinTypes::Null;
-        function_return_types["parallel-execute"] = BuiltinTypes::List;
-
-        // Future primitives
-        function_return_types["future"] = BuiltinTypes::Value;      // Returns future handle
-        function_return_types["force"] = BuiltinTypes::Value;       // Returns result of computation
-        function_return_types["future-ready?"] = BuiltinTypes::Boolean; // Returns boolean
-        function_return_types["make-promise"] = BuiltinTypes::Value;
-        function_return_types["promise?"] = BuiltinTypes::Boolean;
-        function_return_types["%make-lazy-promise"] = BuiltinTypes::Value;
-        function_return_types["%make-lazy-promise-force"] = BuiltinTypes::Value;
-        function_return_types["rational?"] = BuiltinTypes::Boolean;
-        // numerator/denominator may return a bignum for bignum-magnitude
-        // rationals, so they are tagged Values, not raw int64.
-        function_return_types["numerator"] = BuiltinTypes::Value;
-        function_return_types["denominator"] = BuiltinTypes::Value;
-        function_return_types["make-rational"] = BuiltinTypes::Value;
-        function_return_types["rationalize"] = BuiltinTypes::Value;
-        function_return_types["read-string"] = BuiltinTypes::String;
-        function_return_types["make-bytevector"] = BuiltinTypes::Value;
-        function_return_types["bytevector"] = BuiltinTypes::Value;
-        function_return_types["bytevector-length"] = BuiltinTypes::Int64;
-        function_return_types["bytevector-u8-ref"] = BuiltinTypes::Int64;
-        function_return_types["bytevector-copy"] = BuiltinTypes::Value;
-        function_return_types["bytevector-append"] = BuiltinTypes::Value;
-        function_return_types["dequant-q4_0"] = BuiltinTypes::Tensor;
-        function_return_types["dequant-q8_0"] = BuiltinTypes::Tensor;
-        function_return_types["bytevector?"] = BuiltinTypes::Boolean;
-        function_return_types["utf8->string"] = BuiltinTypes::String;
-        function_return_types["string->utf8"] = BuiltinTypes::Value;
-        function_return_types["tensor-save"] = BuiltinTypes::Boolean;
-        function_return_types["tensor-load"] = BuiltinTypes::Tensor;
-        function_return_types["model-save"] = BuiltinTypes::Boolean;
-        function_return_types["model-load"] = BuiltinTypes::List;
-
-        // Complex number operations
-        function_return_types["make-rectangular"] = BuiltinTypes::Complex128;  // Create complex from real,imag
-        function_return_types["make-polar"] = BuiltinTypes::Complex128;        // Create complex from magnitude,angle
-        function_return_types["real-part"] = BuiltinTypes::Float64;            // Extract real component
-        function_return_types["imag-part"] = BuiltinTypes::Float64;            // Extract imaginary component
-        function_return_types["magnitude"] = BuiltinTypes::Float64;            // |z| = sqrt(r² + i²)
-        function_return_types["angle"] = BuiltinTypes::Float64;                // arg(z) = atan2(imag, real)
-        function_return_types["complex?"] = BuiltinTypes::Boolean;             // Type predicate
-        function_return_types["conjugate"] = BuiltinTypes::Complex128;         // Complex conjugate
-
-        // HoTT sum type operations (discriminated unions)
-        function_return_types["inject-left"] = BuiltinTypes::Pair;     // (0 . value) tagged pair
-        function_return_types["inject-right"] = BuiltinTypes::Pair;    // (1 . value) tagged pair
-        function_return_types["sum-tag"] = BuiltinTypes::Int64;        // Returns 0 (left) or 1 (right)
-        function_return_types["sum-value"] = BuiltinTypes::Value;      // Extracts inner value
-        function_return_types["left?"] = BuiltinTypes::Boolean;        // Is left variant?
-        function_return_types["right?"] = BuiltinTypes::Boolean;       // Is right variant?
-
-        // FFT/IFFT operations (Signal Processing)
-        function_return_types["fft"] = BuiltinTypes::Value;    // Returns vector of complex numbers
-        function_return_types["ifft"] = BuiltinTypes::Value;   // Returns vector of complex numbers
-
-        // Signal Processing Filters (stdlib: signal.filters)
-        function_return_types["fft"] = BuiltinTypes::Vector;
-        function_return_types["ifft"] = BuiltinTypes::Vector;
-        function_return_types["hamming-window"] = BuiltinTypes::Vector;
-        function_return_types["hann-window"] = BuiltinTypes::Vector;
-        function_return_types["blackman-window"] = BuiltinTypes::Vector;
-        function_return_types["kaiser-window"] = BuiltinTypes::Vector;
-        function_return_types["apply-window"] = BuiltinTypes::Vector;
-        function_return_types["convolve"] = BuiltinTypes::Vector;
-        function_return_types["fast-convolve"] = BuiltinTypes::Vector;
-        function_return_types["fir-filter"] = BuiltinTypes::Vector;
-        function_return_types["iir-filter"] = BuiltinTypes::Vector;
-        function_return_types["butterworth-lowpass"] = BuiltinTypes::Pair;   // (b . a) coefficient pair
-        function_return_types["butterworth-highpass"] = BuiltinTypes::Pair;
-        function_return_types["butterworth-bandpass"] = BuiltinTypes::Pair;
-        function_return_types["frequency-response"] = BuiltinTypes::Pair;    // (magnitudes . phases)
-
-        // Optimization Algorithms (stdlib: ml.optimization)
-        function_return_types["gradient-descent"] = BuiltinTypes::Vector;
-        function_return_types["adam"] = BuiltinTypes::Vector;
-        function_return_types["l-bfgs"] = BuiltinTypes::Vector;
-        function_return_types["conjugate-gradient"] = BuiltinTypes::Vector;
-        function_return_types["line-search"] = BuiltinTypes::Float64;       // Returns step size alpha
-        function_return_types["tensor-dot"] = BuiltinTypes::Float64;        // Returns scalar
-        function_return_types["tensor-norm"] = BuiltinTypes::Float64;       // Returns scalar
-        function_return_types["tensor-svd"] = BuiltinTypes::List;          // Returns (U S V) list
-        // Tensor unary/binary ops — all return a tensor (Value = tagged heap ptr)
-        function_return_types["tensor-neg"]       = BuiltinTypes::Value;
-        function_return_types["tensor-abs"]       = BuiltinTypes::Value;
-        function_return_types["tensor-sqrt"]      = BuiltinTypes::Value;
-        function_return_types["tensor-exp"]       = BuiltinTypes::Value;
-        function_return_types["tensor-log"]       = BuiltinTypes::Value;
-        function_return_types["tensor-sin"]       = BuiltinTypes::Value;
-        function_return_types["tensor-cos"]       = BuiltinTypes::Value;
-        function_return_types["tensor-pow"]       = BuiltinTypes::Value;
-        function_return_types["tensor-maximum"]   = BuiltinTypes::Value;
-        function_return_types["tensor-minimum"]   = BuiltinTypes::Value;
-        function_return_types["tensor-scale"]     = BuiltinTypes::Value;
-        function_return_types["tensor-transpose"] = BuiltinTypes::Value;
-        function_return_types["batch-matmul"]     = BuiltinTypes::Value;
-    }
+    void registerBuiltinReturnTypes();
     
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
         try {
@@ -3495,9 +2849,7 @@ public:
                     Value* last_top_level_value = nullptr;
                     bool last_was_value_expr = false;
 
-                    const auto emit_top_level_range = [&](size_t range_start,
-                                                          size_t range_end) {
-                    for (size_t i = range_start; i < range_end; i++) {
+                    for (size_t i = 0; i < num_asts_to_use; i++) {
                         bool is_function_def = (asts_to_use[i].type == ESHKOL_OP &&
                                                asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                                                asts_to_use[i].operation.define_op.is_function);
@@ -3621,47 +2973,6 @@ public:
                                 eshkol_debug("Called __lambda_init__ to initialize lambda captures");
                             }
                         }
-                    }
-                    };
-
-                    // A broad import graph can contain thousands of
-                    // top-level forms. Keep the observable order by calling
-                    // fixed-size internal helpers in order, while preventing
-                    // one generated `_main` from becoming the allocator's
-                    // entire interference graph. REPL batches stay in one
-                    // function because their last-value capture is an
-                    // interactive-session contract.
-                    const uint64_t outline_forms = aot_init_outline_forms();
-                    const bool outline_initialization =
-                        !g_repl_mode_enabled &&
-                        num_asts_to_use > outline_forms;
-                    if (outline_initialization) {
-                        for (size_t start = 0; start < num_asts_to_use;
-                             start += static_cast<size_t>(outline_forms)) {
-                            const size_t end = std::min(
-                                num_asts_to_use,
-                                start + static_cast<size_t>(outline_forms));
-                            FunctionType* helper_type =
-                                FunctionType::get(void_type, false);
-                            Function* helper = Function::Create(
-                                helper_type, Function::InternalLinkage,
-                                "__eshkol_init_chunk_" + std::to_string(start),
-                                module.get());
-                            BasicBlock* helper_entry = BasicBlock::Create(
-                                *context, "entry", helper);
-                            builder->SetInsertPoint(helper_entry);
-                            current_function = helper;
-                            emit_top_level_range(start, end);
-                            if (!builder->GetInsertBlock()->getTerminator()) {
-                                builder->CreateRetVoid();
-                            }
-
-                            builder->SetInsertPoint(main_entry);
-                            current_function = function_table["main"];
-                            builder->CreateCall(helper);
-                        }
-                    } else {
-                        emit_top_level_range(0, num_asts_to_use);
                     }
                     
                     /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
@@ -4054,786 +3365,9 @@ private:
     Function* getSnprintfFunc() { return funcs->getSnprintf(); }
     Function* getStrtodFunc() { return funcs->getStrtod(); }
 
-    void createBuiltinFunctions() {
-        // printf function declaration
-        std::vector<Type*> printf_args;
-        printf_args.push_back(PointerType::getUnqual(*context)); // const char* format
-        
-        FunctionType* printf_type = FunctionType::get(
-            int32_type, // return int
-            printf_args,
-            true // varargs
-        );
-        
-        Function* printf_func = Function::Create(
-            printf_type,
-            Function::ExternalLinkage,
-            "printf",
-            module.get()
-        );
-        
-        function_table["printf"] = printf_func;
+    void createBuiltinFunctions();
 
-        // sin function declaration (from libm)
-        std::vector<Type*> sin_args;
-        sin_args.push_back(double_type); // double x
-
-        FunctionType* sin_type = FunctionType::get(
-            double_type, // return double
-            sin_args,
-            false // not varargs
-        );
-
-        Function* sin_func = Function::Create(
-            sin_type,
-            Function::ExternalLinkage,
-            "sin",
-            module.get()
-        );
-
-        function_table["sin"] = sin_func;
-
-        // cos function declaration (from libm)
-        std::vector<Type*> cos_args;
-        cos_args.push_back(double_type); // double x
-
-        FunctionType* cos_type = FunctionType::get(
-            double_type, // return double
-            cos_args,
-            false // not varargs
-        );
-
-        Function* cos_func = Function::Create(
-            cos_type,
-            Function::ExternalLinkage,
-            "cos",
-            module.get()
-        );
-
-        function_table["cos"] = cos_func;
-
-        // sqrt function declaration (from libm)
-        std::vector<Type*> sqrt_args;
-        sqrt_args.push_back(double_type); // double x
-
-        FunctionType* sqrt_type = FunctionType::get(
-            double_type, // return double
-            sqrt_args,
-            false // not varargs
-        );
-
-        Function* sqrt_func = Function::Create(
-            sqrt_type,
-            Function::ExternalLinkage,
-            "sqrt",
-            module.get()
-        );
-
-        function_table["sqrt"] = sqrt_func;
-
-        // pow function declaration (from libm)
-        std::vector<Type*> pow_args;
-        pow_args.push_back(double_type); // double base
-        pow_args.push_back(double_type); // double exponent
-
-        FunctionType* pow_type = FunctionType::get(
-            double_type, // return double
-            pow_args,
-            false // not varargs
-        );
-
-        Function* pow_func = Function::Create(
-            pow_type,
-            Function::ExternalLinkage,
-            "pow",
-            module.get()
-        );
-
-        function_table["pow"] = pow_func;
-
-        // exit function declaration (from stdlib.h)
-        std::vector<Type*> exit_args;
-        exit_args.push_back(int32_type); // int status
-
-        FunctionType* exit_type = FunctionType::get(
-            void_type, // returns void (actually noreturn)
-            exit_args,
-            false // not varargs
-        );
-
-        Function* exit_func = Function::Create(
-            exit_type,
-            Function::ExternalLinkage,
-            "exit",
-            module.get()
-        );
-        exit_func->addFnAttr(Attribute::NoReturn);
-
-        function_table["exit"] = exit_func;
-
-        // ============================================================================
-        // FILE I/O FUNCTIONS (from stdio.h)
-        // ============================================================================
-
-        // fopen: FILE* eshkol_fopen(const char* filename, const char* mode)
-        std::vector<Type*> fopen_args;
-        fopen_args.push_back(PointerType::get(*context, 0));  // filename
-        fopen_args.push_back(PointerType::get(*context, 0));  // mode
-        FunctionType* fopen_type = FunctionType::get(
-            PointerType::get(*context, 0), fopen_args, false);
-        Function* fopen_func = Function::Create(
-            fopen_type, Function::ExternalLinkage, eshkol::runtime::fopen_symbol, module.get());
-        function_table["fopen"] = fopen_func;
-
-        // fclose: int fclose(FILE* stream)
-        std::vector<Type*> fclose_args;
-        fclose_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fclose_type = FunctionType::get(
-            int32_type, fclose_args, false);
-        Function* fclose_func = Function::Create(
-            fclose_type, Function::ExternalLinkage, "fclose", module.get());
-        function_table["fclose"] = fclose_func;
-
-        // fgets: char* fgets(char* str, int n, FILE* stream)
-        std::vector<Type*> fgets_args;
-        fgets_args.push_back(PointerType::get(*context, 0));  // str
-        fgets_args.push_back(int32_type);      // n
-        fgets_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fgets_type = FunctionType::get(
-            PointerType::get(*context, 0), fgets_args, false);
-        Function* fgets_func = Function::Create(
-            fgets_type, Function::ExternalLinkage, "fgets", module.get());
-        function_table["fgets"] = fgets_func;
-
-        // feof: int feof(FILE* stream)
-        std::vector<Type*> feof_args;
-        feof_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* feof_type = FunctionType::get(
-            int32_type, feof_args, false);
-        Function* feof_func = Function::Create(
-            feof_type, Function::ExternalLinkage, "feof", module.get());
-        function_table["feof"] = feof_func;
-
-        // fputs: int fputs(const char* str, FILE* stream)
-        std::vector<Type*> fputs_args;
-        fputs_args.push_back(PointerType::get(*context, 0));  // str
-        fputs_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fputs_type = FunctionType::get(
-            int32_type, fputs_args, false);
-        Function* fputs_func = Function::Create(
-            fputs_type, Function::ExternalLinkage, "fputs", module.get());
-        function_table["fputs"] = fputs_func;
-
-        // fputc: int fputc(int c, FILE* stream)
-        std::vector<Type*> fputc_args;
-        fputc_args.push_back(int32_type);      // c
-        fputc_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fputc_type = FunctionType::get(
-            int32_type, fputc_args, false);
-        Function* fputc_func = Function::Create(
-            fputc_type, Function::ExternalLinkage, "fputc", module.get());
-        function_table["fputc"] = fputc_func;
-
-        // strlen: size_t strlen(const char* str)
-        std::vector<Type*> strlen_args;
-        strlen_args.push_back(PointerType::get(*context, 0));  // str
-        FunctionType* strlen_type = FunctionType::get(
-            int64_type, strlen_args, false);
-        Function* strlen_func = Function::Create(
-            strlen_type, Function::ExternalLinkage, "strlen", module.get());
-        function_table["strlen"] = strlen_func;
-
-        // ============================================================================
-        // RANDOM NUMBER FUNCTIONS (from stdlib.h)
-        // ============================================================================
-
-        // drand48: double drand48(void) - returns random double in [0.0, 1.0)
-        FunctionType* drand48_type = FunctionType::get(
-            double_type, {}, false);
-        Function* drand48_func = Function::Create(
-            drand48_type, Function::ExternalLinkage, "drand48", module.get());
-        function_table["drand48"] = drand48_func;
-
-        // srand48: void srand48(long seed) - seeds the random number generator
-        std::vector<Type*> srand48_args;
-        srand48_args.push_back(int64_type);  // seed
-        FunctionType* srand48_type = FunctionType::get(
-            void_type, srand48_args, false);
-        Function* srand48_func = Function::Create(
-            srand48_type, Function::ExternalLinkage, "srand48", module.get());
-        function_table["srand48"] = srand48_func;
-
-        // ============================================================================
-        // QUANTUM RANDOM NUMBER GENERATOR (from lib/quantum/quantum_rng_wrapper.h)
-        // ============================================================================
-
-        // eshkol_qrng_double: double eshkol_qrng_double(void) - quantum random in [0,1)
-        FunctionType* qrng_double_type = FunctionType::get(double_type, {}, false);
-        Function* qrng_double_func = Function::Create(
-            qrng_double_type, Function::ExternalLinkage, "eshkol_qrng_double", module.get());
-        function_table["eshkol_qrng_double"] = qrng_double_func;
-
-        // eshkol_qrng_uint64: uint64_t eshkol_qrng_uint64(void) - quantum random uint64
-        FunctionType* qrng_uint64_type = FunctionType::get(int64_type, {}, false);
-        Function* qrng_uint64_func = Function::Create(
-            qrng_uint64_type, Function::ExternalLinkage, "eshkol_qrng_uint64", module.get());
-        function_table["eshkol_qrng_uint64"] = qrng_uint64_func;
-
-        // eshkol_qrng_range: int64_t eshkol_qrng_range(int64_t min, int64_t max) - quantum random in range
-        std::vector<Type*> qrng_range_args = {int64_type, int64_type};
-        FunctionType* qrng_range_type = FunctionType::get(int64_type, qrng_range_args, false);
-        Function* qrng_range_func = Function::Create(
-            qrng_range_type, Function::ExternalLinkage, "eshkol_qrng_range", module.get());
-        function_table["eshkol_qrng_range"] = qrng_range_func;
-
-        // time: time_t time(time_t* timer) - for seeding random
-        std::vector<Type*> time_args;
-        time_args.push_back(PointerType::get(*context, 0));  // timer (can be NULL)
-        FunctionType* time_type = FunctionType::get(
-            int64_type, time_args, false);
-        Function* time_func = Function::Create(
-            time_type, Function::ExternalLinkage, "time", module.get());
-        function_table["time"] = time_func;
-
-        // gettimeofday: int gettimeofday(struct timeval* tv, struct timezone* tz)
-        // struct timeval { time_t tv_sec; suseconds_t tv_usec; }
-        // We'll use i64 for both fields for simplicity
-        std::vector<Type*> gettimeofday_args;
-        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timeval*
-        gettimeofday_args.push_back(PointerType::get(*context, 0));  // timezone* (can be NULL)
-        FunctionType* gettimeofday_type = FunctionType::get(
-            int32_type, gettimeofday_args, false);
-        Function* gettimeofday_func = Function::Create(
-            gettimeofday_type, Function::ExternalLinkage, "gettimeofday", module.get());
-        function_table["gettimeofday"] = gettimeofday_func;
-
-        // ============================================================================
-        // SYSTEM & ENVIRONMENT FUNCTIONS (from stdlib.h, unistd.h)
-        // ============================================================================
-
-        // getenv: char* eshkol_getenv(const char* name)
-        std::vector<Type*> getenv_args;
-        getenv_args.push_back(PointerType::get(*context, 0));  // name
-        FunctionType* getenv_type = FunctionType::get(
-            PointerType::get(*context, 0), getenv_args, false);
-        Function* getenv_func = Function::Create(
-            getenv_type, Function::ExternalLinkage, eshkol::runtime::getenv_symbol, module.get());
-        function_table["getenv"] = getenv_func;
-
-        // setenv: int eshkol_setenv(const char* name, const char* value, int overwrite)
-        std::vector<Type*> setenv_args;
-        setenv_args.push_back(PointerType::get(*context, 0));  // name
-        setenv_args.push_back(PointerType::get(*context, 0));  // value
-        setenv_args.push_back(int32_type);                     // overwrite
-        FunctionType* setenv_type = FunctionType::get(
-            int32_type, setenv_args, false);
-        Function* setenv_func = Function::Create(
-            setenv_type, Function::ExternalLinkage, eshkol::runtime::setenv_symbol, module.get());
-        function_table["setenv"] = setenv_func;
-
-        // unsetenv: int eshkol_unsetenv(const char* name)
-        std::vector<Type*> unsetenv_args;
-        unsetenv_args.push_back(PointerType::get(*context, 0));  // name
-        FunctionType* unsetenv_type = FunctionType::get(
-            int32_type, unsetenv_args, false);
-        Function* unsetenv_func = Function::Create(
-            unsetenv_type, Function::ExternalLinkage, eshkol::runtime::unsetenv_symbol, module.get());
-        function_table["unsetenv"] = unsetenv_func;
-
-        // system: int system(const char* command)
-        std::vector<Type*> system_args;
-        system_args.push_back(PointerType::get(*context, 0));  // command
-        FunctionType* system_type = FunctionType::get(
-            int32_type, system_args, false);
-        Function* system_func = Function::Create(
-            system_type, Function::ExternalLinkage, "system", module.get());
-        function_table["system"] = system_func;
-
-        // usleep: int usleep(useconds_t usec) - sleep for microseconds
-        std::vector<Type*> usleep_args;
-        usleep_args.push_back(int32_type);  // usec (microseconds)
-        FunctionType* usleep_type = FunctionType::get(
-            int32_type, usleep_args, false);
-        Function* usleep_func = Function::Create(
-            usleep_type, Function::ExternalLinkage, "usleep", module.get());
-        function_table["usleep"] = usleep_func;
-
-        // access: int eshkol_access(const char* path, int mode) - check file access
-        std::vector<Type*> access_args;
-        access_args.push_back(PointerType::get(*context, 0));  // path
-        access_args.push_back(int32_type);                     // mode
-        FunctionType* access_type = FunctionType::get(
-            int32_type, access_args, false);
-        Function* access_func = Function::Create(
-            access_type, Function::ExternalLinkage, eshkol::runtime::access_symbol, module.get());
-        function_table["access"] = access_func;
-
-        // remove: int eshkol_remove(const char* path) - delete file
-        std::vector<Type*> remove_args;
-        remove_args.push_back(PointerType::get(*context, 0));  // path
-        FunctionType* remove_type = FunctionType::get(
-            int32_type, remove_args, false);
-        Function* remove_func = Function::Create(
-            remove_type, Function::ExternalLinkage, eshkol::runtime::remove_symbol, module.get());
-        function_table["remove"] = remove_func;
-
-        // rename: int eshkol_rename(const char* old, const char* new)
-        std::vector<Type*> rename_args;
-        rename_args.push_back(PointerType::get(*context, 0));  // old path
-        rename_args.push_back(PointerType::get(*context, 0));  // new path
-        FunctionType* rename_type = FunctionType::get(
-            int32_type, rename_args, false);
-        Function* rename_func = Function::Create(
-            rename_type, Function::ExternalLinkage, eshkol::runtime::rename_symbol, module.get());
-        function_table["rename"] = rename_func;
-
-        // mkdir: int eshkol_mkdir(const char* path, mode_t mode)
-        std::vector<Type*> mkdir_args;
-        mkdir_args.push_back(PointerType::get(*context, 0));  // path
-        mkdir_args.push_back(int32_type);                     // mode
-        FunctionType* mkdir_type = FunctionType::get(
-            int32_type, mkdir_args, false);
-        Function* mkdir_func = Function::Create(
-            mkdir_type, Function::ExternalLinkage, eshkol::runtime::mkdir_symbol, module.get());
-        function_table["mkdir"] = mkdir_func;
-
-        // rmdir: int eshkol_rmdir(const char* path)
-        std::vector<Type*> rmdir_args;
-        rmdir_args.push_back(PointerType::get(*context, 0));  // path
-        FunctionType* rmdir_type = FunctionType::get(
-            int32_type, rmdir_args, false);
-        Function* rmdir_func = Function::Create(
-            rmdir_type, Function::ExternalLinkage, eshkol::runtime::rmdir_symbol, module.get());
-        function_table["rmdir"] = rmdir_func;
-
-        // getcwd: char* getcwd(char* buf, size_t size)
-        std::vector<Type*> getcwd_args;
-        getcwd_args.push_back(PointerType::get(*context, 0));  // buf
-        getcwd_args.push_back(int64_type);                     // size
-        FunctionType* getcwd_type = FunctionType::get(
-            PointerType::get(*context, 0), getcwd_args, false);
-        Function* getcwd_func = Function::Create(
-            getcwd_type, Function::ExternalLinkage, "getcwd", module.get());
-        function_table["getcwd"] = getcwd_func;
-
-        // chdir: int eshkol_chdir(const char* path)
-        std::vector<Type*> chdir_args;
-        chdir_args.push_back(PointerType::get(*context, 0));  // path
-        FunctionType* chdir_type = FunctionType::get(
-            int32_type, chdir_args, false);
-        Function* chdir_func = Function::Create(
-            chdir_type, Function::ExternalLinkage, eshkol::runtime::chdir_symbol, module.get());
-        function_table["chdir"] = chdir_func;
-
-        // stat: int eshkol_stat(const char* path, struct stat* buf)
-        std::vector<Type*> stat_args;
-        stat_args.push_back(PointerType::get(*context, 0));  // path
-        stat_args.push_back(PointerType::get(*context, 0));  // stat buf
-        FunctionType* stat_type = FunctionType::get(
-            int32_type, stat_args, false);
-        Function* stat_func = Function::Create(
-            stat_type, Function::ExternalLinkage, eshkol::runtime::stat_symbol, module.get());
-        function_table["stat"] = stat_func;
-
-        // opendir: DIR* eshkol_opendir(const char* name)
-        std::vector<Type*> opendir_args;
-        opendir_args.push_back(PointerType::get(*context, 0));  // name
-        FunctionType* opendir_type = FunctionType::get(
-            PointerType::get(*context, 0), opendir_args, false);
-        Function* opendir_func = Function::Create(
-            opendir_type, Function::ExternalLinkage, eshkol::runtime::opendir_symbol, module.get());
-        function_table["opendir"] = opendir_func;
-
-        // readdir: struct dirent* readdir(DIR* dirp)
-        std::vector<Type*> readdir_args;
-        readdir_args.push_back(PointerType::get(*context, 0));  // dirp
-        FunctionType* readdir_type = FunctionType::get(
-            PointerType::get(*context, 0), readdir_args, false);
-        Function* readdir_func = Function::Create(
-            readdir_type, Function::ExternalLinkage, "readdir", module.get());
-        function_table["readdir"] = readdir_func;
-
-        // closedir: int closedir(DIR* dirp)
-        std::vector<Type*> closedir_args;
-        closedir_args.push_back(PointerType::get(*context, 0));  // dirp
-        FunctionType* closedir_type = FunctionType::get(
-            int32_type, closedir_args, false);
-        Function* closedir_func = Function::Create(
-            closedir_type, Function::ExternalLinkage, "closedir", module.get());
-        function_table["closedir"] = closedir_func;
-
-        // fseek: int fseek(FILE* stream, long offset, int whence)
-        std::vector<Type*> fseek_args;
-        fseek_args.push_back(PointerType::get(*context, 0));  // stream
-        fseek_args.push_back(int64_type);                     // offset
-        fseek_args.push_back(int32_type);                     // whence
-        FunctionType* fseek_type = FunctionType::get(
-            int32_type, fseek_args, false);
-        Function* fseek_func = Function::Create(
-            fseek_type, Function::ExternalLinkage, "fseek", module.get());
-        function_table["fseek"] = fseek_func;
-
-        // ftell: long ftell(FILE* stream)
-        std::vector<Type*> ftell_args;
-        ftell_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* ftell_type = FunctionType::get(
-            int64_type, ftell_args, false);
-        Function* ftell_func = Function::Create(
-            ftell_type, Function::ExternalLinkage, "ftell", module.get());
-        function_table["ftell"] = ftell_func;
-
-        // fread: size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream)
-        std::vector<Type*> fread_args;
-        fread_args.push_back(PointerType::get(*context, 0));  // ptr
-        fread_args.push_back(int64_type);                     // size
-        fread_args.push_back(int64_type);                     // nmemb
-        fread_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fread_type = FunctionType::get(
-            int64_type, fread_args, false);
-        Function* fread_func = Function::Create(
-            fread_type, Function::ExternalLinkage, "fread", module.get());
-        function_table["fread"] = fread_func;
-
-        // fwrite: size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream)
-        std::vector<Type*> fwrite_args;
-        fwrite_args.push_back(PointerType::get(*context, 0));  // ptr
-        fwrite_args.push_back(int64_type);                     // size
-        fwrite_args.push_back(int64_type);                     // nmemb
-        fwrite_args.push_back(PointerType::get(*context, 0));  // stream
-        FunctionType* fwrite_type = FunctionType::get(
-            int64_type, fwrite_args, false);
-        Function* fwrite_func = Function::Create(
-            fwrite_type, Function::ExternalLinkage, "fwrite", module.get());
-        function_table["fwrite"] = fwrite_func;
-
-        // ============================================================================
-        // COMPREHENSIVE C STANDARD MATH FUNCTIONS
-        // ============================================================================
-
-        // Helper to declare a single-arg math function (double -> double)
-        auto declareUnaryMathFunc = [this](const char* name) {
-            std::vector<Type*> args = {double_type};
-            FunctionType* type = FunctionType::get(double_type, args, false);
-            Function* func = Function::Create(type, Function::ExternalLinkage, name, module.get());
-            function_table[name] = func;
-        };
-
-        // Helper to declare a two-arg math function (double, double -> double)
-        auto declareBinaryMathFunc = [this](const char* name) {
-            std::vector<Type*> args = {double_type, double_type};
-            FunctionType* type = FunctionType::get(double_type, args, false);
-            Function* func = Function::Create(type, Function::ExternalLinkage, name, module.get());
-            function_table[name] = func;
-        };
-
-        // Trigonometric functions
-        declareUnaryMathFunc("tan");
-        declareUnaryMathFunc("asin");
-        declareUnaryMathFunc("acos");
-        declareUnaryMathFunc("atan");
-        declareBinaryMathFunc("atan2");
-
-        // Hyperbolic functions
-        declareUnaryMathFunc("sinh");
-        declareUnaryMathFunc("cosh");
-        declareUnaryMathFunc("tanh");
-        declareUnaryMathFunc("asinh");
-        declareUnaryMathFunc("acosh");
-        declareUnaryMathFunc("atanh");
-
-        // Exponential
-        declareUnaryMathFunc("exp2");
-
-        // Logarithmic
-        declareUnaryMathFunc("log");  // natural log
-        declareUnaryMathFunc("log10");
-        declareUnaryMathFunc("log2");
-
-        // Numeric/rounding functions
-        declareUnaryMathFunc("fabs");   // absolute value
-        declareUnaryMathFunc("floor");
-        declareUnaryMathFunc("ceil");
-        declareUnaryMathFunc("round");
-        declareUnaryMathFunc("trunc");
-        declareBinaryMathFunc("fmod");  // modulo for floats
-        declareBinaryMathFunc("remainder");  // IEEE remainder
-        declareBinaryMathFunc("fmin");
-        declareBinaryMathFunc("fmax");
-        declareUnaryMathFunc("cbrt");   // cube root
-
-        // Note: Builtin runtime function declarations (eshkol_deep_equal, eshkol_display_value,
-        // eshkol_lambda_registry_*) are now created via BuiltinDeclarations after CodegenContext
-        // is initialized. See the builtins_ initialization below.
-
-        // Get struct types from TypeSystem (types are created once in constructor)
-        dual_number_type = types->getDualNumberType();
-        ad_node_type = types->getAdNodeType();
-        tensor_type = types->getTensorType();
-
-        // Initialize tape state
-        current_tape_ptr = nullptr;
-        next_node_id = 0;
-
-        eshkol_debug("Using TypeSystem-managed struct types (dual_number, ad_node, tensor)");
-
-        // Initialize memory codegen (creates arena function declarations)
-        mem = std::make_unique<eshkol::MemoryCodegen>(*module, *types);
-
-        // Initialize CodegenContext - shared state for extracted modules
-        // This must happen after types, funcs, and mem are all initialized
-        ctx_ = std::make_unique<eshkol::CodegenContext>(
-            *context, *module, *builder, *types, *funcs, *mem
-        );
-        ctx_->setLibraryMode(library_mode);
-        ctx_->setModulePrefix(module_prefix);
-        ctx_->setGlobalArena(global_arena);
-        ctx_->setAdModeActive(ad_mode_active);
-        ctx_->setCurrentAdTape(current_ad_tape);
-        ctx_->setAdTapeStack(ad_tape_stack);
-        ctx_->setAdTapeDepth(ad_tape_depth);
-        ctx_->setAdPertLevel(ad_pert_level);
-        ctx_->setAdTowerActive(ad_tower_active);
-        ctx_->setAdTowerOrder(ad_tower_order);
-        ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
-        ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
-        ctx_->setOuterGradAccumulator(outer_grad_accumulator);
-        ctx_->setInnerVarNodePtr(inner_var_node_ptr);
-        ctx_->setGradientXDegree(gradient_x_degree);
-        ctx_->setOuterAdNodeStack(outer_ad_node_stack);
-        ctx_->setOuterAdNodeDepth(outer_ad_node_depth);
-        if (g_repl_mode_enabled) {
-            ctx_->setReplMode(true);
-        }
-        eshkol_debug("Created CodegenContext for module '%s'", module_prefix.c_str());
-
-        // Initialize TaggedValueCodegen - pack/unpack operations for tagged values
-        tagged_ = std::make_unique<eshkol::TaggedValueCodegen>(*ctx_);
-        eshkol_debug("Created TaggedValueCodegen");
-
-        // Initialize BuiltinDeclarations - runtime function declarations
-        // Creates: eshkol_deep_equal, eshkol_display_value, eshkol_lambda_registry_*
-        builtins_ = std::make_unique<eshkol::BuiltinDeclarations>(*ctx_);
-        // Update member pointers for backward compatibility
-        eshkol_deep_equal_func = builtins_->getDeepEqual();
-        eshkol_display_value_func = builtins_->getDisplayValue();
-        eshkol_lambda_registry_init_func = builtins_->getLambdaRegistryInit();
-        eshkol_lambda_registry_add_func = builtins_->getLambdaRegistryAdd();
-        eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
-        eshkol_debug("Created BuiltinDeclarations");
-
-        // Every frontend shares the canonical Eshkol-owned adapter ABI. Builds
-        // without an installed TensorCore package resolve these declarations to
-        // explicit-unavailable runtime stubs; no ambient environment toggle can
-        // silently change compiler lowering.
-        if (eshkol_register_tensorcore_builtins(ctx_.get()) < 0) {
-            eshkol_error("tensorcore: canonical adapter registration failed");
-        }
-
-        // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
-        tensor_ = std::make_unique<eshkol::TensorCodegen>(*ctx_, *tagged_, *mem);
-        // Set up callbacks for AST evaluation (uses same pattern as other modules)
-        tensor_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            ControlFlowCallbacks::typedToTaggedWrapper,
-            this
-        );
-        eshkol_debug("Created TensorCodegen with callbacks");
-
-        // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)
-        autodiff_ = std::make_unique<eshkol::AutodiffCodegen>(*ctx_, *tagged_, *mem);
-        // Set up function table reference for math operations (sin, cos, exp, etc.)
-        autodiff_->setFunctionTable(&function_table);
-        // Set up symbol tables for variable/capture lookup
-        autodiff_->setSymbolTables(&symbol_table, &global_symbol_table);
-        // Set up REPL mode flag
-        autodiff_->setReplMode(&g_repl_mode_enabled);
-        // Set up REPL state for cross-evaluation function resolution
-        autodiff_->setReplState(&g_repl_mutex, &g_repl_lambda_captures, &g_repl_symbol_addresses);
-        // Set up AST codegen callback
-        autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
-        // Set up lambda resolution callback
-        autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
-        // Calculus extraction: wire closure call, arity table, captures, closure alloc
-        autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
-        autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
-        autodiff_->setFunctionArityTable(&function_arity_table);
-        autodiff_->setFunctionBodyAstTable(&function_body_ast);
-        autodiff_->setFunctionDefAstTable(&function_def_ast);
-        autodiff_->setNestedFunctionCaptures(&nested_function_captures);
-        autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
-        tensor_->setAutodiffCodegen(autodiff_.get());
-        eshkol_debug("Created AutodiffCodegen with function table and callbacks");
-
-        // Initialize ComplexCodegen - complex number arithmetic
-        complex_ = std::make_unique<eshkol::ComplexCodegen>(*ctx_, *tagged_, *mem);
-        eshkol_debug("Created ComplexCodegen");
-
-        // Initialize ArithmeticCodegen - polymorphic arithmetic operations
-        // Now fully functional with tensor, autodiff, and complex support
-        arith_ = std::make_unique<eshkol::ArithmeticCodegen>(*ctx_, *tagged_, *tensor_, *autodiff_, *complex_);
-        eshkol_debug("Created ArithmeticCodegen");
-
-        // Initialize CallApplyCodegen - function call and apply operations
-        call_apply_ = std::make_unique<eshkol::CallApplyCodegen>(*ctx_, *tagged_, *arith_);
-        call_apply_->setSymbolTables(&symbol_table, &global_symbol_table);
-        call_apply_->setVariadicFunctionInfo(&variadic_function_info);
-        call_apply_->setFunctionTable(&function_table);
-        call_apply_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
-        call_apply_->setExtractConsCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
-        call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
-        call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
-        call_apply_->setGetBuiltinArithmeticCallback(ControlFlowCallbacks::getBuiltinArithmeticWrapper);
-        call_apply_->setGetBuiltinPredicateCallback(ControlFlowCallbacks::getBuiltinPredicateWrapper);
-        call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
-        call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
-        eshkol_debug("Created CallApplyCodegen with callbacks");
-
-        // Initialize MapCodegen - higher-order list mapping operations
-        map_ = std::make_unique<eshkol::MapCodegen>(*ctx_, *tagged_);
-        map_->setSymbolTables(&symbol_table, &global_symbol_table);
-        map_->setFunctionTable(&function_table);
-        map_->setNestedFunctionCaptures(&nested_function_captures);
-        map_->setLastGeneratedLambdaName(&last_generated_lambda_name);
-        map_->setCurrentFunction(&current_function);
-        map_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
-        map_->setCodegenLambdaCallback(ControlFlowCallbacks::codegenLambdaWrapper);
-        map_->setClosureCallCallback(ControlFlowCallbacks::closureCallWrapper);
-        map_->setExtractCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
-        map_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
-        map_->setGetConsGetPtrCallback(ControlFlowCallbacks::getConsAccessorWrapper);
-        map_->setGetConsSetPtrCallback(ControlFlowCallbacks::getConsSetPtrWrapper);
-        map_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
-        map_->setIndirectCallCallback(ControlFlowCallbacks::indirectCallWrapper);
-        map_->setFunctionContextCallbacks(ControlFlowCallbacks::pushFunctionContextWrapper,
-                                          ControlFlowCallbacks::popFunctionContextWrapper);
-        eshkol_debug("Created MapCodegen with callbacks");
-
-        // Initialize ControlFlowCodegen - control flow operations
-        // Now fully functional with callback-based AST evaluation
-        flow_ = std::make_unique<eshkol::ControlFlowCodegen>(*ctx_, *tagged_);
-        // Set up callbacks for AST evaluation
-        flow_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            ControlFlowCallbacks::typedToTaggedWrapper,
-            ControlFlowCallbacks::codegenFuncDefineWrapper,
-            ControlFlowCallbacks::codegenVarDefineWrapper,
-            ControlFlowCallbacks::eqvCompareWrapper,
-            ControlFlowCallbacks::detectAndPackWrapper,
-            this
-        );
-        flow_->setClosureCallCallback(ControlFlowCallbacks::closureCallWrapper);
-        eshkol_debug("Created ControlFlowCodegen with callbacks");
-
-        // Initialize StringIOCodegen - string and I/O operations
-        strio_ = std::make_unique<eshkol::StringIOCodegen>(*ctx_, *tagged_);
-        // Set up callbacks for AST evaluation (reuse ControlFlowCallbacks wrappers)
-        strio_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            ControlFlowCallbacks::typedToTaggedWrapper,
-            ControlFlowCallbacks::consCreateWrapper,
-            this
-        );
-        strio_->setDisplayValueFunc(eshkol_display_value_func);
-        // R7RS §5.3.1: display must not short-circuit a redefined name to the
-        // name-keyed `<name>_sexpr` side table (see setRedefinedTopLevelNames).
-        strio_->setRedefinedTopLevelNames(&redefined_toplevel_names);
-        eshkol_debug("Created StringIOCodegen with callbacks");
-
-        // Initialize BindingCodegen - variable binding operations
-        binding_ = std::make_unique<eshkol::BindingCodegen>(*ctx_, *tagged_);
-        binding_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            ControlFlowCallbacks::typedToTaggedWrapper,
-            ControlFlowCallbacks::getTypedValueTypeWrapper,
-            ControlFlowCallbacks::registerFuncBindingWrapper,
-            this
-        );
-        binding_->setSymbolTables(&symbol_table, &global_symbol_table);
-        binding_->setCurrentFunction(&current_function);
-        binding_->setReplMode(&g_repl_mode_enabled);
-        binding_->setLambdaTracking(&last_generated_lambda_name, &function_table);
-        binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
-        // Set up TCO callbacks for tail call optimization
-        binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
-        eshkol_debug("Created BindingCodegen with callbacks and TCO support");
-
-        // Wire binding codegen to autodiff (for TCO context save/restore in higher-order gradient)
-        autodiff_->setBindingCodegen(binding_.get());
-
-        // Initialize CollectionCodegen - list and vector operations
-        coll_ = std::make_unique<eshkol::CollectionCodegen>(*ctx_, *tagged_, *mem);
-        // Set up callbacks for AST evaluation (reuse ControlFlowCallbacks wrappers)
-        coll_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            ControlFlowCallbacks::typedToTaggedWrapper,
-            this
-        );
-        eshkol_debug("Created CollectionCodegen with callbacks");
-
-        // Initialize HomoiconicCodegen - quote and S-expression operations
-        homoiconic_ = std::make_unique<eshkol::HomoiconicCodegen>(*ctx_, *tagged_, *coll_, *strio_);
-        eshkol_debug("Created HomoiconicCodegen");
-
-        // Initialize TailCallCodegen - tail call optimization support
-        tailcall_ = std::make_unique<eshkol::TailCallCodegen>(*ctx_, *tagged_, *mem);
-        tailcall_->generateTrampolineRuntime();
-        eshkol_debug("Created TailCallCodegen with trampoline runtime");
-
-        // Initialize SystemCodegen - system, environment, and file operations
-        system_ = std::make_unique<eshkol::SystemCodegen>(*ctx_, *tagged_, *mem, function_table);
-        system_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            this
-        );
-        eshkol_debug("Created SystemCodegen");
-
-        // Initialize HashCodegen - hash table operations
-        hash_ = std::make_unique<eshkol::HashCodegen>(*ctx_, *tagged_, *mem, function_table, *arith_);
-        hash_->setCodegenCallbacks(
-            ControlFlowCallbacks::codegenASTWrapper,
-            ControlFlowCallbacks::codegenTypedASTWrapper,
-            this
-        );
-        eshkol_debug("Created HashCodegen");
-
-        // Initialize LogicWorkspaceCodegen - consciousness engine primitives
-        // (logic vars, KB, factor graphs, active inference, workspace, model_io)
-        logic_workspace_ = std::make_unique<eshkol::LogicWorkspaceCodegen>(*ctx_, *tagged_);
-        logic_workspace_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTWrapper, this);
-        logic_workspace_->setCodegenClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
-        eshkol_debug("Created LogicWorkspaceCodegen");
-
-        // Initialize FunctionCodegen - lambda and closure operations
-        // Note: The main implementations remain in this file for now
-        func_ = std::make_unique<eshkol::FunctionCodegen>(*ctx_, *tagged_, *mem);
-        eshkol_debug("Created FunctionCodegen");
-
-        // Initialize ParallelCodegen - parallel execution primitives.
-        // Its constructor emits worker dispatchers and a registration ctor, so
-        // keep it out of freestanding object mode unless a hosted runtime is
-        // available to satisfy those symbols.
-        if (!freestanding_codegen_) {
-            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
-            parallel_->setCodegenASTCallback(
-                ControlFlowCallbacks::codegenASTWrapper,
-                this
-            );
-            eshkol_debug("Created ParallelCodegen");
-        } else {
-            eshkol_debug("Skipped ParallelCodegen for freestanding object mode");
-        }
-
-        // Populate function_table for backward compatibility
-        registerArenaFunctions();
-    }
-
-    void registerArenaFunctions() {
+    void registerArenaFunctions() __attribute__((noinline, used)) {
         // Register arena functions in function_table for name-based lookups
         function_table["arena_create"] = mem->getArenaCreate();
         function_table["arena_destroy"] = mem->getArenaDestroy();
@@ -5772,7 +4306,7 @@ private:
         }
     }
 
-    bool isLibraryInitAST(const eshkol_ast_t& ast) const {
+    bool isLibraryInitAST(const eshkol_ast_t& ast) const __attribute__((noinline, used)) {
         if (ast.type != ESHKOL_OP) {
             return false;
         }
@@ -5782,7 +4316,7 @@ private:
         return ast.operation.op == ESHKOL_SET_OP;
     }
 
-    void codegenLibraryInitAST(const eshkol_ast_t& ast) {
+    void codegenLibraryInitAST(const eshkol_ast_t& ast) __attribute__((noinline, used)) {
         codegenAST(&ast);
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             eshkol_debug("Library init: initialized global variable: %s",
@@ -5800,7 +4334,7 @@ private:
         const std::vector<size_t>& init_indices,
         size_t begin_index,
         size_t end_index
-    ) {
+    ) __attribute__((noinline, used)) {
         std::string chunk_name = "__eshkol_lib_init_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
@@ -5830,7 +4364,7 @@ private:
         return chunk_func;
     }
 
-    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) {
+    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline, used)) {
         Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
         std::string sexpr_key = meta.lambda_name + "_sexpr";
         GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
@@ -5862,7 +4396,7 @@ private:
         size_t chunk_index,
         size_t begin_index,
         size_t end_index
-    ) {
+    ) __attribute__((noinline, used)) {
         std::string chunk_name = "__eshkol_lib_init_sexpr_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
@@ -5893,7 +4427,7 @@ private:
         return chunk_func;
     }
 
-    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) {
+    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) __attribute__((noinline, used)) {
         // Make named functions external linkage for library export
         // Keep lambda functions as internal to avoid conflicts with user code
         for (auto& pair : function_table) {
@@ -6262,91 +4796,7 @@ private:
 
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
-    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts) {
-        std::vector<size_t> init_ast_indices;
-        for (size_t i = 0; i < num_asts; i++) {
-            if (isLibraryInitAST(asts[i])) {
-                init_ast_indices.push_back(i);
-            }
-        }
-
-        Function* lambda_init_func = module->getFunction("__lambda_init__");
-        if (freestanding_codegen_ &&
-            init_ast_indices.empty() &&
-            !lambda_init_func &&
-            pending_lambda_sexprs.empty()) {
-            finalizeLibrarySymbols(asts, num_asts);
-            eshkol_info("Skipped library init function for freestanding object mode");
-            return;
-        }
-
-        // Create library init function: void __eshkol_lib_init__(void* arena)
-        // Takes an arena pointer as parameter so caller can manage memory
-        std::vector<Type*> init_args = { PointerType::getUnqual(*context) }; // arena pointer
-        FunctionType* init_type = FunctionType::get(void_type, init_args, false);
-        Function* init_func = Function::Create(init_type, Function::ExternalLinkage,
-                                               "__eshkol_lib_init__", module.get());
-
-        BasicBlock* entry = BasicBlock::Create(*context, "entry", init_func);
-        builder->SetInsertPoint(entry);
-        current_function = init_func;
-
-        // Get arena parameter and store in global
-        Value* arena_param = init_func->arg_begin();
-        arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
-
-        // Process global variable definitions and top-level set! statements in
-        // noinline chunks. Large aggregate libraries otherwise produce one huge
-        // __eshkol_lib_init__ text atom, which trips Apple ld branch-island
-        // placement limits.
-        std::vector<Function*> init_chunks;
-        for (size_t begin = 0, chunk_index = 0;
-             begin < init_ast_indices.size();
-             begin += LIB_INIT_AST_CHUNK_SIZE, chunk_index++) {
-            size_t end = std::min(begin + LIB_INIT_AST_CHUNK_SIZE, init_ast_indices.size());
-            init_chunks.push_back(createLibraryInitChunkFunction(
-                init_type, chunk_index, asts, init_ast_indices, begin, end));
-        }
-        for (Function* chunk_func : init_chunks) {
-            builder->CreateCall(chunk_func, {arena_param});
-        }
-
-        // Call __lambda_init__ to initialize lambda captures
-        if (lambda_init_func) {
-            builder->CreateCall(lambda_init_func);
-            eshkol_debug("Library init: called __lambda_init__ for lambda captures");
-        }
-
-        // Initialize lambda registry (caller may not have done it yet)
-        builder->CreateCall(eshkol_lambda_registry_init_func);
-        eshkol_debug("Library init: initialized lambda registry");
-
-        // Generate S-expressions for lambdas and register them
-        if (!pending_lambda_sexprs.empty()) {
-            std::vector<Function*> sexpr_chunks;
-            for (size_t begin = 0, chunk_index = 0;
-                 begin < pending_lambda_sexprs.size();
-                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
-                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
-                                      pending_lambda_sexprs.size());
-                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
-                    init_type, chunk_index, begin, end));
-            }
-            for (Function* chunk_func : sexpr_chunks) {
-                builder->CreateCall(chunk_func, {arena_param});
-            }
-
-            pending_lambda_sexprs.clear();
-        }
-
-        // Return void
-        builder->CreateRetVoid();
-
-        finalizeLibrarySymbols(asts, num_asts);
-
-        eshkol_info("Created library init function: __eshkol_lib_init__");
-    }
+    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
 
     void pruneUnusedFreestandingDeclarations() {
         if (!freestanding_codegen_) return;
@@ -6586,20 +5036,6 @@ private:
 
                 // Generate S-expressions now that arena is ready
 
-                // S-expression materialization walks the entire imported
-                // lambda set and can itself dominate the entry function. Keep
-                // the runtime ordering (arena first, registry second, then
-                // metadata/aliases) while outlining that work into one
-                // internal initialization helper.
-                FunctionType* lambda_init_type = FunctionType::get(void_type, false);
-                Function* lambda_metadata_init = Function::Create(
-                    lambda_init_type, Function::InternalLinkage,
-                    "__eshkol_lambda_metadata_init", module.get());
-                BasicBlock* lambda_metadata_entry = BasicBlock::Create(
-                    *context, "entry", lambda_metadata_init);
-                builder->SetInsertPoint(lambda_metadata_entry);
-                current_function = lambda_metadata_init;
-
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
                     
@@ -6687,13 +5123,6 @@ private:
                         }
                     }
                 }
-
-                if (!builder->GetInsertBlock()->getTerminator()) {
-                    builder->CreateRetVoid();
-                }
-                builder->SetInsertPoint(main_entry);
-                current_function = c_main;
-                builder->CreateCall(lambda_metadata_init);
             } else {
                 // No lambdas - just initialize arena at entry
                 builder->SetInsertPoint(main_entry);
@@ -6886,19 +5315,10 @@ private:
             }
 
             // Generate S-expressions for pending lambdas (function definitions compiled in Step 2)
-            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a
-            // continuation block. The whole metadata walk is outlined so a
-            // broad imported program does not make C `main` carry every
-            // lambda's allocation and registry live range.
+            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a continuation block
             if (!pending_lambda_sexprs.empty()) {
-                FunctionType* lambda_init_type = FunctionType::get(void_type, false);
-                Function* lambda_metadata_init = Function::Create(
-                    lambda_init_type, Function::InternalLinkage,
-                    "__eshkol_lambda_metadata_init", module.get());
-                BasicBlock* lambda_metadata_entry = BasicBlock::Create(
-                    *context, "entry", lambda_metadata_init);
-                builder->SetInsertPoint(lambda_metadata_entry);
-                current_function = lambda_metadata_init;
+                // Create a continuation block for after all S-expression generation
+                BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", main_func);
 
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
@@ -6933,12 +5353,12 @@ private:
                     }
                 }
 
-                if (!builder->GetInsertBlock()->getTerminator()) {
-                    builder->CreateRetVoid();
-                }
-                builder->SetInsertPoint(main_entry);
-                current_function = main_func;
-                builder->CreateCall(lambda_metadata_init);
+                // Branch to continuation and set it as the new insertion point
+                builder->CreateBr(sexpr_continue);
+                builder->SetInsertPoint(sexpr_continue);
+
+                // Update main_entry to point to the continuation block for generateIR
+                main_entry = sexpr_continue;
 
                 pending_lambda_sexprs.clear();
             }
@@ -7739,7 +6159,7 @@ private:
         }
     }
 
-    Function* resolveFunctionByLogicalName(const std::string& name) {
+    Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline, used)) {
         auto it = function_table.find(name);
         if (it != function_table.end() && it->second) {
             return it->second;
@@ -7748,224 +6168,7 @@ private:
     }
 
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
-    Function* tryResolveReplFunction(const std::string& func_name) {
-        // Only check REPL symbols if REPL mode is enabled
-        if (!g_repl_mode_enabled) {
-            return nullptr;
-        }
-
-        std::lock_guard<std::mutex> lock(g_repl_mutex);
-
-        // MODULE VISIBILITY: Check if symbol is private (not exported from its module)
-        if (g_repl_private_symbols.find(func_name) != g_repl_private_symbols.end()) {
-            eshkol_error("Function '%s' is private (not exported from its module)", func_name.c_str());
-            markFatalCodegenError();
-            return nullptr;
-        }
-
-        // Check multiple name variations and track which one matched
-        std::string actual_func_name;
-
-        // 1. Exact name
-        auto it = g_repl_function_addresses.find(func_name);
-        if (it != g_repl_function_addresses.end()) {
-            actual_func_name = func_name;
-        } else {
-            // 2. With "_func" suffix for lambda variables
-            std::string func_key = func_name + "_func";
-            it = g_repl_function_addresses.find(func_key);
-            if (it != g_repl_function_addresses.end()) {
-                actual_func_name = func_key;
-            } else if (func_name.ends_with("_func")) {
-                // 3. Try removing "_func" suffix if present
-                std::string base_name = func_name.substr(0, func_name.length() - 5);
-                it = g_repl_function_addresses.find(base_name);
-                if (it != g_repl_function_addresses.end()) {
-                    actual_func_name = base_name;
-                }
-            }
-        }
-
-        if (it == g_repl_function_addresses.end()) {
-            return nullptr;
-        }
-
-        // CRITICAL: If this is a lambda variable (like "square"), resolve to the actual lambda name
-        // The JIT only has the lambda function (e.g., "lambda_0"), not the alias (e.g., "square_func")
-        std::string jit_symbol_name = actual_func_name;
-        auto lambda_it = g_repl_lambda_names.find(func_name);
-        if (lambda_it != g_repl_lambda_names.end()) {
-            // Found lambda mapping: use the actual lambda name that exists in JIT
-            jit_symbol_name = lambda_it->second;
-        }
-
-        // Get the function's arity using the actual matched name
-        size_t arity = 0;
-        auto arity_it = g_repl_function_arities.find(actual_func_name);
-        if (arity_it != g_repl_function_arities.end()) {
-            arity = arity_it->second;
-        }
-
-        // Did the host explicitly mark this name as a native C function (i.e.
-        // compiled by Clang/GCC, NOT by the JIT)? If so we cannot use the IR
-        // struct {i8,i8,i16,i32,i64} for params/return — Clang coerces a
-        // 16-byte struct-by-value into `[2 x i64]` per AAPCS/SysV, which is
-        // a different register-packing than what LLVM does for the IR struct.
-        // We register a *thunk* with the struct ABI (so existing call sites
-        // are unchanged) that internally bitcasts to [2 x i64] and forwards.
-        bool is_native_c = g_repl_native_c_functions.count(jit_symbol_name) > 0
-                       || g_repl_native_c_functions.count(actual_func_name) > 0
-                       || g_repl_native_c_functions.count(func_name) > 0;
-
-        // Check if we already have this function in the current module.
-        // For native-C functions the cache key is the thunk name, NOT the
-        // raw JIT symbol (that name now refers to the [2 x i64] declaration
-        // and is wrong-typed for callers who expect a tagged_value-ABI fn).
-        std::string cache_key = is_native_c
-            ? (jit_symbol_name + "__cabi_thunk")
-            : jit_symbol_name;
-        Function* extern_func = module->getFunction(cache_key);
-        if (!extern_func) {
-            if (is_native_c) {
-                // 1. Declare the *real* C function with the [2 x i64] ABI
-                //    under the original JIT symbol name. ORC will resolve
-                //    that name via dlsym to the host C function (compiled
-                //    by Clang/GCC, which itself coerced the 16-byte struct
-                //    to [2 x i64] for AAPCS / SysV register passing).
-                ArrayType* coerced_type = ArrayType::get(int64_type, 2);
-                std::vector<Type*> cabi_param_types(arity, coerced_type);
-                FunctionType* cabi_type = FunctionType::get(
-                    coerced_type,
-                    cabi_param_types,
-                    false
-                );
-                Function* cabi_real = module->getFunction(jit_symbol_name);
-                if (!cabi_real) {
-                    cabi_real = Function::Create(
-                        cabi_type,
-                        Function::ExternalLinkage,
-                        jit_symbol_name,  // ORC will dlsym this name
-                        module.get()
-                    );
-                }
-
-                // 2. Build a thunk with the IR struct ABI that just unpacks
-                //    its struct args into [2 x i64], calls the C function,
-                //    and packs the result back. The thunk has private
-                //    linkage so it does not collide across modules.
-                std::vector<Type*> thunk_param_types(arity, tagged_value_type);
-                FunctionType* thunk_type = FunctionType::get(
-                    tagged_value_type,
-                    thunk_param_types,
-                    false
-                );
-                std::string thunk_name = jit_symbol_name + "__cabi_thunk";
-                Function* thunk = Function::Create(
-                    thunk_type,
-                    Function::PrivateLinkage,
-                    thunk_name,
-                    module.get()
-                );
-                // Save current insert point so we can return to the caller
-                // mid-codegen without disturbing it.
-                IRBuilder<>::InsertPoint saved_ip = builder->saveIP();
-                BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
-                builder->SetInsertPoint(entry);
-
-                // Coerce each struct arg → [2 x i64] via memory (alloca,
-                // store struct, load [2 x i64]). This is exactly what Clang
-                // emits for a 16-byte struct passed by value at -O0.
-                std::vector<Value*> coerced_args;
-                coerced_args.reserve(arity);
-                for (size_t i = 0; i < arity; ++i) {
-                    Value* slot = builder->CreateAlloca(
-                        tagged_value_type, nullptr,
-                        "cabi_arg_" + std::to_string(i));
-                    builder->CreateStore(thunk->getArg(i), slot);
-                    Value* loaded = builder->CreateLoad(
-                        coerced_type, slot,
-                        "cabi_arg_" + std::to_string(i) + "_coerced");
-                    coerced_args.push_back(loaded);
-                }
-                Value* cabi_ret = builder->CreateCall(
-                    cabi_type, cabi_real, coerced_args, "cabi_ret");
-
-                // Coerce return [2 x i64] → struct via memory.
-                Value* ret_slot = builder->CreateAlloca(
-                    tagged_value_type, nullptr, "cabi_ret_slot");
-                builder->CreateStore(cabi_ret, ret_slot);
-                Value* ret_struct = builder->CreateLoad(
-                    tagged_value_type, ret_slot, "cabi_ret_struct");
-                builder->CreateRet(ret_struct);
-
-                builder->restoreIP(saved_ip);
-
-                extern_func = thunk;
-            } else {
-                // Function doesn't exist yet - create external declaration
-                // All Eshkol functions return eshkol_tagged_value and take tagged_value parameters
-                std::vector<Type*> param_types(arity, tagged_value_type);
-                FunctionType* func_type = FunctionType::get(
-                    tagged_value_type,
-                    param_types,
-                    false  // NOT varargs - use exact arity
-                );
-
-                // CRITICAL: Use the actual JIT symbol name that exists in the JIT, not the requested name
-                extern_func = Function::Create(
-                    func_type,
-                    Function::ExternalLinkage,
-                    jit_symbol_name,  // Use the actual JIT symbol name (e.g., "lambda_0")!
-                    module.get()
-                );
-            }
-        }
-
-        // Register in function table so subsequent lookups find it
-        // Register under BOTH the requested name and JIT symbol name for flexibility
-        function_table[func_name] = extern_func;
-        if (jit_symbol_name != func_name) {
-            function_table[jit_symbol_name] = extern_func;
-        }
-        if (actual_func_name != func_name && actual_func_name != jit_symbol_name) {
-            function_table[actual_func_name] = extern_func;
-        }
-
-        // Bug BB: also propagate the resolved arity into function_arity_table
-        // so future variable-codegen paths that look up `func_name` in
-        // function_table (line ~7212) ALSO find an arity entry and take the
-        // closure-wrap branch.
-        //
-        // Before this line existed, the second reference to a cross-file
-        // user function would:
-        //   1. find the function in function_table (registered above on
-        //      the first reference)
-        //   2. NOT find an arity in function_arity_table
-        //   3. fall through to the "raw function pointer" path at line ~7250
-        //   4. produce a CALLABLE tagged value whose data field is the raw
-        //      code address instead of a heap pointer to a closure header
-        // and the next dispatch would dereference the code address as if it
-        // were a closure → SEGV at a mangled-looking address.
-        //
-        // Repro:
-        //   (load "lib.esk")           ; defines f
-        //   (define a f) (define b f)  ; first wraps OK; second was raw
-        //   (a x)  → OK
-        //   (b x)  → SEGV  before this fix
-        //
-        // See tests/bug_BB_minimal_xfile_indirector.esk.
-        if (arity > 0 || function_arity_table.find(func_name) == function_arity_table.end()) {
-            function_arity_table[func_name] = arity;
-            if (jit_symbol_name != func_name) {
-                function_arity_table[jit_symbol_name] = arity;
-            }
-            if (actual_func_name != func_name && actual_func_name != jit_symbol_name) {
-                function_arity_table[actual_func_name] = arity;
-            }
-        }
-
-        return extern_func;
-    }
+    Function* tryResolveReplFunction(const std::string& func_name);
 
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val) {
         Value* arena_ptr = getArenaPtr();
@@ -15938,42 +14141,39 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
             Value* char_val = unpackInt64FromTaggedValue(arg);
+            // Truncate to i8 for character classification
+            Value* ch = builder->CreateTrunc(char_val, int8_type);
             Value* result = nullptr;
-            if (func_name == "char-alphabetic?" || func_name == "char-numeric?") {
-                const char* predicate_name = func_name == "char-alphabetic?"
-                    ? "eshkol_unicode_is_alphabetic"
-                    : "eshkol_unicode_is_numeric";
-                llvm::Function* predicate = builder->GetInsertBlock()->getModule()->getFunction(predicate_name);
-                if (!predicate) {
-                    llvm::FunctionType* predicate_type = llvm::FunctionType::get(
-                        builder->getInt32Ty(), {int64_type}, false);
-                    predicate = llvm::Function::Create(
-                        predicate_type, llvm::Function::ExternalLinkage,
-                        predicate_name, builder->GetInsertBlock()->getModule());
-                }
-                Value* classified = builder->CreateCall(predicate, {char_val});
-                result = builder->CreateICmpNE(
-                    classified, ConstantInt::get(builder->getInt32Ty(), 0));
-            } else {
-                Value* ch = builder->CreateTrunc(char_val, int8_type);
-                if (func_name == "char-whitespace?") {
-                    // space, tab, newline, carriage return, form feed
-                    Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
-                    Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
-                    Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
-                    Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
-                    Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
-                    result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
-                        builder->CreateOr(is_nl, is_cr)), is_ff);
-                } else if (func_name == "char-upper-case?") {
-                    Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
-                    Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
-                    result = builder->CreateAnd(ge_A, le_Z);
-                } else { // char-lower-case?
-                    Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
-                    Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
-                    result = builder->CreateAnd(ge_a, le_z);
-                }
+            if (func_name == "char-alphabetic?") {
+                // (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                Value* upper = builder->CreateAnd(ge_A, le_Z);
+                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                Value* lower = builder->CreateAnd(ge_a, le_z);
+                result = builder->CreateOr(upper, lower);
+            } else if (func_name == "char-numeric?") {
+                Value* ge_0 = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, '0'));
+                Value* le_9 = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, '9'));
+                result = builder->CreateAnd(ge_0, le_9);
+            } else if (func_name == "char-whitespace?") {
+                // space, tab, newline, carriage return, form feed
+                Value* is_space = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, ' '));
+                Value* is_tab = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\t'));
+                Value* is_nl = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\n'));
+                Value* is_cr = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\r'));
+                Value* is_ff = builder->CreateICmpEQ(ch, ConstantInt::get(int8_type, '\f'));
+                result = builder->CreateOr(builder->CreateOr(builder->CreateOr(is_space, is_tab),
+                    builder->CreateOr(is_nl, is_cr)), is_ff);
+            } else if (func_name == "char-upper-case?") {
+                Value* ge_A = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'A'));
+                Value* le_Z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'Z'));
+                result = builder->CreateAnd(ge_A, le_Z);
+            } else { // char-lower-case?
+                Value* ge_a = builder->CreateICmpUGE(ch, ConstantInt::get(int8_type, 'a'));
+                Value* le_z = builder->CreateICmpULE(ch, ConstantInt::get(int8_type, 'z'));
+                result = builder->CreateAnd(ge_a, le_z);
             }
             return packBoolToTaggedValue(result);
         }
@@ -23373,18 +21573,13 @@ private:
         // Declare setjmp if needed
         Function* setjmp_func = getOrDeclareSetjmpFunc();
 
-        // Declare continuation runtime functions.
-        //
-        // SW-74: the _flags form is what codegen emits, because codegen is the
-        // only place that knows whether this particular capture can outlive its
-        // frame. The 2-argument eshkol_make_continuation_state() still exists
-        // for callers with no classification; it forwards with flags = 0.
-        Function* make_state_func = module->getFunction("eshkol_make_continuation_state_flags");
+        // Declare continuation runtime functions
+        Function* make_state_func = module->getFunction("eshkol_make_continuation_state");
         if (!make_state_func) {
             FunctionType* make_state_type = FunctionType::get(builder->getPtrTy(),
-                {builder->getPtrTy(), builder->getPtrTy(), builder->getInt64Ty()}, false);
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
             make_state_func = Function::Create(make_state_type, Function::ExternalLinkage,
-                "eshkol_make_continuation_state_flags", module.get());
+                "eshkol_make_continuation_state", module.get());
         }
 
         Function* make_cont_func = module->getFunction("eshkol_make_continuation_closure");
@@ -23413,27 +21608,18 @@ private:
 
         // A continuation that may outlive its frame may also outlive the
         // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and an UNPINNED region reclaims that arena at
-        // exit — native regions reclaim by escape-promoting the values that
-        // leave, and the continuation's own state is not one of them. Putting
-        // the continuation's state, closure or stack image there would leave
-        // the resume path reading reclaimed memory; it happens to survive only
-        // while the freed blocks are not yet reused, which is the
-        // dangling-reference failure in its purest form. Allocate from the
+        // eshkol_current_arena(), and region exit FREES that arena — native
+        // regions reclaim by escape-promoting values that leave, not by
+        // pinning. Putting the continuation's state, closure or stack image
+        // there would leave the resume path reading freed memory; it happens
+        // to survive only while the freed blocks are not yet reused, which is
+        // the dangling-reference failure in its purest form. Allocate from the
         // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes retention, never a dangle, matching the
+        // failure direction becomes a leak, never a dangle, matching the
         // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region.
-        //
-        // Escape-only captures keep the current arena, and SW-74 is why that is
-        // still right even though such a capture no longer pins: the
-        // continuation cannot be invoked after the frame that created it
-        // returns, and every enclosing `with-region`'s extent contains that
-        // frame's, so its state dies with the region and is never read
-        // afterwards. The one region that CAN close inside the capture's extent
-        // — a handle-owned one, via `(region-close h)` — makes the runtime pin
-        // after all (eshkol_region_any_handle_owned_open()), so the arena is
-        // promoted and the state stays readable there too.
+        // does by pinning the region. Escape-only captures keep the current
+        // arena — such a continuation cannot outlive the region body that
+        // created it, so its state is correctly reclaimed with the region.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
             Function* shared_arena_func = module->getFunction("get_global_arena_shared");
@@ -23446,20 +21632,8 @@ private:
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
 
-        // Create continuation state on arena.
-        //
-        // SW-74: hand the runtime the same classification the arena choice above
-        // was made with. It decides whether the capture pins the open regions.
-        // An escape-only continuation cannot be invoked after its frame returns,
-        // and every enclosing `with-region`'s dynamic extent contains that
-        // frame's, so it can never read a closed region — pinning it retained
-        // one whole region arena per capture for nothing, which is the leak
-        // SW-74 records. Anything the classifier does not model reads as "may
-        // escape" and pins exactly as before.
-        Value* cont_flags = ConstantInt::get(builder->getInt64Ty(),
-            stays_local ? ESHKOL_CONT_FLAG_ESCAPE_ONLY : 0);
-        Value* state_ptr = builder->CreateCall(make_state_func,
-            {cont_arena, jmp_buf_alloc, cont_flags}, "cont_state");
+        // Create continuation state on arena
+        Value* state_ptr = builder->CreateCall(make_state_func, {cont_arena, jmp_buf_alloc}, "cont_state");
 
         // Create continuation closure
         Value* cont_closure_ptr = builder->CreateCall(make_cont_func, {cont_arena, state_ptr}, "cont_closure");
@@ -43487,8 +41661,6 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Set data layout
         module->setDataLayout(target_machine->createDataLayout());
 
-        trace_aot_function_ir_stats(*module);
-
         // Run LLVM optimization passes before codegen (respects -O level)
         auto phase_start = std::chrono::steady_clock::now();
         trace_object_emit_phase("optimizeModule", "begin", *module, filename,
@@ -43499,14 +41671,6 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         trace_object_emit_phase("optimizeModule", "end", *module, filename,
                                 std::string(), object_triple_str, cpu_name,
                                 phase_elapsed.count());
-
-        const bool use_fast_regalloc = aot_module_needs_fast_regalloc(*module);
-        if (use_fast_regalloc) {
-            eshkol_info("AOT O0 register allocation policy: fast allocator "
-                        "for a function at or above %llu optimized IR instructions",
-                        static_cast<unsigned long long>(
-                            aot_fast_regalloc_instruction_threshold()));
-        }
 
         // Emit to a same-directory temporary file first. LLVM opens the output
         // before running the backend, so direct final-path emission can publish
@@ -43536,47 +41700,22 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             object_triple_str,
             cpu_name);
 
-        // Create pass manager and emit object file. The legacy target pipeline
-        // has no per-TargetMachine allocator setter, so select the registered
-        // fast allocator explicitly for this emission and restore LLVM's
-        // previous default afterward. This keeps the policy local to one
-        // compiler invocation and avoids process-global command-line mutation.
+        // Create pass manager and emit object file
         legacy::PassManager pass_manager;
-        const auto previous_regalloc = RegisterRegAlloc::getDefault();
-        bool fast_regalloc_selected = false;
-        if (use_fast_regalloc) {
-            for (auto* allocator = RegisterRegAlloc::getList(); allocator;
-                 allocator = allocator->getNext()) {
-                if (allocator->getName() == "fast") {
-                    RegisterRegAlloc::setDefault(allocator->getCtor());
-                    fast_regalloc_selected = true;
-                    break;
-                }
-            }
-            if (!fast_regalloc_selected) {
-                eshkol_error("LLVM fast register allocator is not registered; "
-                             "refusing oversized O0 emission");
-                return -1;
-            }
-        }
         emit_watchdog.set_phase(
             "addPassesToEmitFile",
             "stalled while constructing LLVM backend emission passes; final object was not published");
         phase_start = std::chrono::steady_clock::now();
         trace_object_emit_phase("addPassesToEmitFile", "begin", *module, filename,
                                 temp_filename, object_triple_str, cpu_name);
-        if (target_machine->addPassesToEmitFile(
-                pass_manager, dest, nullptr, ESHKOL_CODEGEN_FILETYPE)) {
+        if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
+                                              ESHKOL_CODEGEN_FILETYPE)) {
             eshkol_error("Target machine cannot emit object files");
             dest.close();
-            if (dest.has_error()) dest.clear_error();
-            if (fast_regalloc_selected) {
-                RegisterRegAlloc::setDefault(previous_regalloc);
+            if (dest.has_error()) {
+                dest.clear_error();
             }
             return -1;
-        }
-        if (env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) {
-            pass_manager.add(new AotMachineTelemetryPass());
         }
         phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - phase_start);
@@ -43596,9 +41735,6 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         trace_object_emit_phase("pass_manager.run", "end", *module, filename,
                                 temp_filename, object_triple_str, cpu_name,
                                 phase_elapsed.count());
-        if (fast_regalloc_selected) {
-            RegisterRegAlloc::setDefault(previous_regalloc);
-        }
         emit_watchdog.finish();
 
         phase_start = std::chrono::steady_clock::now();
