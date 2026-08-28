@@ -31,6 +31,83 @@ e.g. `(+ 1 (f n))` — the `(+ 1 …)` runs after `f` returns.
 Five million iterations complete without stack growth. Named-`let` loops behave
 the same way (their loop call is a tail call).
 
+## Self tail recursion in a `guard` body
+
+A `guard` is how a resident program draws an error boundary around one unit of
+work, and the unit of work is usually a loop:
+
+```scheme
+(define (tick i acc)
+  (guard (e (#t acc))                    ; the boundary: any raise ends the run
+    (if (>= i 1000000)
+        acc
+        (tick (+ i 1) (+ acc 1)))))      ; self tail call, inside the guard
+(display (tick 0 0)) (newline)
+```
+```
+1000000
+```
+
+**A self tail call in the body of a `guard` runs in constant stack, and the
+handler chain the program observes is exactly the one it would observe if every
+activation kept a native frame.** Both halves of that sentence are gated:
+`tests/tco/guard_tail_position_test.esk` runs a million guarded iterations under
+a reduced `ulimit -s`, and the nine fixtures in `tests/tco/guard_tail_context/`
+are checked against chibi-scheme 0.12's answers on the native JIT, the native
+AOT path and the bytecode VM by `scripts/run_guard_tail_context.sh`.
+
+This is a deliberate extension of R7RS, not a reading of it. R7RS 7.1.3's
+tail-context grammar does not list `guard`, and it cannot: the handler's whole
+purpose is to be in effect while the body runs, so at depth N a conforming
+implementation has N *live* guards, each holding that activation's variables.
+Every one of them is observable — a handler that re-raises, or a clause body
+that raises, must find the next one out and get *its* activation's values back:
+
+```scheme
+(define (climb n)
+  (guard (e ((> n 0) (raise e))          ; not the outermost: hand it further out
+            (#t (list 'answered-at n)))  ; n = 0: the outermost activation answers
+    (if (>= n 100000) (raise 'top) (climb (+ n 1)))))
+(display (climb 0)) (newline)
+```
+```
+(answered-at 0)
+```
+
+That condition meets one hundred thousand distinct live handlers, in order, each
+answering with its own `n`, in one native frame.
+
+### How it is lowered
+
+The self-call is a branch back to the loop header (ESH-0222), which is what
+makes the stack flat. What the back edge must not do is destroy the guards the
+collapsed activations were standing in. So it does not pop them: it **leaves the
+handler frames installed** — they *are* the enclosing activations' handlers —
+and attaches a snapshot of the departing activation's loop parameters to each.
+The guard's landing pad asks the frame that fired whether it carries a snapshot;
+if it does, the raise walked out of an inner activation, and those values are put
+back before the clauses read them. A re-raise then simply raises, and the next
+frame down is the next activation's guard, with its own `wind_mark` and
+`region_mark`, so `dynamic-wind` after-thunks and region unwinding happen in
+exactly the reference's order.
+
+Three lowerings are chosen per loop, and all three are exact:
+
+| lowering | when | stack | handler frames |
+|---|---|---|---|
+| collapse | the guard has a catch-all clause and no clause test or body can raise, so the enclosing activations are unobservable | flat | one, reused |
+| replay | anything else the loop's parameters can restore | flat | one per live guard, on the heap |
+| ordinary call | the clauses read a binding the loop re-establishes each iteration, which no snapshot of the *parameters* can restore | one frame per activation | one per live guard, on the stack |
+
+The collapse lowering is the resident tick-loop shape
+(`docs/LONG_RUNNING_LOOPS.md`), and it is why a daemon's peak RSS is flat across
+a week of ticks rather than growing by a handler frame each time round. The
+replay lowering keeps the stack flat and pays one small heap frame per *live*
+guard — which is the space R7RS's own semantics require to exist, moved off the
+native stack. The third row is not a fallback to something weaker: it is what a
+conforming implementation costs for a non-tail `guard` body, and it is chosen
+only where nothing cheaper is exact.
+
 ## Mutual tail recursion is optimized
 
 Tail calls **between** procedures (ping-pong / mutual recursion) are emitted as
@@ -166,21 +243,23 @@ the stack:
   (ADR-0006 §6 principle 8), so those sites keep the ordinary call. In this tree
   every such site is an `extern` FFI declaration taking a raw pointer, which must
   not be transferred in any case.
-- **Tail calls in the body of `guard`.** R7RS 7.3 derives `guard` from
+- **MUTUAL tail calls in the body of `guard`.** R7RS 7.3 derives `guard` from
   `with-exception-handler` wrapping the body, so the handler is installed for the
   body's whole dynamic extent: a call in a guard body is **not in a tail
   context**, and the guard must still be able to catch what the callee raises.
-  Optimizing it away is not merely hard, it is wrong — measured against
+  Transferring one away is not merely hard, it is wrong — measured against
   chibi-scheme 0.12, transferring these sites made
   `(guard (e (#t 'caught)) (b n))` report an unhandled exception where the
   reference answers `caught`, and made a nested pair of guards answer with the
-  outer handler instead of the inner one. Giving `guard` a genuine tail context
-  requires its handler to be a heap-owned continuation the driver can invoke
-  rather than a `setjmp` landing pad in the frame a transfer destroys
-  (ADR-0006 §4). Until then this stays an ordinary call.
-  (Self tail recursion through `guard` *is* transformed into a loop, ESH-0222 —
-  see SW-58 in `.icc/silent-wrong-ledger.yaml` for the conformance consequence
-  of that, which is a separate, pre-existing finding.)
+  outer handler instead of the inner one
+  (`tests/tco/guard_tail_context/01`, `03`). A transfer RETURNS from the
+  transferring procedure to run the callee, which pops the guard's `setjmp`
+  landing pad out of the frame; giving the mutual side a genuine tail context
+  needs that landing pad to be a heap-owned continuation the driver can invoke
+  instead (ADR-0006 §4). Until then a mutual tail call in a guard body stays an
+  ordinary call.
+  **This does not apply to SELF tail recursion**, which keeps its frame and is
+  therefore fully optimized — see "Self tail recursion in a `guard` body" above.
 
 **Workaround for any of the above:** fold the state machine into a single
 self-recursive procedure that dispatches on a state argument, or give the

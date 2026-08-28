@@ -3817,7 +3817,9 @@ entries:
 
   - id: SW-58
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "963f4533"
+    closed_by: "branch fix/tco-guard-tail-position (PR: fix(tco): self-recursive tail calls inside guard bodies are constant-stack with exact handler semantics)"
     title: "Self tail recursion through `guard` collapses the handler chain, so a re-raise reaches the wrong handler"
     repro: >-
       A self-recursive procedure whose recursion sits in a `guard` body, where
@@ -3865,19 +3867,73 @@ entries:
       way — verified on three further fixtures (guard_sem1/2/4) where Eshkol and
       chibi both answer `(caught-by-a 0)`, `(gb 0)` and `inner`.
     fix_requires: >-
-      A `guard` frame that survives without a native frame — its handler held as
-      a heap-owned continuation the driver can invoke rather than a `setjmp`
-      landing pad in a frame the transform destroys (ADR-0006 §4,
-      "make continuations explicit and heap-owned"). Reverting ESH-0222 instead
-      would restore conformance at the cost of the resident-tick-loop capability
-      it shipped for (docs/LONG_RUNNING_LOOPS.md), i.e. trade a rare wrong
-      answer for a common crash, so it is not the fix.
+      A `guard` frame that survives without a native frame. The original reading
+      of that was a heap-owned continuation the driver can invoke instead of a
+      `setjmp` landing pad in a frame the transform destroys (ADR-0006 §4) — a
+      trajectory item. It turned out a narrower observation suffices for the
+      SELF-recursive case, which unlike the mutual case KEEPS its frame: the
+      landing pad is never destroyed, so only the handler CHAIN had to stop
+      being destroyed. Reverting ESH-0222 was never the fix — it would trade a
+      rare wrong answer for a common crash in the resident-tick-loop capability
+      it shipped for (docs/LONG_RUNNING_LOOPS.md).
+    fix: >-
+      The back edge no longer drains. A self tail call taken from inside an open
+      `guard` body LEAVES the handler frames installed — they are precisely the
+      enclosing activations' handlers — and attaches a snapshot of the departing
+      activation's loop parameters to each
+      (`eshkol_guard_replay_snapshot`, lib/core/runtime_exceptions_hosted.cpp,
+      emitted by emitTCOBackEdge in lib/backend/llvm_codegen.cpp). The guard's
+      landing pad asks the frame that fired whether it carries a snapshot
+      (`eshkol_guard_replay_restore`) and restores those values into the loop's
+      parameter allocas before the clauses read them, so a re-raise — or a raise
+      from inside a clause body — walks the same chain, in the same order, with
+      the same per-activation values, and each frame carries its own wind_mark /
+      region_mark so dynamic-wind and region unwinding keep the reference's
+      ordering. Every exit from the loop unwinds the chain back to a depth taken
+      at loop setup, so the frames cannot outlive the loop. The guard's jmp_buf
+      is hoisted to the function entry block, since the frames now outlive the
+      llvm.stackrestore on the back edge.
+      Stack stays flat. What the mechanism costs is one handler frame per LIVE
+      guard, which is the space R7RS's own semantics require to exist, moved off
+      the native stack onto the heap — and it is not paid at all in the
+      COLLAPSIBLE case (a catch-all clause whose tests and bodies cannot raise,
+      so the enclosing activations are unobservable), which is the resident
+      tick-loop shape and keeps ESH-0222's flat RSS unchanged.
+      A third case is decided statically and is not a weakening: when the
+      clauses read a binding the loop re-establishes every iteration, no
+      snapshot of the PARAMETERS could restore it, so emitTCOBackEdge declines
+      the loop transform and the call stays a real call — which is exactly what
+      a conforming implementation costs for a non-tail `guard` body.
+      The bytecode VM needed no change: compile_form_guard compiles the guard
+      body with tail=0, so it never collapsed the activations and answered
+      correctly throughout. It is now GATED at that, on every fixture.
     evidence: >-
-      Differential against chibi-scheme 0.12 on four fixtures, three agreeing
-      and one diverging; the diverging one is guard_sem5. The same differential
-      is what stopped ESH-0102c from extending the tail-transfer dispatcher
-      through `guard` on the mutual side — the mechanism worked, the semantics
-      did not.
+      Nine fixtures in tests/tco/guard_tail_context/ measured against
+      chibi-scheme 0.12 and gated on all three engines (native JIT, native AOT,
+      bytecode VM) by scripts/run_guard_tail_context.sh, which
+      scripts/run_tco_tests.sh now runs:
+      01 (caught-by-a 0), 02 (gb 0), 03 inner, 04 (inner 1) — the original
+      divergence, which answered `outer` before this fix — 05 (answered-at 0),
+      06 (bottom (1 2 3 . boom)), 07 (outer-answered 1 (i o i o i . boom)),
+      08 the dynamic-wind trace, 09 (inner 0 0).
+      tests/tco/guard_tail_position_test.esk is the deep self-checking gate
+      picked up by scripts/run_tco_tests.sh: one million collapsed guarded
+      iterations, a 100 000-deep re-raise chain that meets 100 000 distinct live
+      handlers in one native frame, a raise from inside a clause body, nested
+      guards, the forbid case, and guard + dynamic-wind ordering. Run under a
+      reduced `ulimit -s`, which is what makes "constant stack" a measurement
+      rather than a claim about fitting in 512 MB.
+      Flat RSS for the collapsible lane is unchanged and still gated by
+      tests/memory/define_loop_flat_rss_aot_test.sh and
+      tests/memory/resident_longrun_flat_gate.sh, both of which use exactly the
+      catch-all shape the collapse lowering is granted for.
+      The pre-fix evidence stands as recorded: a differential against
+      chibi-scheme 0.12 on four fixtures, three agreeing and one diverging. The
+      same differential is what stopped ESH-0102c from extending the
+      tail-transfer dispatcher through `guard` on the mutual side — the
+      mechanism worked, the semantics did not, and the mutual side is still an
+      ordinary call for that reason (a transfer RETURNS from the transferring
+      frame, so unlike the self case its landing pad really is destroyed).
     caught_by: [esh-0102c-guard-soundness-differential, reference-differential]
     missed_by: [icc-correctness-chain, icc-smoke, ctest, recursion-depth-parametric, vm-parity]
     notes: >-
@@ -3889,16 +3945,18 @@ entries:
       SW-50's: its `guard` kind measures how DEEP a guard can nest, not which
       handler answers. A depth sweep cannot see a semantic defect that costs no
       stack.
-    waiver:
-      reason: >-
-        Pre-existing on master, not introduced by ESH-0102c, and narrow: it
-        requires a guard handler that re-raises into an enclosing guard of the
-        same self-recursive procedure. The fix is the heap-owned continuation
-        rework named in fix_requires, which is a trajectory item (ADR-0006 §4)
-        rather than a patch, and guessing at it is exactly the silent-wrong risk
-        this ledger exists to prevent.
-      expires: "2027-12-31"
-      owner: tsotchke
+    closure_note: >-
+      The waiver this entry carried (expiring 2027-12-31, owner tsotchke, on the
+      grounds that the fix was a trajectory item rather than a patch) is
+      RETIRED, not expired: the defect is fixed and measured, so there is
+      nothing left to waive. Its reasoning is preserved here because it was the
+      right call at the time and the thing that changed is not the risk appetite
+      but the analysis — the mutual and self cases were being treated as one
+      problem, and only the mutual one destroys the guard's landing pad.
+      recursion-depth-parametric remains in missed_by: its `guard` kind measures
+      how DEEP a guard can nest, not which handler answers, and a depth sweep
+      still cannot see a semantic defect that costs no stack. What can see it is
+      the value-level engine differential this fix wires in.
 
   - id: SW-57
     bucket: SILENT-WRONG
