@@ -84,9 +84,10 @@
          (d  (/ (arcosh w) (sqrt c))))
     (* d d)))
 
-;; Sphere of curvature +c, radius R = 1/sqrt(c). Points are normalised onto
-;; the sphere, which is what makes the map 0-homogeneous in each argument and
-;; its ambient gradient exactly tangent.
+;; Sphere of signed curvature K=+c, radius R = 1/sqrt(c). The fixtures are
+;; already on that sphere. The homogeneous extension below makes generic AD
+;; produce the intrinsic tangent gradient; the native bridge separately refuses
+;; off-manifold inputs rather than exposing this extension as a projection op.
 (define (sqdist-sphere x y c)
   (let* ((r  (/ 1.0 (sqrt c)))
          (nx (vnorm x))
@@ -160,7 +161,8 @@
                         0.6 -0.8 0.0
                         1.5  0.25))
 (define PROD-Y (vector -0.3   0.2
-                        0.2   0.3  0.9
+                        0.20628424925175867 0.309426373877638
+                        0.9282791216329139
                        -0.5   1.75))
 
 ;;; ----------------------------------------------------------------------

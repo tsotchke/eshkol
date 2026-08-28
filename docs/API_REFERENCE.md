@@ -570,10 +570,15 @@ grad_x d²(x,y) = -2 log_x(y)
 The primitive covers Euclidean, Poincare-ball hyperbolic, spherical, and
 factorwise product manifolds. At `x == y`, its value and gradients are exactly
 zero; it does not inherit ordinary geodesic distance's cone-point refusal.
+The curvature argument is signed sectional curvature (`K < 0` hyperbolic,
+`K = 0` Euclidean, `K > 0` spherical), and its sign must agree with `form`.
+Spherical inputs must already lie on the required sphere; the bridge refuses
+off-manifold points rather than projecting them. Valid near-boundary Poincare
+pairs use the shared stable core rather than an intermediate `t == 1` test.
 The spherical antipode is still rejected because it is the genuine cut locus.
 This is a native-only C bridge, not a Scheme builtin or VM opcode. Its
 backward is registered in `inc/eshkol/ad_node_registry.def` and covered by
-the 30-check `squared_distance_gradcheck` gate.
+the 39-check `squared_distance_gradcheck` gate.
 
 ---
 
