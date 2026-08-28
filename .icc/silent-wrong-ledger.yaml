@@ -6448,7 +6448,7 @@ entries:
     status: closed
     closed_at: "@@SHA@@"
     closed_by: "branch fix/ad-bridge-boundary-refusal"
-    title: "AD geometric bridge fabricated values off the Poincare ball: ad_poincare_log_map clamped artanh's argument to 1-1e-12, ad_poincare_exp_map never checked its base point, and ad_geodesic_attention scored an off-manifold head-slice as HUGE_VAL and dropped it from the softmax — all three returned a finite, plausible answer with exit 0, and the reverse sweep then differentiated it"
+    title: "AD geometric bridge answered from the wrong manifold and past its own domain: `c = (curvature == 0.0) ? 1.0 : fabs(curvature)` sent K = 0 (Euclidean) and K > 0 (sphere) to the hyperbolic ball, ad_poincare_log_map clamped artanh's argument to 1-1e-12, ad_poincare_exp_map never checked its base point, and ad_geodesic_attention scored an off-manifold head-slice as HUGE_VAL and dropped it from the softmax — every one returned a finite, plausible answer with exit 0, and the reverse sweep then differentiated it"
     repro: >-
       Three entry points in lib/bridge/qllm_bridge.cpp, all reachable from
       tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp:
@@ -6470,6 +6470,15 @@ entries:
       so lam < 0 and the map runs BACKWARDS along the geodesic. Both return a
       point that is not exp_x(v) of anything, silently.
 
+      (0) THE CURVATURE SIGN, all four entry points. Each opened with
+      `double c = (curvature == 0.0) ? 1.0 : std::fabs(curvature);`. The
+      parameter is the SECTIONAL CURVATURE K, whose sign names the manifold:
+      K < 0 is the Poincare ball of radius 1/sqrt(-K), K = 0 is Euclidean
+      space, K > 0 is the sphere of radius 1/sqrt(K). That line mapped K = 0
+      to c = 1 — the UNIT HYPERBOLIC BALL — and K > 0 to c = |K|, also a
+      hyperbolic ball, silently, for ops that implement the K < 0 branch and
+      only that branch.
+
       (3) ad_geodesic_attention. Inside the score loop:
       `if (dxq <= 0.0 || dxk <= 0.0) { dist = HUGE_VAL; }` commented "outside
       the ball: unreachable". An off-manifold Q or K head-slice scored as
@@ -6478,8 +6487,17 @@ entries:
       the average, recorded an AD node for it, and the backward produced
       gradients for that arrangement. (If EVERY key in a row was off-manifold,
       mx stayed -HUGE_VAL and the row went NaN through the
-      `if (sum <= 0.0) sum = 1.0;` guard.)
+      `if (sum <= 0.0) sum = 1.0;` guard — NaN <= 0 is false — and the op
+      recorded and returned a node full of NaNs.)
     observed: >-
+      With K = 0 (Euclidean), d((0,0,0), (0.5,0,0)) returned
+      1.0986122886681098 = 2*artanh(0.5), the HYPERBOLIC distance, where flat
+      space says 0.5; exp_0(0.5) returned 0.46211715726000974 and log_0(0.5)
+      returned 0.5493061443340549, both hyperbolic. With K > 0 the same ops
+      answered from a hyperbolic ball on inputs for which the VM's geometry
+      opcodes select a sphere — two surfaces of one engine answering the same
+      question from different manifolds, neither saying so.
+
       log_x(y) at |x| = |y| = 1 - 1e-9 antipodal (c = 1, both strictly inside):
       a finite tangent vector of magnitude 2*atanh(1-1e-12)/lam, where no
       finite log exists. exp_x(v) at sqrt(c)|x| = 1.5: a finite interior point
@@ -6488,6 +6506,15 @@ entries:
       indistinguishable from a valid one, in which that key contributed
       nothing. In all three cases stderr was empty and the exit status 0.
     correct: >-
+      The sign of K names the manifold and the three signs are three different
+      geometries, so the mapping must branch on it: c = -K for K < 0, and an
+      explicit refusal for K >= 0 and for NaN. These ops' forwards are
+      Mobius/artanh formulas and their reverse rules are derived from those
+      same formulas, so the K < 0 branch is the only one they implement;
+      supporting a geometry in the forward that the backward does not is
+      exactly how a fabricated gradient is created, which is why the flat and
+      spherical branches are refused rather than half-implemented.
+
       A point of the Poincare ball of curvature -c satisfies sqrt(c)|p| < 1
       STRICTLY. On the boundary the conformal factor diverges: there is no
       tangent space, no finite log map, and no derivative — so there is no
@@ -6510,6 +6537,17 @@ entries:
       "every other op in this group refuses an off-manifold argument rather
       than projecting silently."
     observed_after: >-
+      Added poincare_curvature(K, op, &c) as the single place the curvature is
+      interpreted: c = -K for K < 0, refusal naming the op and the measured K
+      otherwise (`K < 0.0` is false for NaN, so NaN refuses on the same test).
+      All four entry points route through it. The lambda = 2/(1 - c|x|^2)
+      convention is deliberately UNCHANGED — a maintainer ruling on its K -> 0
+      continuity is pending — and keeping the mapping in one place is what
+      makes that ruling a one-line change rather than an edit at four sites.
+      Sharing inc/eshkol/backend/riemannian_core.h with the VM was considered
+      and is not yet feasible: that header does not exist on master, it arrives
+      with PR #516, so a shared definition has to wait for it to land.
+
       Added poincare_in_ball(p, c, n, &sn) in lib/bridge/qllm_bridge.cpp as the
       single membership test for the surface, returning sn < 1.0 — strict, so
       a NaN coordinate also refuses rather than reaching the tape. Applied it
@@ -6528,7 +6566,7 @@ entries:
       den >= (1 - c|x||y|)^2 > 0.
 
       Measured on cosbox (Linux x86_64, LLVM 21, Release, ci.yml flags),
-      ctest qllm_bridge_geometric_gradcheck, 32 passed / 0 failed:
+      ctest qllm_bridge_geometric_gradcheck, 38 passed / 0 failed:
       @@NUMBERS@@
     fixed_by: >-
       branch fix/ad-bridge-boundary-refusal — poincare_in_ball() plus the four

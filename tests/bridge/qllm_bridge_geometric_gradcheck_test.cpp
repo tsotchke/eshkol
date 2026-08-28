@@ -801,6 +801,99 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
     }
 }
 
+
+/* ============================================= curvature sign contract === */
+/* SW-76, second half. Every op here took `c = (curvature == 0.0) ? 1.0 :
+ * fabs(curvature)`, which is wrong in both directions and silent in both:
+ * K = 0 (Euclidean) selected the UNIT HYPERBOLIC BALL, so a caller asking for
+ * flat space got d(0, 0.5) = 1.0986 instead of 0.5; and K > 0 (sphere) also
+ * selected a hyperbolic ball, on the very inputs for which the VM's geometry
+ * opcodes select a sphere. The sign of K names the manifold, and these ops
+ * implement the K < 0 branch only, so every other sign must refuse. */
+
+static void check_ops_refuse_nonnegative_curvature(void) {
+    const int64_t sh[1] = { 3 };
+    const int64_t sh3[3] = { 1, 2, 4 };
+    double X[3] = { 0.20,-0.15, 0.10 }, Y[3] = { -0.20, 0.25, 0.10 };
+    double V[3] = { 0.01, 0.02,-0.03 };
+    double Q[8], K3[8], Vv[8];
+    for (int i = 0; i < 8; ++i) { Q[i] = 0.10; K3[i] = -0.05; Vv[i] = 0.03 * i; }
+
+    /* K = 0 is Euclidean, K = +1 is the sphere, NaN names nothing. All three
+     * must refuse; only K < 0 is the Poincare ball. */
+    const double bad[3] = { 0.0, 1.0, NAN };
+    const char* names[3] = { "K=0 (Euclidean)", "K=+1 (sphere)", "K=NaN" };
+
+    int d_ok = 1, e_ok = 1, l_ok = 1, g_ok = 1;
+    const char* d_first = "";  const char* e_first = "";
+    const char* l_first = "";  const char* g_first = "";
+    for (int i = 0; i < 3; ++i) {
+        ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1), *vn = var_node(V, sh, 1);
+        if (ad_hyperbolic_distance(nullptr, xn, yn, bad[i]) != nullptr) { d_ok = 0; if (!*d_first) d_first = names[i]; }
+        if (ad_poincare_exp_map(nullptr, xn, vn, bad[i]) != nullptr)    { e_ok = 0; if (!*e_first) e_first = names[i]; }
+        if (ad_poincare_log_map(nullptr, xn, yn, bad[i]) != nullptr)    { l_ok = 0; if (!*l_first) l_first = names[i]; }
+        ad_node_t* q = var_node(Q, sh3, 3), *k = var_node(K3, sh3, 3), *v3 = var_node(Vv, sh3, 3);
+        if (ad_geodesic_attention(nullptr, q, k, v3, 2, bad[i], false) != nullptr) { g_ok = 0; if (!*g_first) g_first = names[i]; }
+    }
+    report("curvature.distance_refuses_nonnegative_K", d_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", d_ok ? "" : "; first accepted: ", d_first);
+    report("curvature.exp_map_refuses_nonnegative_K", e_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", e_ok ? "" : "; first accepted: ", e_first);
+    report("curvature.log_map_refuses_nonnegative_K", l_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", l_ok ? "" : "; first accepted: ", l_first);
+    report("curvature.geodesic_refuses_nonnegative_K", g_ok != 0,
+           "K in {0, +1, NaN} all refused%s%s", g_ok ? "" : "; first accepted: ", g_first);
+}
+
+/** @brief The specific number the K = 0 mapping used to fabricate. With
+ *  c forced to 1, d(0, (0.5,0,0)) came back as the HYPERBOLIC 1.0986...
+ *  (= 2*artanh(0.5)) where flat space says 0.5. This asserts the op no longer
+ *  answers at all for K = 0, and still gives the hyperbolic answer for the
+ *  curvature that actually names the hyperbolic ball — so the check would fail
+ *  if the refusal were achieved by breaking K < 0 too. */
+static void check_curvature_zero_was_hyperbolic(void) {
+    const int64_t sh[1] = { 3 };
+    double O[3] = { 0.0, 0.0, 0.0 }, P[3] = { 0.5, 0.0, 0.0 };
+    ad_node_t* a = var_node(O, sh, 1), *b = var_node(P, sh, 1);
+    bool refused_flat = (ad_hyperbolic_distance(nullptr, a, b, 0.0) == nullptr);
+
+    ad_node_t* a2 = var_node(O, sh, 1), *b2 = var_node(P, sh, 1);
+    ad_node_t* h = ad_hyperbolic_distance(nullptr, a2, b2, -1.0);
+    double hv = h ? ((const double*)h->tensor_value)[0] : NAN;
+    double want = 2.0 * std::atanh(0.5);     /* 1.0986122886681098 */
+    report("curvature.K0_no_longer_answers_from_the_hyperbolic_ball",
+           refused_flat && h && std::fabs(hv - want) < 1e-12,
+           "K=0 refused=%s; K=-1 still gives d(0,0.5) = %.15f (want %.15f)",
+           refused_flat ? "yes" : "NO", hv, want);
+}
+
+/** @brief An attention row in which EVERY key is off-manifold used to produce
+ *  NaN, not a refusal: each score became -HUGE_VAL, the max-shift subtracted
+ *  -inf from -inf, and the row went NaN straight through the
+ *  `if (sum <= 0.0) sum = 1.0;` guard (NaN <= 0 is false). The op then recorded
+ *  a node full of NaNs and returned it. The in-ball pre-pass makes this a
+ *  refusal instead, and with it every score is finite, so mx is finite and
+ *  sum >= 1 by its own max term. */
+static void check_geodesic_all_keys_off_manifold_refuses(void) {
+    const int64_t sh[3] = { 1, 2, 4 };
+    double Q[8], Kb[8], V[8];
+    for (int i = 0; i < 8; ++i) { Q[i] = 0.10; Kb[i] = 1.0; V[i] = 0.03 * i; }
+    ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kb, sh, 3), *v = var_node(V, sh, 3);
+    ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, 2, -1.0, false);
+    bool ok = (o == nullptr);
+    if (!ok) {
+        const double* O = (const double*)o->tensor_value;
+        bool anynan = false;
+        for (int i = 0; i < 8; ++i) if (!(O[i] == O[i])) anynan = true;
+        report("curvature.geodesic_all_keys_off_manifold_refuses", false,
+               "returned a node instead of refusing; contains NaN: %s",
+               anynan ? "yes" : "no");
+        return;
+    }
+    report("curvature.geodesic_all_keys_off_manifold_refuses", ok,
+           "every K slice at |k| = sqrt(2): refused instead of returning a NaN row");
+}
+
 int main(void) {
     check_distance_conformal_identity();     /* 1 */
     check_distance_fd();                     /* 1 */
@@ -823,6 +916,10 @@ int main(void) {
     check_ops_refuse_on_and_outside_boundary(); /* 8 */
     check_ops_refuse_nan_coordinate();       /* 3 */
     check_geodesic_refuses_off_manifold_slice(); /* 3 */
+    /* SW-76 curvature-sign contract: only K < 0 is this surface's geometry. */
+    check_ops_refuse_nonnegative_curvature();  /* 4 */
+    check_curvature_zero_was_hyperbolic();     /* 1 */
+    check_geodesic_all_keys_off_manifold_refuses(); /* 1 */
     std::printf("Results: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
