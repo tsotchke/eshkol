@@ -102,25 +102,74 @@ its backward rule is reachable and gradchecked *through* that producer rather
 than through a hand-built fixture. What remains is reachability from the two
 other paths, and neither is a wiring change.
 
-**Compiled Eshkol (JIT and AOT).** No compiled program can create one of these
-nodes at all. `AutodiffCodegen::recordADNodeTensor` exists and has exactly one
-call site, dead behind `kDenseTensorADNodesEnabled` in
-`lib/backend/llvm_codegen.cpp`; the block comment there records that flipping
-the flag SIGSEGVs rather than yielding a slower-but-correct gradient, for three
-independent reasons:
+**Compiled Eshkol (JIT and AOT) — COMPLETE for `matmul`, `tensor-sum` and
+`tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
+architecture: no compiled program could create one of these nodes at all.
+`AutodiffCodegen::recordADNodeTensor` existed and had exactly one call site,
+dead behind `kDenseTensorADNodesEnabled` in `lib/backend/llvm_codegen.cpp`, and
+flipping that flag SIGSEGV'd rather than yielding a slower-but-correct
+gradient, for three independent reasons:
 
 1. `recordADNodeTensor` stores NULL into `tensor_gradient`, while the reverse
-   pass *selects* the tensor backward by testing that field non-null —
-   constructor and consumer each wait for the other;
-2. the node it builds is dropped: the function goes on to return a plain
-   tagged tensor, so nothing downstream can find it;
+   pass *selected* the tensor backward by testing that field non-null —
+   constructor and consumer each waiting for the other;
+2. the node it built was dropped: the function went on to return a plain
+   tagged tensor, so nothing downstream could find it;
 3. under AD the scalarizing path leaves AD-node *pointers* in the result
    tensor's elements, which is what `tensor-sum` and friends consume, so a
    dense node would sever the chain at the next tensor op.
 
-That is ADR-0002 Position A (the dense resident tape), scheduled for v1.6. Until
-it lands, `(embedding …)` codegen emits a plain gather with no tape node, and
+All three are now closed, and the dense path is what a compiled program takes
+by default (ADR-0002 Position A, `.icc/silent-wrong-ledger.yaml` SW-48):
+
+1. **Selection.** The reverse pass recognises a tensor node by its
+   `tensor_value`, not by `tensor_gradient`. `tensor_value` is set at record
+   time and is documented as NULL for scalar nodes, so the test is decidable
+   the moment the node exists; `tensor_gradient` is still accepted as well,
+   because the qLLM bridge's C entry points seed it directly on nodes they did
+   not build here. A tensor node can therefore no longer fall into the scalar
+   dispatch and dereference the `input1`/`input2` a tensor node legitimately
+   leaves null — which is what the SIGSEGV was. A one-element tensor node whose
+   gradient arrived on the SCALAR side (`(tensor-sum …)` feeding ordinary
+   arithmetic) is bridged into its tensor gradient by
+   `eshkol_tensor_backward_dispatch` rather than silently dropped.
+2. **The node is returned.** Under AD, `matmul` returns the `AD_NODE_MATMUL`
+   node itself, tagged `CALLABLE` with the AD-node subtype the allocator
+   stamps — the same shape `extractTensorAndADNode` already read on the operand
+   side. Outside AD mode it returns the plain tensor it always returned, so
+   nothing changes for non-differentiated code.
+3. **The consumers understand it.** `tensor-sum` and `tensor-mean` reduce the
+   node's dense buffer directly and record one `AD_NODE_SUM` / `AD_NODE_MEAN`
+   node; `matmul` reuses a dense operand's node rather than re-packing it, so a
+   chain of dense ops stays one node per op. Where an operand is *not* dense —
+   the tensor of scalar AD nodes `(gradient f x)` seeds, or the result of a
+   still-scalarizing tensor op — it is bridged by an `AD_NODE_TENSOR_PACK`
+   node, whose backward is the identity scatter from the dense gradient onto
+   the scalar nodes. A pack node performs no arithmetic, so it can change the
+   *representation* of a gradient and not its value.
+
+The cost claim is measured, not asserted.
+[`tests/ad/matmul_tape_node_count_test.esk`](../../../tests/ad/matmul_tape_node_count_test.esk)
+is a shrink-only ratchet on the tape size, and
+[`scripts/run_dense_tensor_ad_gate.sh`](../../../scripts/run_dense_tensor_ad_gate.sh)
+compiles
+[`tests/ad/dense_tensor_ad_gradcheck_test.esk`](../../../tests/ad/dense_tensor_ad_gradcheck_test.esk)
+under **both** lowerings — `ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0` — and
+requires their gradients to be byte-identical while the tape shrinks. The
+scalarizing lowering is retained precisely so that it can go on serving as that
+oracle; `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects it, and the choice is made at
+codegen time, so the two are two emitted programs rather than one program with
+a runtime branch.
+
+**Still scalarizing** (unchanged, and correct — the scalar decomposition has
+always produced exact gradients; what it costs is tape size): dense elementwise
+tensor arithmetic and the broadcast variants, which ADR-0002 schedules as Phase
+C.3/C.4 for v1.4, and `conv2d`, `attention` and the norm layers. `(embedding …)`
+codegen still emits a plain gather with no tape node, so
 `(gradient (lambda (W) … (embedding idx W)))` records nothing for the lookup.
+An op that has not learned the dense representation and is handed a dense
+AD-node handle raises a catchable type error at its own call site rather than
+returning a wrong number.
 
 **The VM.** `lib/backend/vm_autodiff.c` has its own scalar `AdNode`
 representation; no `vm_*.c` file references `ad_node_t` or any `AD_NODE_*`
