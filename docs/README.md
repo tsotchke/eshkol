@@ -137,7 +137,7 @@ pages and lets them fan out to their siblings.
 - [CI lanes](platform/CI_LANES.md) — required vs. non-required CI lanes and what each covers
 - [Self-hosted runners](platform/SELF_HOSTED_RUNNERS.md) — attaching the maintainer's own machines as GitHub Actions runners: label taxonomy, provisioning, registration, why no mesh lane is a required check
 - [ICC contract surface](platform/ICC_CONTRACT_SURFACE.md)
-- [Windows x86 under KVM](platform/WINDOWS_X86_KVM.md)
+- Windows x86 under KVM — internal runbook, not published
 - [Target Support Matrix](platform/TARGET_SUPPORT_MATRIX.md)
 - [Architecture documentation index](architecture/README.md) — master architecture doc, component architecture, active platform architecture
 - [Development documentation index](development/README.md) — build from source, running tests, code structure, contribution workflow
@@ -244,8 +244,8 @@ These documents are written for maintainers and cross-project collaborators
 rather than end users. They are kept in the repository for traceability but
 are not part of the primary documentation path.
 
-- [Release Readiness Report](internal/RELEASE_READINESS_REPORT.md) — release-candidate gate status for the current line
-- [Eshkol V1 Language Reference (internal)](internal/ESHKOL_V1_LANGUAGE_REFERENCE.md) — comprehensive internal feature reference
+- Release Readiness Report — internal runbook, not published
+- Eshkol V1 Language Reference (internal) — internal runbook, not published
 - [icc_extras tooling](../tools/icc_extras/README.md) — Eshkol-specific tooling on top of `infinite_context_coder`
 - [LLVM verifier coverage audit](../tools/icc_extras/verifier_coverage.md)
 
@@ -263,7 +263,7 @@ correspondence. Kept for traceability; superseded by the current documents linke
 above or by closed issues/PRs referenced inline. Click to expand.</summary>
 
 - [v1.3 -> v1.5 Dependency Plan (2026-06-28)](V1_3_TO_V1_5_DEPENDENCY_PLAN_2026-06-28.md) — superseded by the canonical [ROADMAP.md](../ROADMAP.md)
-- [Eshkol Language Update Brief (2026-06-17)](internal/ESHKOL_LANGUAGE_UPDATE_BRIEF.md) — one-time modernization request memo, since actioned
+- Eshkol Language Update Brief (2026-06-17) — one-time modernization request memo, since actioned; internal runbook, not published
 - [AD nested-reuse root cause (2026-06-26)](reports/AD_NESTED_REUSE_ROOTCAUSE_2026-06-26.md) — superseded by the shipped fix; see [AD reference](reference/ad/INDEX.md) for current behaviour
 - [Eshkol -> Noesis: nested-AD report (2026-06-26)](reports/ESHKOL_TO_NOESIS_nested_ad_2026-06-26.md)
 - [Eshkol -> Noesis: nested-AD, root cause pinpointed (update, 2026-06-26)](reports/ESHKOL_TO_NOESIS_nested_ad_update_2026-06-26.md)
