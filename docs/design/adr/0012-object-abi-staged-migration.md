@@ -61,7 +61,7 @@ neutralised before the change is attempted rather than during it.
 The site inventory is produced by `scripts/abi_header_inventory.py`, is
 regenerated from `git ls-files` on every run, and is snapshotted at
 `docs/design/abi/header-site-inventory.json` with a readable companion beside
-it. Seventeen detectors across three layers — lexical token matching, libclang
+it. Eighteen detectors across three layers — lexical token matching, libclang
 semantic resolution over `compile_commands.json`, and the compiler's own emitted
 IR — each recording *how* it found what it found, so the finding method is
 auditable and rerunnable rather than trusted.
@@ -98,7 +98,9 @@ The relevant result is not the total. It is which classes exist:
 | R | header offsets that actually reach emitted LLVM IR | `--dump-ir` over a corpus |
 
 At the commit this ADR was written against, the lexical layer reports 816 sites
-across 98 files; adding the semantic layer brings the enumerated total to 1273,
+across 98 files (`.icc/abi-header-baseline.json` records 820 across 99 at the
+v1.3.5-evolve cut, the ratchet having moved with the tree); adding the semantic
+layer brings the enumerated total to 1273,
 and the emitted layer counts 66 header GEPs across the corpus. The published
 hand survey reported 504. The gap is not carelessness in that survey — it is
 three classes the search it used could not express.
