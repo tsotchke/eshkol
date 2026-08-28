@@ -6426,12 +6426,31 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # zlib's upstream CMake project but is excluded from the default build;
         # Eshkol ships and links only the static archive.
         set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        # zlib is a PRIVATE build dependency: only its static archive is
+        # copied into eshkol-agent-zlib.a (agent FFI compression support,
+        # below) -- eshkol-runtime, the archive find_package(Eshkol)/
+        # eshkol.pc expose to consumers, never links zlib at all -- so it
+        # must never appear in Eshkol's OWN install manifest. zlib's own
+        # CMakeLists.txt guards every install() call (library archives,
+        # public headers, the man page, its .pc file) behind
+        # `if(NOT SKIP_INSTALL_<X> AND NOT SKIP_INSTALL_ALL)`; without this,
+        # `cmake --install <build> --prefix X` walks into that subdirectory
+        # and installs zlib too -- and (root-caused against this exact
+        # pinned revision) its four install() destinations are computed from
+        # CMAKE_INSTALL_PREFIX as it stood at THIS project's own configure
+        # time, not from a later `--prefix` override, so they silently land
+        # in the *default* prefix (e.g. /usr/local) instead of the packaged
+        # one. Scoped to just this FetchContent call so every other
+        # vendored dependency's own install behavior (pcre2, sqlite,
+        # tree-sitter, Yoga) is unaffected.
+        set(SKIP_INSTALL_ALL ON)
         FetchContent_Declare(eshkol_zlib
             GIT_REPOSITORY https://github.com/madler/zlib.git
             GIT_TAG 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
             GIT_SHALLOW FALSE
         )
         FetchContent_MakeAvailable(eshkol_zlib)
+        unset(SKIP_INSTALL_ALL)
         if(NOT TARGET zlibstatic)
             message(FATAL_ERROR "Pinned zlib did not define zlibstatic")
         endif()
