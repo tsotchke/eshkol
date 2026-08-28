@@ -359,6 +359,19 @@ void eshkol_seed_tensor_gradient(void* ad_node_ptr);
 void eshkol_tensor_backward_dispatch(void* ad_node_ptr);
 
 /**
+ * @brief Element count of a tensor AD node: the overflow-checked product of its
+ *        shape, or 0 if the node is null, carries no tensor value, or the
+ *        product overflows.
+ *
+ * The dense tensor AD path (ADR-0002 Position A) calls this from emitted code,
+ * so a consumer such as `tensor-sum` sizes its reduction from the node it was
+ * handed instead of re-deriving a shape it does not own.
+ *
+ * @param ad_node_ptr AD node (as eshkol_ad_node_t*, opaque here)
+ */
+int64_t eshkol_ad_node_total_elements(const void* ad_node_ptr);
+
+/**
  * @brief Spell an AD node type for diagnostics, e.g. "AD_NODE_TENSOR_MATMUL".
  *
  * Generated from inc/eshkol/ad_node_registry.def, so every node type has a

@@ -32731,11 +32731,55 @@ private:
             BasicBlock* not_ad_bb = BasicBlock::Create(*context, "mm_not_ad", cur_fn);
             builder->CreateCondBr(is_ad, ad_bb, not_ad_bb);
 
-            // AD node path: extract tensor struct ptr from field 6 (tensor_value)
+            // AD node path: build a zero-copy tensor view over the node's dense
+            // buffer.
+            //
+            // `tensor_value` (field 6) is the dense f64 ELEMENT buffer -- the
+            // convention every tensor AD-node producer follows (the qLLM
+            // bridge's make_node, recordADNodeTensor, and the dense matmul
+            // below) -- with `shape` (13) / `ndim` (14) describing it. This
+            // block used to load field 6 and hand it on AS a tensor struct,
+            // which would have misread the first three words of the element
+            // buffer as {dims, ndim, elements}; it had never executed, because
+            // nothing on the compiled path produced an AD-node-tagged tensor
+            // until the dense path landed (SW-48).
             builder->SetInsertPoint(ad_bb);
             StructType* ad_type = ctx_->adNodeType();
-            Value* tv_field = builder->CreateStructGEP(ad_type, raw_ptr, 6);
-            Value* tensor_from_ad = builder->CreateLoad(builder->getPtrTy(), tv_field);
+            Value* ad_elems = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(ad_type, raw_ptr, 6));
+            // A CALLABLE AD node with no tensor value is a SCALAR node, which
+            // is a type error for matmul: route it to the checked unpack so it
+            // raises a catchable condition rather than reading a null buffer.
+            BasicBlock* ad_tensor_bb = BasicBlock::Create(*context, "mm_ad_tensor", cur_fn);
+            builder->CreateCondBr(
+                builder->CreateICmpNE(ad_elems, null_ptr), ad_tensor_bb, plain_bb);
+
+            builder->SetInsertPoint(ad_tensor_bb);
+            Value* ad_shape = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(ad_type, raw_ptr, 13));
+            Value* ad_ndim = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(ad_type, raw_ptr, 14));
+            Function* mm_total_fn = module->getFunction("eshkol_ad_node_total_elements");
+            if (!mm_total_fn) {
+                FunctionType* mm_total_ty = FunctionType::get(
+                    int64_type, {builder->getPtrTy()}, false);
+                mm_total_fn = Function::Create(mm_total_ty, Function::ExternalLinkage,
+                                               "eshkol_ad_node_total_elements", module.get());
+            }
+            Value* ad_total = builder->CreateCall(mm_total_fn, {raw_ptr}, "mm_ad_total");
+            Value* mm_view_arena = getArenaPtr();
+            Value* tensor_from_ad = builder->CreateCall(
+                mem->getArenaAllocateTensorWithHeader(), {mm_view_arena}, "mm_ad_view");
+            builder->CreateStore(ad_shape,
+                builder->CreateStructGEP(tensor_type, tensor_from_ad, 0));
+            builder->CreateStore(ad_ndim,
+                builder->CreateStructGEP(tensor_type, tensor_from_ad, 1));
+            builder->CreateStore(ad_elems,
+                builder->CreateStructGEP(tensor_type, tensor_from_ad, 2));
+            builder->CreateStore(ad_total,
+                builder->CreateStructGEP(tensor_type, tensor_from_ad, 3));
+            builder->CreateStore(ConstantInt::get(int64_type, 0),
+                builder->CreateStructGEP(tensor_type, tensor_from_ad, 4));
             BasicBlock* ad_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
 
@@ -32964,8 +33008,102 @@ private:
         Value* c_elems_field = builder->CreateStructGEP(tensor_type, result_ptr, 2);
         Value* c_elems = builder->CreateLoad(builder->getPtrTy(), c_elems_field);
 
+        // ── ADR-0002 Position A: DENSE TENSOR AD NODE ───────────────────────
+        //
+        // Two exact reverse-mode lowerings of the same matmul:
+        //
+        //   dense (shipped)   ONE AD_NODE_MATMUL node carrying A, B, the
+        //                     result and {M,K,N}; the result tensor's elements
+        //                     hold plain doubles and the chain rule travels
+        //                     through the node.  Tape size scales with the
+        //                     number of TENSOR ops.
+        //   scalarizing       2*M*N*K scalar tape nodes; the result tensor's
+        //                     element slots hold AD-node POINTERS.  Selected by
+        //                     ESHKOL_DENSE_TENSOR_AD_NODES=0, and kept because
+        //                     it is the verified oracle the dense path is
+        //                     differentially tested against.
+        //
+        // The choice is made HERE, at codegen time, so the emitted IR contains
+        // one lowering or the other -- never a runtime switch between them.
+        // See docs/design/adr/0002-ad-staged-dense-kernels.md and
+        // .icc/silent-wrong-ledger.yaml SW-48.
+        const bool mm_dense_ad = autodiff_ && eshkol::denseTensorADNodesEnabled()
+                                 && ctx_->adModeActive() != nullptr;
+        Value* mm_a_use = a_elems;
+        Value* mm_b_use = b_elems;
+        Value* mm_parent_a = nullptr;
+        Value* mm_parent_b = nullptr;
+        Value* mm_ad_enabled = nullptr;
+        Value* mm_dense_result = nullptr;
+
         BasicBlock* after_matmul_compute = nullptr;
-        if (autodiff_) {
+        if (mm_dense_ad) {
+            // Under AD the operands' element slots may hold scalar AD-node
+            // pointers (that is how `gradient` seeds a tensor differentiation
+            // point).  The numeric kernel needs doubles, so densify first and
+            // record one parent node per operand -- a pack node for a
+            // scalarized operand, or the operand's own dense node when it came
+            // from another dense tensor op.  Outside AD mode nothing is packed
+            // and the operands are used exactly as they are.
+            Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ctx_->adModeActive());
+            BasicBlock* mm_pack_bb  = BasicBlock::Create(*context, "matmul_dense_pack", current_func);
+            BasicBlock* mm_plain_bb = BasicBlock::Create(*context, "matmul_dense_plain", current_func);
+            BasicBlock* mm_join_bb  = BasicBlock::Create(*context, "matmul_dense_join", current_func);
+            builder->CreateCondBr(ad_enabled, mm_pack_bb, mm_plain_bb);
+
+            builder->SetInsertPoint(mm_pack_bb);
+            Value* a_dims_for_pack = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(tensor_type, ptr_a, 0));
+            Value* a_nd_for_pack = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, ptr_a, 1));
+            Value* b_dims_for_pack = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(tensor_type, ptr_b, 0));
+            Value* b_nd_for_pack = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, ptr_b, 1));
+            // M*K and K*N are the PEP-465 PROMOTED element counts, which is
+            // exactly what eshkol_backward_matmul reads and writes.
+            Value* a_total_dense = builder->CreateMul(M, K);
+            Value* b_total_dense = builder->CreateMul(K, N);
+
+            Value* a_dense = nullptr;
+            Value* b_dense = nullptr;
+            Value* parent_a = autodiff_->emitDenseTensorOperand(
+                ad_node_a, a_elems, a_total_dense, a_dims_for_pack, a_nd_for_pack,
+                &a_dense, "mm_a");
+            Value* parent_b = autodiff_->emitDenseTensorOperand(
+                ad_node_b, b_elems, b_total_dense, b_dims_for_pack, b_nd_for_pack,
+                &b_dense, "mm_b");
+            if (!parent_a || !parent_b || !a_dense || !b_dense) {
+                eshkol_error("matmul: failed to record the dense tensor AD operand nodes");
+                return packNullToTaggedValue();
+            }
+            BasicBlock* mm_pack_exit = builder->GetInsertBlock();
+            builder->CreateBr(mm_join_bb);
+
+            builder->SetInsertPoint(mm_plain_bb);
+            builder->CreateBr(mm_join_bb);
+
+            builder->SetInsertPoint(mm_join_bb);
+            auto mm_null_ptr = ConstantPointerNull::get(PointerType::getUnqual(*context));
+            PHINode* a_use_phi = builder->CreatePHI(builder->getPtrTy(), 2, "mm_a_use");
+            a_use_phi->addIncoming(a_dense, mm_pack_exit);
+            a_use_phi->addIncoming(a_elems, mm_plain_bb);
+            PHINode* b_use_phi = builder->CreatePHI(builder->getPtrTy(), 2, "mm_b_use");
+            b_use_phi->addIncoming(b_dense, mm_pack_exit);
+            b_use_phi->addIncoming(b_elems, mm_plain_bb);
+            PHINode* parent_a_phi = builder->CreatePHI(builder->getPtrTy(), 2, "mm_parent_a");
+            parent_a_phi->addIncoming(parent_a, mm_pack_exit);
+            parent_a_phi->addIncoming(mm_null_ptr, mm_plain_bb);
+            PHINode* parent_b_phi = builder->CreatePHI(builder->getPtrTy(), 2, "mm_parent_b");
+            parent_b_phi->addIncoming(parent_b, mm_pack_exit);
+            parent_b_phi->addIncoming(mm_null_ptr, mm_plain_bb);
+
+            mm_a_use = a_use_phi;
+            mm_b_use = b_use_phi;
+            mm_parent_a = parent_a_phi;
+            mm_parent_b = parent_b_phi;
+            mm_ad_enabled = ad_enabled;
+        } else if (autodiff_) {
             GlobalVariable* ad_mode = ctx_->adModeActive();
             if (ad_mode) {
                 Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
@@ -33122,149 +33260,125 @@ private:
             builder->CreateStructGEP(tensor_type, result_ptr, 4));
         Value* mm_dtype = builder->CreateTrunc(mm_dtype_i64, builder->getInt32Ty());
 
-        // Call the runtime matmul dispatch (routes to GPU GemmEx / GPU / CPU BLAS)
-        builder->CreateCall(matmul_func, {a_elems, b_elems, c_elems, M, K, N, mm_dtype});
+        // Call the runtime matmul dispatch (routes to GPU GemmEx / GPU / CPU BLAS).
+        // mm_a_use / mm_b_use are a_elems / b_elems unless the dense tensor AD
+        // path densified the operands above.
+        builder->CreateCall(matmul_func, {mm_a_use, mm_b_use, c_elems, M, K, N, mm_dtype});
         if (after_matmul_compute) {
             builder->CreateBr(after_matmul_compute);
             builder->SetInsertPoint(after_matmul_compute);
         }
 
-        // ── ADR-0002b dense tensor AD node: PRESENT BUT NOT ENABLED ──────────
+        // ── ADR-0002 Position A: RECORD THE ONE DENSE NODE ──────────────────
         //
-        // What follows is the dense-node sketch ADR-0002 specifies: ONE
-        // AD_NODE_MATMUL tape node carrying A, B, the result and {M,K,N},
-        // instead of the 2*M*N*K scalar nodes the loop above emits. It has
-        // never executed in a compiled Eshkol program, and the guard that kept
-        // it out said so only by accident.
+        // Three things were unfinished where this block used to sit dead behind
+        // a named constant (.icc/silent-wrong-ledger.yaml SW-48), and only the
+        // first of them was the crash:
         //
-        // The guard used to read `autodiff_ && ad_mode && !after_matmul_compute`.
-        // `after_matmul_compute` is assigned non-null at the top of this block
-        // under exactly `autodiff_ && ad_mode`, so the conjunction was
-        // unsatisfiable and this code was unreachable — while reading like a
-        // live fallback for "the scalarizing path did not install". Reviewers,
-        // ADR readers and the roadmap's Stage-7 gate all took it for a switch
-        // waiting to be flipped. It is not. Measured on this branch, flipping
-        // it does not produce a slower-but-correct gradient or a different
-        // gradient; it SIGSEGVs on the first `(gradient (lambda (x) (tensor-sum
-        // (matmul x c))) ...)`, identically under -r and AOT.
-        //
-        // Three independent things are unfinished, and the crash is only the
-        // first one to fire:
-        //
-        //   1. recordADNodeTensor (autodiff_codegen.cpp) stores NULL into
-        //      field 7 (`tensor_gradient`), commented "allocated during
-        //      backward" — but the reverse pass SELECTS the tensor backward by
-        //      testing field 7 non-null (autodiff_codegen.cpp, "TENSOR GRADIENT
-        //      FAST PATH"). A node this function builds therefore falls through
-        //      to the SCALAR dispatch for op 24 and dereferences its null
-        //      input1/input2. Constructor and consumer each wait for the other.
-        //   2. The dense node produced here is dropped: this block computes
-        //      `ad_node`, sets its params, and then the function returns a
-        //      plain HEAP_PTR tensor. Nothing downstream can find it. The
-        //      input side of that representation does exist
-        //      (extractTensorAndADNode reads an AD-node-tagged tensor operand),
-        //      so only the producing half is missing.
-        //   3. Under AD the scalarizing path leaves AD-node POINTERS in the
-        //      result tensor's elements, which is what tensor-sum and friends
-        //      consume. A dense matmul writes plain doubles there, so even a
-        //      working dense node would sever the chain at the next tensor op
-        //      until those ops learn the dense representation.
-        //
-        // Nothing on the compiled path ever sets `tensor_gradient`; the only
-        // writers are the qLLM bridge C entry points (lib/bridge/qllm_bridge.cpp)
-        // and the backward rules themselves. So eshkol_tensor_backward_dispatch
-        // is likewise unreachable from compiled Eshkol today.
-        //
-        // Finishing this is ADR-0002 Position A ("dense resident tape"),
-        // scheduled for v1.6 and unstarted. Until then the deadness is
-        // DECLARED rather than accidental: the block stays compiled and
-        // type-checked so it cannot bit-rot, gated on a named constant that
-        // states the truth instead of a guard that hid it. The scalar node
-        // counts this costs are measured and ratcheted by
-        // tests/ad/matmul_tape_node_count_test.esk, so the day the dense path
-        // lands the drop is provable rather than asserted.
-        //
-        // See docs/design/adr/0002-ad-staged-dense-kernels.md,
-        // docs/design/adr/0000-unified-trajectory.md Stages 7-8, and
-        // .icc/silent-wrong-ledger.yaml SW-48.
-        constexpr bool kDenseTensorADNodesEnabled = false;
+        //   1. the guard `autodiff_ && ad_mode && !after_matmul_compute` was
+        //      UNSATISFIABLE -- `after_matmul_compute` is assigned non-null
+        //      under exactly `autodiff_ && ad_mode` a few lines above -- so
+        //      recordADNodeTensor had zero live callers while reading like a
+        //      switch awaiting a flip.  Flipping it SIGSEGV'd, because a tensor
+        //      node was recognised by a non-null `tensor_gradient`, which
+        //      recordADNodeTensor leaves null: the node fell into the SCALAR
+        //      reverse dispatch and dereferenced the input1/input2 a tensor
+        //      node legitimately leaves null.  The reverse sweep now recognises
+        //      a tensor node by its `tensor_value` (autodiff_codegen.cpp,
+        //      "TENSOR NODE FAST PATH"), which it carries from the moment it is
+        //      recorded, and the C dispatcher bridges a scalar-seeded
+        //      one-element node into its tensor gradient.
+        //   2. the node was DROPPED: the block computed it, set its params, and
+        //      the function then returned a plain HEAP_PTR tensor, so nothing
+        //      downstream could find it.  It is now what matmul RETURNS under
+        //      AD -- tagged CALLABLE with the AD-node subtype the allocator
+        //      stamps, the same shape extractTensorAndADNode reads on the
+        //      operand side.
+        //   3. the result tensor's element slots held scalarized AD-node
+        //      pointers, because the scalarizing loop is what ran.  On this
+        //      path that loop is not emitted at all: the numeric kernel wrote
+        //      plain doubles into c_elems and the chain rule lives in the node,
+        //      which is where tensor-sum and tensor-mean now read it.
+        if (mm_dense_ad && mm_ad_enabled) {
+            BasicBlock* dense_rec_bb  = BasicBlock::Create(*context, "matmul_dense_record", current_func);
+            BasicBlock* dense_skip_bb = BasicBlock::Create(*context, "matmul_dense_skip", current_func);
+            BasicBlock* dense_done_bb = BasicBlock::Create(*context, "matmul_dense_done", current_func);
+            builder->CreateCondBr(mm_ad_enabled, dense_rec_bb, dense_skip_bb);
 
-        GlobalVariable* ad_mode = ctx_->adModeActive();
-        if (kDenseTensorADNodesEnabled && autodiff_ && ad_mode) {
-            Value* ad_enabled = builder->CreateLoad(builder->getInt1Ty(), ad_mode);
-
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* ad_record = BasicBlock::Create(*context, "matmul_ad_record", current_func);
-            BasicBlock* ad_skip = BasicBlock::Create(*context, "matmul_ad_skip", current_func);
-            BasicBlock* ad_merge = BasicBlock::Create(*context, "matmul_ad_merge", current_func);
-
-            builder->CreateCondBr(ad_enabled, ad_record, ad_skip);
-
-            // AD recording path
-            builder->SetInsertPoint(ad_record);
-
-            Value* arena_ptr = getArenaPtr();
-
-            // Arena-allocate saved_tensors array: {a_elems, b_elems}
-            Function* alloc_func = mem->getArenaAllocate();
-            Value* saved_arr = builder->CreateCall(alloc_func,
-                {arena_ptr, ConstantInt::get(int64_type, 2 * 8)}); // 2 pointers
-            builder->CreateStore(a_elems,
-                builder->CreateGEP(builder->getPtrTy(), saved_arr,
-                    ConstantInt::get(int64_type, 0)));
-            builder->CreateStore(b_elems,
-                builder->CreateGEP(builder->getPtrTy(), saved_arr,
-                    ConstantInt::get(int64_type, 1)));
-
-            // Arena-allocate shape array: {M, N}
-            Value* shape_arr = builder->CreateCall(alloc_func,
-                {arena_ptr, ConstantInt::get(int64_type, 2 * 8)}); // 2 int64s
-            builder->CreateStore(M,
-                builder->CreateGEP(int64_type, shape_arr,
-                    ConstantInt::get(int64_type, 0)));
-            builder->CreateStore(N,
-                builder->CreateGEP(int64_type, shape_arr,
-                    ConstantInt::get(int64_type, 1)));
-
-            // Get result elements pointer for tensor_value field
-            Value* result_elems = builder->CreateLoad(builder->getPtrTy(),
-                builder->CreateStructGEP(tensor_type, result_ptr, 2));
-
-            // Record tensor AD node with input tracking
-            Value* ad_node = autodiff_->recordADNodeTensor(
-                24,  // AD_NODE_MATMUL
-                ad_node_a, ad_node_b,  // input AD nodes (nullptr if plain tensor)
-                nullptr, nullptr,      // input3/4 unused
-                result_elems,          // tensor_value
-                saved_arr, ConstantInt::get(int64_type, 2),  // saved_tensors + count
-                shape_arr, ConstantInt::get(int64_type, 2)   // shape + ndim
-            );
-
-            // Set params: M, K, N in params[0..2]
-            if (ad_node) {
-                StructType* ad_type = ctx_->adNodeType();
-                ArrayType* params_type = ArrayType::get(int64_type, 6);
-                Value* params_ptr = builder->CreateStructGEP(ad_type, ad_node, 12);
-                builder->CreateStore(M,
-                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 0));
-                builder->CreateStore(K,
-                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 1));
-                builder->CreateStore(N,
-                    builder->CreateConstGEP2_32(params_type, params_ptr, 0, 2));
+            builder->SetInsertPoint(dense_rec_bb);
+            Value* dense_arena = getArenaPtr();
+            Function* dense_alloc = mem->getArenaAllocate();
+            if (!dense_arena || !dense_alloc) {
+                eshkol_error("matmul: no arena for the dense tensor AD node");
+                return packNullToTaggedValue();
             }
 
-            builder->CreateBr(ad_merge);
+            // saved_tensors = {A, B}: the DENSE operand buffers the kernel just
+            // consumed, so the backward differentiates the arithmetic that ran
+            // rather than a re-read of slots that may hold node pointers.
+            Value* dense_saved = builder->CreateCall(dense_alloc,
+                {dense_arena, ConstantInt::get(int64_type, 2 * 8)});
+            builder->CreateStore(mm_a_use,
+                builder->CreateGEP(builder->getPtrTy(), dense_saved,
+                    ConstantInt::get(int64_type, 0)));
+            builder->CreateStore(mm_b_use,
+                builder->CreateGEP(builder->getPtrTy(), dense_saved,
+                    ConstantInt::get(int64_type, 1)));
 
-            // Non-AD path
-            builder->SetInsertPoint(ad_skip);
-            builder->CreateBr(ad_merge);
+            // shape/ndim are the RESULT tensor's own, so a PEP-465 contracted
+            // 1-D result is described honestly instead of as a padded [M,N].
+            Value* dense_res_dims = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(tensor_type, result_ptr, 0));
+            Value* dense_res_nd = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, result_ptr, 1));
 
-            // Merge
-            builder->SetInsertPoint(ad_merge);
+            Value* ad_node = autodiff_->recordADNodeTensor(
+                static_cast<uint32_t>(AD_NODE_MATMUL),
+                mm_parent_a, mm_parent_b,   // dense operand nodes
+                nullptr, nullptr,           // input3/4 unused
+                c_elems,                    // tensor_value: the dense result
+                dense_saved, ConstantInt::get(int64_type, 2),
+                dense_res_dims, dense_res_nd);
+            if (!ad_node) {
+                eshkol_error("matmul: failed to record the dense tensor AD node");
+                return packNullToTaggedValue();
+            }
+
+            // params: M, K, N -- what eshkol_backward_matmul contracts over.
+            StructType* dense_ad_type = ctx_->adNodeType();
+            ArrayType* dense_params_ty = ArrayType::get(int64_type, 6);
+            Value* dense_params = builder->CreateStructGEP(dense_ad_type, ad_node, 12);
+            builder->CreateStore(M,
+                builder->CreateConstGEP2_32(dense_params_ty, dense_params, 0, 0));
+            builder->CreateStore(K,
+                builder->CreateConstGEP2_32(dense_params_ty, dense_params, 0, 1));
+            builder->CreateStore(N,
+                builder->CreateConstGEP2_32(dense_params_ty, dense_params, 0, 2));
+
+            Value* dense_node_tagged = packPtrToTaggedValue(ad_node, ESHKOL_VALUE_CALLABLE);
+            BasicBlock* dense_rec_exit = builder->GetInsertBlock();
+            builder->CreateBr(dense_done_bb);
+
+            // Outside AD mode the dense path records nothing and matmul returns
+            // the tensor it always returned.
+            builder->SetInsertPoint(dense_skip_bb);
+            Value* dense_plain_tagged = packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
+            BasicBlock* dense_skip_exit = builder->GetInsertBlock();
+            builder->CreateBr(dense_done_bb);
+
+            builder->SetInsertPoint(dense_done_bb);
+            PHINode* dense_res_phi = builder->CreatePHI(tagged_value_type, 2, "matmul_dense_result");
+            dense_res_phi->addIncoming(dense_node_tagged, dense_rec_exit);
+            dense_res_phi->addIncoming(dense_plain_tagged, dense_skip_exit);
+            mm_dense_result = dense_res_phi;
         }
 
         // Return tagged result tensor. ESH-0121: merge with the dual-matmul path.
-        Value* mm_normal_result = packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
+        // On the dense tensor AD path the result is already chosen: an AD-node
+        // handle under AD, the plain tensor outside it.
+        Value* mm_normal_result = mm_dense_result
+            ? mm_dense_result
+            : packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
         BasicBlock* mm_normal_exit = builder->GetInsertBlock();
         builder->CreateBr(mm_done_bb);
 

@@ -1034,6 +1034,20 @@ static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
     return total;
 }
 
+/** @brief Element count of a tensor AD node: the overflow-checked product of
+ *         its shape, or 0 if the node is null, carries no tensor value, or the
+ *         product overflows.
+ *
+ * The dense tensor AD path (ADR-0002 Position A) calls this from emitted code,
+ * so a consumer such as `tensor-sum` sizes its reduction from the node it was
+ * handed instead of re-deriving a shape it does not own. */
+extern "C" int64_t eshkol_ad_node_total_elements(const void* ad_node_ptr) {
+    if (!ad_node_ptr) return 0;
+    const ad_node_t* node = (const ad_node_t*)ad_node_ptr;
+    if (!node->tensor_value) return 0;
+    return compute_total_elements(node->shape, node->ndim);
+}
+
 /** @brief Spell an AD node type, for diagnostics.
  *
  *  GENERATED from inc/eshkol/ad_node_registry.def, so a node type cannot exist
@@ -1096,7 +1110,29 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
 
     ad_node_t* node = (ad_node_t*)ad_node_ptr;
     double* upstream_grad = (double*)node->tensor_gradient;
-    if (!upstream_grad) return;
+
+    /* SCALAR-CONSUMER BRIDGE (ADR-0002 Position A, SW-48).
+     *
+     * A tensor node whose output is a single number is consumed by SCALAR
+     * machinery: `(tensor-sum ...)` feeds ordinary arithmetic, and the emitted
+     * scalar reverse sweep accumulates into `node->gradient`, not into
+     * `tensor_gradient`.  The tensor rules read `tensor_gradient`.  Without
+     * this bridge the two sides each wait for the other and the gradient is
+     * dropped in silence -- one of the three defects that kept the dense
+     * tensor AD path unreachable.
+     *
+     * Defined ONLY for a one-element node, where the scalar and the 1-vector
+     * are the same object.  For anything larger a NULL tensor_gradient means
+     * no upstream gradient reached this node at all, which is a genuine zero
+     * contribution: return, do not fabricate one. */
+    if (!upstream_grad) {
+        if (compute_total_elements(node->shape, node->ndim) != 1) return;
+        if (node->gradient == 0.0) return;
+        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(), sizeof(double));
+        if (!node->tensor_gradient) return;
+        ((double*)node->tensor_gradient)[0] = node->gradient;
+        upstream_grad = (double*)node->tensor_gradient;
+    }
 
     /* Access params as raw int64_t array (matches union layout) */
     int64_t* p = (int64_t*)&node->params;
@@ -1250,6 +1286,32 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
                 eshkol_accumulate_tensor_grad(node->input1, grad_A, M * K);
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_B, K * N);
+        }
+        break;
+    }
+
+    /* --- TENSOR_PACK (83): the dense/scalar boundary, ADR-0002 Position A ---
+     *
+     * The dense path's operands may still be tensors whose element slots hold
+     * SCALAR AD-node pointers: that is how `(gradient f x)` seeds a tensor
+     * differentiation point, and how every scalarizing tensor op publishes its
+     * result.  A pack node holds the dense f64 copy in tensor_value and the
+     * scalar node each element came from in saved_tensors, so its backward is
+     * the identity scatter: element i of the tensor gradient lands on scalar
+     * node i.
+     *
+     * It performs no arithmetic.  A pack node therefore cannot change the
+     * VALUE of a gradient, only which representation carries it -- which is
+     * what lets the dense and scalarizing paths agree exactly, not closely. */
+    case AD_NODE_TENSOR_PACK: {
+        if (!node->saved_tensors) break;
+        int64_t total = (int64_t)node->num_saved;
+        if (total <= 0) break;
+        ad_node_t** slots = (ad_node_t**)node->saved_tensors;
+        for (int64_t i = 0; i < total; i++) {
+            /* A NULL slot is an element that was a plain number in the source
+             * tensor: it carries no gradient, and dropping it is exact. */
+            if (slots[i]) slots[i]->gradient += upstream_grad[i];
         }
         break;
     }
