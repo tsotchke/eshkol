@@ -6,8 +6,30 @@
  * the pre-compiled prelude bytecode as C arrays. This eliminates
  * the ~50ms prelude compilation on every REPL startup.
  *
- * Build: gcc -O2 -DGENERATE_PRELUDE_CACHE eshkol_vm.c -o gen_prelude -lm
- * Run:   ./gen_prelude > vm_prelude_cache.h
+ * SW-49: the one-liner this comment used to record here (`gcc -O2
+ * -DGENERATE_PRELUDE_CACHE eshkol_vm.c -o gen_prelude -lm`) stopped linking
+ * once this file's #include "eshkol_vm.c" below grew a transitive
+ * dependency on the rest of the Eshkol runtime (arena/bignum/tensor/
+ * image-io/GPU) that `-lm` alone cannot satisfy — and, separately, it names
+ * the wrong translation unit: eshkol_vm.c on its own never defines this
+ * file's GENERATE_PRELUDE_CACHE `main()`. Nobody had reason to notice: this
+ * generator's only consumer is the Emscripten-built WASM REPL
+ * (vm_wasm_repl.c), so no native build or ctest ever ran it, and the
+ * committed lib/backend/vm_prelude_cache.h drifted 30 builtins stale behind
+ * eshkol_vm.c's BUILTINS[] table before anyone regenerated it.
+ *
+ * Do not hand-copy a build line here again — it will drift the same way.
+ * Build + regenerate:
+ *   scripts/regenerate_vm_prelude_cache.sh
+ * which builds this file through the real CMake target
+ * (eshkol-vm-prelude-cache-gen, CMakeLists.txt, right after
+ * eshkol-vm-standalone-test) so it always links against whatever
+ * eshkol-static currently requires, on whatever platform, rather than a
+ * frozen guess at it. `--check` verifies the committed header is current
+ * without touching it (this is what ctest's vm_prelude_cache_is_current
+ * runs); scripts/check_vm_prelude_cache_builtins.py runs the same
+ * assertion build-free by diffing name lists as text, so CI catches a
+ * missing builtin even on a docs-only PR that configures no build.
  *
  * Usage in vm_wasm_repl.c:
  *   #include "vm_prelude_cache.h"
