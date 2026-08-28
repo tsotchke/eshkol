@@ -6529,3 +6529,303 @@ entries:
       never appearing in the emitted surface - harmless today, but the shape of
       a vacuous surface entry if an extraction source ever picks the name up
       from a blacklist.
+
+  - id: SW-78
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "branch test/guard-coverage-esh-0101"
+    closed_by: "branch test/guard-coverage-esh-0101"
+    title: "the R7RS `=>` cond-clause was unimplemented inside `guard` on all three code generators, and inside `cond` on both bytecode ones"
+    repro: "(display (guard (e ((and (number? e) e) => (lambda (x) (+ x 10)))) (raise 32)))"
+    observed: >-
+      A guard clause IS a cond clause (R7RS 4.2.7), so `(test => receiver)` is
+      as legal there as `(test body ...)`. No clause reader recognised it.
+      Native (lib/backend/llvm_codegen.cpp codegenGuard) fell through to the
+      body loop and code-generated the literal identifier `=>` as a variable
+      reference; both bytecode compilers (lib/backend/vm_compiler.c
+      compile_form_guard for the vm-src axis, and the ESKB emitter's own copy in
+      lib/backend/eshkol_compiler.c for vm-eskb) compiled `=>` as an ordinary
+      body expression, so the clause answered the receiver rather than applying
+      it. The VM's `cond` had the same hole - native `cond` gained `=>` when
+      ESH-0109 closed and neither bytecode compiler was brought along, so
+      `(cond ((f x) => g))` answered differently on the VM than natively.
+      Provenance note: the mechanism above is read from the sources at
+      origin/master e7f2c685; the fix landed before this branch's first
+      measured build, so no pre-fix RUN of these exact programs was captured -
+      only the post-fix runs below.
+    correct: >-
+      The receiver is applied to the TEST's value (not to the guard variable),
+      and is evaluated only when the test is true.
+    observed_after: >-
+      42 on all five axes. scripts/run_guard_coverage.sh grades
+      tests/error_handling/guard_coverage/02_arrow_clause.esk - seven checks
+      covering a named-procedure receiver, a lambda receiver, the receiver
+      seeing the test's value rather than the guard variable, a false arrow test
+      falling through, `=>` after a plain clause, and `=>` before and after
+      `else` - green on jit, aot-o0, aot-o2, vm-src and vm-eskb. The `cond` half
+      is covered by three checks in 09_guard_contexts.esk.
+    fix: >-
+      Shape detection identical to ControlFlowCodegen::codegenCond's, added to
+      all three clause readers so they cannot drift apart again: codegenGuard
+      packs the test value in the block that computes it (so it dominates the
+      then-block) and applies the receiver through codegenClosureCall; both
+      bytecode readers DUP the test, claim the frame slot it already occupies,
+      evaluate the receiver only on the truthy path, then re-push the test value
+      so OP_CALL 1 reads [receiver, argument].
+    evidence: >-
+      tests/error_handling/guard_coverage/02_arrow_clause.esk +
+      09_guard_contexts.esk, graded by scripts/run_guard_coverage.sh on five
+      axes; gate summary "59 passed, 18 failed" -> green after the found/ split.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      Invisible to every differential harness in the repo because native and
+      both bytecode routes were wrong in DIFFERENT but equally wrong ways, and
+      no fixture anywhere used the form. tests/error_handling/*.esk are the
+      `guard` tests and scripts/run_error_handling_tests.sh only ever compiles
+      them AOT, so no guard program had ever run under -r or on the VM either.
+
+  - id: SW-79
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "branch test/guard-coverage-esh-0101"
+    closed_by: "branch test/guard-coverage-esh-0101"
+    title: "a test-only guard clause `(test)` answered '() natively and stack garbage on the VM instead of the test's own value"
+    repro: "(define (classify v) (if (number? v) (cons 'num v) #f))\n(display (guard (e ((classify e))) (raise 2)))"
+    observed: >-
+      R7RS 4.2.1 gives `(<test>)` - a clause with no body - the value of the
+      TEST when the test is truthy. codegenGuard's body loop ran zero times, left
+      `result` null, and the existing `if (!result) result =
+      packNullToTaggedValue()` fallback substituted '(). The bytecode readers
+      compiled the test, consumed it with OP_JUMP_IF_FALSE and then emitted
+      OP_RETURN with nothing pushed for that clause. Same provenance note as
+      SW-78: mechanism read from origin/master e7f2c685, no pre-fix run captured.
+    correct: "(num . 2)"
+    observed_after: >-
+      (num . 2) on all five axes; two checks (a truthy test-only clause, and a
+      falsy one falling through to the next clause) in
+      tests/error_handling/guard_coverage/01_clause_forms.esk. The ESKB
+      emitter's `cond` turned out to be dropping no-body clauses outright too -
+      an `n_children < 2` skip that lib/backend/vm_compiler.c had already been
+      fixed for and lib/backend/eshkol_compiler.c had not - so the two bytecode
+      compilers had silently drifted; both now carry the same reader.
+    fix: >-
+      DUP the test before the conditional jump (OP_JUMP_IF_FALSE consumes
+      exactly one slot on both paths), return the survivor on the truthy path
+      and POP it on the fall-through; natively, use the packed test value as the
+      clause result.
+    evidence: "tests/error_handling/guard_coverage/01_clause_forms.esk, five axes."
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+
+  - id: SW-82
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "branch test/guard-coverage-esh-0101"
+    closed_by: "branch test/guard-coverage-esh-0101"
+    title: "a guard's implicit re-raise destroyed the condition's payload; an enclosing guard saw #<exception> instead of the raised value"
+    repro: '(display (guard (o (#t o)) (guard (i ((number? i) "n")) (raise "payload"))))'
+    observed: >-
+      "#<exception>", exit 0. Measured on the native JIT at 904d5df6.
+      lib/core/runtime_exceptions_hosted.cpp eshkol_raise() honours a
+      caller-supplied payload only while g_raised_value_set_by_user is set, and
+      it CLEARS that flag on every raise. The original `raise` consumed the
+      flag, so codegenGuard's no-clause-matched re-raise - which called
+      eshkol_raise(eshkol_get_exception()) without re-asserting anything - took
+      the fallback branch and overwrote g_raised_tagged_value with the exception
+      STRUCT pointer. The condition propagated correctly; only its payload was
+      replaced, so a guard that merely counted or returned a constant looked
+      fine and only one that INSPECTED its variable saw the corruption.
+    correct: "payload"
+    observed_after: >-
+      "payload" on all five axes (native JIT verified directly at 722206be, and
+      by tests/error_handling/guard_coverage/03_else_and_reraise.esk, whose
+      eight checks include the re-raised object being the original, unchanged,
+      across one and two non-matching guards).
+    fix: >-
+      Re-assert the value the guard variable was bound to - eshkol_set_raised_value(raised_alloca)
+      - immediately before the fall-through eshkol_raise. The VM path was
+      already correct: it re-raises its `exn` local, which is the payload.
+    evidence: "tests/error_handling/guard_coverage/03_else_and_reraise.esk, five axes."
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      Not reachable by differencing native against the VM either, since only the
+      native side was wrong - but no fixture on ANY engine had ever re-raised a
+      condition and then looked at it, so the differential had nothing to compare.
+
+  - id: SW-83
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "branch test/guard-coverage-esh-0101"
+    closed_by: "branch test/guard-coverage-esh-0101"
+    title: "a closure created inside a guard clause pointed at unrelocated code, so calling it ran the wrong function"
+    repro: "(define f (guard (e (#t (lambda (x) (+ x 100)))) (raise 1)))\n(display (f 1))"
+    observed: >-
+      1, exit 0 (want 101). Measured on vm-src at 904d5df6. A guard handler is
+      compiled as its own function and then INLINED into the parent chunk at
+      hfunc_pc. The inliner relocated jump operands and the handler's own entry
+      pc, but a nested `lambda` stores its entry pc in a CONSTANT that
+      OP_CLOSURE names by index: the index was remapped, the pc it points at
+      never was. Every closure built inside a guard clause therefore ran
+      whatever happened to live at its unrelocated offset near the start of the
+      program. Both bytecode compilers carried the bug independently
+      (lib/backend/vm_compiler.c and lib/backend/eshkol_compiler.c).
+    correct: "101"
+    observed_after: >-
+      101 on vm-src and vm-eskb (verified directly at 722206be), and
+      tests/error_handling/guard_coverage/10_guard_scoping.esk's
+      closure-captures-var check plus 02_arrow_clause.esk's lambda receiver are
+      green on all five axes.
+    fix: >-
+      Relocate the mapped constant by hfunc_pc when copying an OP_CLOSURE, once
+      per constant (a reloc_seen[] bitmap keeps the += idempotent when two
+      OP_CLOSURE instructions share one constant, which would otherwise be a
+      fresh bug of the same shape).
+    evidence: >-
+      tests/error_handling/guard_coverage/02_arrow_clause.esk +
+      10_guard_scoping.esk on the VM axes.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    notes: >-
+      The instructive part is how it was found. On its own the defect is SILENT -
+      it hands back a callable that runs the wrong code - and it stayed silent
+      for as long as nothing called such a closure promptly. Adding `=>` (SW-78)
+      made it LOUD, because an arrow clause applies its receiver immediately: a
+      lambda receiver re-entered the top of the program and ran to STACK
+      OVERFLOW. A wrong answer became a crash, which is how a two-line
+      relocation bug surfaced at all.
+
+  - id: SW-84
+    bucket: SILENT-WRONG
+    status: open
+    title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
+    repro: "(display (guard (g (#t 'guard-fired)) (with-exception-handler (lambda (e) 'ignored) (lambda () (raise 'esc)))))"
+    observed: >-
+      ignored, exit 0. Identical on ALL FIVE axes (jit, aot-o0, aot-o2, vm-src,
+      vm-eskb) at 722206be. The raise simply disappears: the enclosing guard
+      never fires and the whole form evaluates to whatever the handler returned.
+    correct: >-
+      guard-fired. R7RS 6.11: `raise` invokes the current exception handler, and
+      "if the handler returns, a secondary exception is raised in the same
+      dynamic environment as the handler." The object of that secondary
+      exception is unspecified, so the specified, checkable part is only that
+      the condition must NOT be absorbed - control has to reach the enclosing
+      handler.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    repro_file: tests/error_handling/guard_coverage/found/weh_handler_return_swallows_condition.esk
+    notes: >-
+      RULING REQUESTED. This is the entry that makes the case for the whole
+      gate: being wrong IDENTICALLY on every engine, it is invisible in
+      principle to every differential harness the project has, and it was found
+      only because this gate grades each engine against a hand-authored R7RS
+      golden instead of against another engine.
+      It is filed open and in the gating bucket deliberately - it is a wrong
+      answer with no diagnostic and exit 0, which is what SILENT-WRONG means -
+      so scripts/gate_no_silent_wrong.py will go red until it is either fixed or
+      waived. The waiver is a maintainer decision (owner/reason/expires) and is
+      NOT taken here by the lane that found the defect.
+      Fixing it is a `with-exception-handler` change, not a `guard` change, and
+      is deliberately out of this branch's scope: `guard` never relies on its
+      handler returning, since R7RS derives it so the handler always escapes to
+      the guard's own continuation first.
+
+  - id: SW-85
+    bucket: PARITY-RATCHET
+    status: open
+    title: "VM: a `set!` to a top-level binding from inside a guard clause body does not reach that binding"
+    repro: "(define fired 0)\n(display (guard (e (#t (set! fired (+ fired 1)) \"caught\")) (raise 7)))\n(display fired)"
+    observed: "caught 0 on vm-src and vm-eskb (want: caught 1). Native jit/aot-o0/aot-o2 are correct."
+    correct: "caught 1"
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential]
+    repro_file: tests/error_handling/guard_coverage/found/vm_setbang_global_from_guard_clause_lost.esk
+    notes: >-
+      Silent on the VM: the clause returns the correct value, so nothing signals
+      that the side effect was dropped. The guard handler is compiled as its own
+      closure with its own frame and the write appears to land there rather than
+      in the enclosing binding. Tracked by the shrink-only manifest at
+      tests/error_handling/guard_coverage/ENGINES.tsv, which requires a
+      justification per (case, axis) and fails on a stale row, and measured
+      every run by 15_clause_side_effects.esk on the native axes.
+
+  - id: SW-86
+    bucket: PARITY-RATCHET
+    status: open
+    title: "VM: internal `define`s in a guard BODY do not produce the body's value"
+    repro: "(display (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)))"
+    observed: "wrong value on vm-src and vm-eskb (want 42). Native jit/aot-o0/aot-o2 are correct."
+    correct: "42"
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential]
+    repro_file: tests/error_handling/guard_coverage/found/vm_internal_defines_in_guard_body.esk
+    notes: >-
+      Measured every run by 16_internal_defines_in_body.esk on the native axes;
+      the two VM axes are declared not-required with justification in
+      tests/error_handling/guard_coverage/ENGINES.tsv.
+
+  - id: SW-87
+    bucket: LOUD-ERROR
+    status: open
+    title: "native: `set!` on the guard VARIABLE is rejected outright, though R7RS derives guard through a let binding"
+    repro: "(display (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig)))"
+    observed: >-
+      "ERROR: set!: variable 'e' is not mutable (not an alloca, global, or
+      capture pointer)", exit 1, on jit / aot-o0 / aot-o2. BOTH VM axes accept
+      it and answer (mutated orig), so this is also a native-vs-VM divergence in
+      which the native side is the nonconforming one.
+    correct: "(mutated orig)"
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    repro_file: tests/error_handling/guard_coverage/found/native_setbang_on_guard_variable_rejected.esk
+    notes: >-
+      LOUD, so not tag-blocking: it fails to compile with a precise diagnostic
+      rather than answering wrongly. codegenGuard binds the guard variable to an
+      SSA value (symbol_table[var_name] = raised_tagged); making it assignable
+      means giving it an entry-block alloca and registering it as a mutable
+      binding, which is binding-codegen work rather than clause-reader work and
+      is out of this branch's scope. Measured every run by
+      18_guard_variable_mutation.esk on the VM axes.
+
+  - id: SW-88
+    bucket: LOUD-ERROR
+    status: open
+    title: "native: three separately-valid guard x dynamic-wind blocks in ONE module fail LLVM module verification"
+    repro: "tests/error_handling/guard_coverage/found/guard_wind_multi_module_dominance.esk"
+    observed: >-
+      "ERROR: LLVM module verification failed: Instruction does not dominate all
+      uses!", exit 1, on jit / aot-o0 / aot-o2. Both VM axes run the same file
+      correctly. Each of the three blocks compiles and runs correctly ON ITS OWN
+      on every axis - they are shipped separately as 12_wind_normal_exit.esk,
+      13_guard_inside_wind.esk and 14_sequential_winds.esk, all green - so no
+      single construct reproduces it and it is filed as an interaction.
+    correct: "the three blocks' checks, all passing, as they do when compiled separately"
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential, error-handling-suite]
+    repro_file: tests/error_handling/guard_coverage/found/guard_wind_multi_module_dominance.esk
+    notes: >-
+      LOUD - nothing runs at all - so not tag-blocking, but it means a real
+      program mixing several guard/dynamic-wind forms can fail to compile.
+      Splitting the corpus case into three preserved the per-construct native
+      coverage instead of losing all of it to this one module-level defect.
+
+  - id: SW-89
+    bucket: PARITY-RATCHET
+    status: open
+    title: "vm-eskb runs a guard clause body BEFORE the dynamic-wind after-thunk, inverting the R7RS order"
+    repro: "(define order '())\n(guard (e (#t (set! order (cons 'clause order)) \"done\")) (dynamic-wind (lambda () (set! order (cons 'before order))) (lambda () (raise 'x)) (lambda () (set! order (cons 'after order)))))"
+    observed: "order is not (clause after before) on vm-eskb. vm-src and all three native axes are correct."
+    correct: >-
+      (clause after before). R7RS derives `guard` so the handler re-enters the
+      guard's own continuation before the clauses run, so an escaping raise runs
+      the after-thunk first and the clause body second.
+    caught_by: [guard-coverage-gate]
+    missed_by: [vm-parity, differential]
+    repro_file: tests/error_handling/guard_coverage/found/vm_eskb_wind_order_vs_clause.esk
+    notes: >-
+      A three-way divergence, and the only finding here where the two BYTECODE
+      routes disagree with each other rather than with native: the VM's own
+      compiler is right and eshkol-run's ESKB emitter is wrong. Measured every
+      run by 17_wind_unwind_order.esk on the four correct axes; the vm-eskb axis
+      is declared not-required with justification in ENGINES.tsv.
