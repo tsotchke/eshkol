@@ -1,17 +1,27 @@
 ;; ESH-0097 minimal repro (found by the AD composition oracle, P3).
-;; ANY vector-param AD operator (gradient, jacobian, hessian, divergence,
-;; curl, laplacian) whose lambda captures a LOCAL function parameter fails
-;; LLVM module verification on BOTH -r and AOT:
+;; WAS: ANY vector-param AD operator (gradient, jacobian, hessian,
+;; divergence, curl, laplacian) whose lambda captured a LOCAL function
+;; parameter failed LLVM module verification on BOTH -r and AOT:
 ;;   ERROR: LLVM module verification failed: PtrToInt source must be pointer
 ;;     %N = ptrtoint %eshkol_tagged_value %a to i64
-;; Notes:
-;;  * scalar `derivative` with the same local capture works fine
-;;  * capturing a GLOBAL works fine
-;;  * the capture does not even have to be used in an AD-relevant way
-;;  * capturing a vector param and using (vector-ref w 0) fails the same way
+;; What the triage established at the time:
+;;  * scalar `derivative` with the same local capture worked fine
+;;  * capturing a GLOBAL worked fine
+;;  * the capture did not even have to be used in an AD-relevant way
+;;  * capturing a vector param and using (vector-ref w 0) failed the same way
+;;
+;; STATUS: FIXED. Re-measured at e7f2c685 on both -r and AOT — this file now
+;; prints #(4.42 0), and the same shapes agree on the bytecode VM. The fix is
+;; in autodiff_codegen.cpp: a captured local parameter resolves to that
+;; parameter's llvm::Argument, which carries the eshkol_tagged_value STRUCT
+;; type rather than a pointer type, and the mutable-capture path ran
+;; CreatePtrToInt on it unconditionally. Value-typed captures now funnel
+;; through a temp alloca. Kept as the acceptance test of ESH-0097 / ledger
+;; LE-06; the shape matrix is gated by
+;; tests/ad/captured_local_vector_param_test.esk (CTest, JIT + AOT).
 ;;
 ;; Run: build/eshkol-run -r tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk
-;; Expected: #(4.42 0). Actual: compile-time IR verification failure.
+;; Expected: #(4.42 0).
 (define (mk a)
   (gradient (lambda (v) (* a (vref v 0) (vref v 0))) (vector 1.3 -0.7)))
 (display (mk 1.7))
