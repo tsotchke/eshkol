@@ -2712,6 +2712,47 @@ install(FILES inc/eshkol/tensorcore_adapter.h DESTINATION ${CMAKE_INSTALL_INCLUD
 install(FILES inc/eshkol/backend/tensorcore_codegen.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol/backend)
 
+# ── find_package(Eshkol) consumer contract (BI-29) ──────────────────────
+# cmake/FindEshkol.cmake and docs/BUILD_INTEGRATION.md already document
+# `find_package(Eshkol REQUIRED)` + `include(EshkolCompile)` against
+# <prefix>/share/eshkol/cmake/ as the one downstream discovery path (a
+# Find module, not a generated Config package — kept as the single
+# contract rather than adding a second, divergent EshkolConfig.cmake).
+# Before this block, `cmake --install` shipped neither the two cmake/
+# modules FindEshkol.cmake itself says every packaging pipeline installs,
+# nor the eshkol-runtime archive, nor the lib/*.esk module sources
+# Eshkol_STDLIB_MODULE_DIR searches for — only the release workflow and the
+# homebrew formula staged those by hand, so an install from source (the
+# path this repository's own build documents) could not satisfy
+# find_package(Eshkol)'s REQUIRED_VARS.
+if(TARGET eshkol-runtime)
+  install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+endif()
+install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
+# The full (require ...)/(import ...) module-source tree, preserving lib/'s
+# relative layout, so Eshkol_STDLIB_MODULE_DIR (share/eshkol/lib) resolves
+# stdlib.esk AND every module stdlib.esk (require)s (core.manifold included)
+# from an installed prefix, not just the entry file.
+install(DIRECTORY lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib
+        FILES_MATCHING PATTERN "*.esk")
+
+# pkg-config module for non-CMake consumers (`pkg-config eshkol --libs
+# --cflags`), generated at configure time so its link line matches
+# Eshkol::eshkol's INTERFACE_LINK_LIBRARIES on this platform exactly (same
+# two-archive / stdlib.o contract FindEshkol.cmake documents, just reached
+# through pkg-config instead of find_package()).
+set(ESHKOL_PC_EXTRA_LIBS "")
+if(APPLE)
+  set(ESHKOL_PC_EXTRA_LIBS
+      "-framework Accelerate -framework Metal -framework MetalPerformanceShaders -framework Foundation -framework Security -framework CoreFoundation -framework ImageIO -framework CoreGraphics -lobjc")
+elseif(WIN32)
+  set(ESHKOL_PC_EXTRA_LIBS "-lbcrypt -lws2_32")
+endif()
+configure_file(cmake/eshkol.pc.in ${CMAKE_CURRENT_BINARY_DIR}/eshkol.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eshkol.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
 message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT} and ${STDLIB_BITCODE}")
 if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
   message(STATUS

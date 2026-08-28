@@ -1,0 +1,23 @@
+# eshkol.pc — pkg-config module for an installed Eshkol.
+#
+# Generated at configure time from cmake/eshkol.pc.in (@ONLY substitution)
+# and installed to <prefix>/lib/pkgconfig/eshkol.pc, so `pkg-config eshkol
+# --cflags --libs` resolves the same runtime archive + stdlib.o link line
+# that cmake/FindEshkol.cmake's Eshkol::eshkol imported target carries for
+# CMake consumers — one contract (see FindEshkol.cmake's header comment for
+# "Two archives, two audiences" / "Every program needs stdlib.o"), two
+# discovery mechanisms.
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+bindir=${prefix}/@CMAKE_INSTALL_BINDIR@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@/eshkol
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+stdlibdir=${prefix}/@CMAKE_INSTALL_DATADIR@/eshkol/lib
+compiler=${bindir}/eshkol-run
+
+Name: Eshkol
+Description: Eshkol hosted runtime archive and eshkol-run compiler driver
+URL: https://eshkol.ai
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -leshkol-runtime ${libdir}/stdlib.o @ESHKOL_PC_EXTRA_LIBS@
+Cflags: -I${includedir}
