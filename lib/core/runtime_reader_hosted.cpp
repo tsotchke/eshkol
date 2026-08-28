@@ -34,6 +34,16 @@ static int read_skip_whitespace(FILE* fp) {
     }
 }
 
+// R7RS reader-macro characters terminate an ordinary token even when there
+// is no intervening whitespace. Keep this delimiter set aligned with the
+// frontend tokenizer: `a,b`, `a`b`, and `a'b` are multiple datums, not symbols
+// containing reader syntax.
+static bool reader_token_delimiter(int ch) {
+    return ch == EOF || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+           ch == '(' || ch == ')' || ch == '\'' || ch == '`' || ch == ',' ||
+           ch == '"' || ch == ';';
+}
+
 // Forward declaration
 static eshkol_tagged_value_t read_datum(arena_t* arena, FILE* fp, int first_char);
 
@@ -466,8 +476,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
     arena_t* arena, FILE* fp, int ch) {
     if (ch == 't') {
         int next = fgetc(fp);
-        if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
-            next == '\t' || next == ')' || next == '(') {
+        if (reader_token_delimiter(next)) {
             if (next != EOF) ungetc(next, fp);
             return make_bool_tagged(1);
         }
@@ -478,7 +487,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         rest[rlen++] = 'r';
         while (rlen < 15) {
             int c = fgetc(fp);
-            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
+            if (reader_token_delimiter(c)) {
                 if (c != EOF) ungetc(c, fp);
                 break;
             }
@@ -490,8 +499,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
     }
     if (ch == 'f') {
         int next = fgetc(fp);
-        if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
-            next == '\t' || next == ')' || next == '(') {
+        if (reader_token_delimiter(next)) {
             if (next != EOF) ungetc(next, fp);
             return make_bool_tagged(0);
         }
@@ -499,7 +507,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         // Could be #false — consume rest and return false
         while (1) {
             int c = fgetc(fp);
-            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
+            if (reader_token_delimiter(c)) {
                 if (c != EOF) ungetc(c, fp);
                 break;
             }
@@ -511,8 +519,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         int c1 = fgetc(fp);
         if (c1 == EOF) return make_eof_tagged();
         int c2 = fgetc(fp);
-        if (c2 == EOF || c2 == ' ' || c2 == '\n' || c2 == '\r' ||
-            c2 == '\t' || c2 == ')' || c2 == '(') {
+        if (reader_token_delimiter(c2)) {
             if (c2 != EOF) ungetc(c2, fp);
             return make_char_tagged(c1);
         }
@@ -523,7 +530,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         int nlen = 2;
         while (nlen < 31) {
             int c = fgetc(fp);
-            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
+            if (reader_token_delimiter(c)) {
                 if (c != EOF) ungetc(c, fp);
                 break;
             }
@@ -549,8 +556,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
     int blen = 2;
     while (blen < 255) {
         int c = fgetc(fp);
-        if (c == EOF || c == ' ' || c == '\n' || c == '\r' ||
-            c == '\t' || c == ')' || c == '(' || c == '"') {
+        if (reader_token_delimiter(c)) {
             if (c != EOF) ungetc(c, fp);
             break;
         }
@@ -567,8 +573,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_number_or_symbol(
     int blen = 1;
     while (blen < 255) {
         int ch = fgetc(fp);
-        if (ch == EOF || ch == ' ' || ch == '\n' || ch == '\r' ||
-            ch == '\t' || ch == ')' || ch == '(' || ch == '"' || ch == ';') {
+        if (reader_token_delimiter(ch)) {
             if (ch != EOF) ungetc(ch, fp);
             break;
         }
