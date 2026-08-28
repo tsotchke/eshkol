@@ -119,6 +119,29 @@ public:
     llvm::Value* adPointToDouble(llvm::Value* tagged, const char* what);
 
     /**
+     * LE-12. Normalize a vector field's RESULT so a `(list …)` return is seen
+     * by the caller as a Scheme vector.
+     *
+     * The jacobian/divergence/curl output dispatch is a two-way split — "is the
+     * heap subtype VECTOR? if not, read it as an eshkol_tensor_t" — so a cons
+     * cell fell into the tensor arm and its car/cdr words were loaded as the
+     * tensor's `dims`/`elements` POINTERS, which is the LE-12 SIGSEGV. This
+     * emits a runtime test for HEAP_SUBTYPE_CONS and, only in that case,
+     * rewrites the value into a Scheme vector via `eshkol_list_to_svec_raw`,
+     * which copies each element VERBATIM so an AD node survives the conversion
+     * (the point-side `eshkol_list_to_svec` coerces to double and must not be
+     * used here — see the note on the runtime helper).
+     *
+     * Everything else — Scheme vector, tensor, AD tensor, CALLABLE — passes
+     * through untouched, so the existing arms keep their current behaviour.
+     *
+     * @param out_tagged The field's result as a tagged value.
+     * @param tag        Short label used to name the emitted basic blocks.
+     * @return A tagged value that is never a cons cell.
+     */
+    llvm::Value* normalizeFieldOutputList(llvm::Value* out_tagged, const char* tag);
+
+    /**
      * ESH-0393. Is this evaluation point a SCALAR (f: R→R) rather than a
      * collection (f: R^n→R)? Returns an i1.
      *
