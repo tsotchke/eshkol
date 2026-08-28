@@ -6457,7 +6457,7 @@ static int32_t vm_box_i128(VM* vm, __int128 value) {
     return ptr;
 }
 
-static __int128 vm_unbox_i128(VM* vm, Value v) {
+__int128 vm_unbox_i128(VM* vm, Value v) {
     return eshkol_i128_from_abi(
         *(eshkol_i128_abi*)vm->heap.objects[v.as.ptr]->opaque.ptr);
 }
@@ -6472,7 +6472,7 @@ static __int128 vm_coerce_i128(VM* vm, Value v, int* ok) {
 }
 
 /* Box and push a computed __int128 result. */
-static void vm_push_i128(VM* vm, __int128 value) {
+void vm_push_i128(VM* vm, __int128 value) {
     int32_t ptr = vm_box_i128(vm, value);
     if (ptr < 0) return;   /* vm->error already set */
     vm_push(vm, (Value){.type = VAL_I128, .as.ptr = ptr});

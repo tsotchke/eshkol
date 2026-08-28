@@ -4803,6 +4803,12 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         b.CreateBr(rvt_plain);   // eshkol_raise does not return
                     }
                     b.SetInsertPoint(rvt_plain);
+                    // The result is allocated outside the tape region so that
+                    // releasing the tape cannot reclaim the published tensor.
+                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
+                        {arena_ptr, rvt_ndim, rvt_n});
+                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
+                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Fresh tape for this gradient; publish as current so
                     // createADVariable / tensor-op recording target it.
@@ -4822,12 +4828,6 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         {arena_ptr, rvt_ndim, rvt_n});
                     Value* rvt_ad_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 0));
                     Value* rvt_ad_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 2));
-
-                    // Result tensor (same shape) that receives the gradient.
-                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
-                        {arena_ptr, rvt_ndim, rvt_n});
-                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
-                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
 
                     // Copy the shape into both the AD-node tensor and the result.
                     Value* rvt_di = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_di");
@@ -5007,6 +5007,11 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         ctx_.builder().CreateAdd(rvt_gv, ConstantInt::get(ctx_.int64Type(), 1)), rvt_gi);
                     ctx_.builder().CreateBr(rvt_gc);
                     ctx_.builder().SetInsertPoint(rvt_ge);
+
+                    // The result tensor was allocated before the tape. Release
+                    // the marked tape interval now that every node gradient has
+                    // been copied out, keeping repeated closure gradients flat.
+                    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {rvt_tape});
 
                     current_tape_ptr_ = rvt_saved_tape;
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
@@ -7535,8 +7540,10 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(after_read_bb);
 
-    // Step 9: Reset tape for next iteration (MUST call to zero gradients)
-    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {partial_tape});
+    // Step 9: Release the marked tape interval after all gradients have been
+    // copied into the result tensor. The next loop iteration gets a fresh tape
+    // without requiring the caller to wrap the training step in with-region.
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {partial_tape});
 
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
@@ -8743,7 +8750,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         typed_jac_elems, linear_idx);
     ctx_.builder().CreateStore(partial_deriv, jac_result_elem_ptr);
     
-    ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {jac_tape});
+    ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {jac_tape});
     
     // CRITICAL FIX: Clear global tape pointer (like gradient does)
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());

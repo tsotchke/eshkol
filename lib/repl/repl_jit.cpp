@@ -1503,6 +1503,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_allocate_tape);
     ADD_SYMBOL(arena_tape_add_node);
     ADD_SYMBOL(arena_tape_reset);
+    ADD_SYMBOL(arena_tape_release);
     ADD_SYMBOL(arena_tape_get_node);
     ADD_SYMBOL(arena_tape_get_node_count);
     // ESH-0093: mixed-mode AD (reverse tape over inner forward derivative)
@@ -1548,6 +1549,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_i128_from_int_tagged);
     ADD_SYMBOL(eshkol_i128_from_string_tagged);
     ADD_SYMBOL(eshkol_i128_predicate_tagged);
+    ADD_SYMBOL(eshkol_is_i128_tagged);
     ADD_SYMBOL(eshkol_i128_binary_tagged);
     ADD_SYMBOL(eshkol_i128_neg_tagged);
     ADD_SYMBOL(eshkol_i128_shift_tagged);

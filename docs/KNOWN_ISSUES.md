@@ -371,6 +371,15 @@ block ordinary use.
   off the numeric tower and never auto-promotes, so this is a missing
   opcode branch rather than a tower-contagion question.
 - **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
+- **Generic arithmetic and comparison over `i128` now use the i128 domain.**
+  On both native and VM, `+ - * / modulo`, unary `-`, `abs`, and
+  `= < > <= >=` dispatch to the shared fixed-width implementation whenever
+  either operand is an i128. A fixnum is widened as the other operand; other
+  numeric-tower values remain an error. The results are wrapping two's-
+  complement arithmetic, truncated quotient/remainder division, and signed
+  comparisons, matching the dedicated `i128-*` operators. The regression is
+  `tests/types/i128_test.esk`.
+- **The VM lane ignores a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
   The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
   loudly — `WARNING undefined variable 'load'` followed by a fatal
@@ -464,17 +473,13 @@ block ordinary use.
   regression `tests/ad/sweep_c_regressions_test.esk:57-69` asserts exact
   values for gradient/jacobian/hessian/divergence/laplacian over a lambda
   capturing a local parameter (conformity audit 2026-08-25, item e1).
-- **Resident training loops accumulate RSS unless each step is scoped.** The
-  automatic per-iteration nursery (ESH-0214e) reclaims *structural* mutation, not
-  the reverse-mode AD tape, so a long-running gradient/training loop is excluded
-  from automatic reclamation by design. Wrap each optimization step in an
-  explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
-  now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
-  The AD-tape reclamation clause (#345) is native-only; on the bytecode VM a
-  per-step `with-region` reclaims through the Stage-1 evacuator, which does not
-  special-case the tape (see "Region handles on the VM" above).
-  A lighter-weight tape mark/release API is planned so a bare training loop can
-  reclaim without a per-step region.
+- **Resident training loops reclaim operator tapes through a native mark/release
+  scope.** Each generated reverse-mode pass marks its tape allocation interval
+  and releases it after copying the gradients into the result, so a bare
+  resident loop no longer needs a per-step `(with-region ...)`. The tape API is
+  LIFO and refuses an out-of-order release. The bytecode VM keeps its existing
+  region-stack ownership: its equivalent tape allocations are reclaimed by an
+  enclosing VM region, because its arena has no independent rewind handle.
 
 **Recursion depth**
 - The stdlib list operations that used to fail on very large inputs no longer

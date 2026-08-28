@@ -561,11 +561,18 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
         initial_capacity = 64;
     }
 
+    // Mark the complete tape allocation interval. Generated AD paths release
+    // this scope after reading their result, so resident loops do not need a
+    // user-visible with-region around every differentiation step.
+    arena_push_scope(arena);
+    arena_scope_t* allocation_scope = arena->current_scope;
+
     ad_tape_t* tape = (ad_tape_t*)
         arena_allocate_aligned(arena, sizeof(ad_tape_t), 8);
 
     if (!tape) {
         eshkol_error("Failed to allocate tape structure");
+        if (allocation_scope) arena_pop_scope(arena);
         return nullptr;
     }
 
@@ -574,6 +581,7 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
 
     if (!tape->nodes) {
         eshkol_error("Failed to allocate tape nodes array");
+        if (allocation_scope) arena_pop_scope(arena);
         return nullptr;
     }
 
@@ -585,6 +593,7 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     // targets the SAME arena (region-created tapes stay fully reclaimable at
     // region_pop; globally-created tapes never dangle when grown inside a region).
     tape->owner_arena = arena;
+    tape->allocation_scope = allocation_scope;
 
     __eshkol_ad_counters.tape_allocations++;
     return tape;
@@ -702,6 +711,23 @@ void arena_tape_reset(ad_tape_t* tape) {
     }
 
     tape->num_nodes = 0;
+}
+
+/**
+ * @brief Reclaim a tape's marked allocation scope.
+ *
+ * Release is deliberately LIFO. An out-of-order request is rejected so one
+ * tape cannot pop another tape's allocations. Tapes created on a parallel
+ * commit-only arena have no scope and remain owned by that arena.
+ */
+void arena_tape_release(ad_tape_t* tape) {
+    if (!tape || !tape->allocation_scope || !tape->owner_arena) return;
+    arena_t* arena = tape->owner_arena;
+    if (arena->current_scope != tape->allocation_scope) {
+        eshkol_error("Cannot release AD tape out of allocation order");
+        return;
+    }
+    arena_pop_scope(arena);
 }
 
 /**

@@ -156,6 +156,10 @@ void eshkol_i128_predicate_tagged(const eshkol_tagged_value_t* x,
     *out = make_bool_tv(tagged_is_i128(x));
 }
 
+bool eshkol_is_i128_tagged(const eshkol_tagged_value_t* x) {
+    return tagged_is_i128(x);
+}
+
 /* Binary arithmetic. op: 0=add 1=sub 2=mul 3=quotient 4=remainder. */
 void eshkol_i128_binary_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* a,

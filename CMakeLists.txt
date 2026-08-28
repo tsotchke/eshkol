@@ -4019,6 +4019,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
+        NAME hessian_capture_scalar_vm_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/hessian_capture_scalar.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/hessian_capture_scalar.eskb'"
+    )
+    set_tests_properties(hessian_capture_scalar_vm_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "hessian_capture_scalar:.*PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(
+        NAME i128_generic_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/i128_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(i128_generic_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
+    add_test(
+        NAME i128_generic_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/i128_generic_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/types/i128_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/i128_generic_aot'"
+    )
+    set_tests_properties(i128_generic_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
+    add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/collections/empty_collection_test.esk"

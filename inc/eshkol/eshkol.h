@@ -1133,6 +1133,7 @@ typedef struct ad_tape {
     ad_node_t** variables;     // Input variable nodes
     size_t num_variables;      // Number of input variables
     struct arena* owner_arena; // Arena the header + nodes array live in; growth targets it (#341)
+    struct arena_scope* allocation_scope; // Scope used by mark/release reclamation
 } ad_tape_t;
 
 // ===== CLOSURE ENVIRONMENT STRUCTURES =====

@@ -4858,6 +4858,7 @@ private:
         function_table["arena_allocate_tape"] = mem->getArenaAllocateTape();
         function_table["arena_tape_add_node"] = mem->getArenaTapeAddNode();
         function_table["arena_tape_reset"] = mem->getArenaTapeReset();
+        function_table["arena_tape_release"] = mem->getArenaTapeRelease();
         function_table["arena_tape_get_node"] = mem->getArenaTapeGetNode();
         function_table["arena_tape_get_node_count"] = mem->getArenaTapeGetNodeCount();
         function_table["arena_allocate_ad_node"] = mem->getArenaAllocateAdNode();
@@ -22375,10 +22376,21 @@ private:
 
         Value* any_bignum = arith_->emitIsBignumCheck(arg1, arg2);
         BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum",   func);
+        BasicBlock* i128_bb = BasicBlock::Create(*context, "mod_i128",     func);
         BasicBlock* chk_bb = BasicBlock::Create(*context, "mod_check_dbl", func);
         BasicBlock* dbl_bb = BasicBlock::Create(*context, "mod_double",   func);
         BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",      func);
         BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",    func);
+        Value* any_i128 = arith_->emitIsI128Check(arg1, arg2);
+        BasicBlock* check_i128_bb = BasicBlock::Create(*context, "mod_check_i128", func);
+        builder->CreateCondBr(any_i128, i128_bb, check_i128_bb);
+
+        builder->SetInsertPoint(i128_bb);
+        Value* i128_result = arith_->emitI128BinaryCall(arg1, arg2, 4);
+        BasicBlock* i128_exit = builder->GetInsertBlock();
+        builder->CreateBr(mrg_bb);
+
+        builder->SetInsertPoint(check_i128_bb);
         builder->CreateCondBr(any_bignum, bn_bb, chk_bb);
 
         // Bignum path: eshkol_bignum_binary_tagged op=4 → mod
@@ -22468,7 +22480,8 @@ private:
 
         // Merge (bn vs flonum vs int paths).
         builder->SetInsertPoint(mrg_bb);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "modulo_phi");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "modulo_phi");
+        result_phi->addIncoming(i128_result, i128_exit);
         result_phi->addIncoming(bn_result, bn_exit);
         result_phi->addIncoming(dbl_mod_tagged, dbl_exit);
         result_phi->addIncoming(int_tagged, int_exit);
