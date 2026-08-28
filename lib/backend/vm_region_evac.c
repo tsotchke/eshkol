@@ -197,7 +197,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_COMPLEX]      = { "complex",      VM_EVAC_WALK, "payload only (two doubles)" },
     [HEAP_RATIONAL]     = { "rational",     VM_EVAC_WALK, "payload only (int64 pair or two VmBignum)" },
     [HEAP_BIGNUM]       = { "bignum",       VM_EVAC_WALK, "payload only (VmBignum.limbs)" },
-    [HEAP_DUAL]         = { "dual",         VM_EVAC_WALK, "payload only (two doubles)" },
+    [HEAP_DUAL]         = { "dual",         VM_EVAC_WALK, "two doubles + two optional VmRational* exact halves (SW-85), retained by the interior-pointer walk" },
     [HEAP_TENSOR]       = { "tensor",       VM_EVAC_WALK, "payload only (shape/strides/data; views borrow)" },
     [HEAP_LOGIC_VAR]    = { "logic-var",    VM_EVAC_PIN,  "no constructor exists; pin rather than guess a layout" },
     [HEAP_SUBST]        = { "substitution", VM_EVAC_WALK, "VmSubstitution.terms[i] of kind OPAQUE/FACT" },
@@ -434,7 +434,10 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_COMPLEX:                /* two doubles                            */
     case HEAP_RATIONAL:               /* int64 pair, or two VmBignum*            */
     case HEAP_BIGNUM:                 /* sign/limbs/n_limbs/capacity             */
-    case HEAP_DUAL:                   /* primal/tangent                          */
+    /* HEAP_DUAL's exact halves (SW-85) are ARENA pointers, not heap indices,
+     * so this mark arm stays a no-op; they are retained by the
+     * interior-pointer walk further down, which is where arena chains live. */
+    case HEAP_DUAL:                   /* primal/tangent (+ exact halves)         */
     case HEAP_HYPER_DUAL:             /* f/f1/f2/f12                             */
     case HEAP_I128:                   /* {lo, hi}                                */
     case HEAP_BYTEVECTOR:             /* len/uint8_t* data                       */
@@ -744,6 +747,31 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
     case HEAP_RATIONAL: {
         const VmRational* r = (const VmRational*)p;
         if (r->is_big) {
+            if (r->big_num) { vm_evac_retain_ptr(bs, r->big_num);
+                              vm_evac_scan_range(bs, r->big_num, sizeof(VmBignum)); }
+            if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);
+                              vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
+        }
+        break;
+    }
+    case HEAP_DUAL: {
+        /* SW-85: a dual seeded at an EXACT point owns two VmRational* in the
+         * region arena, and each of those may itself be bignum-backed. Before
+         * the exact halves existed a dual really was "two doubles" and this
+         * arm was correctly absent; the moment the carrier gained interior
+         * arena pointers, leaving it out would let the exact halves dangle
+         * into a freed region — the SW-66 defect, one subtype over. The chain
+         * is three deep (dual -> rational -> bignum limbs) and a scan cannot
+         * reach the far end on its own, which is exactly why HEAP_RATIONAL
+         * above has to walk its own bignums too. */
+        const VmDual* d = (const VmDual*)p;
+        const VmRational* halves[2] = { d->eprimal, d->etangent };
+        for (int i = 0; i < 2; i++) {
+            const VmRational* r = halves[i];
+            if (!r) continue;                     /* inexact half: nothing to retain */
+            vm_evac_retain_ptr(bs, (void*)r);
+            vm_evac_scan_range(bs, (void*)r, sizeof(VmRational));
+            if (!r->is_big) continue;
             if (r->big_num) { vm_evac_retain_ptr(bs, r->big_num);
                               vm_evac_scan_range(bs, r->big_num, sizeof(VmBignum)); }
             if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);

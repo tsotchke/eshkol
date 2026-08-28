@@ -466,6 +466,44 @@ static VmRational* vm_rational_inv_exact(VmRegionStack *rs, const VmRational *a)
     return vm_rational_alloc_bn(rs, vm_rat_den_bn(rs, a), vm_rat_num_bn(rs, a));
 }
 
+/* ── Public exact-arithmetic surface (SW-85) ───────────────────────────────
+ * The four `*_exact` helpers above are the never-degrading, bignum-capable
+ * arithmetic the VM's numeric tower already runs on, but they are file-static
+ * and were reachable only through the native-call dispatcher's own switch.
+ * The forward-mode dual carrier needs exactly this arithmetic, from
+ * lib/backend/vm_dual.c, so that an exact seed stays exact through + - * /.
+ * These wrappers are the whole public surface that needs; deliberately thin,
+ * so vm_dual.c never reimplements rational arithmetic and can never disagree
+ * with the tower about what an exact result is. */
+
+/** @brief Exact a `op` b for op in '+', '-', '*', '/'. NULL on exact division
+ *         by exact zero or on allocation failure. */
+VmRational* vm_rational_op_exact(VmRegionStack *rs, const VmRational *a,
+                                 const VmRational *b, char op) {
+    return vm_rational_arith_exact(rs, a, b, op);
+}
+
+/** @brief Exact -a. */
+VmRational* vm_rational_negate_exact(VmRegionStack *rs, const VmRational *a) {
+    return vm_rational_neg_exact(rs, a);
+}
+
+/** @brief Exact |a|. */
+VmRational* vm_rational_absolute_exact(VmRegionStack *rs, const VmRational *a) {
+    return vm_rational_abs_exact(rs, a);
+}
+
+/** @brief The exact rational n/1 for a bignum @p n. Needed so that an AD seed
+ *         at a BIGNUM point is exact too, not just at a fixnum or a ratnum —
+ *         native's exact tier accepts all three, and a VM that accepted only
+ *         two would just move the divergence rather than close it. */
+VmRational* vm_rational_from_bignum(VmRegionStack *rs, VmBignum *n) {
+    if (!rs || !n) return NULL;
+    VmBignum *one = bignum_from_int64(rs, 1);
+    if (!one) return NULL;
+    return vm_rational_alloc_bn(rs, n, one);
+}
+
 /** @brief Exact three-way compare, bignum-capable (cross-multiplication;
  *         both denominators are positive by the normalization invariant). */
 static int vm_rational_compare_exact(VmRegionStack *rs,

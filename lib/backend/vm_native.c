@@ -5547,6 +5547,55 @@ static Value vm_make_double_vector(VM* vm, const double* data, int n) {
 }
 
 /** @brief Allocate a forward-mode dual number (primal + tangent*ε) as a
+/** @brief The exact rational for an exact VM numeric Value, or NULL when the
+ *         value is inexact (a flonum) or is not a number.
+ *
+ * SW-85. This is the SEED side of VM AD exactness. Before it, every AD entry
+ * point read its point through as_number_vm(), which correctly unwraps a
+ * rational to a double — the only thing a `double` carrier can accept — and
+ * that coercion is where `(derivative (lambda (x) (* x x)) 1/3)` stopped being
+ * 2/3 and became 0.6666666666666666. Native's exact tier accepts fixnum,
+ * bignum and ratnum points alike, so all three are handled here; anything else
+ * answers NULL and the caller keeps its existing double path unchanged. */
+static VmRational* vm_exact_rational_of(VM* vm, Value v) {
+    if (!vm) return NULL;
+    if (v.type == VAL_INT)
+        return vm_rational_from_int(vm_active_arena(&vm->heap.regions), v.as.i);
+    if (v.type == VAL_RATIONAL) {
+        if (!is_heap_type(vm, v, HEAP_RATIONAL)) return NULL;
+        return (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    }
+    if (v.type == VAL_BIGNUM) {
+        if (!is_heap_type(vm, v, HEAP_BIGNUM)) return NULL;
+        VmBignum* b = (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!b) return NULL;
+        return vm_rational_from_bignum(&vm->heap.regions, b);
+    }
+    return NULL;
+}
+
+/** @brief Push an exact rational as a VM Value, normalizing an integral
+ *         rational (denominator 1) to VAL_INT so that `(derivative sq 2)`
+ *         answers 4 rather than 4/1 — the same normalization the rest of the
+ *         VM's numeric surface performs. Answers 0 on failure so the caller
+ *         can fall back. */
+static Value vm_exact_rational_val(VM* vm, VmRational* r) {
+    if (!r) return NIL_VAL;
+    if (!r->is_big && r->denom == 1) return INT_VAL(r->num);
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+    vm->heap.objects[ptr]->opaque.ptr = r;
+    return (Value){.type = VAL_RATIONAL, .as.ptr = ptr};
+}
+
+static int vm_push_exact_rational(VM* vm, VmRational* r) {
+    Value v = vm_exact_rational_val(vm, r);
+    if (v.type == VAL_NIL) return 0;
+    vm_push(vm, v);
+    return 1;
+}
+
  *         heap-boxed VAL_DUAL, so gradient's dual passes seed a coordinate. */
 static Value vm_make_dual_val(VM* vm, double primal, double tangent) {
     VmDual* d = vm_dual_make(&vm->heap.regions, primal, tangent);
@@ -5770,8 +5819,37 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     if (!point || point_n <= 0) return FLOAT_VAL(0);
     int n = (int)point_n;
 
-    /* Scalar point → scalar derivative (single dual pass). */
+    /* Scalar point → scalar derivative (single dual pass).
+     *
+     * SW-85: vm_ad_extract_point() has already flattened the point into
+     * `double* point`, so exactness has to be recovered from the ORIGINAL
+     * x_val, not from point[0] — by the time it is a double it is too late.
+     * `gradient` at an exact scalar point is the same divergence `derivative`
+     * had, and PARITY.tsv's op:GRADIENT row records it as the same fix. */
     if (!is_collection && n == 1) {
+        VmRational* xr = vm_exact_rational_of(vm, x_val);
+        if (xr) {
+            VmDual* ed = vm_dual_make_exact_seed(&vm->heap.regions, xr);
+            if (ed) {
+                int32_t dp = heap_alloc(&vm->heap);
+                if (dp >= 0) {
+                    vm->heap.objects[dp]->type = HEAP_DUAL;
+                    vm->heap.objects[dp]->opaque.ptr = ed;
+                    Value earg = (Value){.type = VAL_DUAL, .as.ptr = dp};
+                    Value eres = vm_ad_call_closure(vm, f_val, &earg, 1);
+                    if (eres.type == VAL_DUAL && eres.as.ptr >= 0) {
+                        VmDual* rd = (VmDual*)vm->heap.objects[eres.as.ptr]->opaque.ptr;
+                        VmRational* et = vm_dual_exact_tangent(rd);
+                        if (et) {
+                            Value ev = vm_exact_rational_val(vm, et);
+                            if (ev.type != VAL_NIL) return ev;
+                        }
+                        return FLOAT_VAL(rd ? rd->tangent : 0);
+                    }
+                    return FLOAT_VAL(vm_dual_tangent_of(vm, eres));
+                }
+            }
+        }
         Value dual_arg = vm_make_dual_val(vm, point[0], 1.0);
         Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
         return FLOAT_VAL(vm_dual_tangent_of(vm, result));
@@ -8745,7 +8823,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * were simply inconsistent with it. Same change applies to the
          * jacobian/hessian/divergence/curl/laplacian/directional-derivative
          * point and direction reads below. */
-        VmDual* d = vm_dual_make(&vm->heap.regions, as_number_vm(vm, x_val), 1.0);
+        /* SW-85: seed EXACTLY when the point is exact. An exact point through
+         * exactness-preserving arithmetic must give an exact derivative on
+         * every substrate — native's Taylor-tower exact tier (ESH-0394) has
+         * answered 2/3 here since #393 while the VM answered
+         * 0.6666666666666666, numerically equal and silently less exact.
+         * An inexact point takes the unchanged double path below. */
+        VmDual* d = NULL;
+        VmRational* xr = vm_exact_rational_of(vm, x_val);
+        if (xr) d = vm_dual_make_exact_seed(&vm->heap.regions, xr);
+        if (!d) d = vm_dual_make(&vm->heap.regions, as_number_vm(vm, x_val), 1.0);
         if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
         int32_t dptr = heap_alloc(&vm->heap);
         if (dptr < 0) { vm->error = 1; break; }
@@ -8754,10 +8841,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value dual_arg = (Value){.type = VAL_DUAL, .as.ptr = dptr};
         /* Call f(dual) via closure bridge */
         Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
-        /* Extract tangent = derivative */
+        /* Extract tangent = derivative. An exact tangent survived every
+         * operation the function applied, so it is pushed as an exact Value;
+         * the moment any transcendental ran, the exact halves are gone and
+         * this falls back to the double — R7RS contagion, decided by the
+         * carrier rather than re-derived here. */
         if (result.type == VAL_DUAL && result.as.ptr >= 0) {
             VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-            vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
+            VmRational* et = vm_dual_exact_tangent(rd);
+            if (!et || !vm_push_exact_rational(vm, et))
+                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
         } else {
             vm_push(vm, FLOAT_VAL(0)); /* non-dual result = constant function */
         }

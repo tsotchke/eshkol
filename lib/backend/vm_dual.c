@@ -24,7 +24,80 @@ static VmDual* vm_dual_new(VmRegionStack* rs, double primal, double tangent) {
     if (!d) return NULL;
     d->primal = primal;
     d->tangent = tangent;
+    /* Inexact by construction. Every transcendental below reaches the carrier
+     * through here, which is what makes R7RS exactness contagion the DEFAULT
+     * rather than something each operator has to remember to do. */
+    d->eprimal = NULL;
+    d->etangent = NULL;
     return d;
+}
+
+/* ── Exact halves (SW-85) ─────────────────────────────────────────────────
+ *
+ * The VM used to answer `(derivative (lambda (x) (* x x)) 1/3)` as
+ * 0.6666666666666666 where native answers 2/3, because a rational point has
+ * nowhere to live in a `double` and the exactness was lost at the SEED. The
+ * carrier now has two optional exact halves; these helpers are the only place
+ * that decides whether a result keeps them.
+ *
+ * The rule is the one native's tower uses: an operation is exact only if BOTH
+ * operands are exact AND the operation itself preserves exactness. + - * / and
+ * integer expt qualify; every transcendental does not, and demotes by simply
+ * not setting the halves. */
+
+/** @brief True when both halves of @p d are exact. A dual with only one exact
+ *         half cannot be used exactly — the missing half is a double whose
+ *         value we would have to invent a rational for — so this is
+ *         deliberately an AND, not an OR. */
+static int dual_is_exact(const VmDual* d) {
+    return d && d->eprimal && d->etangent;
+}
+
+/** @brief Allocate a dual from exact halves, deriving the doubles so that
+ *         every existing `d->primal` / `d->tangent` reader keeps seeing a
+ *         correct (correctly-rounded) value. Falls back to @p fp / @p ft and
+ *         an inexact carrier if either exact half is missing. */
+static VmDual* vm_dual_new_exact(VmRegionStack* rs,
+                                 VmRational* ep, VmRational* et,
+                                 double fp, double ft) {
+    if (!ep || !et) return vm_dual_new(rs, fp, ft);
+    VmDual* d = (VmDual*)vm_alloc_object(rs, VM_SUBTYPE_DUAL, sizeof(VmDual));
+    if (!d) return NULL;
+    d->primal   = vm_rational_to_double(ep);
+    d->tangent  = vm_rational_to_double(et);
+    d->eprimal  = ep;
+    d->etangent = et;
+    return d;
+}
+
+/** @brief Exact a `op` b, or NULL if either side is inexact — the caller then
+ *         falls back to its double arm. */
+static VmRational* rex(VmRegionStack* rs, const VmRational* a,
+                       const VmRational* b, char op) {
+    if (!a || !b) return NULL;
+    return vm_rational_op_exact(rs, a, b, op);
+}
+
+/** @brief Seed a dual at an exact point with an exact unit tangent — the
+ *         `x + 1·ε` of forward mode, with both halves exact. */
+VmDual* vm_dual_make_exact_seed(VmRegionStack* rs, VmRational* point) {
+    if (!point) return NULL;
+    VmRational* one = vm_rational_from_int(vm_active_arena(rs), 1);
+    if (!one) return NULL;
+    return vm_dual_new_exact(rs, point, one,
+                             vm_rational_to_double(point), 1.0);
+}
+
+/** @brief The dual's exact tangent, or NULL when it is inexact. This is the
+ *         EXTRACTION side: the AD entry points push an exact Value when this
+ *         answers non-NULL, and a FLOAT_VAL otherwise. */
+VmRational* vm_dual_exact_tangent(const VmDual* d) {
+    return dual_is_exact(d) ? d->etangent : NULL;
+}
+
+/** @brief The dual's exact primal, or NULL when it is inexact. */
+VmRational* vm_dual_exact_primal(const VmDual* d) {
+    return dual_is_exact(d) ? d->eprimal : NULL;
 }
 
 /* ── Core Operations ── */
@@ -34,19 +107,45 @@ VmDual* vm_dual_make(VmRegionStack* rs, double primal, double tangent) {
     return vm_dual_new(rs, primal, tangent);
 }
 
-/** @brief Native call 373: dual addition, (a+a'e)+(b+b'e) = (a+b)+(a'+b')e. */
+/** @brief Native call 373: dual addition, (a+a'e)+(b+b'e) = (a+b)+(a'+b')e.
+ *         Exactness-preserving: exact when both operands are. */
 VmDual* vm_dual_add(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
+    if (dual_is_exact(a) && dual_is_exact(b)) {
+        VmRational* p = rex(rs, a->eprimal,  b->eprimal,  '+');
+        VmRational* t = rex(rs, a->etangent, b->etangent, '+');
+        if (p && t) return vm_dual_new_exact(rs, p, t,
+                                             a->primal + b->primal,
+                                             a->tangent + b->tangent);
+    }
     return vm_dual_new(rs, a->primal + b->primal, a->tangent + b->tangent);
 }
 
-/** @brief Native call 374: dual subtraction, (a+a'e)-(b+b'e) = (a-b)+(a'-b')e. */
+/** @brief Native call 374: dual subtraction, (a+a'e)-(b+b'e) = (a-b)+(a'-b')e.
+ *         Exactness-preserving: exact when both operands are. */
 VmDual* vm_dual_sub(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
+    if (dual_is_exact(a) && dual_is_exact(b)) {
+        VmRational* p = rex(rs, a->eprimal,  b->eprimal,  '-');
+        VmRational* t = rex(rs, a->etangent, b->etangent, '-');
+        if (p && t) return vm_dual_new_exact(rs, p, t,
+                                             a->primal - b->primal,
+                                             a->tangent - b->tangent);
+    }
     return vm_dual_new(rs, a->primal - b->primal, a->tangent - b->tangent);
 }
 
 /** @brief Native call 375: dual multiplication (product rule), (a+a'e)(b+b'e)
  *         = ab + (a'b+ab')e. */
 VmDual* vm_dual_mul(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
+    if (dual_is_exact(a) && dual_is_exact(b)) {
+        /* product rule, entirely in the exact domain */
+        VmRational* p  = rex(rs, a->eprimal,  b->eprimal,  '*');
+        VmRational* l  = rex(rs, a->etangent, b->eprimal,  '*');
+        VmRational* r  = rex(rs, a->eprimal,  b->etangent, '*');
+        VmRational* t  = rex(rs, l, r, '+');
+        if (p && t) return vm_dual_new_exact(rs, p, t,
+                        a->primal * b->primal,
+                        a->tangent * b->primal + a->primal * b->tangent);
+    }
     return vm_dual_new(rs,
         a->primal * b->primal,
         a->tangent * b->primal + a->primal * b->tangent);
@@ -56,6 +155,20 @@ VmDual* vm_dual_mul(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
  *         a/b + (a'b-ab')/b^2 e. */
 VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     double b2 = b->primal * b->primal;
+    if (dual_is_exact(a) && dual_is_exact(b)) {
+        /* quotient rule. rex() answers NULL on exact division by exact zero,
+         * so a 1/0 falls through to the double arm and its infinity rather
+         * than fabricating an exact value for it. */
+        VmRational* p  = rex(rs, a->eprimal, b->eprimal, '/');
+        VmRational* l  = rex(rs, a->etangent, b->eprimal,  '*');
+        VmRational* r  = rex(rs, a->eprimal,  b->etangent, '*');
+        VmRational* n  = rex(rs, l, r, '-');
+        VmRational* d2 = rex(rs, b->eprimal, b->eprimal, '*');
+        VmRational* t  = rex(rs, n, d2, '/');
+        if (p && t) return vm_dual_new_exact(rs, p, t,
+                        a->primal / b->primal,
+                        (a->tangent * b->primal - a->primal * b->tangent) / b2);
+    }
     return vm_dual_new(rs,
         a->primal / b->primal,
         (a->tangent * b->primal - a->primal * b->tangent) / b2);
@@ -102,6 +215,33 @@ VmDual* vm_dual_sqrt(VmRegionStack* rs, const VmDual* a) {
 VmDual* vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n) {
     double p = pow(a->primal, n);
     double dp = n * pow(a->primal, n - 1.0) * a->tangent;
+    /* SW-85: a NON-NEGATIVE INTEGER exponent is exactness-preserving, so
+     * (expt x 5) at an exact point keeps the exact tier the way (* x x x x x)
+     * does. A fractional or negative exponent is not (it introduces a root or
+     * a reciprocal that need not be rational), and pow() itself is a
+     * transcendental, so those keep the double path — the same line native's
+     * tower draws between taylor_pow_exact and the COEFF_F64 demotion. */
+    if (dual_is_exact(a) && n >= 0.0 && n == floor(n) && n <= 1024.0) {
+        int64_t k = (int64_t)n;
+        VmRational* acc = vm_rational_from_int(vm_active_arena(rs), 1);   /* a^k   */
+        VmRational* acck1 = NULL;                                        /* a^(k-1) */
+        int ok = (acc != NULL);
+        for (int64_t i = 0; ok && i < k; i++) {
+            acck1 = acc;
+            acc = rex(rs, acc, a->eprimal, '*');
+            if (!acc) ok = 0;
+        }
+        if (ok && k == 0) {
+            /* d/dx of a constant 1 is 0 */
+            VmRational* zero = vm_rational_from_int(vm_active_arena(rs), 0);
+            if (zero) return vm_dual_new_exact(rs, acc, zero, p, dp);
+        } else if (ok && acck1) {
+            VmRational* kr = vm_rational_from_int(vm_active_arena(rs), k);
+            VmRational* t  = rex(rs, kr, acck1, '*');
+            t = rex(rs, t, a->etangent, '*');
+            if (t) return vm_dual_new_exact(rs, acc, t, p, dp);
+        }
+    }
     return vm_dual_new(rs, p, dp);
 }
 
@@ -117,6 +257,11 @@ VmDual* vm_dual_abs(VmRegionStack* rs, const VmDual* a) {
 
 /** @brief Native call 384: dual negation, -(a+a'e) = -a + (-a')e. */
 VmDual* vm_dual_neg(VmRegionStack* rs, const VmDual* a) {
+    if (dual_is_exact(a)) {
+        VmRational* p = vm_rational_negate_exact(rs, a->eprimal);
+        VmRational* t = vm_rational_negate_exact(rs, a->etangent);
+        if (p && t) return vm_dual_new_exact(rs, p, t, -a->primal, -a->tangent);
+    }
     return vm_dual_new(rs, -a->primal, -a->tangent);
 }
 
