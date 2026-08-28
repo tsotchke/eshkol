@@ -21,6 +21,14 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 1
 fi
 
+# Stage 1: the compiled runner must carry the active object-ABI tag in the
+# persistent-cache key path. Without it, changing only the ABI configuration
+# can reuse an artifact from the other layout and return wrong data.
+if ! strings "$ESHKOL_RUN" | grep -F 'abi1h8s0a8' >/dev/null; then
+    echo "FAIL: eshkol-run cache key does not carry the v1 object-ABI tag" >&2
+    exit 1
+fi
+
 if eshkol_durable_enabled; then
     tmpdir="$(eshkol_durable_prepare_dir jit-cache-test)" || exit $?
 else

@@ -141,6 +141,8 @@ public:
 
     /** @brief Get the declared `eshkol_make_exception_with_header` runtime function (HEAP_PTR + EXCEPTION subtype). */
     llvm::Function* getMakeExceptionWithHeader() const { return eshkol_make_exception_with_header; }
+    /** @brief Get the WASM-side object-ABI geometry check import, if this is wasm32. */
+    llvm::Function* getWasmAbiCheck() const { return wasm_abi_check; }
 
 private:
     /**
@@ -215,6 +217,7 @@ private:
 
     // Exception allocation (with header for HEAP_PTR type)
     llvm::Function* eshkol_make_exception_with_header;
+    llvm::Function* wasm_abi_check = nullptr;
 
     // Helper to create function declarations
     llvm::Function* createFunc(const char* name, llvm::FunctionType* ft);

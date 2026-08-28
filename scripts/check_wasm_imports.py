@@ -57,6 +57,67 @@ JS_FILES = [
     REPO_ROOT / "site" / "static" / "eshkol-runtime.js",
 ]
 
+# The C++ WASM entry check reports this ordered geometry tuple to both glue
+# implementations. Values absent from an ABI use the unsigned 32-bit sentinel.
+# Keep this independent of the generated WASM so the negative test can prove
+# that a changed JS offset is rejected even when emscripten is unavailable.
+WASM_ABI_GEOMETRY = {
+    "abiVersion": 1,
+    "pointerWidth": 4,
+    "objectHeaderSize": 8,
+    "objectHeaderAlign": 4,
+    "objectPayloadAlign": 8,
+    "objectSubtypeOffset": 0,
+    "objectFlagsOffset": 1,
+    "objectRefCountOffset": 2,
+    "objectSizeOffset": 4,
+    "objectLayoutIdOffset": 0xFFFFFFFF,
+    "objectIdOffset": 0xFFFFFFFF,
+    "objectHomeOffset": 0xFFFFFFFF,
+    "objectAuxOffset": 0xFFFFFFFF,
+    "taggedValueSize": 16,
+    "taggedValueAlign": 8,
+    "taggedValueTypeOffset": 0,
+    "taggedValueFlagsOffset": 1,
+    "taggedValueReservedOffset": 2,
+    "taggedValueDataOffset": 8,
+    "taggedValuePaddingOffset": 4,
+}
+_WASM_ABI_GEOMETRY_RE = re.compile(
+    r"const\s+wasmAbiGeometry\s*=\s*Object\.freeze\(\s*\{(?P<body>.*?)\}\s*\)",
+    re.DOTALL,
+)
+_WASM_ABI_GEOMETRY_FIELD_RE = re.compile(
+    r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?P<value>0[xX][0-9A-Fa-f]+|[0-9]+)"
+)
+
+
+def extract_wasm_abi_geometry(js_text: str) -> dict[str, int] | None:
+    """Extract the literal geometry object used by a JS glue file."""
+    match = _WASM_ABI_GEOMETRY_RE.search(js_text)
+    if not match:
+        return None
+    return {
+        field.group("name"): int(field.group("value"), 0)
+        for field in _WASM_ABI_GEOMETRY_FIELD_RE.finditer(match.group("body"))
+    }
+
+
+def validate_wasm_abi_geometry(js_text: str) -> list[str]:
+    """Return contract violations for one JS glue file's ABI geometry."""
+    actual = extract_wasm_abi_geometry(js_text)
+    if actual is None:
+        return ["missing const wasmAbiGeometry = Object.freeze({ ... })"]
+    failures: list[str] = []
+    for name, expected in WASM_ABI_GEOMETRY.items():
+        if name not in actual:
+            failures.append(f"{name}: missing (expected {expected})")
+        elif actual[name] != expected:
+            failures.append(f"{name}: expected {expected}, got {actual[name]}")
+    for name in sorted(set(actual) - set(WASM_ABI_GEOMETRY)):
+        failures.append(f"{name}: unexpected geometry field")
+    return failures
+
 # Smoke programs — each picks a different runtime surface. Add new programs
 # here when a new runtime helper is introduced and you want CI to exercise it.
 SMOKE_PROGRAMS = {
@@ -516,6 +577,28 @@ def selftest_extractor() -> list[str]:
     return failures
 
 
+def selftest_geometry() -> list[str]:
+    """Prove both the source contract and its deliberate mismatch direction."""
+    fields = "\n".join(f"            {name}: {value},"
+                         for name, value in WASM_ABI_GEOMETRY.items())
+    valid = f"const wasmAbiGeometry = Object.freeze({{\n{fields}\n        }});"
+    failures = validate_wasm_abi_geometry(valid)
+    if failures:
+        return [f"valid geometry rejected: {failure}" for failure in failures]
+
+    wrong = valid.replace("objectHeaderSize: 8", "objectHeaderSize: 9", 1)
+    if not validate_wasm_abi_geometry(wrong):
+        failures.append("deliberately wrong objectHeaderSize was accepted")
+
+    for js in JS_FILES:
+        if not js.exists():
+            failures.append(f"required JS glue file not found: {js}")
+            continue
+        for failure in validate_wasm_abi_geometry(js.read_text()):
+            failures.append(f"{js.relative_to(REPO_ROOT)}: {failure}")
+    return failures
+
+
 # --------------------------------------------------------------------------- #
 #  Build / compile helpers
 # --------------------------------------------------------------------------- #
@@ -601,16 +684,17 @@ def main() -> int:
     # scanner is broken, every verdict it produces afterwards is worthless —
     # either a phantom red naming a symbol that is present, or a silent green.
     # Failing here is a hard tooling failure (exit 2), not a content failure.
-    extractor_failures = selftest_extractor()
-    if extractor_failures:
-        print("error: env-key extractor self-test FAILED — refusing to report a "
-              "verdict from a broken scanner:", file=sys.stderr)
-        for f in extractor_failures:
+    selftest_failures = selftest_extractor() + selftest_geometry()
+    if selftest_failures:
+        print("error: WASM import/geometry self-test FAILED — refusing to report "
+              "a verdict from a broken scanner:", file=sys.stderr)
+        for f in selftest_failures:
             print(f"  {f}", file=sys.stderr)
         return 2
     if args.selftest:
-        print(f"OK — env-key extractor self-test passed "
-              f"({len(_SELFTEST_FIXTURES)} fixtures).")
+        print(f"OK — WASM import/geometry self-test passed "
+              f"({len(_SELFTEST_FIXTURES)} extractor fixtures; deliberate "
+              "geometry mismatch rejected).")
         return 0
 
     eshkol_run = args.build_dir / "eshkol-run"
@@ -693,6 +777,14 @@ def main() -> int:
 
     # Cross-check.
     failed = False
+    for js in JS_FILES:
+        geometry_failures = validate_wasm_abi_geometry(js.read_text())
+        if geometry_failures:
+            failed = True
+            rel = js.relative_to(REPO_ROOT)
+            print(f"\n=== ABI GEOMETRY MISMATCH in {rel} ===")
+            for failure in geometry_failures:
+                print(f"  {failure}")
     for js, keys in js_provided.items():
         missing = sorted(all_imports - keys)
         extra = sorted(keys - all_imports) if args.strict else []

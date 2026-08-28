@@ -1,5 +1,5 @@
 {
-  "commit": "b57b5330e64aa44dff8af338b54ca4618ec71481",
+  "commit": "0bcc308c4b2db1d62e3ae2d7761a46181450f217",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 32,
@@ -31,7 +31,7 @@
       "tests/core/runtime_regions_test.cpp": 1
     },
     "B_header_type": {
-      "inc/eshkol/abi_fingerprint.h": 2,
+      "inc/eshkol/abi_fingerprint.h": 4,
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 13,
       "lib/agent/c/agent_system_builtins.c": 2,
@@ -106,7 +106,7 @@
       "lib/core/dnc_api.c": 5,
       "lib/core/i128_runtime.cpp": 4,
       "lib/core/inference.cpp": 3,
-      "lib/core/introspection.cpp": 3,
+      "lib/core/introspection.cpp": 2,
       "lib/core/kb_persistence.cpp": 4,
       "lib/core/logic.cpp": 6,
       "lib/core/model_io.cpp": 3,
@@ -119,6 +119,7 @@
       "lib/core/runtime_closure_reflection.cpp": 1,
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_display_hosted.cpp": 1,
+      "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 3,
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 6,
@@ -160,14 +161,14 @@
       "lib/core/dnc_api.c": 3,
       "lib/core/i128_runtime.cpp": 3,
       "lib/core/inference.cpp": 6,
-      "lib/core/introspection.cpp": 8,
+      "lib/core/introspection.cpp": 10,
       "lib/core/kb_persistence.cpp": 7,
       "lib/core/logic.cpp": 10,
       "lib/core/runtime_autodiff.cpp": 4,
       "lib/core/runtime_closure_alloc.cpp": 4,
       "lib/core/runtime_continuations.cpp": 1,
       "lib/core/runtime_deep_equal.cpp": 7,
-      "lib/core/runtime_display_hosted.cpp": 6,
+      "lib/core/runtime_display_hosted.cpp": 8,
       "lib/core/runtime_exceptions_hosted.cpp": 4,
       "lib/core/runtime_hash_table.cpp": 4,
       "lib/core/runtime_object_alloc.cpp": 20,
@@ -379,7 +380,7 @@
   "schema": 1,
   "totals": {
     "A_macro_api": 113,
-    "B_header_type": 71,
+    "B_header_type": 73,
     "C_sizeof_header": 64,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 45,

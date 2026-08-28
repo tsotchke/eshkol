@@ -6,6 +6,7 @@
  */
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
+#include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/function_cache.h>
@@ -6248,6 +6249,42 @@ private:
     }
 
     void createMainWrapper() {
+        auto emitWasmAbiCheck = [this]() {
+            llvm::Function* check = mem ? mem->getWasmAbiCheck() : nullptr;
+            if (!check) return;
+            llvm::IntegerType* i32 = types->getInt32Type();
+            const uint64_t pointer_width =
+                types->getIntPtrType()->getIntegerBitWidth() / 8;
+            const uint64_t geometry[] = {
+                ESHKOL_OBJECT_ABI_VERSION,
+                pointer_width,
+                ESHKOL_OBJECT_ABI_HEADER_SIZE,
+                ESHKOL_OBJECT_ABI_HEADER_ALIGN,
+                ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN,
+                ESHKOL_OBJECT_ABI_SUBTYPE_OFF,
+                ESHKOL_OBJECT_ABI_FLAGS_OFF,
+                ESHKOL_OBJECT_ABI_REFCOUNT_OFF,
+                ESHKOL_OBJECT_ABI_SIZE_OFF,
+                ESHKOL_OBJECT_ABI_LAYOUT_ID_OFF,
+                ESHKOL_OBJECT_ABI_OBJECT_ID_OFF,
+                ESHKOL_OBJECT_ABI_HOME_OFF,
+                ESHKOL_OBJECT_ABI_AUX_OFF,
+                sizeof(eshkol_tagged_value_t),
+                alignof(eshkol_tagged_value_t),
+                offsetof(eshkol_tagged_value_t, type),
+                offsetof(eshkol_tagged_value_t, flags),
+                offsetof(eshkol_tagged_value_t, reserved),
+                offsetof(eshkol_tagged_value_t, data),
+                4
+            };
+            std::vector<Value*> args;
+            args.reserve(sizeof(geometry) / sizeof(geometry[0]));
+            for (uint64_t value : geometry) {
+                args.push_back(ConstantInt::get(i32, value));
+            }
+            builder->CreateCall(check, args);
+        };
+
         // Check if main function exists
         Function* main_func = function_table["main"];
         if (main_func) {
@@ -6284,6 +6321,7 @@ private:
 
             main_entry = BasicBlock::Create(*context, "entry", c_main);
             builder->SetInsertPoint(main_entry);
+            emitWasmAbiCheck();
 
             // DWARF DEBUG INFO: Set default debug location for C main wrapper
             if (emit_debug_info_ && c_main->getSubprogram()) {
@@ -6555,6 +6593,7 @@ private:
 
             // REPL MODE FIX: Use shared arena instead of creating new one
             builder->SetInsertPoint(main_entry);
+            emitWasmAbiCheck();
 
             // DWARF DEBUG INFO: Set default debug location for top-level main
             if (emit_debug_info_ && main_func->getSubprogram()) {
