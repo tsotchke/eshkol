@@ -1141,6 +1141,9 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(get_global_arena_shared);
     ADD_SYMBOL(eshkol_check_recursion_depth);
     ADD_SYMBOL(eshkol_decrement_recursion_depth);
+    // ESH-0101: emitted at the entry of every user function body, so `-r`
+    // fails to link any program at all if the JIT cannot resolve it.
+    ADD_SYMBOL(eshkol_stack_guard_check);
     // SW-10: emitted on every tail-call loop back-edge, so the JIT must be able
     // to resolve it or `-r` fails to link any program containing a TCO loop.
     ADD_SYMBOL(eshkol_limit_poll_interrupt);
