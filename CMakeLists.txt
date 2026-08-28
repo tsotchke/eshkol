@@ -4979,6 +4979,16 @@ if(ESHKOL_BUILD_TESTS)
                     --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
         )
     endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/escape_matrix/test_parity_backlog.py")
+        add_test(
+            NAME parity_backlog_build_free_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/escape_matrix/test_parity_backlog.py"
+        )
+        set_tests_properties(parity_backlog_build_free_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 60)
+    endif()
 
     # Assurance-wave-1 gates (v1.3.5): three ledger/oracle release gates that
     # used to live only as prose in a memory file or as a script nobody ran in

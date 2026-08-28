@@ -1,5 +1,15 @@
 #include "eshkol/backend/vm_limits.h"
 
+/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
+ * constant. The low 32 bits remain the code offset, so the metadata survives
+ * ESKB serialization and code relocation. A value of 255 denotes variadic;
+ * -1 means that the producer did not provide arity metadata. */
+#ifndef VM_PACK_FUNC_ARITY
+#define VM_PACK_FUNC_ARITY(pc, arity) \
+    ((int64_t)(uint32_t)(pc) | (INT64_C(1) << 40) | \
+     (((int64_t)((arity) & 0xFF)) << 32))
+#endif
+
 #ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
 #define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
 #endif
@@ -917,6 +927,23 @@ typedef struct VM {
         int active;
     } ts_queries[32];
 } VM;
+
+/* Validate fixed-arity closure calls at the common dispatch boundary. Native
+ * builtin closures are ordinary VM closures, so checking only user lambdas
+ * would leave the exact bug this contract covers: `(car)` and `(car 1 2)`
+ * would still enter a one-argument builtin body and silently discard stack
+ * values. Unknown and variadic closures deliberately remain unchecked. */
+static int vm_validate_closure_arity(VM* vm, const HeapObject* closure,
+                                     int argc) {
+    if (!closure || closure->type != HEAP_CLOSURE) return 0;
+    const int expected = closure->closure.arity;
+    if (expected < 0 || expected == 255 || expected == argc) return 1;
+    fprintf(stderr,
+            "ERROR: Arity mismatch: expected %d arguments but got %d\n",
+            expected, argc);
+    if (vm) vm->error = 1;
+    return 0;
+}
 
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;

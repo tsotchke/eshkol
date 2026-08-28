@@ -1,0 +1,6 @@
+; A fixed-arity call must fail closed on both native and the VM.
+; The VM used to enter the one-argument builtin closure with zero arguments
+; and could return a fabricated value or leave the stack misaligned.
+(define (arity-probe x) x)
+(arity-probe)
+(display "MUST-NOT-PRINT")

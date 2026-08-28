@@ -28,14 +28,6 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * opcode forms. The caller emits the combining opcode (which consumes the
  * operands) and then restores c->n_locals to its saved entry value.
  */
-/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
- * constant (bit 40 = present flag).  The PC occupies only the low 32 bits, so
- * nested-closure PC re-basing (which adds a small offset to the low word) and
- * ESKB reload leave the arity intact; OP_CLOSURE unpacks it into
- * closure.arity, which vm_closure_arity() reports to `gradient`. */
-#define VM_PACK_FUNC_ARITY(pc, arity) \
-    ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
-
 /* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
  *
  * "At the top level of a program, a definition
@@ -3359,6 +3351,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CONS, 0);
         }
         chunk_emit(c, OP_NATIVE_CALL, 473);
+        return;
+    }
+
+    /* The public `(fg-infer! graph max-iterations)` spelling supplies the
+     * native default tolerance. BUILTINS[] stores the full three-argument
+     * implementation, so sending the two-argument form through its closure
+     * used to read a stale stack slot; arity validation correctly exposes
+     * that mismatch instead of allowing a plausible but ungrounded result. */
+    if (is_sym(head, "fg-infer!") && node->n_children == 3) {
+        compile_expr(c, node->children[1], 0);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(1e-8)));
+        chunk_emit(c, OP_NATIVE_CALL, 523);
         return;
     }
 

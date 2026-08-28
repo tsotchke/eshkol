@@ -411,9 +411,10 @@ invariants:
     fidelity: runtime
     description: >
       Every corpus program must compute the SAME ANSWER under native LLVM and
-      under the bytecode VM, and the differential construct-coverage fraction
-      must hold its recorded floor.  Verified by executing both engines, not
-      by reading source text.
+      under the bytecode VM. The overall differential construct-coverage
+      fraction and the high-risk fraction must each hold their recorded
+      floors. Verified by executing both engines, not by reading source text;
+      a name-resolution or one-engine coverage event is insufficient.
     capability: engine_semantic_parity
     window_days: 30
     threshold:
