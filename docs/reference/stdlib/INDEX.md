@@ -65,7 +65,7 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 | [`core.sexp`](../../../lib/core/sexp.esk) | yes | [sexp.md](sexp.md) | `sexp->string` `sexp->canonical-string` |
 | [`core.streams`](../../../lib/core/streams.esk) | yes | [streams.md](streams.md) | `stream-null` `stream-null?` `stream-pair?` `stream?` `stream-cons` `stream-car` `stream-cdr` `stream-take` `stream-drop` `stream-ref` `stream-map` `stream-filter` `stream-for-each` `stream-zip` `stream-append` `stream-iterate` `stream-from` `stream-take-while` `stream-drop-while` `stream-length` `stream->list` `list->stream` |
 | [`core.strings`](../../../lib/core/strings.esk) | yes | [strings.md](strings.md) | `string-join` `string-trim` `string-trim-left` `string-trim-right` `string-replace` `string-reverse` `string-copy` `string-repeat` `string-starts-with?` `string-ends-with?` `string-starts-with` `string-ends-with` `string-index` `string-last-index` `string-contains` `string-contains?` `string-count` `string-find` `string-upcase` `string-downcase` `string-split-ordered` |
-| [`core.testing`](../../../lib/core/testing.esk) | no | [testing.md](testing.md) | `register-test` `check-equal?` `check-true` `check-false` `check-approx` `assert-close` `certify-kernel` `check-raises` `run-tests` `reset-tests!` `*tests*` `*test-pass-count*` `*test-fail-count*` `*current-test-fails*` `*current-test-name*` |
+| [`core.testing`](../../../lib/core/testing.esk) | no | [testing.md](testing.md) | `register-test` `check-equal?` `check-true` `check-false` `check-approx` `check-raises` `run-tests` `reset-tests!` `*tests*` `*test-pass-count*` `*test-fail-count*` `*current-test-fails*` `*current-test-name*` |
 | [`core.threads`](../../../lib/core/threads.esk) | no | [threads.md](threads.md) | `make-mutex` `mutex-lock!` `mutex-trylock!` `mutex-unlock!` `mutex-destroy!` `with-mutex` `make-condvar` `condvar-wait!` `condvar-signal!` `condvar-broadcast!` `condvar-destroy!` `make-thread` `thread-join` `thread?` `thread-result-ready?` |
 | [`core.url`](../../../lib/core/url.esk) | yes | [url.md](url.md) | `url-encode` `url-decode` `base64url-encode` `base64url-decode` |
 | [`math`](../../../lib/math.esk) | no | [math.md](math.md) | `mat-ref` `tensor-copy` `det` `inv` `solve` `cross` `dot` `normalize` `mat-vec-mul` `power-iteration` `integrate` `newton` `variance` `std` `covariance` |
@@ -76,81 +76,14 @@ notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
 ## Builtin families
 
-Some public surfaces are compiler or VM builtins rather than `.esk` modules, so
-they have no `require` line or `provide` block. They are documented here because
-from a user's side they are ordinary callable names.
+Some public surfaces are compiler or VM **builtins** rather than `.esk` modules, so
+they have no `require` line and no `provide` block. They are documented here anyway,
+because from a user's side they are ordinary callable names.
 
 | Family | Reference | Names | Engines |
 |---|---|---|---|
-| Geometric manifolds, Lie groups, forms, geodesic attention | [geometry.md](geometry.md) | 62 | bytecode VM only |
-| Explicit reverse-mode AD tape and instrumentation counters | [../ad/tape.md](../ad/tape.md) | 33 | native AOT, native JIT, VM |
-
-## DD-11 indexed export coverage
-
-The following shipped exports were missing from the index and now have stable
-reference anchors on [shipped_exports.md](shipped_exports.md).
-
-| Source | Export | Reference |
-|---|---|---|
-| `agent.http` | `http-stream-error` | [http-stream-error](shipped_exports.md#http-stream-error) |
-| `agent.http` | `sse-event-id` | [sse-event-id](shipped_exports.md#sse-event-id) |
-| `agent.http` | `sse-event-retry-ms` | [sse-event-retry-ms](shipped_exports.md#sse-event-retry-ms) |
-| `agent.quantum` | `make-pauli-hamiltonian` | [make-pauli-hamiltonian](shipped_exports.md#make-pauli-hamiltonian) |
-| `core.ad.interval` | `interval-add` | [interval-add](shipped_exports.md#interval-add) |
-| `core.ad.interval` | `interval-cos` | [interval-cos](shipped_exports.md#interval-cos) |
-| `core.ad.interval` | `interval-div` | [interval-div](shipped_exports.md#interval-div) |
-| `core.ad.interval` | `interval-exp` | [interval-exp](shipped_exports.md#interval-exp) |
-| `core.ad.interval` | `interval-log` | [interval-log](shipped_exports.md#interval-log) |
-| `core.ad.interval` | `interval-mid` | [interval-mid](shipped_exports.md#interval-mid) |
-| `core.ad.interval` | `interval-mul` | [interval-mul](shipped_exports.md#interval-mul) |
-| `core.ad.interval` | `interval-neg` | [interval-neg](shipped_exports.md#interval-neg) |
-| `core.ad.interval` | `interval-pow` | [interval-pow](shipped_exports.md#interval-pow) |
-| `core.ad.interval` | `interval-sin` | [interval-sin](shipped_exports.md#interval-sin) |
-| `core.ad.interval` | `interval-sub` | [interval-sub](shipped_exports.md#interval-sub) |
-| `core.ad.interval` | `interval-union` | [interval-union](shipped_exports.md#interval-union) |
-| `core.ad.interval` | `interval-widen` | [interval-widen](shipped_exports.md#interval-widen) |
-| `core.ad.interval` | `interval?` | [interval?](shipped_exports.md#interval) |
-| `core.ad.interval` | `iv-abs-pad` | [iv-abs-pad](shipped_exports.md#iv-abs-pad) |
-| `core.ad.interval` | `iv-eps` | [iv-eps](shipped_exports.md#iv-eps) |
-| `core.ad.interval` | `iv-rel-pad` | [iv-rel-pad](shipped_exports.md#iv-rel-pad) |
-| `core.ad.taylor_models` | `taylor-model?` | [taylor-model?](shipped_exports.md#taylor-model) |
-| `core.ad.taylor_models` | `tm-nsamp` | [tm-nsamp](shipped_exports.md#tm-nsamp) |
-| `core.ad.taylor_models` | `tm-safety` | [tm-safety](shipped_exports.md#tm-safety) |
-| `core.ad.tensor_tower` | `tt-add` | [tt-add](shipped_exports.md#tt-add) |
-| `core.ad.tensor_tower` | `tt-const` | [tt-const](shipped_exports.md#tt-const) |
-| `core.ad.tensor_tower` | `tt-div` | [tt-div](shipped_exports.md#tt-div) |
-| `core.ad.tensor_tower` | `tt-exp` | [tt-exp](shipped_exports.md#tt-exp) |
-| `core.ad.tensor_tower` | `tt-hadamard-cauchy` | [tt-hadamard-cauchy](shipped_exports.md#tt-hadamard-cauchy) |
-| `core.ad.tensor_tower` | `tt-neg` | [tt-neg](shipped_exports.md#tt-neg) |
-| `core.ad.tensor_tower` | `tt-order` | [tt-order](shipped_exports.md#tt-order) |
-| `core.ad.tensor_tower` | `tt-scale-const` | [tt-scale-const](shipped_exports.md#tt-scale-const) |
-| `core.ad.tensor_tower` | `tt-sub` | [tt-sub](shipped_exports.md#tt-sub) |
-| `core.ad.tensor_tower` | `tt-value` | [tt-value](shipped_exports.md#tt-value) |
-| `tensor.utils` | `tensor.utils` | [tensor.utils](shipped_exports.md#tensor.utils) |
-| `tensorcore` | `tc-adapter-available?` | [tc-adapter-available?](shipped_exports.md#tc-adapter-available) |
-| `tensorcore` | `tc-adapter-status` | [tc-adapter-status](shipped_exports.md#tc-adapter-status) |
-| `tensorcore` | `tc-attention-forward` | [tc-attention-forward](shipped_exports.md#tc-attention-forward) |
-| `tensorcore` | `tc-buffer-alloc` | [tc-buffer-alloc](shipped_exports.md#tc-buffer-alloc) |
-| `tensorcore` | `tc-buffer-free` | [tc-buffer-free](shipped_exports.md#tc-buffer-free) |
-| `tensorcore` | `tc-buffer-map` | [tc-buffer-map](shipped_exports.md#tc-buffer-map) |
-| `tensorcore` | `tc-buffer-size` | [tc-buffer-size](shipped_exports.md#tc-buffer-size) |
-| `tensorcore` | `tc-device-info` | [tc-device-info](shipped_exports.md#tc-device-info) |
-| `tensorcore` | `tc-device-name` | [tc-device-name](shipped_exports.md#tc-device-name) |
-| `tensorcore` | `tc-gemm` | [tc-gemm](shipped_exports.md#tc-gemm) |
-| `tensorcore` | `tc-gemm-bf16` | [tc-gemm-bf16](shipped_exports.md#tc-gemm-bf16) |
-| `tensorcore` | `tc-gemm-fp16` | [tc-gemm-fp16](shipped_exports.md#tc-gemm-fp16) |
-| `tensorcore` | `tc-gemm-fp32` | [tc-gemm-fp32](shipped_exports.md#tc-gemm-fp32) |
-| `tensorcore` | `tc-init` | [tc-init](shipped_exports.md#tc-init) |
-| `tensorcore` | `tc-last-backend` | [tc-last-backend](shipped_exports.md#tc-last-backend) |
-| `tensorcore` | `tc-last-backend-name` | [tc-last-backend-name](shipped_exports.md#tc-last-backend-name) |
-| `tensorcore` | `tc-last-status` | [tc-last-status](shipped_exports.md#tc-last-status) |
-| `tensorcore` | `tc-runtime-capabilities` | [tc-runtime-capabilities](shipped_exports.md#tc-runtime-capabilities) |
-| `tensorcore` | `tc-runtime-capabilities-abi-version` | [tc-runtime-capabilities-abi-version](shipped_exports.md#tc-runtime-capabilities-abi-version) |
-| `tensorcore` | `tc-runtime-capabilities-status` | [tc-runtime-capabilities-status](shipped_exports.md#tc-runtime-capabilities-status) |
-| `tensorcore` | `tc-shutdown` | [tc-shutdown](shipped_exports.md#tc-shutdown) |
-| `tensorcore` | `tc-status-string` | [tc-status-string](shipped_exports.md#tc-status-string) |
-| `tensorcore` | `tc-version` | [tc-version](shipped_exports.md#tc-version) |
-| `web.web` | `web.web` | [web.web](shipped_exports.md#web.web) |
+| Geometric manifolds, Lie groups, forms, geodesic attention (native ids 804-861) | [geometry.md](geometry.md) | 62 | bytecode VM only |
+| Explicit reverse-mode AD tape and its instrumentation counters (`ad-*`) | [../ad/tape.md](../ad/tape.md) | 33 | native AOT, native JIT, VM |
 
 ## Not covered here
 
@@ -160,3 +93,4 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
   is the agent-FFI domain, documented separately from the stdlib reference.
 - `stdlib`-level helpers (`random-tensor`, `time-it`, `time-ns`, keyword-argument
   internals, …) are covered in [stdlib_extras.md](stdlib_extras.md).
+
