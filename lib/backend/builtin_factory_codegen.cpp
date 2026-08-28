@@ -709,6 +709,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         binding_->setReplMode(&eshkol::llvm_codegen_detail::replModeEnabled());
         binding_->setLambdaTracking(&eshkol::llvm_codegen_detail::lastGeneratedLambdaName(), &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
+        binding_->setMutationAnalysisCallback(ControlFlowCallbacks::isVarSetWrapper);
         // Set up TCO callbacks for tail call optimization
         binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
         eshkol_debug("Created BindingCodegen with callbacks and TCO support");

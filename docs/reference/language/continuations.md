@@ -192,7 +192,7 @@ does both.
 
 #### Limits
 
-Two shapes do not behave as R7RS specifies, both tracked in
+One shape does not behave as R7RS specifies and is tracked in
 `.icc/silent-wrong-ledger.yaml`:
 
 - **A top-level binding established after a capture, on the bytecode VM.**
@@ -202,13 +202,15 @@ Two shapes do not behave as R7RS specifies, both tracked in
   diagnostic** naming the cause and the workaround (move the definition above
   the `call/cc`, or use the native backend) rather than resuming onto a
   corrupted store. Native has no such restriction.
-- **A local variable mutated after capture is rolled back on re-entry**, on
-  both engines, when that variable is neither a top-level binding nor captured
-  by a closure. Such a variable lives directly in the restored frame, so the
-  image restores its capture-time value; R7RS says the location persists and
-  only the control state is captured. Making this sound needs assignment
-  conversion — boxing `set!`-assigned locals — which is not yet implemented.
-  See ledger SW-62.
+Assignment conversion is complete on both engines. Every local targeted by
+`set!` is stored in an arena-backed cell, including locals that no closure
+captures. A continuation restores the frame's control values, but the cell is
+outside that snapshot, so a re-entry observes the location's current value as
+R7RS requires. `tests/continuations/assignment_conversion.esk` proves the
+filed `f=1`, `f=2`, `f=3`, `done` contract on native JIT, native AOT, and the
+bytecode VM.
+The complete continuation regression inventory is in
+[`tests/continuations/README.md`](../../../tests/continuations/README.md).
 
 ### Resolved history — deep CPS chains (ESH-0080)
 

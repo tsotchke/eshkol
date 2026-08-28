@@ -31,6 +31,7 @@ BUILD_DIR=build scripts/run_continuation_tests.sh
 | `generator_multishot.esk` | a correctly structured generator, re-capturing per request |
 | `amb_backtracking.esk` | McCarthy `amb`: each choice point re-entered once per alternative |
 | `region_capture_resume.esk` | capture inside `with-region`, resumed after the region exits |
+| `assignment_conversion.esk` | a non-captured `set!`-assigned local survives continuation re-entry (SW-62) |
 
 ## History
 
@@ -55,6 +56,6 @@ have been corrected here:
   continues forward through the remaining top-level forms.
 
 See `docs/reference/language/continuations.md` for the per-engine account of
-how re-entry is implemented, the ownership rule for regions, and the two
-remaining limits (a VM-only representation limit that fails loudly, and
-SW-62).
+how re-entry is implemented and the ownership rule for regions. The VM-only
+representation limit remains documented there; assignment conversion closes
+SW-62 on both engines.

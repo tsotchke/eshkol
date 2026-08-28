@@ -1466,6 +1466,10 @@ namespace ControlFlowCallbacks {
     void popFunctionContextWrapper(void* context);
     // TCO callback for checking self-tail-recursion
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
+    // Binding callback for assignment conversion of lexical locals.
+    bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    static bool isVarObservedWrapper(const void* ast, const char* name, void* context);
+    static bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
@@ -1485,6 +1489,7 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::codegenVarDefineWrapper(const void* op, void* context);
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
+    friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
     friend void ControlFlowCallbacks::registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
@@ -40885,6 +40890,11 @@ namespace ControlFlowCallbacks {
     llvm::Value* codegenASTWrapper(const void* ast, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->codegenAST(static_cast<const eshkol_ast_t*>(ast));
+    }
+
+    bool isVarSetWrapper(const void* ast, const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
     }
 
     void* codegenTypedASTWrapper(const void* ast, void* context) {
