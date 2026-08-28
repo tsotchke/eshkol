@@ -9,7 +9,6 @@
  * inc/eshkol/backend/vm_limits.h; the counters live on the VM so they survive
  * the longjmp a continuation invoke performs.
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 /* ===== SW-10: VM runaway-instruction guard and timeout checkpoint =====

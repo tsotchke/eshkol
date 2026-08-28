@@ -9,7 +9,6 @@
  * `call/cc` captures the control state and not the store (SW-52), so a
  * continuation snapshots only the operand slots above vm->global_top.
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 /* Slots [0, vm->global_top) are top-level bindings — the store. R7RS

@@ -105,7 +105,8 @@ typedef enum {
     /* operand = number of top-level binding slots established so far.
      * Emitted once after each top-level form by compile_and_run(). Raises
      * vm->global_top, the STORE/CONTROL boundary a continuation restore must
-     * not roll back across (see vm_restore_continuation() in vm_run.c). The
+     * not roll back across (see vm_restore_continuation_stack() in
+     * vm_control.c). The
      * VM binds every top-level define to a stack slot, so without this marker
      * a continuation's stack snapshot restores the *store* along with the
      * control state and `set!` mutations are silently undone (SW-52). */

@@ -210,8 +210,8 @@ static void vm_language_coverage_named_call(VM* vm, Value func);
  * BEFORE vm_run.c so the interpreter can call it. */
 #include "vm_region_evac.c"
 
-/* VM interpreter, one module per responsibility. All four opcode-body modules
- * precede vm_run.c because the dispatch loop calls into them, and all four
+/* VM interpreter, one module per responsibility. The opcode-body modules
+ * precede vm_run.c because the dispatch loop calls into them, and they all
  * follow vm_native.c / vm_region_evac.c because they call into those. */
 #include "vm_limits.c"      /* runaway-instruction guard, timeout checkpoint */
 #include "vm_ops.c"         /* comparison, pair, vector, operand-stack opcodes */

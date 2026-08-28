@@ -6,7 +6,6 @@
  * These are the entry points around the interpreter rather than part of it,
  * so they live beside vm_run.c instead of inside it.
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 /** @brief Mnemonic names for the first 38 base opcodes, indexed by opcode

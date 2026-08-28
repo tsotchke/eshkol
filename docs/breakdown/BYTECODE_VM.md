@@ -42,13 +42,18 @@ eshkol_vm.c (hub)
 
 `vm_run.c` holds the dispatch loop itself — the fetch/decode step and the two
 dispatch mechanisms (computed-goto threading on GCC/Clang, a `switch` loop
-everywhere else). The opcode bodies live in the four modules beside it, and
-each body is written once and called from both dispatch mechanisms, so a fix
-to an opcode cannot land in one dispatch path and miss the other. The opcodes
-whose two copies are not equivalent today — the arithmetic opcodes (only the
-threaded path records reverse-mode AD tape nodes), the local-variable and
-string accessors, `OP_CALL`/`OP_TAIL_CALL` and `OP_CALLCC` — stay inline in
-`vm_run.c` until they are reconciled.
+everywhere else). The interpreter helpers and shared opcode bodies live in the
+five responsibility modules beside it; each shared opcode body is written
+once and called from both dispatch mechanisms. Arithmetic, local-variable,
+string-accessor, call,
+call/cc, and other handlers whose two paths intentionally differ remain
+inline in `vm_run.c`; the decomposition does not change those semantics.
+
+The surrounding responsibilities have stable owners as well: builtin
+trampolines and native dispatch are in `vm_native.c`, error objects and their
+helpers are in `vm_error.c`, coverage hooks and public ESKB entry points are
+in `eshkol_vm.c`, and VM instance creation/destruction is in
+`vm_lifecycle.c`.
 
 ## Core Instruction Set (64 Opcodes)
 

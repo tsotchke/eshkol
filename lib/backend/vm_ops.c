@@ -18,7 +18,6 @@
  * next dispatch step observes the flag and leaves the loop, exactly as the
  * `goto vm_exit` / `break` it replaced did.
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 /**

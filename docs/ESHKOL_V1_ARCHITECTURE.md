@@ -13,18 +13,19 @@
 
 1. [Executive Summary](#executive-summary)
 2. [System Overview](#system-overview)
-3. [Memory Architecture (OALR)](#memory-architecture-oalr)
-4. [Type System (Triple-Layer)](#type-system-triple-layer)
-5. [Automatic Differentiation](#automatic-differentiation)
-6. [Closure System](#closure-system)
-7. [N-Dimensional Tensors](#n-dimensional-tensors)
-8. [Compilation Pipeline](#compilation-pipeline)
-9. [Module System](#module-system)
-10. [REPL/JIT System](#repljit-system)
-11. [Standard Library](#standard-library)
-12. [Code Organization](#code-organization)
-13. [Performance Characteristics](#performance-characteristics)
-14. [v1.1 Architecture Extensions](#v11-architecture-extensions)
+3. [Bytecode VM Architecture](#bytecode-vm-architecture)
+4. [Memory Architecture (OALR)](#memory-architecture-oalr)
+5. [Type System (Triple-Layer)](#type-system-triple-layer)
+6. [Automatic Differentiation](#automatic-differentiation)
+7. [Closure System](#closure-system)
+8. [N-Dimensional Tensors](#n-dimensional-tensors)
+9. [Compilation Pipeline](#compilation-pipeline)
+10. [Module System](#module-system)
+11. [REPL/JIT System](#repljit-system)
+12. [Standard Library](#standard-library)
+13. [Code Organization](#code-organization)
+14. [Performance Characteristics](#performance-characteristics)
+15. [v1.1 Architecture Extensions](#v11-architecture-extensions)
 
 ---
 
@@ -102,6 +103,32 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 3. **Gradual Typing**: Optional type annotations, dynamic fallback
 4. **Memory Safety**: Arena-based allocation eliminates GC pauses
 5. **Performance**: LLVM optimization passes, native code generation
+
+---
+
+## Bytecode VM Architecture
+
+The bytecode backend is a unity-build C system rooted at
+[`lib/backend/eshkol_vm.c`](../lib/backend/eshkol_vm.c). Its interpreter is
+decomposed by responsibility while retaining the existing static symbols,
+public C API, and include order:
+
+| Responsibility | Module | Implemented boundary |
+|---|---|---|
+| Dispatch loop | `vm_run.c` | Fetch/decode and computed-goto or switch dispatch |
+| Value operations | `vm_ops.c` | Comparison, pair, vector, and operand-stack bodies |
+| Frames and closures | `vm_frame.c` | Upvalues, closure creation, and returns |
+| Non-local control | `vm_control.c` | Continuations, dynamic-wind, and exception handlers |
+| Execution limits | `vm_limits.c` | Instruction ceiling and cooperative timeout polling |
+| VM lifecycle | `vm_lifecycle.c` | Instance creation/destruction and test-program helpers |
+
+The neighboring modules retain their existing ownership boundaries: builtin
+trampolines and native dispatch are in `vm_native.c`, error-object support is
+in `vm_error.c`, and coverage hooks plus public ESKB/VM entry points are in
+`eshkol_vm.c`. The unity hub includes the extracted modules before
+`vm_run.c`, after the native and region-evacuation components they call.
+Handlers whose threaded and switch paths intentionally differ remain inline
+in `vm_run.c`, so this structural change does not alter behavior.
 
 ---
 

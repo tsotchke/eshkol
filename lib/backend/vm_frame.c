@@ -11,7 +11,6 @@
  * continuation object carries a null payload), and unifying them would be a
  * behaviour change rather than a move.
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
 static void vm_exec_get_upvalue(VM* vm, int32_t operand) {
