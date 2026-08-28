@@ -1,0 +1,4 @@
+escape=42
+kept=(1 2 3)
+after=7
+ALL PASS

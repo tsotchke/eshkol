@@ -48,6 +48,16 @@
 #      is the user-visible statement that a region was retained, so it must
 #      track the pin exactly.
 #
+#   F. handle_close_inside_callcc — the carve-out, under ESHKOL_ARENA_POISON=1.
+#      An escape-only capture skips the pin because no LEXICAL `with-region` can
+#      be torn down inside the capture's extent. `(region-close h)` can: it is
+#      an ordinary call and runs anywhere. So a handle-owned open region makes
+#      an escape-only capture pin after all, and
+#      tests/continuations/region_handle_close_inside_callcc.esk closes a handle
+#      from inside the `call/cc` procedure and then invokes the continuation.
+#      With the arena poisoned, losing that carve-out reads 0xCB and crashes
+#      instead of being accidentally right.
+#
 # Usage: tests/memory/region_callcc_flat_rss_test.sh [--short N] [--long N]
 #                                                    [--timeout S]
 #   BUILD_DIR selects the build directory (default: build).
@@ -255,6 +265,41 @@ else
     check "escaping_region_pins" "an escaping capture inside with-region retained nothing — the pin is not being taken" $rc
     if grep -qF "$NOTE_SUBSTRING" "$e_err"; then rc=0; else rc=1; fi
     check "escaping_region_pin_note" "an escaping capture inside with-region printed no region-pin note" $rc
+fi
+echo
+
+# ── F. the handle carve-out, with the arena poisoned ────────────────────────
+HANDLE_SRC="$REPO_ROOT/tests/continuations/region_handle_close_inside_callcc.esk"
+HANDLE_EXPECTED="$REPO_ROOT/tests/continuations/expected/region_handle_close_inside_callcc.txt"
+if [ ! -f "$HANDLE_SRC" ] || [ ! -f "$HANDLE_EXPECTED" ]; then
+    check "handle_close_inside_callcc_jit" "fixture or expected transcript missing" 1
+    check "handle_close_inside_callcc_aot" "fixture or expected transcript missing" 1
+else
+    want=$(tr -d '\n' < "$HANDLE_EXPECTED")
+
+    ( cd "$WORK" && env ESHKOL_ARENA_POISON=1 "$ESHKOL_RUN" -r "$HANDLE_SRC" ) \
+        > "$WORK/handle_jit.out" 2> "$WORK/handle_jit.err"
+    jit_rc=$?
+    got=$(tr -d '\n' < "$WORK/handle_jit.out")
+    if [ "$jit_rc" -eq 0 ] && [ "$got" = "$want" ]; then rc=0; else rc=1; fi
+    check "handle_close_inside_callcc_jit" \
+        "native JIT under ESHKOL_ARENA_POISON=1 gave rc=$jit_rc and \"$got\" (want \"$want\") — a region handle closed inside a call/cc extent must still pin" $rc
+
+    HANDLE_BIN="$WORK/handle_close_inside_callcc"
+    if ( cd "$WORK" && "$ESHKOL_RUN" "$HANDLE_SRC" -o "$HANDLE_BIN" ) \
+            > "$WORK/handle_compile.log" 2>&1 && [ -x "$HANDLE_BIN" ]; then
+        ( cd "$WORK" && env ESHKOL_ARENA_POISON=1 "$HANDLE_BIN" ) \
+            > "$WORK/handle_aot.out" 2> "$WORK/handle_aot.err"
+        aot_rc=$?
+        got=$(tr -d '\n' < "$WORK/handle_aot.out")
+        if [ "$aot_rc" -eq 0 ] && [ "$got" = "$want" ]; then rc=0; else rc=1; fi
+        check "handle_close_inside_callcc_aot" \
+            "native AOT under ESHKOL_ARENA_POISON=1 gave rc=$aot_rc and \"$got\" (want \"$want\")" $rc
+        rm -f "$HANDLE_BIN"
+    else
+        check "handle_close_inside_callcc_aot" "AOT compile failed" 1
+    fi
+    disk_cap_check
 fi
 echo
 

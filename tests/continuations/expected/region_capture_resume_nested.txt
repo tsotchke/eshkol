@@ -1,0 +1,5 @@
+outer=(1 2 3) inner=(4 5 6)
+outer=(1 2 3) inner=(4 5 6)
+outer=(1 2 3) inner=(4 5 6)
+final outer=(1 2 3) inner=(4 5 6)
+ALL PASS
