@@ -51,7 +51,7 @@ figure, conformity audit item b2/d3), SICP 88/88, reference differential
 `evidence/audit/06_vm_parity.log`; corrects "184/184", which was the
 corpus-differential count, not the full manifest); the full manifest
 (`tests/vm_parity/PARITY.tsv`) is 956 rows — 581 `vm-supported`, 44
-`native-only-justified`, 331 `gap` — plus 328 further names in
+`native-only-justified`, 331 `gap` — plus 323 further names in
 `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see
 [VM_PARITY.md](VM_PARITY.md)); citing only "184/184" or "188/188" alone
 substitutes one narrow metric for the full parity picture — corrected

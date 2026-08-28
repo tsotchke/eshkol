@@ -162,9 +162,9 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
 | Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
-### 555+ Built-in Functions
+### 1,042 Built-in Functions
 
-Eshkol v1.1 ships with over 555 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol v1.3.5-evolve ships 1,042 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
@@ -513,7 +513,7 @@ doubles 3.0 and 4.0.
 
 ## Continuations & Exception Handling
 
-Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, and structured exception handling following R7RS semantics.
+Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, and structured exception handling following R7RS semantics. Continuations are multi-shot and re-entrant on every engine (native JIT, native AOT, bytecode VM): a captured continuation may be invoked any number of times, including after the capturing procedure has returned, which is what generators, coroutines and `amb`-style backtracking need. Escape-only captures keep the zero-overhead `setjmp`/`longjmp` path.
 
 ### First-Class Continuations
 
@@ -531,6 +531,14 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
     #f)))
 
 (find-first even? (list 1 3 5 4 7))  ;; -> 4
+```
+
+```scheme
+;; Re-entrant: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)        ;; -> 2
+(k 10)     ;; -> 11, re-entering f after it returned
 ```
 
 ### Dynamic Wind
@@ -1131,7 +1139,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 555+ builtins
+- **Tab completion** for all 1,042 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection

@@ -20,7 +20,8 @@ before a coordinated disclosure window has been agreed.
 
 | Version          | Security fixes                |
 | ---------------- | ----------------------------- |
-| v1.3.x (current) | yes                           |
+| v1.3.5 (current) | yes                           |
+| v1.3.0 - v1.3.4  | yes                           |
 | v1.2.x           | yes (until v1.4 GA)           |
 | < v1.2           | no                            |
 
@@ -93,16 +94,44 @@ need to coordinate resets.
 
 ## Sanitizer / Fuzzing Coverage
 
-- ASan / UBSan builds pass the full aggregate suite (45 suites, 770 tests),
-  including the v1.2 edge-case coverage (testing framework, argparse, time
-  API, binary I/O, hardening path, regex, JSON). See
-  `scripts/build-sanitizer.sh`. `linux-x64-asan-ubsan` is a required,
-  merge-blocking CI lane.
-- ThreadSanitizer is run against the parallel runtime: the v1.3.4-evolve
-  `parallel-map` fix took the arena data-race count to zero.
+- ASan / UBSan builds pass the full aggregate suite (46 suites), including
+  the v1.2 edge-case coverage (testing framework, argparse, time API, binary
+  I/O, hardening path, regex, JSON). See `scripts/build-sanitizer.sh`.
+  `linux-x64-asan-ubsan` is a required, merge-blocking CI lane.
+- Leak detection on that lane is proved armed before its silence is trusted
+  (v1.3.5-evolve, #486). `scripts/check_leak_detection_selftest.sh` compiles
+  two probes under the lane's exact `ASAN_OPTIONS`/`LSAN_OPTIONS`, including
+  the checked-in suppression file: one that deliberately leaks and must be
+  reported, and one that allocates and frees cleanly and must not be. Until
+  this shipped, the lane ran with `detect_leaks=0` and a suppression file that
+  could have grown broad enough to swallow a real leak with no visible effect.
+- `tests/memory/leak_audit_gate.sh` then runs an AOT compile, the compiled
+  program, the VM and the REPL under `detect_leaks=1`, failing on any leak
+  `.icc/lsan-suppressions.txt` does not already name and justify, plus a slope
+  check on the one retention the suppressions do hide, so a per-form growth
+  regression cannot hide behind a suppression rule.
+- Closed-enum dispatch is compiler-enforced (v1.3.5-evolve, #500). A `switch`
+  over a closed enum may not carry a `default:` clause, so adding a tag, an
+  opcode, a heap subtype or a port flag cannot silently fall through to a
+  catch-all arm at any registered dispatch site. This is a memory-safety
+  property as much as a correctness one: several historical defects here were
+  a new subtype reaching a handler that treated it as the wrong shape.
+  Enforcement is `-Werror=switch -Werror=switch-enum` plus the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`, with `scripts/gate_exhaustive_dispatch.py`
+  re-deriving each enum's members from its own definition so a removed arming
+  is reported rather than merely producing a build that no longer checks.
+- ThreadSanitizer is run nightly against the parallel runtime (the
+  `concurrency-tsan` job in `.github/workflows/adversarial-nightly.yml`): the
+  v1.3.4-evolve `parallel-map` fix took the arena data-race count to zero.
 - MSan / LSan are wired via the same CMake flags; their CI lanes are being
   added incrementally.
-- Fuzzing harnesses (libfuzzer) are tracked under #187.
+- Seeded differential fuzzing ships and runs today:
+  `scripts/run_differential_fuzz.sh` compares `jit`, `jit-nocache`, `aot-o0`
+  and `aot-o2` on generated programs and auto-shrinks any divergence to a
+  minimal repro, and `scripts/run_generative_differential.py` drives the
+  generative corpus. libFuzzer-based in-process harnesses remain tracked under
+  #187.
 
 ## Threat Model (summary)
 

@@ -1,6 +1,6 @@
 # Eshkol Language Core Reference
 
-Complete reference for the Eshkol language core, targeting **v1.3.4-evolve**.
+Complete reference for the Eshkol language core, targeting **v1.3.5-evolve**.
 
 Every example in these documents was executed against a fresh build of the compiler
 (`cmake --build build --target eshkol-run stdlib`) and the shown output is the real

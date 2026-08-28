@@ -25,7 +25,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Project Structure](#project-structure)
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
-    - [Immediate Priorities (v1.4-connection - July 2026)](#immediate-priorities-v14-connection---july-2026)
+    - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
     - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
@@ -270,6 +270,56 @@ advisory ones, before merging, and dedupes stale check entries by taking the lat
 run per lane name. Re-run the failed jobs once before treating a lite-lane red as a
 real regression.
 
+**What `assurance-gates` actually checks.** This is the one required context
+that runs on every PR shape, docs-only included, because it builds nothing —
+it is pure Python over the checked-out files. Every gate below runs its own
+`--self-test` first (deliberately broken fixtures it must go red on), so the
+job proves each gate CAN fail before it reports that nothing failed. Run any
+of them locally before pushing:
+
+```bash
+python3 scripts/check_ledger_integrity.py    # .icc/silent-wrong-ledger.yaml: no duplicate ids, every entry well-formed
+python3 scripts/check_oracle_schema.py       # .icc/completion-oracles.yaml parses; every criterion is gradeable
+python3 scripts/gate_no_silent_wrong.py      # no open, unwaived SILENT-WRONG flaw ships
+python3 scripts/audit_oracle_false_green.py  # no oracle target reads ready on zero evidence
+python3 scripts/gate_ad_shared_node_model.py # every AD op routes through a declared, exact carrier
+python3 scripts/gate_exhaustive_dispatch.py  # no dispatch switch over a closed enum carries a `default:`
+python3 scripts/check_required_context_consistency.py --offline
+python3 scripts/check_surface_counts.py      # quoted language-surface counts have not drifted
+python3 scripts/check_ps1_encoding.py        # tracked *.ps1 are ASCII, or BOM-marked UTF-8
+python3 scripts/check_self_verdicts.py       # no self-reported failure hides behind a PASS verdict
+python3 scripts/check_build_fingerprint.py   # no harness's recorded binary fingerprint is stale
+python3 scripts/check_evidence_staleness.py --require-trace-dir
+```
+
+Three of these reject changes that look harmless:
+
+- **Exhaustive dispatch.** A `switch` over a closed enum may not carry a
+  `default:` clause. Adding an enumerator means updating every registered
+  dispatch site; a `default:` that silently absorbs the new member is the
+  defect this gate exists to stop. The compiler enforces it too
+  (`-Werror=switch -Werror=switch-enum`, or the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`), but a failed build produces an absence
+  rather than evidence, so the gate re-derives each enum's members from its
+  own definition and reports.
+- **PowerShell encoding.** A tracked `*.ps1` or `*.psm1` may not contain a
+  non-ASCII byte without a UTF-8 BOM. PowerShell 5.1 decodes a BOM-less script
+  in the system ANSI code page; pwsh 7 assumes UTF-8. A file that parses
+  cleanly under pwsh 7 can throw a cascade of parse errors on a Windows 5.1
+  host, so an em dash in a comment is a real breakage.
+- **Surface counts.** If you change the language surface, the counts quoted in
+  `README.md`, `docs/FEATURE_MATRIX.md`, `docs/TEST_COVERAGE.md`,
+  `.icc/architecture-model.yaml` and every `docs/reference/*/INDEX.md` must
+  move with it. `scripts/check_surface_counts.py` is the drift checker.
+
+Two further gates run with ICC rather than in this job:
+`scripts/check_doc_claims_residual.py` requires every ICC `doc-typed-claims`
+"wrong" finding to be either allowlisted in `.icc/doc-claims-allowlist.yaml`
+or an open, tracked DOC-DEBT ledger item, and
+`scripts/check_evidence_staleness.py` refuses to grade an empty trace
+directory as a pass.
+
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
 the oracle traces at the tagged SHA and runs `icc architecture-verify` +
@@ -347,6 +397,14 @@ We strive for good test coverage:
 - Ensure all tests pass before submitting a pull request.
 - Follow the existing test patterns in the codebase.
 
+Every root-cause fix ships with a dedicated regression gate wired into the
+readiness oracle, not merely a test file. A gate that cannot fail is not a
+gate: if you add one, add a self-test or a deliberate-failure fixture that
+proves it goes red. See [docs/TESTING.md](docs/TESTING.md) for the full
+harness inventory and
+[docs/design/PILLAR_CI_INVENTORY.md](docs/design/PILLAR_CI_INVENTORY.md) for
+what runs per-PR versus nightly.
+
 ## Project Structure
 
 Understanding the project structure will help you contribute effectively:
@@ -381,7 +439,7 @@ eshkol/
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (45 suites by feature)
+├── tests/                  # Test suite (46 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests

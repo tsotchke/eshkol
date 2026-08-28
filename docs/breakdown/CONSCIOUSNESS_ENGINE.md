@@ -48,11 +48,11 @@ working memory this cycle).
 
 | Component         | Header                                | Implementation                          | Lines |
 |-------------------|---------------------------------------|------------------------------------------|-------|
-| Logic engine      | `inc/eshkol/core/logic.h`             | `lib/core/logic.cpp`                     | 246 / 961 |
-| Active inference  | `inc/eshkol/core/inference.h`         | `lib/core/inference.cpp`                 | 183 / 1029 |
-| Global workspace  | `inc/eshkol/core/workspace.h`         | `lib/core/workspace.cpp`                 | 146 / 308 |
-| Auxiliary builtins| —                                     | `lib/core/logic_builtins.cpp`            | 164  |
-| LLVM codegen      | `inc/eshkol/backend/logic_workspace_codegen.h` | `lib/backend/logic_workspace_codegen.cpp` | 665  |
+| Logic engine      | `inc/eshkol/core/logic.h`             | `lib/core/logic.cpp`                     | 413 / 1,505 |
+| Active inference  | `inc/eshkol/core/inference.h`         | `lib/core/inference.cpp`                 | 289 / 1,258 |
+| Global workspace  | `inc/eshkol/core/workspace.h`         | `lib/core/workspace.cpp`                 | 188 / 354 |
+| Auxiliary builtins| —                                     | `lib/core/logic_builtins.cpp`            | 209  |
+| LLVM codegen      | `inc/eshkol/backend/logic_workspace_codegen.h` | `lib/backend/logic_workspace_codegen.cpp` | 725  |
 | Op dispatch       | `lib/backend/llvm_codegen.cpp` §`codegenOperation` | (lines 8648–8697)                  | —    |
 | Type predicates   | `lib/backend/llvm_codegen.cpp` (lines 32223–32430) | —                                  | —    |
 | Parser keywords   | `lib/frontend/parser.cpp` (lines 985–1011) and §`TOKEN_SYMBOL` (line 888) | —          | —    |

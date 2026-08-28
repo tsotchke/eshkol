@@ -96,54 +96,52 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 
 ## Test Suite Overview
 
-> **Provenance note.** The per-suite `Tests` column is deliberately `--`: the
-> aggregate runner does not emit a stable machine-readable per-suite test
-> count, so an old hand-entered number would be a false current claim. The
-> suite inventory itself is generated from `TEST_SCRIPTS` and checked by
-> `python3 scripts/check_test_coverage.py`; regenerate a machine-readable
-> inventory with `python3 scripts/generate_test_coverage.py`. The gated figure
-> above (46 suites) is the one `scripts/run_all_tests.sh` reports and the
-> release oracle consumes.
+> **Provenance note.** The per-suite `Tests` counts below are the v1.1-era
+> inventory and have drifted; the **gated** figures are the aggregate ones
+> above (46 suites), which `scripts/run_all_tests.sh`
+> reports and the release oracle consumes. Regenerating this column requires a
+> full suite run and is tracked as a follow-up. The suite list itself is
+> current and matches `TEST_SCRIPTS` in `scripts/run_all_tests.sh`.
 
 | # | Suite | Script | Tests | Coverage |
 |---|-------|--------|------:|----------|
-| 1 | Features | `run_features_tests.sh` | -- | R7RS wave 2/3, bytevectors, bitwise ops, char/type predicates, trigonometric/hyperbolic functions, pattern matching, stress tests |
-| 2 | Stdlib | `run_stdlib_tests.sh` | -- | Standard library functions: CSV parsing, string operations with closures, list queries, atomic file writes, refactoring regression |
-| 3 | Lists | `run_list_tests.sh` | -- | Cons cells, car/cdr, map, filter, fold, for-each, apply, assoc, variadic operations, homoiconicity, arena cons, tagged cons (Phase 3B) |
-| 4 | Memory | `run_memory_tests.sh` | -- | OALR linear types, double-move detection, use-after-move detection, borrow checker, arena regions |
-| 5 | Modules | `run_modules_tests.sh` | -- | `require`/`provide`, symbol visibility, circular dependency detection, stdlib module loading |
-| 6 | Types | `run_types_tests.sh` | -- | HoTT type system, type annotations, type introspection, predicate matrix, symbol ops, list element types, hash table types, mixed-type stress |
-| 7 | Type System | `run_typesystem_tests.sh` | -- | Static type checker: strict/gradual mismatch detection, unsafe suppression, arity checking, negative indexing, backward inference, nested expression checking, false-positive avoidance |
-| 8 | Autodiff | `run_autodiff_tests.sh` | -- | Forward-mode AD, reverse-mode AD, gradient composition, Jacobian, Hessian, vector calculus, dual numbers, computational graph construction, backward pass validation, tensor-AD integration |
-| 9 | ML | `run_ml_tests.sh` | -- | Tensor operations, matmul, transpose, convolution, pooling, activations (SiLU, SIMD), statistics, random tensors, covariance/correlation, bitwise tensor ops, optimizers, loss functions, weight initialization, LR schedulers, dataloaders, gradient utilities, transformers, linear algebra |
-| 10 | Neural | `run_neural_tests.sh` | -- | Neural network layers, forward pass, backpropagation training, complete network construction |
-| 11 | JSON | `run_json_tests.sh` | -- | JSON parsing, serialization, file I/O, large-document stress tests |
-| 12 | System | `run_system_tests.sh` | -- | Hash tables (create, ref, set, int keys), display system, file I/O (inline, port-based, stress, trace) |
-| 13 | Complex | `run_complex_tests.sh` | -- | Complex number arithmetic (Smith's formula division), FFT |
-| 14 | C++ Types | `run_cpp_type_tests.sh` | -- | C++ unit tests for HoTT type checker and type system internals (compiled and run as native C++) |
-| 15 | VM | `run_vm_tests.sh` | -- | Standalone bytecode VM source suite, including 50 source-level checks with verified output capture |
-| 16 | Parser | `run_parser_tests.sh` | -- | Special forms, numeric literals, comments, s-expression roundtrip, string escapes, function shadowing, edge cases, `define`-in-`begin`, `letrec*` regression, nested `define`-in-`if` |
-| 17 | Control Flow | `run_control_flow_tests.sh` | -- | `if`/`cond`, loops, recursion, `call/cc`, `dynamic-wind`, `call/cc`+`dynamic-wind` interaction, continuation edge cases, TCO validation, deep recursion (512 MB stack) |
-| 18 | Logic | `run_logic_tests.sh` | -- | Unification, logic variables, knowledge base (`kb-assert!`/`kb-query`), factor graphs (`fg-add-factor!`/`fg-infer!`), global workspace (`ws-register!`/`ws-step!`), continuous learning |
-| 19 | Bignum | `run_bignum_tests.sh` | -- | Arbitrary-precision integer arithmetic, edge cases (overflow, sign, exponentiation, mixed exact/inexact) |
-| 20 | Rational | `run_rational_tests.sh` | -- | Exact fraction arithmetic, `rationalize`, comprehensive rational operations, comparison, conversion |
-| 21 | Parallel | `run_parallel_tests.sh` | -- | `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`, `parallel-execute`, futures, flags-byte regression |
-| 22 | Signal | `run_signal_tests.sh` | -- | DSP filters, comprehensive FFT (windowing, spectral analysis) |
-| 23 | Optimization | `run_optimization_tests.sh` | -- | ML optimizer convergence: gradient descent, Adam, conjugate gradient |
-| 24 | Examples | `run_examples_tests.sh` | -- | End-to-end example programs (compile + run validation); proprietary/unreleased examples are skipped |
-| 25 | XLA | `run_xla_tests.sh` | -- | XLA/StableHLO tensor operations: C++ unit tests, matmul (basic, large, accuracy, special), transpose, shape ops, elementwise, reduce, dispatch threshold |
-| 26 | GPU | `run_gpu_tests.sh` | -- | Metal/CUDA dispatch: elementwise, reduce, matmul, transpose, softmax/normalize, scale correctness, sf64 primitives (uniform/non-uniform), large matmul, diagnostics |
-| 27 | Error Handling | `run_error_handling_tests.sh` | -- | `guard`/`raise`, advanced guard patterns, nested exceptions, bounds checking, division by zero, edge cases, stack overflow detection |
-| 28 | Macros | `run_macros_tests.sh` | -- | `define-syntax`, `syntax-rules`, hygiene, `let-syntax`, nested patterns |
-| 29 | REPL | `run_repl_tests.sh` | -- | Interactive evaluation: arithmetic, comparisons, booleans, conditionals, variables, functions, lambdas, `let`, lists, closures, stdlib, math, autodiff, vectors, types, complex numbers, REPL commands, hot reload, type predicates, stdlib combined |
-| 30 | Web | `run_web_tests.sh` | -- | WASM compilation, HTTP client externs, canvas rendering; server checks run when local bind is available |
-| 31 | TCO | `run_tco_tests.sh` | -- | Tail call optimization: 7 nested TCO patterns (mutual recursion, letrec, continuation-passing, accumulator, trampoline, A-normal form, CPS transform) |
-| 32 | I/O | `run_io_tests.sh` | -- | String ports, `write`/`read` roundtrip, binary I/O, port edge cases |
-| 33 | Benchmark | `run_benchmark_tests.sh` | -- | Performance regression: timing harness, tensor SIMD benchmark, BLAS matmul benchmark |
-| 34 | Migration | `run_migration_tests.sh` | -- | Backward compatibility: pointer consolidation comprehensive test |
-| 35 | Codegen | `run_codegen_tests.sh` | -- | LLVM IR generation correctness: integer ops, floating-point ops |
-| 36 | Numeric | `run_numeric_tests.sh` | -- | Critical numeric regressions: bignum, rational, rounding, expt, min/max |
-| 37 | v1.2 Edge Cases | `run_v1_2_edge_cases_tests.sh` | -- | v1.2 compiler/runtime hardening: REPL protocol, module parity, path hardening, arity, atomics, concurrency, Unicode, HTTP, image/ONNX/JSON schema, quasiquote, symbols, streams, subprocesses |
+| 1 | Features | `run_features_tests.sh` | 24 | R7RS wave 2/3, bytevectors, bitwise ops, char/type predicates, trigonometric/hyperbolic functions, pattern matching, stress tests |
+| 2 | Stdlib | `run_stdlib_tests.sh` | 11 | Standard library functions: CSV parsing, string operations with closures, list queries, atomic file writes, refactoring regression |
+| 3 | Lists | `run_list_tests.sh` | 129 | Cons cells, car/cdr, map, filter, fold, for-each, apply, assoc, variadic operations, homoiconicity, arena cons, tagged cons (Phase 3B) |
+| 4 | Memory | `run_memory_tests.sh` | 6 | OALR linear types, double-move detection, use-after-move detection, borrow checker, arena regions |
+| 5 | Modules | `run_modules_tests.sh` | 5 | `require`/`provide`, symbol visibility, circular dependency detection, stdlib module loading |
+| 6 | Types | `run_types_tests.sh` | 11 | HoTT type system, type annotations, type introspection, predicate matrix, symbol ops, list element types, hash table types, mixed-type stress |
+| 7 | Type System | `run_typesystem_tests.sh` | 8 | Static type checker: strict/gradual mismatch detection, unsafe suppression, arity checking, negative indexing, backward inference, nested expression checking, false-positive avoidance |
+| 8 | Autodiff | `run_autodiff_tests.sh` | 54 | Forward-mode AD, reverse-mode AD, gradient composition, Jacobian, Hessian, vector calculus, dual numbers, computational graph construction, backward pass validation, tensor-AD integration |
+| 9 | ML | `run_ml_tests.sh` | 37 | Tensor operations, matmul, transpose, convolution, pooling, activations (SiLU, SIMD), statistics, random tensors, covariance/correlation, bitwise tensor ops, optimizers, loss functions, weight initialization, LR schedulers, dataloaders, gradient utilities, transformers, linear algebra |
+| 10 | Neural | `run_neural_tests.sh` | 6 | Neural network layers, forward pass, backpropagation training, complete network construction |
+| 11 | JSON | `run_json_tests.sh` | 3 | JSON parsing, serialization, file I/O, large-document stress tests |
+| 12 | System | `run_system_tests.sh` | 13 | Hash tables (create, ref, set, int keys), display system, file I/O (inline, port-based, stress, trace) |
+| 13 | Complex | `run_complex_tests.sh` | 2 | Complex number arithmetic (Smith's formula division), FFT |
+| 14 | C++ Types | `run_cpp_type_tests.sh` | 2 | C++ unit tests for HoTT type checker and type system internals (compiled and run as native C++) |
+| 15 | VM | `run_vm_tests.sh` | 1 | Standalone bytecode VM source suite, including 50 source-level checks with verified output capture |
+| 16 | Parser | `run_parser_tests.sh` | 12 | Special forms, numeric literals, comments, s-expression roundtrip, string escapes, function shadowing, edge cases, `define`-in-`begin`, `letrec*` regression, nested `define`-in-`if` |
+| 17 | Control Flow | `run_control_flow_tests.sh` | 10 | `if`/`cond`, loops, recursion, `call/cc`, `dynamic-wind`, `call/cc`+`dynamic-wind` interaction, continuation edge cases, TCO validation, deep recursion (512 MB stack) |
+| 18 | Logic | `run_logic_tests.sh` | 6 | Unification, logic variables, knowledge base (`kb-assert!`/`kb-query`), factor graphs (`fg-add-factor!`/`fg-infer!`), global workspace (`ws-register!`/`ws-step!`), continuous learning |
+| 19 | Bignum | `run_bignum_tests.sh` | 2 | Arbitrary-precision integer arithmetic, edge cases (overflow, sign, exponentiation, mixed exact/inexact) |
+| 20 | Rational | `run_rational_tests.sh` | 3 | Exact fraction arithmetic, `rationalize`, comprehensive rational operations, comparison, conversion |
+| 21 | Parallel | `run_parallel_tests.sh` | 7 | `parallel-map`, `parallel-fold`, `parallel-filter`, `parallel-for-each`, `parallel-execute`, futures, flags-byte regression |
+| 22 | Signal | `run_signal_tests.sh` | 2 | DSP filters, comprehensive FFT (windowing, spectral analysis) |
+| 23 | Optimization | `run_optimization_tests.sh` | 1 | ML optimizer convergence: gradient descent, Adam, conjugate gradient |
+| 24 | Examples | `run_examples_tests.sh` | 6 | End-to-end example programs (compile + run validation); proprietary/unreleased examples are skipped |
+| 25 | XLA | `run_xla_tests.sh` | 14 | XLA/StableHLO tensor operations: C++ unit tests, matmul (basic, large, accuracy, special), transpose, shape ops, elementwise, reduce, dispatch threshold |
+| 26 | GPU | `run_gpu_tests.sh` | 12 | Metal/CUDA dispatch: elementwise, reduce, matmul, transpose, softmax/normalize, scale correctness, sf64 primitives (uniform/non-uniform), large matmul, diagnostics |
+| 27 | Error Handling | `run_error_handling_tests.sh` | 7 | `guard`/`raise`, advanced guard patterns, nested exceptions, bounds checking, division by zero, edge cases, stack overflow detection |
+| 28 | Macros | `run_macros_tests.sh` | 6 | `define-syntax`, `syntax-rules`, hygiene, `let-syntax`, nested patterns |
+| 29 | REPL | `run_repl_tests.sh` | 20 | Interactive evaluation: arithmetic, comparisons, booleans, conditionals, variables, functions, lambdas, `let`, lists, closures, stdlib, math, autodiff, vectors, types, complex numbers, REPL commands, hot reload, type predicates, stdlib combined |
+| 30 | Web | `run_web_tests.sh` | 2 | WASM compilation, HTTP client externs, canvas rendering; server checks run when local bind is available |
+| 31 | TCO | `run_tco_tests.sh` | 1 | Tail call optimization: 7 nested TCO patterns (mutual recursion, letrec, continuation-passing, accumulator, trampoline, A-normal form, CPS transform) |
+| 32 | I/O | `run_io_tests.sh` | 5 | String ports, `write`/`read` roundtrip, binary I/O, port edge cases |
+| 33 | Benchmark | `run_benchmark_tests.sh` | 3 | Performance regression: timing harness, tensor SIMD benchmark, BLAS matmul benchmark |
+| 34 | Migration | `run_migration_tests.sh` | 1 | Backward compatibility: pointer consolidation comprehensive test |
+| 35 | Codegen | `run_codegen_tests.sh` | 2 | LLVM IR generation correctness: integer ops, floating-point ops |
+| 36 | Numeric | `run_numeric_tests.sh` | 7 | Critical numeric regressions: bignum, rational, rounding, expt, min/max |
+| 37 | v1.2 Edge Cases | `run_v1_2_edge_cases_tests.sh` | 87 | v1.2 compiler/runtime hardening: REPL protocol, module parity, path hardening, arity, atomics, concurrency, Unicode, HTTP, image/ONNX/JSON schema, quasiquote, symbols, streams, subprocesses |
 
 | 38 | qLLM Oracle | `run_qllm_oracle_tests.sh` | -- | qLLM bridge differential oracle: five exporters under JIT and AOT against stored golden vectors plus a self-checking finite-difference cross-check. Gate 10/10 on the release cut |
 | 39 | Manifold | `run_manifold_tests.sh` | -- | Riemannian manifold operations: geodesics, exponential/logarithm maps, Frechet mean and its backward pass |
@@ -152,7 +150,7 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 | 42 | Surface Extension | `run_surface_extension_tests.sh` | -- | Newly public language surface, kept in step with the coverage manifest |
 | 43 | FFI | `run_ffi_tests.sh` | -- | Foreign function interface: extern C calls, pointer marshalling, transitive agent-FFI link discovery |
 | 44 | Codegen Opt-Level | `run_codegen_optlevel_tests.sh` | -- | Codegen equivalence across optimisation levels: AOT-O0 vs AOT-O2 vs JIT |
-| 45 | SICP Full-Book Gate | `test_run_sicp_smoke_gate.sh` | -- | The SICP full-book gate: 88 probes across all five chapters under both `-r` and AOT, zero xfail, zero XPASS |
+| 45 | SICP Full-Book Gate | `test_run_sicp_smoke_gate.sh` | 88 | The SICP full-book gate: 88 probes across all five chapters under both `-r` and AOT, zero xfail, zero XPASS |
 | 46 | Continuations | `run_continuation_tests.sh` | -- | Multi-shot re-entrant continuations on native JIT, native AOT and the bytecode VM: re-entry after the capturing frame has returned, `dynamic-wind` rerooting per R7RS 6.10, and capture inside a `with-region` extent (#491) |
 
 **Total**: **46 suites** on the v1.3.5-evolve cut (the gated figure, reported

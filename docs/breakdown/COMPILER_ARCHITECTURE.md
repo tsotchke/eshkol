@@ -7,7 +7,6 @@
 - [Frontend: Parsing and Macro Expansion](#frontend-parsing-and-macro-expansion)
 - [Type Checking (HoTT System)](#type-checking-hott-system)
 - [LLVM Backend](#llvm-backend)
-- [Bytecode VM Architecture](#bytecode-vm-architecture)
 - [Tagged Value Representation](#tagged-value-representation)
 - [Modular Codegen Architecture](#modular-codegen-architecture)
 - [v1.1-accelerate Feature Codegen](#v11-accelerate-feature-codegen)
@@ -63,7 +62,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (44,003 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (42,974 lines)
 |    GENERATION    |  AST -> LLVM IR via 35 codegen modules (~108,400 lines)
 +------------------+
        |
@@ -208,9 +207,9 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (44,003 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (43,959 lines)
 
-The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 36 specialized codegen modules.
+The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 21 specialized codegen modules.
 
 ### Code Generator Class Structure
 
@@ -266,31 +265,6 @@ tensor_->setCodegenCallbacks(
 ```
 
 This pattern inverts the typical dependency graph -- modules call back into the main codegen through thin static wrappers rather than holding direct references to each other.
-
----
-
-## Bytecode VM Architecture
-
-The bytecode backend is a unity-build C system rooted at
-[`lib/backend/eshkol_vm.c`](../../lib/backend/eshkol_vm.c). The hub includes
-the VM components in dependency order, while the interpreter responsibilities
-are kept in separate source modules:
-
-| Responsibility | Owner | Boundary |
-|---|---|---|
-| Dispatch loop | `vm_run.c` | Fetch/decode plus computed-goto and switch dispatch |
-| Value opcode bodies | `vm_ops.c` | Comparisons, pairs, vectors, and operand-stack shuffles |
-| Frames and closures | `vm_frame.c` | Upvalues, closure construction, and return handling |
-| Non-local control | `vm_control.c` | Continuations, dynamic-wind state, and handlers |
-| Execution limits | `vm_limits.c` | Instruction-limit state and timeout checkpoints |
-| VM lifecycle | `vm_lifecycle.c` | `vm_create`, `vm_free`, and test-program emission |
-
-Builtin trampolines and native dispatch remain in `vm_native.c`; error-object
-support remains in `vm_error.c`; and coverage hooks plus public ESKB/VM entry
-points remain in `eshkol_vm.c`. This keeps the public symbols and unity-build
-linkage stable while making the dispatch loop the only owner of fetch/decode
-and dispatch control flow. Handlers with intentionally different threaded and
-switch semantics stay inline in `vm_run.c`.
 
 ---
 
@@ -386,14 +360,14 @@ Subtypes 12-19 are new in v1.1-accelerate. The consolidation of 8 legacy pointer
 
 ## Modular Codegen Architecture
 
-The LLVM backend distributes code generation across 36 specialized modules. Each module is a C++ class instantiated as a `std::unique_ptr` member of the main `LLVMCodeGenerator`.
+The LLVM backend distributes code generation across 21 specialized modules totaling approximately 89,900 lines. Each module is a C++ class instantiated as a `std::unique_ptr` member of the main `LLVMCodeGenerator`.
 
 ### Complete Module Table
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 44,003 | Orchestrator, AST dispatch, builtins, consciousness engine |
-| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,545 | Forward/reverse/symbolic AD modes |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 43,959 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,083 | Forward/reverse/symbolic AD modes |
 | **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | +, -, *, /, bignum, rational, complex dispatch |
 | **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
 | **Collections** | [`collection_codegen.cpp`](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, cons, bytevector operations |
@@ -403,7 +377,7 @@ The LLVM backend distributes code generation across 36 specialized modules. Each
 | **Bindings** | [`binding_codegen.cpp`](../../lib/backend/binding_codegen.cpp) | 1,662 | let/let*/letrec/letrec* with TCO context save/restore |
 | **Thread Pool** | [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) | 1,524 | Work-stealing thread pool runtime |
 | **Tensor Backward** | [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) | 1,572 | Backward-mode AD gradient computation for tensors |
-| **BLAS Backend** | [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) | 1,281 | BLAS dispatch, GPU cost model calibration |
+| **BLAS Backend** | [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) | 1,316 | BLAS dispatch, GPU cost model calibration |
 | **Call/Apply** | [`call_apply_codegen.cpp`](../../lib/backend/call_apply_codegen.cpp) | 1,270 | Function calls, apply, partial application, variadic |
 | **Control Flow** | [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) | 1,107 | if/cond/case/match/when/unless/call-cc/guard |
 | **Map** | [`map_codegen.cpp`](../../lib/backend/map_codegen.cpp) | 1,142 | map/for-each/fold with closure dispatch |
@@ -411,10 +385,10 @@ The LLVM backend distributes code generation across 36 specialized modules. Each
 | **Tagged Values** | [`tagged_value_codegen.cpp`](../../lib/backend/tagged_value_codegen.cpp) | 807 | Pack/unpack tagged values, type extraction |
 | **Tail Calls** | [`tail_call_codegen.cpp`](../../lib/backend/tail_call_codegen.cpp) | 748 | TCO transformation, trampoline runtime |
 | **Homoiconic** | [`homoiconic_codegen.cpp`](../../lib/backend/homoiconic_codegen.cpp) | 706 | Code-as-data, quote, lambda S-expressions, eval |
-| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 671 | make-hash, hash-ref, hash-set!, hash-for-each |
+| **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 734 | make-hash, hash-ref, hash-set!, hash-for-each |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 640 | Complex number arithmetic (Smith's formula division) |
 
-The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines re-exported through the dispatcher above.
+The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling approximately 22,355 lines re-exported through the dispatcher above.
 
 **Additional backend components (not in the 21-module count):**
 
@@ -424,9 +398,9 @@ The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domai
 | Codegen Context | [`codegen_context.cpp`](../../lib/backend/codegen_context.cpp) | 377 | Shared state for module communication |
 | Function Cache | [`function_cache.cpp`](../../lib/backend/function_cache.cpp) | 173 | Lazy-loaded C library function declarations |
 | Builtin Declarations | [`builtin_declarations.cpp`](../../lib/backend/builtin_declarations.cpp) | 148 | Runtime function declarations (deep_equal, display, registry) |
-| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 329 | Arena allocation IR generation |
+| Memory Codegen | [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 401 | Arena allocation IR generation |
 | CPU Features | [`cpu_features.cpp`](../../lib/backend/cpu_features.cpp) | 416 | SIMD capability detection |
-| XLA/StableHLO | 6 files in `lib/backend/xla/` | 3,960 | Tensor compilation via MLIR pipeline |
+| XLA/StableHLO | 6 files in `lib/backend/xla/` | 4,020 | Tensor compilation via MLIR pipeline |
 | GPU/Metal | `lib/backend/gpu/gpu_memory.mm`, `metal_softfloat.h` | 8,954 | Metal compute, SF64 software float64, CUDA stubs |
 
 ### Module Initialization Order
@@ -541,7 +515,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,572 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; ~22,130 lines across twelve sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,572 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -617,7 +591,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,546 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,435 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
