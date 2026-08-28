@@ -4,12 +4,19 @@
 
 (define h (make-hyperbolic-manifold 2 -1.0))
 (define s (make-spherical-manifold 2))
+(define e (make-euclidean-manifold 3))
 (define p (make-tensor '(2) 1.0))
 (define j (make-tensor '(2 2) 1.0))
 
 (display (if h "PASS" "FAIL")) (display ": hyperbolic handle") (newline)
 (display (if (= (manifold-type h) 1) "PASS" "FAIL")) (display ": manifold type") (newline)
 (display (if (= (manifold-dim h) 2) "PASS" "FAIL")) (display ": manifold dim") (newline)
+;; SW-72: manifold-dim (native id 858, vm_geometric_manifold_dim) used to
+;; return 0 unconditionally under ESHKOL_GEOMETRIC_ENABLED regardless of the
+;; manifold's real dimension. Cover a second manifold (Euclidean, distinct
+;; dim) so a regression that hardcodes one dimension cannot pass silently;
+;; the companion native-side check lives in tests/manifold/manifold_test.esk.
+(display (if (= (manifold-dim e) 3) "PASS" "FAIL")) (display ": manifold dim euclidean") (newline)
 (display (if (= (get-curvature h) -1.0) "PASS" "FAIL")) (display ": get curvature") (newline)
 
 (define metric (metric-tensor h))

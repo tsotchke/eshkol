@@ -592,10 +592,6 @@ block ordinary use.
   self-labelled "kept #if 0 stub bodies for now" (superseded by
   `LogicWorkspaceCodegen`). Cheap, unambiguous cleanup; filed as a BUILD ITEM,
   no target version (mechanical debt, any release) — conformity audit item e6.
-- **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
-  configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
-  shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity
-  audit item e6.
 - **89.86% of the language surface has never been differentially compared**
   between engines, per the project's own ledger (PR-10,
   `.icc/silent-wrong-ledger.yaml`, open: 113 of 1,114 constructs carry
