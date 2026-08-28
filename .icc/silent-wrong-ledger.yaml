@@ -5943,3 +5943,102 @@ entries:
       consumer can build on. Scope was the GPU harness/test contract only;
       no dispatch-switch code was touched (a parallel lane owns that
       surface).
+
+  - id: SW-71
+    bucket: VACUOUS-ASSURANCE
+    status: closed
+    closed_at: "fix/gpu-correctness-gate-vacuous"
+    closed_by: "branch fix/gpu-correctness-gate-vacuous"
+    title: "Windows judge: ^-anchored FAIL: marker regexes matched only line 1 of captured output; markers after a banner line were invisible on every Windows suite; discovered when the GPU gate canary was judged NO FAIL MARKER"
+    repro: >-
+      On windows-x64-cuda, tests/gpu/gate_canary_must_fail.esk (SW-67's
+      deliberate, permanent-failure canary) exits nonzero and prints a
+      banner line first, then its marker on the SECOND line:
+        === GPU Gate Canary (this test MUST fail) ===
+        FAIL: gate_canary_must_fail (deliberate: expected C[0,0]=999.0, got 19) - this failure is EXPECTED
+      scripts/run_all_tests.ps1's Invoke-SimpleCompileRunSuite grades the
+      canary path with `$FailRegex -and -not ($run.Output -match
+      $FailRegex)` for suites configured with an anchored FailRegex such as
+      "^FAIL:|Failed:\s+[1-9]" (gpu, and the same ^-anchored shape on the
+      bignum/rational/parallel/signal/error_handling/macros/io/benchmark/
+      migration/codegen/numeric suites; Invoke-TimedCompileRunSuite's
+      ASSERTION FAIL check and Invoke-XlaSuite's inline `$run.Output -match
+      "^FAIL:"` share the same construction). PowerShell's bare -match
+      calls .NET regex without RegexOptions::Multiline, so a bare `^`
+      anchors to the START OF THE WHOLE STRING, not each line: because the
+      banner line comes first, `^FAIL:` never matches, and the judge
+      reports "CANARY FAILED WITH NO FAIL MARKER" even though the marker
+      is right there on line 2. windows-x64-cuda failed three consecutive
+      PR #501 runs on this false negative before the anchoring defect
+      itself was identified as the root cause.
+    observed: >-
+      The canary's own FAIL: marker, present verbatim in stdout, was
+      reported as absent - "gate_canary_must_fail.esk (must-fail canary
+      exited nonzero but printed no FAIL: marker)" - purely because it was
+      not the first line of the captured output. The defect is not scoped
+      to the canary: the identical `$run.Output -match $FailRegex`
+      evaluation is also the ASSERTION FAIL path for every ordinary test in
+      every Windows suite listed above, so a genuine `FAIL:` marker printed
+      after any banner, header or diagnostic line was silently invisible to
+      the judge in the OTHER direction too - a real regression whose
+      marker isn't on line 1 would have been graded PASS, not FAIL.
+      -RequirePassMarker's unanchored "PASS" check and the
+      RuntimeErrorRegex "error:" checks carry no `^`/`$` anchor and were
+      not affected by this half of the defect.
+    correct: >-
+      A `^`-anchored marker regex passed to a Windows suite runner means "a
+      line that starts with this marker" - the same semantics the bash
+      judge gets for free from grep's line-by-line matching
+      (scripts/run_gpu_tests.sh, scripts/lib/test_isolation.sh) - not "the
+      first line of the entire captured stream is this marker." Every site
+      that evaluates a FailRegex/RuntimeErrorRegex/RequirePassMarker or ad
+      hoc marker regex against a test process's captured output must apply
+      RegexOptions.Multiline (or equivalent line-splitting) so that `^`/`$`
+      bind per line, defined in exactly one place so the semantics cannot
+      drift back out of sync at a future call site.
+    observed_after: >-
+      Added `Test-OutputMatches -Output $Output -Regex $Regex` (wraps
+      [regex]::IsMatch with RegexOptions.Multiline) as the single choke
+      point for marker-regex evaluation in scripts/run_all_tests.ps1, and
+      routed every FailRegex/RuntimeErrorRegex/RequirePassMarker check in
+      Invoke-SimpleCompileRunSuite and Invoke-TimedCompileRunSuite, plus
+      Invoke-XlaSuite's inline `^FAIL:`/`PASS`/`error:` checks, through it
+      - six call sites total; none of the suites' own FailRegex/
+      RuntimeErrorRegex string literals changed. Verified on the real
+      Windows 10 / PowerShell 5.1 host (desktop-jack-blupc) with a
+      csc.exe-built stub eshkol-run.exe standing in for the compiler: (a)
+      the real canary fixture (banner line, then a FAIL: marker on line 2,
+      exit 1) -> PASS (must-fail canary correctly failed) with 0 failed;
+      (b) an ordinary fixture (a couple of lines, exit 0) -> PASS; (c) the
+      canary forced to exit 0 -> FAIL "did not fail - verdict pipeline is
+      broken"; (d) an ordinary fixture that exits 0 but prints a `FAIL:`
+      marker on line 2 -> now correctly graded FAIL, proving marker
+      detection is live again for normal tests, not just the canary; (e)
+      `[System.Management.Automation.Language.Parser]::ParseFile` reports
+      no syntax errors under PowerShell 5.1.19041.
+    fixed_by: >-
+      branch fix/gpu-correctness-gate-vacuous - Test-OutputMatches helper
+      in scripts/run_all_tests.ps1, applied at every FailRegex/
+      RuntimeErrorRegex/RequirePassMarker/inline-marker evaluation site.
+    evidence: >-
+      scripts/run_all_tests.ps1 (Test-OutputMatches,
+      Invoke-SimpleCompileRunSuite, Invoke-TimedCompileRunSuite,
+      Invoke-XlaSuite) - real-host run on desktop-jack-blupc (Windows 10,
+      PowerShell 5.1.19041) against a csc.exe-built stub compiler plus two
+      fixture executables, results (a)-(e) above; local `pwsh -NoProfile`
+      parse check; python3 scripts/check_ps1_encoding.py PASS (the file
+      stays pure ASCII).
+    caught_by: [windows-x64-cuda-ci, direct-measurement]
+    missed_by: [run_all_tests.ps1 (pre-fix), icc-smoke, icc-readiness]
+    notes: >-
+      Discovered while fixing SW-67's own must-fail canary contract on
+      Windows (commit 0b4ce1ce): the canary went red for the right reason
+      (the must-fail file did fail) but the judge's *reason* for choosing
+      the FAIL branch it took was already wrong, one layer down. A judge
+      that cannot see a marker that IS there is the same shape of defect
+      as a gate that cannot go red at all (SW-67's VACUOUS-ASSURANCE
+      finding) - one degree closer to the reporting layer instead of the
+      test-content layer. Scope is the Windows PowerShell judge only;
+      scripts/run_gpu_tests.sh and scripts/lib/test_isolation.sh's
+      bash-side grep-based marker matching already operate line-by-line
+      and are unaffected.
