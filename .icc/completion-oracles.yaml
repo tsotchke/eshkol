@@ -1557,6 +1557,23 @@ oracles:
         label: 'Every tracked *.ps1/*.psm1 file is ASCII, or opens with a UTF-8 BOM, so Windows PowerShell 5.1 and pwsh 7 decode it identically (scripts/check_ps1_encoding.py)'
         action: python3 scripts/check_ps1_encoding.py
 
+      # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
+      # in one week. GitHub assembles a squash-merge commit body out of the
+      # PR's individual commit messages, so a hostname mentioned in passing
+      # on a feature branch survives into permanent public history the
+      # moment the PR merges, with nothing in review treating commit prose
+      # as a reviewable surface. This gate scans commit messages, PR
+      # title/body, and added diff lines for both generic private-network
+      # patterns and a maintainer-private denylist of real identifiers
+      # (loaded from OUTSIDE this repository).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["disclosure_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier (scripts/check_disclosure.py)'
+        action: python3 scripts/check_disclosure.py --base origin/master --head HEAD
+
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:
           event_kinds: [eshkol_smoke]

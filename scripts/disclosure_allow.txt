@@ -1,0 +1,28 @@
+# scripts/check_disclosure.py allowlist.
+#
+# One public-safe phrase per line, case-insensitive, exact substring match.
+# A generic-pattern or private-denylist hit is suppressed only when its
+# exact matched span sits fully inside one of these phrases on the same
+# line — a hit next to, but not inside, an allowlisted phrase still fails
+# the gate. Comments ('#'-prefixed) and blank lines are ignored.
+#
+# Add an entry here when a legitimate, public-safe usage collides with a
+# gate pattern (e.g. a documented benchmark's hardware name, or a CI
+# runner capability label) — never to suppress a real finding.
+
+# Reproducible-benchmark hardware: this repo's performance claims name the
+# exact hardware they were measured on, on purpose.
+Apple M2 Ultra
+Apple M2 Max
+Apple M3 Ultra
+Apple M3 Max
+Apple M1 Ultra
+Apple M1 Max
+Jetson AGX Xavier
+
+# CI runner capability labels (.github/workflows/*.yml `runs-on:` matrices).
+self-hosted
+Linux
+X64
+eshkol
+cuda
