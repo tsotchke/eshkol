@@ -49,7 +49,7 @@ Consolidated list of language-core known issues referenced here:
 | Ledger | Summary |
 |--------|---------|
 | ESH-0090 | A user `(define (raise …) …)` cannot shadow the builtin `raise`. |
-| ESH-0101 / ESH-0102 | Differential findings around `guard` value corruption / optimization-level-dependent crashes. |
+| ESH-0101 | Recursion-depth guard coverage: codegen does not emit the depth guard at the entry of every top-level `define`d function, so a deep non-tail recursion dies with no diagnostic. **Not** a `guard`/exception defect — earlier revisions of [error-handling.md](error-handling.md) misattributed the (since-closed) differential `guard` findings to this id. |
 | ESH-0109 (part) | Curried `define` sugar `(define ((f x) y) …)` is a parse error, and `raise-continuable` is an unknown function on the native path (it exists in the bytecode VM). The `cond`/`case` `=>` and `define-values` parts of that ledger entry are done. |
 | — | Mutual tail recursion IS optimized, in every tail spelling (`if`, `cond`, `case`, `when`, `unless`, `and`/`or`), at any pair of arities, and on every target, to 100,000,000 hops in constant stack (ESH-0102, ESH-0102b, ESH-0102c). Two lowerings carry it: LLVM `musttail` where the target can express it, and the tail-transfer dispatcher everywhere else. Bounded exceptions — indirect tail calls through a procedure value, mutual tail calls between `letrec`-bound lambdas or from inside a named `let` loop, sites forwarding a pointer into the caller's frame, and tail calls in the body of `guard` (which R7RS does not make a tail context) — are listed in [tail-calls.md](tail-calls.md). |
 

@@ -83,16 +83,18 @@
 ;; a `cond` `=>` clause inside a guard body (the native backend has had the
 ;; arrow form in cond since ControlFlowCodegen::codegenCond; the VM compiled
 ;; `=>` as an ordinary body expression) — SW-78's other half.
+(define (find-key k al)
+  (if (null? al) #f (if (eq? (car (car al)) k) (car al) (find-key k (cdr al)))))
+(define alist (cons (cons 'a 1) (cons (cons 'b 2) (quote ()))))
 (chk "cond-arrow-in-guard-body"
      (equal? (guard (e (#t 'unreached))
-               (cond ((assoc 'b (list (cons 'a 1) (cons 'b 2))) => cdr)
-                     (else 'no)))
+               (cond ((find-key 'b alist) => cdr) (else 'no)))
              2))
 (chk "cond-arrow-false-in-guard-body"
      (equal? (guard (e (#t 'unreached))
-               (cond ((assoc 'z (list (cons 'a 1))) => cdr) (else 'no)))
+               (cond ((find-key 'z alist) => cdr) (else 'no)))
              'no))
 (chk "cond-test-only-in-guard-body"
      (equal? (guard (e (#t 'unreached))
-               (cond ((assoc 'a (list (cons 'a 1)))) (else 'no)))
+               (cond ((find-key 'a alist)) (else 'no)))
              (cons 'a 1)))
