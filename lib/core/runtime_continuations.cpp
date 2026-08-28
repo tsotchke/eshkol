@@ -235,11 +235,11 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
 /**
  * @brief Conservative wrapper: capture with no escape classification.
  *
- * Retained as the stable ABI entry point (it is declared in the public header
- * and registered in the REPL JIT symbol table). Passing 0 means "this
- * continuation may outlive its frame", which pins every open region — the
+ * Retained as the stable ABI entry point: it is declared in inc/eshkol/eshkol.h,
+ * so an embedder or an out-of-tree backend can still call it. Passing 0 means
+ * "this continuation may outlive its frame", which pins every open region — the
  * behaviour every caller had before SW-74 gave the codegen path a way to say
- * otherwise.
+ * otherwise. Codegen itself always calls the _flags form.
  */
 extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena_void,
                                                                       void* jmp_buf_ptr) {
