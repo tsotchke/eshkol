@@ -670,6 +670,8 @@ extern uint64_t eshkol_ad_counter_primal_calls(void);
 extern uint64_t eshkol_ad_counter_reverse_passes(void);
 extern uint64_t eshkol_ad_counter_tape_allocations(void);
 extern uint64_t eshkol_ad_counter_tape_nodes(void);
+extern uint64_t eshkol_ad_counter_scalar_ad_nodes(void);
+extern uint64_t eshkol_ad_counter_tensor_ad_nodes(void);
 extern uint64_t eshkol_ad_counter_finite_difference_evals(void);
 extern void eshkol_ad_count_fd(void);
 
@@ -689,6 +691,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ad_reverse_passes_v(void) {
 /** Implements `(ad-tape-allocations)`: reverse-mode tapes allocated since reset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tape_allocations_v(void) {
     return sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations());
+}
+/** Implements `(ad-scalar-ad-nodes)`: scalar reverse nodes since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_scalar_ad_nodes_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_scalar_ad_nodes());
+}
+/** Implements `(ad-tensor-ad-nodes)`: tensor reverse nodes since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tensor_ad_nodes_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_tensor_ad_nodes());
 }
 /** Implements `(ad-finite-difference-evals)`: finite-difference evaluations since reset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_finite_difference_evals_v(void) {
@@ -712,14 +722,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ad_note_finite_difference_v(void
 }
 /** Implements `(ad-counters)`: an assoc list of every AD counter, e.g.
  *  ((primal-calls . 1) (reverse-passes . 1) (tape-allocations . 1)
- *   (tape-nodes . N) (finite-difference-evals . 0)). Built by prepending, so
- *  entries are listed in this order. */
+ *   (tape-nodes . N) (scalar-ad-nodes . S) (tensor-ad-nodes . T)
+ *   (finite-difference-evals . 0)). Built by prepending, so entries are listed
+ *  in this order. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_counters_v(void) {
     eshkol_sysbuiltin_value_t result = sys_make_null();
     result = sys_make_pair(sys_alist_entry("finite-difference-evals",
         sys_make_int64((int64_t)eshkol_ad_counter_finite_difference_evals())), result);
     result = sys_make_pair(sys_alist_entry("tape-nodes",
         sys_make_int64((int64_t)eshkol_ad_counter_tape_nodes())), result);
+    result = sys_make_pair(sys_alist_entry("tensor-ad-nodes",
+        sys_make_int64((int64_t)eshkol_ad_counter_tensor_ad_nodes())), result);
+    result = sys_make_pair(sys_alist_entry("scalar-ad-nodes",
+        sys_make_int64((int64_t)eshkol_ad_counter_scalar_ad_nodes())), result);
     result = sys_make_pair(sys_alist_entry("tape-allocations",
         sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations())), result);
     result = sys_make_pair(sys_alist_entry("reverse-passes",
@@ -5218,6 +5233,8 @@ void eshkol_builtin_ad_reset_counters(sv_t* out) { *out = eshkol_builtin_ad_rese
 void eshkol_builtin_ad_primal_calls(sv_t* out) { *out = eshkol_builtin_ad_primal_calls_v(); }
 void eshkol_builtin_ad_reverse_passes(sv_t* out) { *out = eshkol_builtin_ad_reverse_passes_v(); }
 void eshkol_builtin_ad_tape_allocations(sv_t* out) { *out = eshkol_builtin_ad_tape_allocations_v(); }
+void eshkol_builtin_ad_scalar_ad_nodes(sv_t* out) { *out = eshkol_builtin_ad_scalar_ad_nodes_v(); }
+void eshkol_builtin_ad_tensor_ad_nodes(sv_t* out) { *out = eshkol_builtin_ad_tensor_ad_nodes_v(); }
 void eshkol_builtin_ad_finite_difference_evals(sv_t* out) { *out = eshkol_builtin_ad_finite_difference_evals_v(); }
 void eshkol_builtin_ad_note_finite_difference(sv_t* out) { *out = eshkol_builtin_ad_note_finite_difference_v(); }
 void eshkol_builtin_ad_counters(sv_t* out) { *out = eshkol_builtin_ad_counters_v(); }

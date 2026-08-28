@@ -1077,6 +1077,8 @@ static const char* prelude_local_names[] = {
     "ad-primal-calls",
     "ad-reverse-passes",
     "ad-tape-allocations",
+    "ad-scalar-ad-nodes",
+    "ad-tensor-ad-nodes",
     "ad-finite-difference-evals",
     "ad-counters",
     "make-tensor",

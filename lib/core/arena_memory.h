@@ -379,6 +379,8 @@ typedef struct {
     uint64_t reverse_passes;           // backward sweeps actually executed
     uint64_t tape_allocations;         // reverse-mode tapes allocated
     uint64_t tape_nodes;               // AD nodes appended to tapes
+    uint64_t scalar_ad_nodes;          // scalar nodes recorded on reverse tapes
+    uint64_t tensor_ad_nodes;          // tensor nodes recorded on reverse tapes
     uint64_t finite_difference_evals;  // finite-difference evaluations on any AD path
 } EshkolADCounters;
 
@@ -394,11 +396,19 @@ void eshkol_ad_count_reverse(void);
 /** Increment the finite-difference counter; invoked from emitted IR each
  *  time a finite-difference evaluation runs on an AD path. */
 void eshkol_ad_count_fd(void);
+/** Increment the scalar-node counter at a scalar recording site. */
+void eshkol_ad_count_scalar_node(void);
+/** Increment the tensor-node counter at a tensor recording site. */
+void eshkol_ad_count_tensor_node(void);
 // Individual readers (Scheme-builtin backends).
 uint64_t eshkol_ad_counter_primal_calls(void);
 uint64_t eshkol_ad_counter_reverse_passes(void);
 uint64_t eshkol_ad_counter_tape_allocations(void);
 uint64_t eshkol_ad_counter_tape_nodes(void);
+uint64_t eshkol_ad_counter_scalar_ad_nodes(void);
+uint64_t eshkol_ad_counter_tensor_ad_nodes(void);
+/** True when strict AD validation is requested through ESHKOL_AD_STRICT=1. */
+bool eshkol_ad_strict_enabled(void);
 /** Read the total count of finite-difference evaluations performed on any
  *  AD path since the last eshkol_ad_counters_reset(). */
 uint64_t eshkol_ad_counter_finite_difference_evals(void);
@@ -408,6 +418,24 @@ uint64_t eshkol_ad_counter_finite_difference_evals(void);
 //   num_variables so a single reverse sweep's per-input gradients can be read back
 //   without replaying the loss per component.
 void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n);
+/** Zero scalar and tensor gradients for every node currently on @p tape. */
+void arena_tape_zero_gradients(ad_tape_t* tape);
+
+/** Forward callback used by the shared one-pass value-and-gradient core. */
+typedef int (*eshkol_ad_forward_callback)(void* context, ad_tape_t* tape,
+                                          ad_node_t** output);
+/** Reverse callback used by the shared one-pass value-and-gradient core. */
+typedef int (*eshkol_ad_backward_callback)(void* context, ad_tape_t* tape,
+                                           ad_node_t* output);
+/**
+ * Run one forward callback and one reverse callback, then collect all tape
+ * variable gradients. The callbacks are the engine-specific lowering seam;
+ * the invocation and counter discipline are shared by native AD consumers.
+ */
+int eshkol_value_and_grad(void* context, ad_tape_t* tape,
+                          eshkol_ad_forward_callback forward,
+                          eshkol_ad_backward_callback backward,
+                          double* value, double* gradients, size_t gradient_count);
 //   eshkol_ad_mixed_record_count: monotonic count of reverse-over-forward mixed
 //   records. The one-pass gradient snapshots this around its single primal pass;
 //   a nonzero delta means an inner forward-mode derivative ran (per-component seed

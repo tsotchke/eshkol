@@ -767,6 +767,8 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_scalar_ad_nodes;
+    uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
 
     /* VM-lifetime geometric optimizer state for compatibility builtins. */

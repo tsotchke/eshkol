@@ -6042,3 +6042,56 @@ entries:
       scripts/run_gpu_tests.sh and scripts/lib/test_isolation.sh's
       bash-side grep-based marker matching already operate line-by-line
       and are unaffected.
+
+  - id: SW-103
+    bucket: DOC-DEBT
+    status: open
+    title: "ADR-0000 Stage 1 instrumentation must distinguish scalar and tensor nodes and clear both gradient stores"
+    repro: >-
+      Before this slice, EshkolADCounters exposed only one tape-node count and
+      arena_tape_reset() documented scalar clearing without a named operation
+      for zeroing tensor adjoints. A green finite-difference assertion could
+      therefore not distinguish a scalar-only tape from a tensor tape, and a
+      reused tensor tape could retain a prior tensor gradient.
+    observed: >-
+      The public counter structure had no scalar_ad_nodes or tensor_ad_nodes
+      fields, and there was no arena_tape_zero_gradients symbol for the Stage 1
+      gate to call.
+    correct: >-
+      The native and VM instrumentation surfaces expose the scalar/tensor split;
+      tape recording increments the matching native counter; and the explicit
+      zero-gradient operation clears scalar and shaped tensor adjoints before
+      reuse. The close condition is a passing native/VM gate that exercises both
+      counter classes and the tensor reset path.
+    evidence: >-
+      Implementation is present in lib/core/runtime_autodiff.cpp,
+      lib/core/arena_memory.h, lib/backend/vm_core.c, and lib/backend/vm_native.c.
+      The executable close evidence is tests/core/ad_tape_zero_gradients_test.cpp
+      plus the one-pass AD gate after the mandated Linux build.
+
+  - id: SW-104
+    bucket: DOC-DEBT
+    status: open
+    title: "ADR-0000 Stage 2 semantic identity must not fork from the parser NodeId substrate"
+    repro: >-
+      The frontend previously carried source spans on one substrate while
+      binding and type work had no shared NodeId-keyed records. Import modifier
+      identity was represented by generated value-copying define aliases, so a
+      prefixed or renamed spelling was not a first-class reference to the
+      provider binding.
+    observed: >-
+      BindingId, interned NominalTypeId/TypeRef terms, Dyn, and typed HIR metadata
+      were absent from the shared frontend substrate, and no binding-aware import
+      algebra existed for the compiler, tooling, and VM to consume together.
+    correct: >-
+      The semantic substrate records BindingId and typed expression facts against
+      the parser's NodeId, interns nominal terms, keeps Dyn distinct from Value,
+      and evaluates recursive import modifiers while preserving binding identity.
+      The close condition is the Stage 2 cross-consumer gate: zero generated
+      aliases, identical native/VM/tooling identities, and unchanged unannotated
+      R7RS behavior.
+    evidence: >-
+      Implementation is present in inc/eshkol/frontend/semantic_identity.h,
+      lib/frontend/semantic_identity.cpp, and tests/frontend/semantic_identity_test.cpp.
+      The Stage 2 gate remains open until the cross-consumer evidence is run on
+      the mandated Linux build.

@@ -445,6 +445,7 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-value-of", 1842, 2}, {"ad-tape-length", 1843, 1}, {"ad-pow", 1844, 3},
     {"ad-reset-counters!", 2082, 0}, {"ad-primal-calls", 2083, 0},
     {"ad-reverse-passes", 2084, 0}, {"ad-tape-allocations", 2085, 0},
+    {"ad-scalar-ad-nodes", 2089, 0}, {"ad-tensor-ad-nodes", 2090, 0},
     {"ad-finite-difference-evals", 2086, 0}, {"ad-counters", 2087, 0},
     /* Write end of the finite-difference counter: every FD site — compiler,
      * runtime or stdlib Scheme — reports one perturbation evaluation through

@@ -3017,6 +3017,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/semantic_identity_test.cpp")
+    add_executable(semantic_identity_test tests/frontend/semantic_identity_test.cpp)
+    target_compile_features(semantic_identity_test PRIVATE cxx_std_20)
+    target_include_directories(semantic_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(semantic_identity_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(semantic_identity_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(semantic_identity_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME semantic_identity_test COMMAND semantic_identity_test)
+    set_tests_properties(semantic_identity_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: semantic identity and Diagnostic v1")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_io_test.cpp")
     add_executable(model_io_test tests/core/model_io_test.cpp)
     target_compile_features(model_io_test PRIVATE cxx_std_20)
@@ -3027,6 +3041,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
+    add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
+    target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)
+    target_include_directories(ad_tape_zero_gradients_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tape_zero_gradients_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tape_zero_gradients_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tape_zero_gradients_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tape_zero_gradients_test COMMAND ad_tape_zero_gradients_test)
+    set_tests_properties(ad_tape_zero_gradients_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: tape zeroes scalar and tensor gradients")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")

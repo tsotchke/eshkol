@@ -42,6 +42,23 @@ components:
     entry_points:
       - {path: lib/frontend/parser.cpp}
 
+  - id: semantic-identity
+    role: analysis
+    description: >
+      Shared NodeId-keyed semantic substrate for binding resolution, interned
+      type terms, typed expression metadata, and versioned frontend diagnostics.
+      The resolver is a consumer of parser identity, not a second identity
+      scheme, and its tables are shared by native tooling and future VM consumers.
+    modules:
+      - inc/eshkol/frontend/node_identity.h
+      - inc/eshkol/frontend/semantic_identity.h
+      - inc/eshkol/frontend/diagnostic.h
+      - lib/frontend/node_identity.cpp
+      - lib/frontend/semantic_identity.cpp
+      - lib/frontend/diagnostic.cpp
+    entry_points:
+      - {path: lib/frontend/semantic_identity.cpp}
+
   - id: llvm-codegen
     role: backend
     description: >
@@ -169,6 +186,16 @@ dataflows:
       The reader lowers source to AST + a special-form/builtin head-symbol
       space; every backend (native LLVM, VM, WASM) must dispatch the same space.
 
+  - id: frontend_identity_to_semantics
+    producer: frontend-reader
+    consumer: semantic-identity
+    produces: [node_id, source_span]
+    consumes: [ast]
+    key_space: {kind: node_id, identifier: "parser-minted AST identity"}
+    description: >
+      Binding and type facts are side-table records keyed by the parser's
+      NodeId. No consumer is permitted to mint a parallel node identity.
+
   - id: codegen_to_vm
     producer: llvm-codegen
     consumer: bytecode-vm
@@ -228,6 +255,18 @@ capabilities:
     dependencies: [ad-tower]
     dependency_constructor: "createDualNumber|makeDual8|makeDual4|seedForwardAndPush"
     dependency_paths: [lib/backend/autodiff_codegen.cpp]
+
+  - id: semantic_binding_resolution
+    feature: NodeId-keyed binding resolution and interned type terms
+    entry_points:
+      - {path: lib/frontend/semantic_identity.cpp}
+    arming:
+      kind: symbol
+      path: lib/frontend/semantic_identity.cpp
+      pattern: BindingResolver::resolve
+    dependencies: [frontend-reader]
+    dependency_constructor: "eshkol_binding_id_for_node|eshkol_nominal_type_intern"
+    dependency_paths: [inc/eshkol/frontend/semantic_identity.h]
 
   - id: base64_ffi_builtin
     feature: base64/base64url string FFI builtins (incident #250)
@@ -344,6 +383,43 @@ capabilities:
 # INVARIANTS — one per incident class from the adversarial campaign
 # --------------------------------------------------------------------------
 invariants:
+
+  - id: INV-node-identity-single-substrate
+    kind: key-space-equality
+    incident: frontend-identity-fork
+    severity: critical
+    fidelity: grep
+    description: >
+      Source spans, resolved bindings, and typed expression facts use the same
+      parser-minted NodeId key. A frontend pass may add a side-table column but
+      may not mint a second identity or attach semantic facts only to a string
+      spelling.
+    sites:
+      - id: parser-node-key
+        path: inc/eshkol/eshkol.h
+        key_pattern: 'uint32_t node_id'
+      - id: span-substrate
+        path: inc/eshkol/frontend/node_identity.h
+        key_pattern: 'eshkol_node_id_t'
+      - id: semantic-substrate
+        path: inc/eshkol/frontend/semantic_identity.h
+        key_pattern: 'eshkol_binding_id_t.*node_id|eshkol_typed_expr_info'
+
+  - id: INV-ad-counters-measure-real-events
+    kind: dependency-presence
+    incident: ad-counter-vacuous-zero
+    severity: critical
+    fidelity: grep
+    description: >
+      The AD counter substrate exposes primal, reverse, tape, scalar-node,
+      tensor-node, and finite-difference counts, with reset and read APIs. The
+      tape zero-gradient operation is explicit so a reverse pass can be reused
+      without carrying stale scalar or tensor adjoints.
+    impl: {path: lib/core/runtime_autodiff.cpp, symbol: arena_tape_zero_gradients}
+    guard:
+      path: lib/core/arena_memory.h
+      symbol: arena_tape_zero_gradients
+      pattern: 'arena_tape_zero_gradients'
 
   # 1. Dispatch parity is a classified, executable contract.  Literal table
   #    equality is incorrect: each backend intentionally owns internal helpers
