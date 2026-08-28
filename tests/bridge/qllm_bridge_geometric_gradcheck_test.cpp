@@ -561,16 +561,21 @@ static void check_distance_near_boundary_identity(void) {
 }
 
 /** @brief The same point against central differences. The step is scaled to the
- *  distance to the boundary (h = 1e-3 * (1 - c|x|^2)) rather than fixed: a
- *  fixed 1e-6 step is larger than the whole remaining gap to the boundary here
- *  and would measure a different function. */
+ *  distance to the boundary, h = 1e-4 * (1 - c|x|^2), rather than fixed. The
+ *  file's usual STEP of 1e-6 is HALF the entire remaining gap to the boundary
+ *  here (1 - c|x|^2 = 2e-6), so the shifted points sit in a completely
+ *  different part of the geometry: measured, a 1e-6 step gives a finite
+ *  difference 30% off the true derivative. Scaled steps, measured against the
+ *  exact lambda_x: 1e-2*gap -> 7.2e-5, 1e-3*gap -> 7.4e-7, 1e-4*gap -> 7.9e-9.
+ *  1e-4 is chosen for two orders of margin under the 1e-6 bar; going further
+ *  would start trading truncation error for cancellation. */
 static void check_distance_near_boundary_fd(void) {
     const int64_t sh[1] = { 3 };
     const double c = 1.0;
     double X[3], Y[3] = { -0.20, 0.25, 0.10 };
     at_radius(1.0 - 1e-6, X);
     double gap = 1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]);
-    double h = 1e-3 * gap;
+    double h = 1e-4 * gap;
 
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
