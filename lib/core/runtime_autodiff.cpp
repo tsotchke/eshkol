@@ -31,13 +31,15 @@ bool __ad_mode_active = false;
 // Process-global (not thread_local): AD runs on the main thread and the Scheme
 // reader builtins that expose these must observe the same object the emitted
 // increments write. Kept plain so LLVM ExternalLinkage globals link portably.
-static EshkolADCounters __eshkol_ad_counters = {0, 0, 0, 0, 0};
+static EshkolADCounters __eshkol_ad_counters = {0, 0, 0, 0, 0, 0, 0};
 
 void eshkol_ad_counters_reset(void) {
     __eshkol_ad_counters.primal_calls = 0;
     __eshkol_ad_counters.reverse_passes = 0;
     __eshkol_ad_counters.tape_allocations = 0;
     __eshkol_ad_counters.tape_nodes = 0;
+    __eshkol_ad_counters.scalar_ad_nodes = 0;
+    __eshkol_ad_counters.tensor_ad_nodes = 0;
     __eshkol_ad_counters.finite_difference_evals = 0;
 }
 void eshkol_ad_counters_get(EshkolADCounters* out) {
@@ -49,10 +51,22 @@ void eshkol_ad_count_primal(void)  { __eshkol_ad_counters.primal_calls++; }
 void eshkol_ad_count_reverse(void) { __eshkol_ad_counters.reverse_passes++; }
 /** Increment the finite-difference-eval counter (see eshkol_ad_counter_finite_difference_evals()). */
 void eshkol_ad_count_fd(void)      { __eshkol_ad_counters.finite_difference_evals++; }
+void eshkol_ad_count_scalar_node(void) { __eshkol_ad_counters.scalar_ad_nodes++; }
+void eshkol_ad_count_tensor_node(void) { __eshkol_ad_counters.tensor_ad_nodes++; }
 uint64_t eshkol_ad_counter_primal_calls(void)  { return __eshkol_ad_counters.primal_calls; }
 uint64_t eshkol_ad_counter_reverse_passes(void){ return __eshkol_ad_counters.reverse_passes; }
 uint64_t eshkol_ad_counter_tape_allocations(void) { return __eshkol_ad_counters.tape_allocations; }
 uint64_t eshkol_ad_counter_tape_nodes(void)    { return __eshkol_ad_counters.tape_nodes; }
+uint64_t eshkol_ad_counter_scalar_ad_nodes(void) { return __eshkol_ad_counters.scalar_ad_nodes; }
+uint64_t eshkol_ad_counter_tensor_ad_nodes(void) { return __eshkol_ad_counters.tensor_ad_nodes; }
+bool eshkol_ad_strict_enabled(void) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("ESHKOL_AD_STRICT");
+        return value && value[0] && std::strcmp(value, "0") != 0 &&
+               std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0;
+    }();
+    return enabled;
+}
 uint64_t eshkol_ad_counter_finite_difference_evals(void) {
     return __eshkol_ad_counters.finite_difference_evals;
 }
@@ -607,6 +621,58 @@ void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n) {
     tape->num_variables = n;
 }
 
+extern "C" void arena_tape_zero_gradients(ad_tape_t* tape) {
+    if (!tape) {
+        eshkol_error("Cannot zero gradients on a null tape");
+        return;
+    }
+
+    for (size_t i = 0; i < tape->num_nodes; ++i) {
+        ad_node_t* node = tape->nodes ? tape->nodes[i] : nullptr;
+        if (!node) continue;
+        node->gradient = 0.0;
+        if (!node->tensor_gradient || !node->shape || node->ndim == 0) continue;
+
+        size_t elements = 1;
+        bool valid_shape = true;
+        for (size_t d = 0; d < node->ndim; ++d) {
+            if (node->shape[d] < 0 ||
+                static_cast<size_t>(node->shape[d]) >
+                    std::numeric_limits<size_t>::max() / elements) {
+                valid_shape = false;
+                break;
+            }
+            elements *= static_cast<size_t>(node->shape[d]);
+        }
+        if (valid_shape) std::memset(node->tensor_gradient, 0, elements * sizeof(double));
+    }
+}
+
+extern "C" int eshkol_value_and_grad(void* context, ad_tape_t* tape,
+                                      eshkol_ad_forward_callback forward,
+                                      eshkol_ad_backward_callback backward,
+                                      double* value, double* gradients,
+                                      size_t gradient_count) {
+    if (!tape || !forward || !backward || !value ||
+        (gradient_count != 0 && !gradients)) {
+        return 0;
+    }
+    arena_tape_zero_gradients(tape);
+    ad_node_t* output = nullptr;
+    if (!forward(context, tape, &output) || !output) return 0;
+    __eshkol_ad_counters.primal_calls++;
+    if (!backward(context, tape, output)) return 0;
+    __eshkol_ad_counters.reverse_passes++;
+    *value = output->value;
+    const size_t available = tape->num_variables < gradient_count
+        ? tape->num_variables : gradient_count;
+    for (size_t i = 0; i < available; ++i) {
+        gradients[i] = tape->variables[i] ? tape->variables[i]->gradient : 0.0;
+    }
+    for (size_t i = available; i < gradient_count; ++i) gradients[i] = 0.0;
+    return 1;
+}
+
 /**
  * @brief Appends a node to the tape's evaluation-order node list.
  *
@@ -675,6 +741,8 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
 
     tape->nodes[tape->num_nodes++] = node;
     __eshkol_ad_counters.tape_nodes++;
+    if (node->tensor_value) __eshkol_ad_counters.tensor_ad_nodes++;
+    else __eshkol_ad_counters.scalar_ad_nodes++;
 }
 
 /**

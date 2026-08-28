@@ -572,7 +572,8 @@ llvm::Value* adNoteFiniteDifference(const eshkol_operations_t* op);
 llvm::Value* adCounters(const eshkol_operations_t* op);
 ```
 
-(ad-counters) — assoc list of all AD instrumentation counters.
+(ad-counters) — assoc list of all seven AD instrumentation counters, including
+scalar and tensor node counts.
 
 ### `SystemCodegen::tempDirectory`
 

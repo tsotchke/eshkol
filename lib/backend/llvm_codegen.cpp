@@ -8,6 +8,8 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/node_identity.h>
+#include <eshkol/frontend/semantic_identity.h>
+#include <eshkol/frontend/diagnostic.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/function_cache.h>
 #include <eshkol/backend/memory_codegen.h>
@@ -2182,6 +2184,21 @@ public:
                     }
                 }
                 expanded_asts = std::move(flattened);
+            }
+
+            // Resolve the expanded unit against the shared NodeId-keyed
+            // semantic substrate before backend-specific lowering. The result
+            // is intentionally metadata-only in this stage: existing codegen
+            // remains spelling-compatible while compiler, tooling, and future
+            // VM consumers begin reading one binding/type identity table.
+            eshkol::frontend::BindingResolver semantic_resolver;
+            const auto semantic_result = semantic_resolver.resolve(expanded_asts);
+            if (!semantic_result.ok()) {
+                for (const auto& diagnostic : semantic_result.diagnostics) {
+                    eshkol_diagnostic_emit_v1(ESHKOL_DIAGNOSTIC_ERROR,
+                                              diagnostic.node_id, "E-BIND",
+                                              diagnostic.message.c_str());
+                }
             }
 
             // Use expanded ASTs for the rest of code generation
@@ -14826,6 +14843,8 @@ private:
         if (func_name == "ad-primal-calls") return system_->adPrimalCalls(op);
         if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
         if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
+        if (func_name == "ad-scalar-ad-nodes") return system_->adScalarAdNodes(op);
+        if (func_name == "ad-tensor-ad-nodes") return system_->adTensorAdNodes(op);
         if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
         if (func_name == "ad-note-finite-difference!") return system_->adNoteFiniteDifference(op);
         if (func_name == "ad-counters") return system_->adCounters(op);
