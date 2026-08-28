@@ -1545,6 +1545,18 @@ oracles:
         label: 'Assurance wave 2: the self-verdict scanner fails a PASS-graded artifact whose text still contains a self-reported failure marker (scripts/check_self_verdicts.py), wired into run_ctest_gate.sh and run_vm_parity.sh'
         action: python3 scripts/check_self_verdicts.py --self-test
 
+      # Verified 2026-08-27 on a real Windows PowerShell 5.1 host: a BOM-less
+      # .ps1 with non-ASCII bytes decodes differently there (system ANSI code
+      # page) than under CI's pwsh 7 (UTF-8 default), corrupting string
+      # literals with no signal from a green CI run.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ps1_encoding_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every tracked *.ps1/*.psm1 file is ASCII, or opens with a UTF-8 BOM, so Windows PowerShell 5.1 and pwsh 7 decode it identically (scripts/check_ps1_encoding.py)'
+        action: python3 scripts/check_ps1_encoding.py
+
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:
           event_kinds: [eshkol_smoke]
