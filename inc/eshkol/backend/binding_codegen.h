@@ -151,6 +151,8 @@ private:
     using GetTypedValueTypeFunc = int (*)(void* typed_value, void* context);
     // Register function binding (for apply/call resolution)
     using RegisterFuncBindingFunc = void (*)(const char* var_name, void* typed_value, void* context);
+    // Decide whether a lexical binding is the target of set! in its scope.
+    using IsVarSetFunc = bool (*)(const void* ast, const char* name, void* context);
 
     // Stored callback instances set via setCodegenCallbacks() (see the
     // typedefs above for each callback's signature/purpose)
@@ -159,6 +161,7 @@ private:
     TypedToTaggedFunc typed_to_tagged_callback_ = nullptr;
     GetTypedValueTypeFunc get_typed_value_type_callback_ = nullptr;
     RegisterFuncBindingFunc register_func_binding_callback_ = nullptr;
+    IsVarSetFunc is_var_set_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Symbol tables (references to main codegen's tables)
@@ -233,6 +236,11 @@ public:
         get_typed_value_type_callback_ = get_typed_value_type;
         register_func_binding_callback_ = register_func_binding;
         callback_context_ = context;
+    }
+
+    /** Set the compiler-owned lexical mutation analysis callback. */
+    void setMutationAnalysisCallback(IsVarSetFunc callback) {
+        is_var_set_callback_ = callback;
     }
 
     /**

@@ -50,12 +50,55 @@ import sys
 
 DOC_HDR = re.compile(r"^#+\s*`\(([a-z][a-zA-Z0-9!?*+<>=./_%-]*)")
 PROVIDE = re.compile(r"\(provide\s+([^)]*)\)", re.S)
-DEFINE = re.compile(r"\(define\s+\(?\s*([a-z][a-zA-Z0-9!?*+<>=./_%-]*)")
+# Public module bindings include ordinary defines, uppercase/asterisk
+# constants, and FFI declarations. Keep the token grammar aligned with the
+# reader instead of silently dropping valid names because they do not begin
+# with a lowercase letter.
+NAME = r"([A-Za-z_*][A-Za-z0-9!?*+<>=./_%-]*)"
+DEFINE = re.compile(r"\(define\s+\(?\s*" + NAME)
+EXTERN = re.compile(r"\(extern\s+\S+\s+" + NAME)
 
 
 def read(path):
     with open(path, encoding="utf-8", errors="replace") as fh:
         return fh.read()
+
+
+def strip_scheme_comments(text):
+    """Remove Scheme line comments without changing string contents.
+
+    The module collector is a source-surface check, not a prose search. A
+    `provide` example in a comment must not create an exported name, and a
+    semicolon inside a string must remain data. Keeping this normalization at
+    the collector boundary makes all five surfaces use the same source view.
+    """
+    out = []
+    in_string = False
+    escaped = False
+    in_comment = False
+    for ch in text:
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+                out.append(ch)
+            continue
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+        elif ch == ";":
+            in_comment = True
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def collect_docs(root):
@@ -86,13 +129,15 @@ def collect_modules(root):
     provided = set()
     defined = set()
     for esk in glob.glob(os.path.join(root, "lib/**/*.esk"), recursive=True):
-        txt = read(esk)
+        txt = strip_scheme_comments(read(esk))
         for m in PROVIDE.finditer(txt):
             for tok in m.group(1).split():
                 tok = tok.strip()
                 if tok and not tok.startswith(";"):
                     provided.add(tok)
         for m in DEFINE.finditer(txt):
+            defined.add(m.group(1))
+        for m in EXTERN.finditer(txt):
             defined.add(m.group(1))
     return provided, defined
 

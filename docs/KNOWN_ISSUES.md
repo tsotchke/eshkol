@@ -723,6 +723,16 @@ block ordinary use.
 
 ---
 
+## Continuations
+
+- **Assignment conversion for continuation re-entry is complete.** Every local
+  targeted by `set!` is stored in an arena-backed cell, including locals that
+  no closure captures. Re-entering a continuation therefore restores control
+  without rolling back the mutable location on native JIT, native AOT, or the
+  bytecode VM. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript. This closes SW-62 in
+  `.icc/silent-wrong-ledger.yaml`.
+
 ## Roadmap (Future Releases)
 
 These are planned features, not deficiencies in the current release. Targets

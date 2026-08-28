@@ -1740,9 +1740,10 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile a `(let ((var val)...) body...)` special form:
  *        evaluates each binding's value in the outer scope, boxing it in
- *        a 1-element vector (needs_boxing()) when it's both `set!`-mutated
- *        and captured by a nested lambda, then compiles the body with
- *        those locals in scope. */
+ *        a 1-element vector (needs_boxing()) whenever it is `set!`-mutated,
+ *        then compiles the body with those locals in scope. Assignment
+ *        conversion is required even without a closure: call/cc restores
+ *        control state, not the mutable location (SW-62). */
 static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -2022,7 +2023,7 @@ static const char* param_name(Node* p) {
 
 /**
  * @brief Heap-box every parameter of the just-opened function chunk @p func
- *        that is both `set!`-mutated and captured by a nested lambda (SW-25).
+ *        that is `set!`-mutated (SW-25, SW-62).
  *
  * THE DEFECT THIS CLOSES. `compile_form_let()` has always run needs_boxing()
  * over its bindings, so a `let`-bound variable that an inner lambda mutates
@@ -2280,7 +2281,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
 /**
  * @brief Compile `(set! name value)`: for an unboxed local, a direct
- *        OP_SET_LOCAL; for a boxed local (mutated + captured — see
+ *        OP_SET_LOCAL; for an assignment-converted local (see
  *        needs_boxing()), a VEC_SET into its 1-element box vector. When
  *        @p name isn't a local in the current scope, walks the enclosing
  *        FuncChunk chain to find it, threading upvalue registrations

@@ -10,6 +10,12 @@
 ;; This module provides a simplified API for non-TUI consumers
 ;; (e.g., formatting tool output, table rendering).
 
+(define (layout-compute direction width children)
+  "Compute a row or column layout for the supplied children."
+  (if (eq? direction 'row)
+      (layout-row children width)
+      (layout-column children width)))
+
 (define (layout-box direction width children)
   "Compute layout for a flex container.
    direction: 'row or 'column

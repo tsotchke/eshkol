@@ -1,0 +1,23 @@
+# These names are deliberately local to incompatible translation units.
+# The standalone compiler/weight tools and the hosted VM are not linked
+# together, while test accumulators and backend threshold initializers have
+# translation-unit-local ownership. ICC still reports them for inspection;
+# this source gate records the reviewed boundary instead of hiding a linker
+# collision behind an unqualified global allowance.
+CallFrame
+DepthGuard
+Fixture
+FuncChunk
+HeapObject
+HeapType
+Instr
+Local
+Node
+NodeType
+OpCode
+RelAcc
+ThresholdInitializer
+Token
+TokenType
+Upvalue
+ValType

@@ -391,11 +391,22 @@ def main():
             }, f, indent=2)
 
     if args.update_baseline:
+        dispositions = baseline.get("dispositions", {})
+        if not isinstance(dispositions, dict):
+            dispositions = {}
+        missing_dispositions = [d["program"] for d in divergences
+                                if d["program"] not in dispositions]
+        if missing_dispositions:
+            die("every retained divergence needs a named disposition; missing: %s"
+                % ", ".join(missing_dispositions))
         with open(BASELINE, "w", encoding="utf-8") as f:
             json.dump({
                 "_comment": ("Ratchet for scripts/run_engine_parity_coverage.py. "
                              "divergent_programs may never grow; "
                              "differential_floor may never fall."),
+                "dispositions": {name: dispositions[name]
+                                 for name in sorted(dispositions)
+                                 if name in {d["program"] for d in divergences}},
                 "divergent_programs": sorted(d["program"] for d in divergences),
                 "both_ran_programs": sorted(both_ran_now),
                 "differential_floor": round(fraction, 4),

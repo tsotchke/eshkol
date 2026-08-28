@@ -55,6 +55,30 @@ static bool isReplMode(bool* ptr) {
 }
 
 /**
+ * @brief Return whether @p name is assigned in @p ast.
+ *
+ * The main LLVM code generator owns the complete AST walk because it also
+ * uses the result for closure and loop capture decisions. BindingCodegen
+ * asks that same analysis before choosing stack or arena storage, keeping
+ * assignment conversion at the binding root instead of duplicating a
+ * partial syntax walk here.
+ */
+static bool astSetsVar(bool (*callback)(const void*, const char*, void*),
+                       const void* ast, const std::string& name, void* context) {
+    return callback && callback(ast, name.c_str(), context);
+}
+
+/** Allocate one tagged-value cell in the live arena. */
+static Value* allocateMutableCell(CodegenContext& ctx, const std::string& name) {
+    Value* arena = ctx.builder().CreateLoad(ctx.ptrType(), ctx.globalArena(),
+                                             name + ".assignment_arena");
+    return ctx.builder().CreateCall(
+        ctx.memory().getArenaAllocate(),
+        {arena, ConstantInt::get(ctx.sizeType(), 16)},
+        name + ".assignment_cell");
+}
+
+/**
  * @brief Mangle a Scheme variable name into a private REPL storage-slot symbol name.
  *
  * Produces `__repl_storage_<encoded name>`, where every character that is not
@@ -718,39 +742,50 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
             continue;
         }
 
-        // Create alloca and store
+        // Assignment conversion: a local whose location is mutated must not
+        // live in the stack image captured by call/cc. Keep the location in
+        // the arena instead; codegenSet already treats any pointer-backed
+        // binding as mutable storage. This applies even when no closure
+        // captures the name: re-entry itself is the store/continuation
+        // boundary that requires a durable cell (SW-62).
+        const bool assignment_converted = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+
+        // Create storage and store
         // TCO FIX: When TCO is enabled, allocas MUST be in entry block to avoid
         // stack growth on each loop iteration. This is safe because:
         // 1. The alloca is just stack space - it doesn't capture any value
         // 2. The store happens at the current position with the correct value
         // 3. Closure captures work because we fixed codegenVariable to load from pointers
-        AllocaInst* alloca = nullptr;
-        if (tco_context_.enabled) {
+        Value* storage = nullptr;
+        if (assignment_converted) {
+            storage = allocateMutableCell(ctx_, var_name);
+        } else if (tco_context_.enabled) {
             // TCO path: Insert alloca in entry block
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             BasicBlock& entry_block = current_func->getEntryBlock();
             IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
             ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
-            alloca = ctx_.builder().CreateAlloca(
+            storage = ctx_.builder().CreateAlloca(
                 ctx_.taggedValueType(),
                 nullptr,
                 var_name
             );
-            alloca->setAlignment(Align(16));
+            cast<AllocaInst>(storage)->setAlignment(Align(16));
             ctx_.builder().restoreIP(saved_ip);
         } else {
             // Non-TCO path: Create alloca at current position (original behavior)
-            alloca = ctx_.builder().CreateAlloca(
+            storage = ctx_.builder().CreateAlloca(
                 ctx_.taggedValueType(),
                 nullptr,
                 var_name
             );
-            alloca->setAlignment(Align(16));
+            cast<AllocaInst>(storage)->setAlignment(Align(16));
         }
         // Store happens at current position regardless of where alloca is
-        ctx_.builder().CreateStore(tagged_val, alloca);
+        ctx_.builder().CreateStore(tagged_val, storage);
 
-        (*symbol_table_)[var_name] = alloca;
+        (*symbol_table_)[var_name] = storage;
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
@@ -885,6 +920,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     std::vector<std::string> var_names;
     std::vector<const eshkol_ast_t*> val_asts;
     std::vector<bool> is_lambda;
+    std::vector<bool> assignment_converted;
 
     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
         const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -901,6 +937,27 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         var_names.push_back(var_name);
         val_asts.push_back(val_ast);
         is_lambda.push_back(binding_is_lambda);
+        bool mutated = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+        for (const eshkol_ast_t* other : val_asts) {
+            if (other && astSetsVar(is_var_set_callback_, other,
+                                    var_name, callback_context_)) {
+                mutated = true;
+            }
+        }
+        assignment_converted.push_back(mutated);
+    }
+    // All letrec bindings are visible during every initializer, so include
+    // the complete initializer set even when the mutation appears later than
+    // the binding currently being classified.
+    for (size_t i = 0; i < assignment_converted.size(); ++i) {
+        for (const eshkol_ast_t* value : val_asts) {
+            if (value && astSetsVar(is_var_set_callback_, value,
+                                    var_names[i], callback_context_)) {
+                assignment_converted[i] = true;
+                break;
+            }
+        }
     }
 
     Function* current_func = getCurrentFunction(current_function_);
@@ -931,17 +988,16 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        if (use_local_storage) {
+        if (use_local_storage && assignment_converted[i]) {
+            storage = allocateMutableCell(ctx_, var_name + "_letrec");
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()), storage);
+        } else if (use_local_storage) {
             AllocaInst* local = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(),
-                nullptr,
-                var_name + "_letrec"
-            );
+                ctx_.taggedValueType(), nullptr, var_name + "_letrec");
             local->setAlignment(Align(16));
             ctx_.builder().CreateStore(
-                ConstantAggregateZero::get(ctx_.taggedValueType()),
-                local
-            );
+                ConstantAggregateZero::get(ctx_.taggedValueType()), local);
             storage = local;
             eshkol_debug("letrec: created local storage for %s", var_name.c_str());
         } else {
@@ -1239,17 +1295,37 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
             continue;
         }
 
-        // Create alloca and store
-        AllocaInst* alloca = ctx_.builder().CreateAlloca(
-            ctx_.taggedValueType(),
-            nullptr,
-            var_name
-        );
-        alloca->setAlignment(Align(16));
-        ctx_.builder().CreateStore(tagged_val, alloca);
+        // In let*, this binding is visible to every later initializer and the
+        // body. Assignment conversion must therefore inspect both portions of
+        // that scope, not just the body.
+        bool assignment_converted = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+        for (uint64_t later = i + 1;
+             !assignment_converted && later < op->let_op.num_bindings; ++later) {
+            const eshkol_ast_t* later_binding = &op->let_op.bindings[later];
+            if (later_binding->type == ESHKOL_CONS && later_binding->cons_cell.cdr) {
+                assignment_converted = astSetsVar(
+                    is_var_set_callback_, later_binding->cons_cell.cdr,
+                    var_name, callback_context_);
+            }
+        }
+
+        Value* storage = nullptr;
+        if (assignment_converted) {
+            storage = allocateMutableCell(ctx_, var_name);
+        } else {
+            AllocaInst* alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+            storage = alloca;
+        }
+        ctx_.builder().CreateStore(tagged_val, storage);
 
         // Add to symbol table immediately (visible to subsequent bindings)
-        (*symbol_table_)[var_name] = alloca;
+        (*symbol_table_)[var_name] = storage;
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
@@ -1355,6 +1431,21 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         }
     }
 
+    std::vector<bool> assignment_converted(var_names.size(), false);
+    for (size_t i = 0; i < var_names.size(); ++i) {
+        assignment_converted[i] = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_names[i], callback_context_);
+        for (uint64_t j = 0; !assignment_converted[i] &&
+             j < op->let_op.num_bindings; ++j) {
+            const eshkol_ast_t* binding = &op->let_op.bindings[j];
+            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                assignment_converted[i] = astSetsVar(
+                    is_var_set_callback_, binding->cons_cell.cdr,
+                    var_names[i], callback_context_);
+            }
+        }
+    }
+
     Function* current_func = getCurrentFunction(current_function_);
     bool use_local_storage = current_func != nullptr;
 
@@ -1378,17 +1469,16 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        if (use_local_storage) {
+        if (use_local_storage && assignment_converted[i]) {
+            storage = allocateMutableCell(ctx_, var_name + "_letrecstar");
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()), storage);
+        } else if (use_local_storage) {
             AllocaInst* local = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(),
-                nullptr,
-                var_name + "_letrecstar"
-            );
+                ctx_.taggedValueType(), nullptr, var_name + "_letrecstar");
             local->setAlignment(Align(16));
             ctx_.builder().CreateStore(
-                ConstantAggregateZero::get(ctx_.taggedValueType()),
-                local
-            );
+                ConstantAggregateZero::get(ctx_.taggedValueType()), local);
             storage = local;
             eshkol_debug("letrec*: created local storage for %s", var_name.c_str());
         } else {

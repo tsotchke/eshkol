@@ -1078,17 +1078,16 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
-/** @brief Check whether a let-bound variable @p name needs heap boxing:
- *         true only if it is both `set!`-mutated (scan_for_set()) and
- *         captured by a nested lambda (scan_for_capture()) somewhere across
- *         @p body_nodes. */
+/** @brief Check whether a lexical variable @p name needs assignment conversion.
+ *         Every set!-assigned local is stored in a heap cell. Closure capture
+ *         is not required: a re-entered continuation restores control state,
+ *         not the mutable location (SW-62). */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
-    int has_set = 0, has_capture = 0;
+    int has_set = 0;
     for (int i = 0; i < n_bodies; i++) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
-        if (scan_for_capture(body_nodes[i], name, 0)) has_capture = 1;
     }
-    return has_set && has_capture;
+    return has_set;
 }
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
