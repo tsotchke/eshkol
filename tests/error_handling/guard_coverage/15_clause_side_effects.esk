@@ -24,3 +24,15 @@
 (chk "clause-effect-visible-outside"
      (equal? (guard (e (#t (set! log-count 5) "done")) (raise 'x)) "done"))
 (chk "clause-effect-value" (equal? log-count 5))
+
+;; a clause body's side effect, once per iteration of an enclosing loop
+(define caught 0)
+(define (loop i acc)
+  (if (= i 10)
+      acc
+      (loop (+ i 1)
+            (+ acc (guard (e (#t (set! caught (+ caught 1)) 1))
+                     (if (even? i) (raise 'even) 0))))))
+(define loop-total (loop 0 0))
+(chk "guard-in-loop-total" (equal? loop-total 5))
+(chk "guard-in-loop-count" (equal? caught 5))

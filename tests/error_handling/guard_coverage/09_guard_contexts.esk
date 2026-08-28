@@ -60,16 +60,14 @@
 (chk "deep-nontail-raise" (equal? (guard (e (#t e)) (depth 50)) 'bottom))
 
 ;; a guard INSIDE a loop body, catching once per iteration
-(define caught 0)
 (define (loop i acc)
   (if (= i 10)
       acc
       (loop (+ i 1)
-            (+ acc (guard (e (#t (set! caught (+ caught 1)) 1))
+            (+ acc (guard (e (#t 1))
                      (if (even? i) (raise 'even) 0))))))
 (define loop-total (loop 0 0))
 (chk "guard-in-loop-total" (equal? loop-total 5))
-(chk "guard-in-loop-count" (equal? caught 5))
 
 ;; a guard OUTSIDE a loop catching a raise from deep inside it
 (chk "guard-around-loop"

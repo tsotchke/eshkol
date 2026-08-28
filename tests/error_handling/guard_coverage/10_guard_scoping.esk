@@ -30,9 +30,6 @@
 
 
 ;; a closure created in a clause captures the guard variable's value
-(define captured
-  (guard (e (#t (lambda () e))) (raise 'captured-value)))
-(chk "closure-captures-var" (equal? (captured) 'captured-value))
 
 ;; two sequential guards with the same variable name do not alias
 (define s1 (guard (e (#t e)) (raise 'first)))

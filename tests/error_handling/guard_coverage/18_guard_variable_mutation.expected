@@ -1,1 +1,1 @@
-PASS:set-guard-var PASS:outer-still-intact
+PASS:set-guard-var PASS:outer-still-intact PASS:closure-captures-var
