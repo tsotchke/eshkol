@@ -52,3 +52,22 @@
     (if (= i n) s
         (loop (+ i 1) (+ s (vref (gradient qloss (vector 1.0 2.0)) 0))))))
 (display (loopsum 500)) (newline)                               ; 1000
+
+; --- LE-06 / ESH-0097: the differentiated lambda CAPTURES A LOCAL binding ---
+; This shape used to fail LLVM verification on native ("PtrToInt source must be
+; pointer") and so had no VM counterpart to compare against. Both engines must
+; now answer identically. f(v) = a*v0^2 -> grad = (2*a*v0, 0).
+(define (mk-cap a)
+  (gradient (lambda (v) (* a (* (vref v 0) (vref v 0)))) (vector 1.3 -0.7)))
+(display (mk-cap 1.7)) (newline)                                ; #(4.42 0)
+; the same builder reused with a different captured value
+(display (mk-cap 3.0)) (newline)                                ; #(7.8 0)
+; captured VECTOR local, read inside the AD lambda
+(define (mk-cap-vec w)
+  (gradient (lambda (v) (* (vector-ref w 0) (* (vref v 0) (vref v 0)))) (vector 1.3 -0.7)))
+(display (mk-cap-vec (vector 1.7 0.3))) (newline)               ; #(4.42 0)
+; captured LET binding rather than a parameter: b = 2a, grad_0 = 2*b*v0
+(define (mk-cap-let a)
+  (let ((b (* a 2.0)))
+    (gradient (lambda (v) (* b (* (vref v 0) (vref v 0)))) (vector 1.3 -0.7))))
+(display (mk-cap-let 1.0)) (newline)                            ; #(5.2 0)

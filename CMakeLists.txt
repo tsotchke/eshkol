@@ -3812,6 +3812,68 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # LE-06 / ESH-0072 / ESH-0097: a vector-parameter AD operator whose
+    # differentiated lambda captures a LOCAL binding of the enclosing function.
+    # The defect this gates was a COMPILE-TIME one -- "PtrToInt source must be
+    # pointer (ptrtoint %eshkol_tagged_value %a to i64)", a module verification
+    # failure that killed the whole translation unit on BOTH -r and AOT -- so
+    # the FAIL_REGULAR_EXPRESSION names the verifier message directly and a
+    # regression is reported as itself rather than as an absent PASS. The two
+    # lanes are not redundant: the JIT and AOT reach the closure-environment
+    # unpack through different paths, and the original defect was present in
+    # both. The pre-existing regression (tests/ad/sweep_c_regressions_test.esk)
+    # was never wired into CTest -- it is registered below -- and covers only
+    # the `vector-ref` spelling with a captured SCALAR parameter; this file adds
+    # the `vref` path, captured VECTOR locals, let-bound captures, inert
+    # captures, capture reuse, and `curl`.
+    add_test(
+        NAME captured_local_vector_param_ad_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/captured_local_vector_param_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(captured_local_vector_param_ad_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: vector-parameter AD over captured locals"
+            FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|FAIL:|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
+    add_test(
+        NAME captured_local_vector_param_ad_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/captured_local_vector_param_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/captured_local_vector_param_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/captured_local_vector_param_aot'"
+    )
+    set_tests_properties(captured_local_vector_param_ad_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: vector-parameter AD over captured locals"
+            FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|FAIL:|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
+    # The GROUP C release-blocking AD regressions (ESH-0078 nested named-inner
+    # gradient, ESH-0096 vector-param gradient-of-gradient, ESH-0095
+    # hessian/laplacian on tensor points, ESH-0072/0097 captured-local AD,
+    # R->R^n vector-valued derivative) are the acceptance tests docs/KNOWN_ISSUES
+    # cites as the evidence those five are fixed -- and nothing ran them. Same
+    # unwired-acceptance-test defect as ESH-0394 above. Both lanes.
+    add_test(
+        NAME ad_sweep_c_regressions_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/sweep_c_regressions_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_sweep_c_regressions_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
+    add_test(
+        NAME ad_sweep_c_regressions_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_sweep_c_regressions_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/sweep_c_regressions_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_sweep_c_regressions_aot'"
+    )
+    set_tests_properties(ad_sweep_c_regressions_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "\\[FAIL\\]|LLVM module verification failed|PtrToInt source must be pointer|fatal signal")
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
     # carries interior bignum/rational HEAP_PTRs in its coefficient array that
     # evac_kind_for (lib/core/runtime_regions.cpp) dropped to a shallow leaf
