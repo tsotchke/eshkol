@@ -184,5 +184,22 @@ fi
 echo "  ratchet (matmul AD tape node count):"
 run_case "matmul-nodes" tests/ad/matmul_tape_node_count_test.esk matmul_tape_node_count_test
 
+# ---- DENSE PATH: one node per tensor op, and the SAME gradient --------------
+#
+# The ratchet above measures the tape. This measures the answer: the dense
+# lowering (ADR-0002 Position A) and the scalarizing one are run over the same
+# gradcheck program and their gradients compared byte-for-byte. Kept as its own
+# script because it compiles the program twice, once per lowering.
+echo "  dense tensor AD path (ADR-0002 Position A):"
+if [ "$DO_AOT" -eq 1 ]; then
+    dense_out="$(BUILD_DIR="$BUILD_DIR" bash "$REPO_ROOT/scripts/run_dense_tensor_ad_gate.sh" 2>&1)"; dense_rc=$?
+else
+    dense_out="$(BUILD_DIR="$BUILD_DIR" bash "$REPO_ROOT/scripts/run_dense_tensor_ad_gate.sh" --no-aot 2>&1)"; dense_rc=$?
+fi
+printf '%s\n' "$dense_out" | sed 's/^/    /'
+if [ "$dense_rc" -ne 0 ]; then
+    fail "dense tensor AD gate FAIL (rc=$dense_rc)"
+fi
+
 echo "AD exactness gate: $overall"
 [ "$overall" = PASS ]
