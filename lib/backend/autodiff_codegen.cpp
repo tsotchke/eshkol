@@ -7560,9 +7560,47 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     BasicBlock* out_vecval = BasicBlock::Create(ctx_.context(), "grad_out_vecval", current_func);
     BasicBlock* out_tscalar = BasicBlock::Create(ctx_.context(), "grad_out_tscalar", current_func);
     BasicBlock* out_decide = BasicBlock::Create(ctx_.context(), "grad_out_decide", current_func);
+
+    // DENSE TENSOR AD NODE AS THE LOSS (ADR-0002 Position A).
+    //
+    // On the dense path a tensor op returns the AD NODE, tagged CALLABLE, so a
+    // vector-valued body — `(gradient (lambda (x) (matmul x c)) x)` — now hands
+    // back a CALLABLE whose tensor_value holds M*N elements, where it used to
+    // hand back a HEAP_PTR tensor. The multi-element check below reads the
+    // HEAP_PTR form and would not see it, and seeding a multi-element node with
+    // all-ones would answer the gradient of the SUM of the outputs: a plausible
+    // number in place of the clean "gradient is undefined for a vector-valued
+    // function, the Jacobian is the right object" diagnostic. Same rule, same
+    // message, applied to the node form.
+    BasicBlock* out_adnode = BasicBlock::Create(ctx_.context(), "grad_out_adnode", current_func);
+    BasicBlock* out_adnode_len = BasicBlock::Create(ctx_.context(), "grad_out_adnode_len", current_func);
+    BasicBlock* out_adnode_vecval = BasicBlock::Create(ctx_.context(), "grad_out_adnode_vecval", current_func);
+    BasicBlock* out_hp_entry = BasicBlock::Create(ctx_.context(), "grad_out_hp_entry", current_func);
+    ctx_.builder().CreateCondBr(output_is_ad_node, out_adnode, out_hp_entry);
+
+    ctx_.builder().SetInsertPoint(out_hp_entry);
+    ctx_.builder().CreateCondBr(output_is_heap, out_tcheck, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode);
+    Value* out_ad_tv = ctx_.builder().CreateLoad(ctx_.ptrType(),
+        ctx_.builder().CreateStructGEP(ctx_.adNodeType(), output_node_ptr,
+                                       TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
     ctx_.builder().CreateCondBr(
-        ctx_.builder().CreateAnd(output_is_heap, ctx_.builder().CreateNot(output_is_ad_node)),
-        out_tcheck, out_decide);
+        ctx_.builder().CreateICmpNE(out_ad_tv,
+            ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()))),
+        out_adnode_len, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_len);
+    FunctionCallee out_ad_total_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_total_elements",
+        FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    Value* out_ad_m = ctx_.builder().CreateCall(out_ad_total_fn, {output_node_ptr}, "grad_out_ad_m");
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateICmpUGT(out_ad_m, ConstantInt::get(ctx_.int64Type(), 1)),
+        out_adnode_vecval, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_vecval);
+    emitVectorValuedGradientError(out_ad_m);
 
     ctx_.builder().SetInsertPoint(out_tcheck);
     Value* out_hp = tagged_.unpackPtr(output_tagged);
