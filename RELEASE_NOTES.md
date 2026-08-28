@@ -87,10 +87,14 @@ ICC readiness) is measured and stated here against the final release commit.
   `curl` went uncompared for so long. A new manifest declares, per operator
   and per engine, which differentiation carrier answers it, and a gate
   re-derives that declaration from the emitted native code and VM bytecode
-  handler rather than trusting it. The existing no-finite-differences
-  counter also gained its first real caller, so `(= (ad-finite-difference-evals)
-  0)` is now an assertion that can fail instead of one that was true by
-  construction.
+  handler rather than trusting it. The same change replaced the VM's last two
+  central-difference operators, `curl` and `divergence`, with exact
+  forward-dual implementations: a gradient field's curl now returns exactly
+  zero where the difference quotient returned 1.1e-09, and the VM builds its
+  3x3 Jacobian from three closure calls where the quotient needed six. The
+  existing no-finite-differences counter also gained its first real caller,
+  so `(= (ad-finite-difference-evals) 0)` is now an assertion that can fail
+  instead of one that was true by construction.
 
 ### Tail calls that do not care how they were spelled
 
@@ -101,15 +105,17 @@ ICC readiness) is measured and stated here against the final release commit.
   all of them — including calls with differing signatures, and on
   non-AArch64 targets — in a reused, constant-size frame. Tail calls through
   `guard` remain deliberately un-optimized, because R7RS does not make that
-  a tail context.
+  a tail context; the differential that established this also surfaced a
+  pre-existing wrong answer in that shape, filed as SW-58 and tracked open.
 
 ### Hardening and tooling
 
 - **Object-ABI migration, stage zero (ADR-0012).** A machine-verified
-  inventory of 1,273 call sites across 98 files that depend on the current
-  object-header layout, ratcheted so new sites fail the build, plus a
-  link-time guard that fails a mixed-ABI link with a named undefined symbol
-  instead of a silently wrong program.
+  inventory of 1,273 sites that depend on the current object-header layout —
+  816 of them found by lexical scanning across 98 files, the rest by
+  semantic resolution — with the lexical layer ratcheted so new sites fail
+  the build, plus a link-time guard that fails a mixed-ABI link with a named
+  undefined symbol instead of a silently wrong program.
 - **A leak-detection lane that could actually fail.** The ASan/LSan CI lane
   had been unable to report a leak since it shipped — a runtime override
   forced the process to exit 0 regardless of what LeakSanitizer found, and
@@ -123,10 +129,10 @@ ICC readiness) is measured and stated here against the final release commit.
   entirely; all four readers (native and VM tokenizers and runtime `read`)
   now handle the full quoted-datum grammar.
 - **A public, reproducible benchmark suite.** One command from a clean
-  checkout measures the axes where Eshkol claims something distinctive —
-  exact-AD cost curves, region-reclamation flat RSS, exact-vs-reduced-precision
-  GEMM, and cross-engine parity — and emits machine-readable results anyone
-  can reproduce.
+  checkout measures the four axes where Eshkol claims something distinctive —
+  exact-AD cost curves, Ozaki-II CRT exact f64 GEMM, flat RSS under resident
+  load, and differentiable quantum kernels — and emits machine-readable
+  results anyone can reproduce.
 - **Assurance, two waves.** A self-verdict scanner catches a test that
   prints its own failure inside a run graded PASS; build-fingerprint checks
   catch a binary that was never rebuilt after its source changed; and CI

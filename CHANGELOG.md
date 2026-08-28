@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
-  AST node the parser produces now carries a stable `NodeId`, and a side table
+- **ADR-0000 Stage 1, phase A: the frontend node-identity substrate (#476).**
+  Every AST node the parser produces now carries a stable `NodeId`, and a side table
   maps that id to a `SourceSpan` — the first column of the
   `NodeId -> {SourceSpan, BindingId, TypedExprInfo}` substrate that ADR-0000 §7
   risk 1 calls "the single most important co-design constraint in the whole
@@ -81,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none of them is half-built here.
 
 - **The bytecode VM reclaims memory: a Stage-1 OALR region evacuator ports
-  `with-region` reclamation to the VM heap (SW-14, the v1.3.5 flagship item).**
+  `with-region` reclamation to the VM heap (#461, SW-14, the v1.3.5 flagship
+  item).**
   `(with-region ...)` used to lower to `begin` on the VM. The body ran, its
   value was returned, and not one byte came back: measured on
   `tests/memory/vm_region_growth_watchdog_test.esk`, peak RSS was 1.503 GB
@@ -136,55 +137,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   captured inside a region, or a failed bookkeeping allocation all pin the
   region, which is then promoted whole.
 
-### Changed
-
-- **Outside a region the bytecode VM still does not reclaim**, and the heap
-  growth watchdog stays for exactly that case. What changed is what it must not
-  say: the interim note claiming `with-region` reclaims nothing is gone, the
-  budget diagnostic now names the mechanism that *does* reclaim, and
-  `tests/memory/vm_region_growth_watchdog_test.sh` pins that the same allocation
-  volume which trips the budget unwrapped does not trip it wrapped.
-- The user-reachable region **handle** surface (`region-open` / `region-close`)
-  remains bookkeeping-only on the VM and announces that at the point of use.
-  A handle can be closed out of order, from another dynamic extent, or never,
-  whereas `with-region`'s lexical extent tells the teardown where the region
-  ends — which is why the lexical form landed first. Stage-2.
-- New environment variables, all documented in
-  `docs/reference/runtime/environment-variables.md`: `ESHKOL_VM_REGION_EVAC`,
-  `ESHKOL_VM_REGION_VERIFY`, `ESHKOL_VM_REGION_VERIFY_FATAL`,
-  `ESHKOL_VM_REGION_COMPACT`, `ESHKOL_VM_REGION_RECYCLE`. `ESHKOL_ARENA_POISON`
-  — the same variable the native arena reads — now also arms the VM's.
-
-### Known limits of Stage-1
-
-- An escaping object with an **out-of-line payload** (a vector's element array,
-  a bignum's limbs) keeps the arena block that payload occupies; escaping
-  cons/closure structure is copied out exactly. A cons-only loop is therefore
-  perfectly flat and a payload-heavy one is merely much smaller.
-- A **continuation captured inside a region** pins that region.
-- Objects promoted out of a region live in the enclosing arena for its lifetime,
-  which is OALR's semantics and is equally true natively.
-
-### Fixed
-
-- **Python bindings: NumPy capsule keeps the tensor buffer alive (#458,
-  audit H1).** A NumPy array exported from a tensor `eval()` held no
-  reference back to its owning `Context`; deleting (or losing the last
-  reference to) the `Context` object called `eshkol_ffi_shutdown()`
-  unconditionally, with nothing to stop that while an exported array — or
-  a view/slice/reshape of one — was still alive and depending on that
-  memory staying valid. `EshkolContext` now holds the context as a
-  `std::shared_ptr`, and every exported array's `base` capsule carries its
-  own copy; real shutdown is deferred until every holder, including every
-  live array's capsule, has released its reference. Closes
-  `.icc/silent-wrong-ledger.yaml` SW-44 (interop/lifetime, SILENT-WRONG
-  bucket — the pre-fix behavior read silently corrupted memory at exit 0,
-  no diagnostic). New regression: `tests/bindings/python_capsule_lifetime_test.py`,
-  wired into `ctest` as `python_bindings_capsule_lifetime`. See
-  [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
-
-### Added
-
 - **Assurance wave 1: ledger-integrity and oracle-schema gates with
   self-tests (#454).** `scripts/check_ledger_integrity.py` fails
   `.icc/silent-wrong-ledger.yaml` on a parse error, a duplicate `id`
@@ -197,19 +149,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `--self-test`. All three wired into the `eshkol-compiler-readiness`
   oracle, added as `ctest` entries, and run in a new `assurance-gates` CI
   job. See [docs/TESTING.md](docs/TESTING.md#assurance-gates-v135-wave-1-454).
-
-### Changed
-
-- **CI: docs-only PRs now get every required context reported (#455).**
-  `paths-ignore` on the `pull_request` trigger previously meant a
-  docs-only PR (like this one) never started the main workflow at all, so
-  8 of 9 required branch-protection contexts never reported a status and
-  permanently blocked the PR. The docs-only decision moved into a
-  job-level `changes` gate instead, so a docs-only PR now gets every
-  required context reported as skipped. See
-  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-now-actually-report-required-contexts-455).
-
-### Added
 
 - **R7RS 7.1.1 vertical-line symbol syntax: read and write (#462).**
   `<identifier> -> <vertical line> <symbol element>* <vertical line>` is
@@ -228,131 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JIT/AOT/VM as a three-way parity check. See
   [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
 
-### Documentation
-
-- **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
-  executed): the previously published v1.4-v2.0 dates were not achievable at
-  measured velocity (the v1.3.1-v1.3.4 line averaged ~5 weeks/point release);
-  v2.0 moves from the previously published "Q1 2027" to ~Q4 2028. Added the
-  six standing workstreams every release now draws from (W1 resident/DBSP
-  spine, W2 assurance, W3 performance, W4 codebase health, W5 interop &
-  adoption, W6 two-tier distributed computing — PJRT/XLA scale-tier plus a
-  native exact-allreduce mesh tier), replaced the stale per-version AD
-  staging bullets with pointers to the already-shipped P0-P12 truth, and
-  added the v1.3.5/v1.4.1/v1.5.1/v1.6.1/v1.8.1/v1.9.1/v1.9.2 point-release
-  rows. `docs/KNOWN_ISSUES.md`'s future-releases table re-pinned off the new
-  ladder (distributed/multi-GPU rows point at the W6 ladder instead of a
-  fixed version; PGO -> v1.5.0-intelligence; ONNX -> post-training-win, no
-  fixed date; Python bindings row tracks the v1.4.0-connection interop wave).
-  `docs/FEATURE_MATRIX.md`'s historical-snapshot roadmap section corrected
-  (it had listed Vulkan Compute, ONNX export, quantization, and distributed
-  training as SHIPPED in v1.2-scale; none of those shipped) and re-dated to
-  match. Press sheets (`press/ESHKOL_DESCRIPTION_COPY.md`,
-  `press/ESHKOL_PRESS_INFORMATION_SHEET.md`) refreshed with numbers
-  re-measured this cycle against a from-source build of commit `694c3179`:
-  exact rational derivative (`(derivative-n g 1/3 1)` => `16/3`, exact),
-  the H2 vibrational example (5003.2 cm⁻¹), the Ozaki-II Metal exact-GEMM
-  certification gate (25/25, 0 mismatches), a fresh CHSH run (S = 2.835,
-  gate `2.4 < S <= 2.95`), gradient parity across native JIT / native AOT /
-  bytecode VM (byte-identical `#(24 57)`), and the ESH-0214b flat-RSS AOT
-  gate (8 MB vs. 2,620 MB with the fix compiled out). Added a new
-  [Python bindings reference page](docs/reference/bindings/python.md) (no
-  such page existed previously) documenting the `Context.eval`/
-  `derivative`/`gradient` API and the #458 capsule-lifetime guarantee, with
-  a working example re-run against a from-source build including the
-  merged fix; flagged in passing that the module's own docstring example
-  (`ctx.derivative('sin', 0.5)`) does not work against the current
-  `func_source` validation and needs a full `(lambda ...)` form instead.
-  Documented the #454 assurance gates and #455 CI fix in
-  [docs/TESTING.md](docs/TESTING.md), re-running all three gates'
-  `--self-test` modes plus both non-self-test invocations against the
-  real repo files. Added a "Bytecode VM Region Reclamation" section to
-  [docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md)
-  (the one doc file #461 didn't already normalize) with the full
-  `ESHKOL_VM_REGION_*` variable table and a fresh flat-RSS measurement
-  (25/26/27 MB at 1,000/4,000/16,000 iterations vs. 793 MB with the
-  evacuator disabled); `docs/VM_PARITY.md` checked and needs no changes
-  (its row counts still match `tests/vm_parity/PARITY.tsv` exactly).
-  `ROADMAP.md`'s v1.3.5 section and Release Timeline row updated to mark
-  the evacuator, H1 fix, and assurance-wave items shipped rather than
-  planned. Documented the #462 vertical-line symbol syntax in
-  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol),
-  [Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)'s Data Types table, and
-  [FAQ.md](docs/FAQ.md)'s R7RS conformance answer, re-running
-  `tests/features/pipe_symbol_test.esk` myself on native JIT, native AOT,
-  and the bytecode VM (51/51 checks, 0 errors, all three paths agree).
-  Checked #406 (Moonlab pin bump to the real v1.2.0 tag SHA,
-  `e441957b`→`4bf83a6c`) against every doc referencing the Moonlab
-  version: the published label was already "v1.2.0" everywhere and stays
-  "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
-  version Eshkol advertises — so no doc text needed to change.
-
-### Fixed
-
-- **The no-finite-differences AD guarantee is now enforced, and the
-  dense-node divergence is measurable (#474, SW-47).** `eshkol_ad_count_fd()`,
-  the only writer of the finite-difference counter, had zero callers
-  anywhere, so every shipped `(= (ad-finite-difference-evals) 0)` assertion
-  was true by construction — it would have stayed green had a real
-  finite-difference fallback been added the next day. `record-fd-op!`'s
-  central-difference backward (`lib/core/ad/tape.esk`) now reports through a
-  new zero-arity builtin `(ad-note-finite-difference!)` (native fid 2088;
-  VM `case 2088`), and `scripts/run_ad_exactness_gate.sh` runs a positive
-  case and a negative control (a difference quotient deliberately planted in
-  the gradient path) on JIT, AOT and the VM, wiring the previously-orphaned
-  `scripts/run_one_pass_gradient_gate.sh`.
-- **AD exactness gains a structural gate a differential cannot provide
-  (#487).** An output differential can only compare what two carriers
-  compute, never which carrier computed it — the gap that let `op:CURL` go
-  uncompared entirely. `.icc/ad-carrier-manifest.yaml` declares, per operator
-  and per engine, which differentiation carrier answers it and whether it is
-  exact; `scripts/gate_ad_shared_node_model.py` re-derives each declaration
-  by extracting and classifying the actual `case <id>:` body in
-  `vm_native.c`/`autodiff_codegen.cpp`, so a declaration cannot be laundered
-  through a helper. Seven checks, including that a `vm-supported` row in
-  `tests/vm_parity/PARITY.tsv` must declare its carrier and that the
-  declared carrier equals the one the source is observed to use.
-- **Linear `Qubit` violations are compile-time errors, not warnings
-  (#471).** Cloning a qubit previously printed `[WARN] Type warning`, exited
-  0, and wrote a runnable binary — a documented "type error" that was really
-  a convention with a diagnostic attached. Measured against 24 shapes (four
-  clones the checker previously missed entirely, five correct programs it
-  wrongly rejected), a linearity violation in the default compilation mode
-  now stops before code generation, exits nonzero, and writes no artifact —
-  the same discipline `--strict-types` already has.
-- **`xla_runtime.cpp` no longer violates `eshkol_tensor`'s one-definition
-  rule (#481).** A second, divergent definition of the same struct compiled
-  into the XLA backend risked UB the moment both translation units'
-  optimizations disagreed about layout; the backend now includes the single
-  canonical header instead of redeclaring the type.
-- **Oracle severities no longer let absent evidence read as ready (#472,
-  ADR-0010 A13).** `icc readiness --target gpu-execution` read `ready/94` on
-  a host that had executed zero GPU kernels: the target's one criterion was
-  `severity: medium`, and ICC's grader degrades a zero-evidence miss on
-  anything below `severity: high` to a cheap `WARN`. `gpu-execution` was the
-  only one of 35 oracle targets with no `severity: high` criterion; every
-  target that asserts a correctness/capability claim is now raised to
-  `high`, four targets keep an explicit, commented advisory exception, and
-  a new `scripts/audit_oracle_false_green.py` gate fails if another target
-  regresses into the same shape. Also arms the staleness half of A13 — no
-  evidence in N days now fails as a repo-side gate, since ICC's own grading
-  has no `max_age_days` support yet.
-- **The bytecode VM's closure upvalue capacity matches its compiler again
-  (#463, SW-45).** The VM compiler capped a scope's upvalue count at 32
-  (`MAX_UPVALUES`, `lib/backend/vm_parser.c`) while the runtime closure
-  representation was hardcoded at 16 (`lib/backend/vm_core.c`), with nothing
-  keeping the two in sync. A procedure referencing 17-32 distinct top-level
-  procedures compiled cleanly, then `OP_CLOSURE` silently clamped the count
-  to 16 and stranded the rest on the operand stack with no diagnostic and
-  exit 0 — every later stack-slot offset was off by the leaked count, so the
-  *next* top-level `define` read back a stray value and failed with "calling
-  non-function" on an unrelated line. The runtime constant now matches the
-  compiler's.
-
-### Added
-
 - **Mutual tail recursion in every tail-position spelling; OALR ABI v2
-  Phase A (#478, ADR-0000 Stage 4).** A mutual tail call written with
+  Phase A (#478, SW-50, ADR-0000 Stage 4).** A mutual tail call written with
   `cond`, `case`, `when`, `unless`, or as the last operand of `and`/`or`
   previously grew one native frame per hop and exhausted the stack (SIGBUS)
   between 500,000 and 5,000,000 hops, while the byte-identical program
@@ -373,67 +189,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A public, reproducible benchmark suite on the exactness axes (#469,
   `bench/run_public_benchmarks.sh`).** One command from a clean checkout
   measures the four axes where Eshkol claims something distinctive — exact-AD
-  cost curves, region-reclamation flat RSS, exact-vs-reduced-precision GEMM,
-  and JIT/AOT/VM parity — and emits machine-readable JSON plus a
+  cost curves, Ozaki-II CRT exact f64 GEMM, flat RSS under resident load, and
+  differentiable quantum kernels — and emits machine-readable JSON plus a
   human-readable table, with the noise-control methodology and the explicit
   not-benchmarked list documented in `bench/README.md`. This is not a
   competition entry against XLA/PyTorch/JAX.
 
-### Changed
-
-- **CI: end duplicate matrix runs; harden the `changes` gate; add opt-in
-  self-hosted lanes (#477).** `feat/**` branches ran the full matrix twice
-  (once on push, once on the PR event that already covers them) until the
-  push trigger was narrowed to `master`/`develop`. The docs-only `changes`
-  gate now fails safe — a diff it cannot compute (a force-pushed PR branch
-  orphaning its comparison SHA) sets `docs_only=false` and runs everything,
-  instead of exiting nonzero and blocking the run outright. New `ci-mesh.yml`
-  adds self-hosted runner support behind a repository variable, restricted
-  to non-fork PRs; no currently-required hosted lane is removed, weakened,
-  or made conditional.
-- **CI: advisory mesh-gate placeholder added; every required hosted lane
-  kept (#391).** With the physical compute mesh's telemetry dark since at
-  least 2026-08-17, the hosted required lanes (`unix-matrix`,
-  `windows-matrix`, `wasm-execute-diff`, `prefetch-windows-llvm-archives`,
-  `quantum-macos`) stay required and unchanged. `mesh-gate-advisory` is a
-  `continue-on-error` job that emits an honest `::warning::` that mesh
-  telemetry is unavailable, rather than fabricating a verdict — flipping the
-  mesh into an actual merge gate is a separate, explicit maintainer decision
-  gated on the telemetry coming back live.
-
-### Documentation
-
-- **ADR-0011: host guest garbage collectors over OALR regions.** Rejects the
-  standing claim that "no-GC closes doors permanently" (Common Lisp, Python,
-  or any other GC-hosted language could never run on Eshkol). ADR-0001's
-  no-GC theorem quantifies over Eshkol's own object graph; it says nothing
-  about a guest heap living inside a region. Specifies
-  `eshkol_guest_vtable_t` (`collect`/`relocate`/`on_teardown`/
-  `enumerate_outbound`) over a bounded arena, a `{index, generation}` pin
-  table reusing the existing region-handle staleness discipline, and an
-  asymmetric Eshkol<->guest boundary. Commitment sharpens rather than
-  weakens: no GC for Eshkol, permanently; guest collectors welcome inside
-  their own regions.
-- **2026-08-25 conformity audit resolved (#468).** Fifty documentation
-  divergences against `ROADMAP.md`, `docs/COMPILER_ROADMAP.md`, the ADRs,
-  `docs/FEATURE_MATRIX.md`, `docs/KNOWN_ISSUES.md`, `README.md`, and
-  `docs/VM_PARITY.md` are triaged in
-  `docs/design/AUDIT_2026_08_25_RESOLUTION.md`: every claim describing a
-  real, intended capability the code doesn't have yet is kept and filed as
-  tracked work, never softened or deleted; only claims factually wrong about
-  the past, or contradicting another doc, are corrected.
-- **Flaw-detection capability roadmap (`docs/design/FLAW_DETECTION_ROADMAP.md`,
-  #444).** The v1.3.4 campaign found 81 ledgered defects; the automated
-  correctness chain (completion oracles, the smoke harness, the readiness
-  gate) found none of them — almost every one was found by a human reading
-  code or running a program by hand. States the trust thesis (five
-  falsifiable operational claims a dual-engine compiler with AD must keep)
-  and catalogs sixteen detection gaps with evidence; the wave-1 and wave-2
-  assurance items landed this cycle (#454, #465) close the first several.
-
-### Added
-
-- **`gensym` reachable on every engine (#480).** Implemented in
+- **`gensym` reachable on every engine (#491).** Implemented in
   `lib/core/introspection.cpp` but registered in no dispatch table anywhere,
   so `(gensym)` failed loudly on native JIT/AOT (`Unknown function: gensym`)
   and compiled to an undefined global on the VM (fatal `calling
@@ -444,14 +206,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `symbol_intern.cpp` already uses, for the same reason) and wired on both
   engines: `codegenGensym` on native, VM builtin id 2227. 9/9 on all three
   engines (`tests/control_flow/gensym_test.esk`); the stale "gensym is
-  VM-only" note in `symbol_consistency_test.esk` is removed (that claim was
+  VM-only" note in `tests/v1_2_edge_cases/symbol_consistency_test.esk` is
+  removed (that claim was
   wrong too — nothing called it successfully on the VM either).
 - **Object ABI migration, stage 0: machine inventory, layout pin, mixed-link
-  guard (#488, ADR-0012).** `scripts/abi_header_inventory.py` runs seventeen
+  guard (#488, ADR-0012).** `scripts/abi_header_inventory.py` runs eighteen
   detectors across three layers (lexical token matching, libclang semantic
-  resolution, emitted-LLVM-IR ground truth) and finds 1,273 sites across 98
-  files depending on the current object-header layout, ratcheted against
-  `.icc/abi-header-baseline.json` so new sites fail the build. A link-time
+  resolution, emitted-LLVM-IR ground truth) and enumerates 1,273
+  layout-dependent sites: 816 from the lexical layer across 98 files, the
+  rest from the semantic layer, with the emitted layer counting 66 header
+  GEPs separately. The lexical layer is what CI ratchets, against
+  `.icc/abi-header-baseline.json` (820 sites across 99 files at this cut),
+  so new sites fail the build. A link-time
   guard (`inc/eshkol/abi_fingerprint.h`, `lib/core/abi_fingerprint.c`,
   `MemoryCodegen::emitObjectAbiGuard`) whose symbol name is derived from the
   four numbers that determine object-exchange compatibility means a stale
@@ -475,7 +241,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate-return `musttail` to get the same bound. Tail calls through
   `guard` stay bounded deliberately — R7RS does not make that a tail
   context, and optimizing it would be wrong, not merely unfinished; that
-  differential surfaced a pre-existing silent wrong answer, filed as SW-53.
+  differential surfaced a pre-existing silent wrong answer, filed as SW-58
+  (open, waived): a re-raise from a self-recursive `guard` body reaches the
+  outermost handler rather than the one immediately enclosing it.
 - **`bench/pgo_corpus/` gets a Stage-1 smoke consumer (#490, ADR 0007).**
   The five-program PGO training corpus had zero callers anywhere — nothing
   compiled it, nothing ran it — and had already rotted:
@@ -489,53 +257,195 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives profile-guided compilation over this corpus is unbuilt and tracked
   separately against ADR 0007, targeted v1.5.0.
 
-### Fixed
+- **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
+  bytecode VM (#491, SW-60/SW-61).** A captured continuation can now be
+  invoked any number of times, from any dynamic extent, including after the
+  procedure that
+  captured it has already returned — the shape generators, coroutines and
+  `amb`-style backtracking search all need, and previously crashed
+  (SIGILL/SIGSEGV, native) or hung (bytecode VM) the moment a program tried
+  it. Native gives a capture that may outlive its frame a durable copy of
+  the live C stack, restored to the same addresses before `longjmp`ing, so
+  every interior pointer — frame pointers, spilled registers, addresses of
+  locals held by closures, the `jmp_buf` itself — stays valid with no
+  relocation; an escape-only capture (the common case: early return,
+  exception-style unwinding) is unaffected and keeps the original
+  zero-overhead `setjmp`/`longjmp` path. The VM snapshots its own operand
+  stack and call-frame array, excluding top-level bindings (the *store*)
+  from the *control* snapshot R7RS actually asks `call/cc` to capture, so
+  `set!`/`define` effects at top level survive re-entry. `dynamic-wind`
+  reroots on both engines: re-entering a continuation captured inside a
+  `dynamic-wind` whose extent has since been left re-runs that extent's
+  `before` thunk, per R7RS 6.10. Gated on all three engines by
+  `scripts/run_continuation_tests.sh` against six fixtures in
+  `tests/continuations/`. Closes SW-60 (native re-entry into a returned frame
+  faulted) and SW-61 (VM re-invocation replayed completed top-level forms).
+  Two known limits remain, both tracked in `.icc/silent-wrong-ledger.yaml`:
+  a binding established after capture on the VM's operand-stack store is
+  refused with a diagnostic rather than silently corrupted (a residual
+  recorded in the SW-61 entry), and a non-boxed `set!`-assigned local is
+  rolled back on re-entry on both engines pending assignment conversion
+  (SW-62, open, waived to 2026-12-31). See
+  [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
 
-- **The leak-detection lane could not fail; four JIT/driver leaks fixed
-  (#486).** `exe/eshkol-run.cpp` supplied `__lsan_default_options()`
-  returning `"exitcode=0"`, so LeakSanitizer ran, found leaks, printed them,
-  and exited 0 anyway — measured directly: 248,387 bytes leaked in 28,748
-  allocations on `hello.esk -o hello`, `EXIT = 0`. The REPL was worse than
-  unfailable: `repl_clean_exit()` ends the process with `std::_Exit()` to
-  avoid running static/TLS destructors while JIT workers may hold libsystem
-  locks, which also skips LSan's `atexit` whole-process check, so the one
-  long-lived process this project ships produced identical output whether
-  it leaked or not; it now calls `__lsan_do_leak_check()` explicitly before
-  `_Exit`. `report_objects=1` (which expanded one hello-world report to
-  148,231 lines) is also gone. Every real leak the now-live lane found is
-  fixed, workload by workload (AOT compile, the compiled program, `-r`,
-  `-e`, the standalone VM).
-- **Trace-emitting harnesses now distinguish infrastructure failure from
-  code failure (#475).** `run_vm_parity.sh` reported "2 of 188" FAIL for two
-  runs that were actually SIGALRM from a 140-second cold-start JIT compile
-  under load, not a code defect — direct re-runs were 140.49s once, then
-  0.07s/0.06s exit 0, byte-identical. That spurious FAIL had propagated
-  through `icc architecture-verify` and turned a HIGH invariant red. New
-  `scripts/lib/harness_outcome.sh` gives every harness a shared
-  PASS/FAIL/INFRA/SKIP vocabulary, a real fork-based timeout wrapper, and a
-  retry-once helper for a transient INFRA condition; INFRA never publishes a
-  `test_result` record (ICC's evaluator has no UNCHECKABLE state, so
-  publishing "no verdict" through that channel would read as a defect) but
-  does get an explicit value in the richer domain-specific event streams.
-  `run_vm_parity.sh` adds a one-time untimed JIT-cache warm-up (the actual
-  root cause of the 140s outlier); `run_language_coverage.sh` no longer lets
-  an unrelated flaky prerequisite's `set -e` discard coverage evidence that
-  had already been computed.
-- **Reader: quoted-datum kinds beyond `(` and `'`; fences for #229 and #244
-  residue (#466).** `parse_quoted_data_with_token()` dispatched on exactly
-  two token kinds and sent everything else — vectors, quasiquote, unquote —
-  to `parse_atom()`, which has no case for them and returns an empty node
-  while leaving the datum's own tokens in the stream. `(or x '#())` silently
-  returned `()` instead of `x` (exit 0, no diagnostic) because the leftover
-  `)` happened to balance; `'#(1 2)` anywhere else desynchronized the reader
-  entirely. The same hole meant `'#(1 2)` compiled to the list `(vector 1
-  2)` on the VM (never compared against native, since native couldn't read
-  a quoted vector at all), and `compile_quote`'s numeric arm dropped the
-  `is_char`/`is_inexact` reader flags, turning `'(#\a)` into the integer
-  list `(97)`. All three fixed together so closing one blind spot couldn't
-  open a native-vs-VM divergence.
+- **A continuation captured inside `with-region` pins the region on native,
+  matching the bytecode VM (#491, SW-59).** The VM already gave a region a real
+  pin (`heap_region_pin_all()`) the moment a continuation was captured
+  inside one; native had no analogue, so a continuation captured inside a
+  `with-region` and resumed after that region exited read the region's
+  freed, poison-filled arena — a real use-after-free invisible to the
+  non-poisoned test oracle (SIGSEGV at `0xcbcbcbcbcbcbcbcb` under
+  `ESHKOL_ARENA_POISON=1`, 3/3, both native JIT and AOT). `eshkol_region_t`
+  now carries a `pinned` flag; capturing a continuation while any region is
+  open (`eshkol_make_continuation_state`) pins every currently-open region
+  (`eshkol_region_pin_all()`, mirroring `heap_region_pin_all()` exactly,
+  including its permanence — neither engine ever unpins, since a
+  continuation carries no refcount to unpin against); `region_destroy()`
+  leaks a pinned region's arena instead of freeing it, so the failure
+  direction is a leak, never a dangle, on both engines identically. The
+  fix is confined to `region_destroy()` — the single teardown path
+  (`eshkol_region_unwind_to()`, covering lexical `with-region` exit,
+  `region-close`, a `raise` crossing the region, and a `call/cc` escape)
+  needed no changes, so pinning triggers only on an actual capture: a
+  program that never calls `call/cc` shows zero behavior change, confirmed
+  by the unchanged flat-RSS gates
+  (`tests/memory/region_mutating_loop_flat_rss_test.sh`,
+  `tests/memory/define_loop_flat_rss_aot_test.sh`,
+  `tests/memory/vm_region_flat_rss_test.sh`). `tests/continuations/region_capture_resume.esk`
+  is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
+  crashing on two of them.
+
+- **AD-node producers for tensor embedding and the Fréchet mean (#497).**
+  The external-tensor bridge already had gated, gradchecked backward rules
+  for `AD_NODE_TENSOR_EMBEDDING` and `AD_NODE_FRECHET_MEAN`, but no forward
+  anywhere in the tree ever recorded either node, so both rules had only
+  ever been validated against hand-assembled `ad_node_t` fixtures written
+  from the same contract the rule reads — the one defect class that
+  construction cannot catch is a producer that fills the contract wrongly,
+  because there was no producer at all. `ad_tensor_embedding` and
+  `ad_frechet_mean` are now real producers in `lib/bridge/qllm_bridge.cpp`;
+  fractional, negative and out-of-range embedding indices are refused at
+  record time rather than rounded or clamped into a wrong row, and the
+  Fréchet forward shares its Karcher iteration with the VM's own opcode
+  (extracted into `inc/eshkol/backend/frechet_mean_core.h`) so forward and
+  backward cannot disagree about what "converged" means.
+  `tests/bridge/qllm_bridge_producer_gradcheck_test.cpp` gradchecks both
+  through the real producers and real dispatch against exact analytic
+  references alongside finite differences (embedding: exact scatter-add,
+  0 mismatches; Fréchet: exact Euclidean closed form, 0.0; hyperbolic
+  finite difference 8.3e-10 over 48 partials). 202/202 ctest, 77/77
+  `qllm_oracle`, golden vectors regenerating byte-identically.
+
+- **A synthetic large-single-file AOT compile-time benchmark, gated
+  continuously (#495).** A 2026-08-26 downstream-consumer audit found that
+  a single hand-written file with many top-level defines took
+  disproportionately (4x+) longer to `--emit-object` than an equivalent
+  multi-file bundle, and never finished inside the audit's time window.
+  `bench/generate_large_single_file.py` generates a deterministic,
+  self-contained fixture reproducing the same shape (default 208
+  top-level defines referencing earlier-numbered functions, calibrated
+  against a measured super-linear growth curve — 208/416/832/1600 defines
+  at roughly 4s/11s/41s/154s locally); `bench/large_single_file_compile_bench.sh`
+  compiles a 1600-define fixture against a 900-second ceiling, killed with
+  `SIGKILL` rather than `SIGTERM` (measured directly: `eshkol-run` does not
+  exit promptly on `SIGTERM` mid-codegen), and captures an
+  `ESHKOL_PHASE_TIME=1` breakdown showing ~98% of wall-clock cost is in
+  LLVM's own backend, not Eshkol's frontend. Wired as a real (non-advisory)
+  nightly gate in `adversarial-nightly.yml`. Measurement only — no fix;
+  addressing the underlying cost is a v1.3.6+ item.
+
+- **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
+  against BOM-less non-ASCII bytes (#503).** Verified on a real Windows PowerShell
+  5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
+  parsed clean under CI's `pwsh` 7 (UTF-8 by default) but threw 18 cascading
+  parse errors on 5.1, which falls back to decoding a BOM-less script in the
+  process's system ANSI code page — corrupting string-literal boundaries
+  around every non-ASCII byte. CI running the same bytes under a different
+  default encoding could not have caught this by execution; the new gate
+  checks the files' own bytes instead, failing on any tracked `*.ps1`/
+  `*.psm1` file that contains a byte `>= 0x80` unless it opens with the
+  UTF-8 BOM (`EF BB BF`), and reporting the exact `file:line:col` and
+  codepoint of every offender. Self-tests (`--self-test`) cover the
+  ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
+  reporting; wired into the `assurance-gates` CI job and the `v1.3.5-evolve`
+  completion-oracle target (`ps1_encoding_clean`, `severity: high`).
 
 ### Changed
+
+- **Outside a region the bytecode VM still does not reclaim**, and the heap
+  growth watchdog stays for exactly that case. What changed is what it must not
+  say: the interim note claiming `with-region` reclaims nothing is gone, the
+  budget diagnostic now names the mechanism that *does* reclaim, and
+  `tests/memory/vm_region_growth_watchdog_test.sh` pins that the same allocation
+  volume which trips the budget unwrapped does not trip it wrapped.
+- The user-reachable region **handle** surface (`region-open` / `region-close`)
+  remains bookkeeping-only on the VM and announces that at the point of use.
+  A handle can be closed out of order, from another dynamic extent, or never,
+  whereas `with-region`'s lexical extent tells the teardown where the region
+  ends — which is why the lexical form landed first. Stage-2.
+- New environment variables, all documented in
+  `docs/reference/runtime/environment-variables.md`: `ESHKOL_VM_REGION_EVAC`,
+  `ESHKOL_VM_REGION_VERIFY`, `ESHKOL_VM_REGION_VERIFY_FATAL`,
+  `ESHKOL_VM_REGION_COMPACT`, `ESHKOL_VM_REGION_RECYCLE`. `ESHKOL_ARENA_POISON`
+  — the same variable the native arena reads — now also arms the VM's.
+
+- **CI: docs-only PRs now get every required context reported (#455).**
+  `paths-ignore` on the `pull_request` trigger previously meant a
+  docs-only PR (like this one) never started the main workflow at all, so
+  8 of 9 required branch-protection contexts never reported a status and
+  permanently blocked the PR. The docs-only decision moved into a
+  job-level `changes` gate instead, so a docs-only PR now gets every
+  required context reported as skipped. See
+  [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-report-every-required-context-455-477-485).
+
+- **CI: end duplicate matrix runs; harden the `changes` gate; add opt-in
+  self-hosted lanes (#477).** `feat/**` branches ran the full matrix twice
+  (once on push, once on the PR event that already covers them) until the
+  push trigger was narrowed to `master`/`develop`. The docs-only `changes`
+  gate now fails safe — a diff it cannot compute (a force-pushed PR branch
+  orphaning its comparison SHA) sets `docs_only=false` and runs everything,
+  instead of exiting nonzero and blocking the run outright. New `ci-mesh.yml`
+  adds self-hosted runner support behind a repository variable, restricted
+  to non-fork PRs; no currently-required hosted lane is removed, weakened,
+  or made conditional.
+- **CI: required-context stub drift closed; network setup steps hardened
+  (#485, ledger VA-01).** #455's `docs-only-required-context-stubs` job
+  covered the seven matrix-derived required contexts that existed when it
+  shipped; branch protection later grew five more and nothing re-checked the
+  stub matrix against the new list. The 2026-08-25 hardening to
+  `enforce_admins: true` turned that from dormant to active — a real
+  docs-only PR was blocked with those five contexts required and clean the
+  instant they were removed, with no other change and no new CI run. A
+  skipped MATRIX job produces no check run under any per-leg name at all,
+  which is why an uncovered matrix-derived context blocks such a PR
+  permanently; a skipped STATIC job reports one check run with conclusion
+  `skipped`, which satisfies branch protection. The stub matrix now covers
+  all twelve, and new `scripts/check_required_context_consistency.py` parses
+  the workflow job graph with PyYAML rather than regex and asserts that every
+  required context is reportable on every PR shape, reading the required set
+  live and falling back to a committed snapshot
+  (`.icc/required-status-contexts.json`, sixteen intended contexts) — and
+  reporting `NO_DATA` (exit 2, distinct from PASS and FAIL) rather than
+  silently passing when neither source is usable. Self-test fixtures prove it
+  goes red both when a still-required name is dropped from the stub matrix and
+  when a required context names no job any workflow could emit. New
+  `scripts/ci_retry.sh` hardens the network setup steps. Wired into `ctest`,
+  the `assurance-gates` job, and a `severity: high` oracle criterion.
+- **Moonlab pin bumped to the real v1.2.0 tag (#406).** The previous pin was
+  a commit no Moonlab tag named v1.2.0 has ever pointed at; `CMakeLists.txt`
+  now pins the v1.2.0 tag object's peeled commit. The version Eshkol
+  advertises is unchanged before and after — this corrects an internal
+  SHA/tag mismatch, not the advertised version — so no user-facing document
+  needed to change.
+- **CI: advisory mesh-gate placeholder added; every required hosted lane
+  kept (#391).** With the physical compute mesh's telemetry dark since at
+  least 2026-08-17, the hosted required lanes (`unix-matrix`,
+  `windows-matrix`, `wasm-execute-diff`, `prefetch-windows-llvm-archives`,
+  `quantum-macos`) stay required and unchanged. `mesh-gate-advisory` is a
+  `continue-on-error` job that emits an honest `::warning::` that mesh
+  telemetry is unavailable, rather than fabricating a verdict — flipping the
+  mesh into an actual merge gate is a separate, explicit maintainer decision
+  gated on the telemetry coming back live.
 
 - **Pillar harnesses armed; `icc readiness` is machine-reachable, not only
   runnable by hand (#470, ADR-0010 §2.5).** Six gates were redirecting their
@@ -581,124 +491,179 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and every gate's `--self-test` contract being wired into `ctest` or CI
   somewhere real.
 
-### Added
+- **The release-readiness gate now runs on the self-hosted runner (#502).**
+  `release-readiness-gate` needs ICC, which only exists on the
+  maintainer's self-hosted node (the `ICC_BIN` repository variable); a
+  GitHub-hosted runner can never certify this gate, only report it
+  unavailable. Moves the job to the self-hosted `eshkol`-labelled runner
+  and adapts it to the mesh provisioning contract `ci-mesh.yml` already
+  established: drops the `apt-get` toolchain install (self-hosted runners
+  are provisioned once by hand, never mutated by CI) in favor of a
+  preflight step that resolves `llvm-config`/`cmake`/`ninja`/`python3`/`jq`
+  and shims `ld.lld` from whatever the node already has, failing loud and
+  specific if anything is missing, and reclaims the two build trees the
+  job leaves behind so a persistent node doesn't fill up across releases.
+  `ESHKOL_REQUIRE_READINESS_GATE` stays unset until this merges and the
+  runner is confirmed online, so the gate keeps warning rather than
+  blocking in the interim.
 
-- **Multi-shot, re-entrant `call/cc` on native JIT, native AOT and the
-  bytecode VM.** A captured continuation can now be invoked any number of
-  times, from any dynamic extent, including after the procedure that
-  captured it has already returned — the shape generators, coroutines and
-  `amb`-style backtracking search all need, and previously crashed
-  (SIGILL/SIGSEGV, native) or hung (bytecode VM) the moment a program tried
-  it. Native gives a capture that may outlive its frame a durable copy of
-  the live C stack, restored to the same addresses before `longjmp`ing, so
-  every interior pointer — frame pointers, spilled registers, addresses of
-  locals held by closures, the `jmp_buf` itself — stays valid with no
-  relocation; an escape-only capture (the common case: early return,
-  exception-style unwinding) is unaffected and keeps the original
-  zero-overhead `setjmp`/`longjmp` path. The VM snapshots its own operand
-  stack and call-frame array, excluding top-level bindings (the *store*)
-  from the *control* snapshot R7RS actually asks `call/cc` to capture, so
-  `set!`/`define` effects at top level survive re-entry. `dynamic-wind`
-  reroots on both engines: re-entering a continuation captured inside a
-  `dynamic-wind` whose extent has since been left re-runs that extent's
-  `before` thunk, per R7RS 6.10. Gated on all three engines by
-  `scripts/run_continuation_tests.sh` against six fixtures in
-  `tests/continuations/`. Two known limits remain, both tracked in
-  `.icc/silent-wrong-ledger.yaml`: a binding established after capture on
-  the VM's operand-stack store (refused with a diagnostic, not silently
-  corrupted — SW-61), and a non-boxed `set!`-assigned local rolled back on
-  re-entry on both engines pending assignment conversion (SW-62). See
-  [docs/reference/language/continuations.md](docs/reference/language/continuations.md).
+**Known limits of the Stage-1 VM region evacuator (#461).**
 
-- **A continuation captured inside `with-region` pins the region on native,
-  matching the bytecode VM (SW-59).** The VM already gave a region a real
-  pin (`heap_region_pin_all()`) the moment a continuation was captured
-  inside one; native had no analogue, so a continuation captured inside a
-  `with-region` and resumed after that region exited read the region's
-  freed, poison-filled arena — a real use-after-free invisible to the
-  non-poisoned test oracle (SIGSEGV at `0xcbcbcbcbcbcbcbcb` under
-  `ESHKOL_ARENA_POISON=1`, 3/3, both native JIT and AOT). `eshkol_region_t`
-  now carries a `pinned` flag; capturing a continuation while any region is
-  open (`eshkol_make_continuation_state`) pins every currently-open region
-  (`eshkol_region_pin_all()`, mirroring `heap_region_pin_all()` exactly,
-  including its permanence — neither engine ever unpins, since a
-  continuation carries no refcount to unpin against); `region_destroy()`
-  leaks a pinned region's arena instead of freeing it, so the failure
-  direction is a leak, never a dangle, on both engines identically. The
-  fix is confined to `region_destroy()` — the single teardown path
-  (`eshkol_region_unwind_to()`, covering lexical `with-region` exit,
-  `region-close`, a `raise` crossing the region, and a `call/cc` escape)
-  needed no changes, so pinning triggers only on an actual capture: a
-  program that never calls `call/cc` shows zero behavior change, confirmed
-  by the unchanged flat-RSS gates
-  (`tests/memory/region_mutating_loop_flat_rss_test.sh`,
-  `tests/memory/define_loop_flat_rss_aot_test.sh`,
-  `tests/memory/vm_region_flat_rss_test.sh`). `tests/continuations/region_capture_resume.esk`
-  is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
-  crashing on two of them.
-
-### Added
-
-- **AD-node producers for tensor embedding and the Fréchet mean (#497).**
-  The external-tensor bridge already had gated, gradchecked backward rules
-  for `AD_NODE_TENSOR_EMBEDDING` and `AD_NODE_FRECHET_MEAN`, but no forward
-  anywhere in the tree ever recorded either node, so both rules had only
-  ever been validated against hand-assembled `ad_node_t` fixtures written
-  from the same contract the rule reads — the one defect class that
-  construction cannot catch is a producer that fills the contract wrongly,
-  because there was no producer at all. `ad_tensor_embedding` and
-  `ad_frechet_mean` are now real producers in `lib/bridge/qllm_bridge.cpp`;
-  fractional, negative and out-of-range embedding indices are refused at
-  record time rather than rounded or clamped into a wrong row, and the
-  Fréchet forward shares its Karcher iteration with the VM's own opcode
-  (extracted into `inc/eshkol/backend/frechet_mean_core.h`) so forward and
-  backward cannot disagree about what "converged" means.
-  `tests/bridge/qllm_bridge_producer_gradcheck_test.cpp` gradchecks both
-  through the real producers and real dispatch against exact analytic
-  references alongside finite differences (embedding: exact scatter-add,
-  0 mismatches; Fréchet: exact Euclidean closed form, 0.0; hyperbolic
-  finite difference 8.3e-10 over 48 partials). 202/202 ctest, 77/77
-  `qllm_oracle`, golden vectors regenerating byte-identically.
-
-- **A synthetic large-single-file AOT compile-time benchmark, gated
-  continuously (#495).** A 2026-08-26 downstream-consumer audit found that
-  a single hand-written file with many top-level defines took
-  disproportionately (4x+) longer to `--emit-object` than an equivalent
-  multi-file bundle, and never finished inside the audit's time window.
-  `bench/generate_large_single_file.py` generates a deterministic,
-  self-contained fixture reproducing the same shape (default 208
-  top-level defines referencing earlier-numbered functions, calibrated
-  against a measured super-linear growth curve — 208/416/832/1600 defines
-  at roughly 4s/11s/41s/154s locally); `bench/large_single_file_compile_bench.sh`
-  compiles a 1600-define fixture against a 900-second ceiling, killed with
-  `SIGKILL` rather than `SIGTERM` (measured directly: `eshkol-run` does not
-  exit promptly on `SIGTERM` mid-codegen), and captures an
-  `ESHKOL_PHASE_TIME=1` breakdown showing ~98% of wall-clock cost is in
-  LLVM's own backend, not Eshkol's frontend. Wired as a real (non-advisory)
-  nightly gate in `adversarial-nightly.yml`. Measurement only — no fix;
-  addressing the underlying cost is a v1.3.6+ item.
-
-- **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
-  against BOM-less non-ASCII bytes.** Verified on a real Windows PowerShell
-  5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
-  parsed clean under CI's `pwsh` 7 (UTF-8 by default) but threw 18 cascading
-  parse errors on 5.1, which falls back to decoding a BOM-less script in the
-  process's system ANSI code page — corrupting string-literal boundaries
-  around every non-ASCII byte. CI running the same bytes under a different
-  default encoding could not have caught this by execution; the new gate
-  checks the files' own bytes instead, failing on any tracked `*.ps1`/
-  `*.psm1` file that contains a byte `>= 0x80` unless it opens with the
-  UTF-8 BOM (`EF BB BF`), and reporting the exact `file:line:col` and
-  codepoint of every offender. Self-tests (`--self-test`) cover the
-  ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
-  reporting; wired into the `assurance-gates` CI job and the
-  `eshkol-compiler-readiness` oracle (`ps1_encoding_clean`).
+- An escaping object with an **out-of-line payload** (a vector's element array,
+  a bignum's limbs) keeps the arena block that payload occupies; escaping
+  cons/closure structure is copied out exactly. A cons-only loop is therefore
+  perfectly flat and a payload-heavy one is merely much smaller.
+- A **continuation captured inside a region** pins that region.
+- Objects promoted out of a region live in the enclosing arena for its lifetime,
+  which is OALR's semantics and is equally true natively.
 
 ### Fixed
 
+- **Python bindings: NumPy capsule keeps the tensor buffer alive (#458,
+  audit H1).** A NumPy array exported from a tensor `eval()` held no
+  reference back to its owning `Context`; deleting (or losing the last
+  reference to) the `Context` object called `eshkol_ffi_shutdown()`
+  unconditionally, with nothing to stop that while an exported array — or
+  a view/slice/reshape of one — was still alive and depending on that
+  memory staying valid. `EshkolContext` now holds the context as a
+  `std::shared_ptr`, and every exported array's `base` capsule carries its
+  own copy; real shutdown is deferred until every holder, including every
+  live array's capsule, has released its reference. Closes
+  `.icc/silent-wrong-ledger.yaml` SW-44 (interop/lifetime, SILENT-WRONG
+  bucket — the pre-fix behavior read silently corrupted memory at exit 0,
+  no diagnostic). New regression: `tests/bindings/python_capsule_lifetime_test.py`,
+  wired into `ctest` as `python_bindings_capsule_lifetime`. See
+  [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
+
+- **The no-finite-differences AD guarantee is now enforced, and the
+  dense-node divergence is measurable (#474, SW-47).** `eshkol_ad_count_fd()`,
+  the only writer of the finite-difference counter, had zero callers
+  anywhere, so every shipped `(= (ad-finite-difference-evals) 0)` assertion
+  was true by construction — it would have stayed green had a real
+  finite-difference fallback been added the next day. `record-fd-op!`'s
+  central-difference backward (`lib/core/ad/tape.esk`) now reports through a
+  new zero-arity builtin `(ad-note-finite-difference!)` (VM builtin id 2088,
+  `case 2088` in `vm_native.c`; dispatched by name on native through
+  `codegenAdNoteFiniteDifference`), and `scripts/run_ad_exactness_gate.sh` runs a positive
+  case and a negative control (a difference quotient deliberately planted in
+  the gradient path) on JIT, AOT and the VM, wiring the previously-orphaned
+  `scripts/run_one_pass_gradient_gate.sh`.
+- **AD exactness gains a structural gate a differential cannot provide, and
+  the VM's last two approximate operators become exact (#487,
+  SW-46/SW-51/SW-52).** An output differential can only compare what two carriers
+  compute, never which carrier computed it — the gap that let `op:CURL` go
+  uncompared entirely. `.icc/ad-carrier-manifest.yaml` declares, per operator
+  and per engine, which differentiation carrier answers it and whether it is
+  exact; `scripts/gate_ad_shared_node_model.py` re-derives each declaration
+  by extracting and classifying the actual `case <id>:` body in
+  `vm_native.c`/`autodiff_codegen.cpp`, so a declaration cannot be laundered
+  through a helper. Seven checks, including that a `vm-supported` row in
+  `tests/vm_parity/PARITY.tsv` must declare its carrier and that the
+  declared carrier equals the one the source is observed to use.
+
+  The same change replaces the bytecode VM's central-difference `curl` and
+  `divergence` (`h = 1e-7`, answering `#(1.1e-09 -3.3e-09 0)` where the curl
+  of a gradient field is exactly zero) with exact forward-dual
+  implementations at `case 753` and `case 754` in `lib/backend/vm_native.c`:
+  one dual pass per input variable, three closure calls for the 3x3 Jacobian
+  where the difference quotient needed six, and no step size anywhere. The
+  gradient field's curl now returns exactly `#(0 0 0)` and
+  `(ad-finite-difference-evals)` reads 0 where it read 6. Both engines
+  therefore carry an exact carrier for these operators rather than one exact
+  and one approximate; `op:CURL` and `op:DIVERGENCE` stay `gap` rows in
+  `PARITY.tsv` because the two engines cannot yet be COMPARED (ledger LE-12:
+  native `curl` faults on a list-returning arity-1 vector field, and native
+  passes the whole point as one argument where the VM spreads it into N), not
+  because the VM is approximate. Closes SW-46, SW-51 and SW-52.
+- **Linear `Qubit` violations are compile-time errors, not warnings
+  (#471, SW-53).** Cloning a qubit previously printed `[WARN] Type warning`,
+  exited 0, and wrote a runnable binary — a documented "type error" that was really
+  a convention with a diagnostic attached. Measured against 24 shapes (four
+  clones the checker previously missed entirely, five correct programs it
+  wrongly rejected), a linearity violation in the default compilation mode
+  now stops before code generation, exits nonzero, and writes no artifact —
+  the same discipline `--strict-types` already has.
+- **`xla_runtime.cpp` no longer violates `eshkol_tensor`'s one-definition
+  rule (#481).** A second, divergent definition of the same struct compiled
+  into the XLA backend risked UB the moment both translation units'
+  optimizations disagreed about layout; the backend now includes the single
+  canonical header instead of redeclaring the type.
+- **Oracle severities no longer let absent evidence read as ready (#472,
+  ADR-0010 A13).** `icc readiness --target gpu-execution` read `ready/94` on
+  a host that had executed zero GPU kernels: the target's one criterion was
+  `severity: medium`, and ICC's grader degrades a zero-evidence miss on
+  anything below `severity: high` to a cheap `WARN`. `gpu-execution` was the
+  only one of the 35 oracle targets then defined with no `severity: high`
+  criterion; every target that asserts a correctness/capability claim is now
+  raised to `high`, three targets keep four explicit, commented advisory
+  exceptions (`total-language-coverage` twice, `agent-ffi-ready`,
+  `stdlib-ready`), and
+  a new `scripts/audit_oracle_false_green.py` gate fails if another target
+  regresses into the same shape. Also arms the staleness half of A13 — no
+  evidence in N days now fails as a repo-side gate, since ICC's own grading
+  has no `max_age_days` support yet.
+- **The bytecode VM's closure upvalue capacity matches its compiler again
+  (#463, SW-45).** The VM compiler capped a scope's upvalue count at 32
+  (`MAX_UPVALUES`, `lib/backend/vm_parser.c`) while the runtime closure
+  representation was hardcoded at 16 (`lib/backend/vm_core.c`), with nothing
+  keeping the two in sync. A procedure referencing 17-32 distinct top-level
+  procedures compiled cleanly, then `OP_CLOSURE` silently clamped the count
+  to 16 and stranded the rest on the operand stack with no diagnostic and
+  exit 0 — every later stack-slot offset was off by the leaked count, so the
+  *next* top-level `define` read back a stray value and failed with "calling
+  non-function" on an unrelated line. The runtime constant now matches the
+  compiler's.
+
+- **The leak-detection lane could not fail; four JIT/driver leaks fixed
+  (#486).** `exe/eshkol-run.cpp` supplied `__lsan_default_options()`
+  returning `"exitcode=0"`, so LeakSanitizer ran, found leaks, printed them,
+  and exited 0 anyway — measured directly: 248,387 bytes leaked in 28,748
+  allocations on `hello.esk -o hello`, `EXIT = 0`. The REPL was worse than
+  unfailable: `repl_clean_exit()` ends the process with `std::_Exit()` to
+  avoid running static/TLS destructors while JIT workers may hold libsystem
+  locks, which also skips LSan's `atexit` whole-process check, so the one
+  long-lived process this project ships produced identical output whether
+  it leaked or not; it now calls `__lsan_do_leak_check()` explicitly before
+  `_Exit`. `report_objects=1` (which expanded one hello-world report to
+  148,231 lines) is also gone. Every real leak the now-live lane found is
+  fixed, workload by workload (AOT compile, the compiled program, `-r`,
+  `-e`, the standalone VM).
+- **Trace-emitting harnesses now distinguish infrastructure failure from
+  code failure (#475).** `run_vm_parity.sh` reported "2 of 188" FAIL for two
+  runs that were actually SIGALRM from a 140-second cold-start JIT compile
+  under load, not a code defect — direct re-runs were 140.49s once, then
+  0.07s/0.06s exit 0, byte-identical. That spurious FAIL had propagated
+  through `icc architecture-verify` and turned a HIGH invariant red. New
+  `scripts/lib/harness_outcome.sh` gives every harness a shared
+  PASS/FAIL/INFRA/SKIP vocabulary, a real fork-based timeout wrapper, and a
+  retry-once helper for a transient INFRA condition; INFRA never publishes a
+  `test_result` record (ICC's evaluator has no UNCHECKABLE state, so
+  publishing "no verdict" through that channel would read as a defect) but
+  does get an explicit value in the richer domain-specific event streams.
+  `run_vm_parity.sh` adds a one-time untimed JIT-cache warm-up (the actual
+  root cause of the 140s outlier); `run_language_coverage.sh` no longer lets
+  an unrelated flaky prerequisite's `set -e` discard coverage evidence that
+  had already been computed.
+- **Reader: quoted-datum kinds beyond `(` and `'`; fences for the
+  and/or-dispatch and no-return-terminator defects (#466, SW-54/SW-55/SW-56).**
+  The two internal defect ids are 229 and 244; GitHub pull requests with those
+  numbers are unrelated changes, so they are spelled out rather than linked.
+  `parse_quoted_data_with_token()` dispatched on exactly
+  two token kinds and sent everything else — vectors, quasiquote, unquote —
+  to `parse_atom()`, which has no case for them and returns an empty node
+  while leaving the datum's own tokens in the stream. `(or x '#())` silently
+  returned `()` instead of `x` (exit 0, no diagnostic) because the leftover
+  `)` happened to balance; `'#(1 2)` anywhere else desynchronized the reader
+  entirely. The same hole meant `'#(1 2)` compiled to the list `(vector 1
+  2)` on the VM (never compared against native, since native couldn't read
+  a quoted vector at all), and `compile_quote`'s numeric arm dropped the
+  `is_char`/`is_inexact` reader flags, turning `'(#\a)` into the integer
+  list `(97)`. All three fixed together so closing one blind spot couldn't
+  open a native-vs-VM divergence.
+
 - **Four release-machinery gaps from the 2026-08-25 audit closed (#493).**
-  A v1.3.5-evolve completion-oracle target (22 criteria bound to real
-  gates/`ctest` names) gives "all of v1.3.5" a machine-checkable
+  A v1.3.5-evolve completion-oracle target (24 criteria at this cut, all bound
+  to real gates/`ctest` names) gives "all of v1.3.5" a machine-checkable
   representation instead of only `v1.3-evolve`. `release.yml`'s readiness
   job now configures and builds a quantum-enabled tree before running
   `run_language_coverage.sh`, which hard-requires one — previously the
@@ -760,9 +725,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that silently returned a zero gradient; the comment guarding that default
   reasoned from a numeric band of enum values rather than the enum's actual
   closure, and four newer node types had already stepped outside the band
-  it assumed. An inventory of 180 switches with three or more case labels
-  found 120 more `default:` arms that *produce* a plausible answer for a
-  member nobody considered; `ad_node_type_t`, `callable_subtype_t` and
+  it assumed. An inventory of 179 switches with three or more enum-member case
+  labels (recorded in the SW-70 ledger entry) found further `default:` arms
+  that *produce* a plausible answer for a member nobody considered;
+  `ad_node_type_t`, `callable_subtype_t` and
   `EvacKind` are now generated from a single-declaration registry
   (`inc/eshkol/ad_node_registry.def`) with no `default:` and
   `-Werror=switch -Werror=switch-enum` enforcing exhaustiveness at compile
@@ -780,8 +746,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this PR's own audit found move from silently returning zero to loudly
   aborting, named, until #498 promotes them to real `BRIDGE` rows, and
   four further node types (`TANGENT_PROJECT`/`MOBIUS_ADD`/`MOBIUS_MATMUL`/
-  `GYROVECTOR_SPACE`) remain `UNREGISTERED` with no producer yet. 204/204
-  ctest.
+  `GYROVECTOR_SPACE`) remain `UNREGISTERED` with no producer yet.
+  <!-- ctest count: regenerate from the release battery; the figure carried
+       here was not reproducible from any committed artifact -->
 
 - **Exact backwards for the four geometric bridge ops (SW-65, #498).**
   `ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`
@@ -803,17 +770,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   introduce a disagreement. Validated against golden Jacobians from an
   independently-written Eshkol transcription of the same formulas
   (agreement to 3.7e-16 / 1.1e-14) and two derivation-independent
-  identities (the conformal gradient-norm identity and the
-  inverse-Jacobian identity, both to ~6e-16) before finite differences are
-  consulted at all. Two points made explicit rather than hidden: the
+  identities — the conformal gradient-norm identity
+  `|grad_x d| = 2/(1-c|x|^2)` to 5.0e-16 over three pairs, and the
+  inverse-Jacobian identity `|J_log * J_exp - I|` to 6.7e-16 — before finite
+  differences are consulted at all. Two points made explicit rather than hidden: the
   distance is not differentiable at coincident points, and geodesic
   attention is therefore not differentiable when a query row equals a key
   row exactly (the ordinary case when `Q` and `K` are the same tensor) —
   both refuse loudly, naming the offending index, rather than picking a
-  plausible subgradient. 212/212 ctest on the registry base, 13/13
-  gradcheck (count pinned), 11/11 `exhaustive_dispatch` (18 bridged, 4
-  unregistered), `qllm_oracle` 10/10 files with golden vectors
-  regenerating byte-identically.
+  plausible subgradient. 13/13 gradcheck (count pinned), 11/11
+  `exhaustive_dispatch` (18 bridged, 4 unregistered), `qllm_oracle` 10/10
+  files with golden vectors regenerating byte-identically.
+  <!-- ctest count: regenerate from the release battery; the figure carried
+       here was not reproducible from any committed artifact -->
 
 - **`FindEshkol.cmake` ships as the one canonical discovery module; the
   packaged link contract is complete (SW-64, #496).** A downstream-consumer
@@ -840,8 +809,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merely that its files landed. Scoped to macOS/Linux; the Windows/MSVC
   link recipe is not yet established. Closes SW-64.
 
-- **A resident daemon loop leaked 48 bytes per tick through its exception
-  guard (SW-57, #473).** The public benchmark suite's flat-RSS axis (#469)
+- **A resident daemon loop leaked 40 bytes per tick through its exception
+  guard, on top of 48 correctly-attributed bytes per published cons (SW-57,
+  #473).** The public benchmark suite's flat-RSS axis (#469)
   extended the published 100k-tick point to 400k and measured 119 MB
   rather than flat; an independent reproduction found the growth perfectly
   linear to ±3% across a 160x span (10k-1.6M ticks) with no plateau. Two
@@ -864,13 +834,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/memory/resident_longrun_flat_gate.sh` measures at two horizons
   8x apart and gates on the slope, not a ceiling, verified to catch the
   defect when reverted (40.024 bytes/tick). Ledger id moved from SW-49 to
-  SW-57 during the release-train rebase to avoid colliding with the
-  linearity no-cloning entry.
+  SW-57 during the release-train rebase: master's own VM prelude-cache entry
+  (SW-49, "28 builtins stale") had independently landed under the same id.
+  SW-49 remains open and is a different defect.
 
 - **The GPU correctness gate could not fail, and the Windows test judge
   could not see most of its own failure markers (SW-67, SW-71, #501).**
   `tests/gpu/gpu_correctness_gate.esk` and three sibling files printed only
-  unlabelled `RESULT` lines and exited 0 unconditionally, and the other 17
+  unlabelled `RESULT` lines and exited 0 unconditionally, and the other 14
   files that did print well-formed `FAIL:` markers never called `exit`
   with a nonzero status — a failed check produced text, never a
   process-level signal, so an exit-code-primary judge saw green regardless
@@ -885,7 +856,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tightens from `1e-4` to `1e-9` on the strength of a corrected claim
   about `display`'s precision (it round-trips exactly; it does not print
   only ~6 significant digits) plus a measured Metal-vs-CPU divergence of
-  exactly 0 across ten probes.
+  exactly 0 across ten probes. Note that
+  `.github/workflows/gpu-execution-gate.yml` still sets `GPU_GATE_TOL: '1e-4'`
+  in the one lane that runs the gate, so the tightened default is what a
+  manual run enforces, not yet what CI enforces; flipping that lane is a
+  follow-up.
 
   The Windows judge needed two further fixes to honor the same contract.
   `scripts/run_all_tests.ps1`'s shared verdict function never implemented
@@ -916,25 +891,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/gate_no_silent_wrong.py` both pass. 18/18 `run_gpu_tests.sh`,
   full CPU-vs-GPU differential PASS at the new tolerance.
 
-### Changed
-
-- **The release-readiness gate now runs on the self-hosted runner (#502).**
-  `release-readiness-gate` needs ICC, which only exists on the
-  maintainer's self-hosted node (the `ICC_BIN` repository variable); a
-  GitHub-hosted runner can never certify this gate, only report it
-  unavailable. Moves the job to the self-hosted `eshkol`-labelled runner
-  and adapts it to the mesh provisioning contract `ci-mesh.yml` already
-  established: drops the `apt-get` toolchain install (self-hosted runners
-  are provisioned once by hand, never mutated by CI) in favor of a
-  preflight step that resolves `llvm-config`/`cmake`/`ninja`/`python3`/`jq`
-  and shims `ld.lld` from whatever the node already has, failing loud and
-  specific if anything is missing, and reclaims the two build trees the
-  job leaves behind so a persistent node doesn't fill up across releases.
-  `ESHKOL_REQUIRE_READINESS_GATE` stays unset until this merges and the
-  runner is confirmed online, so the gate keeps warning rather than
-  blocking in the interim.
-
 ### Documentation
+
+- **v1.3.5 documentation wave (#464).** `ROADMAP.md` re-dated (maintainer ruling R1,
+  executed): the previously published v1.4-v2.0 dates were not achievable at
+  measured velocity (the v1.3.1-v1.3.4 line averaged ~5 weeks/point release);
+  v2.0 moves from the previously published "Q1 2027" to ~Q4 2028. Added the
+  six standing workstreams every release now draws from (W1 resident/DBSP
+  spine, W2 assurance, W3 performance, W4 codebase health, W5 interop &
+  adoption, W6 two-tier distributed computing — PJRT/XLA scale-tier plus a
+  native exact-allreduce mesh tier), replaced the stale per-version AD
+  staging bullets with pointers to the already-shipped P0-P12 truth, and
+  added the v1.3.5/v1.4.1/v1.5.1/v1.6.1/v1.8.1/v1.9.1/v1.9.2 point-release
+  rows. `docs/KNOWN_ISSUES.md`'s future-releases table re-pinned off the new
+  ladder (distributed/multi-GPU rows point at the W6 ladder instead of a
+  fixed version; PGO -> v1.5.0-intelligence; ONNX -> post-training-win, no
+  fixed date; Python bindings row tracks the v1.4.0-connection interop wave).
+  `docs/FEATURE_MATRIX.md`'s historical-snapshot roadmap section corrected
+  (it had listed Vulkan Compute, ONNX export, quantization, and distributed
+  training as SHIPPED in v1.2-scale; none of those shipped) and re-dated to
+  match. Press sheets (`press/ESHKOL_DESCRIPTION_COPY.md`,
+  `press/ESHKOL_PRESS_INFORMATION_SHEET.md`) refreshed with numbers
+  re-measured this cycle against a from-source build of commit `694c3179`:
+  exact rational derivative (`(derivative-n g 1/3 1)` => `16/3`, exact),
+  the H2 vibrational example (5003.2 cm⁻¹), the Ozaki-II Metal exact-GEMM
+  certification gate (25/25, 0 mismatches), a fresh CHSH run against the gate
+  band `2.4 < S <= 2.95` (the measured S is a per-run value from a shot-noise
+  simulation and is not committed as an artifact; regenerate it with the
+  quantum lane rather than quoting a fixed number), gradient parity across
+  native JIT / native AOT /
+  bytecode VM (byte-identical `#(24 57)`), and the ESH-0214b flat-RSS AOT
+  gate (8 MB vs. 2,620 MB with the fix compiled out). Added a new
+  [Python bindings reference page](docs/reference/bindings/python.md) (no
+  such page existed previously) documenting the `Context.eval`/
+  `derivative`/`gradient` API and the #458 capsule-lifetime guarantee, with
+  a working example re-run against a from-source build including the
+  merged fix; flagged in passing that the module's own docstring example
+  (`ctx.derivative('sin', 0.5)`) does not work against the current
+  `func_source` validation and needs a full `(lambda ...)` form instead.
+  Documented the #454 assurance gates and #455 CI fix in
+  [docs/TESTING.md](docs/TESTING.md), re-running all three gates'
+  `--self-test` modes plus both non-self-test invocations against the
+  real repo files. Added a "Bytecode VM Region Reclamation" section to
+  [docs/breakdown/RUNTIME_CONFIGURATION.md](docs/breakdown/RUNTIME_CONFIGURATION.md)
+  (the one doc file #461 didn't already normalize) with the full
+  `ESHKOL_VM_REGION_*` variable table and a fresh flat-RSS measurement
+  (25/26/27 MB at 1,000/4,000/16,000 iterations vs. 793 MB with the
+  evacuator disabled; a second host measured 26/26/26 MB vs. 796 MB on the
+  same fixture, and the doc records both — the run-to-run spread is the
+  point, not a contradiction with the flagship entry above);
+  `docs/VM_PARITY.md` checked and needs no changes
+  (its row counts still match `tests/vm_parity/PARITY.tsv` exactly).
+  `ROADMAP.md`'s v1.3.5 section and Release Timeline row updated to mark
+  the evacuator, H1 fix, and assurance-wave items shipped rather than
+  planned. Documented the #462 vertical-line symbol syntax in
+  [Complete Language Specification §2.1.6](docs/COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol),
+  [Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)'s Data Types table, and
+  [FAQ.md](docs/FAQ.md)'s R7RS conformance answer, re-running
+  `tests/features/pipe_symbol_test.esk` myself on native JIT, native AOT,
+  and the bytecode VM (51/51 checks, 0 errors, all three paths agree).
+  Checked #406 (Moonlab pin bump to the real v1.2.0 tag SHA,
+  `e441957b`→`4bf83a6c`) against every doc referencing the Moonlab
+  version: the published label was already "v1.2.0" everywhere and stays
+  "v1.2.0" — the bump corrects an internal SHA/tag mismatch, not the
+  version Eshkol advertises — so no doc text needed to change.
+
+- **ADR-0011: host guest garbage collectors over OALR regions (#484).** Rejects the
+  standing claim that "no-GC closes doors permanently" (Common Lisp, Python,
+  or any other GC-hosted language could never run on Eshkol). ADR-0001's
+  no-GC theorem quantifies over Eshkol's own object graph; it says nothing
+  about a guest heap living inside a region. Specifies
+  `eshkol_guest_vtable_t` (`collect`/`relocate`/`on_teardown`/
+  `enumerate_outbound`) over a bounded arena, a `{index, generation}` pin
+  table reusing the existing region-handle staleness discipline, and an
+  asymmetric Eshkol<->guest boundary. Commitment sharpens rather than
+  weakens: no GC for Eshkol, permanently; guest collectors welcome inside
+  their own regions.
+- **2026-08-25 conformity audit resolved (#468).** Fifty documentation
+  divergences against `ROADMAP.md`, `docs/COMPILER_ROADMAP.md`, the ADRs,
+  `docs/FEATURE_MATRIX.md`, `docs/KNOWN_ISSUES.md`, `README.md`, and
+  `docs/VM_PARITY.md` are triaged in
+  `docs/design/AUDIT_2026_08_25_RESOLUTION.md`: every claim describing a
+  real, intended capability the code doesn't have yet is kept and filed as
+  tracked work, never softened or deleted; only claims factually wrong about
+  the past, or contradicting another doc, are corrected.
+- **Flaw-detection capability roadmap (`docs/design/FLAW_DETECTION_ROADMAP.md`,
+  #444).** The v1.3.4 campaign found 81 ledgered defects; the automated
+  correctness chain (completion oracles, the smoke harness, the readiness
+  gate) found none of them — almost every one was found by a human reading
+  code or running a program by hand. States the trust thesis (five
+  falsifiable operational claims a dual-engine compiler with AD must keep)
+  and catalogs sixteen detection gaps with evidence; the wave-1 and wave-2
+  assurance items landed this cycle (#454, #465) close the first several.
 
 - **README/CONTRIBUTING/FEATURE_MATRIX reconciled with machine sources;
   a surface-count drift checker added (B6/B7/N4, #492).** Three
