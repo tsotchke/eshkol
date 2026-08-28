@@ -756,7 +756,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (5,893 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (5,919 lines)
 
 ### Architecture
 
@@ -1285,12 +1285,12 @@ These features are **designed but not implemented**. See roadmap documents for d
 ### Primary Source Files (analyzed in detail)
 
 - [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,163 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (43,959 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (43,964 lines)
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (634 lines; 4,499 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,402 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (4,913 lines)
 - [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,435 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (5,893 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (5,919 lines)
 
 ### Forward-looking design documents
 
