@@ -65,11 +65,21 @@ components:
     role: backend
     description: >
       Bytecode VM — the second backend.  eshkol_vm.c holds the VM BUILTINS
-      dispatch table; the vm_*.c family implements each op domain.
+      dispatch table; the vm_*.c family implements each op domain.  The
+      interpreter itself is split by responsibility: vm_run.c is the dispatch
+      loop only, and the opcode bodies it routes to live in vm_ops.c (value
+      opcodes), vm_frame.c (frames, closures, upvalues) and vm_control.c
+      (continuations, dynamic wind, handler stack), with vm_limits.c owning
+      execution-limit enforcement and vm_lifecycle.c the VM entry points.
     modules:
       - lib/backend/eshkol_vm.c
       - lib/backend/vm_core.c
       - lib/backend/vm_run.c
+      - lib/backend/vm_ops.c
+      - lib/backend/vm_frame.c
+      - lib/backend/vm_control.c
+      - lib/backend/vm_limits.c
+      - lib/backend/vm_lifecycle.c
       - lib/backend/vm_native.c
       - lib/backend/vm_autodiff.c
       - lib/backend/vm_tensor.c

@@ -197,6 +197,9 @@ int main(int argc, char** argv) {
 
     if (const int rc = require_entries(vm_core_src,
             {"lib/backend/vm_core.c", "lib/backend/vm_run.c",
+             "lib/backend/vm_limits.c", "lib/backend/vm_ops.c",
+             "lib/backend/vm_control.c", "lib/backend/vm_frame.c",
+             "lib/backend/vm_lifecycle.c",
              "lib/backend/vm_complex.c", "lib/backend/vm_rational.c",
              "lib/backend/vm_bignum.c", "lib/backend/vm_dual.c",
              "lib/backend/vm_hyperdual.c", "lib/backend/vm_autodiff.c",

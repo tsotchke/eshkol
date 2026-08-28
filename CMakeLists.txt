@@ -1927,6 +1927,11 @@ endif()
 set(ESHKOL_VM_CORE_COMPONENT_SRC
   lib/backend/vm_core.c
   lib/backend/vm_run.c
+  lib/backend/vm_limits.c
+  lib/backend/vm_ops.c
+  lib/backend/vm_control.c
+  lib/backend/vm_frame.c
+  lib/backend/vm_lifecycle.c
   lib/backend/vm_complex.c
   lib/backend/vm_rational.c
   lib/backend/vm_bignum.c
