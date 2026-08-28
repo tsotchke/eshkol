@@ -1810,29 +1810,35 @@ void eshkol_ad_nested_unsupported(int32_t order_k) {
 
 /**
  * @brief Report a curried/first-class `gradient` reached with reverse-tape
- *        inputs, which the runtime-closure gradient cannot differentiate.
+ *        inputs that the enclosing pass has not published a seed among.
  *
- * The vector arm of emitRuntimeClosureGradient() reads its point's components
- * as raw doubles. When an ENCLOSING reverse pass (`jacobian`, `gradient`) hands
- * it a point whose components are `ad_node_t*` tape nodes, that bitcast turns a
- * heap pointer into a subnormal ~1e-310, so the inner gradient is evaluated at
- * ~0 rather than at the real point, AND the result carries no edge back to the
- * outer tape. Ledger SW-05 (ESH-0096): `(jacobian (gradient f) (vector 2.0))`
- * answered `#((0))` where `(hessian f (vector 2.0))` answers `#((12))`, and for
- * `f(v) = v0*v0` the bogus element bits were classified as a pointer and
- * dereferenced (SIGBUS).
+ * ESH-0096 / ledger SW-05. The runtime-closure gradient's vector arm now
+ * detects a point whose components are an ENCLOSING reverse pass's
+ * `ad_node_t*` tape nodes and evaluates the inner gradient FORWARD instead --
+ * the forward-over-reverse composition the direct `hessian` performs -- so
+ * `(jacobian (gradient f) point)` answers the same matrix as
+ * `(hessian f point)`.
  *
- * Until the curried route learns the forward-over-reverse composition the
- * direct `hessian` already performs, this raises: the alternative is a wrong
- * derivative with no diagnostic, or a crash.
+ * That route needs one thing from the enclosing pass: the component it is
+ * currently differentiating with respect to must be published as the active
+ * reverse seed (`eshkol_ad_seed_swap`) AND must be one of the point's own
+ * components, so the inner jet's ep dimension can carry the dependence and
+ * `eshkol_ad_mixed_record` can write it back. When the components are tape
+ * nodes but none of them is the active seed -- the enclosing pass computed the
+ * point through intermediate tape nodes, or published no seed at all -- the
+ * edge cannot be established, and this raises rather than answering a
+ * disconnected (silently zero) derivative.
  */
 void eshkol_ad_curried_gradient_unsupported(void) {
     eshkol_error(
         "unsupported nested differentiation: a first-class `gradient` closure "
-        "differentiated again by an enclosing reverse-mode pass. Use "
-        "`(hessian f point)` for the second derivative of a scalar function, or "
-        "`(jacobian (lambda (v) (gradient f v)) point)` is NOT a substitute -- "
-        "it is the same unsupported composition. Tracked as ESH-0096.");
+        "reached with reverse-tape inputs that the enclosing pass is not "
+        "differentiating directly. `(jacobian (gradient f) point)` and "
+        "`(jacobian (lambda (v) ((gradient f) v)) point)` are supported and "
+        "answer the Hessian; a point COMPUTED from the enclosing pass's "
+        "variables (e.g. `(jacobian (lambda (v) ((gradient f) (vector (* 2.0 "
+        "(vector-ref v 0))))) point)`) is not. Use `(hessian f point)` for the "
+        "second derivative of a scalar function. Tracked as ESH-0096.");
     eshkol_exception_t* exc = eshkol_make_exception(
         ESHKOL_EXCEPTION_ERROR,
         "unsupported nested differentiation of a first-class gradient (ESH-0096)");
