@@ -24,7 +24,7 @@ pages and lets them fan out to their siblings.
 
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
-- [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.4-evolve
+- [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
 - [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,025-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (61 modules)
@@ -164,6 +164,10 @@ pages and lets them fan out to their siblings.
 - [Self-Differentiating Neural Computer (SDNC)](SDNC.md) — v1.2 paper artefact
 - [Generated API Reference](api/README.md) — Doxygen-comment-derived per-header symbol pages (`scripts/gen_api_docs.py`), fans out via [INDEX.md](api/INDEX.md)
 - [AD Staged Kernel Handoff](design/AD_STAGED_KERNEL_HANDOFF.md) — compiler work needed for staged dense-tensor training kernels
+- [OALR object ABI v2 — migration inventory](design/ABI_V2_MIGRATION_INVENTORY.md) — every header site the v2 ABI migration must convert, measured and reproducible, and why the migration cannot be staged one subsystem at a time
+- [2026-08-25 architecture and conformity audit resolution](design/AUDIT_2026_08_25_RESOLUTION.md) — the conformity table, what each finding resolved to, and which items became tracked build work
+- [Flaw-detection capability roadmap](design/FLAW_DETECTION_ROADMAP.md) — the detector inventory behind the v1.3.5 and v1.4 assurance work, and the scripts that enforce it
+- [Pillar-harness CI inventory](design/PILLAR_CI_INVENTORY.md) — which adversarial pillar harnesses run in which CI lane, and which readiness targets are trace-blocked rather than code-blocked
 
 Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
 
@@ -180,6 +184,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
 - [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
 - [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
+- [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
 
 ## Testing and Quality Gates
 

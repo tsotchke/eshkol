@@ -1,8 +1,8 @@
 # Eshkol System Architecture Reference
 
-**Version**: v1.3.0-evolve
-**Release**: v1.3.0-evolve
-**Date**: May 2026
+**Version**: v1.3.5-evolve
+**Release**: v1.3.5-evolve
+**Date**: August 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.
@@ -323,7 +323,7 @@ typedef struct {
 - Functions: Π-types (dependent function types)
 - Proofs: `Eq`, `<`, `Bounded` (erased at runtime)
 
-**Current Status**: Type checker produces **warnings only**, doesn't block compilation (gradual typing).
+**Current Status**: Type checker produces **warnings only** and does not block compilation (gradual typing), with one deliberate exception: a value carrying `TYPE_FLAG_LINEAR` (`Qubit`, `Handle`, `Stream`) is enforced. Cloning one is a compile-time error in the default build on both engines and no artifact is written (v1.3.5-evolve, #471).
 
 ### Layer 3: Dependent Types
 
@@ -1106,7 +1106,7 @@ eshkol/
 
 ### Backend Modular Refactoring
 
-**Status**: 21 modules extracted from monolithic codegen
+**Status**: 35 `*codegen*.cpp` translation units under `lib/backend/`; the extraction from the original monolith is ongoing, not complete
 
 **Callback Pattern** for inter-module communication:
 ```cpp
@@ -1254,10 +1254,10 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 ### Test Validation
 
 Each test verifies:
-- ✅ Correct results
-- ✅ Type safety
-- ✅ Memory cleanup (no leaks)
-- ✅ Error handling (for failure tests)
+- Correct results
+- Type safety
+- Memory cleanup (no leaks)
+- Error handling (for failure tests)
 
 ---
 
@@ -1550,4 +1550,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.3.4-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.3.5-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
