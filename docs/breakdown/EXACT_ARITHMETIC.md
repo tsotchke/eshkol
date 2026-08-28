@@ -1573,10 +1573,8 @@ Partial:
 
 ### Project memory
 
-* `~/.claude/projects/-Users-tyr-Desktop-eshkol/memory/MEMORY.md` — index
-  of bug-and-fix entries, including the bignum-dispatch lessons documented
-  here. The entries are point-in-time observations; this document supersedes
-  them where source verification is required.
-* `~/.claude/projects/-Users-tyr-Desktop-eshkol/memory/project_bignum_dispatch_pattern.md`
-  — the dispatch pattern for new integer ops; cites the
-  `codegenModulo` fix at commit `51ec814`.
+The maintainer's private working notes record the bignum-dispatch lessons
+documented here, including the dispatch pattern for new integer ops and the
+`codegenModulo` fix at commit `51ec814`. Those entries are point-in-time
+observations and are not part of this repository; this document supersedes
+them wherever source verification is required.

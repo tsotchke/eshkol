@@ -37,7 +37,7 @@ Current guard:
     Jack's MSYS/UCRT checkout, avoiding hosted runner use for routine x86_64
     Windows smoke validation
   - Jack gate example:
-    `scripts/remote_windows_verify.sh jack-blupc --build-dir build-jack-msys-ucrt --suite-only`
+    `scripts/remote_windows_verify.sh <windows-host> --build-dir <build-dir> --suite-only`
 - `tests/toolchain/remote_windows_verify_surface_test.cpp`
   - keeps the remote Windows verifier tied to the bounded Windows suite and
     prevents it from becoming destructive

@@ -1,4 +1,4 @@
-# Known Issues — Eshkol v1.3.4-evolve
+# Known Issues — Eshkol v1.3.5-evolve
 
 **Status**: Production release
 
@@ -199,7 +199,7 @@ The commitment is scoped to Eshkol's own semantics: Eshkol values are never trac
 One consequence within Eshkol's own semantics: an unreachable **cycle** allocated inside a region is not reclaimed until that region exits. This follows from the same theorem rather than from an implementation gap — aliasing, mutation, and automatic cycle reclamation cannot all be had without tracing, reference accounting, or an ownership restriction. Scope cyclic garbage with `with-region` or a `region-open`/`region-close` handle.
 
 **Gradual typing (warnings, not errors)**
-Type annotations are optional and informational. This preserves Scheme's exploratory programming model. Programs compile and run regardless of type warnings. This is the intended behavior — Eshkol is a dynamically-typed language with optional static analysis, not a statically-typed language with escape hatches.
+Type annotations are optional and informational. This preserves Scheme's exploratory programming model. Programs compile and run regardless of type warnings. This is the intended behavior — Eshkol is a dynamically-typed language with optional static analysis, not a statically-typed language with escape hatches. One deliberate exception: a value carrying `TYPE_FLAG_LINEAR` (`Qubit`, `Handle`, `Stream`) is enforced, not advised. Cloning one is a compile-time error in the default build on both engines, decided by whole-form use analysis rather than synthesis counters, and no artifact is written on a violation (v1.3.5-evolve, #471) — the no-cloning theorem is a type error, not a warning with a diagnostic attached. Ownership annotations (`owned` / `move` / `borrow` / `shared` / `weak-ref`) remain advisory and carry no linear flag.
 
 **Hybrid arena model (global + per-thread)**
 Global arena for main thread, per-thread arenas (1 MB, lazily allocated) for parallel workers. Zero contention for parallel workloads. This is an implementation strength, not a trade-off.
@@ -362,11 +362,12 @@ block ordinary use.
   arithmetic and comparison on either engine; `i128` deliberately lives
   off the numeric tower and never auto-promotes, so this is a missing
   opcode branch rather than a tower-contagion question.
-- **The VM lane ignores a path-literal `(load "x.esk")`.** After the
+- **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
   load-path unification (#407) the native, JIT and AOT paths share one resolver.
-  The VM lane still resolves only the CWD `lib/<dotted>` form and silently
-  ignores a path literal. Tracked for v1.3.5; use the dotted module form on the
-  VM in the meantime.
+  The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
+  loudly — `WARNING undefined variable 'load'` followed by a fatal
+  `calling non-function` (ledger LE-05, open). Tracked for v1.4.0; use the
+  dotted module form on the VM in the meantime.
 - **`syntax-rules` templates have no referential transparency: a free
   identifier resolves at the USE site, not the macro-definition site.**
   Minimal reproducer:
@@ -564,7 +565,7 @@ block ordinary use.
   item e6/g6).
 - Of the 331 `gap` rows, 14 reference a reproducer file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
-  -l`). The `found/` corpus itself holds 38 filed reproducers; per the
+  -l`). The `found/` corpus itself holds 39 filed reproducers; per the
   project's own ledger (DD-12, `.icc/silent-wrong-ledger.yaml`, open,
   re-run at `9f2da2ab`), **25 still diverge and 13 now agree** (the doc
   previously said "17 verified behavioral divergences," a stale figure —
@@ -602,6 +603,108 @@ block ordinary use.
   differential evidence) even though the engine-parity gate reports PASS.
   Not a new finding — cross-referenced here because it was previously absent
   from this document — conformity audit item e6.
+
+**Continuations**
+
+- **Re-entering a continuation rolls back a mutated local that is neither a
+  top-level binding nor closure-captured** (native JIT, native AOT and the
+  bytecode VM alike). With
+  `(define (f) (let ((x 0)) (call/cc (lambda (c) (set! k c))) (set! x (+ x 1)) x))`,
+  three re-entries print `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
+  `let` creates one location for `x` per invocation, and `call/cc` captures
+  the control state, not the store. Exit 0, no diagnostic. This is a strictly
+  narrower residual of two defects that were both worse — on native the same
+  program used to SIGSEGV (SW-60) and on the VM it looped forever (SW-61),
+  both fixed in v1.3.5-evolve by #491. It is not made loud because every sound
+  detector for it is the same whole-function assignment analysis that would
+  fix it; assignment conversion (boxing every `set!`-assigned local so a frame
+  holds only immutable values) is the recommended next step. Tracked as SW-62
+  in `.icc/silent-wrong-ledger.yaml`, open under a maintainer waiver expiring
+  2026-12-31.
+
+**Exceptions and tail position**
+
+- **Self tail recursion through `guard` sends a re-raise to the wrong
+  handler.** Each activation of a self-recursive procedure whose recursion
+  sits in a `guard` body should install its own nesting handler (R7RS 7.3
+  derives `guard` from `with-exception-handler` wrapping the body); Eshkol
+  collapses the chain, so a re-raise from the innermost handler escapes to the
+  outermost `guard` instead of the one immediately enclosing it. On
+  `tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk` Eshkol
+  prints `outer` and exits 0 where chibi-scheme 0.12 prints `(inner 1)`; three
+  control fixtures in the same directory agree with the reference. The defect
+  costs no stack, so a depth sweep cannot see it; the fix is the heap-owned
+  `guard` continuation named in ADR-0006 section 4, not a patch. Tracked as
+  SW-58, open under a maintainer waiver expiring 2027-12-31. Distinct from the
+  tail-position question under "Recursion depth" above.
+
+**VM tail positions**
+
+- **On the bytecode VM, `when` / `unless` / `and` / `or` bodies and
+  local-allocating `let` bodies are not tail positions**, so a tail call there
+  dies at `ESHKOL_VM_MAX_FRAMES` (`inc/eshkol/backend/vm_limits.h`) — roughly
+  depth 300. R7RS 3.5 makes all of them tail positions exactly as much as the
+  branches of `if`. The native engine gained every one of these spellings this
+  release (#478, #483); the VM did not. The failure prints `FRAME OVERFLOW` to
+  stderr and then exits 0 with empty stdout, so it is silent to any caller
+  that checks only the exit status. Tracked as LE-13 and LE-07, both open.
+  Reproducers: `tests/vm_parity/found/when_tail_call_no_tco.esk`,
+  `vm_tail_let_locals_no_tco.esk`, `vm_tail_indirect_ok.esk`.
+
+**Vector calculus**
+
+- **Native `curl` faults on a list-returning vector field.** With
+  `(define (F v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))`,
+  `(curl F (vector 1.0 2.0 3.0))` prints the field's own value and then
+  faults. Spelling the components across three parameters instead makes the
+  LLVM verifier reject the module: native `curl` passes the whole point as one
+  argument where the VM spreads it into N. Two separable defects — the crash,
+  and the arity-convention divergence between engines. Loud, so not
+  tag-blocking, but it is what keeps `op:CURL` a `gap` row in
+  `tests/vm_parity/PARITY.tsv` now that the VM implementation is exact (SW-46,
+  closed by #487). Tracked as LE-12, open.
+
+**Precompiled prelude**
+
+- **The committed VM prelude bytecode cache is stale, so the WASM REPL cannot
+  see `string-length`, `string-ref`, `integer?`, `vref` or any
+  `c[ad]{3,4}r`.** Regenerating `lib/backend/vm_prelude_cache.h` from the
+  source tables yields a larger local count than the committed cache records.
+  Every missing name is a real builtin the engine registers and no name goes
+  the other way, so this is lag rather than divergence. It affects only the
+  precompiled-prelude path (the WASM REPL); an ordinarily-built VM registers
+  the full set. Tracked as SW-49, open.
+
+**Dense tensor AD**
+
+- **ADR-0002's dense tensor AD node has never executed.** The guard admitting
+  it in the matmul lowering is an unsatisfiable conjunction, so
+  `recordADNodeTensor` has zero live callers. Every matmul under autodiff
+  therefore records one tape node per scalar multiply-accumulate, and flipping
+  the guard so the dense node is built faults on the first matmul gradient.
+  Gradients are correct; tape size scales with element count rather than
+  tensor-op count. This blocks ADR-0000 Stages 5, 7 and 8. Tracked as SW-48,
+  open.
+
+**Other tracked open items** (repros in `.icc/silent-wrong-ledger.yaml`)
+
+- **SW-39** — on the VM, `string-length` / `string-ref` / `vref` used as
+  first-class values abort the VM; call position works on the same engine.
+- **LE-02** — `hessian` over a lambda capturing its enclosing function's
+  parameter fails LLVM verification.
+- **LE-04** — `sort` argument order is reversed between engines: native takes
+  `(sort lst <)`, the VM takes `(sort < lst)`. No test covers it.
+- **IF-06** — a non-store value passed to a memory-store accessor faults.
+- **IF-07** — `void*` is not accepted as an `extern` type name; it warns and
+  silently defaults to `int64`.
+- **IF-08** — `HEAP_SUBTYPE_PARAMETER` is leaf-copied rather than deep-walked
+  by the native region evacuator; the bytecode VM's own evacuator already
+  deep-walks the equivalent row. No failing reproducer has been constructed —
+  it was filed because the classification was undocumented, not because a
+  wrong value was measured.
+- **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
 
 ---
 
