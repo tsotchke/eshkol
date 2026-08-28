@@ -741,6 +741,15 @@ function Invoke-SimpleCompileRunSuite {
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
+        # VERDICT CONTRACT (mirrors scripts/run_gpu_tests.sh's canary handling,
+        # e.g. tests/gpu/gate_canary_must_fail.esk): a test file named
+        # `*_must_fail.esk` is a deliberate, permanent failure used to prove
+        # this harness can still fail a real defect. For that file alone the
+        # verdict is inverted — a nonzero exit (with a matching FAIL: marker,
+        # when this suite configures one) is PASS, and an exit of 0 is FAIL.
+        # $testName is already a leaf name (Split-Path -Leaf above), so this
+        # match is path-separator agnostic on both Windows and POSIX inputs.
+        $isMustFailCanary = $testName -match '_must_fail\.esk$'
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName $SuiteName -TestName $testName
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
         if ($compile.TimedOut) {
@@ -762,6 +771,25 @@ function Invoke-SimpleCompileRunSuite {
             Add-Fail $suite "$testName (timeout)"
             continue
         }
+
+        if ($isMustFailCanary) {
+            if ($run.ExitCode -eq 0) {
+                Format-TestStatus $testName "CANARY DID NOT FAIL (exit 0)" Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite "$testName (must-fail canary did not fail — verdict pipeline is broken)"
+                continue
+            }
+            if ($FailRegex -and -not ($run.Output -match $FailRegex)) {
+                Format-TestStatus $testName "CANARY FAILED WITH NO FAIL MARKER" Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite "$testName (must-fail canary exited nonzero but printed no FAIL: marker)"
+                continue
+            }
+            Format-TestStatus $testName ("PASS (must-fail canary correctly failed, exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Green
+            Add-Pass $suite
+            continue
+        }
+
         if ($run.ExitCode -ne 0) {
             Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
