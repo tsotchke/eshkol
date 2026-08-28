@@ -7148,17 +7148,22 @@ static void vm_escape_native_control(VM* vm) {
 static void vm_dispatch_exception(VM* vm, Value exn) {
     vm->current_exception = exn;
     if (vm->n_handlers > 0) {
-        vm->n_handlers--;
-        int target_winds = vm->handler_stack[vm->n_handlers].n_winds;
+        VmExceptionHandler handler = vm->handler_stack[vm->n_handlers - 1];
+        int target_winds = handler.n_winds;
+        if (handler.saved_value_count > 0 && handler.saved_values) {
+            memcpy(vm->stack + handler.fp, handler.saved_values,
+                   (size_t)handler.saved_value_count * sizeof(Value));
+        }
+        vm_pop_handler(vm);
         while (vm->n_winds > target_winds) {
             vm->n_winds--;
             Value after = vm->wind_stack[vm->n_winds].after;
             vm_run_wind_after(vm, after);
         }
         vm_unwind_parameter_bindings(
-            vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
+            vm, handler.n_parameter_bindings);
         vm_promise_eval_unwind_to(
-            vm, vm->handler_stack[vm->n_handlers].promise_mark);
+            vm, handler.promise_mark);
         /* #341: retire every region handle opened after this handler was
          * installed, mirroring the native raise path (which additionally frees
          * the regions and promotes the raised value out of them — there is
@@ -7166,7 +7171,7 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
          * Doing it keeps handle liveness after a caught exception observably
          * identical on both substrates. */
         eshkol_region_handle_seq_unwind_to(
-            vm->handler_stack[vm->n_handlers].region_handle_mark);
+            handler.region_handle_mark);
         /* Stage-1 evacuator: close every `with-region` the raise is jumping
          * out of, innermost first, BEFORE the operand stack is cut back. The
          * raised condition is promoted out of each region on the way because
@@ -7176,11 +7181,11 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
          * means anything the abandoned frames still hold is treated as live,
          * which errs toward retention rather than toward a freed value. */
         vm_region_bracket_unwind_to(
-            vm, vm->handler_stack[vm->n_handlers].region_bracket_mark);
-        vm->sp = vm->handler_stack[vm->n_handlers].sp;
-        vm->fp = vm->handler_stack[vm->n_handlers].fp;
-        vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
-        vm->pc = vm->handler_stack[vm->n_handlers].pc;
+            vm, handler.region_bracket_mark);
+        vm->sp = handler.sp;
+        vm->fp = handler.fp;
+        vm->frame_count = handler.frame_count;
+        vm->pc = handler.pc;
         vm_escape_native_control(vm);
     } else {
         /* Report the condition on stderr ONLY, and report what it actually says.

@@ -57,9 +57,10 @@ activation's own guard is the one that fires either way. Rows 04-07 are the ones
 that can tell the difference, and on the native engines they answered wrongly
 until SW-58: ESH-0222's self-tail transform through `guard` collapsed the
 activations into one loop iteration and drained the handler chain with them, so
-there was no enclosing guard left for a re-raise to find. The bytecode VM never
-treated a `guard` body as a tail position, so it answered correctly throughout —
-which is exactly why every row is measured on all three engines.
+there was no enclosing guard left for a re-raise to find. The VM now uses the
+same direct self-tail lowering, with a growable handler chain and frame cleanup
+on return, so it is subject to the same value-level gate rather than being a
+non-TCO control case.
 
 The fix keeps the collapse (it is what makes a resident tick loop run forever in
 one native frame) and stops it destroying the chain: a back edge taken from
@@ -86,10 +87,14 @@ for f in tests/tco/guard_tail_context/*.esk; do
     printf '%-58s eshkol=%s\n' "$(basename "$f")" "$(./build/eshkol-run -r "$f" 2>/dev/null | tail -1)"
 done
 
-# and against the reference:
+# and against the reference (the generated source stays under the worktree's
+# ignored scratch directory):
+REF_WORK="${ESHKOL_TCO_REF_WORK:-.scratch/guard-tail-context-reference}"
+mkdir -p "$REF_WORK"
 for f in tests/tco/guard_tail_context/*.esk; do
-    { echo '(import (scheme base) (scheme write))'; cat "$f"; } > "${TMPDIR:-.}/ref.scm"
-    printf '%-58s chibi=%s\n' "$(basename "$f")" "$(chibi-scheme "${TMPDIR:-.}/ref.scm" 2>&1 | tail -1)"
+    ref="$REF_WORK/$(basename "$f" .esk).scm"
+    { echo '(import (scheme base) (scheme write))'; cat "$f"; } > "$ref"
+    printf '%-58s chibi=%s\n' "$(basename "$f")" "$(chibi-scheme "$ref" 2>&1 | tail -1)"
 done
 ```
 

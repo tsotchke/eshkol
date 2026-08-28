@@ -1,4 +1,5 @@
 #include "eshkol/backend/vm_limits.h"
+#include <limits.h>
 
 #ifndef ESHKOL_VM_NATIVE_POLICY_DESKTOP
 #define ESHKOL_VM_NATIVE_POLICY_DESKTOP 0
@@ -666,6 +667,22 @@ typedef struct {
     int32_t func_pc;     /* for debugging */
 } CallFrame;
 
+typedef struct {
+    int pc;
+    int sp;
+    int fp;
+    int frame_count;
+    int n_winds;
+    int n_parameter_bindings;
+    Value promise_mark;
+    uint64_t region_handle_mark;
+    int region_bracket_mark;
+    Value* saved_values;
+    int saved_value_count;
+} VmExceptionHandler;
+
+#define VM_INITIAL_HANDLER_CAP 16
+
 /*******************************************************************************
  * VM State
  ******************************************************************************/
@@ -702,28 +719,13 @@ typedef struct VM {
     int n_outputs;
 
     /* Exception handling */
-    struct {
-        int pc;
-        int sp;
-        int fp;
-        int frame_count;
-        int n_winds;
-        int n_parameter_bindings;
-        Value promise_mark;
-        /* #341: open-handle sequence mark. A raise retires every region handle
-         * opened after the handler was installed, so handle liveness after a
-         * caught exception reads identically on the VM and on native. */
-        uint64_t region_handle_mark;
-        /* Stage-1 evacuator: how many `with-region` brackets were open when
-         * this handler was installed. A raise closes every region entered
-         * since, promoting the raised value out of each on the way — the same
-         * guarantee the native raise path gives (runtime_exceptions_hosted.cpp
-         * calls eshkol_region_unwind_to with the in-flight value). Without it a
-         * caught exception would leave the region stack deeper than the
-         * program thinks it is, and the arenas would never be released. */
-        int region_bracket_mark;
-    } handler_stack[16];
+    /* Exception handlers are growable because a VM self-tail loop inside a
+     * guard retains one live handler per collapsed activation. The array is
+     * VM-owned heap storage, while the operand stack and call-frame depth stay
+     * constant under OP_TAIL_CALL. */
+    VmExceptionHandler* handler_stack;
     int n_handlers;
+    int handler_cap;
     Value current_exception;
 
     /* Dynamic-wind stack */
@@ -952,6 +954,60 @@ static char** g_vm_argv = NULL;
  *         602 (`command-line`). */
 static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_argv = argv; }
 
+static int vm_ensure_handler_capacity(VM* vm, int need) {
+    if (!vm || need < 0) return 0;
+    if (need <= vm->handler_cap) return 1;
+    int cap = vm->handler_cap > 0 ? vm->handler_cap : VM_INITIAL_HANDLER_CAP;
+    while (cap < need) {
+        if (cap > INT_MAX / 2) { cap = need; break; }
+        cap *= 2;
+    }
+    VmExceptionHandler* grown = (VmExceptionHandler*)realloc(
+        vm->handler_stack, (size_t)cap * sizeof(*grown));
+    if (!grown) {
+        fprintf(stderr, "ERROR: exception handler stack growth to %d entries failed\n", cap);
+        return 0;
+    }
+    vm->handler_stack = grown;
+    vm->handler_cap = cap;
+    return 1;
+}
+
+static void vm_release_handler(VmExceptionHandler* handler) {
+    if (!handler) return;
+    free(handler->saved_values);
+    handler->saved_values = NULL;
+    handler->saved_value_count = 0;
+}
+
+static void vm_pop_handler(VM* vm) {
+    if (!vm || vm->n_handlers <= 0) return;
+    vm_release_handler(&vm->handler_stack[vm->n_handlers - 1]);
+    vm->n_handlers--;
+}
+
+static void vm_clear_handlers(VM* vm) {
+    if (!vm) return;
+    while (vm->n_handlers > 0) vm_pop_handler(vm);
+}
+
+static int vm_capture_handler_values(VM* vm, VmExceptionHandler* handler) {
+    if (!vm || !handler) return 0;
+    int count = vm->sp - vm->fp;
+    if (count < 0) count = 0;
+    handler->saved_values = NULL;
+    handler->saved_value_count = count;
+    if (count == 0) return 1;
+    handler->saved_values = (Value*)malloc((size_t)count * sizeof(Value));
+    if (!handler->saved_values) {
+        handler->saved_value_count = 0;
+        return 0;
+    }
+    memcpy(handler->saved_values, vm->stack + vm->fp,
+           (size_t)count * sizeof(Value));
+    return 1;
+}
+
 /** @brief Zero-initialize a VM instance: clears all state, initializes the
  *         heap, sets the default native policy, and marks the AD tape
  *         inactive with an empty node map. */
@@ -990,6 +1046,10 @@ static void vm_init(VM* vm) {
     vm->constants = NULL;
     vm->const_cap = 0;
     (void)vm_ensure_const_cap(vm, MAX_CONSTS);
+    vm->handler_cap = VM_INITIAL_HANDLER_CAP;
+    vm->handler_stack = (VmExceptionHandler*)calloc(
+        (size_t)vm->handler_cap, sizeof(*vm->handler_stack));
+    if (!vm->handler_stack) vm->handler_cap = 0;
     vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
@@ -1448,6 +1508,7 @@ typedef struct {
     Value promise_mark;
     Value* saved_stack;
     CallFrame* saved_frames;
+    VmExceptionHandler* saved_handlers;
     Value* saved_wind_befores;
     Value* saved_wind_afters;
     Value* saved_parameter_bindings;

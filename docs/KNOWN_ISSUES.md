@@ -506,10 +506,12 @@ block ordinary use.
   calls through a procedure value (and therefore mutual tail calls between
   `letrec`-bound lambdas, which internal defines become), mutual tail calls made
   from inside a named `let` loop, tail calls that forward a pointer into the
-  caller's frame, and tail calls in the body of `guard`. The last of those is
-  not an optimization gap: R7RS 7.3 keeps the handler installed for the body's
-  whole dynamic extent, so a call in a guard body is not in a tail context, and
-  making it one changes which handler answers. See
+  caller's frame, and **mutual** tail calls in the body of `guard`. The last of
+  those is not an optimization gap: R7RS 7.3 keeps the handler installed for
+  the body's whole dynamic extent, so a mutual call in a guard body is not in a
+  tail context, and making it one changes which handler answers. Self-recursive
+  tail calls in a guard body are complete, with constant stack and the exact
+  handler chain; see
   [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body

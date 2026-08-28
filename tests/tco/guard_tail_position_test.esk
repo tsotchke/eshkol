@@ -81,7 +81,7 @@
 (report "replay lane, nested guards re-raise through both"
         (two 0)
         (list 'outer-answered 1
-              (cons 'i (cons 'o (cons 'i (cons 'o (cons 'i 'boom))))))) 
+              (cons 'i (cons 'o (cons 'i (cons 'o (cons 'i 'boom)))))))
 
 ;; ── 6. The residue: clauses read a binding the loop rebinds every iteration.
 ;;      No snapshot of the loop PARAMETERS can restore it, so the call stays a

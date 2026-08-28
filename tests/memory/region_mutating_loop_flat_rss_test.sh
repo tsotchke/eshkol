@@ -25,6 +25,8 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+SCRATCH_ROOT="${ESHKOL_MEMORY_SCRATCH_ROOT:-$REPO_ROOT/.scratch/memory-gates}"
+mkdir -p "$SCRATCH_ROOT"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -57,23 +59,24 @@ done
 
 # Detect which peak-RSS-reporting `time` flavor is available.
 TIME_MODE=""
-if /usr/bin/time -l true >/dev/null 2>/tmp/.regmut_probe.$$; then
-    if grep -q "maximum resident set size" /tmp/.regmut_probe.$$ 2>/dev/null; then
+PROBE_LOG="$SCRATCH_ROOT/regmut_probe.$$"
+if /usr/bin/time -l true > /dev/null 2>"$PROBE_LOG"; then
+    if grep -q "maximum resident set size" "$PROBE_LOG" 2>/dev/null; then
         TIME_MODE="bsd"
     fi
 fi
-if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >/tmp/.regmut_probe.$$ 2>&1; then
-    if grep -qi "Maximum resident set size" /tmp/.regmut_probe.$$ 2>/dev/null; then
+if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$PROBE_LOG" 2>&1; then
+    if grep -qi "Maximum resident set size" "$PROBE_LOG" 2>/dev/null; then
         TIME_MODE="gnu"
     fi
 fi
-rm -f /tmp/.regmut_probe.$$
+rm -f "$PROBE_LOG"
 if [ -z "$TIME_MODE" ]; then
     echo "region_mutating_loop_flat_rss_test.sh: neither \`/usr/bin/time -l\` (macOS) nor \`/usr/bin/time -v\` (Linux) reports peak RSS on this host — cannot gate." >&2
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-region-mut-rss.XXXXXX")"
+WORK="$(mktemp -d "$SCRATCH_ROOT/region-mut-rss.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "=========================================================="

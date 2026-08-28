@@ -1,10 +1,9 @@
 ; SW-58 — which handler answers when a self tail call sits in a `guard` body.
 ;
-; The native engines lower that call as a loop back edge; the VM compiles a
-; guard body with tail=0 and keeps one activation per level. The two engines
-; must still agree on WHICH of the live guards answers and with WHOSE
-; variables, because that is a property of the program, not of the engine.
-; Depths are kept small: the VM's handler stack holds 16 frames.
+; Both native engines and the VM lower that direct self call as a loop back
+; edge while retaining one live handler per activation. The two engines must
+; agree on WHICH guard answers and with WHOSE variables, because that is a
+; property of the program, not of the engine.
 
 ; 1. innermost handler re-raises: the answer names the next guard out
 (define (s n)

@@ -14,10 +14,10 @@
 # README rather than by editing a number.
 #
 # Every fixture is checked on all three engines Eshkol ships — native JIT (-r),
-# native AOT, and the bytecode VM — because SW-58 was an engine-local defect:
-# the VM never treated a `guard` body as a tail position, so it answered
-# correctly while both native paths did not.  Parity across the three is the
-# property being gated, and the reference is what all three are held to.
+# native AOT, and the bytecode VM.  SW-58 was first observed on native codegen;
+# the VM now uses the same direct self-tail lowering and dynamic handler chain.
+# Parity across the three is the property being gated, and the reference is
+# what all three are held to.
 #
 # Usage: scripts/run_guard_tail_context.sh
 #   BUILD_DIR selects the build directory (default: build).
@@ -46,7 +46,9 @@ read -r -d '' EXPECTED <<'TABLE'
 09_clause_reads_a_binding_the_loop_rebinds	(inner 0 0)
 TABLE
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/guard_tail_context.XXXXXX")"
+SCRATCH_ROOT="${ESHKOL_TCO_SCRATCH_ROOT:-.scratch/tco-context}"
+mkdir -p "$SCRATCH_ROOT"
+WORK="$(mktemp -d "$SCRATCH_ROOT/run.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 pass=0
@@ -67,6 +69,19 @@ check() {
     fi
 }
 
+# The standalone VM prints a compile/disassembly banner and a final execution
+# marker around the program's stdout. Keep the value comparison identical to
+# scripts/run_vm_parity.sh: discard those infrastructure lines and compare the
+# resulting byte stream, including spaces but not engine-specific newlines.
+normalize_output() {
+    perl -ne 'next if
+        /^WARN/ or /^INFO:/ or /^DEBUG/ or
+        /^\[ESKB\]/ or /^\[GPU\]/ or /^\s*\[compiled:/ or
+        /^=== Eshkol VM/ or /^=== Execution complete ===/ or
+        /^remark:/ or /^warning: <unknown>/;
+        print' | tr -d '\n'
+}
+
 echo "========================================="
 echo "  SW-58 guard tail-context differential"
 echo "  reference: chibi-scheme 0.12"
@@ -82,12 +97,12 @@ while IFS=$'\t' read -r name want; do
         continue
     fi
 
-    got=$("$ESHKOL_RUN" -r "$src" 2>/dev/null | tail -1)
+    got=$("$ESHKOL_RUN" -r "$src" 2>/dev/null | normalize_output)
     check "jit" "$name" "$want" "$got"
 
     bin="$WORK/$name.bin"
     if "$ESHKOL_RUN" "$src" -o "$bin" >/dev/null 2>&1; then
-        got=$("$bin" 2>/dev/null | tail -1)
+        got=$("$bin" 2>/dev/null | normalize_output)
         check "aot" "$name" "$want" "$got"
     else
         printf '  %-6s %-54s FAIL (compile)\n' "aot" "$name"
@@ -96,7 +111,7 @@ while IFS=$'\t' read -r name want; do
     fi
 
     if [ -x "$ESHKOL_VM" ]; then
-        got=$("$ESHKOL_VM" "$src" 2>/dev/null | tail -1)
+        got=$(ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$src" 2>/dev/null | normalize_output)
         check "vm" "$name" "$want" "$got"
     fi
 done <<< "$EXPECTED"

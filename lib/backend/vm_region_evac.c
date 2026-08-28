@@ -34,7 +34,7 @@
  *   - CONSERVATIVE MEMORY, PRECISE OBJECTS. Sweeping is at ARENA-BLOCK
  *     granularity: a block is freed only when nothing live is in it and nothing
  *     anywhere points into it. Every payload buffer (VmVector.items,
- *     VmBignum.limbs, VmContinuation's six saved arrays, VmFactorGraph's five
+ *     VmBignum.limbs, VmContinuation's seven saved arrays, VmFactorGraph's five
  *     pointer arrays, ...) is therefore covered WITHOUT the evacuator knowing
  *     those layouts at all, because a raw pointer to them is found by scanning.
  *
@@ -216,7 +216,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_PORT]         = { "port",         VM_EVAC_ROOT, "owns a FILE*/malloc'd buffer freed only by close" },
     [HEAP_AD_TAPE]      = { "ad-tape",      VM_EVAC_WALK, "payload only (AdNode array holds no Values)" },
     [HEAP_PROMISE]      = { "promise",      VM_EVAC_WALK, "VmVector.items[0..3): forced flag, thunk, cached" },
-    [HEAP_CONTINUATION] = { "continuation", VM_EVAC_WALK, "promise_mark + saved stack/winds/parameter arrays" },
+    [HEAP_CONTINUATION] = { "continuation", VM_EVAC_WALK, "promise_mark + saved stack/handlers/winds/parameter arrays" },
     [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are raw scalars; marked CONSERVATIVELY" },
     [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; irritants chain must be NULL" },
     [HEAP_BYTEVECTOR]   = { "bytevector",   VM_EVAC_WALK, "payload only (VmBytevector.data)" },
@@ -472,7 +472,8 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_CONTINUATION: {
         VmContinuation* c = (VmContinuation*)o->opaque.ptr;
         if (!c) return 1;
-        if (c->sp < 0 || c->n_winds < 0 || c->n_parameter_bindings < 0) return 0;
+        if (c->sp < 0 || c->n_handlers < 0 || c->n_winds < 0 ||
+            c->n_parameter_bindings < 0) return 0;
         if (!vm_evac_mark_value(h, c->promise_mark)) return 0;
         if (c->sp > 0) {
             if (!c->saved_stack) return 0;
@@ -490,6 +491,16 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
             for (int i = 0; i < c->n_parameter_bindings; i++)
                 if (!vm_evac_mark_value(h, c->saved_parameter_bindings[i]) ||
                     !vm_evac_mark_value(h, c->saved_parameter_values[i])) return 0;
+        }
+        if (c->n_handlers > 0) {
+            if (!c->saved_handlers) return 0;
+            for (int i = 0; i < c->n_handlers; i++) {
+                VmExceptionHandler* handler = &c->saved_handlers[i];
+                if (handler->saved_value_count < 0) return 0;
+                if (handler->saved_value_count > 0 && !handler->saved_values) return 0;
+                for (int j = 0; j < handler->saved_value_count; j++)
+                    if (!vm_evac_mark_value(h, handler->saved_values[j])) return 0;
+            }
         }
         return 1;
     }
@@ -646,7 +657,7 @@ static void vm_evac_retain_ptr(VmEvacBlocks* bs, const void* p) {
  *        a region block, retaining every block found.
  *
  * This is what makes payload coverage TOTAL without per-subtype layout
- * knowledge: `VmVector.items`, `VmBignum.limbs`, `VmContinuation`'s six saved
+ * knowledge: `VmVector.items`, `VmBignum.limbs`, `VmContinuation`'s seven saved
  * arrays, `VmFactorGraph`'s five pointer arrays and every nested row inside
  * them are all found as ordinary pointer-shaped words. Over-retention (an
  * integer that happens to look like an address) costs memory; under-retention
@@ -690,7 +701,7 @@ static void vm_evac_scan_retained(VmEvacBlocks* bs) {
  *
  * Only the SIZE of each payload struct is needed, never its layout: the
  * pointers inside it (`VmVector.items`, `VmBignum.limbs`, `VmContinuation`'s
- * six saved arrays, `VmFactorGraph`'s five pointer arrays) are found as
+ * seven saved arrays, `VmFactorGraph`'s five pointer arrays) are found as
  * pointer-shaped words, and anything they in turn point at is found when the
  * block they live in is scanned in its own right.
  *
@@ -824,8 +835,12 @@ static int vm_evac_mark_roots(VM* vm) {
 
     /* Exception state: the in-flight condition and each handler's promise mark. */
     if (!vm_evac_mark_value(h, vm->current_exception)) return 0;
-    for (int i = 0; i < vm->n_handlers && i < 16; i++)
+    for (int i = 0; i < vm->n_handlers; i++) {
         if (!vm_evac_mark_value(h, vm->handler_stack[i].promise_mark)) return 0;
+        for (int j = 0; j < vm->handler_stack[i].saved_value_count; j++) {
+            if (!vm_evac_mark_value(h, vm->handler_stack[i].saved_values[j])) return 0;
+        }
+    }
 
     /* dynamic-wind thunks still to run. */
     for (int i = 0; i < vm->n_winds && i < 32; i++)

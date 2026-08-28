@@ -2200,7 +2200,7 @@ static void eshkol_vm_prepare_entry(EshkolVmHandle* h, int function_index) {
     vm->frame_count = 0;
     vm->halted = 0;
     vm->error = 0;
-    vm->n_handlers = 0;
+    vm_clear_handlers(vm);
     vm->n_winds = 0;
     vm->promise_eval_head = NIL_VAL;
     vm->native_call_depth = 0;

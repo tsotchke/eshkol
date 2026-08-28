@@ -9,6 +9,54 @@ static int vm_is_definition_form(Node* node) {
             strcmp(node->children[0]->symbol, "define-values") == 0);
 }
 
+static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
+    if (!tail) return 0;
+    if (c->guard_self_tail_only &&
+        (!c->function_name || !head || head->type != N_SYMBOL ||
+         strcmp(head->symbol, c->function_name) != 0)) return 0;
+    return 1;
+}
+
+static int vm_guard_expr_cannot_raise(const Node* node) {
+    static const char* const safe_calls[] = {
+        "=", "<", ">", "<=", ">=", "eq?", "eqv?", "equal?",
+        "not", "boolean?", "symbol?", "number?", "integer?", "real?",
+        "zero?", "positive?", "negative?", "cons", "list"
+    };
+    if (!node || node->type != N_LIST) return 1;
+    if (node->n_children == 0 || node->children[0]->type != N_SYMBOL) return 0;
+    const char* name = node->children[0]->symbol;
+    if (strcmp(name, "quote") == 0) return 1;
+    int safe = 0;
+    for (size_t i = 0; i < sizeof(safe_calls) / sizeof(safe_calls[0]); i++) {
+        if (strcmp(name, safe_calls[i]) == 0) { safe = 1; break; }
+    }
+    if (!safe) return 0;
+    for (int i = 1; i < node->n_children; i++) {
+        if (!vm_guard_expr_cannot_raise(node->children[i])) return 0;
+    }
+    return 1;
+}
+
+static int vm_guard_is_collapsible(Node* clause_list) {
+    if (!clause_list || clause_list->type != N_LIST || clause_list->n_children < 2)
+        return 0;
+    int catch_all = 0;
+    for (int i = 1; i < clause_list->n_children; i++) {
+        Node* clause = clause_list->children[i];
+        if (!clause || clause->type != N_LIST || clause->n_children < 1) return 0;
+        Node* test = clause->children[0];
+        int is_else = test->type == N_SYMBOL && strcmp(test->symbol, "else") == 0;
+        int is_true = test->type == N_BOOL && test->numval != 0;
+        if (is_else || is_true) catch_all = 1;
+        if (!is_else && !vm_guard_expr_cannot_raise(test)) return 0;
+        for (int j = 1; j < clause->n_children; j++) {
+            if (!vm_guard_expr_cannot_raise(clause->children[j])) return 0;
+        }
+    }
+    return catch_all;
+}
+
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by
  * allocate-then-fill (constant operand-stack depth) instead of by pushing every
  * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
@@ -1533,11 +1581,13 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
  *        the detailed PUSH_HANDLER/POP_HANDLER bytecode layout comment
  *        below. Clauses are tried like `cond`, with a bare `(var ...)`
  *        (no clauses) falling back to compiling just the guard's own tail
- *        expression.
+ *        expression. A tail-position guard body permits direct self-tail
+ *        recursion; mutual calls remain ordinary so this form does not lose
+ *        its handler before the callee runs.
  */
 static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
-    (void)head; (void)tail;
+    (void)head;
     Node* clause_list = node->children[1]; /* (var (test handler) ...) */
     if (clause_list->type != N_LIST || clause_list->n_children < 1) {
         compile_expr(c, node->children[node->n_children - 1], tail);
@@ -1571,14 +1621,22 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int handler_patch = c->code_len;
     chunk_emit(c, OP_PUSH_HANDLER, 0);
 
-    /* Compile body expressions */
+    /* A guard in tail position is an Eshkol extension: its direct
+     * self-recursive body call may reuse the VM frame. Restrict the tail
+     * opcode to that direct self call so a mutual call remains an ordinary
+     * call and the guard handler remains catchable for the callee. */
+    int saved_guard_self_tail_only = c->guard_self_tail_only;
+    int saved_guard_pop_on_self_tail = c->guard_pop_on_self_tail;
+    c->guard_self_tail_only = tail && c->function_name != NULL;
+    if (c->guard_self_tail_only && vm_guard_is_collapsible(clause_list))
+        c->guard_pop_on_self_tail++;
     for (int i = 2; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
-            compile_expr(c, node->children[i], 0);
-            if (!vm_is_definition_form(node->children[i])) chunk_emit(c, OP_POP, 0);
-        }
-        else compile_expr(c, node->children[i], 0);
+        int is_last = (i == node->n_children - 1);
+        compile_expr(c, node->children[i], is_last ? tail : 0);
+        if (!is_last) chunk_emit(c, OP_POP, 0);
     }
+    c->guard_self_tail_only = saved_guard_self_tail_only;
+    c->guard_pop_on_self_tail = saved_guard_pop_on_self_tail;
 
     /* Normal exit */
     chunk_emit(c, OP_POP_HANDLER, 0);
@@ -2201,6 +2259,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * from the enclosing scope's func_slot. */
         FuncChunk func; chunk_init_arrays(&func);
         func.enclosing = c;
+        func.function_name = fname;
 
         /* Check for dot notation in params: (name x y . rest). A bare `.`
          * marks the variadic tail; the R7RS 7.1.1 vertical-line spelling
@@ -3311,9 +3370,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
+        if (vm_tail_call_allowed(c, head, tail)) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
             chunk_emit(c, OP_TAIL_CALL, argc);
-        else
+        } else
             chunk_emit(c, OP_CALL, argc);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
@@ -4663,9 +4724,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
+        if (vm_tail_call_allowed(c, head, tail)) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
             chunk_emit(c, OP_TAIL_CALL, argc);
-        else
+        } else
             chunk_emit(c, OP_CALL, argc);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;
