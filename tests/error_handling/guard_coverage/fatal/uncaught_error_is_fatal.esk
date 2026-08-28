@@ -1,0 +1,5 @@
+;; ESH-0101 guard coverage — FAIL-CLOSED probe.
+;; An uncaught (error ...) must be fatal and must name itself on stderr.
+(display "BEFORE ")
+(error "fatal probe message" 1 2)
+(display "MUST-NOT-PRINT")

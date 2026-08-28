@@ -708,6 +708,25 @@ jobs:
           VM_PARITY_TIMEOUT: '120'
         run: bash scripts/run_vm_parity.sh
 
+      # ESH-0101. run_vm_parity.sh above is a DIFFERENTIAL: it compares the
+      # engines to each other, so a clause form both backends get wrong the
+      # same way passes by agreement. This gate compares every engine to a
+      # hand-authored R7RS golden instead, on five axes (JIT, AOT -O0, AOT
+      # -O2, vm-src, vm-eskb) — which is how the `=>` receiver clause (SW-78)
+      # and the test-only `(test)` clause (SW-79) turned out to be wrong on
+      # BOTH substrates at once. It runs in this job because it needs exactly
+      # the three targets already built above and nothing more.
+      - name: run_guard_coverage.sh (ESH-0101 — R7RS guard on every engine, vs golden)
+        timeout-minutes: 20
+        shell: bash
+        env:
+          BUILD_DIR: build
+          # Same reasoning as VM_PARITY_TIMEOUT above: a hosted runner is
+          # slower than the dev machines these budgets were measured on, and
+          # this gate compiles each case five times.
+          GUARD_COVERAGE_TIMEOUT: '120'
+        run: bash scripts/run_guard_coverage.sh
+
       - name: Disk budget guard (after; fail if net growth exceeds 8GB)
         if: always()
         shell: bash

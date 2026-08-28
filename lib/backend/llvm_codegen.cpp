@@ -22922,6 +22922,28 @@ private:
                     builder->CreateBr(done_block);
                     break;
                 } else {
+                    // R7RS 4.2.7: a guard clause is a COND clause, so all three
+                    // cond-clause shapes are legal here, not just (test body...):
+                    //
+                    //   (test body ...)   value is the last body expression
+                    //   (test => recv)    value is (recv <the test's value>)
+                    //   (test)            value is the TEST's OWN value
+                    //
+                    // Only the first was implemented. `=>` fell through to the
+                    // body loop, which code-generated the literal identifier
+                    // `=>` as a variable reference, and the test-only clause
+                    // left `result` null and was silently replaced by '()
+                    // below — a wrong answer with no diagnostic on either.
+                    // Both are fixed here; the shape detection mirrors
+                    // ControlFlowCodegen::codegenCond's `=>` handling so the
+                    // two clause readers cannot drift apart.
+                    // (Ledger: SW-78 arrow, SW-79 test-only.)
+                    bool is_arrow = (clause->operation.call_op.num_vars == 2 &&
+                        clause->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                        clause->operation.call_op.variables[0].variable.id &&
+                        strcmp(clause->operation.call_op.variables[0].variable.id, "=>") == 0);
+                    bool is_test_only = (clause->operation.call_op.num_vars == 0);
+
                     // Evaluate test
                     TypedValue test_typed = codegenTypedAST(clause->operation.call_op.func);
                     if (builder->GetInsertBlock()->getTerminator()) {
@@ -22929,6 +22951,15 @@ private:
                     }
                     Value* test = test_typed.llvm_value;
                     if (!test) continue;
+
+                    // The tagged form of the test value is needed in the THEN
+                    // block by both `=>` (as the receiver's argument) and the
+                    // test-only clause (as the clause's value). Pack it here,
+                    // in the block that computes the test, so it dominates.
+                    Value* test_tagged = nullptr;
+                    if (is_arrow || is_test_only) {
+                        test_tagged = typedValueToTaggedValue(test_typed);
+                    }
 
                     Value* is_true = flow_->isTruthy(test);
                     BasicBlock* then_block = BasicBlock::Create(*context, "guard_clause_then", current_func);
@@ -22939,17 +22970,36 @@ private:
                     // Then block - evaluate body expressions
                     builder->SetInsertPoint(then_block);
                     Value* result = nullptr;
-                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                        TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                        // NORETURN SAFETY: If a body expression raised, stop
-                        if (builder->GetInsertBlock()->getTerminator()) {
-                            break;
+                    if (is_test_only) {
+                        result = test_tagged;
+                    } else if (is_arrow) {
+                        TypedValue recv_typed =
+                            codegenTypedAST(&clause->operation.call_op.variables[1]);
+                        Value* receiver = typedValueToTaggedValue(recv_typed);
+                        if (receiver && !builder->GetInsertBlock()->getTerminator()) {
+                            std::vector<Value*> recv_args{test_tagged};
+                            result = codegenClosureCall(receiver, recv_args, "guard-arrow");
                         }
-                        // Convert to tagged value for consistent PHI node type
-                        result = typedValueToTaggedValue(typed);
-                        if (builder->GetInsertBlock()->getTerminator()) {
-                            break;
+                        if (!result && !builder->GetInsertBlock()->getTerminator()) {
+                            eshkol_warn("guard `=>` requires a procedure receiver");
+                            result = test_tagged;
                         }
+                    } else {
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
+                            // NORETURN SAFETY: If a body expression raised, stop
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                break;
+                            }
+                            // Convert to tagged value for consistent PHI node type
+                            result = typedValueToTaggedValue(typed);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                break;
+                            }
+                        }
+                    }
+                    if (result && result->getType() != tagged_value_type) {
+                        result = ensureTaggedValue(result);
                     }
                     if (!result && !builder->GetInsertBlock()->getTerminator()) {
                         result = packNullToTaggedValue();

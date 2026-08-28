@@ -1,0 +1,54 @@
+;; ESH-0101 guard coverage — `else`, and the R7RS re-raise obligation:
+;; when NO clause matches, the guard re-raises the condition in the dynamic
+;; environment of the original `raise`, so an ENCLOSING guard sees it.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; else catches everything
+(chk "else-catches"
+     (equal? (guard (e (else "caught")) (raise 'anything)) "caught"))
+
+;; else is only reached when no earlier clause matched
+(chk "else-after-nonmatching"
+     (equal? (guard (e ((number? e) "num") ((string? e) "str") (else "other"))
+               (raise 'sym))
+             "other"))
+
+;; else body of several expressions yields the last
+(define n 0)
+(chk "else-multi-expr"
+     (equal? (guard (e (else (set! n 1) (set! n (+ n 41)) n)) (raise 0)) 42))
+
+;; NO clause matches -> re-raised to the enclosing guard
+(chk "reraise-to-outer"
+     (equal? (guard (outer (#t "outer"))
+               (guard (inner ((number? inner) "inner")) (raise "not-a-number")))
+             "outer"))
+
+;; the re-raised object is the ORIGINAL object, unchanged
+(chk "reraise-preserves-value"
+     (equal? (guard (outer (#t outer))
+               (guard (inner ((number? inner) "inner")) (raise "payload")))
+             "payload"))
+
+;; an inner guard whose clauses all evaluate to #f still re-raises
+(chk "reraise-all-false"
+     (equal? (guard (outer (#t "outer-saw-it"))
+               (guard (inner (#f "a") (#f "b")) (raise 1)))
+             "outer-saw-it"))
+
+;; re-raise crosses TWO non-matching guards to reach the third
+(chk "reraise-two-levels"
+     (equal? (guard (g3 (#t "g3"))
+               (guard (g2 ((number? g2) "g2"))
+                 (guard (g1 ((number? g1) "g1")) (raise 'sym))))
+             "g3"))
+
+;; an EXPLICIT re-raise from inside a clause body reaches the outer guard
+(chk "explicit-reraise-in-clause"
+     (equal? (guard (outer (#t (list 'outer outer)))
+               (guard (inner (#t (raise (list 'wrapped inner)))) (raise 'core)))
+             (list 'outer (list 'wrapped 'core))))

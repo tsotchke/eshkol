@@ -1,0 +1,62 @@
+;; ESH-0101 guard coverage — `error` and the R7RS error-object accessors
+;; interplay with `guard`. `error` raises an error object; `error-object?`
+;; must recognise it and NOTHING else, and message/irritants must round-trip.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; error is catchable by a guard
+(chk "error-caught" (equal? (guard (e (else "caught")) (error "bad")) "caught"))
+
+;; error-object? is true for a raised error object
+(chk "error-object-yes"
+     (equal? (guard (e (#t (error-object? e))) (error "bad")) #t))
+
+;; error-object? is FALSE for ordinary raised values (it must discriminate)
+(chk "error-object-no-number"
+     (equal? (guard (e (#t (error-object? e))) (raise 42)) #f))
+(chk "error-object-no-string"
+     (equal? (guard (e (#t (error-object? e))) (raise "plain")) #f))
+(chk "error-object-no-symbol"
+     (equal? (guard (e (#t (error-object? e))) (raise (quote sym))) #f))
+(chk "error-object-no-list"
+     (equal? (guard (e (#t (error-object? e))) (raise (list 1 2))) #f))
+
+;; message round-trips
+(chk "error-message"
+     (equal? (guard (e (#t (error-object-message e))) (error "the message"))
+             "the message"))
+
+;; no irritants -> empty list
+(chk "error-irritants-empty"
+     (equal? (guard (e (#t (error-object-irritants e))) (error "no irritants"))
+             (list)))
+
+;; irritants round-trip in order
+(chk "error-irritants"
+     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 2 3))
+             (list 1 2 3)))
+
+;; mixed-type irritants
+(chk "error-irritants-mixed"
+     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 "two"))
+             (list 1 "two")))
+
+;; an error-object clause can be selected by error-object? as the TEST
+(chk "error-object-as-test"
+     (equal? (guard (e ((error-object? e) (error-object-message e)) (else "other"))
+               (error "selected"))
+             "selected"))
+
+;; a non-error raise falls past the error-object? clause to else
+(chk "error-object-test-falls-through"
+     (equal? (guard (e ((error-object? e) "err") (else "other")) (raise 7))
+             "other"))
+
+;; an error object survives a re-raise through an enclosing guard
+(chk "error-object-reraise"
+     (equal? (guard (o ((error-object? o) (error-object-message o)))
+               (guard (i ((number? i) "num")) (error "survived")))
+             "survived"))

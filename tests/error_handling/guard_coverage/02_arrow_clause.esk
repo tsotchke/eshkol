@@ -1,0 +1,48 @@
+;; ESH-0101 guard coverage — the R7RS `=>` cond-clause inside `guard`.
+;; (guard (var (test => receiver) ...) body)
+;; When `test` is true the RECEIVER is applied to the TEST's value (not to
+;; the guard variable), and that application's value is the guard's value.
+;; This is the R7RS 4.2.7 example form and has no coverage anywhere else in
+;; the suite.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; receiver as a named procedure; test value is the raised number itself
+(define (add-ten n) (+ n 10))
+(chk "arrow-named-proc"
+     (equal? (guard (e ((and (number? e) e) => add-ten)) (raise 32)) 42))
+
+;; receiver as a lambda
+(chk "arrow-lambda"
+     (equal? (guard (e ((and (string? e) e) => (lambda (s) (string-append s "!"))))
+               (raise "hi"))
+             "hi!"))
+
+;; the receiver sees the TEST's value, NOT the guard variable
+(chk "arrow-receives-test-value"
+     (equal? (guard (e ((assoc 'b e) => cdr)) (raise (list (cons 'a 1) (cons 'b 2))))
+             2))
+
+;; a false `=>` test falls through to the next clause
+(chk "arrow-false-falls-through"
+     (equal? (guard (e ((and (number? e) e) => add-ten) (#t "fell")) (raise "s"))
+             "fell"))
+
+;; `=>` mixed with a plain clause before it
+(chk "arrow-after-plain"
+     (equal? (guard (e ((symbol? e) "sym") ((and (number? e) e) => add-ten))
+               (raise 5))
+             15))
+
+;; `=>` followed by else — the arrow clause wins when its test is true
+(chk "arrow-before-else"
+     (equal? (guard (e ((and (number? e) e) => add-ten) (else "other")) (raise 1))
+             11))
+
+;; `=>` followed by else — else wins when the arrow test is false
+(chk "arrow-then-else"
+     (equal? (guard (e ((and (number? e) e) => add-ten) (else "other")) (raise 'z))
+             "other"))
