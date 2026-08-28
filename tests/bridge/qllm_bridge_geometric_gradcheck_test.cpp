@@ -770,9 +770,11 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
                "all Q/K head-slices strictly inside the ball");
     }
 
-    /* Position 1, head 1 of K pushed outside: offset (0*2+1)*4 + 1*2 = 6. */
+    /* Slice offset is (b*seq + pos)*dim + head*head_dim, the same arithmetic the
+     * op uses. Position 1, head 1 => (0*2+1)*4 + 1*2 = 6. */
+    const size_t k_bad = (size_t)(0*2 + 1)*4 + (size_t)1*head_dim;
     double Kbad[8]; std::memcpy(Kbad, K, sizeof Kbad);
-    Kbad[6] = 0.9; Kbad[7] = 0.9;            /* |slice| = 1.2728 > 1 */
+    Kbad[k_bad] = 0.9; Kbad[k_bad + 1] = 0.9;   /* |slice| = 1.2728 > 1 */
     {
         ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kbad, sh, 3), *v = var_node(V, sh, 3);
         ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
@@ -780,10 +782,11 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
                "K slice at position 1, head 1 has |k| = 1.2728; got %s",
                o ? "an attention output with that key silently dropped" : "NULL");
     }
-    /* And a query slice exactly ON the boundary: |slice| == 1. */
+    /* And a query slice exactly ON the boundary: position 0, head 1 =>
+     * (0*2+0)*4 + 1*2 = 2. |slice| == 1 exactly, in any evaluation order. */
+    const size_t q_bad = (size_t)(0*2 + 0)*4 + (size_t)1*head_dim;
     double Qbad[8]; std::memcpy(Qbad, Q, sizeof Qbad);
-    Qbad[2] = 1.0; Qbad[3] = 0.0;            /* |slice| = 1 exactly, in any
-                                              * evaluation order */
+    Qbad[q_bad] = 1.0; Qbad[q_bad + 1] = 0.0;
     {
         ad_node_t* q = var_node(Qbad, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
         ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
