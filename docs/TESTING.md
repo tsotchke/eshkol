@@ -61,6 +61,26 @@ To gate a new pillar: give it CTest entries with a shared name prefix, add one
 `CTEST_GATE_GROUPS` line, and add one `runtime_event` criterion with
 `event_kinds: [ctest]` under `eshkol-compiler-readiness`.
 
+### Oracle binding gate
+
+`scripts/check_oracle_bindings.py` is the source-level companion to the CTest
+gate. It extracts registered test names and labels from `CMakeLists.txt` and
+`tests/**/CMakeLists.txt`, then fails if an oracle action's `ctest -R` or
+`ctest -L` selector matches nothing. It also checks that script paths named by
+oracle actions exist; directly invoked scripts must be executable.
+
+Run it without building the compiler:
+
+```bash
+python3 scripts/check_oracle_bindings.py --no-trace
+python3 scripts/check_oracle_bindings.py --self-test
+```
+
+The self-test writes its temporary fixtures beneath `.scratch/` and removes
+them before returning. This gate belongs in the assurance-gates job because a
+zero-match CTest selector otherwise exits successfully and can make a
+criterion vacuous.
+
 Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 `ctest_suite_green` whole-suite roll-up plus the
 `fixed_point_exact_accumulation_gate`, `exact_input_ad_identity_gate`,
