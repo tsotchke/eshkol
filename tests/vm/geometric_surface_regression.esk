@@ -1,6 +1,8 @@
 ;; Standalone VM geometric builtin surface regression.
-;; The default build may not link qLLM geometry, but these names must resolve
-;; and their portable fallback must consume the right number of arguments.
+;; These names must resolve and consume the right number of arguments. There is
+;; one dispatch body now -- the closed forms in inc/eshkol/backend/*_core.h -- so
+;; this file is an arity/resolution/stack-balance probe over that body, with the
+;; numeric content living in geometric_riemannian_surface_regression.esk.
 
 (define t (make-tensor '(2) 0.0))
 ;; frechet-mean is the only op here whose arguments have a domain: the weights
@@ -55,13 +57,25 @@
 (ricci-scalar h)
 (sectional-curvature h t t)
 (wedge-product t t)
-;; exterior-derivative and hodge-star are NOT implemented on the VM engine and
-;; raise a catchable condition naming themselves. They used to return zeros and
-;; the identity respectively, which asserted that every form is closed and that
-;; the star is trivial. Probed here through `guard` so this file stays an
-;; arity/resolution probe.
-(guard (e (#t 'refused)) (exterior-derivative t))
-(guard (e (#t 'refused)) (hodge-star t t))
+;; exterior-derivative and hodge-star take a DIFFERENTIAL FORM -- the tensor
+;; [k, n, r, coefficient jets...] -- not a flat coefficient array, because
+;; neither op is determined by coefficient values at a point: d needs the
+;; coefficients' partials and the star needs the degree. `t` is neither, so it
+;; is replaced here with in-domain arguments, the same way the frechet-mean and
+;; spherical probes above are.
+(define form-1jet (make-tensor '(9) 0.0))   ; a 1-jet 1-form on R^2
+(tensor-set! form-1jet 0 1.0)               ; k = 1
+(tensor-set! form-1jet 1 2.0)               ; n = 2
+(tensor-set! form-1jet 2 1.0)               ; r = 1
+(tensor-set! form-1jet 3 1.0)               ; w_dx = 1
+(define form-0jet (make-tensor '(5) 0.0))   ; a 0-jet 1-form on R^2
+(tensor-set! form-0jet 0 1.0)
+(tensor-set! form-0jet 1 2.0)
+(define form-metric (make-tensor '(2 2) 0.0))
+(tensor-set! form-metric 0 1.0)
+(tensor-set! form-metric 3 1.0)
+(exterior-derivative form-1jet)
+(hodge-star form-0jet form-metric)
 (interior-product t t)
 (pullback t t)
 (riemannian-sgd-step t t 0.01 -1.0)
@@ -77,11 +91,17 @@
 (geodesic-attention-forward t t t -1.0)
 (set-curvature! h -0.5)
 (get-curvature h)
-(curvature-gradient h t)
+;; The three curvature-objective ops differentiate the total geodesic distance
+;; over the point pairs their second argument packs, so that argument is a batch
+;; of (x, y) pairs of the manifold's dimension -- not the loose tensor `t`,
+;; whose length is not a whole number of pairs.
+(define curv-pairs (make-tensor '(4) 0.0))
+(tensor-set! curv-pairs 2 0.5)
+(curvature-gradient h curv-pairs)
 (transition-geometry! h -1.0 0.1)
 (manifold-interpolate h s 0.5)
-(curvature-hessian h t)
-(adaptive-curvature-step h t)
+(curvature-hessian h curv-pairs)
+(adaptive-curvature-step h curv-pairs)
 (manifold-type h)
 (manifold-dim h)
 (manifold-dimension h)

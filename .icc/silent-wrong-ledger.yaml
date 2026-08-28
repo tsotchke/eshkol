@@ -6911,3 +6911,189 @@ entries:
       it being one: the caller reading `(geodesic-distance x y -1.0)` in a
       program still gets a number that is not the geodesic distance. That
       section of the page is updated to describe what the code now computes.
+
+  - id: SW-75
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "feat/vm-geometry-complete"
+    closed_by: "branch feat/vm-geometry-complete"
+    title: "the VM's three curvature-adaptation builtins reported numbers that were not derivatives of anything: curvature-gradient returned the SUM of its argument's elements, curvature-hessian the constant 0.0, and adaptive-curvature-step moved K by a fixed 0.01 times that sum — and spherical-project returned the zero vector, which is not a point of the sphere"
+    mechanism: >-
+      lib/backend/vm_geometric.c, ids 852, 855 and 856. Their names and their
+      documented types say derivative: curvature-gradient and curvature-hessian
+      both return a float, adaptive-curvature-step mutates the manifold's
+      curvature. What they computed:
+
+        curvature-gradient (852)
+            sum of the second argument's elements. A reduction, not a
+            derivative of any objective with respect to K. It has the type and
+            the magnitude a gradient would have and nothing in the returned
+            float distinguishes it from one.
+        curvature-hessian (855)
+            0.0, for every manifold and every second argument, which was popped
+            and discarded. A second derivative that is identically zero is the
+            assertion that the objective is AFFINE IN K — a statement about an
+            objective, made without examining one, and false for the geodesic
+            distance at every curvature.
+        adaptive-curvature-step (856)
+            K <- K - 0.01 * sum(grad). A fixed rate applied to a quantity that
+            was not a gradient, under a name that says the step adapts.
+
+      This is the same class SW-73 records for the surrounding geometry, in its
+      second form. SW-73's ops accepted a curvature argument and DISCARDED it;
+      these accept a tensor and REDUCE it, and in both cases the output is a
+      plausible number that carries no trace of what was thrown away. SW-73's
+      own PR body listed all three as "not measurements either" and left them
+      out of that defect's class on the grounds that they do not drop a
+      curvature argument. They are the same defect measured on the other axis,
+      and this entry records them as such.
+
+      Independently, spherical-project (823) returned an L2-normalised copy of
+      its argument and left a ZERO-NORM input unchanged. The zero vector is not
+      a point of the unit sphere, so the op returned a value outside its own
+      codomain — for the one input where no answer exists — with no diagnostic
+      and exit 0.
+
+      Two further names, exterior-derivative (835) and hodge-star (836), were
+      the STRAIGHTFORWARD form of this defect before SW-73 (zeros of the input's
+      shape, and the argument unchanged: "every form is closed" and "the star is
+      trivial", both asserted without examining the argument). SW-73 replaced
+      them with a refusal, which was honest, so they are not re-opened here.
+      They are closed as implementations by the same branch and are listed under
+      fixed_by.
+    repro: >-
+      tests/vm/geometric_riemannian_surface_regression.esk, run by
+      scripts/run_vm_surface_tests.sh (the *_surface_regression glob picks it up
+      automatically). The pair is the origin and (0.5, 0.0) on the Poincare ball
+      of sectional curvature K = -1, packed as the 4-element batch
+      [0 0 | 0.5 0]:
+
+        (define hm (make-hyperbolic-manifold 2 -1.0))
+        (define one-pair (fill! (make-tensor '(4) 0.0) '(0.0 0.0 0.5 0.0)))
+        (curvature-gradient hm one-pair)
+        (curvature-hessian  hm one-pair)
+        (adaptive-curvature-step hm one-pair)
+        (spherical-project (make-tensor '(3) 0.0))
+    observed: >-
+      curvature-gradient returned 0.5 — the sum of the batch's elements, which
+      is a property of the coordinates and not of the geometry: it is unchanged
+      by the manifold's curvature, and changes if the same two points are
+      written in a different order.
+
+      curvature-hessian returned 0.0.
+
+      adaptive-curvature-step moved K from -1.0 to -1.005, i.e. by
+      0.01 * 0.5, in a direction and by an amount that no objective chose.
+
+      spherical-project on the zero vector returned the zero vector.
+    correct: >-
+      The exact derivatives of a NAMED objective with respect to the sectional
+      curvature: L(K) = sum_p d_K(x_p, y_p), the total geodesic distance over
+      the supplied point pairs. For the repro's single pair on the ball,
+      d(c) = 2 artanh(sqrt(c) t)/sqrt(c) with t = 1/2 and c = -K, so
+
+        L'(-1)  = -(2/3 - artanh(1/2)) = -0.1173605223326118
+        L''(-1) =  0.0461814387233047
+
+      Both are closed forms, not difference quotients. The adaptive step is a
+      backtracked damped Newton step on the same L: the full Newton step here
+      lands at K = +1.5412920337059086, which would change WHICH GEOMETRY the
+      manifold is rather than how curved it is, so it is rejected along with the
+      half step, and t = 1/4 gives K = -0.36467699157352285 with the objective
+      falling from 1.0986122886681098 to 1.032168667276747.
+
+      spherical-project must refuse the origin: every point of the sphere is
+      equidistant from it, so no projection is determined.
+    observed_after: >-
+      curvature-gradient  -> -0.1173605223326118
+      curvature-hessian   ->  0.0461814387233047
+      adaptive-curvature-step -> K = -0.36467699157352285, objective 1.032...
+      spherical-project on the origin -> a catchable condition naming the op.
+
+      K = 0 now raises for all three derivative ops, with its reason: the
+      Poincare ball's conformal factor is lambda_x = 2/(1 - c|x|^2), so the ball
+      branch tends to 2|x-y| as K -> 0- while eshkol_rm_distance's flat branch
+      returns |x-y|, and the spherical branch diverges as K -> 0+. The metric
+      family is genuinely discontinuous at K = 0, so no number is the derivative
+      there — and this is exactly the case where returning one would be a new
+      instance of this defect.
+    fixed_by: >-
+      branch feat/vm-geometry-complete.
+
+      inc/eshkol/backend/riemannian_core.h gains eshkol_rm_distance_dK: the
+      geodesic distance and its first two exact derivatives in K, on the ball
+      (the chain rule on d = arccosh(1 + 2D c/((1-ca)(1-cb)))/sqrt(c)) and on
+      the sphere (theta K^-1/2 at fixed angular position, since a point of the
+      sphere of radius 1/sqrt(K) is not a point of a sphere of another radius).
+      Coincident points are exact, not a limit: D = 0 makes d identically zero
+      in c, so both derivatives are exactly 0.
+
+      lib/backend/vm_geometric.c reads its second argument as a batch of point
+      pairs of the manifold's dimension, refuses a length that is not a whole
+      number of pairs with () rather than dropping a partial pair, and raises on
+      every domain failure. spherical-project routes through eshkol_rm_project,
+      which already refused the origin for the other spherical ops.
+
+      In the same branch, inc/eshkol/backend/differential_form_core.h implements
+      exterior-derivative (835) and hodge-star (836) — SW-73 left both raising
+      "not implemented on the VM engine" as build items. A form is now
+      [k, n, r, coefficient jets...]: d is a first-order operator, so the 1-jet
+      of the coefficients is exactly the input that determines it, and the
+      degree the star needs is carried rather than guessed (C(n,k) = C(n,n-k)
+      makes it unrecoverable from a flat array). d is exact, consumes one jet
+      order, and d(d(w)) is BIT-EQUAL zero because the mixed partials that
+      cancel are the same stored double.
+
+      The ESHKOL_GEOMETRIC_ENABLED body and its ESHKOL_GEOMETRIC_QLLM CMake
+      option are deleted in the same branch: 19 compile errors against the
+      current libsemiclassical_qllm ABI, fp32 throughout, and manifold-dim
+      returning 0 unconditionally (the branch SW-72 patched). An unreachable
+      body that does not compile is not a second implementation held in reserve.
+      lib/bridge/qllm_bridge.cpp, the live differentiable integration, is
+      untouched.
+    evidence: >-
+      tests/vm/geometric_riemannian_surface_regression.esk — the file SW-73
+      created, extended from 42 to 98 assertions. The new ones pin every value
+      above against its closed form and, where the old body produced a specific
+      number, assert `far?` from that number as well: curvature-gradient is
+      checked to be far from 0.5, curvature-hessian far from 0.0,
+      adaptive-curvature-step far from -1.005, the Hodge star far from the
+      identity map on the n = 4 k = 1 case where ** = -1. d(d(f)) is checked
+      with `=`, not a tolerance. Run by scripts/run_vm_surface_tests.sh.
+
+      inc/eshkol/backend/differential_form_core.h and
+      inc/eshkol/backend/riemannian_core.h are additionally checked as C, out of
+      the VM, against hand-derived analytic values and against central
+      differences of eshkol_rm_distance — the two agree to 1e-9 on the first
+      derivative and 1e-4 on the second, which is the accuracy the difference
+      quotient has, not the accuracy the closed form has.
+    caught_by: [direct-measurement, sw-73-build-items]
+    missed_by: [run_vm_surface_tests.sh (pre-fix), run_vm_parity.sh, icc-readiness, sw-73 (scoped these out)]
+    notes: >-
+      SW-73's PR body listed items 1, 2, 5 and 6 of its "build items (not fixed
+      here)" section: exterior-derivative, hodge-star, spherical-project's zero
+      vector, and the three curvature heuristics. All four are closed here. Item
+      3, the stale ESHKOL_GEOMETRIC_ENABLED body, is deleted here. Item 4,
+      ad_poincare_log_map's clamp in lib/bridge/qllm_bridge.cpp, is NOT touched:
+      it is on the AD surface and belongs to that lane. Item 7,
+      tests/vm_parity/corpus/42_iota_srfi1.esk, is a native `iota` defect on
+      master and is untouched.
+
+      Nothing here changes the VM parity manifest. All 62 geometric names are on
+      the VM surface only — absent from lib/backend/llvm_codegen.cpp and from
+      lib/backend/eshkol_compiler.c's native builtin table, and recorded
+      "backends": ["vm"] in tests/coverage/language_surface.json — so
+      tests/vm_parity/PARITY.tsv, whose contract is "every symbol on the NATIVE
+      codegen surface must be present on the VM surface or carry a row here",
+      governs none of them and needs no row. The gate that had to catch this is
+      the self-checking one: a probe asserting against mathematics inside a
+      single run, which is what run_vm_surface_tests.sh's own header calls out
+      and what the extended regression is.
+
+      No builtin names, ids or arities changed, so
+      tests/coverage/language_surface.json's builtins_total stays 1042. What
+      changed is what two of the arguments MEAN — exterior-derivative and
+      hodge-star take a form value rather than a flat coefficient array, and the
+      three curvature ops take a batch of point pairs rather than a gradient
+      tensor — and both are stated in docs/reference/stdlib/geometry.md, which
+      is the contract this branch was written against.

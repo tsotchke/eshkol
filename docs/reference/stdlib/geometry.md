@@ -2,9 +2,11 @@
 
 **Name table**: [`lib/backend/eshkol_vm.c`](../../../lib/backend/eshkol_vm.c) `BUILTINS[]`, native ids 804-861.
 **Implementation**: [`lib/backend/vm_geometric.c`](../../../lib/backend/vm_geometric.c).
+**Constant-curvature core**: [`inc/eshkol/backend/riemannian_core.h`](../../../inc/eshkol/backend/riemannian_core.h).
+**Differential-form core**: [`inc/eshkol/backend/differential_form_core.h`](../../../inc/eshkol/backend/differential_form_core.h).
 **Weighted Fréchet mean core**: [`inc/eshkol/backend/frechet_mean_core.h`](../../../inc/eshkol/backend/frechet_mean_core.h).
 **Surface record**: `tests/coverage/language_surface.json`, category `geometry`.
-**Regression**: [`tests/vm/geometric_surface_regression.esk`](../../../tests/vm/geometric_surface_regression.esk), run by `scripts/run_vm_surface_tests.sh`.
+**Regressions**: [`tests/vm/geometric_surface_regression.esk`](../../../tests/vm/geometric_surface_regression.esk) (arity/resolution) and [`tests/vm/geometric_riemannian_surface_regression.esk`](../../../tests/vm/geometric_riemannian_surface_regression.esk) (numeric, every assertion chosen so the pre-`SW-73` answer fails it), both run by `scripts/run_vm_surface_tests.sh`.
 
 This page documents the **62 geometric builtin names** the bytecode VM registers
 under native ids 804-861. They are a different surface from the pure-Scheme
@@ -51,32 +53,34 @@ See [`../runtime/eshkol-run.md`](../runtime/eshkol-run.md) for `--profile` and
 
 ## What the shipped build computes
 
-`vm_geometric.c` has two dispatch bodies, selected at compile time by
-`ESHKOL_GEOMETRIC_ENABLED`:
+`vm_geometric.c` has **one** dispatch body, and it computes the **closed forms
+of constant-curvature geometry in f64** (`inc/eshkol/backend/riemannian_core.h`)
+together with the **differential-form jet calculus**
+(`inc/eshkol/backend/differential_form_core.h`).
 
-- **`#if !defined(ESHKOL_GEOMETRIC_ENABLED)`** — a self-contained,
-  constant-curvature implementation that allocates its manifolds in the VM arena.
-- **`#if defined(ESHKOL_GEOMETRIC_ENABLED)`** — calls out to the
-  `semiclassical_qllm` library (`<semiclassical_qllm/manifold.h>` and friends).
+It used to have two, selected at compile time by `ESHKOL_GEOMETRIC_ENABLED`, the
+second dispatching through the out-of-tree `semiclassical_qllm` library. **That
+body has been deleted.** No target ever defined the macro, so it was unreachable
+from every configuration of this repository; and it was not a working
+implementation waiting for a switch. Measured against a current
+`libsemiclassical_qllm`, a syntax-only pass reported **19 compile errors inside
+`vm_geometric.c` alone** — moved arities on `qllm_hyperbolic_exp_map` /
+`_log_map` / `_distance` / `_parallel_transport` / `_mobius_add` /
+`_mobius_scalar`, `qllm_hyperbolic_project` taking a `qllm_tensor_t*` where the
+call passed a `float*`, and SO(3)/SE(3) arms naming types the library no longer
+declares — and it was fp32 throughout, which
+`inc/eshkol/backend/frechet_mean_core.h` documents as unable to satisfy the
+exact-derivative gate. An unreachable body that does not compile is not a second
+implementation held in reserve; it is a second set of claims no gate can check.
+The `ESHKOL_GEOMETRIC_QLLM` CMake option that briefly selected it is gone with
+it.
 
-**The portable path is the shipped implementation.** `ESHKOL_GEOMETRIC_ENABLED` is
-defined only when the `ESHKOL_GEOMETRIC_QLLM` CMake option is turned ON, which
-requires `ESHKOL_QLLM_ROOT` to point at an installed `libsemiclassical_qllm` and
-`FATAL_ERROR`s at configure time if the headers are not there. It is OFF by default,
-so every CI lane, every release binary and the WASM playground take the portable
-path, and that is the path documented here. The linked-library path is an
-out-of-tree opt-in and is *not* covered by this page or by any gate in this
-repository — and, measured against a current `libsemiclassical_qllm`, it does not
-currently compile: the arities of `qllm_hyperbolic_exp_map` and its siblings have
-moved and the SO(3)/SE(3) arms name types the library no longer declares. Bringing
-it back is its own change against the current qLLM ABI.
-
-The portable path computes the **closed forms of constant-curvature geometry in
-f64**, in `inc/eshkol/backend/riemannian_core.h`. It is not an approximation of the
-linked-library path: it is the same mathematics the AD bridge computes
-(`lib/bridge/qllm_bridge.cpp`: `ad_hyperbolic_distance`, `ad_poincare_exp_map`,
-`ad_poincare_log_map`, `ad_geodesic_attention`), so the VM engine and the AD tape
-agree on what these operations mean.
+The **differentiable** route to this geometry is a different, live integration
+and is untouched: `lib/bridge/qllm_bridge.cpp` registers exact backward rules on
+the AD tape. What the VM opcodes compute is the same mathematics that bridge
+computes (`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map`,
+`ad_geodesic_attention`), so the VM engine and the AD tape agree on what these
+operations mean.
 
 This used not to be true, and the difference is worth stating because a reader of an
 older build's output needs to know. Before `SW-73` these ops computed their **flat
@@ -91,9 +95,17 @@ metric the name promises. `tests/vm/geometric_riemannian_surface_regression.esk`
 pins each of these against its closed form, with every assertion chosen so that the
 flat answer fails it.
 
-Two ops are **not implemented on the VM engine** and raise rather than return a
-plausible value: `exterior-derivative` and `hodge-star`. See
-[Engine availability per builtin](#engine-availability-per-builtin).
+**All 62 names execute on the VM engine.** Two of them — `exterior-derivative`
+and `hodge-star` — used to raise `not implemented on the VM engine`, because a
+form's coefficient *values* at a point determine neither its exterior derivative
+nor which duality its star is. They now take the input that does determine those:
+see [Differential forms](#differential-forms) for the representation.
+
+Three more — `curvature-gradient`, `curvature-hessian` and
+`adaptive-curvature-step` — returned a sum, a constant `0.0` and a fixed-rate
+update, none of which differentiated anything. They now measure the exact first
+and second derivatives of a **named objective** with respect to the curvature
+parameter: see [Curvature derivatives](#curvature-derivatives).
 
 ## Error convention
 
@@ -123,20 +135,37 @@ conditions a caller can hit:
 - `frechet-mean`, when the Karcher iteration has not reached stationarity. A mean
   that has not is exactly the input whose implicit derivative is a plausible wrong
   gradient;
-- `exterior-derivative` and `hodge-star`, always: they are not implemented on the VM
-  engine.
+- `spherical-project`, on the origin: it has no projection onto the sphere, and
+  the zero vector this op used to return is not a point of the sphere either;
+- `exterior-derivative`, on a **0-jet** form: `d` is a derivative, so the
+  coefficients' first partials have to be supplied, and substituting zeros for
+  them is precisely the assertion of closedness this op no longer makes;
+- `hodge-star`, on a metric that is not symmetric positive definite: the star is
+  defined by a Riemannian inner product on k-forms;
+- `curvature-gradient`, `curvature-hessian` and `adaptive-curvature-step`, at
+  **K = 0**, and whenever a supplied point is not a point of the manifold at the
+  curvature being differentiated;
+- `adaptive-curvature-step`, when no backtracked Newton step is admissible.
 
 ## Engine availability per builtin
 
-Sixty of the sixty-two names execute on the bytecode VM. Two do not, and say so:
+**All sixty-two names execute on the bytecode VM.** None of them has a native
+AOT or REPL/JIT implementation — see [Engine availability](#engine-availability)
+above, which applies to all 62 uniformly.
 
-| Name | Id | Status on the VM engine |
-|---|---:|---|
-| `exterior-derivative` | 835 | **Raises `not implemented on the VM engine`.** The argument is a form's coefficient array at a single point, which carries no derivative information; computing `d` needs the coefficients as differentiable functions of position. It previously returned zeros of the input's shape, which asserts that every form handed to it is closed. |
-| `hodge-star` | 836 | **Raises `not implemented on the VM engine`.** The star of a k-form depends on k and on the dimension, and a flat coefficient array records neither, so the op cannot tell which duality is being asked for. It previously returned its argument unchanged, which asserts that the star is trivial. |
+Five of them changed what they compute after `SW-73` and `SW-75`, and a program
+written against an older build needs to know which:
 
-Neither has a native AOT or REPL/JIT implementation either — see
-[Engine availability](#engine-availability) above, which applies to all 62 names.
+| Name | Id | Then | Now |
+|---|---:|---|---|
+| `exterior-derivative` | 835 | zeros of the input's shape, then (SW-73) a refusal | the exact `d` of a form given as a jet — see [Differential forms](#differential-forms) |
+| `hodge-star` | 836 | its argument unchanged, then (SW-73) a refusal | the star with respect to the supplied metric |
+| `curvature-gradient` | 852 | the sum of its tensor's elements | `dL/dK` of the geodesic-distance objective |
+| `curvature-hessian` | 855 | the constant `0.0` | `d²L/dK²` of the same objective |
+| `adaptive-curvature-step` | 856 | `K ← K − 0.01·Σgrad` | a backtracked damped Newton step on the same objective |
+
+`spherical-project` (823) changed too, in one case only: a zero-norm argument
+now raises instead of coming back unchanged.
 
 ## Data model
 
@@ -144,6 +173,18 @@ Neither has a native AOT or REPL/JIT implementation either — see
   all **tensors** (`(make-tensor '(shape) fill)`, or any op that returns one). They
   are *not* Scheme vectors — `vm_get_tensor` returns NULL for a non-tensor, and the
   op then pushes `()`.
+- **A differential form** — for `exterior-derivative` (835) and `hodge-star`
+  (836) only — is a tensor with the specific layout
+  `[k, n, r, coefficient jets...]` described under
+  [Differential forms](#differential-forms). The three other form-shaped ops
+  (`wedge-product` 834, `interior-product` 837, `pullback` 838) take **flat
+  coefficient arrays** and are unchanged; they are algebraic and need neither
+  the degree nor a derivative.
+- **A batch of point pairs** — for `curvature-gradient` (852),
+  `curvature-hessian` (855) and `adaptive-curvature-step` (856) — is a tensor
+  holding `(x₀, y₀, x₁, y₁, …)` consecutively, each point of the manifold's
+  dimension. Any shape works; only the element count matters, and it must be a
+  positive multiple of `2·dim`.
 - **A manifold** is an opaque heap handle (`VAL_MANIFOLD`, heap type
   `HEAP_MANIFOLD`) wrapping `{int type; int dim; double curvature;}`. Construct it
   only with the four constructors; inspect it with `manifold-type`,
@@ -181,7 +222,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `slerp` | 820 | 3 | tensor | normalised `(1-t)x + t y` |
 | `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | `cos‖v‖·base + sin‖v‖·v/‖v‖` on the unit sphere |
 | `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `θ·u/‖u‖`, `u = point − cosθ·base`, on the unit sphere |
-| `spherical-project` | 823 | 1 | tensor | L2-normalised copy |
+| `spherical-project` | 823 | 1 | tensor | L2-normalised copy; **raises** on the origin |
 | `so3-exp` | 824 | 1 | tensor | axis-angle → unit quaternion, shape `(4)` |
 | `so3-log` | 825 | 1 | tensor | quaternion → axis-angle, shape `(3)` |
 | `se3-exp` | 826 | 1 | tensor | twist → pose, shape `(7)` |
@@ -193,8 +234,8 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `ricci-scalar` | 832 | 1 | float | `dim·(dim-1)·K` |
 | `sectional-curvature` | 833 | 3 | float | stored K (u, v discarded) |
 | `wedge-product` | 834 | 2 | tensor | the `n(n-1)/2` 2×2 minors |
-| `exterior-derivative` | 835 | 1 | tensor | **not implemented on the VM engine — raises** |
-| `hodge-star` | 836 | 2 | tensor | **not implemented on the VM engine — raises** |
+| `exterior-derivative` | 835 | 1 | form | exact `d`, one jet order consumed |
+| `hodge-star` | 836 | 2 | form | `sgn(I,J)·√det g·Σ det((g⁻¹)_{I I'})·ω_{I'}`, a 0-jet result |
 | `interior-product` | 837 | 2 | tensor | shape `(1)` holding the dot product |
 | `pullback` | 838 | 2 | tensor | `formᵀ · jacobian`, shape `(cols)` |
 | `riemannian-sgd-step` | 839 | 4 | tensor | `exp_point(−lr·grad)`; `point − lr·grad` at K=0 |
@@ -208,11 +249,11 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `geodesic-attention-forward` | 847 | 4 | tensor | softmax over `−d_K/(√c·√dim)` then a weighted sum of `V`, shape `(nq vdim)` |
 | `set-curvature!` | 850 | 2 | manifold | mutates K, returns the manifold |
 | `get-curvature` | 851 | 1 | float | stored K (same case as 808) |
-| `curvature-gradient` | 852 | 2 | float | sum of the gradient's elements |
+| `curvature-gradient` | 852 | 2 | float | `dL/dK`, `L(K) = Σ d_K(xᵢ, yᵢ)` over the pair batch |
 | `transition-geometry!` | 853 | 3 | float | K ← K + rate·(target − K); returns new K |
 | `manifold-interpolate` | 854 | 3 | float | `(1-t)·K₁ + t·K₂` — a **curvature**, not a manifold |
-| `curvature-hessian` | 855 | 2 | float | `0.0` |
-| `adaptive-curvature-step` | 856 | 2 | manifold | K ← K − 0.01·Σgrad; returns the manifold |
+| `curvature-hessian` | 855 | 2 | float | `d²L/dK²` of the same `L` |
+| `adaptive-curvature-step` | 856 | 2 | manifold | backtracked damped Newton step on `L`; returns the manifold |
 | `manifold-type` | 857 | 1 | int | 0/1/2/3 |
 | `manifold-dim` / `manifold-dimension` | 858 | 1 | int | stored dim |
 | `manifold-destroy!` | 859 | 1 | `()` | invalidates the handle |
@@ -467,7 +508,8 @@ for any `r`, which `r · x` does. At `K = 0` it is `r · x`, exactly. It **raise
 
 ### `(frechet-mean points weights curvature)` — id 817
 
-The one genuinely Riemannian op in the portable path, and the only one that raises.
+The only op in this group whose result is defined by an iteration rather than a
+closed form, which is why it is also the only one that can fail to converge.
 
 - `points` — a tensor. Rank ≥ 2 is read as `(n_points dim)`; a rank-1 tensor is read
   as a single point of dimension `total`.
@@ -560,10 +602,18 @@ Antipodal points raise: the log is not single-valued there.
 
 ### `(spherical-project x)` — id 823
 
-Returns an L2-normalised copy of `x` (unchanged if its norm is zero).
+Returns an L2-normalised copy of `x`: the projection of `x` onto the unit sphere,
+`K = +1`. **The origin raises**, because it has no projection — every point of
+the sphere is equidistant from it, so no answer is determined. This op used to
+return the zero vector unchanged in that case, which is not a point of the sphere
+and therefore not a value of this op's own codomain; nothing in the returned
+tensor showed that.
 
 ```scheme
 (spherical-project (make-tensor '(3) 2.0))
+
+(guard (e (#t 'no-projection))
+  (spherical-project (make-tensor '(3) 0.0)))
 ```
 
 ### `(so3-exp omega)` — id 824
@@ -670,6 +720,87 @@ curvature. `()` if `m` is not a manifold.
 
 ## Differential forms
 
+`exterior-derivative` (835) and `hodge-star` (836) take a **form value** — the
+jet representation below. The other three ops in this section
+(`wedge-product` 834, `interior-product` 837, `pullback` 838) take **flat
+coefficient arrays** and are unchanged: they are algebraic and need neither a
+degree nor a derivative.
+
+### Why the two encodings differ
+
+A form's coefficient **values at a point** determine neither `d` nor `★`, and
+this is the reason both ops used to be wrong and then had to refuse:
+
+- `d` is a derivative. It cannot be computed from values, only from the
+  coefficients as differentiable functions of position. Returning zeros — what
+  this op did before `SW-73` — is not "no information available"; it is the
+  assertion that every form handed to it is closed, made without examining one.
+- `★` depends on the degree `k` and the dimension `n`. A flat array records
+  neither, and `C(n,k) = C(n,n−k)` leaves `k` ambiguous even when `n` and the
+  array length are both known: three coefficients on `R³` is a 1-form or a
+  2-form, and the star differs. Returning the argument unchanged is the star only
+  for a self-dual middle-degree form in a Euclidean metric — the identity map
+  under the name of a duality.
+
+`d` is however a **first-order** operator, so it does not need the whole function
+either: the 1-jet of the coefficients at the point is exactly enough, and is the
+minimal input that determines the answer. That is what the representation
+carries.
+
+### The form representation
+
+A **k-form on Rⁿ, known to jet order r at a point**, is a tensor whose flat data
+is
+
+    [ k, n, r, jet(ω_{I₀}), jet(ω_{I₁}), …, jet(ω_{I_{m−1}}) ]
+
+- `k`, `n`, `r` are the first three elements, and must be integral;
+- `m = C(n,k)`, and the basis `I_t` runs over the **increasing k-multi-indices**
+  of `{0,…,n−1}` in **lexicographic order**, so `ω = Σ_t ω_{I_t} dx^{I_t}`;
+- each jet block holds the coefficient's Taylor data at the point, by order,
+  row-major inside each order:
+
+      jet(ω_I) = [ ω_I | ∂_j ω_I  (n) | ∂_j ∂_l ω_I  (n²) | … ]
+
+  The order-`s` block is the **full** `nˢ` array of `s`-th partials, stored
+  redundantly (it is symmetric). The redundancy buys a contiguous slice, which is
+  what makes `d` an addition over slices;
+- the stride of one coefficient is `S(n,r) = 1 + n + n² + … + nʳ`, and a
+  well-formed form holds **exactly** `3 + m·S(n,r)` elements.
+
+A tensor of any other length is **not a form**: the op reports a shape failure
+(`()`) rather than guessing a degree. Bounds: `1 ≤ n ≤ 8` and `0 ≤ r ≤ 3`, and
+`0 ≤ k ≤ n` — with `k = n+1` denoting the zero top-degree form, which `d` produces
+from an `n`-form and which has no coefficients. A form outside those bounds is
+refused by name, never truncated.
+
+The tensor's **shape** is irrelevant; only its element count and contents matter.
+`(make-tensor '(10) 0.0)` and `(make-tensor '(2 5) 0.0)` are equally good
+containers for a 2-jet 0-form on `R²`.
+
+### Worked example: `d(df) = 0`
+
+For `f(x,y) = x²y + 5xy²` at `(1,2)`: `f = 22`, `f_x = 24`, `f_y = 21`,
+`f_xx = 4`, `f_xy = f_yx = 22`, `f_yy = 10`. As a 2-jet 0-form on `R²`
+(`m = C(2,0) = 1`, `S(2,2) = 1+2+4 = 7`, total `3 + 7 = 10`):
+
+    [0 2 2 | 22 | 24 21 | 4 22 22 10]
+
+`d` of it is a **1-jet 1-form** (`m = 2`, `S(2,1) = 3`, total `9`) — the two
+coefficients are `f_x` and `f_y`, each carrying its own gradient, which are the
+rows of the Hessian:
+
+    [1 2 1 | 24  4 22 | 21 22 10]
+
+`d` of *that* is a **0-jet 2-form** (`m = 1`, total `4`):
+
+    [2 2 0 | 0]
+
+and the `0` is bit-equal zero, because the two mixed partials that cancel are the
+same stored double rather than two separately-computed approximations of it. A
+form that is *not* closed reports so: `ω = y dx` on `R²` as a 1-jet is
+`[1 2 1 | 2 0 1 | 0 0 0]`, and `d(ω) = −dx∧dy`, coefficient `−1`.
+
 ### `(wedge-product a b)` — id 834
 
 Two tensors. With `n = min(total_a, total_b)`, returns a tensor of shape
@@ -683,35 +814,77 @@ is not a tensor.
 
 ### `(exterior-derivative form)` — id 835
 
-**Not implemented on the VM engine.** Raises a catchable condition naming itself.
+`form` is a **differential form in the jet representation** below. Returns the
+exterior derivative: a `(k+1)`-form of jet order `r−1`, on the same `n`.
 
-`form` is a coefficient array evaluated at a single point, and `d` is a derivative:
-it cannot be computed from the values of the coefficients, only from the coefficients
-as differentiable functions of position. Nothing in this op's arguments carries that.
+    (dω)_J = Σ_{p=0..k} (−1)^p ∂_{J_p} ω_{J∖J_p}
 
-It used to return a zero tensor of the input's shape, which is not "no information
-available" — it is the assertion that `d(form) = 0`, i.e. that every form handed to
-it is closed, made without examining one.
+over increasing `(k+1)`-multi-indices `J`, and the order-`s` block of each output
+coefficient is the order-`(s+1)` block of the corresponding input coefficient,
+sliced at its leading index. **The result is exact** — no difference quotient, no
+step size, no truncation. If the supplied jet is exact (as it is for polynomial
+coefficients differentiated by hand, or by Eshkol's AD before the values are
+packed), `d` is exact.
+
+`d` consumes one jet order, so `d(d(ω))` is computable from an `r ≥ 2` form and
+comes out **bit-equal zero**: the two mixed partials that cancel are the same
+stored double, not two separately-computed approximations of it.
+
+**Raises** on a 0-jet form (`r = 0`) — the partials it would need were not
+supplied, and substituting zeros for them is the assertion of closedness this op
+used to make for every input. Returns `()` for a tensor that is not a
+well-formed form at all.
 
 ```scheme
-(guard (e (#t 'not-implemented))
-  (exterior-derivative (make-tensor '(3) 1.0)))
+;; f(x, y) = x²y + 5xy² at (1, 2), as a 2-jet 0-form on R²:
+;;   f = 22, f_x = 24, f_y = 21, f_xx = 4, f_xy = f_yx = 22, f_yy = 10
+(define jet-f (make-tensor '(10) 0.0))
+;; [k n r | f | f_x f_y | f_xx f_xy | f_yx f_yy]
+;;  0 2 2   22   24  21    4   22     22   10
+
+(define df (exterior-derivative jet-f))   ; a 1-jet 1-form: 24 dx + 21 dy
+(exterior-derivative df)                  ; a 0-jet 2-form, coefficient exactly 0.0
 ```
 
 ### `(hodge-star form metric)` — id 836
 
-**Not implemented on the VM engine.** Raises a catchable condition naming itself.
+`form` is a differential form in the jet representation; `metric` is the `n × n`
+metric `g` at the point, as a tensor of `n²` elements. Returns the `(n−k)`-form
 
-The star of a k-form depends on `k` and on the ambient dimension. A flat coefficient
-array records neither, so the op has no way to tell which duality is being asked for.
+    (★ω)_J = sgn(I, J) · √det g · Σ_{I'} det( (g⁻¹)_{I I'} ) · ω_{I'}
 
-It used to return its argument unchanged, which is the Hodge star only for a
-self-dual middle-degree form in a Euclidean metric — the identity map presented under
-the name of a duality.
+where `I` is the complement of `J` and `sgn(I, J)` is the sign of the permutation
+`(I then J)` of `(0 … n−1)`. This is the star defined by `α ∧ ★ω = ⟨α, ω⟩ vol`
+with `vol = √det g · dx⁰∧…∧dx^{n−1}`; the inner sum is the induced inner product
+on k-forms, so a non-diagonal metric costs one `k × k` minor of `g⁻¹` per basis
+pair.
+
+**The result is a 0-jet form, always, and its header says so.** The star's
+coefficients are functions of `g`, so the jet of `★ω` depends on the jet of the
+metric — and a metric sampled at one point carries nothing about how `g` varies.
+Propagating the input's derivative blocks through it would assert that `g` is
+constant: true in the flat case, false on any curved manifold, and
+indistinguishable from the truth in the returned tensor. Apply `d` **before** the
+star, not after it, when both are wanted.
+
+`g` must be **symmetric positive definite** — the star is defined by a Riemannian
+inner product — and a metric that is not raises. The check is the Cholesky
+factorisation itself, which also supplies `det g`, so "is this a metric" and "what
+is its determinant" cannot disagree.
+
+Involution: `★★ω = (−1)^{k(n−k)} ω`. On `R³` with `k = 1` that is `+1`, which is
+what the old identity-map body also returned — the `n = 4`, `k = 1` case, where it
+is `−1`, is the one that distinguishes them.
 
 ```scheme
-(guard (e (#t 'not-implemented))
-  (hodge-star (make-tensor '(3) 1.0) (make-tensor '(3 3) 0.0)))
+;; *(dx ∧ dy) = dz in flat R³
+(define dxdy (make-tensor '(6) 0.0))    ; [2 3 0 | 1 0 0]
+(define id3 (make-tensor '(3 3) 0.0))   ; the identity metric
+(hodge-star dxdy id3)                   ; [1 3 0 | 0 0 1], i.e. dz
+
+;; On a conformal metric g = λ²·δ, the star of a k-form scales by λ^(n−2k):
+;; with the Poincaré factor λ = 2/(1 − c|x|²) = 8/3 at |x|² = 1/4, c = 1,
+;; *(dx) = (8/3)·(dy ∧ dz).
 ```
 
 ### `(interior-product vector form)` — id 837
@@ -883,15 +1056,72 @@ whose scalings differ.
 
 These four ops treat curvature as a learnable scalar on the manifold handle.
 
-### `(curvature-gradient m loss-grad)` — id 852
+### Curvature derivatives
 
-Returns the plain sum of `loss-grad`'s elements as a float. `()` if `m` is not a
-manifold or `loss-grad` is not a tensor. This is a placeholder reduction, not a
-derivative of anything with respect to `K`.
+`curvature-gradient` (852), `curvature-hessian` (855) and
+`adaptive-curvature-step` (856) share one objective, and it is named rather than
+implied:
+
+    L(K) = Σ_p d_K(x_p, y_p)
+
+the total geodesic distance over the batch of point pairs their second argument
+packs, as a function of the **sectional curvature K** with the points held fixed.
+`curvature-gradient` returns `L'(K)`, `curvature-hessian` returns `L''(K)`, and
+`adaptive-curvature-step` takes a damped Newton step on `L`. All three read `K`
+from the manifold, so `set-curvature!` moves the point of evaluation.
+
+Both derivatives are the **exact closed forms** of the distance in `K`
+(`eshkol_rm_distance_dK` in `inc/eshkol/backend/riemannian_core.h`), not central
+differences: there is no step size to choose and no truncation error to bound. On
+the ball, with `c = −K`, `a = |x|²`, `b = |y|²`, `D = |x−y|²`,
+
+    P(c) = (1−ca)(1−cb),   Q = c/P,   A = 1 + 2DQ,   d = arccosh(A)/√c
+
+and `L'`, `L''` are the chain rule on that composition. Coincident points are
+handled exactly rather than in the limit: `D = 0` makes `d` identically zero in
+`c`, so both derivatives are exactly `0`.
+
+**The batch.** Points are packed consecutively — `(x₀, y₀, x₁, y₁, …)`, each of
+the manifold's `dim` coordinates. Only the element count matters, so any tensor
+shape will do, but it must be a **positive multiple of `2·dim`**: a length that is
+not a whole number of pairs is a shape failure (`()`), not a batch with a partial
+pair silently dropped.
+
+**Why `K > 0` is reparametrised.** On the sphere, a point of radius `1/√K` is
+*not* a point of a sphere of a different radius, so "hold the points fixed and
+vary `K`" is not a curve in any single manifold. The family these ops
+differentiate on the spherical branch holds each pair at **fixed angular
+position** and lets the radius follow `K`: with `θ = arccos(⟨x,y⟩/R²)` fixed,
+`d = θ·K^(−1/2)`, so `d' = −θK^(−3/2)/2` and `d'' = 3θK^(−5/2)/4`.
+
+**Why `K = 0` refuses.** The Poincaré ball of curvature `K` has conformal factor
+`λ_x = 2/(1 − c|x|²)`, so its distance tends to `2|x−y|` as `K → 0⁻` — twice what
+the Euclidean branch of `geodesic-distance` returns at `K = 0` exactly — while the
+spherical branch diverges as `K → 0⁺`. The family is genuinely discontinuous
+there, so no number is the derivative, and returning one would be exactly the
+plausible-wrong-number case this surface exists to exclude.
+
+### `(curvature-gradient m pairs)` — id 852
+
+Returns `dL/dK` at `m`'s stored curvature, where `L` is the
+[curvature objective](#curvature-derivatives)
+
+    L(K) = Σ_p d_K(x_p, y_p)
+
+over the point pairs `pairs` packs. Exact closed form, not a difference quotient.
+`()` if `m` is not a manifold, `pairs` is not a tensor, or `pairs`'s element count
+is not a positive multiple of `2·dim`. **Raises** at `K = 0` and whenever a
+supplied point is not a point of the manifold at `K`.
+
+This used to return the plain **sum** of its second argument's elements — a
+number with the type and the magnitude a gradient would have, and the derivative
+of nothing.
 
 ```scheme
-(display (curvature-gradient (make-hyperbolic-manifold 2 -1.0)
-                             (make-tensor '(4) 0.25)))
+;; the origin and (1/2, 0) on the ball of curvature K = −1:
+;;   dL/dK = −(2/3 − artanh(1/2)) = −0.1173605223326118
+(define pairs (make-tensor '(4) 0.0))   ; [0 0 | 0.5 0]
+(display (curvature-gradient (make-hyperbolic-manifold 2 -1.0) pairs))
 (newline)
 ```
 
@@ -918,26 +1148,55 @@ manifold.
 (newline)
 ```
 
-### `(curvature-hessian m grad)` — id 855
+### `(curvature-hessian m pairs)` — id 855
 
-Pops and discards `grad` and returns `0.0` for any manifold, `()` otherwise. A
-constant, not a measurement.
+Returns `d²L/dK²` of the same objective, on the same argument shapes, with the
+same failure and refusal conditions as `curvature-gradient`. Exact closed form.
+
+This used to return the constant `0.0` for every manifold and every argument —
+which is the assertion that the objective is **affine in K**, made without
+examining an objective, and false for the geodesic distance at every curvature.
 
 ```scheme
-(display (curvature-hessian (make-hyperbolic-manifold 2 -1.0)
-                            (make-tensor '(4) 0.25)))
+;; the same pair: d²L/dK² = 0.0461814387233047
+(display (curvature-hessian (make-hyperbolic-manifold 2 -1.0) pairs))
 (newline)
 ```
 
-### `(adaptive-curvature-step m grad)` — id 856
+### `(adaptive-curvature-step m pairs)` — id 856
 
-Applies one fixed-rate curvature update `K ← K − 0.01·Σgrad`, mutating `m`, and
-returns the manifold. `()` if `m` is not a manifold or `grad` is not a tensor.
+Applies one **backtracked damped Newton step** on the curvature objective,
+mutating `m`, and returns the manifold:
+
+    Δ = L'(K) / max(L''(K), 1e-8)
+    K ← K − t·Δ,  t = 1, ½, ¼, … (at most 32 halvings)
+
+`t` is halved until the candidate `K` satisfies all three of:
+
+1. it has the **same sign** as the current `K` — crossing `K = 0` would change
+   which geometry the manifold is, not merely how curved it is;
+2. every supplied point is still a point of the manifold at it — on the ball,
+   `c·|x|² < 1` can fail as `|K|` grows;
+3. it does **not increase** `L`.
+
+The floor on `L''` is Levenberg damping: where the objective is flat or concave
+in `K` the Newton quotient is meaningless or points uphill, and flooring the
+denominator turns the step back into a descent step without inventing a
+direction. **Raises** when no admissible `t` exists after 32 halvings — that is
+not a near-converged state (the step is down by 2⁻³²), it is the absence of a
+step, and the op says so rather than moving `K` somewhere it cannot justify. Also
+raises at `K = 0`, and returns `()` on the same shape failures as the two ops
+above.
+
+This used to be `K ← K − 0.01·Σgrad`: a fixed rate applied to a sum that was not
+a gradient, so nothing about the step adapted to anything.
 
 ```scheme
 (define h (make-hyperbolic-manifold 2 -1.0))
-(adaptive-curvature-step h (make-tensor '(4) 0.25))
-(display (get-curvature h)) (newline)
+;; the full Newton step lands at K = +1.54, which would change the geometry, so
+;; the first two trials are rejected and t = 1/4 is taken:
+(adaptive-curvature-step h pairs)
+(display (get-curvature h)) (newline)   ; -0.36467699157352285
 ```
 
 ---

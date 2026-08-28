@@ -180,15 +180,226 @@
     (mobius-add px py 1.0)))
 (report (eq? mobius-sphere-guarded 'refused) "mobius-add refuses positive curvature")
 
-;; exterior-derivative and hodge-star are NOT implemented on the VM engine: the
-;; data they receive (a coefficient array at one point, with no degree recorded)
-;; does not determine an answer. They refuse by name rather than returning zeros
-;; and the identity, which is what they used to do.
-(define d-guarded (guard (e (#t 'refused)) (exterior-derivative px)))
-(report (eq? d-guarded 'refused) "exterior-derivative refuses instead of returning zeros")
+;; ── spherical-project refuses the origin ─────────────────────────────────────
+;; It used to return the zero vector unchanged, which is not a point of the unit
+;; sphere at all: a value outside the op's own codomain, returned with no
+;; diagnostic. A nonzero argument still normalises.
+(define sp-origin (guard (e (#t 'refused)) (spherical-project (vec3 0.0 0.0 0.0))))
+(report (eq? sp-origin 'refused) "spherical-project refuses the origin")
+(define sp-ok (spherical-project (vec3 3.0 0.0 4.0)))
+(report (near? (tensor-ref sp-ok 0) 0.6) "spherical-project normalises component 0")
+(report (near? (tensor-ref sp-ok 2) 0.8) "spherical-project normalises component 2")
 
-(define star-guarded (guard (e (#t 'refused)) (hodge-star px py)))
-(report (eq? star-guarded 'refused) "hodge-star refuses instead of returning its argument")
+;; ═══ Differential forms ══════════════════════════════════════════════════════
+;; A k-form on R^n known to jet order r at a point is the tensor
+;;   [k, n, r, jet(w_I_0), ..., jet(w_I_{m-1})],  m = C(n,k),
+;; over the lexicographic increasing-multi-index basis, each jet holding the
+;; coefficient's value, then its n first partials, then its n^2 second partials.
+;; exterior-derivative used to return zeros of the input's shape (the assertion
+;; that every form is closed) and hodge-star its argument unchanged (the
+;; identity map under the name of a duality); SW-73 made both refuse. They are
+;; now computed from the data that determines them.
+
+(define (fill! t xs)
+  (let loop ((i 0) (rest xs))
+    (if (null? rest)
+        t
+        (begin (tensor-set! t i (car rest)) (loop (+ i 1) (cdr rest))))))
+
+;; f(x, y) = x^2 y + 5 x y^2 at (1, 2), as a 2-jet 0-form on R^2:
+;;   f = 22,  f_x = 2xy + 5y^2 = 24,  f_y = x^2 + 10xy = 21,
+;;   f_xx = 2y = 4,  f_xy = f_yx = 2x + 10y = 22,  f_yy = 10x = 10.
+(define jet-f (fill! (make-tensor '(10) 0.0)
+                     '(0.0 2.0 2.0  22.0  24.0 21.0  4.0 22.0  22.0 10.0)))
+(define df (exterior-derivative jet-f))
+(report (= (tensor-ref df 0) 1.0) "d(f) is a 1-form")
+(report (= (tensor-ref df 1) 2.0) "d(f) keeps the dimension n = 2")
+(report (= (tensor-ref df 2) 1.0) "d consumes one jet order: r = 2 becomes r = 1")
+(report (near? (tensor-ref df 3) 24.0) "d(f) dx coefficient is f_x")
+(report (near? (tensor-ref df 6) 21.0) "d(f) dy coefficient is f_y")
+(report (near? (tensor-ref df 4) 4.0)  "d(f) dx coefficient's x-partial is f_xx")
+(report (near? (tensor-ref df 5) 22.0) "d(f) dx coefficient's y-partial is f_xy")
+(report (near? (tensor-ref df 8) 22.0) "d(f) dy coefficient's x-partial is f_yx")
+(report (near? (tensor-ref df 9) 10.0) "d(f) dy coefficient's y-partial is f_yy")
+
+;; d(d(f)) = 0, and EXACTLY: the two mixed partials that cancel are the same
+;; stored double, so this is bit-equal zero rather than zero to a tolerance.
+;; The old body returned zeros for every input, which made this check pass for
+;; the wrong reason -- it never looked at f.
+(define ddf (exterior-derivative df))
+(report (= (tensor-ref ddf 0) 2.0) "d(d(f)) is a 2-form")
+(report (= (tensor-ref ddf 3) 0.0) "d(d(f)) = 0 exactly")
+
+;; A form whose coefficients are NOT closed: w = y dx on R^2, 1-jet.
+;;   w_dx = y = 2, d_x w_dx = 0, d_y w_dx = 1;  w_dy = 0, both partials 0.
+;; d(w) = -dx^dy, so the single 2-form coefficient is -1. The old zeros body
+;; reported 0 here, i.e. that y dx is closed.
+(define w-ydx (fill! (make-tensor '(9) 0.0)
+                     '(1.0 2.0 1.0  2.0 0.0 1.0  0.0 0.0 0.0)))
+(define dw (exterior-derivative w-ydx))
+(report (near? (tensor-ref dw 3) -1.0) "d(y dx) = -dx^dy, not zero")
+(report (far? (tensor-ref dw 3) 0.0) "exterior-derivative does not report every form closed")
+
+;; A 0-jet form carries no derivative information, and d says so instead of
+;; substituting zeros for the partials it was not given.
+(define d-no-jet
+  (guard (e (#t 'refused))
+    (exterior-derivative (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0 1.0 0.0 0.0)))))
+(report (eq? d-no-jet 'refused) "exterior-derivative refuses a 0-jet form")
+
+;; A tensor that is not a form at all is a SHAPE failure, not a domain one:
+;; per this surface's error convention it returns () rather than raising.
+(report (null? (exterior-derivative px)) "a non-form tensor returns () from exterior-derivative")
+(report (null? (hodge-star px py)) "a non-form tensor returns () from hodge-star")
+
+;; ── the Hodge star, flat metric on R^3 ───────────────────────────────────────
+(define id3 (fill! (make-tensor '(3 3) 0.0)
+                   '(1.0 0.0 0.0  0.0 1.0 0.0  0.0 0.0 1.0)))
+;; dx^dy, i.e. the 2-form with coefficient 1 on the basis element (0,1).
+(define dxdy (fill! (make-tensor '(6) 0.0) '(2.0 3.0 0.0  1.0 0.0 0.0)))
+(define star-dxdy (hodge-star dxdy id3))
+(report (= (tensor-ref star-dxdy 0) 1.0) "*(dx^dy) is a 1-form")
+(report (= (tensor-ref star-dxdy 2) 0.0) "the star returns a 0-jet, and says so")
+(report (near? (tensor-ref star-dxdy 3) 0.0) "*(dx^dy) has no dx part")
+(report (near? (tensor-ref star-dxdy 4) 0.0) "*(dx^dy) has no dy part")
+(report (near? (tensor-ref star-dxdy 5) 1.0) "*(dx^dy) = dz")
+
+;; dz -> dx^dy, the other half of the 3D cross-product correspondence.
+(define dz (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0  0.0 0.0 1.0)))
+(define star-dz (hodge-star dz id3))
+(report (= (tensor-ref star-dz 0) 2.0) "*(dz) is a 2-form")
+(report (near? (tensor-ref star-dz 3) 1.0) "*(dz) = dx^dy")
+(report (near? (tensor-ref star-dz 4) 0.0) "*(dz) has no dx^dz part")
+
+;; ** = (-1)^{k(n-k)}. On R^3 with k = 1 that is +1, so ** is the identity —
+;; which is what the OLD body returned for every input, and is why the n = 4
+;; case below is the one that actually distinguishes them.
+(define w3 (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0  2.0 -3.0 5.0)))
+(define ss3 (hodge-star (hodge-star w3 id3) id3))
+(report (near? (tensor-ref ss3 3) 2.0)  "n=3, k=1: ** = +1 on component 0")
+(report (near? (tensor-ref ss3 4) -3.0) "n=3, k=1: ** = +1 on component 1")
+(report (near? (tensor-ref ss3 5) 5.0)  "n=3, k=1: ** = +1 on component 2")
+
+;; On R^4 with k = 1, k(n-k) = 3 and ** = -1. The identity map fails this.
+(define id4 (fill! (make-tensor '(4 4) 0.0)
+                   '(1.0 0.0 0.0 0.0  0.0 1.0 0.0 0.0
+                     0.0 0.0 1.0 0.0  0.0 0.0 0.0 1.0)))
+(define w4 (fill! (make-tensor '(7) 0.0) '(1.0 4.0 0.0  2.0 -3.0 5.0 7.0)))
+(define s4 (hodge-star w4 id4))
+(report (= (tensor-ref s4 0) 3.0) "n=4: *(1-form) is a 3-form")
+(define ss4 (hodge-star s4 id4))
+(report (= (tensor-ref ss4 0) 1.0) "n=4: **(1-form) is a 1-form")
+(report (near? (tensor-ref ss4 3) -2.0) "n=4, k=1: ** = (-1)^{1*3} = -1 on component 0")
+(report (near? (tensor-ref ss4 4) 3.0)  "n=4, k=1: ** = -1 on component 1")
+(report (near? (tensor-ref ss4 5) -5.0) "n=4, k=1: ** = -1 on component 2")
+(report (near? (tensor-ref ss4 6) -7.0) "n=4, k=1: ** = -1 on component 3")
+(report (far? (tensor-ref ss4 3) 2.0) "the star is not the identity map")
+
+;; ── the Hodge star on a curved metric ────────────────────────────────────────
+;; The Poincare ball metric is conformal, g = lambda_x^2 <.,.> with
+;; lambda_x = 2/(1 - c|x|^2). For a conformal metric the star of a k-form on R^n
+;; scales by lambda^{n-2k}, so on R^3 a 1-form scales by lambda itself. At
+;; |x|^2 = 1/4 and c = 1 that factor is 8/3 — a number the flat star cannot
+;; produce, and one the old identity-map body could not either.
+(define lam-form (/ 2.0 (- 1.0 0.25)))
+(define g-curved (fill! (make-tensor '(3 3) 0.0)
+                        (list (* lam-form lam-form) 0.0 0.0
+                              0.0 (* lam-form lam-form) 0.0
+                              0.0 0.0 (* lam-form lam-form))))
+(define dx1 (fill! (make-tensor '(6) 0.0) '(1.0 3.0 0.0  1.0 0.0 0.0)))
+(define star-curved (hodge-star dx1 g-curved))
+(report (near? (tensor-ref star-curved 3) lam-form)
+        "conformal metric: *(dx) = lambda (dy^dz), lambda = 8/3")
+(report (far? (tensor-ref star-curved 3) 1.0)
+        "the star reads the metric it is handed, not a flat one")
+
+;; The star is defined by a RIEMANNIAN inner product on k-forms; a metric that is
+;; not symmetric positive definite is refused rather than starred anyway.
+(define star-indefinite
+  (guard (e (#t 'refused))
+    (hodge-star dz (fill! (make-tensor '(3 3) 0.0)
+                          '(1.0 0.0 0.0  0.0 -1.0 0.0  0.0 0.0 1.0)))))
+(report (eq? star-indefinite 'refused) "hodge-star refuses an indefinite metric")
+(define star-asym
+  (guard (e (#t 'refused))
+    (hodge-star dz (fill! (make-tensor '(3 3) 0.0)
+                          '(1.0 2.0 0.0  0.0 1.0 0.0  0.0 0.0 1.0)))))
+(report (eq? star-asym 'refused) "hodge-star refuses an asymmetric metric")
+
+;; ═══ Curvature derivatives ═══════════════════════════════════════════════════
+;; curvature-gradient returned the plain SUM of its tensor's elements,
+;; curvature-hessian the constant 0.0, and adaptive-curvature-step moved K by a
+;; fixed 0.01 times that sum. All three now measure the same named objective —
+;; the total geodesic distance over the point pairs the second argument packs,
+;; laid out (x_0, y_0, x_1, y_1, ...) — with exact closed-form derivatives.
+;;
+;; ONE PAIR, the origin and (1/2, 0) on the ball of curvature K = -1. There
+;; d(c) = 2 artanh(sqrt(c)/2)/sqrt(c) with c = -K, so
+;;   dd/dK   = -[ t/(c(1-c t^2)) - artanh(sqrt(c) t)/c^{3/2} ]
+;;           = -(2/3 - artanh(1/2)) = -0.1173605223326118
+;;   d2d/dK2 =  0.0461814387233047
+;; Both are values the old sum (0.5) and the old constant (0.0) miss outright.
+(define hm (make-hyperbolic-manifold 2 -1.0))
+(define one-pair (fill! (make-tensor '(4) 0.0) '(0.0 0.0  0.5 0.0)))
+(define cg (curvature-gradient hm one-pair))
+(report (near? cg -0.1173605223326118) "curvature-gradient is dL/dK on one pair")
+(report (far? cg 0.5) "curvature-gradient is not the sum of its argument's elements")
+(define ch (curvature-hessian hm one-pair))
+(report (near? ch 0.0461814387233047) "curvature-hessian is d2L/dK2 on one pair")
+(report (far? ch 0.0) "curvature-hessian is not the constant 0.0")
+
+;; The objective is a SUM over pairs, so two copies of the pair double both.
+(define two-pairs (fill! (make-tensor '(8) 0.0) '(0.0 0.0  0.5 0.0  0.0 0.0  0.5 0.0)))
+(report (near? (curvature-gradient hm two-pairs) (* 2.0 -0.1173605223326118))
+        "curvature-gradient sums over the batch")
+(report (near? (curvature-hessian hm two-pairs) (* 2.0 0.0461814387233047))
+        "curvature-hessian sums over the batch")
+
+;; A batch whose length is not a whole number of point pairs of the manifold's
+;; dimension is a shape failure: () rather than a number computed from a guess.
+(report (null? (curvature-gradient hm (make-tensor '(3) 0.1)))
+        "curvature-gradient returns () for a batch that is not whole pairs")
+
+;; On the sphere of radius 1/sqrt(K) the pair is held at fixed ANGULAR position
+;; and the radius follows K, since a point of one sphere is not a point of
+;; another. With theta = pi/2: d = theta K^{-1/2}, so dd/dK = -theta/2 and
+;; d2d/dK2 = 3 theta/4 at K = 1.
+(define sm (make-spherical-manifold 2))
+(define sphere-pair (fill! (make-tensor '(4) 0.0) '(1.0 0.0  0.0 1.0)))
+(report (near? (curvature-gradient sm sphere-pair) -0.7853981633974483)
+        "curvature-gradient on the sphere is -theta/2")
+(report (near? (curvature-hessian sm sphere-pair) 1.1780972450961724)
+        "curvature-hessian on the sphere is 3 theta/4")
+
+;; K = 0 is refused, and the refusal is a fact about the metric family, not
+;; squeamishness: the ball branch tends to 2|x-y| as K -> 0- while the flat
+;; branch returns |x-y|, so no number is the derivative there.
+(define em (make-euclidean-manifold 2))
+(define flat-guarded (guard (e (#t 'refused)) (curvature-gradient em one-pair)))
+(report (eq? flat-guarded 'refused) "curvature-gradient refuses K = 0")
+
+;; ── the adaptive step is a damped Newton step ────────────────────────────────
+;; K - t L'(K)/max(L''(K), floor), with t halved until the new curvature keeps
+;; its sign, keeps every point on the manifold and does not increase L. The full
+;; Newton step here would land at K = +1.54, changing which geometry the
+;; manifold is, so the first two trials are rejected and t = 1/4 is taken:
+;; K = -1 + 0.25 * 2.5412920337059086 = -0.36467699157352285.
+(define step-m (make-hyperbolic-manifold 2 -1.0))
+(define l-before (geodesic-distance (vec2 0.0 0.0) (vec2 0.5 0.0) (get-curvature step-m)))
+(adaptive-curvature-step step-m one-pair)
+(define k-after (get-curvature step-m))
+(report (near? k-after -0.36467699157352285) "adaptive-curvature-step takes the backtracked Newton step")
+(report (< k-after 0.0) "adaptive-curvature-step never changes the sign of K")
+(report (far? k-after -1.005) "adaptive-curvature-step is not K - 0.01 * sum(grad)")
+(define l-after (geodesic-distance (vec2 0.0 0.0) (vec2 0.5 0.0) k-after))
+(report (< l-after l-before) "adaptive-curvature-step decreases the objective")
+(report (near? l-after 1.032168667276747) "the objective after the step")
+
+;; A Euclidean manifold has no admissible step for the same reason it has no
+;; derivative.
+(define step-flat (make-euclidean-manifold 2))
+(define step-guarded (guard (e (#t 'refused)) (adaptive-curvature-step step-flat one-pair)))
+(report (eq? step-guarded 'refused) "adaptive-curvature-step refuses K = 0")
 
 (display "PASS: Riemannian geometry numeric regression complete")
 (newline)
