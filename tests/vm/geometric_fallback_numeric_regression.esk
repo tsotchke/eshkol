@@ -34,8 +34,27 @@
 (define interior (interior-product p p))
 (display (if (= (tensor-ref interior 0) 2.0) "PASS" "FAIL")) (display ": interior product") (newline)
 
-(define step (riemannian-sgd-step p p 0.25 -1.0))
-(display (if (= (tensor-ref step 0) 0.75) "PASS" "FAIL")) (display ": riemannian sgd") (newline)
+;; riemannian-sgd-step USED to be asserted here as `p - 0.25*p = 0.75` at
+;; curvature -1.0 -- with p = (1.0, 1.0), a point whose norm is sqrt(2) and which
+;; therefore is not in the Poincare ball of radius 1 at all. The assertion held
+;; only because the op ignored its curvature argument and did the flat update. It
+;; is now two assertions: the flat update at K = 0, where it is exactly right,
+;; and the geodesic update on the ball, where it is not the flat one.
+(define step (riemannian-sgd-step p p 0.25 0.0))
+(display (if (= (tensor-ref step 0) 0.75) "PASS" "FAIL")) (display ": riemannian sgd at K = 0") (newline)
+
+(define ball-p (make-tensor '(2) 0.25))
+(define ball-g (make-tensor '(2) 0.5))
+(define curved-step (riemannian-sgd-step ball-p ball-g 0.25 -1.0))
+(define flat-step 0.125)   ; 0.25 - 0.25*0.5, the answer the old body gave
+(display (if (> (abs (- (tensor-ref curved-step 0) flat-step)) 0.001) "PASS" "FAIL"))
+(display ": riemannian sgd on the ball is not the flat update") (newline)
+
+;; The step stays inside the ball, which the flat update does not guarantee.
+(display (if (< (+ (* (tensor-ref curved-step 0) (tensor-ref curved-step 0))
+                   (* (tensor-ref curved-step 1) (tensor-ref curved-step 1))) 1.0)
+             "PASS" "FAIL"))
+(display ": riemannian sgd stays on the manifold") (newline)
 
 (define probs (curvature-softmax (make-tensor '(2) 0.0) -1.0))
 (display (if (= (tensor-ref probs 0) 0.5) "PASS" "FAIL")) (display ": curvature softmax 0") (newline)
