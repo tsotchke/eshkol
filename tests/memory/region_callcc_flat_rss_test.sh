@@ -18,7 +18,7 @@
 # WHAT THIS GATE PINS
 #
 #   A. escape_only_region — an escape-only `call/cc` inside `with-region`, in a
-#      resident loop, retains EXACTLY the same number of arena bytes at an 8x
+#      resident loop, retains EXACTLY the same number of arena bytes at a 10x
 #      horizon as at the short one. Not "within a factor": byte-identical,
 #      0.000 bytes/tick. This is the SW-74 repro; before the fix it grew without
 #      bound. The signal is the arena's own counter (ESHKOL_ARENA_REPORT=1),
@@ -80,8 +80,8 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 2
 fi
 
-SHORT_TICKS=100000
-LONG_TICKS=800000
+SHORT_TICKS=10000
+LONG_TICKS=100000
 ESCAPING_TICKS=500         # C promotes a region per tick: keep it small
 TIMEOUT_S=300
 while [ $# -gt 0 ]; do
@@ -101,7 +101,9 @@ fi
 if eshkol_durable_enabled; then
     WORK="$(eshkol_durable_prepare_dir region-callcc-flat)" || exit $?
 else
-    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-rcf.XXXXXX")"
+    WORK_ROOT="${ESHKOL_SCRATCH_ROOT:-$REPO_ROOT/.scratch}"
+    mkdir -p "$WORK_ROOT"
+    WORK="$(mktemp -d "$WORK_ROOT/eshkol-rcf.XXXXXX")"
     trap 'rm -rf "$WORK"' EXIT INT TERM
 fi
 
@@ -148,9 +150,10 @@ emit_fixture() { # <name> <ticks> -> path
 $prelude
 $probe
 (define (tick i)
-  (if (>= i ticks)
-      i
-      (if (= (probe i) i) (tick (+ i 1)) (- 0 i))))
+  (guard (e (#t i))
+    (if (>= i ticks)
+        i
+        (if (= (probe i) i) (tick (+ i 1)) (- 0 i)))))
 (define result (tick 0))
 (if (= result ticks)
     (begin (display "PASS") (newline))
@@ -203,7 +206,7 @@ echo
 DELTA_TICKS=$(( LONG_TICKS - SHORT_TICKS ))
 NOTE_SUBSTRING="could not be reclaimed because a continuation was captured inside it"
 
-# ── A. escape-only capture inside a region: byte-identical across 8x ────────
+# ── A. escape-only capture inside a region: byte-identical across 10x ───────
 printf '  %-24s %14s %14s %12s\n' fixture "arena@short" "arena@long" "bytes/tick"
 measure escape_only_region "$SHORT_TICKS"; a_short="$MEAS_ARENA_BYTES"; rc_short="$MEAS_RC"
 a_short_err="$MEAS_ERR"

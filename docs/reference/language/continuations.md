@@ -104,7 +104,8 @@ the frame that captured it. Every enclosing `with-region`'s dynamic extent
 contains that frame's, so such a continuation can never observe the region after
 it closes, and native does not pin it: the region reclaims in full.
 `tests/memory/region_callcc_flat_rss_test.sh` measures that shape in a resident
-loop as **exactly 0.000 bytes/tick** across an 8× horizon. Anything the
+loop as **exactly 0.000 bytes/tick** from 10,000 to 100,000 iterations (a 10×
+horizon). Anything the
 classifier does not model reads as "may escape" and pins, which is the safe
 direction and costs only a retained region. **The bytecode VM does not make this
 distinction**: it pins on region depth alone, so the same program retains the

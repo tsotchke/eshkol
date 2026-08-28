@@ -507,7 +507,8 @@ continuation cannot outlive its frame — `(call/cc (lambda (k) … (k v) …))`
 only ever in operator position — no enclosing region can outlive the
 continuation's usable extent, so no pin is taken and the region reclaims in full.
 `tests/memory/region_callcc_flat_rss_test.sh` gates that resident shape at
-**exactly 0.000 bytes/tick** across an 8× horizon. The exception is a region
+**exactly 0.000 bytes/tick** from 10,000 to 100,000 iterations (a 10× horizon).
+The exception is a region
 opened through the **handle API**: `(region-close h)` is an ordinary call and can
 run inside the `call/cc` procedure, so a handle-owned open region makes even an
 escape-only capture pin. The bytecode VM pins on region depth alone and so

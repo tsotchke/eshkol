@@ -13,7 +13,7 @@
 ;; classification into the runtime (ESHKOL_CONT_FLAG_ESCAPE_ONLY) and an
 ;; escape-only capture does not pin, so the region reclaims in full.
 ;; tests/memory/region_callcc_flat_rss_test.sh measures that as exactly 0.000
-;; bytes/tick across an 8x horizon; this fixture pins the ANSWERS, on all three
+;; bytes/tick across a 10x horizon; this fixture pins the ANSWERS, on all three
 ;; engines, so the reclamation cannot be bought with a wrong result.
 ;;
 ;; Every shape below keeps `k` in operator position only — a helper that took

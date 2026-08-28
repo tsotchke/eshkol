@@ -1152,7 +1152,7 @@ oracles:
           event_names: ["region_callcc_pin_lifecycle"]
           event_values: ["PASS"]
         severity: high
-        label: 'SW-74: an escape-only `call/cc` inside `with-region` retains byte-identical arena bytes across an 8x horizon (0.000 bytes/tick) and prints no pin note; a capture that escapes still pins, is promoted into the enclosing arena rather than leaked, and still announces itself'
+        label: 'SW-74: an escape-only `call/cc` inside `with-region` retains byte-identical arena bytes from 10,000 to 100,000 iterations (0.000 bytes/tick) and prints no pin note; a capture that escapes still pins, is promoted into the enclosing arena rather than leaked, and still announces itself'
         action: ./scripts/run_icc_smoke.sh
 
       # SW-57 long-horizon residency. The gate above, and every other flat-memory
