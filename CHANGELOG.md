@@ -187,8 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-0010's assurance gaps), each bound to a real harness
   (`scripts/run_v14_connection_gate.sh`, new) instead of a fabricated PASS.
 - **A public, reproducible benchmark suite on the exactness axes (#469,
-  `bench/run_public_benchmarks.sh`).** One command from a clean checkout
-  measures the four axes where Eshkol claims something distinctive — exact-AD
+  `bench/run_public_benchmarks.sh`).** After building Eshkol, one benchmark command runs the configured axes where Eshkol claims something distinctive — exact-AD
   cost curves, Ozaki-II CRT exact f64 GEMM, flat RSS under resident load, and
   differentiable quantum kernels — and emits machine-readable JSON plus a
   human-readable table, with the noise-control methodology and the explicit
@@ -205,7 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Extracted into a new `lib/core/runtime_gensym.cpp` (the same split
   `symbol_intern.cpp` already uses, for the same reason) and wired on both
   engines: `codegenGensym` on native, VM builtin id 2227. 9/9 on all three
-  engines (`tests/control_flow/gensym_test.esk`); the stale "gensym is
+  engines (`tests/control_flow/gensym_test.esk`); <!-- battery: tests/control_flow/gensym_test.esk three-engine result artifact --> the stale "gensym is
   VM-only" note in `tests/v1_2_edge_cases/symbol_consistency_test.esk` is
   removed (that claim was
   wrong too — nothing called it successfully on the VM either).
@@ -238,8 +237,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live per hop and reused regardless of arity or target. Differing-signature
   mutual tail calls, previously SIGBUS at ~5,000,000 hops, now run
   100,000,000 hops at 9.1 MB peak RSS; non-AArch64 targets no longer need an
-  aggregate-return `musttail` to get the same bound. Tail calls through
-  `guard` stay bounded deliberately — R7RS does not make that a tail
+  aggregate-return `musttail` to get the same bound. Calls in a `guard` body
+  remain deliberately unoptimized and therefore depth-bounded — R7RS does not make that a tail
   context, and optimizing it would be wrong, not merely unfinished; that
   differential surfaced a pre-existing silent wrong answer, filed as SW-58
   (open, waived): a re-raise from a self-recursive `guard` body reaches the
@@ -334,7 +333,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references alongside finite differences (embedding: exact scatter-add,
   0 mismatches; Fréchet: exact Euclidean closed form, 0.0; hyperbolic
   finite difference 8.3e-10 over 48 partials). 202/202 ctest, 77/77
-  `qllm_oracle`, golden vectors regenerating byte-identically.
+  `qllm_oracle`, golden vectors regenerating byte-identically. <!-- battery: tests/bridge/qllm_bridge_producer_gradcheck_test.cpp CTest/qllm result artifact -->
 
 - **A synthetic large-single-file AOT compile-time benchmark, gated
   continuously (#495).** A 2026-08-26 downstream-consumer audit found that
@@ -345,12 +344,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-contained fixture reproducing the same shape (default 208
   top-level defines referencing earlier-numbered functions, calibrated
   against a measured super-linear growth curve — 208/416/832/1600 defines
-  at roughly 4s/11s/41s/154s locally); `bench/large_single_file_compile_bench.sh`
+  at roughly 4s/11s/41s/154s locally. <!-- battery: bench/large_single_file_compile_bench.sh timing JSON/log --> The script
   compiles a 1600-define fixture against a 900-second ceiling, killed with
   `SIGKILL` rather than `SIGTERM` (measured directly: `eshkol-run` does not
   exit promptly on `SIGTERM` mid-codegen), and captures an
   `ESHKOL_PHASE_TIME=1` breakdown showing ~98% of wall-clock cost is in
-  LLVM's own backend, not Eshkol's frontend. Wired as a real (non-advisory)
+  LLVM's own backend, not Eshkol's frontend. <!-- battery: ESHKOL_PHASE_TIME benchmark breakdown artifact --> Wired as a real (non-advisory)
   nightly gate in `adversarial-nightly.yml`. Measurement only — no fix;
   addressing the underlying cost is a v1.3.6+ item.
 
@@ -389,13 +388,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ESHKOL_VM_REGION_COMPACT`, `ESHKOL_VM_REGION_RECYCLE`. `ESHKOL_ARENA_POISON`
   — the same variable the native arena reads — now also arms the VM's.
 
-- **CI: docs-only PRs now get every required context reported (#455).**
+- **CI: docs-only PRs now get every intended required context satisfied (#455).**
   `paths-ignore` on the `pull_request` trigger previously meant a
   docs-only PR (like this one) never started the main workflow at all, so
   8 of 9 required branch-protection contexts never reported a status and
   permanently blocked the PR. The docs-only decision moved into a
-  job-level `changes` gate instead, so a docs-only PR now gets every
-  required context reported as skipped. See
+  job-level `changes` gate instead, so a docs-only PR now has
+  every intended required context satisfied: static jobs report `skipped`, while matrix-derived names are supplied by successful docs-only stub jobs. See
   [docs/TESTING.md](docs/TESTING.md#ci-docs-only-prs-report-every-required-context-455-477-485).
 
 - **CI: end duplicate matrix runs; harden the `changes` gate; add opt-in
@@ -447,8 +446,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mesh into an actual merge gate is a separate, explicit maintainer decision
   gated on the telemetry coming back live.
 
-- **Pillar harnesses armed; `icc readiness` is machine-reachable, not only
-  runnable by hand (#470, ADR-0010 §2.5).** Six gates were redirecting their
+- **Pillar harnesses armed; ordinary PR CI now generates and uploads ICC trace evidence; it runs `icc readiness` only on a runner where ICC is installed.** (#470, ADR-0010 §2.5) Six gates were redirecting their
   trace file under `ESHKOL_DURABLE_WORK_ROOT` when set and never touching
   `scripts/icc_traces/`, which is what `icc readiness` reads by default —
   the 2026-08-25 audit's own proof: regenerating the `vm-parity` and
@@ -582,7 +580,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clones the checker previously missed entirely, five correct programs it
   wrongly rejected), a linearity violation in the default compilation mode
   now stops before code generation, exits nonzero, and writes no artifact —
-  the same discipline `--strict-types` already has.
+  the same discipline `--strict-types` already has. <!-- battery: Qubit 24-shape result artifact -->
 - **`xla_runtime.cpp` no longer violates `eshkol_tensor`'s one-definition
   rule (#481).** A second, divergent definition of the same struct compiled
   into the XLA backend risked UB the moment both translation units'
@@ -662,8 +660,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open a native-vs-VM divergence.
 
 - **Four release-machinery gaps from the 2026-08-25 audit closed (#493).**
-  A v1.3.5-evolve completion-oracle target (24 criteria at this cut, all bound
-  to real gates/`ctest` names) gives "all of v1.3.5" a machine-checkable
+  A v1.3.5-evolve completion-oracle target (24 criteria at this cut; three CTest selectors (`gensym`, `tail_transfer`, `reader`) currently match no registered test, and the `no_stubbed_paths` action remains a placeholder.) gives "all of v1.3.5" a machine-checkable
   representation instead of only `v1.3-evolve`. `release.yml`'s readiness
   job now configures and builds a quantum-enabled tree before running
   `run_language_coverage.sh`, which hard-requires one — previously the
@@ -779,8 +776,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row exactly (the ordinary case when `Q` and `K` are the same tensor) —
   both refuse loudly, naming the offending index, rather than picking a
   plausible subgradient. 13/13 gradcheck (count pinned), 11/11
-  `exhaustive_dispatch` (18 bridged, 4 unregistered), `qllm_oracle` 10/10
-  files with golden vectors regenerating byte-identically.
+  `exhaustive_dispatch` (18 bridged, 4 unregistered), `qllm_oracle` 10/10 exporter-engine lanes across five exporters, producing nine golden JSON files.
+  Golden vectors regenerate byte-identically.
   <!-- ctest count: regenerate from the release battery; the figure carried
        here was not reproducible from any committed artifact -->
 
@@ -809,7 +806,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merely that its files landed. Scoped to macOS/Linux; the Windows/MSVC
   link recipe is not yet established. Closes SW-64.
 
-- **A resident daemon loop leaked 40 bytes per tick through its exception
+- **A resident daemon loop allocated one 40-byte handler frame per tick—48 bytes after arena alignment.** The frame was associated with its exception
   guard, on top of 48 correctly-attributed bytes per published cons (SW-57,
   #473).** The public benchmark suite's flat-RSS axis (#469)
   extended the published 100k-tick point to 400k and measured 119 MB
@@ -895,7 +892,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **v1.3.5 documentation wave (#464).** `ROADMAP.md` re-dated (maintainer ruling R1,
   executed): the previously published v1.4-v2.0 dates were not achievable at
-  measured velocity (the v1.3.1-v1.3.4 line averaged ~5 weeks/point release);
+  measured velocity (the v1.3.1-v1.3.4 line averaged about 1.1 weeks per point-to-point interval: 0, 7, and 15 days);
   v2.0 moves from the previously published "Q1 2027" to ~Q4 2028. Added the
   six standing workstreams every release now draws from (W1 resident/DBSP
   spine, W2 assurance, W3 performance, W4 codebase health, W5 interop &

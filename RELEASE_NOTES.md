@@ -9,15 +9,13 @@ already did natively; a workload that held flat across a sixteen-fold increase
 in iterations with the evacuator on grew to roughly thirty times its size with
 it switched off on the identical binary. Cloning a linear `Qubit` is now a
 rejected compile rather than a warning next to a runnable binary. Automatic
-differentiation on the VM is exact and machine-checked against a structural
-gate that re-derives which differentiation carrier answers each operator from
-the emitted code itself, closing a class of gap an output differential could
-never see. Mutual tail recursion now runs in constant stack space through
+The VM’s `curl` and `divergence` implementations are now exact forward-dual implementations for supported list/vector-returning fields, and a structural source gate checks the declared carrier for each listed operator. Exact-point, higher-order, tensor-returning Jacobian, and several cross-engine AD gaps remain recorded in `PARITY.tsv`.
+Mutual tail recursion now runs in constant stack space through
 every tail-position spelling — `cond`, `case`, `when`, `unless`, `and`, and
 `or` — not only `if`.
 
 Alongside the headline items, this release starts the object-ABI migration
-(a machine-verified inventory of every layout-dependent call site, and a
+(a machine-generated, ratcheted inventory of detected layout-dependent sites, and a
 link-time guard that turns a mixed-ABI link into an undefined-symbol error
 instead of a silently wrong program), closes out a leak-detection lane that
 had been unable to fail since it shipped, makes `gensym` reachable on every
@@ -28,14 +26,14 @@ distinctive. The assurance surface gained two waves of new detectors this
 cycle: a self-verdict scanner that catches a test printing its own failure
 inside a run graded PASS, build-fingerprint checks that catch a binary that
 was never rebuilt after its source changed, and CI wiring that makes
-`icc readiness` reachable from an ordinary pull request rather than only from
-a human running every pillar script by hand.
+ordinary PR CI now generates and uploads ICC trace evidence; it runs `icc
+readiness` only on a runner where ICC is installed.
 
 **Release Date**: August 28, 2026.
 
 **Release gates**: the full gate matrix (aggregate suite, CTest, SICP
 full-book gate, reference-Scheme differential oracle, VM parity, qLLM oracle,
-ICC readiness) is measured and stated here against the final release commit.
+ICC readiness) will be measured and stated here against the final release commit.
 <!-- readiness: fill from final battery -->
 
 ## Highlights
@@ -86,8 +84,8 @@ ICC readiness) is measured and stated here against the final release commit.
   one of them silently uses finite differences — which is exactly how
   `curl` went uncompared for so long. A new manifest declares, per operator
   and per engine, which differentiation carrier answers it, and a gate
-  re-derives that declaration from the emitted native code and VM bytecode
-  handler rather than trusting it. The same change replaced the VM's last two
+  re-derives that declaration from the corresponding implementation source
+  blocks in `autodiff_codegen.cpp` and `vm_native.c` rather than trusting it. The same change replaced the VM's last two
   central-difference operators, `curl` and `divergence`, with exact
   forward-dual implementations: a gradient field's curl now returns exactly
   zero where the difference quotient returned 1.1e-09, and the VM builds its
@@ -126,18 +124,17 @@ ICC readiness) is measured and stated here against the final release commit.
   native and the VM alike; now works identically on both.
 - **A reader gap closed.** Certain quoted vectors and quasiquoted forms
   could silently produce the wrong value or desynchronize the reader
-  entirely; all four readers (native and VM tokenizers and runtime `read`)
-  now handle the full quoted-datum grammar.
-- **A public, reproducible benchmark suite.** One command from a clean
-  checkout measures the four axes where Eshkol claims something distinctive —
+  entirely; the native and VM compile-time readers now preserve quoted vectors, quasiquote, unquote, character tags, and inexactness; the VM runtime reader handles all quote prefixes, while native runtime `read` still handles only `'` shorthand.
+- **A public, reproducible benchmark suite.** After building Eshkol, one
+  benchmark command runs the configured axes where Eshkol claims something distinctive —
   exact-AD cost curves, Ozaki-II CRT exact f64 GEMM, flat RSS under resident
   load, and differentiable quantum kernels — and emits machine-readable
   results anyone can reproduce.
 - **Assurance, two waves.** A self-verdict scanner catches a test that
   prints its own failure inside a run graded PASS; build-fingerprint checks
-  catch a binary that was never rebuilt after its source changed; and CI
-  wiring makes `icc readiness` reachable from an ordinary pull request
-  instead of only from a human running every pillar script by hand.
+  catch a binary that was never rebuilt after its source changed; ordinary PR
+  CI now generates and uploads ICC trace evidence; it runs `icc readiness` only
+  on a runner where ICC is installed.
 
 ---
 
