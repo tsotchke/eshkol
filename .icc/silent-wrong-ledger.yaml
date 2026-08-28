@@ -5309,7 +5309,11 @@ entries:
 
   - id: SW-49
     bucket: LOUD-ERROR
-    status: open
+    status: closed
+    closed_at: "fix/vm-prelude-cache"
+    closed_by: >-
+      branch fix/vm-prelude-cache — lib/backend/vm_prelude_cache.h regenerated
+      and two independent gates wired in so it cannot go stale silently again.
     family: vm/prelude-cache
     title: "The committed VM prelude bytecode cache is 28 builtins stale, so the WASM REPL cannot see string-length, string-ref, integer? or any c[ad]{3,4}r"
     repro: >-
@@ -5359,6 +5363,63 @@ entries:
       add a build-free guard that regenerates and diffs, the same shape as
       surface-manifest's "manifest matches the source-extracted surface" step,
       so the cache cannot silently lag again.
+    fixed_by: >-
+      Re-measured on branch fix/vm-prelude-cache (worktree HEAD c3588218, the
+      v1.3.5-evolve press-kit commit): by the time of this fix the drift had
+      grown to 30 names (SW-47's `ad-note-finite-difference!` and a later
+      `gensym` addition had each landed without a regeneration, same as the
+      original 28). lib/backend/vm_prelude_cache.h was regenerated via the new
+      `eshkol-vm-prelude-cache-gen` CMake target
+      (scripts/regenerate_vm_prelude_cache.sh), taking prelude_n_locals 740 ->
+      770 and adding exactly the 30 missing names (cdar, caaar/caadr/cadar/
+      cdaar/cdadr/cddar/cdddr, the sixteen four-letter c[ad]{4}r forms, vref,
+      string-length, string-ref, integer?, gensym, ad-note-finite-difference!)
+      with zero names removed or reordered relative to source position.
+
+      Root cause of "the recipe no longer links": the hand-copied shell
+      command recorded in vm_prelude_source.h (cc ... vm_prelude_cache.c
+      build/libeshkol-runtime.a -lm -lc++ -framework ...) DOES link today on
+      macOS/arm64 given a matching pre-built runtime archive — verified by
+      running it byte-for-byte against a fresh `ninja eshkol-runtime` output
+      — but it is a frozen, platform-specific guess at eshkol-static's link
+      requirements with no automated way to know its own precondition (a
+      pre-existing, matching `build/` tree) is met, and no portable form for
+      Linux CI or for configurations where the real link surface differs
+      (BLAS/GPU backend choice, -DESHKOL_QUANTUM_ENABLED,
+      -DESHKOL_TENSORCORE_ENABLED). Its predecessor — still visible, until
+      this branch, as the stale top-of-file `Build:` comment inside
+      vm_prelude_cache.c itself (`gcc -DGENERATE_PRELUDE_CACHE eshkol_vm.c -o
+      gen_prelude -lm`) — genuinely does not even compile: it names the wrong
+      translation unit (eshkol_vm.c alone never defines this generator's
+      GENERATE_PRELUDE_CACHE `main()`) and predates eshkol_vm.c's unity build
+      growing a transitive dependency on the rest of the runtime (arena/
+      bignum/tensor/image-io/GPU) that `-lm` alone cannot satisfy. Either way,
+      nothing about the recipe was CMake-derived, so nobody had ever run it
+      end to end until this investigation. Fixed at the root: a new
+      `eshkol-vm-prelude-cache-gen` executable target (CMakeLists.txt, right
+      after `eshkol-vm-standalone-test`, whose identical
+      #include-eshkol_vm.c-twice shape already proves a static archive's lazy
+      member-pulling makes this safe — no duplicate-symbol link error)
+      compiles lib/backend/vm_prelude_cache.c and links it against
+      `eshkol-static`, inheriting whatever that target's REAL link
+      requirements are on whatever platform, instead of a comment that can
+      silently fall behind them. scripts/regenerate_vm_prelude_cache.sh wraps
+      it end to end (configure + build + run, from a clean tree, no
+      pre-existing build/ directory required) and doubles as the `--check`
+      command the ctest gate below runs.
+    guarded_by: >-
+      Two independent gates, closing both failure shapes: (1)
+      scripts/check_vm_prelude_cache_builtins.py — build-free, pure text
+      extraction of eshkol_vm.c's BUILTINS[] names and the committed
+      prelude_local_names[] names, asserting the first is a subset of the
+      second; wired into .github/workflows/ci.yml's assurance-gates job (a
+      --selftest proving the extractors are correct and the gate can go red,
+      plus the real check) so it runs on every PR including docs-only ones
+      that configure no build. (2) ctest `vm_prelude_cache_is_current` —
+      builds the real eshkol-vm-prelude-cache-gen target and byte-diffs its
+      fresh output against the committed header via
+      scripts/regenerate_vm_prelude_cache.sh --check, catching a stale
+      bytecode BODY behind an unchanged name list that (1) cannot see.
     caught_by: [branch fix/ad-guarantees-real]
     missed_by: [ci, ctest, vm-parity, wasm-execute-diff, icc-readiness]
     notes: >-
@@ -5369,6 +5430,12 @@ entries:
       instrumentation change under a full prelude-bytecode rewrite that no lane
       here can verify, so the new builtin is simply the 29th name the cache does
       not carry, consistent with the 28 before it.
+
+      Closed on branch fix/vm-prelude-cache: the drift had reached 30 names (a
+      `gensym` addition joined SW-47's entry, neither regenerated) by the time
+      of the fix. missed_by above is left as originally recorded — it names
+      what missed the DEFECT before this branch's two new gates existed, not
+      the post-fix state.
 
   # ──────────────── AD carrier wave (2026-08-25) ────────────────
   #

@@ -28,32 +28,40 @@
  *  • After editing this file — OR after adding, removing or reordering an
  *    entry in eshkol_vm.c's BUILTINS[] table, which emit_builtin_preamble()
  *    turns into one prelude local apiece — the bytecode cache
- *    (`vm_prelude_cache.h`) must be regenerated. The recipe recorded here
- *    previously (`gcc ... vm_prelude_cache.c -o gen_prelude -lm`) no longer
- *    links: the generator pulls in the whole VM, which now needs the runtime
- *    and the platform frameworks. What works on macOS/arm64, from the repo
- *    root with an existing build/ tree:
+ *    (`vm_prelude_cache.h`) must be regenerated:
  *
- *        cc -O2 -DGENERATE_PRELUDE_CACHE -Iinc -Ilib \
- *           lib/backend/vm_prelude_cache.c -o /path/outside/repo/gen_prelude \
- *           build/libeshkol-runtime.a -lm -lc++ \
- *           -framework CoreFoundation -framework CoreGraphics \
- *           -framework ImageIO -framework Foundation -framework IOKit \
- *           -framework Metal -framework Accelerate
- *        /path/outside/repo/gen_prelude > lib/backend/vm_prelude_cache.h
+ *        scripts/regenerate_vm_prelude_cache.sh
  *
- *    On Linux drop the -framework flags and keep -lm -lstdc++.
+ *    SW-49 (closed): a hand-copied shell recipe used to be recorded here in
+ *    its place (`cc -DGENERATE_PRELUDE_CACHE ... build/libeshkol-runtime.a
+ *    -lm -lc++ -framework ...`), and its predecessor
+ *    (`gcc -DGENERATE_PRELUDE_CACHE eshkol_vm.c -o gen_prelude -lm`, still
+ *    visible as the stale top-of-file comment history in
+ *    vm_prelude_cache.c) had stopped linking outright once this
+ *    translation unit's #include of eshkol_vm.c grew a transitive
+ *    dependency on the rest of the runtime (arena/bignum/tensor/image-io/
+ *    GPU) that `-lm` alone cannot satisfy. Either way it was a frozen,
+ *    platform-specific guess at eshkol-static's link requirements rather
+ *    than something the build system derived, nobody had ever actually run
+ *    it end to end, and this generator's only consumer is the
+ *    Emscripten-built WASM REPL (vm_wasm_repl.c, the one place that defines
+ *    ESHKOL_VM_NO_DISASM as a macro) — so no native lane or ctest noticed
+ *    when the committed cache drifted 30 builtins stale (missing
+ *    `string-length`, `string-ref`, `integer?`, `gensym`,
+ *    `ad-note-finite-difference!` and the whole c[ad]{3,4}r family).
  *
- *    NOTE (measured 2026-08-25, master 4bf871a0): the committed cache is
- *    ALREADY STALE by 28 builtins — regenerating from the source tables yields
- *    768 prelude locals against the committed 740, and the missing names
- *    include `string-length`, `string-ref`, `integer?` and the whole
- *    c[ad]{3,4}r family. Its only consumer is the WASM REPL
- *    (vm_wasm_repl.c, the one place that defines ESHKOL_VM_NO_DISASM as a
- *    macro), so nothing in the native or standalone-VM lanes notices. Do NOT
- *    fold that catch-up regeneration into an unrelated change: it rewrites the
- *    whole prelude bytecode and needs the WASM lane to verify it. Ledgered as
- *    SW-49.
+ *    The script above builds the generator through the real CMake target
+ *    (`eshkol-vm-prelude-cache-gen`, CMakeLists.txt, right after
+ *    `eshkol-vm-standalone-test`) so it always links against whatever
+ *    `eshkol-static` currently requires — on any platform, under any
+ *    BLAS/GPU/quantum/tensorcore configuration — instead of a comment that
+ *    can silently fall behind. Two gates now hold this file to that source
+ *    of truth on every PR: the build-free
+ *    `scripts/check_vm_prelude_cache_builtins.py` (diffs BUILTINS[] against
+ *    the committed name list as text, so it runs even on docs-only PRs)
+ *    and the ctest `vm_prelude_cache_is_current` (builds the real generator
+ *    and byte-diffs its output, so it also catches a stale bytecode BODY
+ *    behind an unchanged name list).
  */
 
 #ifndef ESHKOL_VM_PRELUDE_SOURCE_H

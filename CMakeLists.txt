@@ -5205,6 +5205,81 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
 
+    # ─────────────────────────────────────────────────────────────────────
+    # SW-49: VM prelude bytecode cache generator + staleness gate.
+    #
+    # lib/backend/vm_prelude_cache.c generates lib/backend/vm_prelude_cache.h
+    # (the WASM REPL's precompiled prelude — its only consumer, since it is
+    # only #included where ESHKOL_VM_NO_DISASM is a MACRO, in
+    # lib/backend/vm_wasm_repl.c). It does `#include "eshkol_vm.c"` under
+    # ESHKOL_VM_LIBRARY_MODE so it can reach compile_expr/chunk_emit/
+    # parse_sexp/emit_builtin_preamble — parser and compiler internals that
+    # are `static` inside that one translation unit — which means this
+    # target, exactly like eshkol-vm-standalone-test just above, compiles a
+    # SECOND copy of eshkol_vm.c's externs (eshkol_vm_run, eshkol_vm_load_
+    # chunk, ...) alongside the one already sealed into eshkol-static's
+    # eshkol-vm-unity-obj member. That is not a link error: static-archive
+    # members are pulled in lazily, only to resolve symbols the linker still
+    # has undefined, so the archive's copy is simply never touched. It WOULD
+    # be a link error against raw $<TARGET_OBJECTS:eshkol-vm-unity-obj> (objects
+    # are never lazy) — which is exactly why this links against the
+    # `eshkol-static` archive target, the same way eshkol-vm-standalone-test
+    # does, and not against a hand-assembled object/library list.
+    #
+    # The recipe this replaces (recorded as a shell comment in
+    # lib/backend/vm_prelude_source.h) is not CMake-driven, so it cannot
+    # track what eshkol-runtime/eshkol-static actually need to link — a
+    # BLAS/GPU/quantum/tensorcore configuration change silently invalidates
+    # a hand-copied framework list. This target inherits the real, current
+    # link requirements the normal way instead.
+    add_executable(eshkol-vm-prelude-cache-gen lib/backend/vm_prelude_cache.c)
+    target_compile_definitions(eshkol-vm-prelude-cache-gen PRIVATE
+        GENERATE_PRELUDE_CACHE)
+    target_include_directories(eshkol-vm-prelude-cache-gen PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(eshkol-vm-prelude-cache-gen)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(eshkol-vm-prelude-cache-gen PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(eshkol-vm-prelude-cache-gen PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+
+    # `cmake --build <dir> --target regenerate_vm_prelude_cache` runs the
+    # generator and overwrites the committed header in place — the one
+    # command the SW-49 close_condition asked the recipe to boil down to.
+    # Routed through the same script the ctest gate below uses (rather than
+    # a raw `>` redirect, which a CMake COMMAND cannot do without an
+    # explicit shell) so there is exactly one place that knows how to turn
+    # the generator's stdout into the committed header.
+    add_custom_target(regenerate_vm_prelude_cache
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/regenerate_vm_prelude_cache.sh"
+                --gen-exe "$<TARGET_FILE:eshkol-vm-prelude-cache-gen>"
+        DEPENDS eshkol-vm-prelude-cache-gen
+        COMMENT "Regenerating lib/backend/vm_prelude_cache.h from the current VM sources"
+        VERBATIM)
+
+    # The staleness gate itself: run the generator and diff its output
+    # against the committed header, byte for byte. Kept as its own ctest
+    # (rather than only the build-free BUILTINS[]-name subset check in
+    # scripts/check_vm_prelude_cache_builtins.py) because this is the only
+    # check that also catches a stale bytecode BODY behind an unchanged name
+    # list — a compiler change that recompiles an existing builtin
+    # differently without adding or removing one.
+    add_test(NAME vm_prelude_cache_is_current
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/regenerate_vm_prelude_cache.sh"
+            --check
+            --gen-exe "$<TARGET_FILE:eshkol-vm-prelude-cache-gen>")
+    set_tests_properties(vm_prelude_cache_is_current PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: committed vm_prelude_cache\\.h matches the generator"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
