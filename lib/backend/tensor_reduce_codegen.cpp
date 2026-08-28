@@ -1851,6 +1851,119 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     return tagged_.packHeapPtr(result);
 }
 
+llvm::Value* TensorCodegen::emitDenseADReduce(
+    llvm::Value* src_val, bool is_mean,
+    llvm::BasicBlock* merge_block, llvm::BasicBlock** out_exit,
+    const char* name)
+{
+    if (!autodiff_ || !denseTensorADNodesEnabled() || !out_exit) return nullptr;
+    *out_exit = nullptr;
+
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    std::string pfx(name);
+
+    llvm::BasicBlock* dn_probe = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_probe", fn);
+    llvm::BasicBlock* dn_red   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_reduce", fn);
+    llvm::BasicBlock* dn_not   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_not", fn);
+
+    llvm::Value* base_ty = tagged_.getBaseType(tagged_.getType(src_val));
+    llvm::Value* is_callable = b.CreateICmpEQ(base_ty,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* is_ad = b.CreateAnd(is_callable,
+        tagged_.checkCallableSubtype(src_val, CALLABLE_SUBTYPE_AD_NODE));
+    b.CreateCondBr(is_ad, dn_probe, dn_not);
+
+    // A SCALAR AD node reaching a whole-tensor reduction is a type error, not a
+    // dense tensor; let it fall through to the checked unpack that says so.
+    b.SetInsertPoint(dn_probe);
+    llvm::StructType* ad_ty = ctx_.adNodeType();
+    llvm::Value* dn_node = b.CreateIntToPtr(tagged_.unpackInt64(src_val), ctx_.ptrType());
+    llvm::Value* dn_elems = b.CreateLoad(ctx_.ptrType(),
+        b.CreateStructGEP(ad_ty, dn_node, 6));
+    b.CreateCondBr(
+        b.CreateICmpNE(dn_elems, llvm::ConstantPointerNull::get(ctx_.ptrType())),
+        dn_red, dn_not);
+
+    b.SetInsertPoint(dn_red);
+    llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_total_elements",
+        llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    llvm::Value* dn_total = b.CreateCall(total_fn, {dn_node}, pfx + "_dense_total");
+
+    llvm::Value* dn_acc = b.CreateAlloca(ctx_.doubleType(), nullptr, pfx + "_dense_acc");
+    llvm::Value* dn_i = b.CreateAlloca(ctx_.int64Type(), nullptr, pfx + "_dense_i");
+    b.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dn_acc);
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dn_i);
+    llvm::BasicBlock* dn_cond = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_cond", fn);
+    llvm::BasicBlock* dn_body = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_body", fn);
+    llvm::BasicBlock* dn_done = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_done", fn);
+    b.CreateBr(dn_cond);
+
+    b.SetInsertPoint(dn_cond);
+    llvm::Value* dn_iv = b.CreateLoad(ctx_.int64Type(), dn_i);
+    b.CreateCondBr(b.CreateICmpULT(dn_iv, dn_total), dn_body, dn_done);
+
+    b.SetInsertPoint(dn_body);
+    llvm::Value* dn_e = b.CreateLoad(ctx_.doubleType(),
+        b.CreateGEP(ctx_.doubleType(), dn_elems, dn_iv));
+    b.CreateStore(b.CreateFAdd(b.CreateLoad(ctx_.doubleType(), dn_acc), dn_e), dn_acc);
+    b.CreateStore(b.CreateAdd(dn_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dn_i);
+    b.CreateBr(dn_cond);
+
+    b.SetInsertPoint(dn_done);
+    llvm::Value* dn_val = b.CreateLoad(ctx_.doubleType(), dn_acc);
+    if (is_mean) {
+        // A zero-element tensor cannot be averaged; guard the divide rather
+        // than publishing a NaN into the tape.
+        llvm::Value* n_fp = b.CreateSIToFP(
+            b.CreateSelect(b.CreateICmpSGT(dn_total, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+                           dn_total, llvm::ConstantInt::get(ctx_.int64Type(), 1)),
+            ctx_.doubleType());
+        dn_val = b.CreateFDiv(dn_val, n_fp);
+    }
+
+    // The reduction's own storage: a one-element f64 buffer (so the reverse
+    // pass recognises a tensor node) plus the shape {1} that says so.
+    llvm::Value* dn_arena = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Function* dn_alloc = mem_.getArenaAllocate();
+    llvm::Value* dn_buf = b.CreateCall(dn_alloc,
+        {dn_arena, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, pfx + "_dense_buf");
+    b.CreateStore(dn_val, dn_buf);
+    llvm::Value* dn_shape = b.CreateCall(dn_alloc,
+        {dn_arena, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, pfx + "_dense_shape");
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), dn_shape);
+
+    llvm::Value* dn_out = autodiff_->recordADNodeTensor(
+        static_cast<uint32_t>(is_mean ? AD_NODE_MEAN : AD_NODE_SUM),
+        dn_node, nullptr, nullptr, nullptr,
+        dn_buf,
+        nullptr, llvm::ConstantInt::get(ctx_.int64Type(), 0),
+        dn_shape, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    if (!dn_out) {
+        eshkol_error("%s: failed to record the dense tensor AD node", name);
+        return nullptr;
+    }
+
+    // params[0] is the INPUT element count -- what eshkol_backward_sum /
+    // eshkol_backward_mean broadcast the scalar gradient over.
+    llvm::ArrayType* dn_params_ty = llvm::ArrayType::get(ctx_.int64Type(), 6);
+    llvm::Value* dn_params = ctx_.builder().CreateStructGEP(ad_ty, dn_out, 12);
+    ctx_.builder().CreateStore(dn_total,
+        ctx_.builder().CreateConstGEP2_32(dn_params_ty, dn_params, 0, 0));
+    // The scalar `value` field, so ordinary AD arithmetic downstream reads the
+    // number rather than the 0.0 a tensor node is initialised with.
+    ctx_.builder().CreateStore(dn_val,
+        ctx_.builder().CreateStructGEP(ad_ty, dn_out, 1));
+
+    llvm::Value* result = tagged_.packPtr(dn_out, ESHKOL_VALUE_CALLABLE);
+    *out_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_block);
+
+    ctx_.builder().SetInsertPoint(dn_not);
+    return result;
+}
+
 llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     // tensor-sum: (tensor-sum tensor) or (tensor-sum tensor axis) - Sum elements
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
@@ -1877,6 +1990,13 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "sum_scheme_vec", current_func);
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "sum_tensor", current_func);
     llvm::BasicBlock* sum_merge = llvm::BasicBlock::Create(ctx_.context(), "sum_merge", current_func);
+
+    // ADR-0002 Position A: an operand that is a dense tensor AD-node handle is
+    // reduced densely, in ONE tape node. Leaves the builder on the not-dense
+    // branch, so the ordinary lowering below is unchanged.
+    llvm::BasicBlock* tsum_dense_exit = nullptr;
+    llvm::Value* tsum_dense_result =
+        emitDenseADReduce(src_val, /*is_mean=*/false, sum_merge, &tsum_dense_exit, "tensor-sum");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 
@@ -2183,6 +2303,10 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     if (dsum_exit_block && dsum_result) {
         result_phi->addIncoming(dsum_result, dsum_exit_block);
     }
+    // ADR-0002 Position A: dense tensor AD-node operand (see above).
+    if (tsum_dense_exit && tsum_dense_result) {
+        result_phi->addIncoming(tsum_dense_result, tsum_dense_exit);
+    }
 
     return result_phi;
 }
@@ -2213,6 +2337,12 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "mean_scheme_vec", current_func);
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "mean_tensor", current_func);
     llvm::BasicBlock* mean_merge = llvm::BasicBlock::Create(ctx_.context(), "mean_merge", current_func);
+
+    // ADR-0002 Position A: see tensorSum. One AD_NODE_MEAN node for the whole
+    // reduction when the operand is a dense tensor AD-node handle.
+    llvm::BasicBlock* tmean_dense_exit = nullptr;
+    llvm::Value* tmean_dense_result =
+        emitDenseADReduce(src_val, /*is_mean=*/true, mean_merge, &tmean_dense_exit, "tensor-mean");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 
@@ -2466,6 +2596,10 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     result_phi->addIncoming(tensor_tagged_result, tensor_exit_block);
     if (ad_mean_exit_block && ad_mean_tagged_result) {
         result_phi->addIncoming(ad_mean_tagged_result, ad_mean_exit_block);
+    }
+    // ADR-0002 Position A: dense tensor AD-node operand (see above).
+    if (tmean_dense_exit && tmean_dense_result) {
+        result_phi->addIncoming(tmean_dense_result, tmean_dense_exit);
     }
 
     return result_phi;
