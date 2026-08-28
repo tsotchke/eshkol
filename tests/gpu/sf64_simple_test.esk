@@ -1,26 +1,52 @@
 ;; Simple SF64 Test
+;;
+;; Previously every "expected" value here was printed but never compared
+;; against the actual result -- this file could not fail regardless of
+;; what matmul returned. Verdict grammar: "PASS: <label>" / "FAIL: <label>
+;; ..." (see scripts/run_gpu_tests.sh header), aggregated into
+;; gate-failures and a process exit code.
+(define gate-failures 0)
+(define (check! ok? label)
+  (if ok?
+      (begin (display "PASS: ") (display label) (newline))
+      (begin (set! gate-failures (+ gate-failures 1))
+             (display "FAIL: ") (display label) (newline))))
+
 (display "=== SF64 Simple Test ===") (newline)
 
 ;; Test 1: Basic 1x1 multiplication
 (define A1 (reshape (vector 2.0) 1 1))
 (define B1 (reshape (vector 3.0) 1 1))
 (define C1 (matmul A1 B1))
-(display "2.0 * 3.0 = ") (display (vector-ref (tensor-data C1) 0)) (newline)
+(define r1 (vector-ref (tensor-data C1) 0))
+(display "2.0 * 3.0 = ") (display r1) (newline)
+(check! (= r1 6.0) "2.0 * 3.0 = 6.0")
 
 ;; Test 2: Identity 2x2
 (define A2 (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
 (define I2 (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
 (define C2 (matmul A2 I2))
+(define C2-data (tensor-data C2))
 (display "[[1,2],[3,4]] * I = ")
-(display (tensor-data C2)) (newline)
+(display C2-data) (newline)
+(check! (and (= (vector-ref C2-data 0) 1.0) (= (vector-ref C2-data 1) 2.0)
+             (= (vector-ref C2-data 2) 3.0) (= (vector-ref C2-data 3) 4.0))
+        "[[1,2],[3,4]] * I = [[1,2],[3,4]]")
 
 ;; Test 3: GPU path (50x50)
 (define size50 (* 50 50))
 (define A50 (reshape (make-vector size50 1.0) 50 50))
 (define B50 (reshape (make-vector size50 1.0) 50 50))
 (define C50 (matmul A50 B50))
+(define r50 (vector-ref (tensor-data C50) 0))
 (display "50x50 ones matmul C[0,0] = ")
-(display (vector-ref (tensor-data C50) 0))
+(display r50)
 (display " (expected 50)") (newline)
+(check! (= r50 50.0) "50x50 ones matmul C[0,0] = 50")
 
 (display "=== Done ===") (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: sf64_simple_test") (newline) (exit 0))
+    (begin (display "FAIL: sf64_simple_test (") (display gate-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

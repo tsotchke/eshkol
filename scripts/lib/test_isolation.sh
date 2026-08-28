@@ -578,3 +578,46 @@ eshkol_test_output_has_marker() {
     [ -n "$marker" ] || return 0
     LC_ALL=C grep -Eq -- "$marker" "$file" 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# "No verdict" detection — additive, opt-in (does not change the default
+# behavior any existing caller of eshkol_test_output_has_failure /
+# eshkol_test_output_is_silent gets).
+#
+# eshkol_test_output_is_silent only catches a program that printed NOTHING.
+# It does not catch a program that printed plenty of text — diagnostics,
+# intermediate values, a banner — but never emitted a single PASS/FAIL-shaped
+# verdict token anywhere. That gap is exactly how tests/gpu/gpu_correctness_gate.esk
+# used to pass every run of scripts/run_gpu_tests.sh regardless of whether the
+# numbers it printed were right: it printed only unlabelled "RESULT <label>
+# <value>" lines and exited 0 unconditionally, so eshkol_test_output_has_failure
+# never matched (nothing failure-shaped was ever printed) and
+# eshkol_test_output_is_silent never matched (there was plenty of output) —
+# the only reachable verdict was PASS, no matter what the run actually
+# computed. "It printed things" is not the same claim as "it printed a
+# verdict"; a caller that wants the stronger claim enforced calls
+# eshkol_test_output_has_verdict explicitly.
+ESHKOL_TEST_SUCCESS_REGEX='(^|[^A-Za-z0-9_])(PASS|PASSED|OK)([^A-Za-z0-9_]|$)'
+
+# True when the file contains at least one PASS/PASSED/OK-shaped token,
+# subject to the same verdict-noise filtering eshkol_test_output_has_failure
+# uses (so a "Passed: 0" line does not count).
+eshkol_test_output_has_success_marker() {
+    local file="$1"
+    [ -f "$file" ] || return 1
+    eshkol_test_filter_verdict_noise < "$file" \
+        | LC_ALL=C grep -Eq -- "$ESHKOL_TEST_SUCCESS_REGEX" 2>/dev/null
+}
+
+# True when the file contains ANY recognized verdict token — a failure marker
+# (eshkol_test_output_has_failure) or a success marker
+# (eshkol_test_output_has_success_marker). False means the program produced no
+# evidence either way, which a caller enforcing rule 2's full strength must
+# treat as FAIL, never PASS — absence of evidence that any check ran is not
+# evidence the checks passed. $2 — optional extra failure ERE, passed through.
+eshkol_test_output_has_verdict() {
+    local file="$1"
+    local extra="${2:-}"
+    eshkol_test_output_has_failure "$file" "$extra" \
+        || eshkol_test_output_has_success_marker "$file"
+}

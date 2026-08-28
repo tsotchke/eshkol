@@ -1,0 +1,42 @@
+;; GPU gate canary — a DELIBERATE, PERMANENT failure.
+;;
+;; This file exists to answer one question every invocation of
+;; scripts/run_gpu_tests.sh: if a GPU kernel actually produced a wrong
+;; answer, would this harness notice? Every other file in tests/gpu/ is
+;; expected to pass, so a harness that has quietly stopped being able to
+;; fail (a broken marker regex, a build that silently no-ops, a judge
+;; that only checks "did the process exit") would look identical to a
+;; healthy one — every real test would still print PASS and exit 0,
+;; because a healthy GPU backend truly does compute all of them
+;; correctly right now. Nothing in that picture proves the harness is
+;; still WATCHING.
+;;
+;; This file is the control: an assertion that is deliberately, always
+;; false, using the exact PASS:/FAIL: verdict grammar and exit-code
+;; contract documented in scripts/run_gpu_tests.sh. The harness runs it
+;; EXPECTING a FAIL verdict and a non-zero exit; if it ever observes a
+;; PASS from this file (or an exit code of 0), that means the verdict
+;; pipeline itself has broken — a real defect could hide behind the same
+;; failure — and the harness treats THAT as a hard failure of the whole
+;; gate, independent of what every other test reported.
+;;
+;; Do not "fix" this file. A green canary is not a fixed test — it is a
+;; blind judge.
+
+(display "=== GPU Gate Canary (this test MUST fail) ===") (newline)
+
+;; A trivial, unconditionally false numeric assertion computed through
+;; the same tensor path the real tests exercise, so a build that cannot
+;; even construct a tensor still reaches a FAIL verdict rather than
+;; crashing before printing one.
+(define canary-A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define canary-B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define canary-C (matmul canary-A canary-B))
+;; The true value of C[0,0] is 19.0; assert it is 999.0 instead.
+(define canary-ok? (= (tensor-get canary-C 0 0) 999.0))
+
+(if canary-ok?
+    (begin (display "PASS: gate_canary_must_fail (THIS IS A BUG IN THE CANARY ITSELF)") (newline) (exit 0))
+    (begin (display "FAIL: gate_canary_must_fail (deliberate: expected C[0,0]=999.0, got ")
+           (display (tensor-get canary-C 0 0)) (display ") — this failure is EXPECTED") (newline)
+           (exit 1)))

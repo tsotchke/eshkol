@@ -1,5 +1,13 @@
 ;; GPU Diagnostic Test
 ;; Verifies GPU is actually being used for large matrices
+;;
+;; Verdict grammar: each check below prints " PASS"/" FAIL" on the same
+;; line as its measurement, and increments gate-failures on failure (see
+;; scripts/run_gpu_tests.sh header for the full contract). Before this
+;; fix, the FAIL branch printed a marker but nothing aggregated it into a
+;; process exit code, so this file always exited 0 no matter how many
+;; sizes actually failed.
+(define gate-failures 0)
 
 (display "=== GPU Diagnostic Test ===") (newline)
 
@@ -18,7 +26,7 @@
   (display " (expected: ") (display expected) (display ")")
   (if (and (>= result (* expected 0.99)) (<= result (* expected 1.01)))
       (begin (display " PASS") (newline))
-      (begin (display " FAIL") (newline)))
+      (begin (set! gate-failures (+ gate-failures 1)) (display " FAIL") (newline)))
   result)
 
 ;; Small matrices (BLAS/SIMD path, below threshold)
@@ -47,3 +55,8 @@
 (test-matmul-size 53 53.0)   ;; 53 % 4 = 1
 
 (display "=== GPU Diagnostic Test Complete ===") (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: gpu_diagnostic_test") (newline) (exit 0))
+    (begin (display "FAIL: gpu_diagnostic_test (") (display gate-failures) (display " size(s) failed)") (newline)
+           (exit 1)))

@@ -1,4 +1,13 @@
 ;; GPU Matrix Multiply Correctness Tests
+;;
+;; Verdict grammar: each check below prints "PASS: <label>" or
+;; "FAIL: <label> ..." and increments gate-failures on failure (see
+;; scripts/run_gpu_tests.sh header for the full contract). Before this
+;; fix, a FAIL: line was printed but nothing aggregated it into a process
+;; exit code, so this file always exited 0 no matter how many checks
+;; actually failed -- the marker-only harness had to notice the text, and
+;; a differently-shaped judge could not.
+(define gate-failures 0)
 
 ;; --- Small matmul: 2x2 @ 2x2 ---
 (define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
@@ -11,7 +20,7 @@
          (= (tensor-get C 1 0) 43.0)
          (= (tensor-get C 1 1) 50.0))
     (display "PASS: matmul 2x2 correct")
-    (display "FAIL: matmul 2x2 incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: matmul 2x2 incorrect")))
 (newline)
 
 ;; --- Identity matmul: I @ A = A ---
@@ -22,7 +31,7 @@
          (= (tensor-get IA 1 0) 3.0)
          (= (tensor-get IA 1 1) 4.0))
     (display "PASS: I @ A = A")
-    (display "FAIL: I @ A != A"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: I @ A != A")))
 (newline)
 
 ;; --- Non-square: 2x3 @ 3x2 ---
@@ -36,7 +45,7 @@
          (= (tensor-get MN 1 0) 139.0)
          (= (tensor-get MN 1 1) 154.0))
     (display "PASS: matmul 2x3 @ 3x2 correct")
-    (display "FAIL: matmul 2x3 @ 3x2 incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: matmul 2x3 @ 3x2 incorrect")))
 (newline)
 
 ;; --- Matmul + transpose: (A @ B)^T = B^T @ A^T ---
@@ -47,7 +56,7 @@
          (= (tensor-get ABt 1 0) (tensor-get BtAt 1 0))
          (= (tensor-get ABt 1 1) (tensor-get BtAt 1 1)))
     (display "PASS: (AB)^T = B^T A^T")
-    (display "FAIL: (AB)^T != B^T A^T"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: (AB)^T != B^T A^T")))
 (newline)
 
 ;; --- Chain: A @ B @ A ---
@@ -60,5 +69,10 @@
          (= (tensor-get ABA 1 0) 193.0)
          (= (tensor-get ABA 1 1) 286.0))
     (display "PASS: A @ B @ A chain correct")
-    (display "FAIL: A @ B @ A chain incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: A @ B @ A chain incorrect")))
 (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: matmul_correctness_test") (newline) (exit 0))
+    (begin (display "FAIL: matmul_correctness_test (") (display gate-failures) (display " check(s) failed)") (newline)
+           (exit 1)))

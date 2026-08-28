@@ -112,5 +112,5 @@
 ;; Summary
 ;; =====================================================
 (if (and t1-pass t2-pass t3-pass)
-    (begin (display "PASS: All GPU-scale correctness tests passed") (newline))
-    (begin (display "FAIL: Some GPU-scale correctness tests failed") (newline)))
+    (begin (display "PASS: All GPU-scale correctness tests passed") (newline) (exit 0))
+    (begin (display "FAIL: Some GPU-scale correctness tests failed") (newline) (exit 1)))

@@ -39,13 +39,16 @@
 (define A (reshape A-data N K))
 (define B (reshape B-data K N))
 
-;; `display` on a float prints with ~6 significant digits (not full
-;; round-trip precision) — that's a separate stdlib formatting
-;; characteristic, not something this gate changes. It's still enough
-;; precision to catch a real GPU-kernel bug (wrong dimensions, transposed
-;; data, NaN/garbage, wrong accumulation) while the harness's tolerance
-;; comparison (tests/gpu/gpu_correctness_gate.sh) absorbs any last-digit
-;; GPU-vs-CPU floating-point summation-order drift.
+;; `display` on a float prints the SHORTEST ROUND-TRIP decimal
+;; (eshkol_dtoa_shortest, lib/core/runtime_display_hosted.cpp) — reading
+;; the printed string back reproduces the exact same bits, confirmed by a
+;; direct round-trip probe. It is not a lossy ~6-significant-digit
+;; formatter; a prior version of this comment claimed otherwise and used
+;; that to justify a loose 1e-4 gate tolerance in
+;; tests/gpu/gpu_correctness_gate.sh, which has since been tightened on
+;; the strength of this correction (see that script's GPU_GATE_TOL
+;; comment for the measured Metal-vs-CPU divergence this workload
+;; actually produces).
 (define (result label val)
   (display "RESULT ") (display label) (display " ") (display val) (newline))
 
@@ -73,3 +76,67 @@
 (result "reduce-max-A" (tensor-max A))
 
 (display "GATE-DONE") (newline)
+
+;; ─────────────────────────────────────────────────────────────────
+;; Self-check invariants — verdict grammar (see scripts/run_gpu_tests.sh
+;; header for the full contract).
+;;
+;; Before this fix, everything above was this file's entire content: a
+;; fixed sequence of `RESULT <label> <value>` lines and nothing else. That
+;; is sufficient for tests/gpu/gpu_correctness_gate.sh's CPU-vs-GPU
+;; differential (it diffs the two RESULT streams itself), but
+;; scripts/run_gpu_tests.sh runs this file directly, ONCE, through
+;; whichever single build it is testing — it never performs that diff. A
+;; run through that harness printed zero PASS/FAIL/error/mismatch-shaped
+;; output no matter what the GPU kernel actually computed, so a
+;; correctness regression on the only build under test was invisible:
+;; the file could not fail on its own.
+;;
+;; These checks are backend-independent invariants — true on a correct
+;; result regardless of whether this run went through CPU, Metal, or
+;; CUDA — so they give the file real, self-contained teeth without
+;; duplicating the differential that gpu_correctness_gate.sh already
+;; owns.
+(define gate-failures 0)
+(define (verify! ok? label)
+  (if ok?
+      (begin (display "PASS: ") (display label) (newline))
+      (begin (display "FAIL: ") (display label) (newline)
+             (set! gate-failures (+ gate-failures 1)))))
+
+(define (finite? x) (and (= x x) (< (abs x) 1e300)))
+
+;; Independent reduce-sum: a manual accumulation over the plain input
+;; vector, not routed through tensor-sum's own reduction path, so a
+;; broken reduce cannot be used to validate itself.
+(define (vector-sum-manual v n)
+  (let loop ((i 0) (acc 0.0))
+    (if (= i n) acc (loop (+ i 1) (+ acc (vector-ref v i))))))
+
+(define sum-A (tensor-sum A))
+(define sum-B (tensor-sum B))
+(define independent-sum-A (vector-sum-manual A-data elems))
+
+(verify! (finite? (tensor-sum C)) "matmul-checksum is finite")
+(verify! (finite? (tensor-get C 0 0)) "matmul-c00 is finite")
+(verify! (finite? (tensor-get C 511 511)) "matmul-clast is finite")
+(verify! (finite? (tensor-sum S)) "add-checksum is finite")
+(verify! (finite? (tensor-sum P)) "mul-checksum is finite")
+(verify! (> (tensor-sum P) 0.0)
+         "mul-checksum is positive (every A/B element is constructed positive)")
+(verify! (= (tensor-get Ct 0 0) (tensor-get C 0 0))
+         "transpose(transpose(C))[0,0] == C[0,0]")
+(verify! (= (tensor-get Ct 511 511) (tensor-get C 511 511))
+         "transpose(transpose(C))[511,511] == C[511,511]")
+(verify! (< (abs (- sum-A independent-sum-A)) (* 1e-6 (abs independent-sum-A)))
+         "reduce-sum-A agrees with an independent manual accumulation")
+(verify! (and (> (tensor-max A) 0.0) (< (tensor-max A) 2.01))
+         "reduce-max-A within the constructed input's theoretical bound (0, 2.01)")
+(verify! (< (abs (- (tensor-sum S) (+ sum-A sum-B))) (* 1e-6 (abs (+ sum-A sum-B))))
+         "sum(A+B) == sum(A) + sum(B)")
+
+(if (= gate-failures 0)
+    (begin (display "PASS: gpu_correctness_gate self-checks") (newline) (exit 0))
+    (begin (display "FAIL: gpu_correctness_gate self-checks (")
+           (display gate-failures) (display " of 10 failed)") (newline)
+           (exit 1)))

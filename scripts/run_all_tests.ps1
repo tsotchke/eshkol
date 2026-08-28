@@ -710,6 +710,37 @@ function Format-TestStatus {
     Write-Host ("Testing {0,-50} {1}" -f $TestName, $Status) -ForegroundColor $Color
 }
 
+function Test-OutputMatches {
+    # Single choke point for every FailRegex/PassRegex/marker-regex check run
+    # against a test process's captured (possibly multi-line) stdout+stderr.
+    #
+    # PowerShell's bare -match/-notmatch operators call .NET regex WITHOUT
+    # RegexOptions::Multiline, so a bare "^" anchors to the start of the
+    # WHOLE STRING, not the start of each line. A regex like "^FAIL:" was
+    # written (and mirrors the bash judge's line-by-line grep) to mean "a
+    # line starting with FAIL:", but against a multi-line $Output it only
+    # ever matched when that marker happened to be on the string's very
+    # first line - a marker preceded by even one banner line was invisible.
+    # This is what let tests/gpu/gate_canary_must_fail.esk's second-line
+    # `FAIL:` marker go undetected (judged "CANARY FAILED WITH NO FAIL
+    # MARKER"), and the same anchoring silently affected every other
+    # Windows suite using a `^`-prefixed FailRegex.
+    #
+    # Evaluate with the Multiline option so "^"/"$" bind to line boundaries,
+    # matching the intended (and bash-judge-equivalent) semantics. Every
+    # site in this file that tests captured process output against a
+    # FailRegex, PassRegex, RuntimeErrorRegex, or ad hoc marker regex must
+    # route through here so that behavior is defined in exactly one place.
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Output,
+        [Parameter(Mandatory = $true)]
+        [string]$Regex
+    )
+    return [regex]::IsMatch($Output, $Regex, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+}
+
 function Invoke-SimpleCompileRunSuite {
     param(
         [string]$SuiteName,
@@ -741,6 +772,15 @@ function Invoke-SimpleCompileRunSuite {
 
     foreach ($testFile in $files) {
         $testName = Split-Path -Leaf $testFile
+        # VERDICT CONTRACT (mirrors scripts/run_gpu_tests.sh's canary handling,
+        # e.g. tests/gpu/gate_canary_must_fail.esk): a test file named
+        # `*_must_fail.esk` is a deliberate, permanent failure used to prove
+        # this harness can still fail a real defect. For that file alone the
+        # verdict is inverted - a nonzero exit (with a matching FAIL: marker,
+        # when this suite configures one) is PASS, and an exit of 0 is FAIL.
+        # $testName is already a leaf name (Split-Path -Leaf above), so this
+        # match is path-separator agnostic on both Windows and POSIX inputs.
+        $isMustFailCanary = $testName -match '_must_fail\.esk$'
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName $SuiteName -TestName $testName
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
         if ($compile.TimedOut) {
@@ -762,18 +802,37 @@ function Invoke-SimpleCompileRunSuite {
             Add-Fail $suite "$testName (timeout)"
             continue
         }
+
+        if ($isMustFailCanary) {
+            if ($run.ExitCode -eq 0) {
+                Format-TestStatus $testName "CANARY DID NOT FAIL (exit 0)" Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite "$testName (must-fail canary did not fail - verdict pipeline is broken)"
+                continue
+            }
+            if ($FailRegex -and -not (Test-OutputMatches -Output $run.Output -Regex $FailRegex)) {
+                Format-TestStatus $testName "CANARY FAILED WITH NO FAIL MARKER" Red
+                Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
+                Add-Fail $suite "$testName (must-fail canary exited nonzero but printed no FAIL: marker)"
+                continue
+            }
+            Format-TestStatus $testName ("PASS (must-fail canary correctly failed, exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Green
+            Add-Pass $suite
+            continue
+        }
+
         if ($run.ExitCode -ne 0) {
             Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
             continue
         }
-        if ($FailRegex -and $run.Output -match $FailRegex) {
+        if ($FailRegex -and (Test-OutputMatches -Output $run.Output -Regex $FailRegex)) {
             Format-TestStatus $testName "ASSERTION FAIL" Red
             Add-Fail $suite $testName
             continue
         }
-        if ($RuntimeErrorRegex -and $run.Output -match $RuntimeErrorRegex) {
+        if ($RuntimeErrorRegex -and (Test-OutputMatches -Output $run.Output -Regex $RuntimeErrorRegex)) {
             Format-TestStatus $testName "RUNTIME ERROR" Yellow
             Add-Fail $suite $testName
             continue
@@ -1137,12 +1196,12 @@ function Invoke-TimedCompileRunSuite {
             Add-Fail $suite "$testName (runtime exit $($run.ExitCode))"
             continue
         }
-        if ($FailRegex -and $run.Output -match $FailRegex) {
+        if ($FailRegex -and (Test-OutputMatches -Output $run.Output -Regex $FailRegex)) {
             Write-Host "FAIL" -ForegroundColor Red
             Add-Fail $suite "$testName (wrong result)"
             continue
         }
-        if ($RequirePassMarker -and $run.Output -notmatch "PASS") {
+        if ($RequirePassMarker -and -not (Test-OutputMatches -Output $run.Output -Regex "PASS")) {
             Write-Host "UNKNOWN" -ForegroundColor Yellow
             Add-Fail $suite "$testName (no PASS/FAIL)"
             continue
@@ -1472,7 +1531,7 @@ function Invoke-XlaSuite {
             Format-TestStatus $testName ("RUNTIME FAIL (exit {0})" -f (Format-ExitCodeLabel $run.ExitCode)) Red
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName
-        } elseif ($run.Output -match "^FAIL:" -or ($run.Output -notmatch "PASS" -and $run.Output -match "(?i)error:")) {
+        } elseif ((Test-OutputMatches -Output $run.Output -Regex "^FAIL:") -or ((-not (Test-OutputMatches -Output $run.Output -Regex "PASS")) -and (Test-OutputMatches -Output $run.Output -Regex "(?i)error:"))) {
             Format-TestStatus $testName "ASSERTION FAIL" Red
             Show-ProcessFailureDetails -TestName $testName -Phase "runtime" -Result $run
             Add-Fail $suite $testName

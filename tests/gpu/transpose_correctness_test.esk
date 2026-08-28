@@ -1,4 +1,13 @@
 ;; GPU Transpose Correctness Tests
+;;
+;; Verdict grammar: each check below prints "PASS: <label>" or
+;; "FAIL: <label> ..." and increments gate-failures on failure (see
+;; scripts/run_gpu_tests.sh header for the full contract). Before this
+;; fix, a FAIL: line was printed but nothing aggregated it into a process
+;; exit code, so this file always exited 0 no matter how many checks
+;; actually failed -- the marker-only harness had to notice the text, and
+;; a differently-shaped judge could not.
+(define gate-failures 0)
 
 ;; --- Small 2x3 transpose ---
 (define A (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
@@ -12,7 +21,7 @@
          (= (tensor-get AT 2 0) 3.0)
          (= (tensor-get AT 2 1) 6.0))
     (display "PASS: transpose 2x3 values correct")
-    (display "FAIL: transpose 2x3 values incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: transpose 2x3 values incorrect")))
 (newline)
 
 ;; --- Double transpose: (A^T)^T = A ---
@@ -24,7 +33,7 @@
          (= (tensor-get ATT 1 1) 5.0)
          (= (tensor-get ATT 1 2) 6.0))
     (display "PASS: double transpose = original")
-    (display "FAIL: double transpose != original"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: double transpose != original")))
 (newline)
 
 ;; --- Square matrix transpose ---
@@ -37,7 +46,7 @@
          (= (tensor-get ST 1 0) 2.0)
          (= (tensor-get ST 1 1) 4.0))
     (display "PASS: transpose 2x2 square correct")
-    (display "FAIL: transpose 2x2 square incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: transpose 2x2 square incorrect")))
 (newline)
 
 ;; --- Medium size transpose (50x100) ---
@@ -55,7 +64,7 @@
          (= (tensor-get M2T 1 0) 1.0)
          (= (tensor-get M2T 0 1) 100.0))
     (display "PASS: transpose 50x100 values correct")
-    (display "FAIL: transpose 50x100 values incorrect"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: transpose 50x100 values incorrect")))
 (newline)
 
 ;; --- Transpose preserves element count ---
@@ -64,5 +73,10 @@
 (define sum-after (tensor-sum M2T))
 (if (< (abs (- sum-before sum-after)) 1e-6)
     (display "PASS: transpose preserves element sum")
-    (display "FAIL: transpose changes element sum"))
+    (begin (set! gate-failures (+ gate-failures 1)) (display "FAIL: transpose changes element sum")))
 (newline)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: transpose_correctness_test") (newline) (exit 0))
+    (begin (display "FAIL: transpose_correctness_test (") (display gate-failures) (display " check(s) failed)") (newline)
+           (exit 1)))
