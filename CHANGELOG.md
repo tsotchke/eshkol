@@ -341,6 +341,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is 3/3 clean under `ESHKOL_ARENA_POISON=1` on all three engines, up from
   crashing on two of them.
 
+### Added
+
+- **`scripts/check_ps1_encoding.py` guards every tracked PowerShell script
+  against BOM-less non-ASCII bytes.** Verified on a real Windows PowerShell
+  5.1 host: a `.ps1` file with two non-ASCII bytes and no byte-order mark
+  parsed clean under CI's `pwsh` 7 (UTF-8 by default) but threw 18 cascading
+  parse errors on 5.1, which falls back to decoding a BOM-less script in the
+  process's system ANSI code page — corrupting string-literal boundaries
+  around every non-ASCII byte. CI running the same bytes under a different
+  default encoding could not have caught this by execution; the new gate
+  checks the files' own bytes instead, failing on any tracked `*.ps1`/
+  `*.psm1` file that contains a byte `>= 0x80` unless it opens with the
+  UTF-8 BOM (`EF BB BF`), and reporting the exact `file:line:col` and
+  codepoint of every offender. Self-tests (`--self-test`) cover the
+  ASCII-only, BOM'd-UTF-8 and BOM-less-non-ASCII cases plus exact-location
+  reporting; wired into the `assurance-gates` CI job and the
+  `eshkol-compiler-readiness` oracle (`ps1_encoding_clean`).
+
 ## [1.3.4-evolve] - 2026-07-31
 
 A resident-correctness release over v1.3.3-evolve. Every defect surfaced by

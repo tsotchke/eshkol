@@ -467,6 +467,7 @@ jobs:
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
+          python3 scripts/check_ps1_encoding.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -556,6 +557,19 @@ jobs:
       - name: No harness's recorded binary fingerprint is stale (no build in this job — vacuously clean)
         shell: bash
         run: python3 scripts/check_build_fingerprint.py --no-trace
+
+      # Verified 2026-08-27 on a real Windows PowerShell 5.1 host: a BOM-less
+      # .ps1 with two U+2014 bytes parsed clean here (pwsh 7, UTF-8 default)
+      # but threw 18 cascading parse errors there, because 5.1 decodes a
+      # BOM-less script in the process's system ANSI code page instead. This
+      # step re-derives the fact CI cannot otherwise observe — that no
+      # tracked *.ps1/*.psm1 file carries a non-ASCII byte without a UTF-8
+      # BOM to disambiguate it — directly from the files' own bytes, since
+      # running the script under pwsh 7 agrees with 5.1 on nothing once such
+      # a byte is present.
+      - name: Every tracked PowerShell script is ASCII, or BOM-marked UTF-8 (5.1 vs pwsh 7 decoding)
+        shell: bash
+        run: python3 scripts/check_ps1_encoding.py
 
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
