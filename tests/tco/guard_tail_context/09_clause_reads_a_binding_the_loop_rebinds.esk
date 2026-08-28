@@ -1,0 +1,11 @@
+; SW-58 residue: the guard's clauses read `m`, which is re-bound by the loop
+; every iteration and is not a loop parameter, so no snapshot of the
+; parameters could restore it.  The answer therefore has to come from a real
+; activation — which is what R7RS costs for a non-tail `guard` body anyway.
+(define (f n)
+  (let ((m (* n 10)))
+    (guard (e ((> n 0) (raise e))
+              (#t (list 'inner n m)))
+      (if (>= n 3) (raise 'boom) (f (+ n 1))))))
+(display (f 0))
+(newline)

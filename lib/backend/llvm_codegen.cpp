@@ -13018,6 +13018,7 @@ private:
         // below run AFTER the "Clear TCO context" block zeroes the nursery fields.
         Value* define_nursery_region = nullptr;       // ESH-0214e
         Value* define_nursery_saved_arena = nullptr;  // ESH-0214e
+        Value* define_guard_replay_mark = nullptr;    // SW-58 (same reason)
         if (is_tail_rec) {
             use_tco = true;
             eshkol_debug("TCO: Enabling tail call optimization for define %s", func_name);
@@ -13078,6 +13079,13 @@ private:
                 define_nursery_region = tco_ctx.nursery_region;
                 define_nursery_saved_arena = tco_ctx.nursery_saved_arena;
             }
+
+            // SW-58: decide the guard lowering for this loop and, when it is
+            // the replay lowering, take the handler-chain mark ONCE here in the
+            // setup block — before the header, so it records the depth the loop
+            // started at rather than the depth some iteration reached.
+            setupGuardReplayForLoop(tco_ctx, op->define_op.value, func_name);
+            define_guard_replay_mark = tco_ctx.guard_replay_mark;
 
             // Create loop header block
             tco_loop_bb = BasicBlock::Create(*context, "tco_loop", function);
@@ -13253,6 +13261,10 @@ private:
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     body_result = emitIterNurseryClose(body_result, define_nursery_saved_arena);
                 }
+                // SW-58: retire any guard frames this loop's back edges left
+                // standing. Reached on every exit, including the common one
+                // that leaves the loop WITHOUT re-entering the guard.
+                emitGuardReplayUnwindAt(define_guard_replay_mark);
                 builder->CreateRet(body_result);
             }
             // If body_result is a function (lambda), pack as function pointer
@@ -13277,6 +13289,7 @@ private:
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     func_tagged = emitIterNurseryClose(func_tagged, define_nursery_saved_arena);
                 }
+                emitGuardReplayUnwindAt(define_guard_replay_mark);  // SW-58
                 builder->CreateRet(func_tagged);
             }
             // Otherwise, detect type and pack to tagged_value
@@ -13290,6 +13303,7 @@ private:
                 } else if (use_tco && define_iter_nursery && define_nursery_region) {
                     tagged = emitIterNurseryClose(tagged, define_nursery_saved_arena);
                 }
+                emitGuardReplayUnwindAt(define_guard_replay_mark);  // SW-58
                 builder->CreateRet(tagged);
             }
         } else {
@@ -13304,6 +13318,7 @@ private:
             } else if (use_tco && define_iter_nursery && define_nursery_region) {
                 null_tagged = emitIterNurseryClose(null_tagged, define_nursery_saved_arena);
             }
+            emitGuardReplayUnwindAt(define_guard_replay_mark);  // SW-58
             builder->CreateRet(null_tagged);
         }
 
@@ -23019,6 +23034,32 @@ private:
         // inside a TCO loop (binding_ still tracks it, just never consulted).
         unsigned guard_open_before = binding_ ? binding_->getTCOContext().open_guard_handlers : 0;
 
+        // ── SW-58: how this guard interacts with the loop it may be carrying ──
+        //
+        // `replay_active` selects the exact lowering: the handler frame this
+        // guard pushes is left standing by a back edge taken from its body, and
+        // carries a snapshot of that activation's loop parameters, so a
+        // re-raise finds the ENCLOSING activation's handler answering with the
+        // ENCLOSING activation's values — what R7RS 7.3 requires and what
+        // ESH-0222's unconditional drain destroyed.
+        //
+        // `guard_forbids_tco` is the residue the snapshot cannot cover: clauses
+        // that read a binding the loop rebinds every iteration. A back edge
+        // under such a guard declines TCO and stays a real call.
+        eshkol::BindingCodegen::TailCallContext* guard_tco =
+            binding_ ? &binding_->getTCOContext() : nullptr;
+        const bool guard_in_tco_loop = guard_tco && guard_tco->enabled &&
+                                       guard_tco->loop_header != nullptr &&
+                                       !guard_tco->param_allocas.empty();
+        const bool replay_active = guard_in_tco_loop && guard_tco->guard_replay &&
+                                   guard_tco->guard_replay_slots != nullptr;
+        bool guard_forbids_tco = false;
+        if (guard_in_tco_loop) {
+            guard_forbids_tco =
+                classifyGuardForLoop(op, guard_tco->func_name, tco_loop_bound_names_) ==
+                GuardLoopClass::Forbid;
+        }
+
         // Create basic blocks - IMPORTANT: setup_block is separate to avoid
         // corrupting the caller's block when we're nested inside another expression
         BasicBlock* setup_block = BasicBlock::Create(*context, "guard_setup", current_func);
@@ -23033,7 +23074,26 @@ private:
         builder->SetInsertPoint(setup_block);
 
         // Allocate a real platform-sized jmp_buf for the current host ABI.
-        Value* jmp_buf_alloc = allocaJmpBuf("jmp_buf");
+        //
+        // SW-58: in the replay lowering the handler frames this guard pushes
+        // OUTLIVE their iteration — they are the enclosing activations'
+        // handlers — while the back edge still reclaims the iteration's dynamic
+        // stack with llvm.stackrestore. A jmp_buf allocated inside the loop
+        // would therefore be reclaimed out from under a live frame, so it is
+        // hoisted to the function's entry block instead. Every activation of a
+        // TCO'd loop shares one native frame and one stack pointer at guard
+        // entry (the back edge restores it), so one buffer per TEXTUAL guard
+        // holds the identical context every iteration would have written.
+        Value* jmp_buf_alloc = nullptr;
+        if (replay_active) {
+            IRBuilderBase::InsertPoint guard_saved_ip = builder->saveIP();
+            BasicBlock& guard_entry_bb = current_func->getEntryBlock();
+            builder->SetInsertPoint(&guard_entry_bb, guard_entry_bb.begin());
+            jmp_buf_alloc = allocaJmpBuf("guard_jmp_buf");
+            builder->restoreIP(guard_saved_ip);
+        } else {
+            jmp_buf_alloc = allocaJmpBuf("jmp_buf");
+        }
 
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
@@ -23052,6 +23112,11 @@ private:
         // Try block - evaluate body
         builder->SetInsertPoint(try_block);
         Value* body_result = nullptr;
+        // SW-58: a back edge taken from inside this body cannot be replayed
+        // (a clause reads a binding the loop rebinds), so suppress the loop
+        // transform for it. The self-call stays a real call: R7RS's own stack
+        // cost, and the guard nesting the reference implementation has.
+        if (guard_forbids_tco && guard_tco) guard_tco->open_guard_forbid++;
         if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
             TypedValue body_typed = codegenTypedAST(&op->guard_op.body[0]);
             if (!builder->GetInsertBlock()->getTerminator()) {
@@ -23061,6 +23126,10 @@ private:
         }
         if (!body_result && !builder->GetInsertBlock()->getTerminator()) {
             body_result = packNullToTaggedValue();
+        }
+
+        if (guard_forbids_tco && guard_tco && guard_tco->open_guard_forbid > 0) {
+            guard_tco->open_guard_forbid--;
         }
 
         // After evaluating the body, check where we ended up
@@ -23081,6 +23150,39 @@ private:
 
         // Handler block - exception was raised
         builder->SetInsertPoint(handler_block);
+
+        // SW-58: this landing pad is shared by every activation of a replaying
+        // loop. The frame that just fired tells us which one: an ordinary frame
+        // means the raise came from the innermost activation, whose values the
+        // loop's parameter storage already holds; a frame carrying a snapshot
+        // means the raise walked out of an inner activation's clauses into THIS
+        // activation's guard, so its values have to be put back before the
+        // clauses read them. Asked BEFORE the pop below, because the pop is
+        // what retires the frame.
+        if (replay_active) {
+            const size_t replay_arity = guard_tco->param_allocas.size();
+            Value* took = builder->CreateCall(
+                getGuardReplayFn(GuardReplayFn::Restore),
+                {guard_tco->guard_replay_slots,
+                 ConstantInt::get(int64_type, (uint64_t)replay_arity)},
+                "guard_replay_took");
+            Value* is_replay = builder->CreateICmpNE(
+                took, ConstantInt::get(builder->getInt32Ty(), 0), "guard_is_replay");
+            BasicBlock* replay_bb = BasicBlock::Create(*context, "guard_replay_restore", current_func);
+            BasicBlock* replay_cont_bb = BasicBlock::Create(*context, "guard_replay_cont", current_func);
+            builder->CreateCondBr(is_replay, replay_bb, replay_cont_bb);
+
+            builder->SetInsertPoint(replay_bb);
+            for (size_t i = 0; i < replay_arity; i++) {
+                Value* slot = builder->CreateGEP(
+                    tagged_value_type, guard_tco->guard_replay_slots,
+                    ConstantInt::get(int64_type, (uint64_t)i), "guard_replay_slot");
+                Value* v = builder->CreateLoad(tagged_value_type, slot, "guard_replay_val");
+                builder->CreateStore(v, guard_tco->param_allocas[i]);
+            }
+            builder->CreateBr(replay_cont_bb);
+            builder->SetInsertPoint(replay_cont_bb);
+        }
 
         // Pop handler first
         builder->CreateCall(pop_handler_func, {});
@@ -27671,6 +27773,525 @@ private:
         builder->SetCurrentDebugLocation(saved_debug_loc);
     }
 
+    // ═══════════ SW-58: a `guard` that carries a self-recursive TCO loop ═══════════
+    //
+    // ESH-0222 made a `guard` body a tail position for the self-call it
+    // contains and had the back edge DRAIN the handler chain. That is what the
+    // resident tick loop needs — its error boundary is re-entered once per
+    // tick, forever, so the chain must not grow — and it is exactly wrong for a
+    // handler that RE-RAISES. R7RS 7.3 derives `guard` from
+    // `with-exception-handler` wrapping the body, so every activation installs
+    // its own handler and they NEST; a re-raise out of the innermost one has to
+    // find the PREVIOUS activation's guard, which answers with THAT
+    // activation's variables. Draining them sent the re-raise to whatever stood
+    // outside the loop, and a different handler answered — silently. That is
+    // SW-58, whose fixture is
+    // tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk.
+    //
+    // Reverting ESH-0222 would trade a rare wrong answer for a common crash, so
+    // it is not the fix. Instead every guard that carries a loop is classified
+    // into one of three lowerings. ALL THREE ARE SEMANTICALLY EXACT — they
+    // differ only in what they cost:
+    //
+    //   Collapse  the enclosing activations are PROVABLY unobservable, so
+    //             draining them changes nothing a program can see. Constant
+    //             stack and flat RSS. This is the resident tick-loop shape.
+    //   Replay    keep the handler frames standing and attach the departing
+    //             activation's loop parameters to each. Constant stack; one
+    //             handler frame per LIVE guard — the space R7RS's own semantics
+    //             require, moved off the native stack onto the heap.
+    //   Forbid    the clauses read a binding the loop rebinds every iteration,
+    //             which no snapshot of the loop PARAMETERS can restore. Leave
+    //             the call a real call: R7RS's own stack cost, never a guess.
+    enum class GuardLoopClass { Collapse, Replay, Forbid };
+
+    // Names bound inside the innermost TCO loop currently being generated,
+    // minus its own parameters. Set by setupGuardReplayForLoop, consulted by
+    // codegenGuard, saved/restored alongside the rest of the TCO context by
+    // codegenNamedLet.
+    std::set<std::string> tco_loop_bound_names_;
+
+    // Operators whose Eshkol lowering has no path to `eshkol_raise`, so an
+    // expression built from them cannot transfer control to an ENCLOSING
+    // handler while a guard's clauses are running (the guard's own handler is
+    // already removed at that point, so such a transfer is precisely what makes
+    // the enclosing activations observable).
+    //
+    // Deliberately small and total. `/`, `modulo`, `quotient` and `remainder`
+    // are absent because a zero divisor raises; `car`/`cdr`/`vector-ref` are
+    // absent because a domain violation raises; anything user-defined is absent
+    // because its body is unbounded. A name missing from this set costs a
+    // Replay lowering — correct, and one handler frame per iteration — never a
+    // wrong answer, so the set may be grown by measurement but never guessed.
+    static const std::set<std::string>& guardNonRaisingOperators() {
+        static const std::set<std::string> ops = {
+            "+", "-", "*", "=", "<", ">", "<=", ">=",
+            "not", "eq?", "eqv?", "equal?",
+            "null?", "pair?", "zero?", "boolean?", "symbol?", "string?",
+            "number?", "procedure?", "vector?", "char?",
+            "cons", "list", "quote"
+        };
+        return ops;
+    }
+
+    // Can evaluating `e` inside a guard clause reach an enclosing handler?
+    // Conservative: anything not modelled answers "yes".
+    //
+    // A self tail call to `loop_name` counts as non-raising because it is not a
+    // call at all in this lowering — it is the loop's back edge, and whatever
+    // the next activation raises is caught by the guard that activation
+    // re-establishes. (That is an induction over the loop, and it is sound
+    // exactly when this predicate holds for every clause, which is the
+    // condition Collapse is granted under.)
+    bool guardClauseExprCannotRaise(const eshkol_ast_t* e,
+                                    const std::string& loop_name) {
+        if (!e) return true;
+        switch (e->type) {
+            case ESHKOL_OP:
+                break;
+            case ESHKOL_CONS:
+                // quoted data: no evaluation happens inside it
+                return true;
+            default:
+                // literals and bare variable references
+                return true;
+        }
+        const eshkol_operations_t* op = &e->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                const eshkol_ast_t* f = op->call_op.func;
+                std::string name = (f && f->type == ESHKOL_VAR && f->variable.id)
+                                       ? f->variable.id : std::string();
+                if (name.empty()) return false;
+                const bool ok = (name == "if") || (name == loop_name) ||
+                                guardNonRaisingOperators().count(name) > 0;
+                if (!ok) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!guardClauseExprCannotRaise(&op->call_op.variables[i], loop_name)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            case ESHKOL_IF_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!guardClauseExprCannotRaise(&op->call_op.variables[i], loop_name)) {
+                        return false;
+                    }
+                }
+                return true;
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (!guardClauseExprCannotRaise(&op->sequence_op.expressions[i], loop_name)) {
+                        return false;
+                    }
+                }
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // Does this guard have a clause that always matches — `else`, or a literal
+    // true test?  Without one, a raise the clauses do not match is re-raised
+    // into the enclosing handler by R7RS, which is the enclosing ACTIVATION's
+    // guard, which makes the collapsed activations observable.
+    bool guardHasCatchAllClause(const eshkol_operations_t* g) {
+        for (uint64_t i = 0; i < g->guard_op.num_clauses; i++) {
+            const eshkol_ast_t* clause = &g->guard_op.clauses[i];
+            if (clause->type != ESHKOL_OP ||
+                clause->operation.op != ESHKOL_CALL_OP) {
+                continue;
+            }
+            const eshkol_ast_t* test = clause->operation.call_op.func;
+            if (!test) continue;
+            if (test->type == ESHKOL_VAR && test->variable.id &&
+                strcmp(test->variable.id, "else") == 0) {
+                return true;
+            }
+            if (test->type == ESHKOL_BOOL && test->int64_val) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Names bound INSIDE a loop body — let/let*/letrec/letrec*/named let/do
+    // variables and lambda parameters. A guard clause that reads one of these
+    // cannot be replayed from a snapshot of the loop PARAMETERS, because that
+    // binding's storage is reused by the next iteration.
+    void collectLoopBoundNames(const eshkol_ast_t* ast, std::set<std::string>& out) {
+        if (!ast) return;
+        if (ast->type == ESHKOL_CONS) {
+            collectLoopBoundNames(ast->cons_cell.car, out);
+            collectLoopBoundNames(ast->cons_cell.cdr, out);
+            return;
+        }
+        if (ast->type != ESHKOL_OP) return;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                if (op->let_op.name) out.insert(op->let_op.name);
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    const eshkol_ast_t* b = &op->let_op.bindings[i];
+                    if (b->type == ESHKOL_CONS && b->cons_cell.car &&
+                        b->cons_cell.car->type == ESHKOL_VAR &&
+                        b->cons_cell.car->variable.id) {
+                        out.insert(b->cons_cell.car->variable.id);
+                    }
+                    collectLoopBoundNames(b, out);
+                }
+                collectLoopBoundNames(op->let_op.body, out);
+                return;
+            }
+            case ESHKOL_LAMBDA_OP: {
+                for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
+                    const eshkol_ast_t* prm = &op->lambda_op.parameters[i];
+                    if (prm->type == ESHKOL_VAR && prm->variable.id) {
+                        out.insert(prm->variable.id);
+                    }
+                }
+                if (op->lambda_op.rest_param) out.insert(op->lambda_op.rest_param);
+                collectLoopBoundNames(op->lambda_op.body, out);
+                return;
+            }
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    collectLoopBoundNames(&op->sequence_op.expressions[i], out);
+                }
+                return;
+            case ESHKOL_GUARD_OP:
+                if (op->guard_op.var_name) out.insert(op->guard_op.var_name);
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    collectLoopBoundNames(&op->guard_op.body[i], out);
+                }
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    collectLoopBoundNames(&op->guard_op.clauses[i], out);
+                }
+                return;
+            case ESHKOL_DEFINE_OP:
+                if (op->define_op.name) out.insert(op->define_op.name);
+                collectLoopBoundNames(op->define_op.value, out);
+                return;
+            default:
+                // Generic descent over the call_op-shaped forms, which is every
+                // remaining form that can contain a binder.
+                collectLoopBoundNames(op->call_op.func, out);
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    collectLoopBoundNames(&op->call_op.variables[i], out);
+                }
+                return;
+        }
+    }
+
+    // Is there a call to `loop_name` in TAIL position of `body`?  Mirrors the
+    // tail-context rules isInTailPosition() encodes, walking DOWN from a known
+    // tail expression rather than up from a known call.
+    bool tailPositionHasSelfCall(const eshkol_ast_t* body,
+                                 const std::string& loop_name) {
+        if (!body || body->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &body->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                const eshkol_ast_t* f = op->call_op.func;
+                std::string name = (f && f->type == ESHKOL_VAR && f->variable.id)
+                                       ? f->variable.id : std::string();
+                if (name == loop_name) return true;
+                if (name == "if") {
+                    if (op->call_op.num_vars >= 2 &&
+                        tailPositionHasSelfCall(&op->call_op.variables[1], loop_name)) return true;
+                    if (op->call_op.num_vars >= 3 &&
+                        tailPositionHasSelfCall(&op->call_op.variables[2], loop_name)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_IF_OP:
+                if (op->call_op.num_vars >= 2 &&
+                    tailPositionHasSelfCall(&op->call_op.variables[1], loop_name)) return true;
+                if (op->call_op.num_vars >= 3 &&
+                    tailPositionHasSelfCall(&op->call_op.variables[2], loop_name)) return true;
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                return tailPositionHasSelfCall(op->let_op.body, loop_name);
+            case ESHKOL_SEQUENCE_OP:
+                if (op->sequence_op.num_expressions == 0) return false;
+                return tailPositionHasSelfCall(
+                    &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
+                    loop_name);
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                if (op->sequence_op.num_expressions == 0) return false;
+                return tailPositionHasSelfCall(
+                    &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
+                    loop_name);
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (op->call_op.num_vars <= 1) return false;
+                return tailPositionHasSelfCall(
+                    &op->call_op.variables[op->call_op.num_vars - 1], loop_name);
+            case ESHKOL_COND_OP:
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    const eshkol_ast_t* clause = &op->call_op.variables[i];
+                    if (clause->type != ESHKOL_OP ||
+                        clause->operation.op != ESHKOL_CALL_OP ||
+                        clause->operation.call_op.num_vars == 0) continue;
+                    uint64_t last = clause->operation.call_op.num_vars - 1;
+                    if (tailPositionHasSelfCall(
+                            &clause->operation.call_op.variables[last], loop_name)) return true;
+                }
+                return false;
+            case ESHKOL_CASE_OP:
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    const eshkol_ast_t* clause = &op->call_op.variables[i];
+                    if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
+                    const eshkol_ast_t* cbody = clause->cons_cell.cdr;
+                    if (cbody->type != ESHKOL_OP ||
+                        cbody->operation.op != ESHKOL_CALL_OP ||
+                        cbody->operation.call_op.num_vars == 0) continue;
+                    uint64_t last = cbody->operation.call_op.num_vars - 1;
+                    if (tailPositionHasSelfCall(
+                            &cbody->operation.call_op.variables[last], loop_name)) return true;
+                }
+                return false;
+            case ESHKOL_GUARD_OP:
+                if (op->guard_op.body && op->guard_op.num_body_exprs > 0 &&
+                    tailPositionHasSelfCall(&op->guard_op.body[0], loop_name)) return true;
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                    if (clause->type != ESHKOL_OP ||
+                        clause->operation.op != ESHKOL_CALL_OP ||
+                        clause->operation.call_op.num_vars == 0) continue;
+                    uint64_t last = clause->operation.call_op.num_vars - 1;
+                    if (tailPositionHasSelfCall(
+                            &clause->operation.call_op.variables[last], loop_name)) return true;
+                }
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    // Does this guard's BODY carry the loop — i.e. does a back edge get taken
+    // from inside its dynamic extent?  Only those guards constrain the
+    // lowering; a guard whose self-call sits in a CLAUSE has already had its
+    // own handler removed when that call runs, so it leaves nothing behind.
+    bool guardCarriesLoop(const eshkol_operations_t* g, const std::string& loop_name) {
+        return g->guard_op.body && g->guard_op.num_body_exprs > 0 &&
+               tailPositionHasSelfCall(&g->guard_op.body[0], loop_name);
+    }
+
+    GuardLoopClass classifyGuardForLoop(const eshkol_operations_t* g,
+                                        const std::string& loop_name,
+                                        const std::set<std::string>& loop_bound) {
+        // Collapse: the innermost activation's handler provably always answers,
+        // and answers with values the loop's own parameter storage already
+        // holds. Requires a catch-all (so nothing is re-raised) and clauses
+        // that cannot themselves raise (so nothing escapes sideways).
+        bool catch_all = guardHasCatchAllClause(g);
+        bool clauses_total = true;
+        for (uint64_t i = 0; i < g->guard_op.num_clauses && clauses_total; i++) {
+            const eshkol_ast_t* clause = &g->guard_op.clauses[i];
+            if (clause->type != ESHKOL_OP ||
+                clause->operation.op != ESHKOL_CALL_OP) {
+                clauses_total = false;
+                break;
+            }
+            const eshkol_ast_t* test = clause->operation.call_op.func;
+            bool is_else = test && test->type == ESHKOL_VAR && test->variable.id &&
+                           strcmp(test->variable.id, "else") == 0;
+            if (!is_else && !guardClauseExprCannotRaise(test, loop_name)) {
+                clauses_total = false;
+                break;
+            }
+            for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                if (!guardClauseExprCannotRaise(&clause->operation.call_op.variables[j],
+                                                loop_name)) {
+                    clauses_total = false;
+                    break;
+                }
+            }
+        }
+        if (catch_all && clauses_total) return GuardLoopClass::Collapse;
+
+        // Replay: the frames stay and carry a snapshot of the loop parameters.
+        // That restores everything the clauses can read PROVIDED they read only
+        // parameters (and the guard's own exception variable, which the landing
+        // pad recomputes) — never a binding the loop rebinds each iteration,
+        // whose storage the next iteration has already overwritten.
+        for (uint64_t i = 0; i < g->guard_op.num_clauses; i++) {
+            const eshkol_ast_t* clause = &g->guard_op.clauses[i];
+            for (const std::string& bound : loop_bound) {
+                if (g->guard_op.var_name && bound == g->guard_op.var_name) continue;
+                if (astReferencesVar(clause, bound)) return GuardLoopClass::Forbid;
+            }
+        }
+        return GuardLoopClass::Replay;
+    }
+
+    // Whole-loop verdict: does ANY guard that carries this loop need the replay
+    // lowering?  One does ⇒ every guard back edge in the loop takes it, which
+    // keeps a single rule for the whole loop and is always exact (Collapse is
+    // only ever an optimisation over Replay).
+    bool loopNeedsGuardReplay(const eshkol_ast_t* ast, const std::string& loop_name,
+                              const std::set<std::string>& loop_bound) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_CONS) {
+            return loopNeedsGuardReplay(ast->cons_cell.car, loop_name, loop_bound) ||
+                   loopNeedsGuardReplay(ast->cons_cell.cdr, loop_name, loop_bound);
+        }
+        if (ast->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &ast->operation;
+        if (op->op == ESHKOL_GUARD_OP) {
+            if (guardCarriesLoop(op, loop_name) &&
+                classifyGuardForLoop(op, loop_name, loop_bound) == GuardLoopClass::Replay) {
+                return true;
+            }
+            for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                if (loopNeedsGuardReplay(&op->guard_op.body[i], loop_name, loop_bound)) return true;
+            }
+            for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                if (loopNeedsGuardReplay(&op->guard_op.clauses[i], loop_name, loop_bound)) return true;
+            }
+            return false;
+        }
+        switch (op->op) {
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (loopNeedsGuardReplay(&op->sequence_op.expressions[i], loop_name, loop_bound))
+                        return true;
+                }
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (loopNeedsGuardReplay(&op->let_op.bindings[i], loop_name, loop_bound))
+                        return true;
+                }
+                return loopNeedsGuardReplay(op->let_op.body, loop_name, loop_bound);
+            }
+            case ESHKOL_LAMBDA_OP:
+                return loopNeedsGuardReplay(op->lambda_op.body, loop_name, loop_bound);
+            case ESHKOL_DEFINE_OP:
+                return loopNeedsGuardReplay(op->define_op.value, loop_name, loop_bound);
+            default:
+                if (loopNeedsGuardReplay(op->call_op.func, loop_name, loop_bound)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (loopNeedsGuardReplay(&op->call_op.variables[i], loop_name, loop_bound))
+                        return true;
+                }
+                return false;
+        }
+    }
+
+    // One-shot setup for a loop that is about to be lowered: decides the guard
+    // lowering and, when it is Replay, allocates the two entry-block slots the
+    // mechanism needs. `arity` is the loop's parameter count.
+    void setupGuardReplayForLoop(eshkol::BindingCodegen::TailCallContext& tco_ctx,
+                                 const eshkol_ast_t* loop_body,
+                                 const std::string& loop_name) {
+        tco_ctx.guard_replay = false;
+        tco_ctx.guard_replay_mark = nullptr;
+        tco_ctx.guard_replay_slots = nullptr;
+        tco_ctx.open_guard_forbid = 0;
+        tco_loop_bound_names_.clear();
+        if (!loop_body || tco_ctx.param_allocas.empty()) return;
+
+        // Recorded on the codegen object as well: codegenGuard classifies each
+        // guard as it reaches it, long after this loop's body AST is out of
+        // reach, and needs the same binder set to do it.
+        collectLoopBoundNames(loop_body, tco_loop_bound_names_);
+        for (const std::string& pname : tco_ctx.param_names) {
+            tco_loop_bound_names_.erase(pname);
+        }
+        if (!loopNeedsGuardReplay(loop_body, loop_name, tco_loop_bound_names_)) return;
+
+        Function* fn = builder->GetInsertBlock()->getParent();
+        if (!fn || fn->empty()) return;
+
+        // Entry-block storage: a longjmp back into this frame clobbers every
+        // register, and llvm.stackrestore on the back edge reclaims everything
+        // allocated inside the loop — so both of these have to live above both.
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        BasicBlock& entry_bb = fn->getEntryBlock();
+        builder->SetInsertPoint(&entry_bb, entry_bb.begin());
+        AllocaInst* mark_slot = builder->CreateAlloca(int64_type, nullptr, "guard_replay_mark");
+        AllocaInst* snap_slots = builder->CreateAlloca(
+            tagged_value_type,
+            ConstantInt::get(int64_type, (uint64_t)tco_ctx.param_allocas.size()),
+            "guard_replay_slots");
+        builder->restoreIP(saved_ip);
+
+        builder->CreateStore(
+            builder->CreateCall(getGuardReplayFn(GuardReplayFn::Depth), {}, "guard_chain_mark"),
+            mark_slot);
+
+        tco_ctx.guard_replay = true;
+        tco_ctx.guard_replay_mark = mark_slot;
+        tco_ctx.guard_replay_slots = snap_slots;
+        eshkol_debug("SW-58: loop '%s' uses the guard replay lowering (arity %zu)",
+                     loop_name.c_str(), tco_ctx.param_allocas.size());
+    }
+
+    // Declarations for the four SW-58 runtime entry points.
+    enum class GuardReplayFn { Depth, UnwindTo, Snapshot, Restore };
+    Function* getGuardReplayFn(GuardReplayFn which) {
+        const char* name = nullptr;
+        FunctionType* ty = nullptr;
+        switch (which) {
+            case GuardReplayFn::Depth:
+                name = "eshkol_exception_handler_depth";
+                ty = FunctionType::get(int64_type, {}, false);
+                break;
+            case GuardReplayFn::UnwindTo:
+                name = "eshkol_exception_handlers_unwind_to";
+                ty = FunctionType::get(builder->getVoidTy(), {int64_type}, false);
+                break;
+            case GuardReplayFn::Snapshot:
+                name = "eshkol_guard_replay_snapshot";
+                ty = FunctionType::get(builder->getVoidTy(),
+                                       {builder->getPtrTy(), int64_type, int64_type}, false);
+                break;
+            case GuardReplayFn::Restore:
+                name = "eshkol_guard_replay_restore";
+                ty = FunctionType::get(builder->getInt32Ty(),
+                                       {builder->getPtrTy(), int64_type}, false);
+                break;
+        }
+        Function* f = module->getFunction(name);
+        if (!f) {
+            f = Function::Create(ty, Function::ExternalLinkage, name, module.get());
+        }
+        return f;
+    }
+
+    // Emitted on every path that leaves a replaying guard loop: drop whatever
+    // replay frames the loop's back edges left standing. Without it a loop that
+    // exits WITHOUT passing through the guard (`(if done acc (guard ...))`)
+    // would leave live handler frames whose landing pad is a frame the function
+    // is about to return from.
+    void emitGuardReplayUnwindAt(Value* mark_slot) {
+        if (!mark_slot) return;
+        if (builder->GetInsertBlock() && builder->GetInsertBlock()->getTerminator()) return;
+        Value* mark = builder->CreateLoad(int64_type, mark_slot, "guard_replay_mark_v");
+        builder->CreateCall(getGuardReplayFn(GuardReplayFn::UnwindTo), {mark});
+    }
+
     // Check if an AST node is in tail position within its parent
     // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
     bool isInTailPosition(const eshkol_ast_t* expr, const eshkol_ast_t* body) {
@@ -29289,6 +29910,19 @@ private:
             return nullptr;
         }
 
+        // SW-58: inside a `guard` whose clauses read a binding this loop
+        // rebinds every iteration. Neither lowering can serve it — the drain
+        // destroys the enclosing handlers, and a snapshot of the loop
+        // PARAMETERS cannot restore a binding that is not one. Decline the loop
+        // transform; the caller emits a real call, which is what R7RS's own
+        // non-tail `guard` body costs and is exactly what the reference
+        // implementation does.
+        if (tco_ctx.open_guard_forbid > 0) {
+            eshkol_debug("SW-58: declining TCO for %s — guard clause reads a loop rebinding",
+                         tco_ctx.func_name.c_str());
+            return nullptr;
+        }
+
         // Check arity matches
         if (arg_nodes.size() != tco_ctx.param_allocas.size()) {
             eshkol_warn_at(
@@ -29362,15 +29996,60 @@ private:
         // which case it commits (keeps the memory, balanced stack). The
         // values themselves live in SSA registers / C-stack slots, never in
         // the span being rewound, so releasing first is safe.
+        // SW-58: in the replay lowering the handler frames this back edge
+        // leaves standing answer with the DEPARTING activation's values, so
+        // those values are read out here — before the stores below overwrite
+        // them — and are carried through the per-iteration reclamation below
+        // alongside the outgoing arguments. They are live data of a live guard,
+        // exactly as they would be in a real activation, so the iteration's
+        // arena scope must commit rather than reclaim if either points into it.
+        const bool back_edge_snapshots =
+            tco_ctx.guard_replay && tco_ctx.open_guard_handlers > 0 &&
+            tco_ctx.guard_replay_slots != nullptr;
+        std::vector<Value*> snapshot_values;
+        if (back_edge_snapshots) {
+            snapshot_values.reserve(tco_ctx.param_allocas.size());
+            for (AllocaInst* pa : tco_ctx.param_allocas) {
+                snapshot_values.push_back(
+                    builder->CreateLoad(tagged_value_type, pa, "guard_replay_live"));
+            }
+        }
+
+        std::vector<Value*> reclaim_live = new_values;
+        reclaim_live.insert(reclaim_live.end(), snapshot_values.begin(), snapshot_values.end());
+
         if (tco_ctx.iter_scope) {
-            emitIterScopeEnd(new_values);
+            emitIterScopeEnd(reclaim_live);
         } else if (tco_ctx.iter_nursery && tco_ctx.nursery_region) {
             // ESH-0214e: promote the loop-carried out-values out of the nursery
             // (the write barrier already promoted every persistent-mutation
             // escapee at its store), THEN reset the nursery. The recycle returns
             // the PROMOTED values (surviving in the enclosing arena); store those
             // into the parameter allocas since the originals are now reclaimed.
-            new_values = emitIterNurseryRecycle(new_values, tco_ctx.nursery_region);
+            std::vector<Value*> promoted =
+                emitIterNurseryRecycle(reclaim_live, tco_ctx.nursery_region);
+            new_values.assign(promoted.begin(), promoted.begin() + (long)new_values.size());
+            if (back_edge_snapshots) {
+                snapshot_values.assign(promoted.begin() + (long)new_values.size(), promoted.end());
+            }
+        }
+
+        // SW-58: hand the departing activation's values to the handler frames
+        // this back edge is about to leave standing. One per open guard: each
+        // is a distinct live handler in the reference semantics, and each
+        // answers with the same activation's variables.
+        if (back_edge_snapshots) {
+            for (size_t i = 0; i < snapshot_values.size(); i++) {
+                Value* slot = builder->CreateGEP(
+                    tagged_value_type, tco_ctx.guard_replay_slots,
+                    ConstantInt::get(int64_type, (uint64_t)i), "guard_replay_out");
+                builder->CreateStore(snapshot_values[i], slot);
+            }
+            builder->CreateCall(
+                getGuardReplayFn(GuardReplayFn::Snapshot),
+                {tco_ctx.guard_replay_slots,
+                 ConstantInt::get(int64_type, (uint64_t)snapshot_values.size()),
+                 ConstantInt::get(int64_type, (uint64_t)tco_ctx.open_guard_handlers)});
         }
 
         // Store all new values to parameter allocas
@@ -29387,7 +30066,14 @@ private:
         // chain (g_exception_handler_stack) stays balanced across
         // iterations instead of growing forever and retaining stale
         // jmp_buf pointers into stack memory we're about to reclaim below.
-        if (tco_ctx.open_guard_handlers > 0) {
+        //
+        // SW-58 amends this: draining is correct only when the collapsed
+        // activations' guards are provably unobservable — a catch-all clause
+        // whose tests and bodies cannot raise, so the innermost handler always
+        // answers and answers with values the loop's own parameter storage
+        // holds. When they are observable the frames are KEPT (they carry the
+        // snapshot written just above) and retired at loop exit instead.
+        if (tco_ctx.open_guard_handlers > 0 && !back_edge_snapshots) {
             Function* pop_handler_fn = module->getFunction("eshkol_pop_exception_handler");
             if (!pop_handler_fn) {
                 FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
@@ -31453,6 +32139,7 @@ private:
         // Use TCO if letrec set it up for THIS lambda (enabled=true, loop_header=null)
         bool use_binding_tco = had_tco_active && !is_nested_in_tco_func;
         BasicBlock* tco_loop_bb = nullptr;
+        Value* lambda_guard_replay_mark = nullptr;  // SW-58
 
         if (use_binding_tco) {
             auto& tco_ctx = binding_->getTCOContext();
@@ -31489,6 +32176,12 @@ private:
                     }
                 }
             }
+
+            // SW-58: decide this loop's guard lowering and take the
+            // handler-chain mark in the setup block, before the header.
+            setupGuardReplayForLoop(tco_ctx, op->lambda_op.body,
+                                    tco_ctx.func_name);
+            lambda_guard_replay_mark = tco_ctx.guard_replay_mark;
 
             // Create loop header block for tail calls to jump to
             tco_loop_bb = BasicBlock::Create(*context, "tco_loop", lambda_func);
@@ -31574,6 +32267,9 @@ private:
             // TCO mode: current block might be terminated by a tail call jump
             BasicBlock* current_bb = builder->GetInsertBlock();
             if (!current_bb->getTerminator()) {
+                // SW-58: retire any guard frames this loop's back edges left
+                // standing, on every exit from the loop.
+                emitGuardReplayUnwindAt(lambda_guard_replay_mark);
                 // Decrement recursion depth before return
                 builder->CreateCall(getDecrDepthFunc(), {});
                 // Body didn't end with tail call, needs a return
@@ -32681,6 +33377,11 @@ private:
         llvm::Value* saved_tco_nursery_saved_arena = tco_ctx.nursery_saved_arena; // ESH-0214e
         unsigned saved_tco_open_guard_handlers = tco_ctx.open_guard_handlers;  // ESH-0222
         llvm::Value* saved_tco_loop_stack_save = tco_ctx.loop_stack_save;      // ESH-0222
+        bool saved_tco_guard_replay = tco_ctx.guard_replay;                    // SW-58
+        llvm::Value* saved_tco_guard_replay_mark = tco_ctx.guard_replay_mark;  // SW-58
+        llvm::Value* saved_tco_guard_replay_slots = tco_ctx.guard_replay_slots;// SW-58
+        unsigned saved_tco_open_guard_forbid = tco_ctx.open_guard_forbid;      // SW-58
+        std::set<std::string> saved_tco_loop_bound_names = tco_loop_bound_names_;  // SW-58
 
         // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
@@ -32727,6 +33428,10 @@ private:
         if (iter_nursery) {
             emitIterNurseryOpen(tco_ctx);
         }
+
+        // SW-58: same setup as the define path — decide this loop's guard
+        // lowering and take the handler-chain mark in the setup block.
+        setupGuardReplayForLoop(tco_ctx, op->let_op.body, loop_name);
 
         // Create loop header block for TCO
         BasicBlock* tco_loop_bb = BasicBlock::Create(*context, "tco_loop", loop_func);
@@ -32794,6 +33499,7 @@ private:
                 // the displaced allocation arena).
                 body_result = emitIterNurseryClose(body_result, tco_ctx.nursery_saved_arena);
             }
+            emitGuardReplayUnwindAt(tco_ctx.guard_replay_mark);  // SW-58
             builder->CreateRet(body_result);
         }
 
@@ -32831,6 +33537,11 @@ private:
         tco_ctx.nursery_saved_arena = saved_tco_nursery_saved_arena;    // ESH-0214e
         tco_ctx.open_guard_handlers = saved_tco_open_guard_handlers;  // ESH-0222
         tco_ctx.loop_stack_save = saved_tco_loop_stack_save;          // ESH-0222
+        tco_ctx.guard_replay = saved_tco_guard_replay;                // SW-58
+        tco_ctx.guard_replay_mark = saved_tco_guard_replay_mark;      // SW-58
+        tco_ctx.guard_replay_slots = saved_tco_guard_replay_slots;    // SW-58
+        tco_ctx.open_guard_forbid = saved_tco_open_guard_forbid;      // SW-58
+        tco_loop_bound_names_ = saved_tco_loop_bound_names;           // SW-58
 
         // Call the loop function with initial values + capture pointers (#224)
         std::vector<Value*> call_args;

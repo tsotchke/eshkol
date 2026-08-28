@@ -1,0 +1,116 @@
+;;; tests/tco/guard_tail_position_test.esk — SW-58.
+;;;
+;;; A self-recursive tail call in the body of a `guard` runs in CONSTANT STACK
+;;; (ESH-0222, the resident tick-loop capability) AND observes exactly the
+;;; handler chain a non-collapsed program would (R7RS 7.3: each activation
+;;; installs its own handler and they nest).  Before SW-58's fix the back edge
+;;; drained the chain, so one activation replaced N and took the N-1 enclosing
+;;; handlers with it: a handler that re-raised left the loop entirely and the
+;;; wrong guard answered, silently.
+;;;
+;;; The value-level differential against a reference R7RS implementation lives
+;;; in tests/tco/guard_tail_context/ (nine fixtures, chibi-scheme 0.12 answers
+;;; recorded in its README and gated by scripts/run_guard_tail_context.sh).
+;;; THIS file is the in-suite gate: self-checking, and deep enough that a
+;;; per-activation native frame could not fit.
+;;;
+;;; Run with a reduced `ulimit -s` (see docs/LONG_RUNNING_LOOPS.md) to prove
+;;; the stack stays flat rather than merely fitting under the 512MB default.
+
+(define (report name got want)
+  (display name)
+  (display ": ")
+  (if (equal? got want)
+      (display "PASS")
+      (begin (display "FAIL got=") (write got) (display " want=") (write want)))
+  (newline))
+
+;; ── 1. COLLAPSE lane: catch-all boundary, one million iterations ──────────
+;; The handler cannot re-raise and cannot itself raise, so the enclosing
+;; activations' guards are unobservable and the loop keeps ESH-0222's single
+;; handler frame and flat RSS. This is the shape docs/LONG_RUNNING_LOOPS.md
+;; documents for a resident daemon.
+(define TICKS 1000000)
+(define (tick i acc)
+  (guard (e (#t acc))
+    (if (>= i TICKS)
+        acc
+        (tick (+ i 1) (+ acc 1)))))
+(report "collapse lane, 1e6 guarded iterations" (tick 0 0) TICKS)
+
+;; ── 2. COLLAPSE lane: the guard still catches a raise from a LATER iteration ─
+;; Iteration 500000 raises; the handler installed by THAT iteration's guard is
+;; the one that answers, with that iteration's own accumulator.
+(define (stumble i acc)
+  (guard (e (#t (list 'caught-at i acc)))
+    (if (= i 500000)
+        (raise 'stumble)
+        (stumble (+ i 1) (+ acc 2)))))
+(report "collapse lane, raise on iteration 500000"
+        (stumble 0 0)
+        (list 'caught-at 500000 1000000))
+
+;; ── 3. REPLAY lane: 100000 live guards, walked out one at a time ──────────
+;; Every activation's handler re-raises except the outermost, so the condition
+;; must meet 100000 DISTINCT live handlers in order, each answering with its
+;; own `n`. Constant stack: each hop is a longjmp back into the same frame.
+(define DEPTH 100000)
+(define (climb n)
+  (guard (e ((> n 0) (raise e))
+            (#t (list 'answered-at n)))
+    (if (>= n DEPTH) (raise 'top) (climb (+ n 1)))))
+(report "replay lane, 100000-deep re-raise chain" (climb 0) (list 'answered-at 0))
+
+;; ── 4. REPLAY lane: a raise from inside a CLAUSE reaches the PREVIOUS
+;;      activation's guard, not whatever stands outside the loop ────────────
+(define (relay n)
+  (guard (e ((> n 0) (raise (cons n e)))
+            (#t (list 'bottom e)))
+    (if (>= n 3) (raise 'boom) (relay (+ n 1)))))
+(report "replay lane, clause raise finds the enclosing activation"
+        (relay 0)
+        (list 'bottom (cons 1 (cons 2 (cons 3 'boom)))))
+
+;; ── 5. REPLAY lane: nested guards, alternating inner/outer on the way out ──
+(define (two n)
+  (guard (eo ((> n 1) (raise (cons 'o eo)))
+             (#t (list 'outer-answered n eo)))
+    (guard (ei ((> n 0) (raise (cons 'i ei)))
+               (#t (list 'inner-answered n ei)))
+      (if (>= n 3) (raise 'boom) (two (+ n 1))))))
+(report "replay lane, nested guards re-raise through both"
+        (two 0)
+        (list 'outer-answered 1
+              (cons 'i (cons 'o (cons 'i (cons 'o (cons 'i 'boom))))))) 
+
+;; ── 6. The residue: clauses read a binding the loop rebinds every iteration.
+;;      No snapshot of the loop PARAMETERS can restore it, so the call stays a
+;;      real call and the guard nesting is the reference's own. ─────────────
+(define (rebind n)
+  (let ((m (* n 10)))
+    (guard (e ((> n 0) (raise e))
+              (#t (list 'inner n m)))
+      (if (>= n 3) (raise 'boom) (rebind (+ n 1))))))
+(report "forbid lane, clause reads a loop rebinding" (rebind 0) (list 'inner 0 0))
+
+;; ── 7. dynamic-wind inside the guard: after-thunks run innermost-first,
+;;      interleaved with the handlers that let the condition past. ──────────
+(define trace '())
+(define (note! x) (set! trace (cons x trace)))
+(define (wound n)
+  (guard (e ((> n 0) (note! (list 'handler n)) (raise e))
+            (#t (note! (list 'caught n)) 'done))
+    (dynamic-wind
+      (lambda () (note! (list 'before n)))
+      (lambda () (if (>= n 2) (raise 'boom) (wound (+ n 1))))
+      (lambda () (note! (list 'after n))))))
+(wound 0)
+(report "guard + dynamic-wind unwind order"
+        (reverse trace)
+        (list (list 'before 0) (list 'before 1) (list 'before 2)
+              (list 'after 2) (list 'handler 2)
+              (list 'after 1) (list 'handler 1)
+              (list 'after 0) (list 'caught 0)))
+
+(display "guard_tail_position_test complete")
+(newline)

@@ -887,6 +887,11 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
 // ───────────────────────────────────────────────────────────────────────────
 static thread_local eshkol_exception_handler_t* g_exception_handler_free_list = nullptr;
 
+// Depth of g_exception_handler_stack, maintained by push/pop so a guard loop
+// can record a mark in O(1) and unwind to it without walking the chain
+// (SW-58). Thread-local for the same reason the free list is.
+static thread_local int64_t g_exception_handler_depth = 0;
+
 // Push exception handler onto stack
 extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     eshkol_exception_handler_t* handler = g_exception_handler_free_list;
@@ -894,6 +899,10 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
         g_exception_handler_free_list = handler->prev;
     } else {
         handler = (eshkol_exception_handler_t*)malloc(sizeof(eshkol_exception_handler_t));
+        if (handler) {
+            handler->replay_values = nullptr;
+            handler->replay_capacity = 0;
+        }
     }
 
     if (!handler) {
@@ -905,8 +914,10 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     handler->wind_mark = g_dynamic_wind_stack;
     handler->promise_mark = eshkol_promise_eval_mark();
     handler->region_mark = eshkol_region_mark();  // #341
+    handler->replay_count = 0;                    // SW-58: ordinary frame
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
+    g_exception_handler_depth++;
 }
 
 // Pop exception handler from stack
@@ -914,14 +925,86 @@ extern "C" void eshkol_pop_exception_handler(void) {
     if (g_exception_handler_stack) {
         eshkol_exception_handler_t* popped = g_exception_handler_stack;
         g_exception_handler_stack = popped->prev;
+        g_exception_handler_depth--;
         // SW-57: recycle rather than abandon. The frame is dead the instant it
         // leaves the chain (see the block above: nothing else can hold it), so
         // returning it to the free list makes a re-entered guard — a resident
         // tick loop's error boundary — cost no allocation at all.
         popped->jmp_buf_ptr = nullptr;
+        // SW-58: the snapshot dies with the frame, but its BUFFER is kept and
+        // handed back on the next push, so a replaying guard loop allocates at
+        // most one snapshot buffer per handler-chain depth it ever reaches, not
+        // one per iteration.
+        popped->replay_count = 0;
         popped->prev = g_exception_handler_free_list;
         g_exception_handler_free_list = popped;
     }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// SW-58: GUARD-LOOP REPLAY.
+//
+// ESH-0222 lowers a self-recursive tail call in a `guard` body as a branch back
+// to the loop header, which is what lets a resident tick loop wrapped in a
+// catch-all error boundary run forever in one native frame. R7RS keeps one LIVE
+// guard per activation, so the ONLY thing that transform may not do is destroy
+// the enclosing activations' handlers: a handler that re-raises has to find the
+// next one out, and that one answers with ITS activation's variable values.
+//
+// The three calls below are the whole mechanism. A back edge taken from inside
+// an open guard body leaves the handler frame standing and attaches the
+// departing activation's loop-carried values to it (snapshot); a raise that
+// lands on such a frame restores those values before the clauses run
+// (restore); and every exit from the loop drops whatever frames are still
+// standing (unwind_to a depth taken at loop setup). What a program observes is
+// then exactly the handler chain it would have observed with one native frame
+// per activation — the collapse buys stack, never semantics. The frames it
+// keeps are the space R7RS's own semantics require: one live handler per live
+// guard, on the heap instead of the stack.
+// ───────────────────────────────────────────────────────────────────────────
+
+extern "C" int64_t eshkol_exception_handler_depth(void) {
+    return g_exception_handler_depth;
+}
+
+extern "C" void eshkol_exception_handlers_unwind_to(int64_t depth) {
+    while (g_exception_handler_depth > depth && g_exception_handler_stack) {
+        eshkol_pop_exception_handler();
+    }
+}
+
+extern "C" void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
+                                             int64_t count, int64_t frames) {
+    if (count < 0 || frames <= 0) return;
+    eshkol_exception_handler_t* h = g_exception_handler_stack;
+    for (int64_t f = 0; f < frames && h; f++, h = h->prev) {
+        if (h->replay_capacity < count) {
+            eshkol_tagged_value_t* grown = (eshkol_tagged_value_t*)realloc(
+                h->replay_values, (size_t)count * sizeof(eshkol_tagged_value_t));
+            if (!grown) {
+                // Refusing to record the snapshot would silently restore the
+                // wrong activation's values later, which is precisely the
+                // defect this mechanism exists to close. Fail loudly instead.
+                eshkol_error("Failed to allocate guard replay snapshot");
+                return;
+            }
+            h->replay_values = grown;
+            h->replay_capacity = count;
+        }
+        if (count > 0 && vals) {
+            memcpy(h->replay_values, vals, (size_t)count * sizeof(eshkol_tagged_value_t));
+        }
+        h->replay_count = count;
+    }
+}
+
+extern "C" int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count) {
+    eshkol_exception_handler_t* h = g_exception_handler_stack;
+    if (!h || h->replay_count != count || count <= 0 || !h->replay_values || !out) {
+        return 0;
+    }
+    memcpy(out, h->replay_values, (size_t)count * sizeof(eshkol_tagged_value_t));
+    return 1;
 }
 
 // Check if exception matches a specific type

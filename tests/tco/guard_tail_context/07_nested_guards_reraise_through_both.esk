@@ -1,0 +1,12 @@
+; SW-58 with TWO guards per activation.  The chain a re-raise must walk is
+; inner_3, outer_3, inner_2, outer_2, ... — alternating, and each pair carries
+; its own activation's `n`.  The first clause that stops re-raising names both
+; the guard and the activation it belongs to.
+(define (t n)
+  (guard (eo ((> n 1) (raise (cons 'o eo)))
+             (#t (list 'outer-answered n eo)))
+    (guard (ei ((> n 0) (raise (cons 'i ei)))
+               (#t (list 'inner-answered n ei)))
+      (if (>= n 3) (raise 'boom) (t (+ n 1))))))
+(display (t 0))
+(newline)

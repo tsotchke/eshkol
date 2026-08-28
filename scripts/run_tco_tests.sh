@@ -183,7 +183,16 @@ fi
 
 echo ""
 
-if [ $FAIL -eq 0 ]; then
+# SW-58: the value-level differential in tests/tco/guard_tail_context/ cannot be
+# gated by the loop above — it gates on a clean exit, and "the wrong guard
+# answered" exits 0. Run it here so one command covers both properties.
+GUARD_CTX_STATUS=0
+if [ -x scripts/run_guard_tail_context.sh ]; then
+    BUILD_DIR="$BUILD_DIR" scripts/run_guard_tail_context.sh || GUARD_CTX_STATUS=1
+    echo ""
+fi
+
+if [ $FAIL -eq 0 ] && [ $GUARD_CTX_STATUS -eq 0 ]; then
     echo -e "${GREEN}All TCO tests passed!${NC}"
     exit 0
 else

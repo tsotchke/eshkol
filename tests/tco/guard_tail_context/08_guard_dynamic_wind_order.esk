@@ -1,0 +1,16 @@
+; SW-58 + dynamic-wind.  Each activation wraps its recursive call in a
+; dynamic-wind INSIDE its guard, so a raise that walks out through N
+; activations must run N after-thunks, innermost first, interleaved with the
+; handlers that let it past.  The trace is the observable.
+(define trace '())
+(define (note! x) (set! trace (cons x trace)))
+(define (w n)
+  (guard (e ((> n 0) (note! (list 'handler n)) (raise e))
+            (#t (note! (list 'caught n)) 'done))
+    (dynamic-wind
+      (lambda () (note! (list 'before n)))
+      (lambda () (if (>= n 2) (raise 'boom) (w (+ n 1))))
+      (lambda () (note! (list 'after n))))))
+(w 0)
+(display (reverse trace))
+(newline)

@@ -1,0 +1,13 @@
+; SW-58: every activation's guard is LIVE, so a handler that hands the
+; condition further out must meet them one at a time, innermost first, each
+; answering with ITS OWN `n`.  With ESH-0222's unconditional handler drain
+; there was only ever one activation left, so the first re-raise left the
+; loop entirely.  DEPTH is small enough that the reference implementation can
+; run it with one native frame per activation.
+(define DEPTH 200)
+(define (climb n)
+  (guard (e ((> n 0) (raise e))          ; not the outermost: hand it further out
+            (#t (list 'answered-at n)))  ; n = 0: the outermost activation answers
+    (if (>= n DEPTH) (raise 'top) (climb (+ n 1)))))
+(display (climb 0))
+(newline)
