@@ -4,7 +4,7 @@
 
 ---
 
-## Resolved in v1.3.5-evolve
+## Resolved in v1.3.4-evolve
 
 - **Resident-loop retention with persistent mutation.** A tail-recursive loop
   that mutates persistent state (a knowledge base, workspace, or growing list)
@@ -281,15 +281,7 @@ The reclamation itself is measured, never asserted. On
 | 1 000 | 26 MB |
 | 4 000 | 26 MB |
 | 16 000 | 26 MB |
-| 16 000, evacuator disabled | 793 MB |
-| 16 000, unwrapped control (`begin` instead of `with-region`) | 704 MB |
-
-Re-measured for this documentation wave against a from-source build of the
-merge commit `487c2a62` (#461); see
-[RUNTIME_CONFIGURATION.md](breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation)
-for the raw run (the exact peak-RSS figures move a megabyte or two run to
-run; the CHANGELOG's own numbers from the same fixture, 26/26/26 MB and 796
-MB disabled, are consistent with this within that noise band).
+| 16 000, evacuator disabled | 796 MB |
 
 Before the evacuator the same fixture peaked at 1.503 GB *with* the wrapper and
 1.504 GB *without* it — the form was inert. Gated by
@@ -428,30 +420,19 @@ block ordinary use.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
-  *reverse* pass is exact (fixed, ESH-0096).** With `(define g (gradient f))`,
+  *reverse* pass raises (ESH-0096).** With `(define g (gradient f))`,
   `(jacobian g point)` used to return a zero matrix, silently, where
   `(hessian f point)` returns the correct Hessian on the same build — and for
-  some shapes it read a tape pointer as a double and crashed. It was then made
-  to raise `unsupported nested differentiation`, an honest interim guard. It now
-  answers the Hessian, exactly: entry-for-entry identical to
-  `(hessian f point)`, off-diagonals included. The runtime-closure gradient
-  detects a point whose components are the enclosing pass's `ad_node_t*` tape
-  nodes and evaluates the inner gradient **forward**-over-reverse — the route
-  `(hessian f point)` already takes — recording the composition back onto the
-  outer tape. No finite differences. The curried gradient itself,
-  `(g point)` / `(g x y …)`, is exact and byte-identical to
-  `(gradient f point)`, and `(gradient g)` still refuses with a diagnostic
-  naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined). Curried
-  *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
-  **One shape stays loud on purpose:** a point *computed* from the enclosing
-  pass's variables — e.g.
-  `(jacobian (lambda (v) (g (vector (* 2.0 (vector-ref v 0))))) point)` — has no
-  component that IS the pass's active seed, so no edge can be threaded back and
-  it **raises** rather than answering a disconnected zero. Which guard speaks
-  depends on the spelling: a `(vector …)` of AD nodes is rejected by the point
-  coercion (`evaluation point is not a number`), a tensor of non-seed nodes by
-  `unsupported nested differentiation`. Pinned by
-  `tests/ad/ad_curried_gradient_nested_test.esk` on the JIT and AOT lanes.
+  some shapes it read a tape pointer as a double and crashed. It now raises
+  `unsupported nested differentiation`. The cause is specific and shallow: the
+  runtime-closure gradient reads its point's components as raw doubles, so the
+  `ad_node_t*` components an enclosing reverse pass hands it became a subnormal.
+  Closing it exactly means evaluating the inner gradient forward-over-reverse —
+  the route `(hessian f point)` already takes. **Use `(hessian f point)`; it is
+  exact.** The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
+  byte-identical to `(gradient f point)`, and `(gradient g)` still refuses with a
+  diagnostic naming `jacobian` (the gradient of an ℝⁿ→ℝⁿ function is undefined).
+  Curried *scalar* higher-order derivatives are exact to 3rd order (ESH-0369).
 - **`derivative-n` / `taylor` applied to a derivative *closure* is exact (fixed,
   ESH-0402).** With `(define df (derivative f))`, `(derivative-n df x k)` used to
   yield `0`; it now answers exactly, as do `(derivative df x)` and
@@ -568,25 +549,6 @@ block ordinary use.
   unaffected (ESH-0103).
 
 **VM parity**
-
-The following v1.3.5 parity audit items are resolved at their shared roots:
-
-- IF-06: memory-store accessors validate the `mem-store` tag and raise a
-  catchable type error for non-stores; `tests/memory/memory_store_test.esk`
-  covers direct and layered accessors.
-- IF-07: `void*` is an accepted pointer FFI spelling in both extern type maps
-  and receives the same pointer-argument guard as `ptr`;
-  `tests/ffi/extern_void_star_test.esk` covers return and parameter positions.
-- LE-04: both VM prelude consumers use `(sort list comparator)`, with accepted
-  and reverse-order rejection covered by
-  `tests/vm_parity/corpus/72_sort_argument_order.esk`.
-- LE-07: VM frame overflow reports a diagnostic and returns a nonzero process
-  status, covered by `tests/vm_parity/frame_overflow_exit_status_test.py`.
-- PR-07: `inexact->exact` uses the same bignum-capable exact decomposition on
-  native and VM, including large finite values and subnormals.
-- PR-08: complex display uses one canonical representation on native and VM;
-  `tests/vm_parity/corpus/73_complex_display_canonical.esk` covers the unit
-  and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
   581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. `op:GRADIENT` and
@@ -603,12 +565,12 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   item e6/g6).
 - Of the 331 `gap` rows, 14 reference a reproducer file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
-  -l`). The active `found/` corpus now holds 18 filed-divergence/control
-  fixtures. The parity gate re-ran all 39 previously filed programs on both
-  engines at `c459f292`; 21 normalized-agreement cases were reclassified under
-  `tests/vm_parity/resolved/`, while the remaining found files still diverge,
-  fail loudly, or are marked `CONTROL`. The gate fails if a future filed case
-  agrees and remains under `found/` (DD-12 is closed by that gate).
+  -l`). The `found/` corpus itself holds 39 filed reproducers; per the
+  project's own ledger (DD-12, `.icc/silent-wrong-ledger.yaml`, open,
+  re-run at `9f2da2ab`), **25 still diverge and 13 now agree** (the doc
+  previously said "17 verified behavioral divergences," a stale figure —
+  conformity audit item e4). DD-12 is the tracked item for re-verifying and
+  pruning the stale 13; not duplicated here.
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
   `scripts/run_vm_parity.sh`. Re-verified 2026-08-25 against current master
   (`4bf871a0`) with a full rebuild: `scripts/run_vm_parity.sh` passes clean
@@ -631,6 +593,10 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   self-labelled "kept #if 0 stub bodies for now" (superseded by
   `LogicWorkspaceCodegen`). Cheap, unambiguous cleanup; filed as a BUILD ITEM,
   no target version (mechanical debt, any release) — conformity audit item e6.
+- **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
+  configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
+  shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity
+  audit item e6.
 - **89.86% of the language surface has never been differentially compared**
   between engines, per the project's own ledger (PR-10,
   `.icc/silent-wrong-ledger.yaml`, open: 113 of 1,114 constructs carry
@@ -737,8 +703,8 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   it was filed because the classification was undocumented, not because a
   wrong value was measured.
 - **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
-  PR-09.
-- **Doc debt** — DD-11.
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
 
 ---
 

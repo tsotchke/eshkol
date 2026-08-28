@@ -1,4 +1,4 @@
-# Eshkol v1.3.4-evolve Feature Matrix
+# Eshkol v1.3.5-evolve Feature Matrix
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
@@ -1045,7 +1045,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-07-31
-**Document Version**: 1.3.4-evolve
+**Last Updated**: 2026-08-28
+**Document Version**: 1.3.5-evolve
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

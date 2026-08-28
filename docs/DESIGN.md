@@ -1,6 +1,6 @@
 # Eshkol Design Document
 
-## v1.3.4-evolve
+## v1.3.5-evolve
 
 Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, and a consciousness engine built on unification, active inference, and global workspace theory.
 
@@ -302,8 +302,8 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 **v1.2.0-scale** -- COMPLETE. Production-readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack, image I/O, plotting stdlib, actionable error markers, JSON Schema validator, R7RS-compliant stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, 62-test edge-case suite, ASan/UBSan CI lane, 7 hardening fixes.
 
-**v1.3-evolve** -- Next. Native media (ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, GDI+), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization.
+**v1.3-evolve** -- COMPLETE through v1.3.5-evolve. Native media (ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, GDI+), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization. v1.3.5-evolve adds multi-shot re-entrant continuations on every engine, VM region reclamation, compile-time-fatal linear `Qubit` enforcement, exact VM automatic differentiation behind a structural carrier gate, and mutual tail recursion in every tail-position spelling. The forward ladder is [ROADMAP.md](../ROADMAP.md).
 
 ---
 
-*Eshkol v1.3.0-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with a 62-test edge-case regression suite, an ASan/UBSan CI lane, 555+ built-in functions, and 37 sub-suites passing end-to-end.*
+*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,042 built-in functions across a 1,108-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*
