@@ -249,6 +249,41 @@ is_waived() { # case axis -> 0 if waived (sets WAIVER_REASON)
 }
 
 echo
+echo "== stage 0: goldens are well-formed =="
+# A golden is only worth anything if it cannot be edited into agreement with a
+# broken engine. Two properties make that hard to do by accident:
+#   * no golden may contain a FAIL: token — "fixing" a red case by writing its
+#     own failure line into the expectation is the one edit that would make
+#     this whole gate vacuous;
+#   * the golden's token sequence must be exactly the case's `chk` names, in
+#     source order, so a check silently deleted from a program (or added
+#     without an expectation) is a failure rather than a smaller green run.
+golden_ok=1
+golden_problems=""
+for f in "${corpus_files[@]}"; do
+    base=$(basename "$f" .esk)
+    golden="$CORPUS/$base.expected"
+    [ -f "$golden" ] || continue
+    if grep -q 'FAIL:' "$golden"; then
+        golden_ok=0; golden_problems="$golden_problems fail-token-in-golden:$base"
+        continue
+    fi
+    want=$(perl -ne 'print "PASS:$1\n" while /\(chk\s+"([^"]+)"/g' "$f")
+    got=$(tr -s ' \t\n' '\n' < "$golden" | grep -v '^$')
+    if [ "$want" != "$got" ]; then
+        golden_ok=0
+        golden_problems="$golden_problems checks-vs-golden-drift:$base($(printf '%s' "$want" | grep -c .)-checks/$(printf '%s' "$got" | grep -c .)-tokens)"
+    fi
+done
+if [ $golden_ok -eq 1 ]; then
+    report PASS "tests/error_handling/guard_coverage::goldens" "guard_coverage_goldens" \
+        "${#corpus_files[@]} goldens: no FAIL: token, each is exactly its case's chk names in order"
+else
+    report FAIL "tests/error_handling/guard_coverage::goldens" "guard_coverage_goldens" \
+        "malformed goldens:$golden_problems"
+fi
+
+echo
 echo "== stage 3: engine manifest ($MANIFEST) =="
 if [ $manifest_ok -eq 1 ]; then
     report PASS "tests/error_handling/guard_coverage/ENGINES.tsv::manifest" \
