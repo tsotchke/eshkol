@@ -14,9 +14,49 @@ permissions:
 
 jobs:
   guard:
-    runs-on: ubuntu-latest
+    # The primary mesh is used only for trusted-branch/ref runs. A fork PR
+    # remains on a hosted runner, so unreviewed fork-controlled workflow data
+    # never executes on persistent maintainer hardware.
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          'ubuntu-latest' }}
+    env:
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-guard
     timeout-minutes: 5
     steps:
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: >-
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        shell: bash
+        run: |
+          set -u
+          mkdir -p "$MESH_JOB_BUILD_DIR"
+          fail=0
+          note() {
+            echo "::error title=Primary mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."
+            fail=1
+          }
+
+          llvm_config="${LLVM_CONFIG_EXECUTABLE:-}"
+          if [ -z "$llvm_config" ] || [ ! -x "$llvm_config" ]; then
+            llvm_config="/usr/lib/llvm-21/bin/llvm-config"
+          fi
+          if [ ! -x "$llvm_config" ] || [ "$("$llvm_config" --version 2>/dev/null | cut -d. -f1)" != "21" ]; then
+            note "LLVM 21 llvm-config is missing; set LLVM_CONFIG_EXECUTABLE or provision /usr/lib/llvm-21/bin/llvm-config."
+          else
+            echo "LLVM_CONFIG_EXECUTABLE=$llvm_config"
+          fi
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed."
+          exit "$fail"
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -51,3 +91,8 @@ jobs:
             exit 1
           fi
           echo "identity-guard: clean"
+
+      - name: Reclaim per-job build tree
+        if: always()
+        shell: bash
+        run: rm -rf "$MESH_JOB_BUILD_DIR" || true

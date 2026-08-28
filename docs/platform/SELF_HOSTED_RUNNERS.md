@@ -14,25 +14,17 @@ Related: [CI lanes](CI_LANES.md) · `.github/workflows/ci-mesh.yml` ·
 
 ## 1. What this buys, and what it does not
 
-Two distinct wins, worth keeping separate because they have different risk profiles.
+`ci.yml` remains the single source of required check names. With the repository
+variable `ESHKOL_MESH_PRIMARY=on`, its required Linux x64 matrix build/test
+lanes and build-free guard jobs execute on the owned mesh, while ARM64, macOS,
+and Windows remain hosted until their label variables are provisioned. With the
+variable unset (the default), the existing hosted routing is unchanged.
 
-**Capacity.** `ci.yml` runs a 14-lane matrix on GitHub-hosted runners. Moving the
-Linux and macOS *lite* lanes onto owned hardware returns those minutes to the pool
-for the lanes that genuinely need a clean disposable image (Windows SDK downloads,
-the ASan lane, the WASM diff).
-
-**Coverage that hosted runners structurally cannot provide.** The `linux-x64-cuda`,
-`linux-arm64-cuda` and `windows-x64-cuda` lanes in `ci.yml` run on hosted runners,
-and **hosted runners have no GPU**. `nvcc` compiles the kernels, `eshkol_gpu_init()`
-reports zero devices, and every GPU tensor op falls through to the CPU path without
-saying so. Those lanes are *compilation* gates. A registered GPU runner turns
-`gpu-execution-gate.yml` and `mesh-linux-x64-cuda-exec` into real *execution* gates
-— which is also how ADR-0010 gap **A13** closes: that workflow currently emits a
-`::warning` on every run saying it produced no GPU evidence, because no
-`[self-hosted, gpu]` runner has ever existed for this repo.
-
-**What it does not buy: a merge gate.** No job in `ci-mesh.yml` is, or may become,
-a required status check. See §6.
+The primary switch is explicit and fail-closed: a fork pull request is never
+selected for a self-hosted runner. A fork PR uses the hosted fallback, and the
+Actions setting requiring approval for all outside-collaborator workflows remains
+mandatory. `ci-mesh.yml` is only the legacy advisory matrix; it suppresses its
+lanes when primary routing is on so the same work is not run twice.
 
 ---
 
@@ -43,19 +35,20 @@ removed: `self-hosted`, an OS label (`Linux` / `macOS` / `Windows`), and an
 architecture label (`X64` / `ARM64` / `ARM`). Label matching is case-insensitive,
 which is why the workflows spell them lowercase.
 
-On top of those, this repository defines exactly four custom labels. Keep the set
+On top of those, this repository defines exactly five custom labels. Keep the set
 small: a label is a contract a lane relies on, and an unmet contract is a lane that
 either queues forever or lies.
 
 | label | meaning — assign it only if this is true | consumed by |
 |---|---|---|
-| `eshkol` | This runner is provisioned for **this repository's** build: LLVM 21, cmake, ninja, python3, and (Linux) `ld.lld`. Every mesh lane requires it. | `ci-mesh.yml` (all lanes), `mesh-preflight`'s online-runner probe |
+| `eshkol` | This runner is provisioned for **this repository's** build: LLVM 21, cmake, ninja, python3, jq, and (Linux) `ld.lld`. Every mesh lane requires it. | `ci.yml`, `ci-mesh.yml`, `mesh-preflight` |
+| `linux-mesh` | Linux x64 primary-build capacity. It is present on the four primary x64 runners. | `ci.yml` Linux x64, WASM, guard, assurance, and surface lanes |
 | `gpu` | The host has a **real, addressable GPU device** — not merely a GPU toolchain. `nvidia-smi` lists a device, or the host is Apple Silicon with a working Metal device. | `gpu-execution-gate.yml` (`runs-on: [self-hosted, gpu]`) |
-| `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`. Implies `gpu`; assign both. | `mesh-linux-x64-cuda-exec` |
+| `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`; the primary CUDA lane also verifies `nvidia-smi`. | `ci.yml` `linux-x64-cuda`, `mesh-linux-x64-cuda-exec` |
 | `metal` | Apple Silicon host with a working Metal device. Implies `gpu`; assign both. Reserved for a future Metal execution lane. | (none yet) |
 
-So a full label set looks like `--labels eshkol` for a plain build node, or
-`--labels eshkol,gpu,cuda` for the CUDA execution node.
+So a full label set looks like `--labels eshkol,linux-mesh` for a plain Linux
+x64 build node, or `--labels eshkol,cuda` for the CUDA execution node.
 
 **Do not** assign `gpu` to a host that only has the CUDA *toolkit* installed. That
 is precisely the failure the GPU execution gate exists to expose, and a mislabelled
@@ -71,12 +64,16 @@ Measured against the mesh registry (`computer_mesh/nodes.json`) on 2026-08-25 by
 SSH probe, not assumed. Full survey and the raw per-node output live with the PR
 that introduced this document.
 
-| node | OS / arch | cores / RAM / free disk | GPU | suggested labels | provisioning still needed |
+| node | OS / arch | capacity | GPU | registered labels | provisioning still needed |
 |---|---|---|---|---|---|
+| `mesh-linux-x64-01..04` | Linux x64 | 88 cores shared across four runner instances; about 450 GB free | None usable for CUDA CI | `self-hosted`, `Linux`, `X64`, `eshkol`, `linux-mesh` | LLVM 21, cmake, ninja, python3, jq, `ld.lld`; Node.js for WASM; emsdk for `emcc` |
+| `mesh-cuda-01` | Linux x64 | Shared; one runner/job at a time | CUDA 12.4 device | `self-hosted`, `Linux`, `X64`, `eshkol`, `cuda` | LLVM 21, cmake, ninja, python3, jq, `ld.lld`, CUDA toolkit/driver and `nvidia-smi` |
 
-Every other node in the registry was unreachable at survey time: the GCP
-Blackwell/RTX-Pro nodes are stopped or spot-preempted, the on-prem boxes are
-this machine. That volatility is the reason for §6.
+The four `mesh-linux-x64-*` registrations are the primary Linux x64 capacity;
+GitHub can run at most four such jobs in parallel. `mesh-cuda-01` is deliberately
+single-job capacity. Do not assume the CUDA node can satisfy the Linux x64
+`linux-mesh` label: its separate `cuda` label is what keeps ordinary builds off
+the shared GPU host.
 
 ---
 
@@ -95,7 +92,7 @@ echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -
   | sudo tee /etc/apt/sources.list.d/llvm.list
 sudo apt-get update
 sudo apt-get install -y \
-  cmake ninja-build git python3 pkg-config \
+  cmake ninja-build git python3 jq nodejs pkg-config \
   llvm-21 llvm-21-dev lld-21 \
   libreadline-dev libssl-dev libncurses-dev \
   libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev
@@ -112,6 +109,22 @@ For a `cuda` node, additionally confirm **both** of these answer:
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 nvcc --version
 ```
+
+For the four `linux-mesh` nodes, provision Emscripten without `sudo` and make
+the active SDK available to the runner service account. The WASM lane fails
+loudly if `emcc` is absent; it does not install or activate an SDK in CI:
+
+```bash
+git clone https://github.com/emscripten-core/emsdk.git ~/emsdk
+cd ~/emsdk
+./emsdk install 4.0.22
+./emsdk activate 4.0.22
+echo 'source "$HOME/emsdk/emsdk_env.sh" >/dev/null' >> ~/.bashrc
+```
+
+The service environment must also contain the activated SDK's `emcc` and
+`node` on `PATH`; verify with `command -v emcc`, `emcc --version`, and
+`node --version` from the account that runs the GitHub Actions service.
 
 ### macOS
 
@@ -131,9 +144,13 @@ cmake --build build-check --parallel
 ./scripts/run_all_tests.sh
 ```
 
-If that passes by hand, the mesh lane will pass. If it does not, fix it here — a
-runner registered against a broken toolchain produces red lanes that look like code
-regressions.
+The primary Linux x64 CI configure contract is `RelWithDebInfo`, tests enabled,
+`-DESHKOL_XLA_ENABLED=OFF`, `-DESHKOL_GPU_ENABLED=OFF`, and
+`-DESHKOL_REQUIRE_GPU_BACKEND=OFF` for the lite lane. XLA and CUDA lanes retain
+their matrix-specific feature flags. CI only discovers the provisioned tools;
+it never runs `apt-get`, `sudo`, or a package manager on self-hosted runners.
+If the checks above fail by hand, fix the node before registering it: a broken
+toolchain produces red lanes that look like code regressions.
 
 ---
 
@@ -169,11 +186,17 @@ tar xzf runner.tar.gz && rm runner.tar.gz
 ./config.sh \
   --url https://github.com/tsotchke/eshkol \
   --token <REGISTRATION_TOKEN> \
-  --labels eshkol,gpu,cuda \
+  --name mesh-linux-x64-01 \
+  --labels eshkol,linux-mesh \
   --work _work \
   --unattended \
   --replace
 ```
+
+Use names `mesh-linux-x64-01` through `mesh-linux-x64-04` with
+`--labels eshkol,linux-mesh`. Register the CUDA host as `mesh-cuda-01` with
+`--labels eshkol,cuda`; the automatic `self-hosted`, `Linux`, and `X64` labels
+complete the exact `runs-on` selector used by `linux-x64-cuda`.
 
 - `--name` — use the mesh node name. It is how you will tell runners apart in the
   Settings UI and in `gh api .../actions/runners`.
@@ -207,9 +230,10 @@ answer yes.
 
 > `nix-shell nix/jetson/shell.nix` or it will have no CUDA device. Either wrap the
 
-### 5.4 Turn the mesh lanes on
+### 5.4 Turn primary routing on
 
-`ci-mesh.yml` ships **off**. After at least one runner is online:
+After the four Linux x64 runners and the CUDA runner are online and their
+preflight commands pass, the maintainer flips the primary executor with:
 
 Before enabling lanes, seed the shared FetchContent source cache on each Linux
 runner with `scripts/mesh/seed_fetchcontent_cache.sh`. The script populates
@@ -219,41 +243,61 @@ runner with `scripts/mesh/seed_fetchcontent_cache.sh`. The script populates
 the marker is absent, CI retains its normal network-fetch fallback.
 
 ```bash
-gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body on
+gh variable set ESHKOL_MESH_PRIMARY --repo tsotchke/eshkol --body on
+gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body off
 ```
 
-`gpu-execution-gate.yml` needs no variable — it dispatches to `[self-hosted, gpu]`
-as soon as such a runner exists.
+The second command explicitly disables the old advisory switch. It is safe if
+that variable is already unset. To return to hosted routing:
+
+```bash
+gh variable set ESHKOL_MESH_PRIMARY --repo tsotchke/eshkol --body off
+```
+
+Future platform flips use JSON label variables. Linux ARM64 takes one full
+label array; macOS and Windows take an object with `arm64` and `x64` arrays:
+
+```bash
+gh variable set ESHKOL_MESH_ARM64_LABELS --repo tsotchke/eshkol --body '["self-hosted","Linux","ARM64","eshkol","linux-arm64-mesh"]'
+gh variable set ESHKOL_MESH_MACOS_LABELS --repo tsotchke/eshkol --body '{"arm64":["self-hosted","macOS","ARM64","eshkol","macos-mesh"],"x64":["self-hosted","macOS","X64","eshkol","macos-mesh"]}'
+gh variable set ESHKOL_MESH_WINDOWS_LABELS --repo tsotchke/eshkol --body '{"arm64":["self-hosted","Windows","ARM64","eshkol","windows-mesh"],"x64":["self-hosted","Windows","X64","eshkol","windows-mesh"]}'
+```
+
+Those variables are ignored unless `ESHKOL_MESH_PRIMARY=on`. Each value must
+name labels actually present on a runner; malformed JSON fails runner
+selection rather than silently using a different platform.
 
 ---
 
-## 6. What must NOT change
+## 6. Primary routing and required contexts
 
-**No job in `ci-mesh.yml` may be added to branch protection's required contexts.**
+The 16 required check names do not change and are not renamed by the routing
+switch:
 
-The required set is, and stays: `guard`, `linux-x64-xla`, `linux-arm64-xla`,
-`linux-x64-cuda`, `linux-arm64-cuda`, `linux-x64-asan-ubsan`, `wasm-execute-diff`,
-`windows-arm64-xla`, `windows-x64-cuda` — all hosted.
+`guard`, `assurance-gates`, `surface-manifest`, `linux-x64-xla`,
+`linux-arm64-xla`, `linux-x64-cuda`, `linux-arm64-cuda`,
+`linux-x64-asan-ubsan`, `wasm-execute-diff`, `windows-arm64-xla`,
+`windows-x64-cuda`, `windows-arm64-lite`, `macos-arm64-xla`, `macos-x64-xla`,
+`macos-arm64-lite`, `macos-x64-lite`.
 
-The reason is mechanical, not conservative. Branch protection has no timeout: a
-required context that never reports leaves the PR blocked forever, and the only
-recovery is an admin editing the protection rule. This repository has already paid
-that price once, on PR #444. A required context whose runner is one physical machine
-inherits that machine's availability — and §3 measured this fleet directly: most of
-it is off at any given moment, and every datacenter-GPU node in it is a preemptible
-spot instance.
+With `ESHKOL_MESH_PRIMARY=on`, the routing table is:
 
-This is also why the mesh lanes live in their own workflow rather than as a
-"prefer self-hosted, fall back to hosted" matrix inside `ci.yml`. **That fallback
-does not exist in GitHub Actions.** `runs-on` is resolved at schedule time; a job
-whose labels match no online runner does not fail over to a hosted runner, it
-queues. Making a required lane's `runs-on` depend on fleet state would convert every
-mesh outage into a permanently pending required check. Separate job names in a
-separate file make that mistake structurally impossible.
+| context or lane | `runs-on` labels |
+|---|---|
+| `guard` | `self-hosted`, `Linux`, `X64`, `eshkol`, `linux-mesh` |
+| `assurance-gates`, `surface-manifest` | `self-hosted`, `Linux`, `X64`, `eshkol`, `linux-mesh` |
+| `linux-x64-lite`, `linux-x64-xla`, `linux-x64-asan-ubsan` | `self-hosted`, `Linux`, `X64`, `eshkol`, `linux-mesh` |
+| `linux-x64-cuda` | `self-hosted`, `Linux`, `X64`, `eshkol`, `cuda` |
+| `wasm-execute-diff` | `self-hosted`, `Linux`, `X64`, `eshkol`, `linux-mesh` |
+| `linux-arm64-*` | hosted until `ESHKOL_MESH_ARM64_LABELS` is set |
+| macOS lanes | hosted until `ESHKOL_MESH_MACOS_LABELS` is set |
+| Windows lanes | hosted until `ESHKOL_MESH_WINDOWS_LABELS` is set |
 
-Promoting a mesh lane to required is a deliberate maintainer decision that requires,
-at minimum: the runner demonstrably online across a sustained period, and a plan for
-what happens to open PRs when it is not.
+The four Linux x64 runner registrations permit up to four concurrent jobs;
+`unix-matrix` advertises `max-parallel: 4`. The CUDA registration is one
+runner/job at a time. GitHub's runner matching is not failover: if a selected
+label set has no online runner, the required context queues. Keep the primary
+variable off until the selected fleet is online and provisioned.
 
 ---
 
@@ -276,7 +320,19 @@ Controls, in order of load-bearing-ness:
 2. **Require approval for all outside collaborators.** Settings → Actions → General →
    *Fork pull request workflows from outside collaborators*. GitHub's default is
    "require approval for first-time contributors", which still lets a contributor's
-   *second* PR run without review. Set it to **all outside collaborators**.
+   *second* PR run without review. Set it to **all outside collaborators**. This
+   repository setting must be verified by an owner before enabling primary routing;
+   do not change it from a pull request. The workflow-permission API currently
+   reports `default_workflow_permissions` as `read`:
+
+   ```bash
+   gh api repos/tsotchke/eshkol/actions/permissions/workflow
+   # {"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}
+   ```
+
+   That API result does not prove the fork-approval policy. The required policy is
+   still **Require approval for all outside collaborators**, plus the workflow's
+   same-repository runner-selection guard.
 3. **Never put secrets on a mesh lane.** None of the mesh lanes consume repository
    secrets, and none should; a persistent filesystem plus a long-lived machine is a
    poor place for them.

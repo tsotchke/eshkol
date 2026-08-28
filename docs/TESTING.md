@@ -352,3 +352,25 @@ skipped (satisfying branch protection); a PR touching any non-doc file
 still runs the full matrix exactly as before. `paths-ignore` remains on
 the `push` trigger, where it only reduces CI load rather than blocking a
 merge.
+
+## CI: primary mesh execution
+
+The repository variable `ESHKOL_MESH_PRIMARY` is unset by default. When it is
+`on`, the required `guard`, `assurance-gates`, and `surface-manifest` jobs,
+`linux-x64-lite`, `linux-x64-xla`, `linux-x64-asan-ubsan`, and
+`wasm-execute-diff` run on `[self-hosted, Linux, X64, eshkol, linux-mesh]`.
+`linux-x64-cuda` runs on `[self-hosted, Linux, X64, eshkol, cuda]`.
+
+The four Linux x64 runner registrations provide up to four concurrent jobs;
+the CUDA registration provides one job at a time. Every mesh build uses a
+unique directory under the runner's workspace and removes it in an
+`always()` cleanup step. The mesh preflight only discovers provisioned
+`LLVM_CONFIG_EXECUTABLE` (falling back to `/usr/lib/llvm-21/bin/llvm-config`),
+cmake, ninja, python3, jq, and, for WASM, emcc and node. It never installs
+packages or uses sudo. A missing `emcc` is a hard failure with a provisioning
+message; provision emsdk under `~/emsdk` before enabling the variable.
+
+The `linux-arm64-*`, macOS, and Windows lanes remain hosted until their
+corresponding label variables are set. Fork pull requests remain hosted even
+when primary routing is on, and the repository Actions policy must require
+approval for all outside collaborators before self-hosted execution is enabled.

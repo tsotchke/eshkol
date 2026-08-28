@@ -1,25 +1,14 @@
 name: CI
 
 # ─────────────────────────────────────────────────────────────────────────
-# MESH-AS-MERGE-GATE: NOT YET. MAINTAINER DECISION REQUIRED BEFORE THE FLIP.
+# MESH-AS-MERGE-GATE: opt-in through ESHKOL_MESH_PRIMARY.
 #
-# The maintainer's heterogeneous compute mesh (see PR #391 / the
-# `mesh-gate-advisory` job below) can run the same lane batteries as
-# unix-matrix/windows-matrix/wasm-execute-diff on real hardware — including
-# real GPUs, unlike the hosted CUDA lanes — and produce one verdict via
-# `mesh gates run --lane eshkol --ref <sha>`. The eventual intent is for
-# that verdict to replace the equivalent hosted lanes as the actual merge
-# gate.
-#
-# THAT HAS NOT HAPPENED, and must not happen implicitly. The mesh's own
-# telemetry has been dark since at least 2026-08-17 — no fresh verdict, no
-# status endpoint reachable from a hosted GitHub Actions runner. Until the
-# mesh is observed live again AND a maintainer explicitly signs off, every
-# hosted lane below stays exactly as it is today, and every context
-# currently required by branch protection stays required. `mesh-gate-
-# advisory` is advisory-only (continue-on-error, not a required context)
-# and is presently a labeled no-op for exactly that reason — see its own
-# header comment further down.
+# When the repository variable is unset (the default), all runner selections
+# remain hosted. When it is `on`, the owned Linux x64 runner pool becomes the
+# primary executor for the Linux x64, WASM, guard, assurance, and surface lanes;
+# the CUDA lane uses the dedicated CUDA runner. ARM64, macOS, and Windows remain
+# hosted until their label variables are explicitly provisioned. Job names do
+# not change, so the required contexts remain stable.
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
@@ -287,8 +276,8 @@ jobs:
           exit 0
 
   # ─────────────────────────────────────────────────────────────────────
-  # ADVISORY mesh-gate placeholder (see the top-of-file comment above for
-  # the full picture). This job never fails the build and its context must
+  # ADVISORY mesh-gate placeholder (the primary mesh lanes are selected below
+  # by ESHKOL_MESH_PRIMARY). This job never fails the build and its context must
   # never be added to branch protection's required list.
   #
   # `mesh gates run --lane eshkol --ref <sha>` is the maintainer's own
@@ -314,7 +303,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "::warning::mesh telemetry unavailable — the physical compute mesh has had no live, CI-reachable verdict endpoint since at least 2026-08-17. This job is an advisory placeholder: it does not run the mesh's lane batteries and its result does not gate this PR. Flipping any hosted lane's required status to the mesh is a maintainer decision, made only once the mesh is observed live again (see the comment at the top of this file)."
+          echo "::warning::mesh telemetry unavailable — the physical compute mesh verdict endpoint is not used by this advisory placeholder. Primary lane routing is controlled explicitly by ESHKOL_MESH_PRIMARY; this job remains non-blocking."
           echo "mesh-gate-advisory: mesh telemetry unavailable (placeholder, non-blocking)"
 
   # The language-surface manifest is the ground truth the execution-backed
@@ -340,9 +329,39 @@ jobs:
   surface-manifest:
     name: surface-manifest
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-22.04
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          'ubuntu-22.04' }}
+    env:
+      MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-surface-manifest
     steps:
       - uses: actions/checkout@v6
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: >-
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        shell: bash
+        run: |
+          set -u
+          mkdir -p "$MESH_JOB_BUILD_DIR"
+          fail=0
+          note() { echo "::error title=Primary mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."; fail=1; }
+          llvm_config="${LLVM_CONFIG_EXECUTABLE:-/usr/lib/llvm-21/bin/llvm-config}"
+          if [ ! -x "$llvm_config" ] || [ "$("$llvm_config" --version 2>/dev/null | cut -d. -f1)" != "21" ]; then
+            note "LLVM 21 llvm-config is missing; set LLVM_CONFIG_EXECUTABLE or provision /usr/lib/llvm-21/bin/llvm-config."
+          else
+            echo "LLVM_CONFIG_EXECUTABLE=$llvm_config" >> "$GITHUB_ENV"
+          fi
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed."
+          exit "$fail"
       - name: Manifest matches the source-extracted surface
         shell: bash
         run: |
@@ -370,6 +389,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/test_language_coverage_gate.py -v
+
+      - name: Reclaim per-job build tree
+        if: always()
+        shell: bash
+        run: rm -rf "$MESH_JOB_BUILD_DIR" || true
 
   # v1.3.5 assurance wave 1: three release gates that used to be doctrine
   # living only in prose (a memory file, a script's docstring) rather than
@@ -442,10 +466,46 @@ jobs:
   assurance-gates:
     name: assurance-gates
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-22.04
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          'ubuntu-22.04' }}
+    env:
+      MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-assurance-gates
     steps:
       - uses: actions/checkout@v6
-      - name: Install PyYAML
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: >-
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        shell: bash
+        run: |
+          set -u
+          mkdir -p "$MESH_JOB_BUILD_DIR"
+          fail=0
+          note() { echo "::error title=Primary mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."; fail=1; }
+          llvm_config="${LLVM_CONFIG_EXECUTABLE:-/usr/lib/llvm-21/bin/llvm-config}"
+          if [ ! -x "$llvm_config" ] || [ "$("$llvm_config" --version 2>/dev/null | cut -d. -f1)" != "21" ]; then
+            note "LLVM 21 llvm-config is missing; set LLVM_CONFIG_EXECUTABLE or provision /usr/lib/llvm-21/bin/llvm-config."
+          else
+            echo "LLVM_CONFIG_EXECUTABLE=$llvm_config" >> "$GITHUB_ENV"
+          fi
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed."
+          exit "$fail"
+      - name: Verify PyYAML (primary mesh; provisioned out of band)
+        if: env.MESH_PRIMARY_JOB == 'true'
+        shell: bash
+        run: python3 -c 'import yaml; print("PyYAML is provisioned")'
+
+      - name: Install PyYAML (hosted runner)
+        if: env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
 
@@ -1131,9 +1191,54 @@ jobs:
     name: ${{ matrix.name }}
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
-    runs-on: ${{ matrix.runner }}
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          matrix.name == 'linux-x64-lite' &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          matrix.name == 'linux-x64-xla' &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          matrix.name == 'linux-x64-cuda' &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "cuda"]') ||
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          matrix.name == 'linux-x64-asan-ubsan' &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          startsWith(matrix.name, 'linux-arm64-') &&
+          vars.ESHKOL_MESH_ARM64_LABELS != '' &&
+          fromJSON(vars.ESHKOL_MESH_ARM64_LABELS) ||
+          vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          startsWith(matrix.name, 'macos-') &&
+          vars.ESHKOL_MESH_MACOS_LABELS != '' &&
+          fromJSON(vars.ESHKOL_MESH_MACOS_LABELS)[matrix.mesh_arch] ||
+          matrix.runner }}
+    env:
+      MESH_PRIMARY_JOB: >-
+        ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+            (github.event_name != 'pull_request' ||
+             github.event.pull_request.head.repo.full_name == github.repository) &&
+            (matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla' ||
+             matrix.name == 'linux-x64-cuda' || matrix.name == 'linux-x64-asan-ubsan' ||
+             (startsWith(matrix.name, 'linux-arm64-') && vars.ESHKOL_MESH_ARM64_LABELS != '') ||
+             (startsWith(matrix.name, 'macos-') && vars.ESHKOL_MESH_MACOS_LABELS != '')) &&
+            'true' || 'false' }}
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         include:
           - name: linux-x64-lite
@@ -1146,6 +1251,7 @@ jobs:
             artifact_name: eshkol-linux-x64
           - name: linux-arm64-lite
             runner: ubuntu-22.04-arm
+            mesh_arch: arm64
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -1162,6 +1268,7 @@ jobs:
             artifact_name: ''
           - name: linux-arm64-xla
             runner: ubuntu-22.04-arm
+            mesh_arch: arm64
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -1178,6 +1285,7 @@ jobs:
             artifact_name: ''
           - name: linux-arm64-cuda
             runner: ubuntu-22.04-arm
+            mesh_arch: arm64
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
@@ -1186,6 +1294,7 @@ jobs:
             artifact_name: ''
           - name: macos-arm64-lite
             runner: macos-14
+            mesh_arch: arm64
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -1194,6 +1303,7 @@ jobs:
             artifact_name: eshkol-macos-arm64
           - name: macos-x64-lite
             runner: macos-15-intel
+            mesh_arch: x64
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -1202,6 +1312,7 @@ jobs:
             artifact_name: eshkol-macos-x64
           - name: macos-arm64-xla
             runner: macos-14
+            mesh_arch: arm64
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -1210,6 +1321,7 @@ jobs:
             artifact_name: ''
           - name: macos-x64-xla
             runner: macos-15-intel
+            mesh_arch: x64
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -1243,6 +1355,42 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: env.MESH_PRIMARY_JOB == 'true'
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          note() { echo "::error title=Primary mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning."; fail=1; }
+          llvm_config="${LLVM_CONFIG_EXECUTABLE:-/usr/lib/llvm-21/bin/llvm-config}"
+          if [ ! -x "$llvm_config" ] || [ "$("$llvm_config" --version 2>/dev/null | cut -d. -f1)" != "21" ]; then
+            note "LLVM 21 llvm-config is missing; set LLVM_CONFIG_EXECUTABLE or provision /usr/lib/llvm-21/bin/llvm-config."
+          else
+            echo "LLVM_CONFIG_EXECUTABLE=$llvm_config" >> "$GITHUB_ENV"
+            echo "LLVM_CONFIG=$llvm_config" >> "$GITHUB_ENV"
+          fi
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed."
+          if [ "${{ matrix.gpu_enabled }}" = "ON" ]; then
+            command -v nvcc >/dev/null 2>&1 || note "nvcc is not on PATH for the CUDA lane."
+            command -v nvidia-smi >/dev/null 2>&1 || note "nvidia-smi is missing; the cuda runner has no usable GPU."
+            nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || note "nvidia-smi cannot address a CUDA device."
+          fi
+          if [ "$RUNNER_OS" = "Linux" ] && ! command -v ld.lld >/dev/null 2>&1; then
+            versioned="$(command -v ld.lld-21 2>/dev/null || true)"
+            [ -n "$versioned" ] || versioned="/usr/lib/llvm-21/bin/ld.lld"
+            if [ -x "$versioned" ]; then
+              mkdir -p "$RUNNER_TEMP/bin"
+              ln -sf "$versioned" "$RUNNER_TEMP/bin/ld.lld"
+              echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            else
+              note "ld.lld (or ld.lld-21) is not installed."
+            fi
+          fi
+          exit "$fail"
+
       # Every network fetch below goes through scripts/ci_retry.sh — the
       # single definition of this repo's CI retry policy (bounded attempts,
       # exponential backoff, explicit per-command timeouts) — rather than a
@@ -1253,7 +1401,7 @@ jobs:
       # `apt-get install` in "Install Dependencies (Linux)" below had NO
       # retry at all before this change.
       - name: Add LLVM Repository (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1266,7 +1414,7 @@ jobs:
             sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Add NVIDIA CUDA Repository (Linux CUDA)
-        if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON'
+        if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON' && env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1284,7 +1432,7 @@ jobs:
             sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Install Dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1318,7 +1466,7 @@ jobs:
           ld.lld --version
 
       - name: Install Dependencies (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1328,8 +1476,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          BUILD_DIR="${{ matrix.build_dir }}"
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
+          BUILD_DIR="$MESH_JOB_BUILD_DIR"
+          build_type=Release
+          build_tests=ON
+          if [[ "$MESH_PRIMARY_JOB" == "true" ]]; then
+            LLVM_CONFIG="${LLVM_CONFIG_EXECUTABLE:?primary mesh preflight did not export LLVM_CONFIG_EXECUTABLE}"
+            build_type=RelWithDebInfo
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
             LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
             export PATH="$LLVM_PREFIX/bin:$PATH"
             LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
@@ -1338,9 +1491,10 @@ jobs:
           fi
 
           cmake -S . -B "$BUILD_DIR" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE="$build_type" \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_BUILD_TESTS="$build_tests" \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
@@ -1353,7 +1507,7 @@ jobs:
         run: |
           set -euxo pipefail
           python3 scripts/verify_gpu_backend.py \
-            --build-dir "${{ matrix.build_dir }}" \
+            --build-dir "$MESH_JOB_BUILD_DIR" \
             --expected CUDA
 
       - name: Build
@@ -1364,7 +1518,7 @@ jobs:
             export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:allocator_may_return_null=1}"
             export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
           fi
-          cmake --build "${{ matrix.build_dir }}" --parallel
+          cmake --build "$MESH_JOB_BUILD_DIR" --parallel
 
       # Catches the failure mode where a new C runtime helper
       # (eshkol_intern_symbol_lookup, region_create, …) is added on the
@@ -1380,7 +1534,7 @@ jobs:
         if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
@@ -1393,7 +1547,7 @@ jobs:
         if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           python3 scripts/check_wasm_size.py --build-dir "$BUILD_DIR"
@@ -1408,7 +1562,7 @@ jobs:
         if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           python3 scripts/check_diagnostic_corpus.py --build-dir "$BUILD_DIR"
@@ -1422,7 +1576,7 @@ jobs:
         if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           ./scripts/check_leak_detection_selftest.sh
@@ -1441,7 +1595,7 @@ jobs:
         if: contains(matrix.sanitizer_flags, 'ESHKOL_ENABLE_ASAN=ON')
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           ./tests/memory/leak_audit_gate.sh
@@ -1450,7 +1604,7 @@ jobs:
         timeout-minutes: 120
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
@@ -1478,12 +1632,12 @@ jobs:
             export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
           fi
           ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
-          test -x "${{ matrix.build_dir }}/eshkol-agent-http-test"
-          "${{ matrix.build_dir }}/eshkol-agent-http-test"
-          test -x "${{ matrix.build_dir }}/eshkol-agent-sse-test"
-          "${{ matrix.build_dir }}/eshkol-agent-sse-test"
-          test -x "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
-          "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
+          test -x "$MESH_JOB_BUILD_DIR/eshkol-agent-http-test"
+          "$MESH_JOB_BUILD_DIR/eshkol-agent-http-test"
+          test -x "$MESH_JOB_BUILD_DIR/eshkol-agent-sse-test"
+          "$MESH_JOB_BUILD_DIR/eshkol-agent-sse-test"
+          test -x "$MESH_JOB_BUILD_DIR/eshkol-agent-capabilities-test"
+          "$MESH_JOB_BUILD_DIR/eshkol-agent-capabilities-test"
 
       # The exactness guarantee, gated so that it can fail.
       #
@@ -1506,7 +1660,7 @@ jobs:
         timeout-minutes: 25
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
           ESHKOL_JIT_CACHE_DIR: ${{ runner.temp }}/eshkol-ad-exactness-jit-cache
         run: |
           set -euxo pipefail
@@ -1527,10 +1681,10 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: |
-            ${{ matrix.build_dir }}/eshkol-run
-            ${{ matrix.build_dir }}/eshkol-repl
-            ${{ matrix.build_dir }}/stdlib.o
-            ${{ matrix.build_dir }}/stdlib.bc
+            ${{ env.MESH_JOB_BUILD_DIR }}/eshkol-run
+            ${{ env.MESH_JOB_BUILD_DIR }}/eshkol-repl
+            ${{ env.MESH_JOB_BUILD_DIR }}/stdlib.o
+            ${{ env.MESH_JOB_BUILD_DIR }}/stdlib.bc
 
       # Evidence must survive CI (ADR-0010 §2.2; closes AR1 gap A5). Any lane
       # that emits ICC oracle traces — the execution-backed coverage step, the
@@ -1553,6 +1707,13 @@ jobs:
             .icc/runtime-traces/
             .icc/runtime-traces-oracle-view/
           if-no-files-found: ignore
+
+      - name: Reclaim per-job build tree
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          rm -rf "$MESH_JOB_BUILD_DIR" || true
 
   # The Windows lanes' own curl-from-llvm-project path is where the
   # stall/slow-download risk lives (see "Install LLVM SDK" below and
@@ -1617,7 +1778,20 @@ jobs:
     name: ${{ matrix.name }}
     needs: [changes, prefetch-windows-llvm-archives]
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
-    runs-on: ${{ matrix.runner }}
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          vars.ESHKOL_MESH_WINDOWS_LABELS != '' &&
+          fromJSON(vars.ESHKOL_MESH_WINDOWS_LABELS)[matrix.mesh_arch] ||
+          matrix.runner }}
+    env:
+      MESH_PRIMARY_JOB: >-
+        ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+            (github.event_name != 'pull_request' ||
+             github.event.pull_request.head.repo.full_name == github.repository) &&
+            vars.ESHKOL_MESH_WINDOWS_LABELS != '' && 'true' || 'false' }}
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
     # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
     # CUDA toolkit install and GPU build/test on top. 90 minutes leaves that
@@ -1635,6 +1809,7 @@ jobs:
           # is a separate hosted x64 lane below.
           - name: windows-arm64-lite
             runner: windows-11-arm
+            mesh_arch: arm64
             arch: arm64
             llvm_suffix: aarch64
             build_dir: build
@@ -1645,6 +1820,7 @@ jobs:
             artifact_name: eshkol-windows-arm64
           - name: windows-arm64-xla
             runner: windows-11-arm
+            mesh_arch: arm64
             arch: arm64
             llvm_suffix: aarch64
             build_dir: build-xla
@@ -1655,6 +1831,7 @@ jobs:
             artifact_name: ''
           - name: windows-x64-cuda
             runner: windows-2022
+            mesh_arch: x64
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-cuda
@@ -1666,8 +1843,38 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: env.MESH_PRIMARY_JOB == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('cmake.exe', 'ninja.exe', 'python.exe', 'jq.exe')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+              throw "Primary mesh runner is missing $tool. Provision it before registering the runner; CI never installs tools on self-hosted hosts."
+            }
+          }
+          $llvmConfig = if ($env:LLVM_CONFIG_EXECUTABLE) { $env:LLVM_CONFIG_EXECUTABLE } else { (Get-Command llvm-config.exe -ErrorAction SilentlyContinue).Source }
+          if (-not $llvmConfig -or -not (Test-Path $llvmConfig)) {
+            throw "Primary mesh runner is missing LLVM 21 llvm-config. Set LLVM_CONFIG_EXECUTABLE to the provisioned LLVM 21 installation."
+          }
+          $version = (& $llvmConfig --version).Split('.')[0]
+          if ($version -ne '21') { throw "LLVM_CONFIG_EXECUTABLE points to LLVM $version, but LLVM 21 is required." }
+          $llvmHome = Split-Path (Split-Path $llvmConfig -Parent) -Parent
+          $llvmCmakeDir = Join-Path $llvmHome 'lib\cmake\llvm'
+          if (-not (Test-Path (Join-Path $llvmCmakeDir 'LLVMConfig.cmake'))) {
+            throw "LLVMConfig.cmake not found under $llvmCmakeDir."
+          }
+          "LLVM_CONFIG_EXECUTABLE=$llvmConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_HOME=$llvmHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_DIR=$llvmCmakeDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ('${{ matrix.gpu_enabled }}' -eq 'ON') {
+            if (-not $env:CUDA_PATH -or -not (Test-Path "$env:CUDA_PATH\bin\nvcc.exe")) {
+              throw "Primary mesh CUDA runner is missing CUDA_PATH or nvcc.exe."
+            }
+          }
+
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
-        if: matrix.gpu_enabled == 'ON'
+        if: matrix.gpu_enabled == 'ON' && env.MESH_PRIMARY_JOB != 'true'
         uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76
         with:
           cuda: ${{ env.CUDA_VERSION }}
@@ -1680,6 +1887,7 @@ jobs:
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
+        if: env.MESH_PRIMARY_JOB != 'true'
         uses: actions/cache/restore@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
@@ -1689,7 +1897,7 @@ jobs:
       # `needs:`. On a hit, "Install LLVM SDK" below extracts straight from
       # this file and never calls curl at all.
       - name: Restore prefetched LLVM SDK archive
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: steps.llvm-cache.outputs.cache-hit != 'true' && env.MESH_PRIMARY_JOB != 'true'
         id: archive-cache
         uses: actions/cache/restore@v5
         with:
@@ -1698,7 +1906,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Install LLVM SDK
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: steps.llvm-cache.outputs.cache-hit != 'true' && env.MESH_PRIMARY_JOB != 'true'
         shell: pwsh
         # Pure extraction of an already-local archive should never come
         # close to this. If it does, something is genuinely stuck and
@@ -1777,6 +1985,7 @@ jobs:
           Write-Host "LLVM $llvmVersion ${{ matrix.arch }} ready at $llvmRoot"
 
       - name: Resolve LLVM SDK
+        if: env.MESH_PRIMARY_JOB != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1794,7 +2003,7 @@ jobs:
           "$llvmRoot\bin"             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Save LLVM SDK Cache
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        if: steps.llvm-cache.outputs.cache-hit != 'true' && env.MESH_PRIMARY_JOB != 'true'
         uses: actions/cache/save@v5
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
@@ -1815,9 +2024,9 @@ jobs:
           }
           $cmakeArgs = @(
             '-S', '.',
-            '-B', '${{ matrix.build_dir }}',
+            '-B', $env:MESH_JOB_BUILD_DIR,
             '-DBUILD_REPL=ON',
-            '-DESHKOL_BUILD_TESTS=OFF',
+            "-DESHKOL_BUILD_TESTS=$(if ($env:MESH_PRIMARY_JOB -eq 'true') { 'ON' } else { 'OFF' })",
             '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
             "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
             '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
@@ -1913,7 +2122,7 @@ jobs:
           & "$env:CUDA_PATH\bin\nvcc.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "nvcc version probe failed" }
           python scripts/verify_gpu_backend.py `
-            --build-dir '${{ matrix.build_dir }}' `
+            --build-dir "$env:MESH_JOB_BUILD_DIR" `
             --expected CUDA
 
       - name: Build
@@ -1924,7 +2133,7 @@ jobs:
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
-          cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
+          cmake --build "$env:MESH_JOB_BUILD_DIR" --config Release --target @($targets) --parallel
 
       - name: Run Tests
         timeout-minutes: 120
@@ -1932,15 +2141,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
-          & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
+          & .\scripts\run_all_tests.ps1 -BuildDir "$env:MESH_JOB_BUILD_DIR" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
-          $agentNativeTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-windows-agent-test.exe'
-          $agentHttpTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-http-test.exe'
-          $agentSseTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-sse-test.exe'
-          $agentCapabilitiesTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-capabilities-test.exe'
+          $agentNativeTest = Join-Path $env:MESH_JOB_BUILD_DIR 'Release\eshkol-windows-agent-test.exe'
+          $agentHttpTest = Join-Path $env:MESH_JOB_BUILD_DIR 'Release\eshkol-agent-http-test.exe'
+          $agentSseTest = Join-Path $env:MESH_JOB_BUILD_DIR 'Release\eshkol-agent-sse-test.exe'
+          $agentCapabilitiesTest = Join-Path $env:MESH_JOB_BUILD_DIR 'Release\eshkol-agent-capabilities-test.exe'
           foreach ($test in @($agentNativeTest, $agentHttpTest, $agentSseTest, $agentCapabilitiesTest)) {
             if (-not (Test-Path $test -PathType Leaf)) {
               throw "Required native agent contract test is missing: $test"
@@ -1965,10 +2174,16 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: |
-            ${{ matrix.build_dir }}/Release/eshkol-run.exe
-            ${{ matrix.build_dir }}/Release/eshkol-repl.exe
-            ${{ matrix.build_dir }}/stdlib.o
-            ${{ matrix.build_dir }}/stdlib.bc
+            ${{ env.MESH_JOB_BUILD_DIR }}/Release/eshkol-run.exe
+            ${{ env.MESH_JOB_BUILD_DIR }}/Release/eshkol-repl.exe
+            ${{ env.MESH_JOB_BUILD_DIR }}/stdlib.o
+            ${{ env.MESH_JOB_BUILD_DIR }}/stdlib.bc
+
+      - name: Reclaim per-job build tree
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath $env:MESH_JOB_BUILD_DIR -Recurse -Force -ErrorAction SilentlyContinue
 
   # ─────────────────────────────────────────────────────────────────────
   # WASM execute-and-diff lane.  Closes the WASM-correctness cell in the
@@ -1992,10 +2207,50 @@ jobs:
     name: wasm-execute-diff
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
-    runs-on: ubuntu-22.04
+    runs-on: >-
+      ${{ vars.ESHKOL_MESH_PRIMARY == 'on' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
+          'ubuntu-22.04' }}
     timeout-minutes: 45
+    env:
+      MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
+      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-wasm-execute-diff
     steps:
       - uses: actions/checkout@v6
+
+      - name: Toolchain preflight (primary mesh; provisioned out of band)
+        if: env.MESH_PRIMARY_JOB == 'true'
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          note() { echo "::error title=Primary mesh runner not provisioned::$1 See docs/platform/SELF_HOSTED_RUNNERS.md § Provisioning, including the emsdk requirement."; fail=1; }
+          llvm_config="${LLVM_CONFIG_EXECUTABLE:-/usr/lib/llvm-21/bin/llvm-config}"
+          if [ ! -x "$llvm_config" ] || [ "$("$llvm_config" --version 2>/dev/null | cut -d. -f1)" != "21" ]; then
+            note "LLVM 21 llvm-config is missing; set LLVM_CONFIG_EXECUTABLE or provision /usr/lib/llvm-21/bin/llvm-config."
+          else
+            echo "LLVM_CONFIG_EXECUTABLE=$llvm_config" >> "$GITHUB_ENV"
+          fi
+          command -v cmake >/dev/null 2>&1 || note "cmake is not installed."
+          command -v ninja >/dev/null 2>&1 || note "ninja is not installed."
+          command -v python3 >/dev/null 2>&1 || note "python3 is not installed."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed."
+          command -v emcc >/dev/null 2>&1 || note "emcc is missing. Provision emsdk under ~/emsdk and put its active upstream toolchain on PATH."
+          command -v node >/dev/null 2>&1 || note "node is not installed (required by the WASM execute-and-diff gate)."
+          if [ "$RUNNER_OS" = "Linux" ] && ! command -v ld.lld >/dev/null 2>&1; then
+            versioned="$(command -v ld.lld-21 2>/dev/null || true)"
+            [ -n "$versioned" ] || versioned="/usr/lib/llvm-21/bin/ld.lld"
+            if [ -x "$versioned" ]; then
+              mkdir -p "$RUNNER_TEMP/bin"
+              ln -sf "$versioned" "$RUNNER_TEMP/bin/ld.lld"
+              echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            else
+              note "ld.lld (or ld.lld-21) is not installed."
+            fi
+          fi
+          exit "$fail"
 
       # See the unix-matrix job's identical-in-spirit step for why every
       # fetch here goes through scripts/ci_retry.sh. This block's prior
@@ -2006,6 +2261,7 @@ jobs:
       # the retry policy has one definition and a real failure is still
       # terminal.
       - name: Add LLVM Repository (Linux)
+        if: env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -2018,6 +2274,7 @@ jobs:
             sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
 
       - name: Install Dependencies (Linux)
+        if: env.MESH_PRIMARY_JOB != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -2031,12 +2288,14 @@ jobs:
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
 
       - name: Setup Emscripten
+        if: env.MESH_PRIMARY_JOB != 'true'
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 4.0.22
           actions-cache-folder: emsdk-cache-4.0.22
 
       - name: Setup Node
+        if: env.MESH_PRIMARY_JOB != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -2045,22 +2304,30 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
+          build_type=Release
+          llvm_config="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          if [[ "$MESH_PRIMARY_JOB" == "true" ]]; then
+            build_type=RelWithDebInfo
+            llvm_config="${LLVM_CONFIG_EXECUTABLE:?primary mesh preflight did not export LLVM_CONFIG_EXECUTABLE}"
+          fi
+          cmake -S . -B "$MESH_JOB_BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE="$build_type" \
             -DESHKOL_BUILD_TESTS=OFF \
             -DESHKOL_XLA_ENABLED=OFF \
-            -DESHKOL_GPU_ENABLED=OFF
+            -DESHKOL_GPU_ENABLED=OFF \
+            -DESHKOL_REQUIRE_GPU_BACKEND=OFF \
+            -DLLVM_CONFIG_EXECUTABLE="$llvm_config"
 
       - name: Build eshkol-run + stdlib
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build build --target eshkol-run stdlib --parallel
+          cmake --build "$MESH_JOB_BUILD_DIR" --target eshkol-run stdlib --parallel
 
       - name: Run WASM execute-and-diff
         shell: bash
         env:
-          BUILD_DIR: build
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           emcc --version
@@ -2074,6 +2341,13 @@ jobs:
           name: wasm-execute-diff-trace
           path: scripts/icc_traces/wasm_parity.jsonl
           if-no-files-found: ignore
+
+      - name: Reclaim per-job build tree
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          rm -rf "$MESH_JOB_BUILD_DIR" || true
 
   # actions/cache evicts entries that go unaccessed for 7 days, and the
   # windows-llvm-sdk-* caches only get touched by pushes/PRs that actually
