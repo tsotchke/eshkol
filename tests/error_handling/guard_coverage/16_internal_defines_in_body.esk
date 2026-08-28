@@ -1,0 +1,14 @@
+;; ESH-0101 guard coverage — internal `define`s in a guard BODY (the protected
+;; expression, not a clause). Own case so the VM divergence costs a narrow
+;; waiver rather than the 22 other context checks in 09_guard_contexts.esk.
+;; Repro: found/vm_internal_defines_in_guard_body.esk (ledger SW-86).
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+(chk "internal-defines"
+     (equal? (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)) 42))
+(chk "internal-define-then-raise"
+     (equal? (guard (e (#t e)) (define x 7) (raise x)) 7))
