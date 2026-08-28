@@ -25,15 +25,17 @@ First-order stencils use h=1e-5 (atol 1e-6); second-order stencils (hessian
 diagonals/cross terms, laplacian) use h=1e-4 (atol 1e-5) because the eps/h^2
 round-off term dominates at h=1e-5.
 
-Probes print "PASS: <id>" / "FAIL: <id> ad=<v> fd=<v>". Cells that are
-known-open compiler bugs print "XKNOWN: <id> (<ESH-task>) ..." instead of
-FAIL so the gate stays green while the bug is tracked:
+Probes print "PASS: <id>" / "FAIL: <id> ad=<v> fd=<v>". A cell marked `xc=`
+prints "XKNOWN: <id> (<ESH-task>) ..." instead of FAIL, so the gate stays
+green while a bug is tracked. No cell carries such a mark today — sweep C
+cleared the last of them — so every generated cell is expected to PASS and a
+regression FAILs loudly. The historical set, kept for orientation:
 
   ESH-0078  2nd-order gradient through a NAMED-function inner gradient
   ESH-0093  vector-param gradient over an inner derivative (mixed mode)
   ESH-0095  hessian/laplacian SIGSEGV on tensor-literal points  (found by
-            this oracle; crash cells live in their own ad_oracle_xc_* files
-            so one crash cannot mask other probes)
+            this oracle; crash cells lived in their own ad_oracle_xc_* files
+            so one crash could not mask other probes) -- fixed in sweep C
   ESH-0096  vector-param gradient-of-gradient returns zeros (found by this
             oracle)
   ESH-0097  vector-param AD op (gradient/jacobian/hessian/divergence/curl/
@@ -41,7 +43,9 @@ FAIL so the gate stays green while the bug is tracked:
             fails LLVM verification: "PtrToInt source must be pointer
             (ptrtoint %eshkol_tagged_value %a to i64)" on BOTH -r and AOT
             (found by this oracle; compile-time failure kills the whole
-            translation unit, so these cells also live in xc_* files)
+            translation unit, so these cells also lived in xc_* files) --
+            fixed in sweep C, re-measured and closed as ledger LE-06; the
+            shapes are gated by tests/ad/captured_local_vector_param_test.esk
 
 Output: tests/ad_oracle/generated/ad_oracle_<section>_<NN>.esk (~15 probes
 per file), plus ad_oracle_xc_<task>_<NN>.esk single-probe expected-crash
