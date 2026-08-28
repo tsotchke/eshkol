@@ -151,6 +151,60 @@ static double eshkol_rm_norm(const double* a, int n) {
     return sqrt(eshkol_rm_dot(a, a, n));
 }
 
+/**
+ * @brief <a,b> in double-double: returns the rounded sum and sets *@p lo to the
+ *        residual, so that hi + lo is the dot product to about 32 digits.
+ *
+ * WHY THE BALL CHART NEEDS THIS. Every quantity in Poincare-ball geometry is
+ * built from 1 - B|x|^2 and 1 + B<x,y>, and those are exactly the quantities the
+ * chart destroys near the boundary: a point at Euclidean distance eps from the
+ * boundary has 1 - B|x|^2 ~ 2 eps, and computing it as one minus a rounded sum
+ * of squares knows it only to an ABSOLUTE 1e-16 -- eight significant digits at
+ * eps = 1e-9, and none at all at eps = 1e-16. Near-boundary points are not an
+ * edge case here; they are the entire reason to use the ball, because that is
+ * where hyperbolic embeddings put their leaves. Accumulating the sum exactly and
+ * closing with a fused multiply-add gives 1 - B|x|^2 to full RELATIVE precision
+ * instead, so the formulas downstream inherit a well-conditioned input.
+ */
+static double eshkol_rm_dot_dd(const double* a, const double* b, int n,
+                               double* lo) {
+    double hi = 0.0, c = 0.0;
+    for (int i = 0; i < n; i++) {
+        double p = a[i] * b[i];
+        double e = fma(a[i], b[i], -p);      /* exact residual of the product */
+        double s = hi + p;                   /* two-sum                       */
+        double bb = s - hi;
+        c += (hi - (s - bb)) + (p - bb) + e;
+        hi = s;
+    }
+    *lo = c;
+    return hi;
+}
+
+/** @brief 1 - B<a,b>, to full relative precision. The fma performs the
+ *         subtraction with a single rounding of the exact product, so a result
+ *         of size 1e-12 is accurate to 1e-12 * eps rather than to eps. */
+static double eshkol_rm_one_minus_dot(const double* a, const double* b, double B,
+                                      int n) {
+    double lo = 0.0;
+    double hi = eshkol_rm_dot_dd(a, b, n, &lo);
+    return fma(-B, lo, fma(-B, hi, 1.0));
+}
+
+/** @brief 1 + B<a,b>, to full relative precision. */
+static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
+                                     int n) {
+    double lo = 0.0;
+    double hi = eshkol_rm_dot_dd(a, b, n, &lo);
+    return fma(B, lo, fma(B, hi, 1.0));
+}
+
+/** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
+ *         precision. */
+static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
+    return eshkol_rm_one_minus_dot(x, x, B, n);
+}
+
 /** @brief The ball parameter B of the chart of curvature -c: the number for
  *         which the ball is |x|^2 < 1/B and Mobius addition is (+)_B. */
 static double eshkol_rm_ball_param(double c) {
@@ -162,7 +216,7 @@ static double eshkol_rm_ball_param(double c) {
 static double eshkol_rm_lambda(const double* x, double K, int n) {
     if (K >= 0.0) return (K == 0.0) ? ESHKOL_RM_FLAT_LAMBDA : 1.0;
     double B = eshkol_rm_ball_param(-K);
-    return ESHKOL_RM_LAMBDA0 / (1.0 - B * eshkol_rm_dot(x, x, n));
+    return ESHKOL_RM_LAMBDA0 / eshkol_rm_one_minus_bnorm2(x, B, n);
 }
 
 /** @brief The squared Riemannian norm of tangent vector @p v at @p x. Used by
@@ -267,7 +321,7 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
     double xy = eshkol_rm_dot(x, y, n);
     double x2 = eshkol_rm_dot(x, x, n);
     double y2 = eshkol_rm_dot(y, y, n);
-    double q  = 1.0 + B * xy;
+    double q  = eshkol_rm_one_plus_dot(x, y, B, n);
     double scale = B * B * x2 * y2;
     double gram;
     if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
@@ -275,6 +329,26 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
     } else {
         gram = x2 * y2 - xy * xy;
         if (gram < 0.0) gram = 0.0;   /* non-negative by Cauchy-Schwarz */
+    }
+    return q * q + B * B * gram;
+}
+
+/** @brief The Mobius denominator of the pair (-x, y), i.e.
+ *         (1 - B<x,y>)^2 + B^2(|x|^2|y|^2 - <x,y>^2), without materialising -x.
+ *         Negating x flips the sign of <x,y> and leaves the Gram term alone. */
+static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
+                                        double B, int n) {
+    double x2 = eshkol_rm_dot(x, x, n);
+    double y2 = eshkol_rm_dot(y, y, n);
+    double xy = eshkol_rm_dot(x, y, n);
+    double q  = eshkol_rm_one_minus_dot(x, y, B, n);
+    double scale = B * B * x2 * y2;
+    double gram;
+    if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
+        gram = eshkol_rm_gram_lagrange(x, y, n);
+    } else {
+        gram = x2 * y2 - xy * xy;
+        if (gram < 0.0) gram = 0.0;
     }
     return q * q + B * B * gram;
 }
@@ -300,12 +374,14 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
  */
 static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
                                  int n, double* out) {
-    double xy = eshkol_rm_dot(x, y, n);
-    double x2 = eshkol_rm_dot(x, x, n);
     double y2 = eshkol_rm_dot(y, y, n);
-    double num_x = 1.0 + 2.0 * B * xy + B * y2;
-    double num_y = 1.0 - B * x2;
     double den   = eshkol_rm_mobius_den(x, y, B, n);
+    /* num_y is the chart's conformal denominator at x, computed to full
+     * relative precision; num_x then follows from the identity
+     * num_x = den + B|y|^2 num_y, which is exact algebra and keeps num_x from
+     * being formed by its own cancelling sum 1 + 2B<x,y> + B|y|^2. */
+    double num_y = eshkol_rm_one_minus_bnorm2(x, B, n);
+    double num_x = den + B * y2 * num_y;
     for (int i = 0; i < n; i++) out[i] = (num_x * x[i] + num_y * y[i]) / den;
 }
 
@@ -356,7 +432,7 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
         if (!(x[i] == x[i])) return "a coordinate is NaN";
     if (K < 0.0) {
         double B = eshkol_rm_ball_param(-K);
-        if (!(B * eshkol_rm_dot(x, x, n) < 1.0))
+        if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
             return "the point must lie strictly inside the Poincare ball";
     } else if (K > 0.0) {
         double R = 1.0 / sqrt(K);
@@ -384,7 +460,7 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
 static const char* eshkol_rm_require_interior(const double* out, double K, int n) {
     if (K >= 0.0) return NULL;
     double B = eshkol_rm_ball_param(-K);
-    if (!(B * eshkol_rm_dot(out, out, n) < 1.0))
+    if (!(eshkol_rm_one_minus_bnorm2(out, B, n) > 0.0))
         return "the result is on or outside the ball boundary: no strictly "
                "interior double-precision point exists at this magnitude";
     return NULL;
@@ -439,8 +515,8 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
     }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
-        double P  = (1.0 - B * eshkol_rm_dot(x, x, n)) *
-                    (1.0 - B * eshkol_rm_dot(y, y, n));
+        double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
+                    eshkol_rm_one_minus_bnorm2(y, B, n);
         double R  = E / P;
         double ps = eshkol_rm_psi(B * R, NULL, NULL);
         *out = ESHKOL_RM_LAMBDA0 * sqrt(R) * ps;
@@ -547,14 +623,15 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
     }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
-        double xy = eshkol_rm_dot(x, y, n);
-        double x2 = eshkol_rm_dot(x, x, n);
         double y2 = eshkol_rm_dot(y, y, n);
         /* Numerator of (-x) (+)_B y; its denominator is positive and only
-         * scales the vector, so the direction is this alone. */
-        double na = 1.0 - 2.0 * B * xy + B * y2;
-        double nb = 1.0 - B * x2;
+         * scales the vector, so the direction is this alone. Both coefficients
+         * come from the well-conditioned pair (den, 1 - B|x|^2) rather than
+         * from their own cancelling sums -- see eshkol_rm_dot_dd. */
         double* V = scratch;
+        double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
+        double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
+        double na = dn + B * y2 * nb;
         for (int i = 0; i < n; i++) V[i] = nb * y[i] - na * x[i];
         double Vn = eshkol_rm_norm(V, n);
         if (Vn < ESHKOL_RM_ZERO_NORM) {
