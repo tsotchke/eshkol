@@ -141,6 +141,20 @@ def extract_builtin_table(path):
     return out
 
 
+# Alternate spellings that dispatch to the exact same codegen path as another
+# name in this same table (`if (func_name == "X" || func_name == "Y") ...`).
+# These are one construct with two spellings, not two constructs: recorded as
+# an `aliases` field on the canonical entry in build_manifest() rather than as
+# a second `builtins` record, so builtins_total counts the construct once.
+# Keyed alias -> canonical (BI-7: `dataloader-has-next` is the pre-existing
+# spelling kept for compatibility; `dataloader-has-next?` is canonical --
+# docs, PARITY.tsv and the implementation's own diagnostics all use the `?`
+# form).
+ALIASES = {
+    "dataloader-has-next": "dataloader-has-next?",
+}
+
+
 def extract_llvm_dispatch():
     """Extract call-head builtin names dispatched by the LLVM AOT backend
     (`if (func_name == "name") ...`). This is the AOT intrinsic surface: it
@@ -489,15 +503,36 @@ def build_manifest():
     form_names = set(forms)
     aot_builtins = {n for n in aot if n not in form_names}
 
-    names = sorted(set(comp) | set(vm) | aot_builtins)
+    raw_names = sorted(set(comp) | set(vm) | aot_builtins)
+
+    # Fold ALIASES into their canonical spelling before assigning one
+    # language-surface record per construct: an alternate spelling for the
+    # same dispatch is not a second builtin (see ALIASES above).
+    aliases_by_canonical = {}
+    for alias, canonical in ALIASES.items():
+        if alias not in raw_names:
+            continue
+        if canonical not in raw_names:
+            raise ValueError("alias %r names canonical %r, which is not on "
+                             "the dispatch surface" % (alias, canonical))
+        aliases_by_canonical.setdefault(canonical, []).append(alias)
+
+    names = [n for n in raw_names if n not in ALIASES]
     builtins = []
     for name in names:
-        in_c = name in comp
-        in_v = name in vm
-        in_a = name in aot_builtins
-        ids = sorted(set(comp.get(name, {}).get("ids", []))
-                     | set(vm.get(name, {}).get("ids", [])))
-        arity = comp.get(name, vm.get(name, {})).get("arity")
+        member_names = [name] + aliases_by_canonical.get(name, [])
+        in_c = any(m in comp for m in member_names)
+        in_v = any(m in vm for m in member_names)
+        in_a = any(m in aot_builtins for m in member_names)
+        ids = sorted(set().union(*(set(comp.get(m, {}).get("ids", []))
+                                   for m in member_names),
+                                 *(set(vm.get(m, {}).get("ids", []))
+                                   for m in member_names)))
+        arity = None
+        for m in member_names:
+            arity = comp.get(m, vm.get(m, {})).get("arity")
+            if arity is not None:
+                break
         backends = []
         if in_c:
             backends.append("native")
@@ -505,13 +540,16 @@ def build_manifest():
             backends.append("vm")
         if in_a:
             backends.append("native_llvm")
-        builtins.append({
+        entry = {
             "name": name,
             "ids": ids,
             "arity": arity,
             "backends": backends,
             "category": categorize(name),
-        })
+        }
+        if name in aliases_by_canonical:
+            entry["aliases"] = sorted(aliases_by_canonical[name])
+        builtins.append(entry)
 
     # The Moonlab agent APIs are opt-in, but are still user-callable Scheme
     # names and therefore need to participate in total-language coverage. They

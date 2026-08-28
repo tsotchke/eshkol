@@ -4,13 +4,28 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <eshkol/core/config.h>
 #include <eshkol/core/resource_limits.h>
 #include <eshkol/core/runtime.h>
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+
+// The native engine's ESHKOL_ARENA_POISON accessor
+// (lib/core/runtime_arena_diagnostics_hosted.cpp) is not declared in any
+// installed header -- every caller forward-declares it (see e.g.
+// tests/core/ad_tape_region_growth_test.cpp). This binary links eshkol-static,
+// so it is the one place that can see both that accessor and the bytecode
+// VM's vm_arena_poison_enabled() (a self-contained, dependency-free header --
+// see tests/core/vm_arena_poison_test.cpp, which cannot link eshkol-static)
+// in the same translation unit, to check they agree on every value.
+extern "C" int eshkol_arena_poison_enabled(void);
+extern "C" {
+#include "../../lib/backend/vm_arena.h"
+}
 
 namespace {
 
@@ -38,6 +53,114 @@ void unset_env(const char* key) {
 }  // namespace
 
 int main() {
+    // BI-12: ESHKOL_ARENA_POISON parity across the native engine's accessor
+    // (eshkol_arena_poison_enabled(), lib/core/runtime_arena_diagnostics_hosted.cpp)
+    // and the bytecode VM's (vm_arena_poison_enabled(), lib/backend/vm_arena.h;
+    // the VM evacuator now calls this same function rather than re-reading the
+    // variable itself, so checking it here also covers the evacuator). Both
+    // cache their result on first call for the life of the process, so this
+    // must run before anything else in this binary can have touched either --
+    // hence first in main(), with a value ("01") that used to arm only the VM
+    // arena because the native accessor tested just the first byte.
+    {
+        set_env("ESHKOL_ARENA_POISON", "01");
+        const int native_armed = eshkol_arena_poison_enabled();
+        const int vm_armed = vm_arena_poison_enabled();
+        if (!native_armed) {
+            return fail("ESHKOL_ARENA_POISON=01: native accessor did not arm (regression -- "
+                        "it used to test only the first byte)");
+        }
+        if (!vm_armed) return fail("ESHKOL_ARENA_POISON=01: VM accessor did not arm");
+        if ((native_armed != 0) != (vm_armed != 0)) {
+            return fail("ESHKOL_ARENA_POISON=01: native and VM accessors disagree");
+        }
+    }
+
+    // BI-10: the `[types]` config-file section (docs/breakdown/
+    // RUNTIME_CONFIGURATION.md) is documented but was never wired into
+    // apply_config_section() -- `strict` / `unsafe` were parsed nowhere and
+    // silently ignored. Load the checked-in fixture through the real
+    // production path (eshkol_config_load_file() -> parse_toml() ->
+    // apply_config_section()) and confirm both fields move off their
+    // defaults, exactly as --strict-types / --unsafe would set them.
+    {
+        const std::filesystem::path fixture =
+            std::filesystem::path(__FILE__).parent_path() /
+            "fixtures" / "config_types_section.toml";
+        if (!std::filesystem::exists(fixture)) {
+            return fail(("config fixture missing: " + fixture.string()).c_str());
+        }
+
+        eshkol_config_t config = eshkol_config_defaults();
+        if (config.strict_types) return fail("config: strict_types default should be false");
+        if (config.unsafe_mode) return fail("config: unsafe_mode default should be false");
+
+        if (eshkol_config_load_file(&config, fixture.string().c_str()) != 0) {
+            return fail("config: eshkol_config_load_file failed on the [types] fixture");
+        }
+        if (!config.strict_types) {
+            return fail("config: [types] strict = true from the file was not applied "
+                        "(the [types] section is not wired into apply_config_section)");
+        }
+        if (!config.unsafe_mode) {
+            return fail("config: [types] unsafe = true from the file was not applied "
+                        "(the [types] section is not wired into apply_config_section)");
+        }
+    }
+
+    // eshkol_parse_size() is the shared parser behind every ESHKOL_* size
+    // variable, including ESHKOL_STACK_SIZE (parsed in
+    // runtime_stack_hosted.cpp, which does not otherwise expose a testable
+    // seam). Exercise it directly: bare bytes, K/M/G and KiB/MiB/GiB
+    // suffixes, garbage, and below-floor values (floor enforcement is the
+    // caller's job, not the parser's -- eshkol_parse_size only reports
+    // whether the string parsed).
+    {
+        size_t out = 0;
+
+        if (!eshkol_parse_size("512", &out) || out != 512) {
+            return fail("parse_size: bare byte count mismatch");
+        }
+        if (!eshkol_parse_size("512M", &out) || out != 512ULL * 1024 * 1024) {
+            return fail("parse_size: 512M mismatch");
+        }
+        if (!eshkol_parse_size("1G", &out) || out != 1ULL * 1024 * 1024 * 1024) {
+            return fail("parse_size: 1G mismatch");
+        }
+        if (!eshkol_parse_size("1GiB", &out) || out != 1ULL * 1024 * 1024 * 1024) {
+            return fail("parse_size: 1GiB mismatch");
+        }
+        if (!eshkol_parse_size("64KB", &out) || out != 64ULL * 1024) {
+            return fail("parse_size: 64KB mismatch");
+        }
+        if (!eshkol_parse_size("1 MiB", &out) || out != 1ULL * 1024 * 1024) {
+            return fail("parse_size: '1 MiB' (space before suffix) mismatch");
+        }
+        // "512M" misread as 512 bytes was the bug this closes: it must parse
+        // to 512 MiB, not 512 bytes.
+        if (!eshkol_parse_size("512M", &out) || out == 512) {
+            return fail("parse_size: 512M must not be misread as 512 bytes");
+        }
+
+        // Below a caller's floor still parses successfully -- floor
+        // enforcement happens above eshkol_parse_size(), not inside it.
+        if (!eshkol_parse_size("1", &out) || out != 1) {
+            return fail("parse_size: below-floor value should still parse");
+        }
+
+        // Garbage / trailing garbage must fail outright, not silently parse
+        // a numeric prefix.
+        if (eshkol_parse_size("", &out)) return fail("parse_size: empty string should fail");
+        if (eshkol_parse_size(nullptr, &out)) return fail("parse_size: null should fail");
+        if (eshkol_parse_size("garbage", &out)) return fail("parse_size: pure garbage should fail");
+        if (eshkol_parse_size("512X", &out)) return fail("parse_size: unrecognized suffix should fail");
+        if (eshkol_parse_size("512M!", &out)) return fail("parse_size: trailing garbage after suffix should fail");
+        if (eshkol_parse_size("512 trailing", &out)) {
+            return fail("parse_size: trailing garbage after bare number should fail");
+        }
+        if (eshkol_parse_size("-5", &out)) return fail("parse_size: negative value should fail");
+    }
+
     const eshkol_resource_limits_t defaults = eshkol_get_default_limits();
     const eshkol_resource_limits_t* active_defaults = eshkol_get_limits();
     if (active_defaults->max_heap_bytes != defaults.max_heap_bytes) {

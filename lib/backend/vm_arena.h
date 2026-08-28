@@ -46,6 +46,16 @@
  * Same environment variable as the native engine and the VM evacuator, so one
  * switch arms every route. The lookup is cached per translation unit; the
  * value cannot change during a run.
+ *
+ * This is the ONE place the bytecode VM reads ESHKOL_ARENA_POISON.
+ * vm_region_evac.c's evacuator calls this function directly rather than
+ * re-reading the variable itself, so the VM side can never disagree with
+ * itself about whether poisoning is on. The native engine
+ * (lib/core/runtime_arena_diagnostics_hosted.cpp) is a separate hosted
+ * component that cannot see this freestanding header, so it keeps its own
+ * accessor — but that accessor uses the identical "set and not exactly `0`"
+ * rule below, so the two substrates agree on every value, including the
+ * `ESHKOL_ARENA_POISON=01` case that used to arm only this one.
  */
 #define VM_ARENA_POISON_BYTE 0xCB
 

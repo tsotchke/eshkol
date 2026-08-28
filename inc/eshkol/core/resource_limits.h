@@ -202,6 +202,29 @@ void eshkol_set_limits(const eshkol_resource_limits_t* limits);
  */
 const eshkol_resource_limits_t* eshkol_get_limits(void);
 
+/**
+ * @brief Parse a byte-size string with an optional binary-multiple suffix.
+ *
+ * Accepts optional leading/trailing whitespace around a non-negative decimal
+ * value, optionally followed by a size suffix: `K`/`k`, `M`/`m`, or `G`/`g`
+ * (binary: 1024, 1024^2, 1024^3), each optionally followed by `i`/`I` and/or
+ * `B`/`b` — so `512M`, `512MB`, `512MiB`, and `512 MiB` are all accepted and
+ * equivalent. This is the parser every `ESHKOL_*` size environment variable
+ * (`ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STRING_LEN`, `ESHKOL_STACK_SIZE`, ...) is
+ * documented to accept.
+ *
+ * Any content left over after the (optional) suffix — including an
+ * unrecognized suffix letter — is trailing garbage and fails the parse.
+ *
+ * @param str Candidate string; NULL fails.
+ * @param out_bytes Receives the parsed byte count on success; left
+ *        unmodified on failure.
+ * @return true on success, false on any parse failure (NULL/empty input,
+ *         non-numeric value, negative value, unrecognized suffix, trailing
+ *         garbage, or overflow of `size_t`).
+ */
+bool eshkol_parse_size(const char* str, size_t* out_bytes);
+
 // ============================================================================
 // Memory Tracking
 // ============================================================================

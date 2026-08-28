@@ -2895,13 +2895,16 @@
       "category": "geometry"
     },
     {
-      "name": "dataloader-has-next",
+      "name": "dataloader-has-next?",
       "ids": [],
       "arity": null,
       "backends": [
         "native_llvm"
       ],
-      "category": "tensor_ad"
+      "category": "tensor_ad",
+      "aliases": [
+        "dataloader-has-next"
+      ]
     },
     {
       "name": "dataloader-length",

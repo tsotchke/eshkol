@@ -80,15 +80,21 @@ static int vm_evac_enabled(void) {
  *          arena poisoning reads (lib/core/runtime_arena_diagnostics_hosted.cpp),
  *          so one setting arms both substrates in a mixed gate.
  *
+ * Delegates to vm_arena_poison_enabled() (vm_arena.h) rather than reading the
+ * variable a second time through vm_host_env_flag(): this file is textually
+ * included into eshkol_vm.c *after* vm_arena.h, both are part of the same VM
+ * unity translation unit, and a second independent getenv() read previously
+ * used vm_host_env_flag()'s first-byte test while vm_arena.h compared the
+ * whole string — so e.g. `ESHKOL_ARENA_POISON=01` armed the arena's poison
+ * stamping but not the evacuator's. One accessor, one answer.
+ *
  * Poison mode makes a reclamation bug LOUD instead of silent: dead blocks are
  * stamped with 0xCB and kept mapped rather than returned to the allocator, and
  * retired object slots are never recycled. A reference the mark phase missed
  * therefore reads a NULL object slot (caught by is_valid_heap_ptr) or 0xCB
  * bytes, instead of aliasing whatever was allocated next. */
 static int vm_evac_poison(void) {
-    static int cached = -1;
-    if (cached < 0) cached = vm_host_env_flag("ESHKOL_ARENA_POISON");
-    return cached;
+    return vm_arena_poison_enabled();
 }
 
 /** @return 1 when retired object-table indices may be handed out again.

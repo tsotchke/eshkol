@@ -1,0 +1,10 @@
+# BI-10 fixture: docs/breakdown/RUNTIME_CONFIGURATION.md's [types] section.
+#
+# Exercises the config-file path for --strict-types / --unsafe, loaded by
+# tests/core/resource_limits_test.cpp via eshkol_config_load_file(). Both
+# values are non-default so the test can tell a real parse from a config that
+# was silently left at eshkol_config_defaults().
+
+[types]
+strict = true
+unsafe = true

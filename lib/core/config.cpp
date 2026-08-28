@@ -273,6 +273,19 @@ void apply_config_section(eshkol_config_t* config, const ConfigSection& section)
                 config->color_output = parse_bool(value.c_str());
             }
         }
+
+        // Type system section (docs/breakdown/RUNTIME_CONFIGURATION.md's
+        // `[types]` block). Mirrors what --strict-types / --unsafe set on the
+        // CLI; the CLI still wins when passed, since exe/eshkol-run.cpp only
+        // overwrites these two fields on the loaded config when the flag was
+        // actually given (see the comment at its call site).
+        if (section.name == "types" || section.name.empty()) {
+            if (key == "strict") {
+                config->strict_types = parse_bool(value.c_str());
+            } else if (key == "unsafe") {
+                config->unsafe_mode = parse_bool(value.c_str());
+            }
+        }
     }
 }
 

@@ -58,7 +58,15 @@ built against a different runtime layout.
 
 ## Resource limits
 
-Read by `lib/core/resource_limits.cpp`. Size vars accept `K`/`M`/`G` suffixes.
+Read by `lib/core/resource_limits.cpp` (`ESHKOL_STACK_SIZE` is read in
+`lib/core/runtime_stack_hosted.cpp`, but parsed by the same shared
+`eshkol_parse_size()`). Size vars accept `K`/`M`/`G` suffixes, optionally
+followed by `i`/`I` and/or `B`/`b` — so `512M`, `512MB`, and `512MiB` are all
+equivalent. A value below a variable's own floor (`ESHKOL_STACK_SIZE`'s is
+1 MiB) falls back to the default silently for every variable in the table.
+`ESHKOL_STACK_SIZE` additionally reports a value that fails to parse at all
+to stderr, naming the variable and the offending value, before falling back
+to its default.
 
 | Variable | Effect | Default | Exit status when exceeded |
 |----------|--------|---------|---------------------------|
@@ -203,8 +211,14 @@ See [parallelism & threading](parallelism.md).
 | `ESHKOL_XLA_THRESHOLD` | Min size to use the XLA backend. | 100000 |
 
 More GPU tuning vars (`ESHKOL_GPU_PEAK_GFLOPS`, `ESHKOL_GPU_WAIT_TIMEOUT`,
-`ESHKOL_ENABLE_TENSORCORE`, `ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_OZAKI_*`) exist for
-backend benchmarking — see [platform build notes](../../platform/BUILD_NOTES.md).
+`ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_OZAKI_*`) exist for backend benchmarking —
+see [platform build notes](../../platform/BUILD_NOTES.md).
+
+TensorCore support is a **build-time** choice, not a runtime environment
+variable: the CMake option `ESHKOL_TENSORCORE_ENABLED` (off by default) links
+the canonical Eshkol adapter against an installed TensorCore package
+(`CMakeLists.txt`). There is no `ESHKOL_ENABLE_TENSORCORE` runtime knob — no
+code reads it — so setting it in the environment has no effect either way.
 
 ## Agent subprocess sandbox
 

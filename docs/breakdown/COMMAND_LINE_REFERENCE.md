@@ -23,11 +23,34 @@ eshkol-run -r <file.esk>
 
 | Flag | Short | Argument | Description |
 |------|-------|----------|-------------|
-| `--output` | `-o` | `<path>` | Output path for the compiled binary. Without this flag, the binary is named from the first source file. |
+| `--output` | `-o` | `<path>` | Output path for the compiled artifact. Without this flag, the binary is named from the first source file. The artifact kind follows the other flags: a native binary by default, a relocatable object with `-c`/`--compile-only`, a shared library with `--shared-lib`, or a WebAssembly module with `--wasm`. |
 | `--compile-only` | `-c` | (none) | Compile to an object file (`.o`) only; do not link into an executable. Also produces a `.bc` bitcode file for REPL JIT use. |
+| `--emit-object` | (none) | (none) | Alias for `--compile-only`. |
+| `--emit-depfile` | (none) | `<path>` | With `-o`/`--emit-object`, write a Makefile-format depfile listing the entry source plus every file transitively reached via `(load ...)`/`(import ...)`/`(require ...)`, so a build system (e.g. `ninja DEPFILE`) recompiles the object when any of them change. |
 | `--shared-lib` | `-s` | (none) | Link a loadable shared library (`libNAME.dylib` / `libNAME.so` / `NAME.dll`) with no `main` function. All symbols use `LinkOnceODRLinkage` so user programs can override them, and exported functions use the platform C ABI for tagged values so a host can dlopen the library, call `__eshkol_lib_init__(arena)` once, then call them. Add `-c`/`--emit-object` (or name a `-o <path>.o`) to stop at the library-mode object instead; that object keeps Eshkol's internal convention and is meant for linking into other Eshkol modules, not for calling from C. |
 | `--wasm` | `-w` | (none) | Compile to WebAssembly (`.wasm`) format. Sets the target triple to `wasm32-unknown-unknown`. |
 | `--emit-eskb` | `-B` | `<path>` | Emit ESKB bytecode format to the specified path. Used by the bytecode VM subsystem. |
+
+#### Execution Profiles and Targets
+
+| Flag | Short | Argument | Description |
+|------|-------|----------|-------------|
+| `--profile` | (none) | `<name>` | Select an execution profile: `hosted-native`, `hosted-wasm`, `hosted-vm`, `freestanding-kernel-native`, `freestanding-mcu-native`, `freestanding-vm`, `embedded-vm`. |
+| `--target` | (none) | `<triple>` | Set the LLVM target triple explicitly. |
+| `--require-vm-entry` | (none) | `<name>` | Require a named VM entry point to exist in emitted ESKB output (VM profiles with `--emit-eskb` only). |
+| `--require-vm-entry-zero-arg` | (none) | `<name>` | Require a named zero-argument VM entry point to exist in emitted ESKB output (VM profiles with `--emit-eskb` only). |
+| `--features` | (none) | (none) | Print this build's compile-time capabilities (LLVM backend, GPU/Metal/CUDA, BLAS, XLA, supported tensor dtypes) as machine-parseable `KEY=VALUE` lines, then exit. Values describe the binary, not the current invocation. |
+| `--abi-fingerprint` | (none) | (none) | Print the object-ABI fingerprint this build was compiled against (ADR-0012, `inc/eshkol/abi_fingerprint.h`): the guard symbol name, the ABI version, header size, subtype offset and payload alignment, plus the linked runtime's own header size, as `KEY=VALUE` lines, then exit. Previously readable only via `nm` on a built binary or the two C accessors (`eshkol_abi_fingerprint_name()`, `eshkol_abi_runtime_header_size()`); this is the same information from the CLI, e.g. for a deploy check comparing two binaries. |
+
+#### Build-System Compatibility
+
+These flags are accepted so `eshkol-run` can slot into a C-toolchain-style build invocation; they either have a real effect (`-I`) or are accepted and otherwise ignored.
+
+| Flag | Short | Argument | Description |
+|------|-------|----------|-------------|
+| `-I` | (none) | `<dir>` | Add a source/module search path (merged into `ESHKOL_PATH`). |
+| `-D` | (none) | `<name[=value]>` | Accepted for CMake-style object builds; Eshkol source semantics do not yet use preprocessor defines. |
+| `-fPIC` | (none) | (none) | Accepted for build-system compatibility; LLVM object emission already produces relocatable code on this path. |
 
 **Examples:**
 
@@ -143,6 +166,7 @@ eshkol-run program.esk -o program -L build/
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--help` | `-h` | Print the help message and exit. |
+| `--version` | (none) | Print version information and exit. |
 
 ### Input Files
 

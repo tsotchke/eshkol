@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/eshkol.h>
+#include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
@@ -1157,6 +1158,7 @@ static struct option long_options[] = {
     {"require-vm-entry", required_argument, nullptr, 262},
     {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
     {"features", no_argument, nullptr, 264},
+    {"abi-fingerprint", no_argument, nullptr, 266},
     {0, 0, 0, 0}
 };
 
@@ -2253,7 +2255,10 @@ static void print_help(int x = 0)
         "\t--debug:[-d] = Debugging information added inside the program.\n"
         "\t--dump-ast:[-a] = Dumps the AST into a .ast file.\n"
         "\t--dump-ir:[-i] = Dumps the IR into a .ll file.\n"
-        "\t--output:[-o] = Outputs into a binary file.\n"
+        "\t--output:[-o] = Set the output path. The artifact kind follows the\n"
+        "\t    other flags: a native binary by default, a relocatable object\n"
+        "\t    with -c/--compile-only, a shared library with --shared-lib, or\n"
+        "\t    a WebAssembly module with --wasm.\n"
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
         "\t--emit-object = Alias for --compile-only.\n"
         "\t--emit-depfile PATH = With -o/--emit-object, write a Makefile-format\n"
@@ -2276,14 +2281,22 @@ static void print_help(int x = 0)
         "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
         "\t              freestanding-mcu-native, freestanding-vm, embedded-vm.\n"
         "\t--target TRIPLE = Set the LLVM target triple.\n"
+        "\t--emit-eskb:[-B] PATH = Emit a bytecode-VM ESKB module to PATH\n"
+        "\t    instead of a native artifact.\n"
         "\t--require-vm-entry NAME = Require a named VM entry in emitted ESKB.\n"
         "\t--require-vm-entry-zero-arg NAME = Require a named zero-argument VM entry in emitted ESKB.\n"
         "\t--lib:[-l] = Links a shared library to the resulting executable.\n"
         "\t--lib-path:[-L] = Adds a directory to the library search path.\n"
         "\t--no-stdlib:[-n] = Do not auto-load the standard library.\n"
         "\t--eval:[-e] = JIT evaluate an expression; output is shown via (display ...).\n"
-        "\t--run:[-r] = JIT run a file (interpret without compiling).\n"
+        "\t--run:[-r] = JIT-compile and run a file in memory (no artifact is\n"
+        "\t    written). Takes the input file as a plain positional argument,\n"
+        "\t    not an option value: `-r file.esk`, not `--run=file.esk`.\n"
         "\t--version = Print version information.\n"
+        "\t--features = Print this build's compile-time capabilities as\n"
+        "\t    machine-parseable KEY=VALUE lines, then exit.\n"
+        "\t--abi-fingerprint = Print the object-ABI fingerprint (ADR-0012)\n"
+        "\t    this build was compiled against, as KEY=VALUE lines, then exit.\n"
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
         "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
@@ -4272,6 +4285,19 @@ int main(int argc, char **argv)
             compile_only = 1;
             object_output_requested = 1;
             break;
+        case 266: {
+            /* ADR-0012: the object-ABI fingerprint (inc/eshkol/abi_fingerprint.h)
+             * was previously readable only via `nm` on a built binary or the two
+             * C accessors it exposes. Surface it on the CLI so a deploy/mesh
+             * check can compare two binaries without a debugger. */
+            printf("symbol=%s\n", eshkol_abi_fingerprint_name());
+            printf("version=%d\n", ESHKOL_OBJECT_ABI_VERSION);
+            printf("header_size=%d\n", ESHKOL_OBJECT_ABI_HEADER_SIZE);
+            printf("subtype_offset=%d\n", ESHKOL_OBJECT_ABI_SUBTYPE_OFF);
+            printf("payload_align=%d\n", ESHKOL_OBJECT_ABI_PAYLOAD_ALIGN);
+            printf("runtime_header_size=%zu\n", eshkol_abi_runtime_header_size());
+            return 0;
+        }
         case 'f':
             /* Accept -fPIC/-f PIC for build-system compatibility. LLVM object
              * emission already produces relocatable code for this path. */
