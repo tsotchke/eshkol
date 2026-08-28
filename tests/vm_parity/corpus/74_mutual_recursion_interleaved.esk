@@ -1,0 +1,6 @@
+;; LE-08: an intervening top-level expression must not split recursion bindings.
+(define (interleaved-a n) (if (= n 0) 0 (interleaved-b (- n 1))))
+(display 0)
+(define (interleaved-b n) (if (= n 0) 0 (interleaved-a (- n 1))))
+(display (interleaved-a 5000))
+(display "PASS: interleaved mutual recursion")

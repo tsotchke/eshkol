@@ -1,6 +1,15 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+#ifndef ESHKOL_VM_NO_DISASM
+/* C ABI bridge to the platform resolver. The VM is a C unity build, while
+ * the canonical resolver is C++ and is already part of eshkol-static. */
+extern int eshkol_resolve_module_source_path_c(const char* module_name,
+                                               const char* source_path,
+                                               char* out_path,
+                                               size_t out_size);
+#endif
+
 /* Element count above which a `#(...)` / `(vector ...)` literal is built by
  * allocate-then-fill (constant operand-stack depth) instead of by pushing every
  * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
@@ -35,6 +44,23 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * closure.arity, which vm_closure_arity() reports to `gradient`. */
 #define VM_PACK_FUNC_ARITY(pc, arity) \
     ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
+
+/* OP_TAIL_CALL_POPN carries both pieces of information in its one operand.
+ * Local scopes are bounded by MAX_LOCALS and calls by the 16-bit bytecode
+ * operand, so this remains lossless for the VM ISA. */
+#define VM_PACK_TAIL_CALL_POPN(local_count, argc) \
+    ((((int32_t)(local_count)) << 16) | ((int32_t)(argc) & 0xFFFF))
+
+static void vm_emit_call(FuncChunk* c, int argc, int tail) {
+    if (!tail) {
+        chunk_emit(c, OP_CALL, argc);
+    } else if (c->tail_cleanup > 0) {
+        chunk_emit(c, OP_TAIL_CALL_POPN,
+                   VM_PACK_TAIL_CALL_POPN(c->tail_cleanup, argc));
+    } else {
+        chunk_emit(c, OP_TAIL_CALL, argc);
+    }
+}
 
 /* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
  *
@@ -74,6 +100,14 @@ static void vm_clear_redefined_toplevel_names(void) {
     g_vm_n_redefined = 0;
 }
 
+/* Top-level procedure bindings are allocated before any user form is
+ * compiled. This lets mutually recursive definitions be separated by
+ * expressions without changing those expressions' evaluation order. */
+#define VM_MAX_FORWARD_FUNCTIONS 256
+static char g_vm_forward_function_names[VM_MAX_FORWARD_FUNCTIONS][128];
+static int g_vm_forward_function_slots[VM_MAX_FORWARD_FUNCTIONS];
+static int g_vm_n_forward_functions = 0;
+
 /** @brief Register @p name as defined more than once at the program's top
  *         level (idempotent; silently ignored past the table capacity, which
  *         only costs the old stale-binding behaviour). */
@@ -110,6 +144,72 @@ static const char* vm_define_bound_name(Node* e) {
         return target->children[0]->symbol;
     }
     return NULL;
+}
+
+/** @return the procedure name bound by a function-definition form. */
+static const char* vm_define_function_name(Node* e) {
+    if (!e || e->type != N_LIST || e->n_children < 3 ||
+        e->children[0]->type != N_SYMBOL ||
+        strcmp(e->children[0]->symbol, "define") != 0)
+        return NULL;
+    Node* target = e->children[1];
+    if (target->type != N_LIST || target->n_children < 1 ||
+        target->children[0]->type != N_SYMBOL)
+        return NULL;
+    return target->children[0]->symbol;
+}
+
+static void vm_clear_forward_function_slots(void) {
+    g_vm_n_forward_functions = 0;
+}
+
+/** @return the predeclared root slot for @p name, or -1 if none exists. */
+static int vm_forward_function_slot(FuncChunk* c, const char* name) {
+    if (!c || c->enclosing != NULL || !name) return -1;
+    for (int i = 0; i < g_vm_n_forward_functions; ++i)
+        if (strcmp(g_vm_forward_function_names[i], name) == 0)
+            return g_vm_forward_function_slots[i];
+    return -1;
+}
+
+/** @brief Reserve one root slot for every unique, non-redefined function
+ *         definition while preserving source order for execution. */
+static void vm_predeclare_function_slots(FuncChunk* c, Node** forms, int n) {
+    vm_clear_forward_function_slots();
+    if (!c || !forms) return;
+    for (int i = 0; i < n && g_vm_n_forward_functions < VM_MAX_FORWARD_FUNCTIONS; ++i) {
+        const char* name = vm_define_function_name(forms[i]);
+        if (!name || vm_is_redefined_toplevel_name(name)) continue;
+        if (vm_forward_function_slot(c, name) >= 0) continue;
+        chunk_emit(c, OP_NIL, 0);
+        int slot = add_local(c, name);
+        strncpy(g_vm_forward_function_names[g_vm_n_forward_functions], name, 127);
+        g_vm_forward_function_names[g_vm_n_forward_functions][127] = '\0';
+        g_vm_forward_function_slots[g_vm_n_forward_functions] = slot;
+        g_vm_n_forward_functions++;
+    }
+}
+
+/** @brief Parse a source string once to reserve its top-level procedure
+ *         locations before the ESKB emitter's form-by-form pass. */
+static void vm_prescan_forward_function_slots(FuncChunk* c, const char* source) {
+    vm_clear_forward_function_slots();
+    if (!c || !source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+    Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+    vm_predeclare_function_slots(c, forms, n_forms);
+    for (int i = 0; i < n_forms; ++i) free_node(forms[i]);
+    src_ptr = saved_src;
 }
 
 /** @brief Register every name that @p n top-level @p forms define more than
@@ -740,39 +840,34 @@ static const Node* vm_import_set_library_datum(const Node* set) {
 static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
     if (!mod_name || !*mod_name) return;
 
-    /* Track already-loaded modules to avoid double-loading */
-    for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
-        if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
-    }
-    if (g_compiler_ctx.n_loaded < 64)
-        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
-
     /* stdlib is the prelude — builtins already available */
     if (strcmp(mod_name, "stdlib") == 0) return;
-
-    /* Build file path: module.name → lib/module/name.esk */
-    char path[512];
-    snprintf(path, sizeof(path), "lib/");
-    int pi = 4;
-    for (const char* p = mod_name; *p && pi < 500; p++) {
-        path[pi++] = (*p == '.') ? '/' : *p;
-    }
-    path[pi] = '\0';
-    strncat(path, ".esk", sizeof(path) - pi - 1);
 
 #ifdef ESHKOL_VM_NO_DISASM
     /* WASM mode: no filesystem access. Prelude builtins already available. */
     return;
 #else
+    /* Both dotted module names and path literals go through the same resolver
+     * as native JIT/AOT. Its source_path argument makes nested relative loads
+     * resolve beside the file currently being compiled. */
+    char path[1024];
+    if (!eshkol_resolve_module_source_path_c(
+            mod_name, g_compiler_ctx.source_path, path, sizeof(path)))
+        return;
+
+    /* Track the canonical path, not the spelling, so `x.esk` and `./x.esk`
+     * cannot compile the same module twice. */
+    for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
+        if (strcmp(g_compiler_ctx.loaded_modules[i], path) == 0) return;
+    }
+    if (g_compiler_ctx.n_loaded < 64) {
+        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded], path, 127);
+        g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded][127] = '\0';
+        g_compiler_ctx.n_loaded++;
+    }
+
     /* Read and parse the file */
     FILE* mf = fopen(path, "r");
-    if (!mf) {
-        /* Try alternative path: replace ALL dots with slashes */
-        char alt[512];
-        snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-        for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
-        mf = fopen(alt, "r");
-    }
     if (mf) {
         fseek(mf, 0, SEEK_END);
         long len = ftell(mf);
@@ -791,7 +886,10 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
              * top-level form — every later local in that module, and in the
              * importing unit, then addressed the wrong slot. */
             const char* saved_src = src_ptr;
+            const char* saved_source_path = g_compiler_ctx.source_path;
+            char* owned_source_path = strdup(path);
             src_ptr = src;
+            if (owned_source_path) g_compiler_ctx.source_path = owned_source_path;
             while (1) {
                 skip_ws();
                 if (!*src_ptr) break;
@@ -803,6 +901,8 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
                 free_node(expr);
             }
             src_ptr = saved_src;
+            g_compiler_ctx.source_path = saved_source_path;
+            free(owned_source_path);
             free(src);
         } else {
             fclose(mf);
@@ -845,6 +945,18 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
      * (empty/absent module, or a malformed require). */
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
     return;
+}
+
+/** @brief Compile `(load "path.esk")` through the same source resolver used
+ *         by require/import. Loaded definitions become bindings in the
+ *         current top-level environment; a file with no binding emits NIL so
+ *         the caller's normal expression-pop bookkeeping remains balanced. */
+static void compile_form_load(FuncChunk* c, Node* node, int tail) {
+    (void)tail;
+    int locals_at_start = c->n_locals;
+    if (node->n_children == 2 && node->children[1]->type == N_STRING)
+        vm_compile_module_by_name(c, node->children[1]->symbol);
+    if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
 /** @brief Emits `(define <alias> <target>)` through the ordinary define path. */
@@ -1433,11 +1545,13 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
     }
 
     int scoped_locals = c->n_locals - saved_locals;
+    int prior_cleanup = c->tail_cleanup;
+    c->tail_cleanup += scoped_locals;
     for (int i = 2; i < node->n_children; i++) {
         if (i > 2) chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i],
-                     scoped_locals == 0 && tail && i == node->n_children - 1);
+        compile_expr(c, node->children[i], tail && i == node->n_children - 1);
     }
+    c->tail_cleanup = prior_cleanup;
     if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
 }
@@ -1775,14 +1889,18 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     }
     int n_let_locals = c->n_locals - saved_locals;
 
-    /* Compile body — don't use tail position if locals need cleanup */
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    /* A tail transfer performs the local cleanup while reusing this frame. */
+    int prior_cleanup = c->tail_cleanup;
+    c->tail_cleanup += n_let_locals;
+    int body_tail = tail;
     for (int i = 2; i < node->n_children; i++) {
         if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
         else compile_expr(c, node->children[i], body_tail);
     }
 
-    /* Scope cleanup: remove let-bound locals, keep body result. */
+    c->tail_cleanup = prior_cleanup;
+    /* Scope cleanup: remove let-bound locals, keep body result. A path that
+     * emitted OP_TAIL_CALL_POPN never reaches this instruction. */
     if (n_let_locals > 0) {
         chunk_emit(c, OP_POPN, n_let_locals);
     }
@@ -1826,11 +1944,14 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
         }
     }
     int n_let_locals = c->n_locals - saved_locals;
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    int prior_cleanup = c->tail_cleanup;
+    c->tail_cleanup += n_let_locals;
+    int body_tail = tail;
     for (int i = 2; i < node->n_children; i++) {
         if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
         else compile_expr(c, node->children[i], body_tail);
     }
+    c->tail_cleanup = prior_cleanup;
     if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
@@ -1923,13 +2044,15 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_POP, 0);                 /* discard result */
     }
 
-    /* Body — if there are locals to clean up, don't compile in tail position
-     * (TAIL_CALL would skip the POPN cleanup) */
-    int body_tail = (n_let_locals > 0) ? 0 : tail;
+    /* OP_TAIL_CALL_POPN combines frame reuse with cleanup of these bindings. */
+    int prior_cleanup = c->tail_cleanup;
+    c->tail_cleanup += n_let_locals;
+    int body_tail = tail;
     for (int i = 2; i < node->n_children; i++) {
         if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
         else compile_expr(c, node->children[i], body_tail);
     }
+    c->tail_cleanup = prior_cleanup;
     if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
     c->n_locals = saved_locals;
     c->scope_depth--;
@@ -1987,11 +2110,14 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
         }
     }
     {
-        int body_tail = (n_let_locals > 0) ? 0 : tail;
+        int prior_cleanup = c->tail_cleanup;
+        c->tail_cleanup += n_let_locals;
+        int body_tail = tail;
         for (int i = 2; i < node->n_children; i++) {
             if (i < node->n_children - 1) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_POP, 0); }
             else compile_expr(c, node->children[i], body_tail);
         }
+        c->tail_cleanup = prior_cleanup;
     }
     if (n_let_locals > 0) chunk_emit(c, OP_POPN, n_let_locals);
     c->n_locals = saved_locals;
@@ -2114,7 +2240,10 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
          * rather than binding a new one, so the body below also resolves the
          * name to that slot. */
         int redef_slot = vm_redefinition_target_slot(c, fname);
-        int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
+        int forward_slot = vm_forward_function_slot(c, fname);
+        int func_slot = redef_slot >= 0 ? redef_slot :
+                        (forward_slot >= 0 ? forward_slot : add_local(c, fname));
+        int stores_existing_slot = redef_slot >= 0 || forward_slot >= 0;
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
@@ -2266,11 +2395,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (redef_slot >= 0) {
-            /* R7RS §5.3.1: store the new procedure into the name's existing
-             * location. Must come after the open-upvalue conversion above,
-             * which needs the closure on the stack top. */
-            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+        if (stores_existing_slot) {
+            /* Store into the already-reserved location. For a redefinition
+             * this is R7RS §5.3.1; for a forward procedure slot it makes all
+             * closures that captured the slot observe the definition when its
+             * source position is reached. */
+            chunk_emit(c, OP_SET_LOCAL, func_slot);
             chunk_emit(c, OP_NIL, 0);
         }
         chunk_free_arrays(&func);
@@ -3212,10 +3342,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
-            chunk_emit(c, OP_TAIL_CALL, argc);
-        else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, tail);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
     }
@@ -3754,10 +3881,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0);
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
-            compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last) chunk_emit(c, OP_POP, 0);
         }
+        int jend = placeholder(c);
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+        chunk_emit(c, OP_VOID, 0);
+        patch(c, jend, OP_JUMP, c->code_len);
         return;
     }
 
@@ -3767,14 +3898,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NOT, 0);
         int jf = placeholder(c);
         for (int i = 2; i < node->n_children; i++) {
-            compile_expr(c, node->children[i], 0);
-            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
+            int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last) chunk_emit(c, OP_POP, 0);
         }
+        int jend = placeholder(c);
         patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
+        chunk_emit(c, OP_VOID, 0);
+        patch(c, jend, OP_JUMP, c->code_len);
         return;
     }
 
     /* (require module.name) — load and compile the module */
+    if (is_sym(head, "load") && node->n_children == 2 &&
+        node->children[1]->type == N_STRING) {
+        compile_form_load(c, node, tail);
+        return;
+    }
     if (is_sym(head, "require")) { compile_form_require(c, node, tail); return; }
     /* (define-library (name …) <declaration> …) — R7RS-small 5.6.1 */
     if (is_sym(head, "define-library") && node->n_children >= 2 &&
@@ -4251,7 +4391,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_DUP, 0);
             int jf = placeholder(c);
             chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], 0);
+            compile_expr(c, node->children[i],
+                         tail && i == node->n_children - 1);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         }
         return;
@@ -4265,7 +4406,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NOT, 0);
             int jf = placeholder(c);
             chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], 0);
+            compile_expr(c, node->children[i],
+                         tail && i == node->n_children - 1);
             patch(c, jf, OP_JUMP_IF_FALSE, c->code_len);
         }
         return;
@@ -4552,10 +4694,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (tail)
-            chunk_emit(c, OP_TAIL_CALL, argc);
-        else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, tail);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;
     }

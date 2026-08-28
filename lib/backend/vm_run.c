@@ -80,6 +80,7 @@ void vm_run(VM* vm) {
         [OP_CLOSURE]       = &&lbl_CLOSURE,
         [OP_CALL]          = &&lbl_CALL,
         [OP_TAIL_CALL]     = &&lbl_TAIL_CALL,
+        [OP_TAIL_CALL_POPN] = &&lbl_TAIL_CALL,
         [OP_RETURN]        = &&lbl_RETURN,
         [OP_JUMP]          = &&lbl_JUMP,
         [OP_JUMP_IF_FALSE] = &&lbl_JUMP_IF_FALSE,
@@ -451,7 +452,8 @@ void vm_run(VM* vm) {
     }
 
     lbl_TAIL_CALL: {
-        int argc = instr.operand;
+        int argc = instr.op == OP_TAIL_CALL_POPN
+                       ? (instr.operand & 0xFFFF) : instr.operand;
         Value func = vm->stack[vm->sp - 1 - argc];
         vm_language_coverage_named_call(vm, func);
         if (func.type == VAL_PARAMETER_OBJ) {
@@ -968,8 +970,10 @@ vm_exit:
             break;
         }
 
-        case OP_TAIL_CALL: {
-            int argc = instr.operand;
+        case OP_TAIL_CALL:
+        case OP_TAIL_CALL_POPN: {
+            int argc = instr.op == OP_TAIL_CALL_POPN
+                           ? (instr.operand & 0xFFFF) : instr.operand;
             Value func = vm->stack[vm->sp - 1 - argc];
             vm_language_coverage_named_call(vm, func);
             if (func.type == VAL_PARAMETER_OBJ) {

@@ -112,7 +112,13 @@ typedef enum {
      * control state and `set!` mutations are silently undone (SW-52). */
     OP_GLOBAL_MARK = 66,
 
-    OP_COUNT = 67
+    /* operand = (locals-to-discard << 16) | argument count.  This is the
+     * tail-call counterpart of OP_POPN: a tail call in a local-binding body
+     * must reuse the current frame before the callee's arguments overwrite
+     * those locals. */
+    OP_TAIL_CALL_POPN = 67,
+
+    OP_COUNT = 68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;

@@ -1,0 +1,23 @@
+;;; IF-08: a parameter object and its interior tagged values survive region pop.
+;;; The parameter control block is arena-owned, while its malloc-owned stack,
+;;; converter, and current binding can retain values allocated in that region.
+
+(define escaped
+  (with-region ('parameter 4096)
+    (make-parameter (lambda (x) (+ x 1)))))
+
+(define converted
+  (with-region ('parameter-converter 4096)
+    (make-parameter 0 (lambda (x) (+ x 100)))))
+
+;; The default closure was in the popped region and is read through the
+;; parameter's dynamic-binding stack after evacuation.
+(define closure-ok (= ((escaped) 41) 42))
+;; The converter is an interior tagged value and must remain callable too.
+(define converter-ok (= (converted) 100))
+(parameterize ((converted 7))
+  (set! converter-ok (and converter-ok (= (converted) 107))))
+
+(if (and closure-ok converter-ok)
+    (begin (display "PASS: parameter evacuation deep-walk") (newline))
+    (begin (display "FAIL: parameter evacuation deep-walk") (newline) (exit 1)))

@@ -756,6 +756,7 @@ typedef struct FuncChunk {
     struct FuncChunk* enclosing;
     int param_count;
     int stack_depth;  /* compile-time stack depth (values above fp) */
+    int tail_cleanup; /* active local slots to discard on a tail transfer */
 } FuncChunk;
 
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its

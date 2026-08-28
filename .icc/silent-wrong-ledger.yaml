@@ -2541,8 +2541,10 @@ entries:
   - id: IF-08
     bucket: IN-FLIGHT
     silent_wrong_class: false
-    status: open
-    title: "HEAP_SUBTYPE_PARAMETER is leaf-copied (not deep-walked) by the native region evacuator; the bytecode VM's own evacuator already deep-walks the equivalent row"
+    status: closed
+    closed_at: "vm-semantics-worktree"
+    closed_by: "native parameter evacuation deep-walk"
+    title: "HEAP_SUBTYPE_PARAMETER is deep-walked by the native region evacuator"
     observed: >-
       Fixing INV-oalr-interior-pointer-deepwalk (B5/N3, 2026-08-26 audit) to
       derive its heap-subtype-enum side from source-verified per-member
@@ -2566,25 +2568,20 @@ entries:
       "current_value, converter, save_stack[0..stack_depth)" }` — the VM
       engine already treats this exact shape as needing a deep walk; the
       native engine does not.
+    repro: "tests/memory/region_evac_parameter_test.esk"
     correct: >-
-      Not yet established by a failing repro on this pass — see below. If a
-      parameter object outlives a region only via its own arena allocation
-      (never escaping via a mutation the write barrier promotes), and the
-      converter/stack contents never point into a shorter-lived region than
-      the parameter itself, the current LEAF treatment may be sound by
-      construction rather than by oversight. This entry exists because the
-      classification was UNDOCUMENTED, not because a wrong value has been
-      measured.
-    repro: >-
-      Not yet constructed. A candidate shape: `(with-region (make-parameter
-      (lambda (x) x)))` promoted out of the region while a
-      `parameterize`-installed converter or stack entry that IS
-      region-resident is still reachable, then read back after the region
-      pops. Needs a probe analogous to
-      tests/memory/vm_region_evac_subtype_coverage_test.esk on the native
-      engine.
-    fix_lane: "Unassigned — needs investigation before a native-side fix or an explicit reviewed-LEAF justification lands"
-    evidence: "inc/eshkol/eshkol.h HEAP_SUBTYPE_PARAMETER tag comment; lib/core/runtime_regions.cpp evac_kind_for default case; lib/core/runtime_parameters_hosted.cpp eshkol_param_t; lib/backend/vm_region_evac.c HEAP_PARAMETER row"
+      A parameter object that escapes a region remains callable and preserves
+      its default/current value and converter after the region is popped.
+    fix: >-
+      HEAP_SUBTYPE_PARAMETER is tagged [DEEPWALK] and evac_kind_for dispatches
+      it to EVAC_PARAMETER. A runtime-owned visitor walks the converter and
+      every current/dynamic stack value, applying evac_value forwarding while
+      keeping the private eshkol_param_t layout in its owning translation unit.
+    fix_lane: "native parameter evacuation deep-walk"
+    evidence: >-
+      tests/memory/region_evac_parameter_test.esk exercises an escaped default
+      closure, converter, and parameterize stack binding under
+      ESHKOL_ARENA_POISON=1 in native JIT and AOT CTest lanes.
     caught_by: [icc-architecture-verify-inv-oalr-interior-pointer-deepwalk-fix]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest]
 
@@ -2746,8 +2743,8 @@ entries:
     discovered_by: >-
       scripts/run_value_position_sweep.py, on its first run. This defect had been live
       on master since #427 merged and no other gate saw it.
-    caught_by: [value-position-sweep]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
+    caught_by: [value-position-sweep, vm-parity]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, differential-corpus]
     notes: >-
       Worth recording as evidence about the sweep rather than about make-string: the
       defect was introduced BY a fix for this same family, and found by the gate built
@@ -2823,8 +2820,10 @@ entries:
   - id: SW-39
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "On the VM, string-length / string-ref / vref used as FIRST-CLASS VALUES abort the VM"
+    status: closed
+    closed_at: "vm-semantics-worktree"
+    closed_by: "VM first-class accessor parity"
+    title: "VM string-length / string-ref / vref work as first-class values"
     repro: "(define (h1 f a) (f a)) (display (h1 string-length \"hello\"))"
     observed: >-
       The VM terminates with a fatal runtime error and produces no output for the probe;
@@ -2835,9 +2834,15 @@ entries:
       string-ref and vref behave the same way. All four NATIVE axes are correct.
       Reproduced by scripts/run_value_position_sweep.py --axis vm.
     discovered_by: "The value-position sweep's VM axis, first full run"
-    scope_note: >-
-      NOT fixed here, deliberately — same reasoning as SW-38. Ratcheted in
-      tests/value_position/BASELINE.json.
+    fixed_by: >-
+      The supplied VM prelude-cache regeneration binds string-length,
+      string-ref, and vref from the live BUILTINS[] table. Direct call syntax
+      retains its inline opcode fast path, while source and cached preambles
+      expose the same names as first-class closures.
+    evidence: >-
+      tests/integration/vm_first_class_builtin_families_test.esk covers each
+      accessor passed, stored, and returned; source and ESKB VM lanes run the
+      fixture through vm_first_class_builtin_families_smoke and run_vm_parity.sh.
     caught_by: [value-position-sweep]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, differential-corpus]
     notes: >-
@@ -2950,7 +2955,7 @@ entries:
     title: "Generic + over i128 raises a type error natively"
     observed: "Type error in +: expected number, vector, or tensor, got heap-object; exit 1"
     evidence: ".scratch/flaw-ledger/repro/sw_i128.esk; docs/KNOWN_ISSUES.md:262"
-    caught_by: [KNOWN_ISSUES, direct-measurement]
+    caught_by: [KNOWN_ISSUES, direct-measurement, vm-parity]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
     notes: "Paired with SW-09, the silent VM half."
 
@@ -2968,15 +2973,18 @@ entries:
   - id: LE-05
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "(load \"path.esk\") is not resolvable on the VM lane"
+    status: closed
+    closed_at: "vm-semantics-worktree"
+    closed_by: "VM shared module resolver"
+    title: "VM resolves path-literal load through the shared module resolver"
     observed: "vm-src: WARNING undefined variable 'load' then ERROR: calling non-function, fatal"
-    evidence: ".scratch/flaw-ledger/repro/sw_load_path.esk; docs/KNOWN_ISSUES.md:269"
+    evidence: "tests/vm_parity/corpus/72_load_path_literal.esk; docs/reference/language/modules.md"
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: >-
-      KNOWN_ISSUES:269 says the VM 'silently ignores a path literal'. On the vm-src lane at
-      9f2da2ab it is LOUD. The doc overstates the severity; the entry needs correcting either way.
+    fixed_by: >-
+      vm_compile_module_by_name calls the C ABI adapter for
+      platform::resolve_module_source_path, uses the current source file as
+      the base for nested loads, and caches canonical loaded paths.
 
   - id: LE-06
     bucket: LOUD-ERROR
@@ -3046,10 +3054,18 @@ entries:
   - id: LE-08
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
-    title: "VM top-level mutual recursion grouping breaks on interleaved non-define expressions"
-    evidence: "docs/KNOWN_ISSUES.md:195"
-    caught_by: [KNOWN_ISSUES]
+    status: closed
+    closed_at: "vm-semantics-worktree"
+    closed_by: "VM top-level forward procedure slots"
+    title: "VM top-level mutual recursion survives interleaved expressions"
+    correct: "Intervening top-level expressions retain source order while mutually recursive procedure bodies resolve each other."
+    fixed_by: >-
+      The VM pre-scans the complete unit and reserves one root slot for every
+      unique function definition before compiling user forms. Each define
+      stores its closure into that slot at its original source position, so
+      consecutive-definition grouping is not required.
+    evidence: "tests/vm_parity/corpus/74_mutual_recursion_interleaved.esk on VM source and VM ESKB lanes"
+    caught_by: [KNOWN_ISSUES, vm-parity]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
   - id: LE-09
@@ -3282,7 +3298,9 @@ entries:
   - id: LE-13
     bucket: LOUD-ERROR
     subtag: structural
-    status: open
+    status: closed
+    closed_at: "vm-semantics-worktree"
+    closed_by: "VM tail-position transfer cleanup"
     renumbered_from: >-
       LE-12 (collision). Filed as LE-12 on branch feat/tail-transfer-complete,
       independently of master's own LE-12 ("native curl SIGSEGVs on a
@@ -3334,27 +3352,19 @@ entries:
       more conformant than native's: its guard BODY is deliberately non-tail,
       which is what R7RS 7.3 requires (see SW-58). The gap is purely which
       SPELLINGS reach OP_TAIL_CALL.
-    fix_requires: >-
-      Propagate `tail` through compile_form_when / compile_form_unless (direct),
-      and through the last operand of `and` / `or` after resolving the DUP'd
-      short-circuit value. The let-family case needs the tail call to happen
-      after OP_POPN, i.e. an opcode that pops N locals and tail-calls in one
-      step, or the same shared tail epilogue ADR-0006 section 3 calls for on the
-      native side. Wiring tests/tco/*.esk as a VM lane in run_vm_parity.sh would
-      gate it, minus guard_loop_tail_test.esk and apply_loop_tail_test.esk which
-      the VM fails by design.
+    fix: >-
+      compile_form_when and compile_form_unless propagate tail to their last
+      body expression and leave OP_VOID on the false path. The last operand of
+      and/or receives tail in the same way. Local-binding forms track active
+      cleanup slots and emit OP_TAIL_CALL_POPN, whose threaded and switch
+      interpreters reuse the current frame while overwriting those slots with
+      callee arguments. Existing OP_POPN remains for non-transfer paths.
     evidence: >-
-      tests/vm_parity/found/when_tail_call_no_tco.esk (pre-existing) and
-      tests/vm_parity/found/vm_tail_let_locals_no_tco.esk, with the two CONTROLS
-      that bound the finding committed beside them:
-      vm_tail_arity_ok.esk and vm_tail_indirect_ok.esk, both of which the VM
-      answers correctly at 200,000 hops. The
-      depth-parametric recursion harness has NO VM lane at all
-      (scripts/run_recursion_depth.sh mentions the VM only in a comment about
-      LLVM musttail), which is why a 256-frame ceiling on five tail spellings
-      has no gate.
-    caught_by: [esh-0102c-vm-assessment, parity-baselines]
-    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, recursion-depth-parametric]
+      tests/vm_parity/corpus/73_vm_tail_position_forms.esk exercises when,
+      unless, and, or, and local-allocating let mutual recursion at 5,000
+      hops on VM source and VM ESKB lanes through scripts/run_vm_parity.sh.
+    caught_by: [esh-0102c-vm-assessment, parity-baselines, vm-parity]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, recursion-depth-parametric]
     notes: >-
       Bucket LOUD-ERROR follows LE-07's classification of the same
       exit-0-with-stderr shape, and LE-07's "Borderline SILENT-WRONG" note
@@ -6311,8 +6321,8 @@ entries:
       Invoke-SimpleCompileRunSuite and Invoke-TimedCompileRunSuite, plus
       Invoke-XlaSuite's inline `^FAIL:`/`PASS`/`error:` checks, through it
       - six call sites total; none of the suites' own FailRegex/
-      RuntimeErrorRegex string literals changed. Verified on a real
-      Windows 10 / PowerShell 5.1 host on the mesh with a
+      RuntimeErrorRegex string literals changed. Verified on the real
+      Windows 10 / PowerShell 5.1 host (desktop-jack-blupc) with a
       csc.exe-built stub eshkol-run.exe standing in for the compiler: (a)
       the real canary fixture (banner line, then a FAIL: marker on line 2,
       exit 1) -> PASS (must-fail canary correctly failed) with 0 failed;
@@ -6330,8 +6340,8 @@ entries:
     evidence: >-
       scripts/run_all_tests.ps1 (Test-OutputMatches,
       Invoke-SimpleCompileRunSuite, Invoke-TimedCompileRunSuite,
-      Invoke-XlaSuite) - real-host run on a Windows PowerShell 5.1 host on
-      the mesh (Windows 10, PowerShell 5.1.19041) against a csc.exe-built stub compiler plus two
+      Invoke-XlaSuite) - real-host run on desktop-jack-blupc (Windows 10,
+      PowerShell 5.1.19041) against a csc.exe-built stub compiler plus two
       fixture executables, results (a)-(e) above; local `pwsh -NoProfile`
       parse check; python3 scripts/check_ps1_encoding.py PASS (the file
       stays pure ASCII).

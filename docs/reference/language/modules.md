@@ -141,6 +141,10 @@ Strict library isolation is tracked as module-privacy work.
 ```
 Reads and evaluates a file inline in the current top-level environment — no
 export/import boundary. Handy for scripts and REPL-style composition.
+The path literal is resolved by the same resolver on native JIT/AOT, VM source,
+and ESKB execution: the requiring file's directory is preferred, followed by
+the project search path. Nested loads therefore resolve relative to the file
+that contains the nested `load`.
 
 `lib.esk`:
 ```scheme
