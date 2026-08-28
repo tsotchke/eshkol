@@ -5597,7 +5597,12 @@ entries:
       curl_field_shapes_aot_smoke with "fatal signal" in
       FAIL_REGULAR_EXPRESSION, so the original SIGSEGV cannot return green.
       tests/vm_parity/corpus/72_curl_field_shapes.esk carries the same shapes as
-      a native-vs-VM differential across all three parity axes.
+      a native-vs-VM differential, and scripts/run_vm_parity.sh reports
+      corpus_72_curl_field_shapes_vmsrc PASS and
+      corpus_72_curl_field_shapes_vmeskb PASS, both "identical
+      newline-normalized output" — the comparison this entry recorded as
+      impossible, now taken on both the interpreted-source and the compiled-
+      bytecode axis. The gate's AUDIT stage accepts the promoted rows.
       tests/autodiff/field_ops_list_point_test.esk (the ESH-0360 sibling) still
       reports "SUMMARY 32/0". PARITY.tsv op:CURL and op:DIVERGENCE promoted
       gap -> vm-supported on that evidence.
