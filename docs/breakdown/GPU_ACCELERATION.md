@@ -1060,7 +1060,7 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   for "no GPU" (`gpu_memory_cuda.cpp`). The Metal backend reports
   f64 support via SF64 emulation.
 
-## 9. CI Testing: Compilation vs. Execution
+## 13. CI Testing: Compilation vs. Execution
 
 Two separate things are gated, and it matters which one you're looking at:
 
@@ -1130,3 +1130,106 @@ still pins `GPU_GATE_TOL: '1e-4'`, which overrides the script default in the
 only lane that runs the gate. Flipping that lane to the script's own 1e-9 is
 tracked as a follow-up; until it lands, the tightened default is what a manual
 run enforces, not what CI enforces.
+
+### The payload contract
+
+The gate is a differential, so it is only as strong as its ability to tell a
+numeric difference from a structural one.
+
+`tests/gpu/gpu_correctness_gate.esk` emits one `RESULT <label> <value>` line per
+probe and a terminal `GATE-DONE` marker. The script runs it twice — once against
+the GPU build, once against the CPU-reference build — and requires:
+
+1. both runs contain `GATE-DONE`, so a truncated run is a failure rather than a
+   short but agreeing result set;
+2. the two runs' **label sets are identical**. A mismatch fails with "RESULT label
+   sets differ between GPU and CPU runs — payload divergence, not a numeric
+   issue", because a probe that silently stopped emitting a label would otherwise
+   diff clean against the labels that remain;
+3. every shared label's relative difference is at or below `GPU_GATE_TOL`, with a
+   denominator floor of `1e-12` so that a value near zero does not manufacture an
+   enormous relative error.
+
+The GPU run is invoked with dispatch forced on:
+
+```sh
+ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=legacy
+```
+
+and the script then greps the captured stderr for a device-liveness line — a
+Metal announcement, a cuBLAS dispatch line, or an `sf64 dispatch/completed`
+line. **If the device never announces itself the run is a SKIP, not a PASS.**
+Building with GPU support and finding no device is exactly the situation this
+gate exists to distinguish from a real measurement.
+
+### The trace contract
+
+The gate's evidence is a single JSON-L record appended to
+`scripts/icc_traces/gpu_execution.jsonl`:
+
+```json
+{"kind":"gpu_execution","name":"gpu_execution_gate","value":"PASS","snippet":"…","confidence":0.95}
+```
+
+`value` is `PASS` or `FAIL`. The PASS snippet carries the platform, the measured
+`max_rel_diff`, the tolerance actually in force and the probe count, so the record
+says what was measured rather than only that something was.
+
+`skip()` is deliberately **the one verdict path that never writes a record**. That
+silence is what lets `.icc/completion-oracles.yaml`'s `gpu-execution` criterion read
+a GPU-less host as "no evidence yet" instead of a false PASS. It is also why
+`--self-test` asserts the absence of the trace directory rather than the presence of
+a `SKIP`-valued record: a future edit that started emitting from inside `skip()` —
+even with `value=SKIP` — could satisfy a consumer matching on record presence.
+
+### Two different "can this go red?" mechanisms
+
+They are often conflated and they prove different things:
+
+- **`tests/gpu/gate_canary_must_fail.esk`** proves the **verdict pipeline** is
+  live. It computes a 2×2 `matmul` whose `C[0,0]` is `19.0` and asserts it is
+  `999.0`. It is computed *through the tensor path* on purpose, so a build that
+  cannot even construct a tensor still reaches a `FAIL` verdict rather than
+  crashing before printing one. `scripts/run_gpu_tests.sh` hard-fails the whole
+  run on four distinct outcomes: the file is missing, it fails to compile, it
+  exits 0, or it exits non-zero without a `FAIL:` marker (which would mean the
+  marker grammar itself had broken). This check runs before the ordinary failure
+  count, so a green canary cannot be outvoted by the passing tests around it.
+- **`gpu_correctness_gate.sh --self-test`** proves the **trace contract** holds.
+  It needs no build and no GPU.
+
+### Skip clean, or fail closed
+
+Two gates in this repository make opposite choices about a missing subject, and
+both are deliberate:
+
+| Gate | Subject absent | Behaviour |
+|---|---|---|
+| `tests/gpu/gpu_correctness_gate.sh` | no GPU device | **SKIP**, exit 0, and no trace record |
+| `tests/ad/ad_vm_exactness_gate.sh` | no VM binary | **FAIL**, exit 1 |
+
+The GPU gate skips because most hosts genuinely have no GPU and a false PASS is
+the failure mode to avoid; the absence is recorded by writing nothing. The AD VM
+gate fails closed because "an absent VM binary is not evidence that the VM's AD is
+exact, and a gate that passes when its subject is missing is the shape this whole
+wave exists to remove" (ledger SW-51).
+
+### Reporting that the gate did not run
+
+`gpu-execution-gate.yml` carries a second job, `gpu-gate-visibility`, which runs on
+an ordinary hosted runner **on purpose**: its whole job is to report whether the
+real gate ran, so it must not depend on the hardware whose absence it reports. It
+emits a workflow warning and a status marker naming the gate job's result, whether
+any `gpu`-labelled self-hosted runner is registered, when the gate last succeeded
+(or that it never has), the commit and the timestamp. It never fails — visibility,
+never a false red.
+
+The `gpu` label carries a specific meaning in that workflow: a real, addressable
+GPU **device**, not merely a GPU toolchain. A runner labelled `gpu` without a
+device would let the job report success while measuring the CPU fallback.
+
+Artifacts: the gate job uploads `gpu-execution-gate-logs` (the four configure and
+build logs for both trees) and the visibility job uploads `gpu-gate-status`.
+Triggers are `workflow_dispatch`, a daily schedule, and pushes to `master` touching
+`lib/backend/gpu/**`, `lib/backend/vm_gpu_dispatch.h`,
+`tests/gpu/gpu_correctness_gate.*` or the workflow itself.
