@@ -335,12 +335,16 @@ static double vm_geometric_manifold_curvature(VM* vm, Value mv, int* ok) {
 #endif
 }
 
-/** @brief Get manifold @p mv's dimension (fallback-manifold path only;
- *         returns 0 when ESHKOL_GEOMETRIC_ENABLED, per the inline TODO). */
+/** @brief Get manifold @p mv's dimension (via the qllm C API when
+ *         ESHKOL_GEOMETRIC_ENABLED, else the fallback manifold's stored
+ *         dimension) — 0 if @p mv is not a live manifold handle. SW-72:
+ *         the ESHKOL_GEOMETRIC_ENABLED branch used to return 0
+ *         unconditionally regardless of the manifold's real dimension. */
 static int vm_geometric_manifold_dim(VM* vm, Value mv) {
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
-    (void)vm; (void)mv;
-    return 0;
+    if (!vm_manifold_has_value(vm, mv)) return 0;
+    return (int)qllm_manifold_get_dim(
+        (qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr);
 #else
     VmFallbackManifold* m = vm_fallback_manifold(vm, mv);
     return m ? m->dim : 0;

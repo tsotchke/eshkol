@@ -6314,3 +6314,97 @@ entries:
       scripts/run_gpu_tests.sh and scripts/lib/test_isolation.sh's
       bash-side grep-based marker matching already operate line-by-line
       and are unaffected.
+
+  - id: SW-72
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: vm-geometric/manifold-dim
+    status: closed
+    closed_at: "fix/audit-manifold-dim-install"
+    closed_by: "branch fix/audit-manifold-dim-install"
+    title: "vm_geometric_manifold_dim returned 0 unconditionally in the ESHKOL_GEOMETRIC_ENABLED configuration, regardless of the manifold's real dimension"
+    repro: >-
+      lib/backend/vm_geometric.c:340-348 (pre-fix): under
+      `#if defined(ESHKOL_GEOMETRIC_ENABLED)` the function ignored both of
+      its arguments (`(void)vm; (void)mv;`) and unconditionally `return 0;`,
+      with a doc comment admitting "returns 0 when ESHKOL_GEOMETRIC_ENABLED,
+      per the inline TODO." `vm_geometric_manifold_dim` backs VM native id
+      858 (`manifold-dim`/`manifold-dimension`) and is also called
+      internally by `manifold-metric-tensor` (case 829) and
+      `manifold-christoffel-tensor` (case 830) to size their output tensors,
+      so every consumer of a manifold's dimension in that build
+      configuration would have silently received 0 (and downstream
+      christoffel/metric tensors would have silently degenerated to
+      `dim<=0` NIL results) rather than the manifold's actual dimension.
+      Filed as docs/KNOWN_ISSUES.md prose only, with no ledger row, so
+      `scripts/gate_no_silent_wrong.py` reported PASS despite the defect
+      (v1.3.5 docs audit, section 3 BI-4).
+    observed: >-
+      `(manifold-dim (make-hyperbolic-manifold n c))` (or any manifold
+      constructor) would return `0` instead of `n` whenever the compiler
+      was built with `-DESHKOL_GEOMETRIC_ENABLED` linking the
+      semiclassical_qllm manifold backend — a plausible-looking wrong
+      answer (a valid dimension value, just always the same wrong one), not
+      a loud error.
+    correct: >-
+      `manifold-dim`/`manifold-dimension` must return the manifold's actual
+      dimension on every engine and every build configuration: the VM's
+      portable fallback (`VmFallbackManifold.dim`, already correct), the
+      VM's qLLM-linked configuration (`qllm_manifold_get_dim`, the sibling
+      accessor `vm_geometric_manifold_curvature` already forwards to
+      `qllm_manifold_get_curvature` the same way), and the native/AOT path
+      (`lib/core/manifold.esk`'s `manifold-dimension`, `(vector-ref m 1)` on
+      its `#(type dim)` representation) — all three must agree for
+      equivalent manifolds.
+    root_cause: >-
+      `ESHKOL_GEOMETRIC_ENABLED` is not wired to any CMake option in this
+      tree (`ESHKOL_QLLM_ENABLED` only controls the separate
+      `eshkol-qllm-run` demo executable's `USE_QLLM` matmul backend, a
+      different macro), so the enabled branch of vm_geometric.c has never
+      been compiled by any build this repository can produce — the
+      curvature getter was written correctly against the real qLLM header
+      (`qllm_manifold_get_curvature`) but the dimension getter was left as
+      an unimplemented stub, and with the branch permanently dead at
+      compile time no test, sanitizer or differential run could ever have
+      caught the stub returning the wrong thing.
+    fix: >-
+      lib/backend/vm_geometric.c: `vm_geometric_manifold_dim`'s
+      `ESHKOL_GEOMETRIC_ENABLED` branch now guards on
+      `vm_manifold_has_value` (matching `vm_geometric_manifold_curvature`'s
+      null-handle guard) and returns
+      `(int)qllm_manifold_get_dim((qllm_manifold_t*)vm->heap.objects[mv.as.ptr]->opaque.ptr)`
+      instead of the unconditional stub `0`; the portable fallback branch
+      (`VmFallbackManifold.dim`) was already correct and is unchanged. Added
+      VM-parity coverage for two manifolds' dimensions: the VM side
+      (tests/vm/geometric_fallback_numeric_regression.esk, exercising native
+      id 858 via `manifold-dim` on a hyperbolic/Poincaré-ball handle and a
+      newly added Euclidean handle of a different dimension) and the
+      native/AOT side (tests/manifold/manifold_test.esk, exercising
+      `core.manifold`'s `manifold-dimension` on the module's existing
+      Poincaré-ball and Euclidean manifolds) — both engines now assert the
+      constructor's dimension is what comes back.
+    evidence: >-
+      tests/manifold/manifold_test.esk "manifold-dimension Poincare ball"
+      and "manifold-dimension Euclidean" checks, run via
+      scripts/run_manifold_tests.sh (native `eshkol-run`); 
+      tests/vm/geometric_fallback_numeric_regression.esk "manifold dim
+      euclidean" check (alongside the pre-existing hyperbolic "manifold
+      dim" check), run via scripts/run_vm_surface_tests.sh (compiled
+      `--profile hosted-vm --emit-eskb` and executed on
+      eshkol-vm-standalone-test) — both green. The
+      ESHKOL_GEOMETRIC_ENABLED branch itself remains uncompiled by any
+      build this repository's CMakeLists.txt can produce (tracked, not
+      newly introduced by this fix); the code now matches the same qLLM
+      C-API pattern already proven live for `manifold-curvature`.
+    caught_by: [v135-docs-audit-2026-08-28]
+    missed_by: [gate_no_silent_wrong.py (pre-ledger-entry), ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Companion accessor to SW-65 (fix/geometric-bridge-backwards, the qLLM
+      geometric bridge's backward rules) and SW-70/SW-71 — same
+      vm_geometric.c/semiclassical_qllm neighborhood, unrelated defect
+      shape (unimplemented stub vs. wrong sign/direction). The
+      ESHKOL_GEOMETRIC_ENABLED code path stays untested by CI until a
+      CMake option actually wires it to a discoverable
+      libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
+      eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
+      for the accessor to be correct and ledgered).

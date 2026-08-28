@@ -113,3 +113,42 @@ GPU); backend selection is a runtime cost-model decision in
 
 `ESHKOL_XLA_ENABLED` is a CMake option (default OFF) requiring a StableHLO/LLVM
 bundle (`-DSTABLEHLO_ROOT`).
+
+## Consuming an installed Eshkol (`find_package(Eshkol)` / pkg-config)
+
+`cmake --install build --prefix <prefix>` stages everything a downstream
+CMake project needs to build against Eshkol without an in-tree checkout:
+`bin/eshkol-run` (+`eshkol-repl`), `lib/eshkol/{libeshkol-runtime.a,stdlib.o,
+stdlib.bc}`, the `(require ...)`/`(import ...)` module sources under
+`share/eshkol/lib/` (preserving `lib/`'s layout, so `core.manifold` and
+every other stdlib module resolves), the two CMake integration modules at
+`share/eshkol/cmake/{FindEshkol.cmake,EshkolCompile.cmake}`, and a
+generated `lib/pkgconfig/eshkol.pc`. This mirrors what the release tarballs
+and the homebrew formula stage by hand, so a from-source install lands in
+the same shape a packaged one does.
+
+A downstream CMake project consumes that prefix with the Find module this
+repository ships (not a generated Config package — one discovery contract,
+documented in full in `cmake/FindEshkol.cmake`'s header comment and
+`docs/BUILD_INTEGRATION.md`):
+
+```cmake
+list(APPEND CMAKE_MODULE_PATH "<prefix>/share/eshkol/cmake")
+find_package(Eshkol REQUIRED)
+include(EshkolCompile)
+
+eshkol_compile_executable(my_program SOURCES my_program.esk)
+```
+
+`Eshkol_ROOT`/`ESHKOL_ROOT` (CMake variable or environment variable) points
+`find_package(Eshkol)` at a prefix outside the default search roots
+(`/usr/local`, `/usr`, `/opt/homebrew`). `tests/integration/system_package/`
+is a from-scratch consumer fixture exercising this exact path; run it
+against a real `cmake --install` output with
+`scripts/run_system_package_integration_test.sh --prefix <prefix>`.
+
+Non-CMake consumers can instead use the generated pkg-config module:
+`pkg-config eshkol --cflags --libs` resolves the same runtime archive +
+`stdlib.o` link line (every compiled program needs `stdlib.o` linked in
+unconditionally — see `cmake/FindEshkol.cmake`'s "Every program needs
+stdlib.o" note).

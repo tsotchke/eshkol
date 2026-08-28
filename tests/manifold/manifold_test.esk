@@ -25,6 +25,12 @@
 (define H (make-hyperbolic-manifold 3))
 (define E (make-euclidean-manifold 3))
 (define S (make-spherical-manifold 3))
+;; SW-72 (VM-parity companion to tests/vm/geometric_fallback_numeric_regression.esk,
+;; which asserts the same shape via the VM's `manifold-dim` opcode 858): the
+;; native side resolves `manifold-dimension` to this module's `(vector-ref m 1)`
+;; rather than a VM opcode, so both engines must report the constructor's dim.
+(check "manifold-dimension Poincare ball" (= (manifold-dimension H) 3))
+(check "manifold-dimension Euclidean" (= (manifold-dimension E) 3))
 (define a #(0.1 0.2 0.0))(define b #(0.3 -0.1 0.0))
 
 ;; geodesic distance vs analytic Poincaré
