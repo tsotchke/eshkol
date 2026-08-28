@@ -6212,9 +6212,13 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME qllm_bridge_geometric_gradcheck
              COMMAND qllm_bridge_geometric_gradcheck_test)
     set_tests_properties(qllm_bridge_geometric_gradcheck PROPERTIES
-        # 3 distance + 5 exp/log + 3 geodesic + 2 structural. Pinned: a bare
-        # "0 failed" would stay green if a check silently stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 13 passed, 0 failed"
+        # 3 distance + 5 exp/log + 3 geodesic + 2 structural, then 19 for the
+        # SW-76 boundary contract: 4 near-boundary exactness (distance identity,
+        # distance FD, exp/log inverse, artanh-near-1) + 1 no-finite-log refusal
+        # + 8 on/outside-boundary refusals + 3 NaN refusals + 3 geodesic slice.
+        # Pinned: a bare "0 failed" would stay green if a check silently
+        # stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 32 passed, 0 failed"
     )
 endif()
 

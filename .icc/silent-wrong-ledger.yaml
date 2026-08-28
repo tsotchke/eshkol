@@ -6443,3 +6443,159 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-76
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "@@SHA@@"
+    closed_by: "branch fix/ad-bridge-boundary-refusal"
+    title: "AD geometric bridge fabricated values off the Poincare ball: ad_poincare_log_map clamped artanh's argument to 1-1e-12, ad_poincare_exp_map never checked its base point, and ad_geodesic_attention scored an off-manifold head-slice as HUGE_VAL and dropped it from the softmax — all three returned a finite, plausible answer with exit 0, and the reverse sweep then differentiated it"
+    repro: >-
+      Three entry points in lib/bridge/qllm_bridge.cpp, all reachable from
+      tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp:
+
+      (1) ad_poincare_log_map. The forward computed t = sqrt(c)|(-x) (+)_c y|
+      and then executed, verbatim, `if (t >= 1.0) t = 1.0 - 1e-12;` before
+      calling atanh. artanh has no finite value at t = 1: log_x(y) does not
+      exist there. The clamp returned atanh(1 - 1e-12) = 14.221528..., scaled
+      by the conformal factor — a specific finite tangent vector, with no
+      diagnostic and exit 0. Reachable from two points EACH STRICTLY INSIDE
+      the ball, because u = (-x) (+)_c y is formed by cancellation: x and y
+      antipodal at |x| = |y| = 1 - 1e-9 are about 43 units apart in hyperbolic
+      distance, and tanh(21.4) rounds to exactly 1.0 in binary64.
+
+      (2) ad_poincare_exp_map. No check on the base point x at all. The map
+      uses lam = 2.0 / (1.0 - c * norm_sq(X, n)). At sqrt(c)|x| = 1 that
+      denominator is 0, lam is +inf, tanh saturates to 1, and mobius_add
+      returns a finite point. At sqrt(c)|x| > 1 the denominator is NEGATIVE,
+      so lam < 0 and the map runs BACKWARDS along the geodesic. Both return a
+      point that is not exp_x(v) of anything, silently.
+
+      (3) ad_geodesic_attention. Inside the score loop:
+      `if (dxq <= 0.0 || dxk <= 0.0) { dist = HUGE_VAL; }` commented "outside
+      the ball: unreachable". An off-manifold Q or K head-slice scored as
+      infinitely distant gets softmax weight exactly 0, so the op returned a
+      complete, finite attention output with that key silently deleted from
+      the average, recorded an AD node for it, and the backward produced
+      gradients for that arrangement. (If EVERY key in a row was off-manifold,
+      mx stayed -HUGE_VAL and the row went NaN through the
+      `if (sum <= 0.0) sum = 1.0;` guard.)
+    observed: >-
+      log_x(y) at |x| = |y| = 1 - 1e-9 antipodal (c = 1, both strictly inside):
+      a finite tangent vector of magnitude 2*atanh(1-1e-12)/lam, where no
+      finite log exists. exp_x(v) at sqrt(c)|x| = 1.5: a finite interior point
+      produced with a negative conformal factor. geodesic-attention with one
+      K head-slice at |k| = 1.2728: a full attention output, numerically
+      indistinguishable from a valid one, in which that key contributed
+      nothing. In all three cases stderr was empty and the exit status 0.
+    correct: >-
+      A point of the Poincare ball of curvature -c satisfies sqrt(c)|p| < 1
+      STRICTLY. On the boundary the conformal factor diverges: there is no
+      tangent space, no finite log map, and no derivative — so there is no
+      value to return and none to record. Outside it, the argument is not a
+      point of the manifold at all. Every geometric entry point must therefore
+      (a) compute EXACTLY for inputs strictly inside, including arbitrarily
+      close to the boundary, and (b) refuse, with a diagnostic naming the op
+      and the measured sqrt(c)|.|, for inputs on or outside it — never
+      substitute, never clamp, and never project. Projection onto the ball is
+      a DIFFERENT operation with a documented radius (`manifold-project`,
+      (1/sqrt(-K))*(1 - 1e-12)); a caller who wants it asks for it. This is
+      already the settled convention everywhere else in the codebase:
+      eshkol_frechet_log_map (inc/eshkol/backend/frechet_mean_core.h:117-135,
+      whose comment records that clamping sr to 1 - 1e-15 is what it "used to
+      do"), FrechetGeometry::log_map_with_jacobians
+      (lib/bridge/tensor_backward.cpp:915), and eshkol_rm_log_map
+      (inc/eshkol/backend/riemannian_core.h, PR #516/SW-73, which names the
+      bridge's clamp as a separate defect on a separate surface and leaves it
+      for this lane). docs/reference/stdlib/geometry.md states the contract:
+      "every other op in this group refuses an off-manifold argument rather
+      than projecting silently."
+    observed_after: >-
+      Added poincare_in_ball(p, c, n, &sn) in lib/bridge/qllm_bridge.cpp as the
+      single membership test for the surface, returning sn < 1.0 — strict, so
+      a NaN coordinate also refuses rather than reaching the tape. Applied it
+      in ad_hyperbolic_distance (which already refused, but now names the
+      measured norms and the radius), ad_poincare_exp_map (base point; v is a
+      tangent and is correctly unconstrained), ad_poincare_log_map (both
+      points), and ad_geodesic_attention (an up-front pass over every Q and K
+      head-slice, naming the offending batch/position/head; V is an ambient
+      value being averaged, not a manifold point, and is correctly not
+      checked). The `t >= 1.0` clamp in ad_poincare_log_map is replaced by a
+      refusal naming t. Two `if (arg < 1.0) arg = 1.0;` guards before acosh
+      are KEPT and documented: arg = 1 + 2c|x-y|^2/(dx*dy) is >= 1 exactly
+      whenever both points are in the ball, so those lift rounding a few ulp
+      below 1 and nothing else. mobius_add's kMobiusDenFloor is likewise now
+      unreachable rather than load-bearing: for two points strictly inside,
+      den >= (1 - c|x||y|)^2 > 0.
+
+      Measured on cosbox (Linux x86_64, LLVM 21, Release, ci.yml flags),
+      ctest qllm_bridge_geometric_gradcheck, 32 passed / 0 failed:
+      @@NUMBERS@@
+    fixed_by: >-
+      branch fix/ad-bridge-boundary-refusal — poincare_in_ball() plus the four
+      call sites in lib/bridge/qllm_bridge.cpp; the domain contract documented
+      on all four entry points in inc/eshkol/bridge/qllm_bridge.h (and the
+      generated docs/api/bridge/qllm_bridge.md); the now-stale "the forward
+      clamps there" comment and refusal message in
+      lib/bridge/tensor_backward.cpp corrected.
+    evidence: >-
+      tests/bridge/qllm_bridge_geometric_gradcheck_test.cpp — 19 new checks
+      pinning both halves of the contract, and CMakeLists.txt's
+      PASS_REGULAR_EXPRESSION raised 13 -> 32 so a check that stops running
+      goes red. Near-boundary EXACTNESS at |x| = 1 - 1e-6 (c = 1, lambda_x ~
+      1e6): the conformal-factor identity |grad_x d| = lambda_x, central
+      differences with the step scaled to the gap to the boundary
+      (h = 1e-3 * (1 - c|x|^2), since a fixed 1e-6 step is larger than the
+      whole remaining gap), and J_log * J_exp = I. The artanh argument driven
+      to t = 1 - 1e-6 with both points valid (x at |x| = 1 - 1e-6, y at the
+      origin), checked against |log_x(y)| = d(x,y) — a fact about the manifold,
+      not about either implementation, which pins the magnitude the clamp used
+      to fabricate. REFUSAL at sqrt(c)|x| = 1 exactly and at 1.5, for distance
+      / exp / log and for log's second argument; for the no-finite-log pair
+      where BOTH inputs pass the membership test; for a NaN coordinate; and
+      for an off-manifold key slice and an on-boundary query slice in geodesic
+      attention, with an all-interior control asserting the op still computes.
+      Golden vectors in tests/qllm_oracle/golden/ are unchanged and were NOT
+      regenerated — they are produced by Eshkol-side .esk transcriptions
+      (tests/qllm_oracle/*.esk), not by this C surface, and every input POINT
+      in them is strictly inside the ball.
+    caught_by: [direct-measurement, pr-516-review]
+    missed_by: [qllm_bridge_geometric_gradcheck (pre-fix), qllm-oracle, icc-smoke, icc-readiness]
+    notes: >-
+      Found while reviewing PR #516 (SW-73), whose riemannian_core.h header
+      calls the bridge clamp out by name as "ONE DELIBERATE DIVERGENCE FROM
+      THE BRIDGE ... a separate defect on a separate surface [left] for" a
+      later lane. This is that lane.
+
+      TWO ADJACENT FINDINGS, deliberately NOT fixed here, both reported rather
+      than folded in:
+
+      (1) lib/backend/autodiff_codegen.cpp emits SCALAR backward blocks for
+      node types 33-38 (poincare_exp_block ~:13129, poincare_log_block ~:13159)
+      that apply an approximate conformal-factor gradient with a `1e-7`
+      safe_denom clamp — the same clamp family. They are UNREACHABLE: every
+      producer of ids 33/34/35/37 is qllm_bridge.cpp's make_node, which calls
+      ensure_grad() so tensor_gradient is always non-NULL, and
+      AutodiffCodegen::propagateGradient branches on exactly that field at
+      :11822 to eshkol_tensor_backward_dispatch before the type chain is
+      reached; ids 36 and 38 have no producer at all. So this is shadow code,
+      not a live silent-wrong — but it is a second, divergent, approximate
+      derivation of rules that lib/bridge/tensor_backward.cpp derives exactly,
+      sitting unguarded on the live `(gradient ...)` path and keyed only on an
+      integer compare. A future scalar-mode geometric producer would silently
+      inherit it instead of the registry's UNREGISTERED abort. Belongs to the
+      dead-code wire-or-delete sweep or the geometry-completion lane.
+
+      (2) The AD bridge ops have NO Eshkol-source surface — no builtin, no
+      special form, no .esk binding; only the two C++ bridge tests call them.
+      The VM's geometry opcodes (mobius-add 814, poincare-distance 816,
+      frechet-mean 817, geodesic-attention-* 844/845/847) are DIFFERENT
+      operations that create no AD nodes, and on master all but frechet-mean
+      still compute the flat Euclidean form (that is SW-73/#516's subject).
+      So "the same input raises on the VM path too" cannot be asserted from
+      master for these ops: there is no VM twin of ad_poincare_log_map to
+      raise. Once #516 lands, eshkol_rm_log_map refuses on the identical
+      condition and the two surfaces agree by construction — the refusal
+      wording here is deliberately aligned with its reason string. The
+      mechanisms differ by surface and that is pre-existing: the VM raises a
+      catchable condition via vm_raise_error_msg, while a C++ bridge forward
+      cannot, and uses this file's established eshkol_error + return NULL.

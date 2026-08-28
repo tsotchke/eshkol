@@ -510,11 +510,25 @@ static void check_leaf_still_silent(void) {
  * logs and returns, so a refusal is a NULL node, not a process exit (that is
  * why these are not fork()ed like the eshkol_fatal refusals above). */
 
-/* Direction is deliberately not axis-aligned so every component is live. */
+/* Direction is deliberately not axis-aligned so every component is live in the
+ * near-boundary gradient checks. */
 static void unit_dir(double* d) { d[0] = 0.6; d[1] = -0.8; d[2] = 0.0; }
 static void at_radius(double r, double* out) {
     double d[3]; unit_dir(d);
     for (int i = 0; i < 3; ++i) out[i] = r * d[i];
+}
+
+/** @brief A point at radius r on an AXIS, used wherever the test's meaning
+ *  depends on |x| being exactly r.
+ *
+ *  0.6^2 + 0.8^2 happens to round to exactly 1.0 in f64, but that is a fact
+ *  about one evaluation order: norm_sq() is a `+=` loop, and a compiler free to
+ *  contract it into an FMA may land a half-ulp below 1. A test whose subject is
+ *  "sqrt(c)|x| == 1 exactly refuses" must not be able to drift to |x| = 1 - eps
+ *  and quietly start asserting the interior case instead. r^2 + 0 + 0 is exact
+ *  under every evaluation order, FMA or not. */
+static void at_radius_exact(double r, double* out) {
+    out[0] = r; out[1] = 0.0; out[2] = 0.0;
 }
 
 /** @brief |grad_x d| == lambda_x still holds exactly at |x| = 1 - 1e-6, where
@@ -688,7 +702,9 @@ static void check_ops_refuse_on_and_outside_boundary(void) {
         { "outside",      1.5 },
     };
     for (auto& rc : radii) {
-        double X[3]; at_radius(rc.r, X);
+        /* Exact-radius spelling: the whole point of the r = 1 row is that the
+         * norm is 1 and not 1 - half an ulp. */
+        double X[3]; at_radius_exact(rc.r, X);
         ad_node_t* xn = var_node(X, sh, 1);
         ad_node_t* yn = var_node(Yin, sh, 1);
         ad_node_t* vn = var_node(Vt, sh, 1);
@@ -766,7 +782,8 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
     }
     /* And a query slice exactly ON the boundary: |slice| == 1. */
     double Qbad[8]; std::memcpy(Qbad, Q, sizeof Qbad);
-    Qbad[2] = 0.6; Qbad[3] = 0.8;            /* |slice| = 1 exactly */
+    Qbad[2] = 1.0; Qbad[3] = 0.0;            /* |slice| = 1 exactly, in any
+                                              * evaluation order */
     {
         ad_node_t* q = var_node(Qbad, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
         ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);

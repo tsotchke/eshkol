@@ -225,6 +225,11 @@ ad_node_t* ad_tensor_embedding(
  * distance has a cone point at coincidence: the one-sided slopes disagree in
  * every direction, so only a subgradient set exists there. The backward refuses
  * at coincident points rather than returning a plausible member of that set.
+ *
+ * DOMAIN. Both x and y must lie strictly inside the Poincare ball of radius
+ * 1/sqrt(-curvature); the distance diverges at the boundary. On or outside, the
+ * op returns NULL after a diagnostic naming the measured sqrt(c)|.| rather than
+ * projecting or substituting (SW-76).
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
  * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
@@ -239,6 +244,19 @@ ad_node_t* ad_hyperbolic_distance(
  * @brief Poincare exponential map.
  *
  * Maps a tangent vector at x to a point on the manifold.
+ *
+ * DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of
+ * radius 1/sqrt(-curvature). On or outside it the op returns NULL after a
+ * diagnostic naming the measured sqrt(c)|.|; it never projects the point back
+ * and never substitutes a value. Projection is a separate operation with a
+ * documented radius (`manifold-project`), so that a caller who wants it asks
+ * for it. See the ledger entry SW-76.
+ * The BASE POINT x is a point and is checked; v is a tangent vector, whose
+ * length is unconstrained -- exp_x scales it through tanh, so any finite v maps
+ * to an interior point. Checking x is not optional bookkeeping: the conformal
+ * factor lambda_x = 2/(1 - c||x||^2) is infinite on the boundary and NEGATIVE
+ * outside it, so an unchecked out-of-ball x runs the map backwards and returns
+ * a finite point that is not exp_x(v) of anything.
  */
 ad_node_t* ad_poincare_exp_map(
     ad_tape_t* tape,
@@ -251,6 +269,21 @@ ad_node_t* ad_poincare_exp_map(
  * @brief Poincare logarithmic map.
  *
  * Maps a point y back to the tangent space at x.
+ *
+ * DOMAIN. Every point argument must lie STRICTLY inside the Poincare ball of
+ * radius 1/sqrt(-curvature). On or outside it the op returns NULL after a
+ * diagnostic naming the measured sqrt(c)|.|; it never projects the point back
+ * and never substitutes a value. Projection is a separate operation with a
+ * documented radius (`manifold-project`), so that a caller who wants it asks
+ * for it. See the ledger entry SW-76.
+ * There is a SECOND way this op has no answer, independent of the domain check
+ * above: log_x(y) needs artanh(sqrt(c)|(-x) (+)_c y|), and that argument can
+ * reach 1 for two points EACH STRICTLY INSIDE the ball -- u is formed by
+ * cancellation, so points roughly 19 units of hyperbolic distance apart drive
+ * it there in f64. No finite log exists at that pair. The op returns NULL and
+ * says so. It does not clamp the argument: artanh(1 - 1e-12) is about 14.2, a
+ * specific finite magnitude that no caller could tell from a real one, and in
+ * the AD path it would become a fabricated gradient.
  */
 ad_node_t* ad_poincare_log_map(
     ad_tape_t* tape,
@@ -274,6 +307,14 @@ ad_node_t* ad_poincare_log_map(
  * ordinary case when Q and K are the same tensor. The backward refuses there
  * and names the (batch, head, i, j) it refused on. Dot-product attention
  * (ad_tensor_attention) has no such point and is differentiable everywhere.
+ *
+ * DOMAIN. Every Q and K HEAD-SLICE is a point of the Poincare ball and must lie
+ * strictly inside the ball of radius 1/sqrt(-curvature). If any does not, the
+ * op returns NULL after a diagnostic naming the (batch, position, head) and the
+ * measured sqrt(c)|.|. It does not project, and it does not score an
+ * off-manifold slice as infinitely distant: doing that dropped the key from the
+ * softmax and returned a complete, finite attention output with no indication
+ * that a row had been discarded (SW-76).
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,
