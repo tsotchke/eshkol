@@ -281,7 +281,15 @@ The reclamation itself is measured, never asserted. On
 | 1 000 | 26 MB |
 | 4 000 | 26 MB |
 | 16 000 | 26 MB |
-| 16 000, evacuator disabled | 796 MB |
+| 16 000, evacuator disabled | 793 MB |
+| 16 000, unwrapped control (`begin` instead of `with-region`) | 704 MB |
+
+Re-measured for this documentation wave against a from-source build of the
+merge commit `487c2a62` (#461); see
+[RUNTIME_CONFIGURATION.md](breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation)
+for the raw run (the exact peak-RSS figures move a megabyte or two run to
+run; the CHANGELOG's own numbers from the same fixture, 26/26/26 MB and 796
+MB disabled, are consistent with this within that noise band).
 
 Before the evacuator the same fixture peaked at 1.503 GB *with* the wrapper and
 1.504 GB *without* it — the form was inert. Gated by
