@@ -45,10 +45,12 @@
                (lambda (k) (guard (e (#t (k (list 'early e)))) (raise 'v))))
              (list 'early 'v)))
 
-;; a handler that returns normally for a non-continuable raise still lets the
-;; enclosing guard see the condition
+;; a handler that RETURNS normally from a non-continuable `raise` must not
+;; swallow the condition — the enclosing guard still fires. R7RS leaves the
+;; object of the resulting secondary exception unspecified, so this pins only
+;; the part that is specified: that control reaches the guard clause.
 (chk "weh-return-then-guard"
-     (equal? (guard (g (#t (list 'guard g)))
+     (equal? (guard (g (#t 'guard-fired))
                (with-exception-handler (lambda (e) 'ignored)
                                        (lambda () (raise 'esc))))
-             (list 'guard 'esc)))
+             'guard-fired))
