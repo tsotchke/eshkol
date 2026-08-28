@@ -1,1 +1,1 @@
-PASS:first-clause-body-ran PASS:later-clause-not-run PASS:clause-effect-visible-outside PASS:clause-effect-value
+PASS:first-clause-body-ran PASS:later-clause-not-run PASS:clause-effect-visible-outside PASS:clause-effect-value PASS:guard-in-loop-total PASS:guard-in-loop-count

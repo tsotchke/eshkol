@@ -72,7 +72,7 @@ gate; they are the work queue.
 | `weh_handler_return_swallows_condition.esk` | **all five** | SW-84 |
 | `vm_setbang_global_from_guard_clause_lost.esk` | vm-src, vm-eskb | SW-85 |
 | `vm_internal_defines_in_guard_body.esk` | vm-src, vm-eskb | SW-86 |
-| `native_setbang_on_guard_variable_rejected.esk` | jit, aot-o0, aot-o2 | SW-87 |
+| `native_guard_variable_not_a_binding.esk` | jit, aot-o0, aot-o2 | SW-87 |
 | `guard_wind_multi_module_dominance.esk` | jit, aot-o0, aot-o2 | SW-88 |
 | `vm_eskb_wind_order_vs_clause.esk` | vm-eskb only | SW-89 |
 

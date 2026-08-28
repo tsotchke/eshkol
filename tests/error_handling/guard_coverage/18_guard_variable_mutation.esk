@@ -1,9 +1,10 @@
-;; ESH-0101 guard coverage — `set!` on the guard VARIABLE inside a clause.
+;; ESH-0101 guard coverage — the guard VARIABLE as a real binding: assignable
+;; with `set!`, and capturable by a closure.
 ;; R7RS derives `guard` through `(let ((var condition)) ...)` and a let-bound
 ;; variable is assignable, so this is legal. Own case because it is the one
 ;; place the NATIVE axes are the wrong ones: they reject the assignment
 ;; outright while both VM axes accept it and answer correctly.
-;; Repro: found/native_setbang_on_guard_variable_rejected.esk (ledger SW-87).
+;; Repro: found/native_guard_variable_not_a_binding.esk (ledger SW-87).
 
 (define (chk name ok)
   (if ok
@@ -15,3 +16,12 @@
      (equal? (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig))
              (list 'mutated 'orig)))
 (chk "outer-still-intact" (equal? e "outer-value"))
+
+;; a closure created in a clause captures the guard variable's value. Native
+;; binds the variable to an SSA value in the handler block, so capturing it
+;; fails LLVM module verification outright ("Instruction does not dominate all
+;; uses") — the same root cause as the set! rejection above, and it takes the
+;; whole module down rather than just the one form.
+(define captured
+  (guard (e (#t (lambda () e))) (raise 'captured-value)))
+(chk "closure-captures-var" (equal? (captured) 'captured-value))

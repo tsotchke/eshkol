@@ -6745,7 +6745,10 @@ entries:
       Silent on the VM: the clause returns the correct value, so nothing signals
       that the side effect was dropped. The guard handler is compiled as its own
       closure with its own frame and the write appears to land there rather than
-      in the enclosing binding. Tracked by the shrink-only manifest at
+      in the enclosing binding. The two bytecode routes do not even agree on
+      WHEN it bites: a clause-body counter incremented once per iteration of an
+      enclosing loop is lost on vm-eskb while vm-src happens to get it right, so
+      the manifest waives the two axes separately. Tracked by the shrink-only manifest at
       tests/error_handling/guard_coverage/ENGINES.tsv, which requires a
       justification per (case, axis) and fails on a stale row, and measured
       every run by 15_clause_side_effects.esk on the native axes.
@@ -6768,17 +6771,24 @@ entries:
   - id: SW-87
     bucket: LOUD-ERROR
     status: open
-    title: "native: `set!` on the guard VARIABLE is rejected outright, though R7RS derives guard through a let binding"
-    repro: "(display (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig)))"
+    title: "native: the guard VARIABLE is an SSA value, not a binding, so it can be neither assigned nor captured"
+    repro: "(display (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig)))\n(define captured (guard (e (#t (lambda () e))) (raise 'captured-value)))\n(display (captured))"
     observed: >-
-      "ERROR: set!: variable 'e' is not mutable (not an alloca, global, or
-      capture pointer)", exit 1, on jit / aot-o0 / aot-o2. BOTH VM axes accept
-      it and answer (mutated orig), so this is also a native-vs-VM divergence in
-      which the native side is the nonconforming one.
-    correct: "(mutated orig)"
+      Two failures from one cause, both on jit / aot-o0 / aot-o2 and neither on
+      the VM axes, which run both forms correctly:
+      (a) `set!` on the variable is rejected - "ERROR: set!: variable 'e' is not
+      mutable (not an alloca, global, or capture pointer)", exit 1;
+      (b) CAPTURING it in a closure fails LLVM module verification - "Failed to
+      generate LLVM IR from batch" / "Instruction does not dominate all uses!",
+      exit 1. (b) is the worse of the two: the guard value is defined in the
+      handler block and the capture does not dominate its uses, so the failure
+      takes the whole compilation unit down rather than just the offending form.
+      This is a native-vs-VM divergence in which the native side is the
+      nonconforming one.
+    correct: "(mutated orig) captured-value"
     caught_by: [guard-coverage-gate]
     missed_by: [vm-parity, differential, error-handling-suite]
-    repro_file: tests/error_handling/guard_coverage/found/native_setbang_on_guard_variable_rejected.esk
+    repro_file: tests/error_handling/guard_coverage/found/native_guard_variable_not_a_binding.esk
     notes: >-
       LOUD, so not tag-blocking: it fails to compile with a precise diagnostic
       rather than answering wrongly. codegenGuard binds the guard variable to an

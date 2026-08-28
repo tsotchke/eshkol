@@ -1,1 +1,1 @@
-PASS:shadows-outer PASS:outer-restored PASS:body-sees-outer PASS:no-leak PASS:shadows-proc-name PASS:proc-name-restored PASS:closure-captures-var PASS:sequential-no-alias
+PASS:shadows-outer PASS:outer-restored PASS:body-sees-outer PASS:no-leak PASS:shadows-proc-name PASS:proc-name-restored PASS:sequential-no-alias
