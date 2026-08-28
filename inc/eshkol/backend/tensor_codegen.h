@@ -1398,7 +1398,13 @@ private:
      * @param operation One of "add", "sub", "mul", "div", "pow", "max", "min"
      * @return Result tensor (tagged)
      */
-    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2,
+                                         const std::string& operation,
+                                         bool numeric_only = false);
+
+    /** Emit ADR-0002's one-node dense elementwise lowering for tensor inputs. */
+    llvm::Value* emitDenseTensorArithmetic(llvm::Value* arg1, llvm::Value* arg2,
+                                           const std::string& operation);
 
     /**
      * Generic element-wise unary operation using SIMD + scalar loops.

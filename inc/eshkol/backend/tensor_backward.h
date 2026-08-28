@@ -300,6 +300,23 @@ void eshkol_backward_matmul(
     double* grad_A, double* grad_B,
     int64_t M, int64_t K, int64_t N);
 
+/**
+ * @brief Dense elementwise backward pass, including NumPy-style broadcasting.
+ *
+ * The input and output shapes are row-major and aligned from the trailing
+ * dimensions.  A dimension of one is broadcast and therefore receives the
+ * sum of all corresponding output cotangents.  @p operation is 0=add,
+ * 1=sub, 2=mul, 3=div.
+ */
+void eshkol_backward_tensor_elementwise(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    const int64_t* out_shape, int64_t out_ndim,
+    const int64_t* a_shape, int64_t a_ndim,
+    const int64_t* b_shape, int64_t b_ndim,
+    int operation);
+
 /* ===== Tensor Gradient Accumulation ===== */
 
 /**

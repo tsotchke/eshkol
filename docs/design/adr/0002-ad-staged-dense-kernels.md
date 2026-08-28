@@ -90,10 +90,10 @@ finished, of which the guard was only the most visible:
    closely.
 
 §3.1's "dense op IDs are distinct from scalar op IDs" is respected: the dense
-path uses `AD_NODE_MATMUL` / `AD_NODE_SUM` / `AD_NODE_MEAN` (the tensor family,
-19-32), never a scalar op ID. Elementwise tensor arithmetic still scalarizes
-and still reuses scalar op IDs — that is Phase C.3/C.4, scheduled for v1.4, and
-it remains a build item.
+path uses `AD_NODE_MATMUL` / `AD_NODE_SUM` / `AD_NODE_MEAN` and the registered
+`AD_NODE_TENSOR_*_DENSE` / broadcast variants, never a scalar op ID. Dense
+elementwise arithmetic now uses the same shape-aware tensor dispatcher and
+accumulates repeated indices for broadcast operands.
 
 ADR-0000's Stage-7 gate `scalar_ad_nodes_from_matmul == 0` is now both meetable
 and measured: `tests/ad/matmul_tape_node_count_test.esk` ratchets the count and
@@ -387,25 +387,23 @@ strict-errored when lifted into a tower — not silently linearized.
 
 Sequenced by dependency and risk. Phase letters map to the handoff.
 
-**v1.3.2 — shippable, surgical, low risk (no ABI surface).**
+**v1.3.5-evolve — dense tensor routing (no ABI surface).**
 The scalar oracle is already correct (claim 14), so dense routing is validated
 *against it* on tiny shapes — a differential test, not a leap of faith.
 
 - **Phase A — counters + one-pass gradient.** Highest leverage. See 4.1.
 - **Phase B — row-sweep Jacobian.** Depends on A's helpers +
   `arena_tape_zero_gradients`. Turns `m*n` replays into `m` (or `1+m`).
-- **Phase C.1 / C.2 / C.5 — matmul dense routing, sum/mean dense nodes, strict
-  unsupported.** C.1 removes the largest scalarization source (matmul inner
-  loop); C.5 (strictness) must land *with or before* any new dense recording and
-  also contains the shipping attention-Q/K silent-drop bug.
+- **Phase C.1 / C.2 / C.3 / C.4 / C.5 — dense matmul, reductions,
+  elementwise/broadcast routing and strict unsupported.** These phases remove
+  the scalarization source for the implemented dense tensor arithmetic and
+  carry exact VJPs through the registry-backed dispatcher.
 - **Phase F (scaffolding) — FD counter + strict gate.** The counter and
   `ESHKOL_AD_STRICT` flag land now even before every FD site is removed, so
   tests can assert exactness incrementally.
 
-**v1.4 — feature-complete exact AD (moderate risk).**
+**v1.4 — broader exact AD (moderate risk).**
 
-- **Phase C.3 / C.4 — dense elementwise + broadcast backward** (needs reduce-
-  over-broadcast-axes metadata).
 - **Phase D — first-class `valueAndGradient`** primitive (flat parameter leaves,
   not PyTree ergonomics). Depends on A.
 - **Phase E — exact PINN coordinate derivatives** (the mixed-mode split of 3.5).

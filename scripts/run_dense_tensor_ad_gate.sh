@@ -96,9 +96,12 @@ check_output() {
 run_lowering() {
     local mode="$1"   # 1 = dense, 0 = scalarizing
     local out
-    out="$(ESHKOL_DENSE_TENSOR_AD_NODES="$mode" \
-           ESHKOL_JIT_CACHE_DIR="$ESHKOL_JIT_CACHE_DIR/mode$mode" \
-           run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$REPO_ROOT/$TEST" -L"$BUILD_PATH" 2>&1)"
+    # Assignments before a shell function are not necessarily exported to the
+    # function's exec'd child. Export explicitly: otherwise both invocations
+    # can silently inherit the previous mode and the differential is invalid.
+    export ESHKOL_DENSE_TENSOR_AD_NODES="$mode"
+    export ESHKOL_JIT_CACHE_DIR="$ESHKOL_JIT_CACHE_DIR/mode$mode"
+    out="$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$REPO_ROOT/$TEST" -L"$BUILD_PATH" 2>&1)"
     printf '%s' "$out"
 }
 
@@ -139,8 +142,8 @@ fi
 # ---- and the dense tape must actually be smaller ---------------------------
 # Read the 6x6 count, the shape where the difference is largest: 2*216 = 432
 # scalar nodes for the multiply-accumulates alone.
-dense_6x6="$(printf '%s\n' "$dense_out"  | grep -oE 'tape_nodes 2x2=[0-9]+ 6x6=[0-9]+' | grep -oE '6x6=[0-9]+' | grep -oE '[0-9]+')"
-scalar_6x6="$(printf '%s\n' "$scalar_out" | grep -oE 'tape_nodes 2x2=[0-9]+ 6x6=[0-9]+' | grep -oE '6x6=[0-9]+' | grep -oE '[0-9]+')"
+dense_6x6="$(printf '%s\n' "$dense_out"  | sed -nE 's/.*tape_nodes 2x2=[0-9]+ 6x6=([0-9]+).*/\1/p' | head -n 1)"
+scalar_6x6="$(printf '%s\n' "$scalar_out" | sed -nE 's/.*tape_nodes 2x2=[0-9]+ 6x6=([0-9]+).*/\1/p' | head -n 1)"
 
 if [ -z "${dense_6x6:-}" ] || [ -z "${scalar_6x6:-}" ]; then
     fail "could not read the 6x6 tape_nodes counts"
@@ -153,8 +156,8 @@ fi
 # ---- AOT agrees with JIT ---------------------------------------------------
 if [ "$DO_AOT" -eq 1 ]; then
     bin="$(mktemp "$BUILD_PATH/dense_tensor_ad_gate_bin.XXXXXX")"
-    ESHKOL_DENSE_TENSOR_AD_NODES=1 \
-        run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$REPO_ROOT/$TEST" -o "$bin" \
+    export ESHKOL_DENSE_TENSOR_AD_NODES=1
+    run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$REPO_ROOT/$TEST" -o "$bin" \
         -L"$BUILD_PATH" >/dev/null 2>&1; rc=$?
     if [ "$rc" -ne 0 ] || [ ! -x "$bin" ]; then
         fail "dense lowering       AOT  COMPILE-FAIL rc=$rc"
