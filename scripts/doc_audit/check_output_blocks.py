@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extract_examples import FENCE_RE, LANGS, iter_files  # noqa: E402
+from extract_examples import FENCE_RE, LANGS, closing_fence, iter_files  # noqa: E402
 
 TIMEOUT = 90
 
@@ -29,10 +29,8 @@ def collect(root):
             if not m or m.group(3).lower() not in LANGS:
                 i += 1
                 continue
-            j = i + 1
-            while j < n and not (FENCE_RE.match(lines[j]) and not FENCE_RE.match(lines[j]).group(3)):
-                j += 1
-            if j >= n:
+            j = closing_fence(lines, i, m)
+            if j is None:
                 break
             code = "\n".join(lines[i + 1 : j])
             # look ahead: optional blank lines, then a bare or ```text fence
@@ -41,10 +39,8 @@ def collect(root):
                 k += 1
             m2 = FENCE_RE.match(lines[k]) if k < n else None
             if m2 and m2.group(3).lower() in ("", "text", "output"):
-                e = k + 1
-                while e < n and not (FENCE_RE.match(lines[e]) and not FENCE_RE.match(lines[e]).group(3)):
-                    e += 1
-                if e < n:
+                e = closing_fence(lines, k, m2)
+                if e is not None:
                     expected = "\n".join(lines[k + 1 : e])
                     pairs.append({
                         "file": rel, "code_line": i + 1, "out_line": k + 1,
@@ -60,7 +56,9 @@ def main():
     if "--mode" in sys.argv:
         mode = sys.argv[sys.argv.index("--mode") + 1]
     pairs = collect(root)
-    work = tempfile.mkdtemp(prefix="docaudit-out-")
+    scratch = os.path.join(root, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="docaudit-out-", dir=scratch)
     results = []
     for n, p in enumerate(pairs):
         d = os.path.join(work, str(n))
@@ -68,8 +66,10 @@ def main():
         src = os.path.join(d, "ex.esk")
         open(src, "w").write(p["code"] + "\n")
         cmd = [eshkol_run, "-r", src] if mode == "jit" else [eshkol_run, src]
+        env = dict(os.environ)
+        env["ESHKOL_JIT_CACHE"] = "0"
         try:
-            r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
+            r = subprocess.run(cmd, cwd=d, env=env, capture_output=True, text=True, timeout=TIMEOUT)
             rc, so = r.returncode, r.stdout
             se = r.stderr
         except subprocess.TimeoutExpired:

@@ -81,9 +81,11 @@ def run_one(rec, eshkol_run, mode, workroot, repo):
     with open(src, "w", encoding="utf-8") as fh:
         fh.write(rec["code"])
         fh.write("\n")
-    # Deliberately NOT setting ESHKOL_JIT_CACHE: the audit runs the compiler in
-    # its default configuration, the one a reader of the docs has.
+    # Every example gets a cold compiler path. A persistent cache can retain a
+    # result from an earlier source tree and make the documentation audit
+    # validate an artifact rather than the example it just wrote.
     env = dict(os.environ)
+    env["ESHKOL_JIT_CACHE"] = "0"
     if mode == "jit":
         cmd = [eshkol_run, "-r", src]
     elif mode == "vm":

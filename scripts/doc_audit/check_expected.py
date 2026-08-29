@@ -108,7 +108,9 @@ def main():
     examples = json.load(open(sys.argv[1]))
     eshkol_run = sys.argv[2]
     out_path = sys.argv[3]
-    work = tempfile.mkdtemp(prefix="docaudit-exp-")
+    scratch = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="docaudit-exp-", dir=scratch)
     findings = []
     stats = {"blocks_with_annotations": 0, "pairs": 0, "MATCH": 0, "MISMATCH": 0,
              "PROSE": 0, "NORUN": 0}
@@ -123,6 +125,7 @@ def main():
         with open(src, "w") as fh:
             fh.write(code + "\n")
         env = dict(os.environ)
+        env["ESHKOL_JIT_CACHE"] = "0"
         try:
             p = subprocess.run([eshkol_run, "-r", src], cwd=d, env=env,
                                capture_output=True, text=True, timeout=TIMEOUT)

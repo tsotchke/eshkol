@@ -157,7 +157,10 @@ BUILD_DIR=build scripts/run_vm_parity.sh
 
 Verified behavioral divergences are recorded as `gap` rows referencing a repro
 under `tests/vm_parity/found/` (for example, the VM's `display` appends a
-newline per call). This turns "the VM is roughly compatible" into a precise,
-enforced, and continuously re-verified contract.
+newline per call). The parity gate also reruns every filed program in `found/`;
+normalized agreement fails the gate until the program is moved to
+`tests/vm_parity/resolved/` or promoted into `corpus/`. This keeps the active
+contract precise without retaining stale defect claims.
 
 See also [TESTING.md](TESTING.md) for the full adversarial-testing overview.
+Reclassified cases are listed in [tests/vm_parity/resolved/README.md](../tests/vm_parity/resolved/README.md).

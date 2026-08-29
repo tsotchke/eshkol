@@ -10,7 +10,7 @@ Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]
        eshkol-run -r <file.esk>       (JIT run file)
 ```
 
-Reported version: `Eshkol Compiler v1.3.4-evolve` (`--version`).
+Reported version: `Eshkol Compiler v1.3.5-evolve` (`--version`).
 
 ## Modes at a glance
 
@@ -36,15 +36,17 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 | `--compile-only` | `-c` | Compile to an intermediate object file (no link) |
 | `--emit-object` | | Alias for `--compile-only` |
 | `--shared-lib` | `-s` | Compile to a shared library |
-| `-fPIC` | | Accepted for build-system compatibility (no-op flag) |
+| `-fPIC` | | Request position-independent object emission; object emission already uses LLVM's PIC relocation model |
 | `--wasm` | `-w` | Compile to WebAssembly (`.wasm`) |
 | `--no-stdlib` | `-n` | Do not auto-load the standard library |
+| `--emit-depfile PATH` | | With `-o` / `--emit-object`, write a Makefile-format depfile listing the entry source plus every file reached transitively via `(load …)` / `(import …)` / `(require …)` |
+| `--emit-eskb FILE` | `-B` | Compile to an ESKB bytecode container for the VM |
 
 ### JIT execution
 
 | Flag | Alias | Meaning |
 |------|-------|---------|
-| `--run FILE` | `-r` | JIT-run a file (compile in memory, execute) |
+| `--run` | `-r` | JIT-run the given `.esk` file (compile in memory, execute). The file is a positional argument, not an option value: `--run=file.esk` is rejected |
 | `--eval 'EXPR'` | `-e` | JIT-evaluate a single expression |
 
 ### Optimization & debugging
@@ -53,7 +55,7 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 |------|-------|---------|
 | `--optimize N` | `-O` | LLVM optimization level: `0` none, `1` basic, `2` full, `3` aggressive |
 | `--debug` | `-d` | Add debugging information inside the program |
-| `--debug-info` | `-g` | Emit DWARF debug info (source-level lldb/gdb) |
+| `--debug-info` | `-g` | Emit DWARF debug info (source-level lldb/gdb). Has no effect under `-r` / `-e`, and the driver warns when combined with them |
 | `--dump-ast` | `-a` | Dump the AST to a `.ast` file |
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 
@@ -89,7 +91,7 @@ shapes are enforced and which are not yet.
 | `-I DIR` | | Add a source/module search path |
 | `--lib NAME` | `-l` | Link a shared library into the executable |
 | `--lib-path DIR` | `-L` | Add a directory to the library search path |
-| `-D NAME[=VALUE]` | | Accepted for build-system compatibility (no-op) |
+| `-D NAME[=VALUE]` | | Accepted for build-system compatibility; it does not define Eshkol source macros |
 
 ### Targets & profiles
 
@@ -113,6 +115,7 @@ for what each profile guarantees.
 |------|-------|---------|
 | `--help` | `-h` | Print help |
 | `--version` | | Print version |
+| `--features` | | Print this build's compile-time capabilities as `KEY=VALUE` lines (`version=`, `llvm-backend=`, `gpu=`, `gpu-metal=`, `gpu-cuda=`, `blas=`, `xla=`, `tensor-dtypes=`) and exit |
 
 ## Verified examples
 
@@ -131,10 +134,9 @@ $ eshkol-run -r hello.esk --dump-ir       # also writes hello.ll to CWD
 $ eshkol-run -r hello.esk --dump-ast      # also writes hello.ast to CWD
 ```
 
-> **Discrepancy (report only):** `--help` describes `-e` as "JIT evaluate an
-> expression and print the result," but `eshkol-run -e '(+ 2 3)'` produces **no**
-> output — the resulting value is not auto-printed. Use `display` explicitly
-> (`-e '(display (+ 2 3))'`). Side effects and definitions do run.
+`-e` does not auto-print the resulting value, and `--help` says so
+("output is shown via `(display ...)`"). Use `display` explicitly
+(`-e '(display (+ 2 3))'`); side effects and definitions do run.
 
 `--dump-ir` / `--dump-ast` write `<source-basename>.ll` / `.ast` into the current
 working directory.

@@ -399,9 +399,11 @@ invariants:
   #     answer and kb-retract!'s matching rule. Evidence is EXECUTED: the
   #     corpus is run on both engines and stdout compared, with a VM failure
   #     on a previously-agreeing program treated as a regression rather than
-  #     an out-of-subset reclassification. Bind the differential_fraction
-  #     threshold in the readiness oracle, as INV-language-surface-exercise
-  #     does for covered_fraction.
+  #     an out-of-subset reclassification. The generic ICC `exercise` kind
+  #     records freshness only; it does not inspect numeric event payloads.
+  #     The repository-owned threshold checker below is therefore a required
+  #     companion and evaluates the allowed divergence count and coverage
+  #     floor from the event's structured threshold payload.
   - id: INV-engine-semantic-parity
     kind: exercise
     incident: vm-parity-silent-wrong-answer
@@ -414,6 +416,11 @@ invariants:
       by reading source text.
     capability: engine_semantic_parity
     window_days: 30
+    threshold:
+      differential_fraction: minimum_differential_fraction
+      new_divergent_programs: 0
+      regressed_programs: 0
+    threshold_checker: scripts/check_engine_parity_threshold.py
     impl: {path: scripts/run_engine_parity_coverage.py, symbol: main}
     evidence:
       trace_event_kind: runtime_event

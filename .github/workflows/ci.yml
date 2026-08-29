@@ -467,6 +467,9 @@ jobs:
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
+          python3 scripts/doc_audit/test_harness.py
+          python3 scripts/check_test_coverage.py --self-test
+          python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
 
@@ -599,6 +602,10 @@ jobs:
       - name: No high-severity criterion's evidence is stale (ADR-0010 A13)
         shell: bash
         run: python3 scripts/check_evidence_staleness.py --require-trace-dir
+
+      - name: Documentation suite inventory matches the current test runner
+        shell: bash
+        run: python3 scripts/check_test_coverage.py
 
   # ADR-0010 §2.5 / 2026-08-25 architecture audit: several ICC oracle
   # pillars are real, fast (or fast-enough) gates that never ran anywhere in

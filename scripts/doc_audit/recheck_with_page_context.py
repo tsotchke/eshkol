@@ -43,7 +43,9 @@ def main():
     by_file = {}
     for p in pairs:
         by_file.setdefault(p["file"], []).append(p)
-    work = tempfile.mkdtemp(prefix="docaudit-ctx2-")
+    scratch = os.path.join(root, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="docaudit-ctx2-", dir=scratch)
     results = []
     todo = [p for p in pairs if (p["file"], p["code_line"]) in failed]
     for n, p in enumerate(todo):
@@ -58,8 +60,10 @@ def main():
         src = os.path.join(d, "ex.esk")
         open(src, "w").write("\n".join(prelude) + "\n" + p["code"] + "\n")
         try:
+            env = dict(os.environ)
+            env["ESHKOL_JIT_CACHE"] = "0"
             r = subprocess.run([eshkol_run, "-r", src], cwd=d,
-                               capture_output=True, text=True, timeout=TIMEOUT)
+                               env=env, capture_output=True, text=True, timeout=TIMEOUT)
             rc, so, se = r.returncode, r.stdout, r.stderr
         except subprocess.TimeoutExpired:
             rc, so, se = -9, "", "TIMEOUT"

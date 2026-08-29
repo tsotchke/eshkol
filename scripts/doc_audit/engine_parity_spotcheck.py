@@ -21,9 +21,9 @@ from check_output_blocks import collect  # noqa: E402
 TIMEOUT = 120
 
 
-def run(cmd, cwd):
+def run(cmd, cwd, env):
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=TIMEOUT)
+        p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT)
         return p.returncode, p.stdout.rstrip("\n")
     except subprocess.TimeoutExpired:
         return -9, "<timeout>"
@@ -49,7 +49,11 @@ def main():
         if len(picked) >= n:
             break
 
-    work = tempfile.mkdtemp(prefix="doc-parity-")
+    scratch = os.path.join(repo, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="doc-parity-", dir=scratch)
+    env = dict(os.environ)
+    env["ESHKOL_JIT_CACHE"] = "0"
     tally = {"jit": 0, "aot": 0, "vm": 0, "aot_nocompile": 0, "vm_differs": 0}
     rows = []
     for i, p in enumerate(picked):
@@ -59,13 +63,13 @@ def main():
         exp = p["expected"].rstrip("\n")
         origin = "%s:%d" % (p["file"], p["code_line"])
 
-        _, got = run([run_bin, "-r", "ex.esk"], d)
+        _, got = run([run_bin, "-r", "ex.esk"], d, env)
         jit = got == exp
         tally["jit"] += jit
 
-        rc, _ = run([run_bin, "-o", "ex.bin", "ex.esk"], d)
+        rc, _ = run([run_bin, "-o", "ex.bin", "ex.esk"], d, env)
         if rc == 0 and os.path.exists(os.path.join(d, "ex.bin")):
-            _, got = run(["./ex.bin"], d)
+            _, got = run(["./ex.bin"], d, env)
             aot = got == exp
         else:
             aot, tally["aot_nocompile"] = None, tally["aot_nocompile"] + 1
@@ -73,7 +77,7 @@ def main():
 
         vm = None
         if os.path.exists(vm_bin):
-            _, got = run([vm_bin, "ex.esk"], d)
+            _, got = run([vm_bin, "ex.esk"], d, env)
             vm = got == exp
             tally["vm"] += vm
             tally["vm_differs"] += not vm

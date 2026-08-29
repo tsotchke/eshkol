@@ -7119,9 +7119,9 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 43,232 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus ~22,400 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
-**Compiler Modules**: 21 specialized code generators
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 43,959 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus 22,355 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
+**Compiler Modules**: 36 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions
 

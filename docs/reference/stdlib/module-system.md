@@ -11,9 +11,11 @@ does versus requiring an individual module, and how the precompiled
 
 ## `provide` and `require`
 
-Every stdlib module declares its public surface with a `(provide sym ...)`
-form near the top of the file. Only provided symbols are importable by other
-modules; everything else is module-private.
+Every stdlib module declares its intended public surface with a `(provide sym
+...)` form near the top of the file. In the current compiler this is advisory
+metadata for tooling and documentation: symbols are not made module-private
+by omission, and a consumer that knows another defined name can still resolve
+it. A strict privacy mechanism remains a future module-system extension.
 
 ```scheme
 ;;; lib/core/list/transform.esk

@@ -175,7 +175,9 @@ if eshkol_durable_enabled; then
     WORK="$VM_PARITY_WORK/work"
     mkdir "$WORK"
 else
-    WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-parity.XXXXXX")"
+    SCRATCH_DIR="$REPO_ROOT/.scratch"
+    mkdir -p "$SCRATCH_DIR"
+    WORK="$(mktemp -d "$SCRATCH_DIR/eshkol-vm-parity.XXXXXX")"
 fi
 : "${WORK:?WORK must be set}"
 if ! eshkol_durable_enabled; then trap 'rm -rf "$WORK"' EXIT; fi
@@ -356,6 +358,63 @@ for f in "${corpus_files[@]}"; do
         fi
     fi
 done
+
+# ── stage 2b: filed-reproducer freshness and classification ─────────────
+# `found/` is evidence, not a second hidden baseline. Every filed program is
+# rerun on both engines. If it now agrees byte-for-byte, the gate fails until
+# the file is reclassified under resolved/ (or promoted into corpus/) so a
+# future reader is not shown a defect that no longer exists.
+echo
+echo "== stage 2b: filed reproducer recheck (stale entries must be reclassified) =="
+FOUND="$REPO_ROOT/tests/vm_parity/found"
+found_stale=0
+found_checked=0
+found_infra=0
+found_files=("$FOUND"/*.esk)
+for f in "${found_files[@]}"; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f" .esk)
+    d="$WORK/found_$base"; mkdir -p "$d"
+    run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" -r "$f" >"$d/native.raw" 2>"$d/native.err"
+    nrc=$?
+    ESHKOL_VM_NO_DISASM=1 run_guarded "$TIMEOUT_RUN" "$VM_BIN" "$f" >"$d/vm.raw" 2>"$d/vm.err"
+    vrc=$?
+    nclass=$(eshkol_outcome_classify_exit "$nrc")
+    vclass=$(eshkol_outcome_classify_exit "$vrc")
+    nodeid="tests/vm_parity/found/$base.esk"
+    if [ "$nclass" = INFRA ] || [ "$vclass" = INFRA ]; then
+        found_infra=$((found_infra+1))
+        report INFRA "$nodeid::freshness" "found_${base}" \
+            "reproducer recheck timed out/infra — no stale classification obtained"
+        continue
+    fi
+    found_checked=$((found_checked+1))
+    if grep -qE '^;{1,2}[[:space:]]*CONTROL' "$f"; then
+        report PASS "$nodeid::freshness" "found_${base}" \
+            "control fixture retained; it is not a filed defect"
+        continue
+    fi
+    normalize "$d/native.raw" "$d/native.out"
+    normalize "$d/vm.raw" "$d/vm.out"
+    if [ "$base" = "display_newline_per_call" ] && \
+            [ "$nrc" -eq 0 ] && [ "$vrc" -eq 0 ] && \
+            cmp -s "$d/native.out" "$d/vm.out"; then
+        report PASS "$nodeid::freshness" "found_${base}" \
+            "documented display-newline divergence remains; normalized values agree"
+    elif [ "$nrc" -eq 0 ] && [ "$vrc" -eq 0 ] && \
+            cmp -s "$d/native.out" "$d/vm.out"; then
+        found_stale=$((found_stale+1))
+        report FAIL "$nodeid::freshness" "found_${base}" \
+            "native and VM now agree; reclassify this file under tests/vm_parity/resolved/ or corpus/"
+    else
+        report PASS "$nodeid::freshness" "found_${base}" \
+            "filed divergence still reproduces or remains a loud failure"
+    fi
+done
+if [ "$found_infra" -gt 0 ]; then
+    echo "WARNING: $found_infra filed reproducer(s) had no freshness verdict." >&2
+fi
+echo "found-recheck: $found_checked checked, $found_stale stale/agreed, $found_infra infra"
 
 # ── self-verdict gate: agreement is not correctness ─────────────────────
 echo

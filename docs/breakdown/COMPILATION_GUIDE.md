@@ -341,8 +341,9 @@ This contract is intentionally CMake-friendly:
 - `-I dir` extends Eshkol's module/source search path.
 - `-D NAME[=VALUE]` is accepted for compatibility with existing build rules,
   but preprocessor-style defines are not part of Eshkol source semantics yet.
-- `-fPIC` is accepted for compatibility; emitted LLVM object code is already
-  relocatable for this path.
+- `-fPIC` selects the position-independent object contract; emitted LLVM object
+  code already uses the PIC relocation model on this path, so the flag is a
+  compatibility spelling rather than an additional transformation.
 
 ---
 

@@ -225,7 +225,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Recursive descent parser** with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 43,232 lines — corrected 2026-08-25 from "21 specialized … components", conformity audit item f6
+- **LLVM backend** with 36 code generation modules (`find lib -iname '*codegen*.cpp' | wc -l`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 43,959 lines — current source measurement
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 

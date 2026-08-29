@@ -750,9 +750,11 @@ probe surface_parity_execution_backed 'every name native resolves is resolved by
 probe engine_semantic_parity 'no corpus program computes a different answer on the two engines, and differential construct coverage holds its floor' \
     'if eshkol_durable_enabled; then
          workdir=$(eshkol_durable_prepare_dir engine-parity) || exit $?;
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir";
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir" && \
+           python3 scripts/check_engine_parity_threshold.py;
      else
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py;
+         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py && \
+           python3 scripts/check_engine_parity_threshold.py;
      fi'
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
