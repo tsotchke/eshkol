@@ -1117,14 +1117,11 @@ typedef struct ad_node {
  * variables, so gradients with respect to them can be extracted after the
  * backward pass completes.
  *
- * `owner_arena` records the arena the tape header and its `nodes` array were
- * allocated from at creation. When the array must grow, the new (larger) array
- * is allocated from THIS arena rather than a pinned process-shared one, so the
- * pointer array shares the tape header's lifetime exactly: a tape created inside
- * a `(with-region ...)` grows into the region arena and is fully reclaimed at
- * region_pop, while a tape created outside any region grows into the global
- * arena and safely outlives an inner region it happens to be grown within (the
- * grown array never dangles behind a surviving header). See #341.
+ * `owner_arena` is a dedicated child arena containing only this tape's header,
+ * node array, and recorded nodes. `parent_arena` is the caller's allocation
+ * arena; it owns the child for region teardown, while explicit release destroys
+ * only the child. This separation ensures a tape release cannot rewind or
+ * poison user-visible allocations made during the differentiated function.
  */
 typedef struct ad_tape {
     ad_node_t** nodes;         // Array of nodes in evaluation order
@@ -1132,8 +1129,10 @@ typedef struct ad_tape {
     size_t capacity;           // Allocated capacity
     ad_node_t** variables;     // Input variable nodes
     size_t num_variables;      // Number of input variables
-    struct arena* owner_arena; // Arena the header + nodes array live in; growth targets it (#341)
-    struct arena_scope* allocation_scope; // Scope used by mark/release reclamation
+    struct arena* owner_arena; // Dedicated tape-only arena; growth and nodes use it
+    struct arena* parent_arena; // Caller/region arena that owns this child arena
+    struct arena_scope* allocation_scope; // Reserved for legacy tapes; never caller-owned
+    bool backward_active; // True while a reverse traversal is reading this tape
 } ad_tape_t;
 
 // ===== CLOSURE ENVIRONMENT STRUCTURES =====

@@ -71,6 +71,10 @@ struct arena {
     bool bounded;                  // ESH-0039/v1.8: if set, allocation NEVER grows
                                    // the arena (no new-block malloc); requests that
                                    // overflow the fixed capacity return NULL instead.
+    arena_t* tape_parent;          // Non-null only for a tape-owned child arena.
+    arena_t* first_tape_child;     // Tape arenas owned by this arena.
+    arena_t* next_tape_sibling;    // Next child in tape_parent's list.
+    bool is_tape_arena;            // Child arena used exclusively by one tape.
 };
 
 // Arena management functions
@@ -88,6 +92,12 @@ arena_t* arena_create_threadsafe(size_t default_block_size);  // Thread-safe var
 arena_t* arena_create_bounded(size_t capacity);
 
 void arena_destroy(arena_t* arena);
+
+// Register/unregister a tape-owned child arena. A parent region destroys any
+// still-live children before its own blocks, so region teardown cannot leave a
+// tape child behind. Explicit tape release unregisters before destroying it.
+void arena_register_tape_child(arena_t* parent, arena_t* child);
+void arena_unregister_tape_child(arena_t* child);
 
 // Thread-safety control
 void arena_lock(arena_t* arena);
@@ -393,6 +403,9 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
 void arena_tape_reset(ad_tape_t* tape);
 void arena_tape_release(ad_tape_t* tape);
+arena_t* arena_tape_owner(ad_tape_t* tape);
+void arena_tape_begin_backward(ad_tape_t* tape);
+void arena_tape_end_backward(ad_tape_t* tape);
 
 // Tape query functions
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);

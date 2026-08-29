@@ -644,10 +644,13 @@ typedef struct ad_tape {
  ad_node_t** variables;
  size_t num_variables;
  struct arena* owner_arena;
+ struct arena* parent_arena;
+ struct arena_scope* allocation_scope;
+ bool backward_active;
 } ad_tape_t;
 ```
 
-Tape recording all AD nodes created during a forward pass. Nodes are appended to `nodes` in evaluation (creation) order as the forward computation executes; backpropagation walks the tape in reverse. `variables` tracks the subset of nodes that are independent input variables, so gradients with respect to them can be extracted after the backward pass completes. `owner_arena` records the arena the tape header and its `nodes` array were allocated from at creation. When the array must grow, the new (larger) array is allocated from THIS arena rather than a pinned process-shared one, so the pointer array shares the tape header's lifetime exactly: a tape created inside a `(with-region ...)` grows into the region arena and is fully reclaimed at region_pop, while a tape created outside any region grows into the global arena and safely outlives an inner region it happens to be grown within (the grown array never dangles behind a surviving header). See #341.
+Tape recording all AD nodes created during a forward pass. Nodes are appended to `nodes` in evaluation (creation) order as the forward computation executes; backpropagation walks the tape in reverse. `variables` tracks the subset of nodes that are independent input variables, so gradients with respect to them can be extracted after the backward pass completes. `owner_arena` is a dedicated tape-only child arena; `parent_arena` is the caller/region arena that owns that child for teardown. Growth stays in `owner_arena`, and explicit release destroys only that child, never rewinding user-visible parent allocations. `backward_active` prevents release while a reverse traversal still holds tape pointers. An unreleased tape created inside a `(with-region ...)` is reclaimed with its parent region.
 
 ### `CLOSURE_ENV_GET_NUM_CAPTURES`
 

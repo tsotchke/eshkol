@@ -275,7 +275,8 @@ void MemoryCodegen::createTaggedConsSetters() {
  * @brief Declare the reverse-mode automatic-differentiation tape runtime functions.
  *
  * Declares `arena_allocate_tape`, `arena_tape_add_node`, `arena_tape_reset`,
- * `arena_tape_release`, `arena_tape_get_node`, and `arena_tape_get_node_count`.
+ * `arena_tape_release`, `arena_tape_owner`, `arena_tape_get_node`, and
+ * `arena_tape_get_node_count`.
  */
 void MemoryCodegen::createTapeFunctions() {
     auto ptr = types.getPtrType();
@@ -297,6 +298,10 @@ void MemoryCodegen::createTapeFunctions() {
     // arena_tape_release: void (ad_tape_t*)
     arena_tape_release = createFunc("arena_tape_release",
         llvm::FunctionType::get(voidTy, {ptr}, false));
+
+    // arena_tape_owner: arena_t* (ad_tape_t*)
+    arena_tape_owner = createFunc("arena_tape_owner",
+        llvm::FunctionType::get(ptr, {ptr}, false));
 
     // arena_tape_get_node: ad_node_t* (ad_tape_t*, size_t index)
     arena_tape_get_node = createFunc("arena_tape_get_node",

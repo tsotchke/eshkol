@@ -3040,15 +3040,19 @@ entries:
     observed_before: "Each pass allocated a fresh tape in the owning arena and only reset its node count; tape storage accumulated until an enclosing region ended."
     observed_after: >-
       Native reverse-mode gradient, jacobian, and runtime-closure collection
-      paths release each marked tape interval after copying all gradients into
-      their result. The mark is LIFO and an out-of-order release is rejected.
+      paths allocate tape headers, node arrays, nodes, and private scratch in
+      a dedicated child arena, then release that child after copying all
+      gradients into parent-owned results. Release cannot rewind user-visible
+      parent allocations and is refused during an active reverse pass.
       The bytecode VM disposition is documented: its operator tape remains
       owned by VmRegionStack and is reclaimed by an enclosing VM region.
     root_cause: >-
-      arena_allocate_tape had no lifetime mark and arena_tape_reset only cleared
-      node state. The native runtime now pushes a tape-owned arena scope and
-      arena_tape_release pops it after the result is no longer tape-backed.
-    evidence: "tests/core/ad_tape_region_growth_test.cpp Part 3; docs/reference/ad/tape.md; docs/KNOWN_ISSUES.md"
+      arena_allocate_tape placed tape storage in the caller's bump interval and
+      arena_tape_reset only cleared node state. Releasing that interval could
+      reclaim user values allocated after the tape. The native runtime now
+      creates a tape-only child arena and arena_tape_release destroys it after
+      the result is no longer tape-backed.
+    evidence: "tests/core/ad_tape_region_growth_test.cpp Parts 1-3; tests/core/ad_tape_escape_test.cpp; tests/ad/tape_release_escape_test.esk; docs/reference/ad/tape.md; docs/KNOWN_ISSUES.md"
     caught_by: [KNOWN_ISSUES, direct-measurement]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
 
@@ -4629,17 +4633,25 @@ entries:
   - id: DD-10
     bucket: DOC-DEBT
     status: closed
-    closed_at: "c459f292"
-    closed_by: "documented no-op surface truth audit"
     title: "Documented no-ops in shipped surface"
     items:
-      - "eshkol-run -D NAME[=VALUE] accepted for compatibility; it does not define Eshkol source macros"
-      - "eshkol-run -fPIC selects the position-independent object contract; the LLVM object path already emits PIC relocations"
-      - "provide is advisory; the compiler generates no linkage restriction (docs/breakdown/MODULE_SYSTEM.md:444)"
-      - "manifold gyro-transport ships a first-order approximation with no signal (docs/reference/stdlib/manifold.md:144)"
+      - "eshkol-run -D NAME[=VALUE] defines a cond-expand feature on native and VM"
+      - "eshkol-run -fPIC selects the native AOT PIC object contract; always-PIC or artifactless targets are stated precisely"
+      - "provide restricts the exported names; omitted definitions are private on native and VM"
+      - "manifold gyro-transport uses the closed-form gyrovector parallel transport"
+    evidence: "tests/toolchain/dd10_surface_test.sh; tests/modules/visibility_test.esk; tests/modules/visibility_fail_test.esk; tests/vm_parity/corpus/66_gyro_transport.esk; inc/eshkol/backend/riemannian_core.h"
+    closed_at: "working-tree"
+    observed_after: >-
+      The driver passes every -D name to the native frontend and VM compiler;
+      cond-expand selects the feature in native JIT, native AOT, and emitted
+      ESKB execution. Native LLVM AOT object emission uses Reloc::PIC_ and the
+      focused test emits an object with -fPIC. AOT module loading mangles
+      omitted definitions before dependency flattening, and VM source module
+      loading applies the same boundary with lexical bindings preserved. The
+      hyperbolic module transport computes (lambda_a/lambda_b) gyr[b,-a]v;
+      the shared header supplies the VM fallback gyration closed form and the
+      parity corpus checks the same result on native and VM.
     caught_by: [doc-source-crosscheck]
-    evidence: "docs/reference/runtime/eshkol-run.md; docs/breakdown/COMPILATION_GUIDE.md; docs/reference/stdlib/module-system.md; docs/reference/stdlib/manifold.md; source cross-check at c459f292"
-    observed_after: "All four surfaces state their shipped behavior: -D is compatibility-only, -fPIC is already honored by object emission, provide is advisory rather than private, and manifold parallel transport is first-order while exact gyro-transport is not implemented."
 
   - id: DD-12
     bucket: DOC-DEBT

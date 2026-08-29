@@ -304,7 +304,7 @@ void vm_run(VM* vm) {
          * heap-boxed VAL_I128 as 0.0 exactly like the other arithmetic ops. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b);
-            vm_dispatch_native(vm, 2107); /* i128-remainder */
+            vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
             DISPATCH();
         }
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
@@ -819,7 +819,7 @@ vm_exit:
             /* SW-09b: switch-based twin of lbl_MOD. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
                 vm_push(vm, a); vm_push(vm, b);
-                vm_dispatch_native(vm, 2107); /* i128-remainder */
+                vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
                 break;
             }
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }

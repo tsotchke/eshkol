@@ -1,0 +1,15 @@
+;;; Constant-curvature gyrovector transport must agree between native and VM.
+(require core.manifold)
+
+(define H (make-hyperbolic-manifold 3))
+(define a #(0.1 0.2 0.0))
+(define b #(0.3 -0.1 0.0))
+(define v #(0.05 -0.03 0.02))
+(define moved (manifold-parallel-transport H a b v))
+
+(if (and (< (abs (- (vector-ref moved 0) 0.050896286401282395)) 1.0e-12)
+         (< (abs (- (vector-ref moved 1) -0.02147304301362543)) 1.0e-12)
+         (< (abs (- (vector-ref moved 2) 0.01894736842105263)) 1.0e-12))
+    (display "PASS: exact gyrovector transport")
+    (display "FAIL: exact gyrovector transport"))
+(newline)

@@ -431,8 +431,9 @@ in either direction.
 `ESHKOL_ENFORCE_LIMITS`, `ESHKOL_LIMIT_WARNINGS`) parsed into the active configuration and
 consulted by nobody; `ESHKOL_TIMEOUT_MS=500` printed *"Execution timeout: 500ms limit
 exceeded"* and then ran the program to completion, exit 0, because nothing polled the
-interrupt flag the watchdog set. Closed by PR #430. DD-10: `-D NAME[=VALUE]`, `-fPIC` and
-`provide` are documented no-ops. LE-05: `KNOWN_ISSUES.md:269` says `(load "path.esk")`
+ interrupt flag the watchdog set. Closed by PR #430. DD-10 originally recorded
+`-D NAME[=VALUE]`, `-fPIC` and `provide` as documented no-ops; those surfaces are
+now implemented and re-measured. LE-05: `KNOWN_ISSUES.md:269` says `(load "path.esk")`
 "silently ignores a path literal" where the VM is in fact loud — the doc is wrong in the
 *other* direction, which no doc-truth pass looking for over-claims would find.
 

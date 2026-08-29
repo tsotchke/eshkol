@@ -7668,6 +7668,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * status, and every later top-level form silently dropped.  Every fatal
      * path here now names itself on stderr. */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2119); break;
+        }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         /* `modulo` by zero is fatal for exact AND inexact operands — native
@@ -7676,6 +7679,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2107); break;
+        }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
         /* `remainder` with an INEXACT operand is fmod, so a zero divisor is
          * IEEE-754 (+nan.0) rather than an error — native agrees: it answers
@@ -7687,10 +7693,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2106); break;
+        }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'q'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
+    case 39: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_I128 || b.type == VAL_I128) {
+            int oka = 0, okb = 0;
+            __int128 x = vm_coerce_i128(vm, a, &oka);
+            __int128 y = vm_coerce_i128(vm, b, &okb);
+            if (!oka || !okb) { fprintf(stderr, "ERROR: floor-quotient: expected integer operands\n"); vm->error = 1; break; }
+            if (y == 0) { fprintf(stderr, "ERROR: floor-quotient: division by zero\n"); vm->error = 1; break; }
+            vm_push_i128(vm, eshkol_i128_floor_quotient(x, y));
+            break;
+        }
+        if (vm_either_bignum(a, b)) {
+            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 36);
+            Value m = vm_pop(vm);
+            vm_push(vm, a); vm_push(vm, m); vm_dispatch_native(vm, 143);
+            Value adjusted = vm_pop(vm);
+            vm_push(vm, adjusted); vm_push(vm, b); vm_dispatch_native(vm, 38);
+            break;
+        }
+        int64_t ia = (int64_t)as_number(a), ib = (int64_t)as_number(b);
+        if (ib == 0) { fprintf(stderr, "FLOOR QUOTIENT BY ZERO\n"); vm->error = 1; break; }
+        int64_t q = ia / ib, r = ia % ib;
+        if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
+        vm_push(vm, INT_VAL(q));
+        break;
+    }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Predicates (40-50)
@@ -8133,7 +8167,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(x.type == VAL_I128));
         break;
     }
-    case 2103: case 2104: case 2105: case 2106: case 2107: { /* add/sub/mul/quot/rem */
+    case 2103: case 2104: case 2105: case 2106: case 2107: case 2119: { /* add/sub/mul/quot/rem/floor-rem */
         Value b = vm_pop(vm), a = vm_pop(vm);
         int oka = 0, okb = 0;
         __int128 x = vm_coerce_i128(vm, a, &oka);
@@ -8150,9 +8184,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 2106:
                 if (y == 0) { fprintf(stderr, "ERROR: i128-quotient: division by zero\n"); vm->error = 1; goto i128_arith_done; }
                 r = eshkol_i128_quotient(x, y); break;
-            default: /* 2107 */
+            case 2107:
                 if (y == 0) { fprintf(stderr, "ERROR: i128-remainder: division by zero\n"); vm->error = 1; goto i128_arith_done; }
                 r = eshkol_i128_remainder(x, y); break;
+            default: /* 2119: generic modulo/floor-remainder */
+                if (y == 0) { fprintf(stderr, "ERROR: i128-floor-remainder: division by zero\n"); vm->error = 1; goto i128_arith_done; }
+                r = eshkol_i128_floor_remainder(x, y); break;
         }
         vm_push_i128(vm, r);
     i128_arith_done:

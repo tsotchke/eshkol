@@ -115,6 +115,8 @@ public:
     llvm::Function* getArenaTapeReset() const { return arena_tape_reset; }
     /** @brief Get the declared `arena_tape_release` runtime function (reclaim a marked AD tape). */
     llvm::Function* getArenaTapeRelease() const { return arena_tape_release; }
+    /** @brief Get the declared `arena_tape_owner` runtime function (tape-private child arena). */
+    llvm::Function* getArenaTapeOwner() const { return arena_tape_owner; }
     /** @brief Get the declared `arena_tape_get_node` runtime function (index into an AD tape). */
     llvm::Function* getArenaTapeGetNode() const { return arena_tape_get_node; }
     /** @brief Get the declared `arena_tape_get_node_count` runtime function. */
@@ -204,6 +206,7 @@ private:
     llvm::Function* arena_tape_add_node;
     llvm::Function* arena_tape_reset;
     llvm::Function* arena_tape_release;
+    llvm::Function* arena_tape_owner;
     llvm::Function* arena_tape_get_node;
     llvm::Function* arena_tape_get_node_count;
 

@@ -7,11 +7,13 @@ their parent links, and the saved forward state needed by the reverse sweep.
 ## Mark and release
 
 The native runtime exposes the tape lifetime operations
-`arena_allocate_tape` and `arena_tape_release`. Allocation marks the owning arena
-before the tape header, node-pointer array, and recorded nodes are created.
-Release rewinds that marked interval after the caller has copied every result out
-of the tape. Release is LIFO; an out-of-order release is rejected. This is the
-lightweight lifetime boundary for a resident loop:
+`arena_allocate_tape` and `arena_tape_release`. Allocation creates a dedicated
+tape sub-arena for the tape header, node-pointer array, and recorded nodes; the
+requested arena is only the sub-arena's parent for region teardown. Release
+destroys that tape interval after the caller has copied every result out of the
+tape, without rewinding or poisoning parent-arena allocations. Release is
+rejected during an active reverse pass. This is the lightweight lifetime
+boundary for a resident loop:
 
 ```text
 for each training step:
@@ -23,7 +25,10 @@ for each training step:
 
 Generated native `gradient`, `jacobian`, and runtime-closure gradient paths use
 this boundary. A caller does not need to wrap each step in `(with-region ...)`,
-and the result tensors are allocated before the tape interval is released.
+and the result tensors and user values allocated by the differentiated function
+remain valid after the tape sub-arena is released. If a tape is created inside a
+region and is not explicitly released, region teardown destroys its child tape
+arena with the parent.
 
 The bytecode VM has a separate arena implementation. Its internal operator tape
 is owned by the active `VmRegionStack`; VM programs use an enclosing region for

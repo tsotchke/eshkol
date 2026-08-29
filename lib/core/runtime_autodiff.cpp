@@ -542,12 +542,13 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
 /**
  * @brief Allocates and initializes an empty reverse-mode AD tape.
  *
- * Allocates the ad_tape_t header plus a nodes array sized to
- * `initial_capacity` (0 is treated as 64) from `arena`. The tape starts
+ * Allocates a dedicated tape child arena, then places the ad_tape_t header
+ * plus a nodes array sized to `initial_capacity` (0 is treated as 64) in it.
+ * The caller's `arena` is retained only as the child lifetime parent. The tape starts
  * with zero recorded nodes and no variable list; nodes are appended later
  * via arena_tape_add_node() as operations are recorded.
  *
- * @param arena             Arena to allocate from; must be non-null.
+ * @param arena             Parent arena for the tape child; must be non-null.
  * @param initial_capacity  Initial nodes-array capacity; 0 is treated as 64.
  * @return                  Newly allocated empty tape, or nullptr on failure.
  */
@@ -561,27 +562,32 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
         initial_capacity = 64;
     }
 
-    // Mark the complete tape allocation interval. Generated AD paths release
-    // this scope after reading their result, so resident loops do not need a
-    // user-visible with-region around every differentiation step.
-    arena_push_scope(arena);
-    arena_scope_t* allocation_scope = arena->current_scope;
+    // Tape storage must never share the caller's bump interval: the
+    // differentiated function is allowed to allocate values that escape into
+    // globals, closures, or continuations. Releasing a child arena therefore
+    // cannot rewind any of those user-visible allocations.
+    arena_t* tape_arena = arena_create(64 * 1024);
+    if (!tape_arena) {
+        eshkol_error("Failed to create tape sub-arena");
+        return nullptr;
+    }
+    arena_register_tape_child(arena, tape_arena);
 
     ad_tape_t* tape = (ad_tape_t*)
-        arena_allocate_aligned(arena, sizeof(ad_tape_t), 8);
+        arena_allocate_aligned(tape_arena, sizeof(ad_tape_t), 8);
 
     if (!tape) {
         eshkol_error("Failed to allocate tape structure");
-        if (allocation_scope) arena_pop_scope(arena);
+        arena_destroy(tape_arena);
         return nullptr;
     }
 
     size_t nodes_size = sizeof(ad_node_t*) * initial_capacity;
-    tape->nodes = (ad_node_t**)arena_allocate_aligned(arena, nodes_size, 8);
+    tape->nodes = (ad_node_t**)arena_allocate_aligned(tape_arena, nodes_size, 8);
 
     if (!tape->nodes) {
         eshkol_error("Failed to allocate tape nodes array");
-        if (allocation_scope) arena_pop_scope(arena);
+        arena_destroy(tape_arena);
         return nullptr;
     }
 
@@ -589,11 +595,10 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     tape->capacity = initial_capacity;
     tape->variables = nullptr;
     tape->num_variables = 0;
-    // #341: remember the arena the header + nodes array live in so a later grow
-    // targets the SAME arena (region-created tapes stay fully reclaimable at
-    // region_pop; globally-created tapes never dangle when grown inside a region).
-    tape->owner_arena = arena;
-    tape->allocation_scope = allocation_scope;
+    tape->owner_arena = tape_arena;
+    tape->parent_arena = arena;
+    tape->allocation_scope = nullptr;
+    tape->backward_active = false;
 
     __eshkol_ad_counters.tape_allocations++;
     return tape;
@@ -620,19 +625,14 @@ void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n) {
  * @brief Appends a node to the tape's evaluation-order node list.
  *
  * Records `node` as the next entry in `tape`, growing the backing array
- * (doubling capacity, minimum 128) from the tape's OWNING arena
- * (tape->owner_arena — the arena the header and initial nodes array were
- * allocated from) when the tape is full, falling back to the shared REPL arena
- * (__repl_shared_arena) only for a legacy tape with no recorded owner. Growing
- * from the owning arena keeps the pointer array's lifetime tied to the tape
- * header's: a region-created tape's grown array is reclaimed with the region at
- * region_pop (no ~8 MB/step residual — #341), and a tape created outside a
- * region grows into the same (surviving) global arena, so its array never
- * dangles behind the header when growth happens inside an inner region. If the
- * tape is full and no arena is available, or growth fails, the append is
- * silently dropped after logging an error. Nodes must be added in the order they
- * should be visited during the reverse (backward) pass, since the tape is walked
- * in this recorded order to propagate gradients.
+ * (doubling capacity, minimum 128) from the tape's dedicated child arena.
+ * Legacy tapes with no recorded owner fall back to the shared REPL arena.
+ * Keeping the pointer array and recorded nodes in the child makes release
+ * tape-local and keeps the parent arena's user-visible allocations intact.
+ * If the tape is full and no arena is available, or growth fails, the append is
+ * silently dropped after logging an error. Nodes must be added in the order
+ * they should be visited during the reverse (backward) pass, since the tape is
+ * walked in this recorded order to propagate gradients.
  *
  * @param tape Tape to append to; no-op (with error log) if null.
  * @param node Node to append; no-op (with error log) if null.
@@ -644,18 +644,8 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     }
 
     if (tape->num_nodes >= tape->capacity) {
-        // #341: grow from the arena the tape header lives in, NOT the pinned
-        // __repl_shared_arena. The pinned arena is never region-swapped, so
-        // growing from it leaked the pointer array (~8 MB/step in a with-region
-        // training loop) even though the tape header + nodes were reclaimed at
-        // region_pop. Using owner_arena ties the array's lifetime to the header:
-        //   - tape created INSIDE a region  -> owner = region arena -> array
-        //     reclaimed at region_pop (fully flat).
-        //   - tape created OUTSIDE a region -> owner = global arena -> array
-        //     survives an inner region_pop alongside the header (no dangling
-        //     pointer — the dangling-pointer trap the naive "current arena" fix
-        //     would fall into).
-        // Fall back to the shared arena for any legacy tape lacking an owner.
+        // Grow in the tape child. Fall back to the shared arena only for a
+        // legacy tape that predates the owner_arena field.
         arena_t* arena = tape->owner_arena ? tape->owner_arena
                                            : __repl_shared_arena.load();
         if (!arena) {
@@ -714,20 +704,41 @@ void arena_tape_reset(ad_tape_t* tape) {
 }
 
 /**
- * @brief Reclaim a tape's marked allocation scope.
+ * @brief Reclaim a tape's dedicated allocation sub-arena.
  *
- * Release is deliberately LIFO. An out-of-order request is rejected so one
- * tape cannot pop another tape's allocations. Tapes created on a parallel
- * commit-only arena have no scope and remain owned by that arena.
+ * Release is deliberately tape-local. A tape cannot reclaim another tape's
+ * allocations, and its parent arena is never rewound. Release is refused
+ * while a reverse pass is active because the traversal still holds pointers
+ * into the child arena.
  */
 void arena_tape_release(ad_tape_t* tape) {
-    if (!tape || !tape->allocation_scope || !tape->owner_arena) return;
-    arena_t* arena = tape->owner_arena;
-    if (arena->current_scope != tape->allocation_scope) {
-        eshkol_error("Cannot release AD tape out of allocation order");
+    if (!tape || !tape->owner_arena) return;
+    if (tape->backward_active) {
+        eshkol_error("Cannot release AD tape during an active reverse pass");
         return;
     }
-    arena_pop_scope(arena);
+    arena_t* tape_arena = tape->owner_arena;
+    tape->owner_arena = nullptr;
+    arena_unregister_tape_child(tape_arena);
+    arena_destroy(tape_arena);
+}
+
+arena_t* arena_tape_owner(ad_tape_t* tape) {
+    return tape ? tape->owner_arena : nullptr;
+}
+
+void arena_tape_begin_backward(ad_tape_t* tape) {
+    if (!tape || !tape->owner_arena) return;
+    if (tape->backward_active) {
+        eshkol_error("Cannot begin an already active AD reverse pass");
+        return;
+    }
+    tape->backward_active = true;
+}
+
+void arena_tape_end_backward(ad_tape_t* tape) {
+    if (!tape) return;
+    tape->backward_active = false;
 }
 
 /**

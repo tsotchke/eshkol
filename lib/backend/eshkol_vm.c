@@ -421,7 +421,7 @@ static const BuiltinDef BUILTINS[] = {
     {"magnitude", 304, 1}, {"angle", 305, 1},
     {"conjugate", 306, 1}, {"complex?", 317, 1},
     /* ═══════════════════════════════════════════════════════════════
-     * Native 128-bit integer (i128) — IDs 2100-2118
+     * Native 128-bit integer (i128) — IDs 2100-2119
      * Distinct wrapping fixed-width type, OFF the numeric tower.
      * ═══════════════════════════════════════════════════════════════ */
     {"i128", 2100, 1}, {"int->i128", 2100, 1},
@@ -433,6 +433,7 @@ static const BuiltinDef BUILTINS[] = {
     {"i128=?", 2112, 2}, {"i128<?", 2113, 2}, {"i128>?", 2114, 2},
     {"i128<=?", 2115, 2}, {"i128>=?", 2116, 2},
     {"i128->string", 2117, 1}, {"i128->int", 2118, 1},
+    {"i128-floor-remainder", 2119, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Rational numbers — IDs 330-349
      * ═══════════════════════════════════════════════════════════════ */
@@ -1477,6 +1478,7 @@ typedef struct VmEskbEmitOptions {
 static void compile_source_to_chunk_with_options(const char* source,
                                                  FuncChunk* chunk,
                                                  const VmEskbEmitOptions* options) {
+    g_vm_n_private_imports = 0;
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
 

@@ -3497,6 +3497,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: curried gradient-of-gradient is exact"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tape_release_escape_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/tape_release_escape_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tape_release_escape_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: tape release preserves escaped user values"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(
+        NAME tape_release_escape_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tape_release_escape_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/tape_release_escape_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tape_release_escape_aot'"
+    )
+    set_tests_properties(tape_release_escape_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape release preserves escaped user values"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
@@ -4050,6 +4072,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
             FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
     add_test(
+        NAME i128_generic_vm_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/types/i128_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/i128_generic.eskb'"
+    )
+    set_tests_properties(i128_generic_vm_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "ALL i128 TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION ": FAIL|fatal signal")
+    add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/collections/empty_collection_test.esk"
@@ -4277,6 +4309,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 900
                 PASS_REGULAR_EXPRESSION "PASS: debug_info_emission_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dd10_surface_test.sh")
+        add_test(
+            NAME dd10_surface_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dd10_surface_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(dd10_surface_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: dd10_surface_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND
@@ -4542,6 +4589,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape
     add_test(NAME ad_tape_region_growth_test COMMAND ad_tape_region_growth_test)
     set_tests_properties(ad_tape_region_growth_test PROPERTIES
         ENVIRONMENT "ESHKOL_ARENA_POISON=1")
+    add_executable(ad_tape_escape_test tests/core/ad_tape_escape_test.cpp)
+    target_compile_features(ad_tape_escape_test PRIVATE cxx_std_17)
+    target_include_directories(ad_tape_escape_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tape_escape_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tape_escape_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tape_escape_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tape_escape_test COMMAND ad_tape_escape_test)
+    set_tests_properties(ad_tape_escape_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+        PASS_REGULAR_EXPRESSION "ad_tape_escape_test: PASS")
 endif()
 
 # ADR-0010 gap A12: the VM arena primitives (lib/backend/vm_arena.h) must honour

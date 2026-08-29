@@ -10016,8 +10016,32 @@ private:
      * so the two can never disagree.
      */
     Value* emitFloorQuotient(Value* a, Value* b) {
+        // i128 has its own fixed-width division domain. Dispatch it directly
+        // so floor-quotient cannot accidentally re-enter a generic quotient
+        // path before the modulo-adjusted numerator is formed.
+        Value* any_i128 = arith_->emitIsI128Check(a, b);
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* i128_bb = BasicBlock::Create(*context, "floor_quot_i128", func);
+        BasicBlock* normal_bb = BasicBlock::Create(*context, "floor_quot_normal", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "floor_quot_merge", func);
+        builder->CreateCondBr(any_i128, i128_bb, normal_bb);
+
+        builder->SetInsertPoint(i128_bb);
+        Value* i128_q = arith_->emitI128BinaryCall(a, b, 5);
+        BasicBlock* i128_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(normal_bb);
         Value* m = arith_->mod(a, b);
-        return arith_->div(arith_->sub(a, m), b);
+        Value* normal_q = arith_->div(arith_->sub(a, m), b);
+        BasicBlock* normal_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "floor_quotient_result");
+        result->addIncoming(i128_q, i128_exit);
+        result->addIncoming(normal_q, normal_exit);
+        return result;
     }
 
     // Helper: Extract car element from cons cell as tagged value (type-safe approach)
@@ -22386,7 +22410,7 @@ private:
         builder->CreateCondBr(any_i128, i128_bb, check_i128_bb);
 
         builder->SetInsertPoint(i128_bb);
-        Value* i128_result = arith_->emitI128BinaryCall(arg1, arg2, 4);
+        Value* i128_result = arith_->emitI128BinaryCall(arg1, arg2, 6);
         BasicBlock* i128_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 

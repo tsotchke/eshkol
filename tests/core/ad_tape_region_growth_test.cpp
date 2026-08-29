@@ -5,11 +5,10 @@
  *
  * tests/core/ad_tape_region_growth_test.cpp — #341 dangling-pointer trap gate.
  *
- * The AD tape's node-pointer array grows (doubling) from an arena. Before #341
- * that growth always drew from the pinned __repl_shared_arena, which leaked the
- * array whenever the tape lived in a `(with-region ...)` (the array outlived the
- * region-reclaimed header). The fix grows from the arena the tape HEADER lives
- * in (ad_tape_t::owner_arena, captured at creation).
+ * The AD tape owns a dedicated child arena. Before the lifetime fix, tape
+ * release rewound the caller's arena and reclaimed user values allocated by
+ * the differentiated function. The child arena keeps tape storage isolated;
+ * its parent link still lets region teardown reclaim unreleased tapes.
  *
  * The obvious-but-wrong alternative — "grow from the CURRENT arena" — is a
  * use-after-free: a tape created OUTSIDE a region but grown INSIDE one would put
@@ -52,13 +51,37 @@ int main() {
                     "so the freed region arena is 0xCB-stamped (the dangling-pointer trap)");
     }
 
+    // Audit P1 counterexample in the allocator's native form: a user-visible
+    // allocation made after tape creation must survive release. On the old
+    // whole-arena implementation, pressure after release reuses that address.
+    {
+        ad_tape_t* t = arena_allocate_tape(global, 4);
+        if (!t) return fail("escape probe: tape allocation failed");
+        uint64_t* escaped = (uint64_t*)arena_allocate_aligned(global, 2 * sizeof(uint64_t), 8);
+        if (!escaped) return fail("escape probe: user allocation failed");
+        escaped[0] = 111;
+        escaped[1] = 222;
+        arena_tape_release(t);
+        for (int i = 0; i < 32; ++i) {
+            uint64_t* pressure = (uint64_t*)arena_allocate_aligned(global, 2 * sizeof(uint64_t), 8);
+            if (!pressure) return fail("escape probe: pressure allocation failed");
+            pressure[0] = 9000 + (uint64_t)i;
+            pressure[1] = 9001 + (uint64_t)i;
+        }
+        if (escaped[0] != 111 || escaped[1] != 222)
+            return fail("escape probe: tape release reclaimed a user allocation");
+        std::printf("ad_tape_region_growth_test: escaped allocation survives tape release\n");
+    }
+
     // 1. Create the tape OUTSIDE any region, from the global arena, with a tiny
     //    initial capacity so a few appends already force a grow.
     const size_t init_cap = 4;
     ad_tape_t* tape = arena_allocate_tape(global, init_cap);
     if (!tape) return fail("tape allocation returned null");
-    if (tape->owner_arena != global)
-        return fail("owner_arena was not recorded as the creation (global) arena");
+    if (!tape->owner_arena || tape->owner_arena == global)
+        return fail("owner_arena was not isolated in a tape child arena");
+    if (tape->parent_arena != global)
+        return fail("parent_arena was not recorded as the creation (global) arena");
 
     // Dummy nodes allocated from the GLOBAL arena: they must outlive the region,
     // and each carries a sentinel id so a post-region readback can be checked.
@@ -84,12 +107,11 @@ int main() {
     arena_t* saved = eshkol_region_enter(region);
 
     // 3. Grow the tape INSIDE the region. The array is reallocated (several times)
-    //    here — the fix routes those reallocations to tape->owner_arena (global),
-    //    NOT to the now-current region arena.
+    //    here — all tape-owned growth stays in the dedicated child arena.
     for (size_t i = 3; i < N; ++i) arena_tape_add_node(tape, owned[i]);
     if (tape->capacity <= init_cap) { std::free(owned); return fail("tape never grew — test would not exercise the trap"); }
     if (tape->num_nodes != N)       { std::free(owned); return fail("not all nodes were appended"); }
-    if (tape->owner_arena != global) { std::free(owned); return fail("owner_arena drifted while inside the region"); }
+    if (!tape->owner_arena || tape->parent_arena != global) { std::free(owned); return fail("tape ownership drifted while inside the region"); }
 
     // 4. Tear the region down: region_pop -> region_destroy poisons (0xCB) and
     //    frees the region arena. If the grown array lived there, it is now gone.
@@ -112,6 +134,8 @@ int main() {
         }
     }
 
+    arena_tape_release(tape);
+
     std::free(owned);
 
     // ── Part 2: the leak this bug was reported for (#341). A tape created INSIDE
@@ -123,7 +147,7 @@ int main() {
     //    training loop. Here we drive many region-scoped tape grows and assert
     //    the global arena stays flat (deterministic, unlike process RSS).
     {
-        const int    steps         = 200;
+        const int    steps         = 5000;
         const size_t nodes_per_pass = 500;  // 4 -> 128 -> 256 -> 512: several grows/pass
         const size_t before = arena_get_used_memory(global);
 
@@ -134,17 +158,18 @@ int main() {
             arena_t* rsaved = eshkol_region_enter(r);
 
             // Tape created from the CURRENT (region) arena — exactly what
-            // createTape()'s getArenaPtr()==__global_arena resolves to inside a
-            // with-region body. owner_arena is therefore the region arena.
+            // createTape() resolves to inside a with-region body. The tape
+            // child is released before the parent region is torn down.
             arena_t* cur = eshkol_current_arena();
             ad_tape_t* t = arena_allocate_tape(cur, 4);
             if (!t) return fail("Part 2: tape alloc failed");
             for (size_t i = 0; i < nodes_per_pass; ++i) {
-                ad_node_t* n = (ad_node_t*)arena_allocate_aligned(cur, sizeof(ad_node_t), 8);
+                ad_node_t* n = (ad_node_t*)arena_allocate_aligned(t->owner_arena, sizeof(ad_node_t), 8);
                 if (!n) return fail("Part 2: node alloc failed");
                 arena_tape_add_node(t, n);
             }
 
+            arena_tape_release(t);
             region_pop();               // frees the region arena (header + nodes + grown array)
             eshkol_region_leave(rsaved);
         }
@@ -169,18 +194,25 @@ int main() {
     }
 
     // Part 3: the lightweight mark/release API used by resident native AD
-    // loops. Each tape owns a nested scope, and release must return the arena
-    // to the exact pre-tape mark without a surrounding region.
+    // loops. Each tape owns a child arena, and release must reclaim that child
+    // without rewinding the surrounding parent arena.
     {
-        const int steps = 200;
+        const int steps = 5000;
         const size_t before = arena_get_used_memory(global);
         for (int s = 0; s < steps; ++s) {
             ad_tape_t* t = arena_allocate_tape(global, 4);
             if (!t) return fail("Part 3: tape allocation failed");
             for (size_t i = 0; i < 300; ++i) {
-                ad_node_t* n = (ad_node_t*)arena_allocate_aligned(global, sizeof(ad_node_t), 8);
+                ad_node_t* n = (ad_node_t*)arena_allocate_aligned(t->owner_arena, sizeof(ad_node_t), 8);
                 if (!n) return fail("Part 3: node allocation failed");
                 arena_tape_add_node(t, n);
+            }
+            if (s == 0) {
+                arena_tape_begin_backward(t);
+                arena_tape_release(t);
+                if (!t->owner_arena || !t->backward_active)
+                    return fail("active reverse pass was not protected from release");
+                arena_tape_end_backward(t);
             }
             arena_tape_release(t);
         }
@@ -197,7 +229,7 @@ int main() {
     }
 
     std::printf("ad_tape_region_growth_test: PASS "
-                "(tape grown inside a region from its owning global arena survives region_pop; "
+                "(tape child storage remains isolated across region_pop; "
                 "%zu nodes intact; per-step region grows fully reclaimed)\n", N);
     return 0;
 }

@@ -2225,7 +2225,10 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     ctx_.builder().CreateCondBr(emitIsI128Check(left, right), i128_path, check_bignum);
     ctx_.builder().SetInsertPoint(i128_path);
-    llvm::Value* i128_mod_tagged = emitI128BinaryCall(left, right, 4);
+    // Generic modulo is R7RS floor-remainder, not the fixed-width
+    // i128-remainder operation. Keep this helper aligned with codegenModulo()
+    // and with the VM's modulo/floor-remainder dispatch.
+    llvm::Value* i128_mod_tagged = emitI128BinaryCall(left, right, 6);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
 
@@ -3560,12 +3563,23 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
+    llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "rem_i128", func);
+    llvm::BasicBlock* check_i128_path = llvm::BasicBlock::Create(ctx_.context(), "rem_check_i128", func);
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "rem_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "rem_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "rem_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "rem_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "rem_merge", func);
 
+    llvm::Value* any_i128 = emitIsI128Check(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_i128, i128_path, check_i128_path);
+
+    ctx_.builder().SetInsertPoint(i128_path);
+    llvm::Value* i128_rem_tagged = emitI128BinaryCall(dividend, divisor, 4);
+    llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(check_i128_path);
     llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
     ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
 
@@ -3655,7 +3669,8 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
 
     // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "remainder_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "remainder_result");
+    phi->addIncoming(i128_rem_tagged, i128_exit);
     phi->addIncoming(bn_rem_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);
@@ -3747,12 +3762,23 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     llvm::Value* both_int = ctx_.builder().CreateAnd(dividend_is_int, divisor_is_int);
 
+    llvm::BasicBlock* i128_path = llvm::BasicBlock::Create(ctx_.context(), "quot_i128", func);
+    llvm::BasicBlock* check_i128_path = llvm::BasicBlock::Create(ctx_.context(), "quot_check_i128", func);
     llvm::BasicBlock* bn_path = llvm::BasicBlock::Create(ctx_.context(), "quot_bn", func);
     llvm::BasicBlock* scalar_path = llvm::BasicBlock::Create(ctx_.context(), "quot_scalar", func);
     llvm::BasicBlock* int_path = llvm::BasicBlock::Create(ctx_.context(), "quot_int", func);
     llvm::BasicBlock* double_path = llvm::BasicBlock::Create(ctx_.context(), "quot_double", func);
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "quot_merge", func);
 
+    llvm::Value* any_i128 = emitIsI128Check(dividend, divisor);
+    ctx_.builder().CreateCondBr(any_i128, i128_path, check_i128_path);
+
+    ctx_.builder().SetInsertPoint(i128_path);
+    llvm::Value* i128_quot_tagged = emitI128BinaryCall(dividend, divisor, 3);
+    llvm::BasicBlock* i128_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge);
+
+    ctx_.builder().SetInsertPoint(check_i128_path);
     llvm::Value* any_bignum = emitIsBignumCheck(dividend, divisor);
     ctx_.builder().CreateCondBr(any_bignum, bn_path, scalar_path);
 
@@ -3860,7 +3886,8 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
     // Merge (bn / int / double).
     ctx_.builder().SetInsertPoint(merge);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "quotient_result");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "quotient_result");
+    phi->addIncoming(i128_quot_tagged, i128_exit);
     phi->addIncoming(bn_quot_tagged, bn_exit);
     phi->addIncoming(int_tagged, int_exit);
     phi->addIncoming(dbl_tagged, dbl_exit);

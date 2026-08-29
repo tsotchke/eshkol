@@ -124,9 +124,10 @@ with `base`.
 
 ### `(manifold-parallel-transport m base-a base-b v)`
 Transport tangent vector `v` from `base-a` to `base-b`. Euclidean is the identity;
-hyperbolic rescales by the ratio of conformal factors λ_a/λ_b (first-order gyro
-transport); spherical removes the component of `v` along `base-b` (projection). Returns
-the transported vector.
+hyperbolic uses `(λ_a/λ_b)·gyr[base-b,−base-a]v` with the linear closed form for
+gyration; spherical removes the component of `v` along `base-b` (projection). The
+hyperbolic result is the exact constant-curvature gyrovector transport for this
+chart, not a first-order rescaling.
 
 ```scheme
 (require core.manifold)
@@ -137,11 +138,8 @@ the transported vector.
 (display (vector-ref (manifold-parallel-transport H a b v) 0)) (newline)
 ```
 ```
-0.04736842105263158
+0.050896286401282395
 ```
-
-Note: the source comments this as a first-order approximation for encoder use; exact
-gyro-transport is a documented refinement, not implemented.
 
 ### `(manifold-sectional-curvature m)`
 Sectional curvature — equal to `manifold-curvature` for these constant-curvature spaces.
