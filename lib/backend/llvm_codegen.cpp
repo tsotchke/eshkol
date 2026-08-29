@@ -202,6 +202,11 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/CodeGen/RegAllocRegistry.h>
+#include <llvm/CodeGen/MachineFunctionPass.h>
+#include <llvm/CodeGen/MachineFunction.h>
+#include <llvm/CodeGen/MachineRegisterInfo.h>
+#include <llvm/CodeGen/LiveIntervals.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -729,11 +734,144 @@ struct AotModuleStats {
     uint64_t instructions = 0;
 };
 
+// A top-level Eshkol program is lowered into one C-main wrapper when it has no
+// user-defined `main`. Keeping every initialization form in that wrapper
+// makes LLVM's register allocator solve one enormous live-range problem even
+// though the source forms are sequential and independently callable. The
+// outline size is a code-generation policy, not a source-language limit.
+static constexpr uint64_t kAotInitOutlineForms = 64;
+
+static uint64_t aot_init_outline_forms() {
+    const char* raw = std::getenv("ESHKOL_AOT_INIT_OUTLINE_FORMS");
+    if (!raw || raw[0] == '\0') return kAotInitOutlineForms;
+    char* end = nullptr;
+    unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (end && *end == '\0' && parsed > 0) {
+        return static_cast<uint64_t>(parsed);
+    }
+    eshkol_warn("Ignoring invalid ESHKOL_AOT_INIT_OUTLINE_FORMS=%s", raw);
+    return kAotInitOutlineForms;
+}
+
+static uint64_t aot_fast_regalloc_instruction_threshold() {
+    // RAGreedy's interference work grows super-linearly with live ranges. A
+    // 100k-IR-instruction function is already beyond the size where the fast
+    // allocator's linear-time tradeoff is preferable for O0/debug emission.
+    static constexpr uint64_t kDefaultThreshold = 100000;
+    const char* raw = std::getenv("ESHKOL_AOT_FAST_RA_THRESHOLD");
+    if (!raw || raw[0] == '\0') return kDefaultThreshold;
+    char* end = nullptr;
+    unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (end && *end == '\0' && parsed > 0) {
+        return static_cast<uint64_t>(parsed);
+    }
+    eshkol_warn("Ignoring invalid ESHKOL_AOT_FAST_RA_THRESHOLD=%s", raw);
+    return kDefaultThreshold;
+}
+
+static bool aot_module_needs_fast_regalloc(const Module& module) {
+    if (g_optimization_level != 0) return false;
+    const uint64_t threshold = aot_fast_regalloc_instruction_threshold();
+    for (const Function& function : module) {
+        if (function.isDeclaration()) continue;
+        uint64_t instructions = 0;
+        for (const BasicBlock& block : function) {
+            instructions += static_cast<uint64_t>(block.size());
+        }
+        if (instructions >= threshold) return true;
+    }
+    return false;
+}
+
 static bool env_flag_enabled(const char* name) {
     const char* raw = std::getenv(name);
     return raw && raw[0] != '\0' && std::strcmp(raw, "0") != 0 &&
            std::strcmp(raw, "false") != 0 && std::strcmp(raw, "FALSE") != 0;
 }
+
+static void trace_aot_function_ir_stats(const Module& module) {
+    if (!env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) return;
+    const std::string module_id = module.getModuleIdentifier();
+    const char* source = g_source_filepath.empty() ? "unknown" : g_source_filepath.c_str();
+    for (const Function& function : module) {
+        if (function.isDeclaration()) continue;
+        const auto started = std::chrono::steady_clock::now();
+        uint64_t blocks = 0;
+        uint64_t instructions = 0;
+        for (const BasicBlock& block : function) {
+            ++blocks;
+            instructions += static_cast<uint64_t>(block.size());
+        }
+        const DISubprogram* subprogram = function.getSubprogram();
+        const unsigned line = subprogram ? subprogram->getLine() : 0;
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        std::fprintf(stderr,
+                     "ESH-0088: AOT function telemetry stage=ir "
+                     "source=%s module=%s function=%s line=%u elapsed_ms=%lld "
+                     "ir_blocks=%llu ir_instructions=%llu "
+                     "machine_instructions=unavailable virtual_registers=unavailable "
+                     "live_intervals=unavailable allocator=pre-codegen\n",
+                     source,
+                     module_id.empty() ? "unknown" : module_id.c_str(),
+                     function.getName().str().c_str(), line,
+                     static_cast<long long>(elapsed_ms),
+                     static_cast<unsigned long long>(blocks),
+                     static_cast<unsigned long long>(instructions));
+    }
+}
+
+// The target backend owns MIR creation, so IR-only telemetry cannot name the
+// machine pressure that caused a register-allocation stall. This pass is
+// appended to the legacy emission pipeline only when function telemetry is
+// requested. It is observational and preserves the emitted object.
+class AotMachineTelemetryPass final : public MachineFunctionPass {
+public:
+    static char ID;
+
+    AotMachineTelemetryPass() : MachineFunctionPass(ID) {}
+
+    bool runOnMachineFunction(MachineFunction& function) override {
+        if (!env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) return false;
+        const auto started = std::chrono::steady_clock::now();
+        uint64_t instructions = 0;
+        for (const MachineBasicBlock& block : function) {
+            instructions += static_cast<uint64_t>(block.size());
+        }
+        const MachineRegisterInfo& registers = function.getRegInfo();
+        uint64_t live_intervals = 0;
+        if (auto* interval_wrapper =
+                getAnalysisIfAvailable<LiveIntervalsWrapperPass>()) {
+            const LiveIntervals& intervals = interval_wrapper->getLIS();
+            for (unsigned index = 0; index < registers.getNumVirtRegs(); ++index) {
+                if (intervals.hasInterval(Register::index2VirtReg(index))) {
+                    ++live_intervals;
+                }
+            }
+        }
+        const bool machine_metrics_available = instructions != 0 ||
+                                                registers.getNumVirtRegs() != 0;
+        const std::string machine_count = machine_metrics_available
+            ? std::to_string(instructions) : "unavailable";
+        const std::string virtual_count = machine_metrics_available
+            ? std::to_string(registers.getNumVirtRegs()) : "unavailable";
+        const std::string interval_count = machine_metrics_available
+            ? std::to_string(live_intervals) : "unavailable";
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        std::fprintf(stderr,
+                     "ESH-0088: AOT function telemetry stage=mir "
+                     "function=%s elapsed_ms=%lld machine_instructions=%s "
+                     "virtual_registers=%s live_intervals=%s\n",
+                     function.getName().str().c_str(),
+                     static_cast<long long>(elapsed_ms),
+                     machine_count.c_str(), virtual_count.c_str(),
+                     interval_count.c_str());
+        return false;
+    }
+};
+
+char AotMachineTelemetryPass::ID = 0;
 
 static unsigned int object_emit_timeout_seconds() {
     const char* raw = std::getenv("ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS");
@@ -3356,7 +3494,9 @@ public:
                     Value* last_top_level_value = nullptr;
                     bool last_was_value_expr = false;
 
-                    for (size_t i = 0; i < num_asts_to_use; i++) {
+                    const auto emit_top_level_range = [&](size_t range_start,
+                                                          size_t range_end) {
+                    for (size_t i = range_start; i < range_end; i++) {
                         bool is_function_def = (asts_to_use[i].type == ESHKOL_OP &&
                                                asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                                                asts_to_use[i].operation.define_op.is_function);
@@ -3480,6 +3620,47 @@ public:
                                 eshkol_debug("Called __lambda_init__ to initialize lambda captures");
                             }
                         }
+                    }
+                    };
+
+                    // A broad import graph can contain thousands of
+                    // top-level forms. Keep the observable order by calling
+                    // fixed-size internal helpers in order, while preventing
+                    // one generated `_main` from becoming the allocator's
+                    // entire interference graph. REPL batches stay in one
+                    // function because their last-value capture is an
+                    // interactive-session contract.
+                    const uint64_t outline_forms = aot_init_outline_forms();
+                    const bool outline_initialization =
+                        !g_repl_mode_enabled &&
+                        num_asts_to_use > outline_forms;
+                    if (outline_initialization) {
+                        for (size_t start = 0; start < num_asts_to_use;
+                             start += static_cast<size_t>(outline_forms)) {
+                            const size_t end = std::min(
+                                num_asts_to_use,
+                                start + static_cast<size_t>(outline_forms));
+                            FunctionType* helper_type =
+                                FunctionType::get(void_type, false);
+                            Function* helper = Function::Create(
+                                helper_type, Function::InternalLinkage,
+                                "__eshkol_init_chunk_" + std::to_string(start),
+                                module.get());
+                            BasicBlock* helper_entry = BasicBlock::Create(
+                                *context, "entry", helper);
+                            builder->SetInsertPoint(helper_entry);
+                            current_function = helper;
+                            emit_top_level_range(start, end);
+                            if (!builder->GetInsertBlock()->getTerminator()) {
+                                builder->CreateRetVoid();
+                            }
+
+                            builder->SetInsertPoint(main_entry);
+                            current_function = function_table["main"];
+                            builder->CreateCall(helper);
+                        }
+                    } else {
+                        emit_top_level_range(0, num_asts_to_use);
                     }
                     
                     /* REPL LAST-VALUE CAPTURE (2026-05-08, qLLM bridge fix):
@@ -6404,6 +6585,20 @@ private:
 
                 // Generate S-expressions now that arena is ready
 
+                // S-expression materialization walks the entire imported
+                // lambda set and can itself dominate the entry function. Keep
+                // the runtime ordering (arena first, registry second, then
+                // metadata/aliases) while outlining that work into one
+                // internal initialization helper.
+                FunctionType* lambda_init_type = FunctionType::get(void_type, false);
+                Function* lambda_metadata_init = Function::Create(
+                    lambda_init_type, Function::InternalLinkage,
+                    "__eshkol_lambda_metadata_init", module.get());
+                BasicBlock* lambda_metadata_entry = BasicBlock::Create(
+                    *context, "entry", lambda_metadata_init);
+                builder->SetInsertPoint(lambda_metadata_entry);
+                current_function = lambda_metadata_init;
+
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
                     
@@ -6491,6 +6686,13 @@ private:
                         }
                     }
                 }
+
+                if (!builder->GetInsertBlock()->getTerminator()) {
+                    builder->CreateRetVoid();
+                }
+                builder->SetInsertPoint(main_entry);
+                current_function = c_main;
+                builder->CreateCall(lambda_metadata_init);
             } else {
                 // No lambdas - just initialize arena at entry
                 builder->SetInsertPoint(main_entry);
@@ -6683,10 +6885,19 @@ private:
             }
 
             // Generate S-expressions for pending lambdas (function definitions compiled in Step 2)
-            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a continuation block
+            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a
+            // continuation block. The whole metadata walk is outlined so a
+            // broad imported program does not make C `main` carry every
+            // lambda's allocation and registry live range.
             if (!pending_lambda_sexprs.empty()) {
-                // Create a continuation block for after all S-expression generation
-                BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", main_func);
+                FunctionType* lambda_init_type = FunctionType::get(void_type, false);
+                Function* lambda_metadata_init = Function::Create(
+                    lambda_init_type, Function::InternalLinkage,
+                    "__eshkol_lambda_metadata_init", module.get());
+                BasicBlock* lambda_metadata_entry = BasicBlock::Create(
+                    *context, "entry", lambda_metadata_init);
+                builder->SetInsertPoint(lambda_metadata_entry);
+                current_function = lambda_metadata_init;
 
                 for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
                     const auto& meta = pending_lambda_sexprs[i];
@@ -6721,12 +6932,12 @@ private:
                     }
                 }
 
-                // Branch to continuation and set it as the new insertion point
-                builder->CreateBr(sexpr_continue);
-                builder->SetInsertPoint(sexpr_continue);
-
-                // Update main_entry to point to the continuation block for generateIR
-                main_entry = sexpr_continue;
+                if (!builder->GetInsertBlock()->getTerminator()) {
+                    builder->CreateRetVoid();
+                }
+                builder->SetInsertPoint(main_entry);
+                current_function = main_func;
+                builder->CreateCall(lambda_metadata_init);
 
                 pending_lambda_sexprs.clear();
             }
@@ -43272,6 +43483,8 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // Set data layout
         module->setDataLayout(target_machine->createDataLayout());
 
+        trace_aot_function_ir_stats(*module);
+
         // Run LLVM optimization passes before codegen (respects -O level)
         auto phase_start = std::chrono::steady_clock::now();
         trace_object_emit_phase("optimizeModule", "begin", *module, filename,
@@ -43282,6 +43495,14 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         trace_object_emit_phase("optimizeModule", "end", *module, filename,
                                 std::string(), object_triple_str, cpu_name,
                                 phase_elapsed.count());
+
+        const bool use_fast_regalloc = aot_module_needs_fast_regalloc(*module);
+        if (use_fast_regalloc) {
+            eshkol_info("AOT O0 register allocation policy: fast allocator "
+                        "for a function at or above %llu optimized IR instructions",
+                        static_cast<unsigned long long>(
+                            aot_fast_regalloc_instruction_threshold()));
+        }
 
         // Emit to a same-directory temporary file first. LLVM opens the output
         // before running the backend, so direct final-path emission can publish
@@ -43311,22 +43532,47 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             object_triple_str,
             cpu_name);
 
-        // Create pass manager and emit object file
+        // Create pass manager and emit object file. The legacy target pipeline
+        // has no per-TargetMachine allocator setter, so select the registered
+        // fast allocator explicitly for this emission and restore LLVM's
+        // previous default afterward. This keeps the policy local to one
+        // compiler invocation and avoids process-global command-line mutation.
         legacy::PassManager pass_manager;
+        const auto previous_regalloc = RegisterRegAlloc::getDefault();
+        bool fast_regalloc_selected = false;
+        if (use_fast_regalloc) {
+            for (auto* allocator = RegisterRegAlloc::getList(); allocator;
+                 allocator = allocator->getNext()) {
+                if (allocator->getName() == "fast") {
+                    RegisterRegAlloc::setDefault(allocator->getCtor());
+                    fast_regalloc_selected = true;
+                    break;
+                }
+            }
+            if (!fast_regalloc_selected) {
+                eshkol_error("LLVM fast register allocator is not registered; "
+                             "refusing oversized O0 emission");
+                return -1;
+            }
+        }
         emit_watchdog.set_phase(
             "addPassesToEmitFile",
             "stalled while constructing LLVM backend emission passes; final object was not published");
         phase_start = std::chrono::steady_clock::now();
         trace_object_emit_phase("addPassesToEmitFile", "begin", *module, filename,
                                 temp_filename, object_triple_str, cpu_name);
-        if (target_machine->addPassesToEmitFile(pass_manager, dest, nullptr,
-                                              ESHKOL_CODEGEN_FILETYPE)) {
+        if (target_machine->addPassesToEmitFile(
+                pass_manager, dest, nullptr, ESHKOL_CODEGEN_FILETYPE)) {
             eshkol_error("Target machine cannot emit object files");
             dest.close();
-            if (dest.has_error()) {
-                dest.clear_error();
+            if (dest.has_error()) dest.clear_error();
+            if (fast_regalloc_selected) {
+                RegisterRegAlloc::setDefault(previous_regalloc);
             }
             return -1;
+        }
+        if (env_flag_enabled("ESHKOL_AOT_FUNCTION_TRACE")) {
+            pass_manager.add(new AotMachineTelemetryPass());
         }
         phase_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - phase_start);
@@ -43346,6 +43592,9 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         trace_object_emit_phase("pass_manager.run", "end", *module, filename,
                                 temp_filename, object_triple_str, cpu_name,
                                 phase_elapsed.count());
+        if (fast_regalloc_selected) {
+            RegisterRegAlloc::setDefault(previous_regalloc);
+        }
         emit_watchdog.finish();
 
         phase_start = std::chrono::steady_clock::now();

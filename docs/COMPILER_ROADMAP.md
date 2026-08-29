@@ -389,6 +389,40 @@ Acceptance:
 - PGO/LTO are opt-in and do not perturb default debug builds.
 - CI uploads trace artifacts for oracle inspection.
 
+### AOT scale and module emission
+
+The AOT driver keeps module initialization and lambda metadata out of one
+oversized entry function. Top-level initialization is emitted through ordered
+internal chunks of 64 forms by default; the chunk size is a compiler policy and
+does not change Scheme evaluation order. For O0 emission, a function at or
+above 100,000 optimized IR instructions selects LLVM's fast register allocator
+through the target's allocator registry. The threshold is an escape hatch for
+large generated functions, not a language or optimization-level change.
+
+`ESHKOL_AOT_FUNCTION_TRACE=1` reports source, module, function, IR block and
+instruction counts before object emission. `ESHKOL_AOT_PHASE_TRACE=1` adds
+module-level timing and post-optimization counts. These opt-in diagnostics are
+intended to identify the function that crosses the allocator threshold without
+making telemetry part of normal compiler output. The legacy backend also emits
+MIR instruction, virtual-register, and live-interval counts when those analyses
+remain available at the observation point; otherwise it says `unavailable`.
+
+Compile-only module objects use a content-addressed cache when
+`ESHKOL_AOT_MODULE_CACHE_DIR` is set (or the user's platform cache directory
+by default). The key includes the entry and transitive source bytes, compiler
+and LLVM versions, target/options, library/search inputs, and
+`ESHKOL_ABI_FINGERPRINT_NAME`; changing the object ABI therefore cannot reuse a
+stale object. Cache publication is nonempty and atomic. The existing depfile
+contract remains authoritative for build-system invalidation.
+
+Acceptance:
+- The broad-import consumer has a bounded AOT compile measurement with the
+  function and phase traces preserved.
+- A warm module-cache compile reproduces the object and bitcode artifacts, and
+  a source, option, or ABI-key change is a cache miss.
+- Native AOT and VM execution retain the same observable top-level order; the
+  outlining policy is not enabled for interactive REPL result capture.
+
 ### Stdlib — Noesis M2 items that are pure stdlib (no new substrate)
 | # | Item | Effort |
 |---|---|---|

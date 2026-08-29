@@ -631,6 +631,107 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     return sha256Hex(hash);
 }
 
+// Content-addressed AOT module cache. This is deliberately separate from the
+// executable run cache: build systems need a reusable module object, while the
+// run cache owns a linked executable. The key reuses the complete source,
+// transitive-dependency, compiler, target, option, library, and ABI inputs
+// above, so a stale object cannot survive a module or object-layout change.
+static std::filesystem::path aotModuleCacheRoot() {
+    std::filesystem::path root;
+    if (const char* explicit_dir = std::getenv("ESHKOL_AOT_MODULE_CACHE_DIR")) {
+        if (*explicit_dir) root = explicit_dir;
+    }
+    if (root.empty()) {
+#ifdef _WIN32
+        if (const char* local_app_data = std::getenv("LOCALAPPDATA")) {
+            if (*local_app_data) root = std::filesystem::path(local_app_data) /
+                                          "eshkol" / "modules";
+        }
+#else
+        if (const char* xdg_cache_home = std::getenv("XDG_CACHE_HOME")) {
+            if (*xdg_cache_home) root = std::filesystem::path(xdg_cache_home) /
+                                          "eshkol" / "modules";
+        }
+        if (root.empty()) {
+            if (const char* home = std::getenv("HOME")) {
+                if (*home) root = std::filesystem::path(home) /
+                                      ".cache" / "eshkol" / "modules";
+            }
+        }
+#endif
+    }
+    // The compiler must never create scratch artifacts under the system temp
+    // directories. A relative fallback keeps hermetic test invocations safe.
+    if (root.empty()) root = std::filesystem::path(".eshkol-aot-cache") / "modules";
+    const std::string text = root.lexically_normal().generic_string();
+    if (text == "/tmp" || text.rfind("/tmp/", 0) == 0 ||
+        text == "/private/tmp" || text.rfind("/private/tmp/", 0) == 0) {
+        eshkol_warn("Ignoring ESHKOL_AOT_MODULE_CACHE_DIR under a forbidden temp root");
+        return {};
+    }
+    return root;
+}
+
+static void aotModuleCacheTrace(const char* event, const std::string& key) {
+    const char* enabled = std::getenv("ESHKOL_AOT_MODULE_CACHE_TRACE");
+    if (!enabled || enabled[0] == '\0' || std::strcmp(enabled, "0") == 0) {
+        return;
+    }
+    std::fprintf(stderr, "ESH-0089: AOT module cache %s key=%s\n",
+                 event ? event : "event", key.c_str());
+}
+
+static bool copyNonEmptyFileAtomically(const std::filesystem::path& source,
+                                       const std::filesystem::path& destination) {
+    std::error_code ec;
+    uintmax_t size = 0;
+    if (!std::filesystem::is_regular_file(source, ec) ||
+        (size = std::filesystem::file_size(source, ec)) == 0 || ec) {
+        return false;
+    }
+    std::filesystem::create_directories(destination.parent_path(), ec);
+    if (ec) return false;
+    const auto process_id =
+#ifdef _WIN32
+        static_cast<unsigned long long>(_getpid());
+#else
+        static_cast<unsigned long long>(getpid());
+#endif
+    const auto temp = destination.string() + ".tmp-" + std::to_string(process_id);
+    std::filesystem::remove(temp, ec);
+    ec.clear();
+    std::filesystem::copy_file(source, temp,
+                                std::filesystem::copy_options::overwrite_existing,
+                                ec);
+    if (ec) return false;
+    uintmax_t copied_size = std::filesystem::file_size(temp, ec);
+    if (ec || copied_size != size || copied_size == 0) {
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+    std::filesystem::rename(temp, destination, ec);
+    if (ec) {
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+    return true;
+}
+
+static std::string aotModuleCacheKey(const std::filesystem::path& source_path,
+                                     const std::filesystem::path& self_path,
+                                     uint8_t no_stdlib,
+                                     uint8_t strict_types,
+                                     uint8_t unsafe_mode,
+                                     int opt_level,
+                                     const char* target_triple,
+                                     const std::vector<char*>& linked_libs,
+                                     const std::vector<char*>& lib_paths,
+                                     const std::vector<char*>& include_paths) {
+    return makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
+                               unsafe_mode, opt_level, target_triple,
+                               linked_libs, lib_paths, include_paths);
+}
+
 // `-r` runs a single file through the persistent AOT cache for speed. That is
 // only semantically equivalent to true in-process JIT execution when the
 // program does NOT need the live JIT at runtime. `eval`/`compile` resolve their
@@ -5407,6 +5508,53 @@ int main(int argc, char **argv)
                 obj_filename = module_name + ".o";
             }
 
+            const bool module_cache_enabled =
+                !debug_mode && !debug_info && !dump_ir && !dump_ast;
+            const auto module_cache_root = module_cache_enabled
+                ? aotModuleCacheRoot() : std::filesystem::path();
+            const auto module_cache_key = module_cache_enabled && source_files.size() == 1
+                ? aotModuleCacheKey(
+                    std::filesystem::path(source_files[0]),
+                    resolveSelfPath(argv[0]), no_stdlib, strict_types,
+                    unsafe_mode, opt_level, target_triple, linked_libs,
+                    lib_paths, include_paths)
+                : std::string();
+            const auto cached_object = module_cache_root.empty() ||
+                                       module_cache_key.empty()
+                ? std::filesystem::path()
+                : module_cache_root / ("module-" + module_cache_key + ".o");
+            const auto cached_bitcode = module_cache_root.empty() ||
+                                        module_cache_key.empty()
+                ? std::filesystem::path()
+                : module_cache_root / ("module-" + module_cache_key + ".bc");
+            std::error_code cache_ec;
+            const bool cached_object_ready =
+                !cached_object.empty() && !cached_bitcode.empty() &&
+                std::filesystem::is_regular_file(cached_object, cache_ec) &&
+                std::filesystem::file_size(cached_object, cache_ec) > 0 &&
+                !cache_ec;
+            cache_ec.clear();
+            const bool cached_bitcode_ready = cached_object_ready &&
+                std::filesystem::is_regular_file(cached_bitcode, cache_ec) &&
+                std::filesystem::file_size(cached_bitcode, cache_ec) > 0 &&
+                !cache_ec;
+            if (cached_bitcode_ready &&
+                copyNonEmptyFileAtomically(cached_object, obj_filename) &&
+                copyNonEmptyFileAtomically(cached_bitcode, obj_filename + ".bc")) {
+                aotModuleCacheTrace("hit", module_cache_key);
+                eshkol_info("AOT module cache hit: %s", module_cache_key.c_str());
+                if (depfile_path && !source_files.empty() &&
+                    !writeDepfile(depfile_path, obj_filename, source_files[0],
+                                  include_paths)) {
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                eshkol_dispose_llvm_module(llvm_module);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+                return 0;
+            }
+            aotModuleCacheTrace("miss", module_cache_key);
+
             eshkol_info("Compiling to object file: %s", obj_filename.c_str());
             auto esh0103_t_obj0 = esh0103_now();
             if (eshkol_compile_llvm_ir_to_object(llvm_module, obj_filename.c_str()) != 0) {
@@ -5424,6 +5572,11 @@ int main(int argc, char **argv)
                 bc_filename = module_name + ".bc";
             }
             eshkol_compile_llvm_ir_to_bitcode(llvm_module, bc_filename.c_str());
+
+            if (!cached_object.empty() && !cached_bitcode.empty()) {
+                copyNonEmptyFileAtomically(obj_filename, cached_object);
+                copyNonEmptyFileAtomically(bc_filename, cached_bitcode);
+            }
 
             // ESH-0215: --emit-depfile PATH — write a Makefile-format depfile
             // so a build system (ninja DEPFILE, make -include) recompiles this

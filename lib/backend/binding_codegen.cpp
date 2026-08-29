@@ -432,6 +432,13 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
          current_name.starts_with("__eshkol_lib_init_chunk_"));
     bool is_repl = isReplMode(repl_mode_);
     bool is_main = current && current->getName() == "main";
+    // AOT top-level initialization may be outlined into sequential internal
+    // helpers to keep one generated `main` below LLVM's register-allocation
+    // pressure threshold. Those helpers are still top-level binding scopes;
+    // treating them as locals would leave an alloca in one helper visible to
+    // the next helper and produce invalid cross-function IR.
+    bool is_outlined_top_level_init = current &&
+        current->getName().starts_with("__eshkol_init_chunk_");
     // Library `provide` bindings (compiled inside __eshkol_lib_init*) keep their
     // raw public name for cross-object linking; genuine user globals are mangled
     // so they can never collide with a C/libm symbol (ESH-0092/0103).
@@ -439,7 +446,8 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
         bindingStorageName(var_name, is_repl, is_lib_init);
     GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_storage_name);
     // Top-level defines in main should always be global, not local
-    bool use_global = !current || is_global_init || is_lib_init || is_repl || is_main;
+    bool use_global = !current || is_global_init || is_lib_init || is_repl ||
+                      is_main || is_outlined_top_level_init;
 
     if (is_lambda) {
         if (use_global) {
