@@ -6241,7 +6241,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME squared_distance_gradcheck
              COMMAND squared_distance_gradcheck_test)
     set_tests_properties(squared_distance_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 48 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 49 passed, 0 failed")
 endif()
 
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
