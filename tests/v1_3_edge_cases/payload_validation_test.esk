@@ -1,0 +1,43 @@
+;; Issue #549: corrupt tensor/model payloads must be rejected, and a missing
+;; input file must raise a catchable error on the native and VM engines.
+
+(define tensor-path "corrupt-tensor.bin")
+(define model-path "corrupt-model.bin")
+(define tensor-out (open-binary-output-file tensor-path))
+(write-u8 0 tensor-out) (write-u8 1 tensor-out) (write-u8 2 tensor-out)
+(close-port tensor-out)
+(define model-out (open-binary-output-file model-path))
+(write-u8 3 model-out) (write-u8 4 model-out) (write-u8 5 model-out)
+(close-port model-out)
+
+;; The issue reproducer, kept verbatim.
+(display (tensor-load tensor-path)) (newline)
+(display (model-load model-path)) (newline)
+
+;; Adversarial short payloads exercise the same rejection boundary without
+;; relying on the checksum being meaningful.
+(define truncated-path "truncated-payload.bin")
+(define truncated-out (open-binary-output-file truncated-path))
+(write-u8 69 truncated-out)
+(close-port truncated-out)
+
+(define (check label value)
+  (display label)
+  (display (if (or (not value) (null? value)) " rejected" " ACCEPTED"))
+  (newline))
+
+(check "tensor-load" (tensor-load tensor-path))
+(check "model-load" (model-load model-path))
+(check "truncated" (tensor-load truncated-path))
+
+;; A failed open must not turn into fgets(NULL) or an implicit stdin read.
+(display
+ (guard (e (#t "missing-file caught"))
+   (read-line (open-input-file "definitely-missing-file"))))
+(newline)
+(display
+ (guard (e (#t "invalid-port caught"))
+   (read-line #f)))
+(newline)
+
+(display "payload-validation-test complete") (newline)

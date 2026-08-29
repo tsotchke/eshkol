@@ -3077,6 +3077,23 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     add_test(NAME model_io_test COMMAND model_io_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
+    add_test(
+        NAME payload_validation_engine_parity
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh"
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+    )
+    set_tests_properties(payload_validation_engine_parity
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: payload_validation_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
     add_executable(tensorcore_adapter_test tests/backend/tensorcore_adapter_test.cpp)
     target_compile_features(tensorcore_adapter_test PRIVATE cxx_std_20)

@@ -6772,6 +6772,73 @@ entries:
     caught_by: [direct-measurement]
     missed_by: [consumer-platform-fs-tests, icc-readiness]
 
+  - id: SW-109
+    bucket: SILENT-WRONG
+    subtag: serialization
+    family: tensor-model-load
+    status: closed
+    closed_at: "fix/issue-549-payload-validation"
+    closed_by: "fix/issue-549-payload-validation"
+    title: "Corrupt tensor/model payloads were accepted and malformed shapes could escape the loader boundary"
+    repro: >-
+      The v1.3.4-evolve issue #549 reproducer writes three arbitrary bytes to
+      `corrupt-tensor.bin` and three different arbitrary bytes to
+      `corrupt-model.bin`, then evaluates `(tensor-load tensor-path)` and
+      `(model-load model-path)`. The reported native JIT/AOT result was a
+      truthy value with exit 0 rather than a null result or diagnostic.
+      Crafted ESKM headers could additionally advertise record counts,
+      dimensions, and element counts that were not bounded by the bytes in the
+      file.
+    observed: >-
+      A consumer could treat an invalid checkpoint as a successfully loaded
+      tensor/model, producing a plausible value without an error. A missing
+      input file returned a false port which the native `read-line` lowering
+      passed to `fgets`, while the VM fell back to stdin for an invalid explicit
+      port; the same source therefore could crash or read the wrong stream.
+    correct: >-
+      Both loaders must validate ESKM magic, version, reserved flags, record
+      count, rank, dimensions, element-byte size, complete record consumption,
+      and the trailing CRC-32 before materializing any tensor. Invalid or
+      missing checkpoints return the documented null result with an `ERROR`
+      diagnostic. An unavailable input file or invalid explicit input port must
+      raise a catchable error on both native and VM execution paths.
+    root_cause: >-
+      The parsers checked some fields but allowed attacker-controlled record
+      and rank counts to drive allocations before proving that the file could
+      contain those records, and the VM element-byte bound could overflow its
+      size arithmetic. The native read-line lowering extracted the payload word
+      from any tagged value and called `fgets` without first proving it was an
+      input port; the VM treated an invalid explicit port as an omitted port.
+      Duplicate legacy `tensor-load` registrations also shadowed the validated
+      ESKM implementation on the ordinary native and VM dispatch paths.
+    fix: >-
+      `lib/core/model_io.cpp` now bounds record/rank/element allocations by the
+      remaining payload, rejects nonzero flags, catches allocation exceptions,
+      and reports invalid ESKM loads. `lib/backend/vm_model_io.c` now applies
+      the same reserved-flag, record-count, signed-shape, and overflow-safe
+      element-byte checks and reports every rejected load. Duplicate legacy
+      tensor persistence dispatches and registrations were removed so ordinary
+      tensor-save/tensor-load calls use the shared ESKM entry points. The native
+      `read-line` lowering validates the tagged input-port shape and raises a
+      catchable error before `fgets`; native missing-file failures remain #f
+      only for denied capabilities, while actual unavailable files raise. The
+      VM's explicit invalid-port and missing-file paths raise through
+      `vm_raise_error_msg`.
+    evidence: >-
+      `tests/toolchain/payload_validation_test.sh` runs the issue reproducer
+      and short-payload adversarial cases through native JIT, native AOT, and
+      hosted VM; all three print the rejection markers, catch the missing-file
+      and invalid-port conditions, and exit 0. `tests/core/model_io_test.cpp`
+      retains the native round-trip and magic/version/CRC/truncation checks.
+      CTest registration is `payload_validation_engine_parity`.
+    caught_by: [issue-549, payload_validation_engine_parity, direct-measurement]
+    missed_by: [pre-fix tensor/model loader, pre-fix native read-line, pre-fix VM read-line]
+    notes: >-
+      This is closed only by the cross-engine regression harness and the
+      native model-I/O unit test; the ledger entry is intentionally separate
+      from the loud-error crash symptom because the accepted corrupt payload
+      was the tag-blocking silent-wrong behavior.
+
   - id: SW-131
     bucket: SILENT-WRONG
     status: fixed

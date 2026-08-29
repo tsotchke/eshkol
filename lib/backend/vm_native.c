@@ -10308,7 +10308,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 }
             }
         }
-        vm_push(vm, NIL_VAL);
+        vm_raise_error_msg(vm, "open-input-file: cannot open file");
         break;
     }
     case 581: { /* open-output-file(path) */
@@ -10355,7 +10355,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 585: { /* read-line(port) */
         Value port_val = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_val);
-        if (!port) port = vm_port_current_input();
+        if (port_val.type != VAL_PORT || !port || !port->is_open ||
+            port->dir != VM_PORT_INPUT) {
+            vm_raise_error_msg(vm, "read-line: expected an open input port");
+            break;
+        }
         VmString* line = vm_port_read_line(&vm->heap.regions, port);
         if (line) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, line);
@@ -16228,88 +16232,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    /* ══════════════════════════════════════════════════════════════════════
-     * Tensor/KB Persistence (1820-1829)
-     * Binary format: [magic:4][version:4][ndims:4][shape:ndims*8][data:total*8]
-     * ══════════════════════════════════════════════════════════════════════ */
-
-#define TENSOR_FILE_MAGIC 0x45534B54 /* "ESKT" */
-
-    case 1820: { /* tensor-save(path, tensor) → #t or #f */
-        Value tensor_val = vm_pop(vm), path_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
-        if (path_val.type == VAL_STRING && tensor_val.type == VAL_TENSOR) {
-            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
-            VmTensor* t = (VmTensor*)vm->heap.objects[tensor_val.as.ptr]->opaque.ptr;
-            if (ps && t && t->data) {
-                FILE* f = fopen(ps->data, "wb");
-                if (f) {
-                    uint32_t magic = TENSOR_FILE_MAGIC;
-                    uint32_t version = 1;
-                    uint32_t ndims = (uint32_t)t->n_dims;
-                    fwrite(&magic, 4, 1, f);
-                    fwrite(&version, 4, 1, f);
-                    fwrite(&ndims, 4, 1, f);
-                    for (int i = 0; i < t->n_dims; i++) {
-                        int64_t dim = t->shape[i];
-                        fwrite(&dim, 8, 1, f);
-                    }
-                    fwrite(t->data, sizeof(double), (size_t)t->total, f);
-                    fclose(f);
-                    vm_push(vm, BOOL_VAL(1));
-                    break;
-                }
-            }
-        }
-#else
-        (void)tensor_val; (void)path_val;
-#endif
-        vm_push(vm, BOOL_VAL(0));
-        break;
-    }
-
-    case 1821: { /* tensor-load(path) → tensor or #f */
-        Value path_val = vm_pop(vm);
-#ifndef ESHKOL_VM_WASM
-        if (path_val.type == VAL_STRING) {
-            VmString* ps = (VmString*)vm->heap.objects[path_val.as.ptr]->opaque.ptr;
-            if (ps) {
-                FILE* f = fopen(ps->data, "rb");
-                if (f) {
-                    uint32_t magic, version, ndims;
-                    if (fread(&magic, 4, 1, f) == 1 && magic == TENSOR_FILE_MAGIC &&
-                        fread(&version, 4, 1, f) == 1 && version == 1 &&
-                        fread(&ndims, 4, 1, f) == 1 && ndims > 0) {
-                        /* Rank comes from the file, so the dimension buffer is
-                         * allocated at the file's rank instead of a fixed 8. */
-                        int64_t* shape = (int64_t*)vm_alloc(&vm->heap.regions,
-                                                            (size_t)ndims * sizeof(int64_t));
-                        int ok = shape != NULL;
-                        for (uint32_t i = 0; ok && i < ndims; i++) {
-                            if (fread(&shape[i], 8, 1, f) != 1) { ok = 0; break; }
-                        }
-                        if (ok) {
-                            int64_t total = 1;
-                            for (uint32_t i = 0; i < ndims; i++) total *= shape[i];
-                            VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, (int)ndims);
-                            if (t && t->data && (int64_t)fread(t->data, sizeof(double), (size_t)total, f) == total) {
-                                fclose(f);
-                                VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
-                                break;
-                            }
-                        }
-                    }
-                    fclose(f);
-                }
-            }
-        }
-#else
-        (void)path_val;
-#endif
-        vm_push(vm, BOOL_VAL(0));
-        break;
-    }
-
     case 1822: { /* kb-save(path, kb) → #t or #f
                   * Serializes KB: writes fact count + predicate hashes + arities as binary.
                   * For facts with datum (list), writes the list repr.
@@ -16353,8 +16275,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, BOOL_VAL(0));
         break;
     }
-
-#undef TENSOR_FILE_MAGIC
 
     /* ══════════════════════════════════════════════════════════════════════
      * Image I/O (1850-1859) — native platform/system codec based

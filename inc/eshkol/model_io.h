@@ -44,6 +44,11 @@ void eshkol_tensor_save_tagged(arena_t* arena,
  * @brief Load a single-tensor checkpoint file previously written by
  *        eshkol_tensor_save_tagged().
  *
+ * The loader validates the ESKM magic, format version, reserved flags, record
+ * shape, payload size, complete record consumption, and trailing CRC-32 before
+ * allocating the result. Invalid, truncated, corrupt, unsupported, or missing
+ * files produce the null result and an ERROR diagnostic.
+ *
  * @param arena   Arena used to allocate the resulting tensor and its
  *                backing storage.
  * @param path_tv Tagged value that must be a string naming the input file.
@@ -80,6 +85,12 @@ void eshkol_model_save_tagged(arena_t* arena,
 /**
  * @brief Load a model checkpoint previously written by
  *        eshkol_model_save_tagged() (or eshkol_tensor_save_tagged()).
+ *
+ * The loader validates the ESKM magic, format version, reserved flags, record
+ * shapes, payload sizes, complete record consumption, and trailing CRC-32
+ * before allocating any result tensors. Invalid, truncated, corrupt,
+ * unsupported, or missing files produce the null result and an ERROR
+ * diagnostic.
  *
  * @param arena   Arena used to allocate the resulting list, pairs, name
  *                strings, and tensors.

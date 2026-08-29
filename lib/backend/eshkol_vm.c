@@ -815,10 +815,9 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"fg-marginal", 1810, 2}, {"fg-entropy", 1811, 2},
     {"fg-total-entropy", 1812, 1}, {"fg-joint-entropy", 1812, 1},
-    /* ═══════════════════════════════════════════════════════════════
-     * Tensor/KB Persistence — IDs 1820-1829
-     * ═══════════════════════════════════════════════════════════════ */
-    {"tensor-save", 1820, 2}, {"tensor-load", 1821, 1},
+    /* Tensor persistence is registered once above at IDs 802/803.  The old
+     * 1820/1821 ESKT entries shadowed the validated ESKM loaders because the
+     * preamble binds duplicate names in declaration order. */
     {"kb-save", 1822, 2},
     /* ═══════════════════════════════════════════════════════════════
      * Image I/O — IDs 1850-1859

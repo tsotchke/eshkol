@@ -2414,7 +2414,8 @@ static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
                                          TaggedValueCodegen& tagged,
                                          llvm::Value* file_ptr,
                                          uint8_t port_type,
-                                         const char* name) {
+                                         const char* name,
+                                         const char* error_on_unavailable = nullptr) {
     llvm::Function* current_func = ctx.builder().GetInsertBlock()->getParent();
     llvm::Value* is_null = ctx.builder().CreateICmpEQ(
         file_ptr, llvm::ConstantPointerNull::get(ctx.ptrType()),
@@ -2430,10 +2431,37 @@ static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
     ctx.builder().CreateCondBr(is_null, null_block, port_block);
 
     ctx.builder().SetInsertPoint(null_block);
-    llvm::Value* false_val = tagged.packBool(
-        llvm::ConstantInt::getFalse(ctx.context()));
-    ctx.builder().CreateBr(merge_block);
-    llvm::BasicBlock* null_exit = ctx.builder().GetInsertBlock();
+    llvm::Value* false_val = nullptr;
+    llvm::BasicBlock* null_exit = nullptr;
+    if (error_on_unavailable) {
+        /* Capability denial is intentionally still represented by #f (the
+         * capability-policy contract), while an allowed but missing file is
+         * a real I/O error and must be catchable by Scheme code. */
+        llvm::FunctionCallee allows_file_mode = ctx.module().getOrInsertFunction(
+            "eshkol_capability_runtime_allows_file_mode",
+            llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false));
+        llvm::Value* mode = ctx.builder().CreateGlobalString("r");
+        llvm::Value* capability_allowed = ctx.builder().CreateICmpNE(
+            ctx.builder().CreateCall(allows_file_mode, {mode}),
+            llvm::ConstantInt::get(ctx.int32Type(), 0));
+        llvm::BasicBlock* unavailable = llvm::BasicBlock::Create(
+            ctx.context(), std::string(name) + "_unavailable", current_func);
+        llvm::BasicBlock* denied = llvm::BasicBlock::Create(
+            ctx.context(), std::string(name) + "_denied", current_func);
+        ctx.builder().CreateCondBr(capability_allowed, unavailable, denied);
+
+        ctx.builder().SetInsertPoint(unavailable);
+        ctx.emitRaise(error_on_unavailable);
+
+        ctx.builder().SetInsertPoint(denied);
+        false_val = tagged.packBool(llvm::ConstantInt::getFalse(ctx.context()));
+        ctx.builder().CreateBr(merge_block);
+        null_exit = ctx.builder().GetInsertBlock();
+    } else {
+        false_val = tagged.packBool(llvm::ConstantInt::getFalse(ctx.context()));
+        ctx.builder().CreateBr(merge_block);
+        null_exit = ctx.builder().GetInsertBlock();
+    }
 
     ctx.builder().SetInsertPoint(port_block);
     llvm::FunctionCallee register_port = ctx.module().getOrInsertFunction(
@@ -2491,6 +2519,16 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op,
     llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
     if (!tagged) return nullptr;
 
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* invalid_path = llvm::BasicBlock::Create(
+        ctx_.context(), "open_input_invalid_path", current_func);
+    llvm::BasicBlock* valid_path = llvm::BasicBlock::Create(
+        ctx_.context(), "open_input_valid_path", current_func);
+    ctx_.builder().CreateCondBr(tagged_.isString(tagged), valid_path, invalid_path);
+    ctx_.builder().SetInsertPoint(invalid_path);
+    ctx_.emitRaise("open-input-file: expected a string path");
+    ctx_.builder().SetInsertPoint(valid_path);
+
     llvm::Value* filename_ptr = ctx_.builder().CreateIntToPtr(
         ctx_.builder().CreateExtractValue(tagged, {4}),
         ctx_.ptrType());
@@ -2500,7 +2538,8 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op,
     llvm::Value* file_ptr = ctx_.builder().CreateCall(fopen_func, {filename_ptr, mode});
 
     return packFilePortOrFalse(ctx_, tagged_, file_ptr,
-        ESHKOL_VALUE_HEAP_PTR | 0x10, "open_input_file");
+        ESHKOL_VALUE_HEAP_PTR | 0x10, "open_input_file",
+        "open-input-file: cannot open file");
 }
 
 // Shared body for open-output-file (mode="w") and
@@ -2590,6 +2629,29 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
         if (!tv_ptr) return nullptr;
         llvm::Value* tagged = typed_to_tagged_callback_(tv_ptr, callback_context_);
         if (!tagged) return nullptr;
+
+        /* `open-input-file` deliberately returns #f when the capability
+         * policy denies the read.  A failed open must not then reach fgets as
+         * a null FILE*: turn every non-input-port argument into the same
+         * catchable condition used by the other runtime guards. */
+        llvm::Value* type_tag = tagged_.getType(tagged);
+        llvm::Value* port_bits = ctx_.builder().CreateAnd(type_tag,
+            llvm::ConstantInt::get(ctx_.int8Type(),
+                ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_ANY_FLAG));
+        llvm::Value* is_input_port = ctx_.builder().CreateICmpEQ(port_bits,
+            llvm::ConstantInt::get(ctx_.int8Type(),
+                ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_INPUT_FLAG));
+
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* invalid_port = llvm::BasicBlock::Create(
+            ctx_.context(), "read_line_invalid_port", current_func);
+        llvm::BasicBlock* valid_port = llvm::BasicBlock::Create(
+            ctx_.context(), "read_line_valid_port", current_func);
+        ctx_.builder().CreateCondBr(is_input_port, valid_port, invalid_port);
+        ctx_.builder().SetInsertPoint(invalid_port);
+        ctx_.emitRaise("read-line: expected an open input port");
+        ctx_.builder().SetInsertPoint(valid_port);
+
         llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(tagged, {4});
         file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
     } else {

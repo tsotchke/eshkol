@@ -16641,8 +16641,6 @@ private:
         if (func_name == "process-spawn") return system_->processSpawn(op);
         if (func_name == "process-wait") return system_->processWait(op);
         if (func_name == "poll-fd") return system_->pollFd(op);
-        if (func_name == "tensor-save") return system_->tensorSave(op);
-        if (func_name == "tensor-load") return system_->tensorLoad(op);
         // v1.2 batch 2
         if (func_name == "file-chmod") return system_->fileChmod(op);
         if (func_name == "symlink-create") return system_->symlinkCreate(op);
