@@ -1,0 +1,43 @@
+; Issue #551 VM/native parity: transformer tensor operations preserve a
+; forward dual that arrives inside a Scheme vector.
+(require stdlib)
+
+(define (finite-difference f x h)
+  (/ (- (f (+ x h)) (f (- x h))) (* 2.0 h)))
+
+; Original generic tensor-gradient reproducer.
+(define actual
+  (gradient (lambda (v)
+              (+ (* (tensor-get v 0) (tensor-get v 0))
+                 (* 3.0 (tensor-get v 1))))
+            #(2.0 5.0)))
+(display actual) (newline)
+
+; Original scaled-dot-attention dual-input reproducer.
+(define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define (attention-f x)
+  (tensor-get (scaled-dot-attention q k
+                (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+(display (derivative attention-f 1.0)) (newline)
+(display (finite-difference attention-f 1.0 1e-5)) (newline)
+
+; Original layer-norm dual-input reproducer.
+(define (layer-f x)
+  (tensor-get (layer-norm (vector x 2.0 3.0) 1.0 0.0 1e-5) 0))
+(display (derivative layer-f 1.0)) (newline)
+(display (finite-difference layer-f 1.0 1e-5)) (newline)
+
+; Adversarial nonzero-score / middle-feature placements.
+(define q2 (reshape #(1.0 0.0 0.0 1.0) 2 2))
+(define k2 (reshape #(0.0 1.0 1.0 0.0) 2 2))
+(define (attention-f2 x)
+  (tensor-get (scaled-dot-attention q2 k2
+                (reshape (vector 2.0 x 3.0 4.0) 2 2)) 1 0))
+(display (derivative attention-f2 2.0)) (newline)
+(display (finite-difference attention-f2 2.0 1e-5)) (newline)
+(define (layer-f2 x)
+  (tensor-get (layer-norm (vector 1.0 x 3.0) 1.0 0.0 1e-5) 1))
+(display (derivative layer-f2 2.0)) (newline)
+(display (finite-difference layer-f2 2.0 1e-5)) (newline)
+(display "PASS: issue_551_tensor_transformer_dual") (newline)

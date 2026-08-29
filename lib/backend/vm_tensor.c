@@ -43,6 +43,7 @@
 #define VM_TENSOR_DTYPE_F16  2
 #define VM_TENSOR_DTYPE_BF16 3
 #define VM_TENSOR_DTYPE_I8   4
+#define VM_TENSOR_DTYPE_DUAL 64  /* elements carry VmDual primal/tangent pairs */
 
 /* ── Tensor ── */
 typedef struct {
@@ -53,6 +54,7 @@ typedef struct {
     int64_t  total;        /* total number of elements */
     int      owns_data;    /* 1 = owns data (allocated), 0 = view (shared) */
     int      dtype;        /* VM_TENSOR_DTYPE_* metadata; data stays double-backed */
+    VmDual*  dual_data;    /* optional forward-mode carrier, parallel to data */
     int64_t  inline_shape[VM_TENSOR_INLINE_DIMS];
     int64_t  inline_strides[VM_TENSOR_INLINE_DIMS];
 } VmTensor;
@@ -286,6 +288,7 @@ static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_di
     memset(t->data, 0, (size_t)t->total * sizeof(double));
     t->owns_data = 1;
     t->dtype = VM_TENSOR_DTYPE_F64;
+    t->dual_data = NULL;
 
     return t;
 }
@@ -377,6 +380,7 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     v->data = t->data;   /* shared data */
     v->owns_data = 0;
     v->dtype = t->dtype;
+    v->dual_data = t->dual_data; /* shared forward carrier, when present */
 
     return v;
 }
@@ -482,6 +486,9 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     c->total = vm_tensor_compute_strides(t->shape, t->n_dims, c->strides);
     c->owns_data = 1;
     c->dtype = t->dtype;
+    c->dual_data = t->dual_data
+        ? (VmDual*)vm_alloc(rs, (size_t)c->total * sizeof(VmDual)) : NULL;
+    if (t->dual_data && !c->dual_data) return NULL;
 
     c->data = (double*)vm_alloc(rs, (size_t)c->total * sizeof(double));
     if (!c->data) return NULL;
@@ -502,6 +509,9 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
 
     if (is_contiguous) {
         memcpy(c->data, t->data, (size_t)c->total * sizeof(double));
+        if (c->dual_data)
+            memcpy(c->dual_data, t->dual_data,
+                   (size_t)c->total * sizeof(VmDual));
     } else {
         /* Element-wise copy for non-contiguous sources */
         int64_t* indices = vm_tensor_dim_scratch(rs, t->n_dims);
@@ -510,6 +520,7 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
             vm_tensor_unravel(i, t->shape, t->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(t, indices, t->n_dims);
             c->data[i] = t->data[src_off];
+            if (c->dual_data) c->dual_data[i] = t->dual_data[src_off];
         }
     }
 
@@ -597,6 +608,8 @@ static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t i
     v->total = t->total / t->shape[0];
     v->owns_data = 0;
     v->dtype = t->dtype;
+    v->dual_data = t->dual_data
+        ? t->dual_data + index * t->strides[0] : NULL;
 
     return v;
 }

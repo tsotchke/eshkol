@@ -287,6 +287,14 @@ tape `num_nodes`.
 
 ### 2.3 Dense tensor AD scalarizes instead of recording dense nodes
 
+> **Status (v1.3.5-evolve): PARTIALLY BUILT.** `matmul`, whole-tensor
+> `tensor-sum` and whole-tensor `tensor-mean` now record ONE dense
+> `ad_node_t` each under AD (ADR-0002 Phase C.1/C.2, ledger SW-48). Same-shape
+> elementwise ops and the broadcast variants still scalarize — that is Phase
+> C.3/C.4, still open. The two lowerings are kept and gated against each other
+> by `scripts/run_dense_tensor_ad_gate.sh`; `ESHKOL_DENSE_TENSOR_AD_NODES=0`
+> selects the scalarizing one.
+
 Current codegen commonly turns tensor AD into per-element scalar AD:
 
 - same-shape elementwise ops create scalar AD nodes per element,
@@ -312,6 +320,12 @@ Backward:
 ```
 
 ### 2.4 Matmul dense tensor backward exists but is bypassed
+
+> **Status (v1.3.5-evolve): BUILT.** It is no longer bypassed. The guard that
+> bypassed it was unsatisfiable rather than merely off, and reaching it faulted
+> for two further reasons — the node was recognised by a field it is recorded
+> without, and the node it built was dropped instead of returned. All three are
+> closed; see ADR-0002 §0 "Resolution" and ledger SW-48.
 
 Runtime dense matmul backward exists.
 

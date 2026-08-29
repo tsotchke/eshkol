@@ -554,7 +554,9 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 // ===== SIMD-ACCELERATED TENSOR ARITHMETIC =====
 // Processes SIMD_WIDTH doubles at a time using vector operations
 // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
-llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
+llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2,
+                                                   const std::string& operation,
+                                                   bool numeric_only) {
     auto& builder = ctx_.builder();
     const unsigned SIMD_WIDTH = getSIMDWidth();
     llvm::VectorType* vec_type = getSIMDVectorType();
@@ -676,8 +678,75 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         builder.CreateStore(bcast_total,
             builder.CreateStructGEP(tensor_type, bcast_tensor, 3));
 
-        builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
-        builder.CreateBr(arith_done);
+        if (autodiff_ && !numeric_only) {
+            llvm::Value* in_ad_mode = builder.CreateLoad(
+                ctx_.int1Type(), ctx_.adModeActive());
+            llvm::BasicBlock* bcast_ad = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_arith_ad", current_top_func);
+            llvm::BasicBlock* bcast_numeric = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_arith_numeric", current_top_func);
+            builder.CreateCondBr(in_ad_mode, bcast_ad, bcast_numeric);
+
+            builder.SetInsertPoint(bcast_ad);
+            int64_t scalar_op_type = 2;
+            if (operation == "sub") scalar_op_type = 3;
+            else if (operation == "mul") scalar_op_type = 4;
+            else if (operation == "div") scalar_op_type = 5;
+            llvm::FunctionCallee index_fn = ctx_.module().getOrInsertFunction(
+                "eshkol_broadcast_source_index",
+                llvm::FunctionType::get(ctx_.int64Type(),
+                    {ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type(),
+                     ctx_.ptrType(), ctx_.int64Type()}, false));
+            llvm::Value* ad_i = builder.CreateAlloca(
+                ctx_.int64Type(), nullptr, "bcast_ad_i");
+            builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_i);
+            llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_cond", current_top_func);
+            llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_body", current_top_func);
+            llvm::BasicBlock* ad_exit = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_exit", current_top_func);
+            builder.CreateBr(ad_cond);
+
+            builder.SetInsertPoint(ad_cond);
+            llvm::Value* ad_index = builder.CreateLoad(ctx_.int64Type(), ad_i);
+            builder.CreateCondBr(
+                builder.CreateICmpULT(ad_index, bcast_total), ad_body, ad_exit);
+
+            builder.SetInsertPoint(ad_body);
+            llvm::Value* ai = builder.CreateCall(index_fn,
+                {ad_index, out_dims_buf, bcast_ndim, t1_dims_ptr, t1_ndim},
+                "bcast_ad_ai");
+            llvm::Value* bi = builder.CreateCall(index_fn,
+                {ad_index, out_dims_buf, bcast_ndim, t2_dims_ptr, t2_ndim},
+                "bcast_ad_bi");
+            llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), t1_elems, ai));
+            llvm::Value* b_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), t2_elems, bi));
+            llvm::Value* a_node = adNodeFromTensorElementBits(
+                a_bits, "bcast_ad_lhs");
+            llvm::Value* b_node = adNodeFromTensorElementBits(
+                b_bits, "bcast_ad_rhs");
+            llvm::Value* result_node = autodiff_->recordADNodeBinary(
+                (uint32_t)scalar_op_type, a_node, b_node);
+            builder.CreateStore(builder.CreatePtrToInt(result_node,
+                                                        ctx_.int64Type()),
+                builder.CreateGEP(ctx_.int64Type(), out_data_buf, ad_index));
+            builder.CreateStore(builder.CreateAdd(ad_index,
+                llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_i);
+            builder.CreateBr(ad_cond);
+
+            builder.SetInsertPoint(ad_exit);
+            builder.CreateBr(bcast_numeric);
+
+            builder.SetInsertPoint(bcast_numeric);
+            builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
+            builder.CreateBr(arith_done);
+        } else {
+            builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
+            builder.CreateBr(arith_done);
+        }
     }
 
     // ===== FAST PATH: shapes match, use SIMD =====
@@ -755,7 +824,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         ad_op_type = 45; // AD_NODE_MIN
     }
 
-    if (autodiff_ && ad_op_type != 0) {
+    if (autodiff_ && ad_op_type != 0 && !numeric_only) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
         llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_path", current_func);
         llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "arith_numeric_path", current_func);

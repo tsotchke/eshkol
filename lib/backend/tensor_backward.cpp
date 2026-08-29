@@ -20,6 +20,7 @@
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <vector>
 
 #if defined(_OPENMP)
 #include <omp.h>
@@ -1034,6 +1035,100 @@ static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
     return total;
 }
 
+/** @brief Exact VJP for dense elementwise arithmetic, with trailing-dimension
+ *         broadcasting.  The caller owns the zero-filled gradient buffers;
+ *         repeated input indices are intentionally accumulated here. */
+extern "C" void eshkol_backward_tensor_elementwise(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    const int64_t* out_shape, int64_t out_ndim,
+    const int64_t* a_shape, int64_t a_ndim,
+    const int64_t* b_shape, int64_t b_ndim,
+    int operation)
+{
+    if (!grad_out || !saved_A || !saved_B || !grad_A || !grad_B ||
+        out_ndim < 0 || a_ndim < 0 || b_ndim < 0 ||
+        (out_ndim > 0 && !out_shape) || (a_ndim > 0 && !a_shape) ||
+        (b_ndim > 0 && !b_shape) || a_ndim > out_ndim || b_ndim > out_ndim) {
+        return;
+    }
+
+    int64_t out_total = compute_total_elements(out_shape, (size_t)out_ndim);
+    int64_t a_total = compute_total_elements(a_shape, (size_t)a_ndim);
+    int64_t b_total = compute_total_elements(b_shape, (size_t)b_ndim);
+    if (out_total <= 0 || a_total <= 0 || b_total <= 0) return;
+
+    std::vector<int64_t> out_coords((size_t)out_ndim, 0);
+    std::vector<int64_t> a_strides((size_t)a_ndim, 1);
+    std::vector<int64_t> b_strides((size_t)b_ndim, 1);
+    for (int64_t i = a_ndim - 2; i >= 0; --i)
+        a_strides[(size_t)i] = a_strides[(size_t)i + 1] * a_shape[i + 1];
+    for (int64_t i = b_ndim - 2; i >= 0; --i)
+        b_strides[(size_t)i] = b_strides[(size_t)i + 1] * b_shape[i + 1];
+
+    for (int64_t flat = 0; flat < out_total; ++flat) {
+        int64_t rem = flat;
+        for (int64_t i = out_ndim - 1; i >= 0; --i) {
+            int64_t dim = out_shape[i];
+            if (dim <= 0) return;
+            out_coords[(size_t)i] = rem % dim;
+            rem /= dim;
+        }
+
+        int64_t a_index = 0;
+        for (int64_t i = 0; i < a_ndim; ++i) {
+            int64_t out_i = out_ndim - a_ndim + i;
+            int64_t coord = (a_shape[i] == 1) ? 0 : out_coords[(size_t)out_i];
+            a_index += coord * a_strides[(size_t)i];
+        }
+        int64_t b_index = 0;
+        for (int64_t i = 0; i < b_ndim; ++i) {
+            int64_t out_i = out_ndim - b_ndim + i;
+            int64_t coord = (b_shape[i] == 1) ? 0 : out_coords[(size_t)out_i];
+            b_index += coord * b_strides[(size_t)i];
+        }
+
+        double a = saved_A[a_index];
+        double b = saved_B[b_index];
+        double g = grad_out[flat];
+        switch (operation) {
+        case 0: /* add */
+            grad_A[a_index] += g;
+            grad_B[b_index] += g;
+            break;
+        case 1: /* sub */
+            grad_A[a_index] += g;
+            grad_B[b_index] -= g;
+            break;
+        case 2: /* mul */
+            grad_A[a_index] += g * b;
+            grad_B[b_index] += g * a;
+            break;
+        case 3: /* div */
+            grad_A[a_index] += g / b;
+            grad_B[b_index] -= g * a / (b * b);
+            break;
+        default:
+            return;
+        }
+    }
+}
+
+/** @brief Element count of a tensor AD node: the overflow-checked product of
+ *         its shape, or 0 if the node is null, carries no tensor value, or the
+ *         product overflows.
+ *
+ * The dense tensor AD path (ADR-0002 Position A) calls this from emitted code,
+ * so a consumer such as `tensor-sum` sizes its reduction from the node it was
+ * handed instead of re-deriving a shape it does not own. */
+extern "C" int64_t eshkol_ad_node_total_elements(const void* ad_node_ptr) {
+    if (!ad_node_ptr) return 0;
+    const ad_node_t* node = (const ad_node_t*)ad_node_ptr;
+    if (!node->tensor_value) return 0;
+    return compute_total_elements(node->shape, node->ndim);
+}
+
 /** @brief Spell an AD node type, for diagnostics.
  *
  *  GENERATED from inc/eshkol/ad_node_registry.def, so a node type cannot exist
@@ -1096,7 +1191,29 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
 
     ad_node_t* node = (ad_node_t*)ad_node_ptr;
     double* upstream_grad = (double*)node->tensor_gradient;
-    if (!upstream_grad) return;
+
+    /* SCALAR-CONSUMER BRIDGE (ADR-0002 Position A, SW-48).
+     *
+     * A tensor node whose output is a single number is consumed by SCALAR
+     * machinery: `(tensor-sum ...)` feeds ordinary arithmetic, and the emitted
+     * scalar reverse sweep accumulates into `node->gradient`, not into
+     * `tensor_gradient`.  The tensor rules read `tensor_gradient`.  Without
+     * this bridge the two sides each wait for the other and the gradient is
+     * dropped in silence -- one of the three defects that kept the dense
+     * tensor AD path unreachable.
+     *
+     * Defined ONLY for a one-element node, where the scalar and the 1-vector
+     * are the same object.  For anything larger a NULL tensor_gradient means
+     * no upstream gradient reached this node at all, which is a genuine zero
+     * contribution: return, do not fabricate one. */
+    if (!upstream_grad) {
+        if (compute_total_elements(node->shape, node->ndim) != 1) return;
+        if (node->gradient == 0.0) return;
+        node->tensor_gradient = arena_allocate_zeroed(get_global_arena(), sizeof(double));
+        if (!node->tensor_gradient) return;
+        ((double*)node->tensor_gradient)[0] = node->gradient;
+        upstream_grad = (double*)node->tensor_gradient;
+    }
 
     /* Access params as raw int64_t array (matches union layout) */
     int64_t* p = (int64_t*)&node->params;
@@ -1251,6 +1368,82 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_B, K * N);
         }
+        break;
+    }
+
+    /* --- TENSOR_PACK (83): the dense/scalar boundary, ADR-0002 Position A ---
+     *
+     * The dense path's operands may still be tensors whose element slots hold
+     * SCALAR AD-node pointers: that is how `(gradient f x)` seeds a tensor
+     * differentiation point, and how every scalarizing tensor op publishes its
+     * result.  A pack node holds the dense f64 copy in tensor_value and the
+     * scalar node each element came from in saved_tensors, so its backward is
+     * the identity scatter: element i of the tensor gradient lands on scalar
+     * node i.
+     *
+     * It performs no arithmetic.  A pack node therefore cannot change the
+     * VALUE of a gradient, only which representation carries it -- which is
+     * what lets the dense and scalarizing paths agree exactly, not closely. */
+    case AD_NODE_TENSOR_PACK: {
+        if (!node->saved_tensors) break;
+        int64_t total = (int64_t)node->num_saved;
+        if (total <= 0) break;
+        ad_node_t** slots = (ad_node_t**)node->saved_tensors;
+        for (int64_t i = 0; i < total; i++) {
+            /* A NULL slot is an element that was a plain number in the source
+             * tensor: it carries no gradient, and dropping it is exact. */
+            if (slots[i]) slots[i]->gradient += upstream_grad[i];
+        }
+        break;
+    }
+
+    /* ── ADR-0002 dense elementwise nodes (84-91) ───────────────────────── */
+    case AD_NODE_TENSOR_ADD_DENSE:
+    case AD_NODE_TENSOR_SUB_DENSE:
+    case AD_NODE_TENSOR_MUL_DENSE:
+    case AD_NODE_TENSOR_DIV_DENSE:
+    case AD_NODE_TENSOR_BROADCAST_ADD_DENSE:
+    case AD_NODE_TENSOR_BROADCAST_SUB_DENSE:
+    case AD_NODE_TENSOR_BROADCAST_MUL_DENSE:
+    case AD_NODE_TENSOR_BROADCAST_DIV_DENSE: {
+        if (!node->saved_tensors || node->num_saved < 2 ||
+            !node->input1 || !node->input2 || !node->input1->tensor_value ||
+            !node->input2->tensor_value || !node->shape) {
+            break;
+        }
+        int operation = 0;
+        const int node_type = (int)node->type;
+        if (node_type == AD_NODE_TENSOR_SUB_DENSE ||
+            node_type == AD_NODE_TENSOR_BROADCAST_SUB_DENSE) {
+            operation = 1;
+        } else if (node_type == AD_NODE_TENSOR_MUL_DENSE ||
+                   node_type == AD_NODE_TENSOR_BROADCAST_MUL_DENSE) {
+            operation = 2;
+        } else if (node_type == AD_NODE_TENSOR_DIV_DENSE ||
+                   node_type == AD_NODE_TENSOR_BROADCAST_DIV_DENSE) {
+            operation = 3;
+        }
+        int64_t a_total = compute_total_elements(node->input1->shape,
+                                                  node->input1->ndim);
+        int64_t b_total = compute_total_elements(node->input2->shape,
+                                                  node->input2->ndim);
+        if (a_total <= 0 || b_total <= 0) break;
+        double* grad_A = (double*)arena_calloc(bwd_arena,
+                                                (size_t)a_total * sizeof(double));
+        double* grad_B = (double*)arena_calloc(bwd_arena,
+                                                (size_t)b_total * sizeof(double));
+        if (!grad_A || !grad_B) break;
+        eshkol_backward_tensor_elementwise(
+            upstream_grad,
+            (const double*)node->saved_tensors[0],
+            (const double*)node->saved_tensors[1],
+            grad_A, grad_B,
+            node->shape, (int64_t)node->ndim,
+            node->input1->shape, (int64_t)node->input1->ndim,
+            node->input2->shape, (int64_t)node->input2->ndim,
+            operation);
+        eshkol_accumulate_tensor_grad(node->input1, grad_A, a_total);
+        eshkol_accumulate_tensor_grad(node->input2, grad_B, b_total);
         break;
     }
 

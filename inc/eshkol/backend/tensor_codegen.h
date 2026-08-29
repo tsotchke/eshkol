@@ -1188,6 +1188,37 @@ public:
      */
     llvm::Value* embedding(const eshkol_operations_t* op);
 
+    /**
+     * Emit the dense tensor AD path for a whole-tensor reduction whose operand
+     * is an AD-node handle (ADR-0002 Position A).
+     *
+     * On the dense path a tensor op hands its consumer an AD-NODE HANDLE, not
+     * a tensor whose element slots hold scalar node pointers. That was the
+     * third of the three things SW-48 found unfinished: a dense matmul writes
+     * plain doubles into its result, so a consumer that reads node pointers
+     * out of those slots would sever the chain at the next tensor op. This
+     * teaches the reductions the dense representation -- they reduce the
+     * node's f64 buffer and record ONE AD_NODE_SUM / AD_NODE_MEAN node whose
+     * backward broadcasts the scalar gradient back over the input, instead of
+     * a chain of `total` scalar adds.
+     *
+     * Emits a probe on @p src_val. On the dense-handle branch it produces the
+     * reduction and branches to @p merge_block; on every other branch it falls
+     * through, leaving the builder positioned so the caller's ordinary
+     * lowering follows.
+     *
+     * @param src_val      the (tagged) operand
+     * @param is_mean      true for tensor-mean, false for tensor-sum
+     * @param merge_block  the caller's result merge block
+     * @param out_exit     receives the block the dense result flows out of
+     * @param name         IR name prefix
+     * @return the tagged dense result, or nullptr if no dense path was emitted
+     */
+    llvm::Value* emitDenseADReduce(llvm::Value* src_val, bool is_mean,
+                                   llvm::BasicBlock* merge_block,
+                                   llvm::BasicBlock** out_exit,
+                                   const char* name);
+
 private:
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
@@ -1367,7 +1398,13 @@ private:
      * @param operation One of "add", "sub", "mul", "div", "pow", "max", "min"
      * @return Result tensor (tagged)
      */
-    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2, const std::string& operation);
+    llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2,
+                                         const std::string& operation,
+                                         bool numeric_only = false);
+
+    /** Emit ADR-0002's one-node dense elementwise lowering for tensor inputs. */
+    llvm::Value* emitDenseTensorArithmetic(llvm::Value* arg1, llvm::Value* arg2,
+                                           const std::string& operation);
 
     /**
      * Generic element-wise unary operation using SIMD + scalar loops.

@@ -227,4 +227,42 @@ ESHKOL_AD_NODE(ATAN2,               81, SCALAR, SCALAR_ADJOINT, ESHKOL_AD_NO_BRI
  */
 ESHKOL_AD_NODE(CUSTOM,              82, SCALAR, CUSTOM_VJP,     ESHKOL_AD_NO_BRIDGE)
 
+/* ── Dense/scalar boundary (83) ─────────────────────────────────────────────
+ * ADR-0002 Position A records ONE node per tensor operation and computes on
+ * plain f64 buffers.  Its operands, though, may still arrive as a tensor whose
+ * ELEMENT SLOTS hold scalar AD-node pointers: that is how `(gradient f x)`
+ * seeds a tensor differentiation point, and how every scalarizing tensor op
+ * publishes its result.
+ *
+ * A pack node is the explicit, exact bridge between the two representations.
+ * It holds the dense f64 copy in tensor_value, the scalar node each element
+ * came from in saved_tensors (NULL where the slot held a plain number and
+ * therefore carries no gradient), and the element count in num_saved and
+ * params[0].  Its backward is the identity scatter — element i of the tensor
+ * gradient lands on scalar node i — so it performs no arithmetic and cannot
+ * change the VALUE of a gradient, only which representation carries it.  That
+ * is what lets the dense and scalarizing paths agree exactly rather than
+ * closely.
+ *
+ * INLINE: the arm is hand-written in eshkol_tensor_backward_dispatch, because
+ * it scatters into the SCALAR gradient field rather than calling an
+ * eshkol_backward_* kernel over tensors. */
+ESHKOL_AD_NODE(TENSOR_PACK,         83, TENSOR, INLINE,         ESHKOL_AD_NO_BRIDGE)
+
+/* ── ADR-0002 dense elementwise gradients (84-91) ──────────────────────────
+ *
+ * These IDs are deliberately separate from the scalar ADD/SUB/MUL/DIV rows
+ * above.  A dense node carries f64 buffers and is reversed by the tensor
+ * dispatcher; aliasing it to a scalar rule would either read a null scalar
+ * parent or silently lose a broadcast contribution.
+ */
+ESHKOL_AD_NODE(TENSOR_ADD_DENSE,             84, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_SUB_DENSE,             85, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_MUL_DENSE,             86, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_DIV_DENSE,             87, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_ADD_DENSE,   88, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_SUB_DENSE,   89, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_MUL_DENSE,   90, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(TENSOR_BROADCAST_DIV_DENSE,   91, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+
 /* clang-format on */
