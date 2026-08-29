@@ -680,13 +680,11 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
                                "great-circle-distance: antipodal endpoints have no unique geodesic");
             break;
         }
-        double nx = sqrt(vm_tensor_dot_for_geometry(x, x));
-        double ny = sqrt(vm_tensor_dot_for_geometry(y, y));
-        if (nx <= 0.0 || ny <= 0.0) { vm_push_float(vm, 0.0); break; }
-        double cs = vm_tensor_dot_for_geometry(x, y) / (nx * ny);
-        if (cs > 1.0) cs = 1.0;
-        if (cs < -1.0) cs = -1.0;
-        vm_push_float(vm, acos(cs));
+        double nx = eshkol_rm_norm(x->data, (int)x->total);
+        double ny = eshkol_rm_norm(y->data, (int)y->total);
+        if (!(nx > 0.0) || !(ny > 0.0)) { vm_push_float(vm, 0.0); break; }
+        vm_push_float(vm, eshkol_rm_sphere_angle(x->data, y->data, 1.0,
+                                                 (int)x->total, NULL));
         break;
     }
     case 820: { /* slerp(x, y, t) */
@@ -1343,10 +1341,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
                                    "great-circle-distance: antipodal endpoints have no unique geodesic");
                 break;
             }
-            float* xf = vm_tensor_to_float(vm, xv);
-            float* yf = vm_tensor_to_float(vm, yv);
-            float dist = qllm_spherical_distance(xf, yf, (int)xv->total);
-            vm_push_float(vm, dist);
+            double nx = eshkol_rm_norm(xv->data, (int)xv->total);
+            double ny = eshkol_rm_norm(yv->data, (int)yv->total);
+            if (!(nx > 0.0) || !(ny > 0.0)) vm_push_float(vm, 0.0);
+            else vm_push_float(vm, eshkol_rm_sphere_angle(
+                xv->data, yv->data, 1.0, (int)xv->total, NULL));
         } else vm_push(vm, NIL_VAL);
         break;
     }
