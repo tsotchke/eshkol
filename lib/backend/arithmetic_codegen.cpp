@@ -868,6 +868,18 @@ static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+static llvm::Function* getTaylorOrderTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_taylor_order_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int32Type(),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(), ctx.int32Type()}, false);
+        func = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
+                                      "eshkol_taylor_order_tagged", &ctx.module());
+    }
+    return func;
+}
+
 /**
  * @brief Emits a runtime check for whether either operand is a Taylor tower.
  *
@@ -943,6 +955,20 @@ llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code
         getArenaPtr(ctx_), ia,
         llvm::ConstantInt::get(ctx_.int32Type(), op_code), res});
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_unres");
+}
+
+llvm::Value* ArithmeticCodegen::emitTaylorOrderCall(llvm::Value* left,
+                                                     llvm::Value* right,
+                                                     int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* la = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_l");
+    llvm::Value* ra = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ord_r");
+    ctx_.builder().CreateStore(left, la);
+    ctx_.builder().CreateStore(right, ra);
+    return ctx_.builder().CreateCall(getTaylorOrderTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), la, ra,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code)});
 }
 
 // === Rational Codegen Helpers ===
@@ -3137,9 +3163,9 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
          * primal coefficient; rebuilding a first-order dual here discards all
          * coefficients above c[1]. */
         ctx_.builder().SetInsertPoint(taylor_path);
-        llvm::Value* min_left = extractAsDouble(left);
-        llvm::Value* min_right = extractAsDouble(right);
-        llvm::Value* min_pick_left = ctx_.builder().CreateFCmpOLE(min_left, min_right);
+        llvm::Value* min_order = emitTaylorOrderCall(left, right, 3); // le
+        llvm::Value* min_pick_left = ctx_.builder().CreateICmpNE(
+            min_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
         llvm::Value* min_taylor_result = ctx_.builder().CreateSelect(
             min_pick_left, left, right, "min_taylor_selected");
         ctx_.builder().CreateBr(min_merge);
@@ -3251,9 +3277,9 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         /* Preserve the selected Taylor tower instead of reducing it to a
          * scalar/first-order dual. */
         ctx_.builder().SetInsertPoint(taylor_path);
-        llvm::Value* max_left = extractAsDouble(left);
-        llvm::Value* max_right = extractAsDouble(right);
-        llvm::Value* max_pick_left = ctx_.builder().CreateFCmpOGE(max_left, max_right);
+        llvm::Value* max_order = emitTaylorOrderCall(left, right, 4); // ge
+        llvm::Value* max_pick_left = ctx_.builder().CreateICmpNE(
+            max_order, llvm::ConstantInt::get(ctx_.int32Type(), 0));
         llvm::Value* max_taylor_result = ctx_.builder().CreateSelect(
             max_pick_left, left, right, "max_taylor_selected");
         ctx_.builder().CreateBr(max_merge);

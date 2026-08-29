@@ -205,6 +205,55 @@
 (check-inexact-close "tanh Taylor derivative at zero"
                      (derivative-n (lambda (x) (tanh x)) 0 1) 1.0)
 
+;; Second-audit counterexamples: branch selection is on the exact primal and
+;; the selected branch carries the whole series, including negative tangent
+;; coefficients.
+(let ((relu-series (taylor (lambda (x) (relu (- 2 x))) 1 3)))
+  (check-exact-eq "relu exact branch c0" (car relu-series) 1)
+  (check-exact-eq "relu exact branch c1" (car (cdr relu-series)) -1)
+  (check-exact-eq "relu exact branch c2" (car (cdr (cdr relu-series))) 0)
+  (check-exact-eq "relu exact branch c3" (car (cdr (cdr (cdr relu-series)))) 0))
+
+(define tiny-positive (/ 1 (expt 10 400)))
+(let ((mx (taylor (lambda (x) (max 0 x)) tiny-positive 1))
+      (rx (taylor (lambda (x) (relu x)) tiny-positive 1)))
+  (check-exact-eq "max exact tiny primal" (car mx) tiny-positive)
+  (check-exact-eq "max exact tiny tangent" (car (cdr mx)) 1)
+  (check-exact-eq "relu exact tiny primal" (car rx) tiny-positive)
+  (check-exact-eq "relu exact tiny tangent" (car (cdr rx)) 1))
+
+;; The zero subgradient convention must survive a mixed Taylor/dual pass.
+(check-inexact-close "mixed abs zero subgradient"
+                     (derivative
+                      (lambda (y)
+                        (derivative-n (lambda (x) (abs (+ x y))) 0 0))
+                      0)
+                     0.0)
+
+;; Stable tail recurrences: these are finite limits, not NaNs from an
+;; unselected overflowing exponential branch.
+(check-inexact-close "sigmoid(-1000) c0"
+                     (derivative-n (lambda (x) (sigmoid x)) -1000 0) 0.0)
+(check-inexact-close "sigmoid(-1000) c1"
+                     (derivative-n (lambda (x) (sigmoid x)) -1000 1) 0.0)
+(check-inexact-close "sigmoid(-1000) c2"
+                     (derivative-n (lambda (x) (sigmoid x)) -1000 2) 0.0)
+(check-inexact-close "tanh(1000) c0"
+                     (derivative-n (lambda (x) (tanh x)) 1000 0) 1.0)
+(check-inexact-close "tanh(1000) c1"
+                     (derivative-n (lambda (x) (tanh x)) 1000 1) 0.0)
+(check-inexact-close "tanh(1000) c2"
+                     (derivative-n (lambda (x) (tanh x)) 1000 2) 0.0)
+
+;; No exponent magnitude cutoff: -4097 remains an exact rational result.
+(check-exact-eq "large negative integer power"
+                (derivative-n (lambda (x) (expt x -4097)) 2 1)
+                (/ -4097 (expt 2 4098)))
+(check-exact-eq "abs exact scalar derivative"
+                (derivative (lambda (x) (abs x)) -2) -1)
+(check-exact-eq "relu exact scalar derivative"
+                (derivative (lambda (x) (relu x)) 2) 1)
+
 (display "----") (newline)
 (display "exact-taylor tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
@@ -220,12 +269,11 @@
 ;; live risks here: every gate below is a loop, and the exact tier this file
 ;; certifies is the oracle `derivative`/`gradient`/`hessian` route to at an
 ;; exact point, so a quietly-shrunken suite would take those three with it.
-;; 159 = 68 original checks + 54 elementary transcendental coefficients + 27
-;; abs coefficients + 3 negative-power checks + 7 audit/dispatch checks.
+;; 177 = 159 original checks + 18 second-audit assertions.
 ;; 68 = 18 (x^5 mul/pow, n=0..8) + 9 (x^5 taylor coefficients) + 11 (geometric
 ;; at 1/2, n=0..10) + 21 (x^20 at 3, n=0..20) + 2 (x^30 bignum) + 5
 ;; (transcendental demotion) + 2 (inexact point stays inexact).
-(define expected-checks 159)
+(define expected-checks 177)
 (if (and (= nfail 0) (= npass expected-checks))
     (begin (display "PASS: exact-coefficient Taylor tier ")
            (display npass) (display "/") (display expected-checks)

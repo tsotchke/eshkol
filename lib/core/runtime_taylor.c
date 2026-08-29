@@ -58,6 +58,7 @@
 #include "../../inc/eshkol/core/bignum.h"
 
 #include <math.h>
+#include <float.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -376,6 +377,45 @@ double eshkol_taylor_c0(const eshkol_tagged_value_t* tv) {
     return tagged_scalar_value(tv);
 }
 
+int32_t eshkol_taylor_order_tagged(void* arena,
+                                   const eshkol_tagged_value_t* left,
+                                   const eshkol_tagged_value_t* right,
+                                   int op) {
+    eshkol_tagged_value_t left_c0;
+    eshkol_tagged_value_t right_c0;
+    const eshkol_tagged_value_t* l = left;
+    const eshkol_tagged_value_t* r = right;
+    esh_taylor_t* lt = tagged_as_taylor(left);
+    esh_taylor_t* rt = tagged_as_taylor(right);
+    if (lt) {
+        if (taylor_is_exact(lt)) left_c0 = taylor_exact_c_const(lt)[0];
+        else left_c0 = eshkol_make_double(lt->c[0]);
+        l = &left_c0;
+    }
+    if (rt) {
+        if (taylor_is_exact(rt)) right_c0 = taylor_exact_c_const(rt)[0];
+        else right_c0 = eshkol_make_double(rt->c[0]);
+        r = &right_c0;
+    }
+
+    if (tagged_is_exact_number(l) && tagged_is_exact_number(r)) {
+        eshkol_tagged_value_t result;
+        eshkol_rational_compare_tagged_ptr(arena, l, r, op, &result);
+        return (int32_t)result.data.int_val;
+    }
+
+    double a = tagged_any_to_double(l);
+    double b = tagged_any_to_double(r);
+    switch (op) {
+        case 0: return a < b;
+        case 1: return a > b;
+        case 2: return a == b;
+        case 3: return a <= b;
+        case 4: return a >= b;
+        default: return 0;
+    }
+}
+
 /* ── AD seed / evaluation-point coercion (ESH-0393) ───────────────────────
  *
  * The forward jet and the reverse tape both carry a RAW DOUBLE per component,
@@ -638,17 +678,40 @@ static void tr_sigmoid(double* s, const double* u, int n, arena_t* arena) {
         ex = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
         den = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
     }
-    tr_neg(nu, u, n);
-    tr_exp(ex, nu, n);
-    den[0] = 1.0 + ex[0];
-    for (int k = 1; k < n; k++) den[k] = ex[k];
-    /* The numerator is the constant series 1. */
-    s[0] = 1.0 / den[0];
-    for (int k = 1; k < n; k++) {
-        double acc = 0.0;
-        for (int j = 1; j <= k; j++) acc = fma(-den[j], s[k-j], acc);
-        s[k] = acc / den[0];
+    if (u[0] >= 0.0) {
+        /* sigma(u) = 1/(1+exp(-u)); this branch never overflows at +inf. */
+        tr_neg(nu, u, n);
+        tr_exp(ex, nu, n);
+        den[0] = 1.0 + ex[0];
+        for (int k = 1; k < n; k++) den[k] = ex[k];
+        s[0] = 1.0 / den[0];
+        for (int k = 1; k < n; k++) {
+            double acc = 0.0;
+            for (int j = 1; j <= k; j++) acc = fma(-den[j], s[k-j], acc);
+            s[k] = acc / den[0];
+        }
+    } else {
+        /* sigma(u) = exp(u)/(1+exp(u)); this branch never overflows at -inf. */
+        tr_exp(ex, u, n);
+        den[0] = 1.0 + ex[0];
+        for (int k = 1; k < n; k++) den[k] = ex[k];
+        tr_div(s, ex, den, n);
     }
+}
+
+static void tr_tanh(double* s, const double* u, int n, arena_t* arena) {
+    double ub[ESH_TAYLOR_STACKN], sb[ESH_TAYLOR_STACKN];
+    double* twice = ub;
+    double* sig = sb;
+    if (n > ESH_TAYLOR_STACKN) {
+        twice = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        sig = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+    }
+    if (!twice || !sig) return;
+    for (int k = 0; k < n; k++) twice[k] = 2.0 * u[k];
+    tr_sigmoid(sig, twice, n, arena);
+    s[0] = 2.0 * sig[0] - 1.0;
+    for (int k = 1; k < n; k++) s[k] = 2.0 * sig[k];
 }
 
 /* ----------------------------------------------------------------------- */
@@ -796,10 +859,6 @@ static void ddual_sigmoid(double* sv, double* st, const double* uv, const double
         den=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
         dent=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
     }
-    tr_neg(nu, uv, n); tr_neg(nut, ut, n);
-    ddual_exp(ex, ext, nu, nut, n);
-    den[0] = 1.0 + ex[0]; dent[0] = ext[0];
-    for (int k = 1; k < n; k++) { den[k] = ex[k]; dent[k] = ext[k]; }
     double one[ESH_TAYLOR_STACKN], onet[ESH_TAYLOR_STACKN];
     double *ov=one,*ot=onet;
     if (n > ESH_TAYLOR_STACKN) {
@@ -808,7 +867,37 @@ static void ddual_sigmoid(double* sv, double* st, const double* uv, const double
     }
     ov[0]=1.0; ot[0]=0.0;
     for (int k=1;k<n;k++) { ov[k]=0.0; ot[k]=0.0; }
-    ddual_div(sv, st, ov, ot, den, dent, n);
+    if (uv[0] >= 0.0) {
+        tr_neg(nu, uv, n); tr_neg(nut, ut, n);
+        ddual_exp(ex, ext, nu, nut, n);
+        den[0] = 1.0 + ex[0]; dent[0] = ext[0];
+        for (int k = 1; k < n; k++) { den[k] = ex[k]; dent[k] = ext[k]; }
+        ddual_div(sv, st, ov, ot, den, dent, n);
+    } else {
+        ddual_exp(ex, ext, uv, ut, n);
+        den[0] = 1.0 + ex[0]; dent[0] = ext[0];
+        for (int k = 1; k < n; k++) { den[k] = ex[k]; dent[k] = ext[k]; }
+        ddual_div(sv, st, ex, ext, den, dent, n);
+    }
+}
+
+static void ddual_tanh(double* sv, double* st, const double* uv, const double* ut,
+                       int n, arena_t* arena) {
+    double ub[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
+    double sb[ESH_TAYLOR_STACKN], stb[ESH_TAYLOR_STACKN];
+    double* twice = ub; double* twicet = utb;
+    double* sig = sb; double* sigt = stb;
+    if (n > ESH_TAYLOR_STACKN) {
+        twice = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        twicet = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        sig = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        sigt = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+    }
+    if (!twice || !twicet || !sig || !sigt) return;
+    for (int k = 0; k < n; k++) { twice[k] = 2.0 * uv[k]; twicet[k] = 2.0 * ut[k]; }
+    ddual_sigmoid(sig, sigt, twice, twicet, n, arena);
+    sv[0] = 2.0 * sig[0] - 1.0; st[0] = 2.0 * sigt[0];
+    for (int k = 1; k < n; k++) { sv[k] = 2.0 * sig[k]; st[k] = 2.0 * sigt[k]; }
 }
 
 /* s = u / w : s_k = ( u_k - sum_{j=1..k} w_j * s_{k-j} ) / w_0. */
@@ -1190,7 +1279,7 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
         }
         if (op == ESH_TAYLOR_OP_pow) {
             int64_t p;
-            if (exact_pow_exponent_as_int(right, epoch, &p) && p >= -4096 && p <= 4096) {
+            if (exact_pow_exponent_as_int(right, epoch, &p)) {
                 eshkol_tagged_value_t base0;
                 normalise_operand_exact(left, epoch, &base0, 1);
                 /* zero is valid only for non-negative powers; a negative
@@ -1332,7 +1421,11 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             }
             case ESH_TAYLOR_UOP_sqrt: ddual_pow_const(ov, ot, uv, ut, 0.5, n, arena); break;
             case ESH_TAYLOR_UOP_abs: {
-                double sgn = (uv[0] < 0.0) ? -1.0 : 1.0;
+                /* An exact zero crossing can arrive through the legacy JET
+                 * boundary as a denormal residue. It is still the documented
+                 * zero-subgradient point, not a positive smooth-side point. */
+                double sgn = fabs(uv[0]) < DBL_MIN ? 0.0
+                             : (uv[0] < 0.0 ? -1.0 : 1.0);
                 ov[0] = fabs(uv[0]); ot[0] = sgn * ut[0];
                 for (int k = 1; k < n; k++) { ov[k] = sgn * uv[k]; ot[k] = sgn * ut[k]; }
                 break;
@@ -1340,6 +1433,10 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             case ESH_TAYLOR_UOP_sinh:
             case ESH_TAYLOR_UOP_cosh:
             case ESH_TAYLOR_UOP_tanh: {
+                if (op == ESH_TAYLOR_UOP_tanh) {
+                    ddual_tanh(ov, ot, uv, ut, n, arena);
+                    break;
+                }
                 /* sinh/cosh/tanh via dual exp(±u). */
                 double epb[ESH_TAYLOR_STACKN],eptb[ESH_TAYLOR_STACKN];
                 double emb[ESH_TAYLOR_STACKN],emtb[ESH_TAYLOR_STACKN];
@@ -1478,19 +1575,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             for (int k = 0; k < n; k++) out->c[k] = 0.5 * (ep[k] + em[k]);
             break;
         }
-        case ESH_TAYLOR_UOP_tanh: {
-            /* tanh via sinh/cosh */
-            double sb[ESH_TAYLOR_STACKN], cbb[ESH_TAYLOR_STACKN], eb[ESH_TAYLOR_STACKN], nb[ESH_TAYLOR_STACKN], mb[ESH_TAYLOR_STACKN];
-            double *sh=sb,*ch=cbb,*ep=eb,*nu=nb,*em=mb;
-            double *hsh=NULL,*hch=NULL,*hep=NULL,*hnu=NULL,*hem=NULL;
-            if (n > ESH_TAYLOR_STACKN) { hsh=(double*)arena_allocate(arena,(size_t)n*sizeof(double));hch=(double*)arena_allocate(arena,(size_t)n*sizeof(double));hep=(double*)arena_allocate(arena,(size_t)n*sizeof(double));hnu=(double*)arena_allocate(arena,(size_t)n*sizeof(double));hem=(double*)arena_allocate(arena,(size_t)n*sizeof(double));sh=hsh;ch=hch;ep=hep;nu=hnu;em=hem;}
-            tr_exp(ep, u, n);
-            tr_neg(nu, u, n);
-            tr_exp(em, nu, n);
-            for (int k = 0; k < n; k++) { sh[k] = 0.5*(ep[k]-em[k]); ch[k] = 0.5*(ep[k]+em[k]); }
-            tr_div(out->c, sh, ch, n);
-            break;
-        }
+        case ESH_TAYLOR_UOP_tanh: tr_tanh(out->c, u, n, arena); break;
         default: memcpy(out->c, u, (size_t)n * sizeof(double)); break;
     }
     *result = taylor_to_tagged(out);

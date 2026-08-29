@@ -1241,7 +1241,8 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     // Allocate space for dual number on the heap (arena)
     // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
     // {primal,d1,d2,d12} + ep-derivative 4-jet {dp,dp1,dp2,dp12}).
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.sizeType(), ESHKOL_DUAL_HEAP_PAYLOAD_SIZE);
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");
@@ -8598,6 +8599,13 @@ static bool towerSafeExpr(const eshkol_ast* e, const std::string* only_var, int 
         if (!e->variable.id) return false;
         return only_var == nullptr || *only_var == e->variable.id;
     }
+    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_WITH_REGION_OP) {
+        const auto& region = e->operation.with_region_op;
+        if (!region.body || region.num_body_exprs == 0) return false;
+        for (uint64_t i = 0; i < region.num_body_exprs; i++)
+            if (!towerSafeExpr(&region.body[i], only_var, depth + 1)) return false;
+        return true;
+    }
     if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
 
     const auto& call = e->operation.call_op;
@@ -8798,7 +8806,14 @@ private:
     V e_sigmoid(const V& u) {
         V one = zeros();
         one[0] = cst(1.0);
-        return e_div(one, e_add(one, e_exp(e_neg(u))));
+        V positive = e_div(one, e_add(one, e_exp(e_neg(u))));
+        V eu = e_exp(u);
+        V negative = e_div(eu, e_add(one, eu));
+        V s(n_);
+        llvm::Value* nonnegative = b().CreateFCmpOGE(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++)
+            s[k] = b().CreateSelect(nonnegative, positive[k], negative[k]);
+        return s;
     }
     V e_sinh(const V& u) {
         V ep = e_exp(u), em = e_exp(e_neg(u)), s(n_);
@@ -8811,12 +8826,18 @@ private:
         return s;
     }
     V e_tanh(const V& u) {
-        V ep = e_exp(u), em = e_exp(e_neg(u)), sh(n_), ch(n_);
+        V two = zeros();
+        two[0] = cst(2.0);
+        V scaled = e_mul(two, u);
+        V sig = e_sigmoid(scaled);
+        V one = zeros();
+        one[0] = cst(1.0);
+        V result(n_);
         for (int k = 0; k < n_; k++) {
-            sh[k] = b().CreateFMul(cst(0.5), b().CreateFSub(ep[k], em[k]));
-            ch[k] = b().CreateFMul(cst(0.5), b().CreateFAdd(ep[k], em[k]));
+            V term = (k == 0) ? one : zeros();
+            result[k] = b().CreateFSub(b().CreateFMul(cst(2.0), sig[k]), term[k]);
         }
-        return e_div(sh, ch);
+        return result;
     }
 
     /** @brief Match a compile-time-literal (int or double) scalar exponent for

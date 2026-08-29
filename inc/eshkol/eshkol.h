@@ -220,6 +220,11 @@ typedef struct eshkol_dual_number {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
                      "Dual number must be 16 bytes for cache efficiency");
 
+/* The native LLVM forward carrier is the eight-double JET8 payload.  Its
+ * tagged pointer keeps the legacy DUAL_NUMBER tag, so region evacuation needs
+ * the emitted payload size rather than the two-double public scalar helper. */
+#define ESHKOL_DUAL_HEAP_PAYLOAD_SIZE (8u * sizeof(double))
+
 // ───────────────────────────────────────────────────────────────────────────
 // TAYLOR TOWER  (arbitrary-order forward-mode AD — ESH-0186, docs/design/AD_TAYLOR_TOWER.md)
 // ───────────────────────────────────────────────────────────────────────────
@@ -270,7 +275,14 @@ typedef struct esh_taylor {
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
 #define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
-     (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+    (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+
+/* Compare the primal coefficients of Taylor operands using the exact numeric
+ * tower whenever both primals are exact.  op is 0=lt, 1=gt, 2=eq, 3=le,
+ * 4=ge. */
+int32_t eshkol_taylor_order_tagged(
+    void* arena, const eshkol_tagged_value_t* left,
+    const eshkol_tagged_value_t* right, int op);
 
 // ESH-0402: nested-AD carrier composition route codes. Returned by
 // eshkol_ad_nested_seed() at a differentiation whose evaluation point is

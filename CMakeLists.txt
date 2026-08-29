@@ -5310,6 +5310,19 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: exact AD at exact points"
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated")
     endif()
+    if(TARGET eshkol-vm-standalone-test AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk")
+        add_test(
+            NAME exact_taylor_vm_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+        )
+        set_tests_properties(exact_taylor_vm_runtime_smoke
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal signal")
+    endif()
 
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native

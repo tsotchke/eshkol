@@ -315,6 +315,10 @@ public:
      */
     llvm::Value* emitTaylorUnaryCall(llvm::Value* in, int op_code);
 
+    /** Compare Taylor primal coefficients through the exact numeric tower. */
+    llvm::Value* emitTaylorOrderCall(llvm::Value* left, llvm::Value* right,
+                                     int op_code);
+
     // === Rational dispatch helpers ===
 
     /**

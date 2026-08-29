@@ -527,6 +527,12 @@ static int vm_rational_compare_exact(VmRegionStack *rs,
     return bignum_compare(l, r);
 }
 
+int vm_rational_compare_exact_values(VmRegionStack *rs,
+                                     const VmRational *a,
+                                     const VmRational *b) {
+    return vm_rational_compare_exact(rs, a, b);
+}
+
 /** @brief Exact equality, bignum-capable.  The representation is canonical
  *         (big only when the reduced pair does not fit int64), so a small and
  *         a big rational can never be equal. */

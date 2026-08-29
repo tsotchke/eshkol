@@ -1050,7 +1050,8 @@ static void region_free_fwd_map(eshkol_region_t* region) {
  * go through evac_object: it sizes and classifies an object from the
  * eshkol_object_header_t 8 bytes below the payload, and these carry no header —
  * those 8 bytes belong to whatever was allocated before them. A flat copy is
- * complete for both (two doubles, no interior pointers), and neither has
+ * complete for both (the native dual is the eight-double JET8 payload; complex
+ * is two doubles, with no interior pointers), and neither has
  * observable pointer identity, so copying cannot break eq?-style sharing the
  * way copying an interned symbol would. */
 static size_t region_headerless_payload_size(uint8_t type) {
@@ -1058,7 +1059,7 @@ static size_t region_headerless_payload_size(uint8_t type) {
      * matching. The port flags share those bits but only ever ride on
      * HEAP_PTR, which is not one of the values matched here. */
     switch (type & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG | ESHKOL_VALUE_INEXACT_FLAG)) {
-        case ESHKOL_VALUE_DUAL_NUMBER: return sizeof(eshkol_dual_number_t);
+        case ESHKOL_VALUE_DUAL_NUMBER: return ESHKOL_DUAL_HEAP_PAYLOAD_SIZE;
         case ESHKOL_VALUE_COMPLEX:     return 2 * sizeof(double);
         default:                       return 0;
     }

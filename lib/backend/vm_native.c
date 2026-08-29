@@ -6474,6 +6474,18 @@ static const VmRational* vm_coerce_rational(VM* vm, Value v, VmRational* scratch
     return scratch;
 }
 
+static const VmRational* vm_taylor_exact_primal(VM* vm, Value v,
+                                                VmDual* dual,
+                                                VmRational* scratch) {
+    if (dual && vm_dual_taylor_is_exact(dual))
+        return vm_dual_taylor_exact_coeff(dual, 0);
+    if (v.type == VAL_FLOAT) return NULL;
+    if (v.type != VAL_INT && v.type != VAL_CHAR &&
+        v.type != VAL_RATIONAL && v.type != VAL_BIGNUM)
+        return NULL;
+    return vm_coerce_rational(vm, v, scratch);
+}
+
 /** @brief Compute (a op b) exactly in the bignum domain and push the
  *         normalized result. @p op is one of '+','-','*','q' (quotient),
  *         'r' (remainder), 'm' (R7RS modulo). A float operand on +,-,* falls
@@ -7781,11 +7793,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * first-order dual and discard c[2..K]. */
             if ((ad_ptr && vm_dual_is_taylor(ad_ptr)) ||
                 (bd_ptr && vm_dual_is_taylor(bd_ptr))) {
-                double ap = ad_ptr && vm_dual_is_taylor(ad_ptr)
-                    ? vm_dual_taylor_coeff(ad_ptr, 0) : as_number_vm(vm, a);
-                double bp = bd_ptr && vm_dual_is_taylor(bd_ptr)
-                    ? vm_dual_taylor_coeff(bd_ptr, 0) : as_number_vm(vm, b);
-                int pick_left = want_max ? (ap >= bp) : (ap <= bp);
+                VmRational ascratch, bscratch;
+                const VmRational* ar = vm_taylor_exact_primal(vm, a, ad_ptr, &ascratch);
+                const VmRational* br = vm_taylor_exact_primal(vm, b, bd_ptr, &bscratch);
+                int pick_left;
+                if (ar && br) {
+                    int cmp = vm_rational_compare_exact_values(
+                        &vm->heap.regions, ar, br);
+                    pick_left = want_max ? (cmp >= 0) : (cmp <= 0);
+                } else {
+                    double ap = ad_ptr && vm_dual_is_taylor(ad_ptr)
+                        ? vm_dual_taylor_coeff(ad_ptr, 0) : as_number_vm(vm, a);
+                    double bp = bd_ptr && vm_dual_is_taylor(bd_ptr)
+                        ? vm_dual_taylor_coeff(bd_ptr, 0) : as_number_vm(vm, b);
+                    pick_left = want_max ? (ap >= bp) : (ap <= bp);
+                }
                 vm_push(vm, pick_left ? a : b);
                 break;
             }
