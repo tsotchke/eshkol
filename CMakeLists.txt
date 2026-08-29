@@ -5342,6 +5342,38 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    # ESH-0103: the native LLVM codegen path must keep deeply nested
+    # expressions approximately linear in compile time and peak RSS. The gate
+    # measures both JIT and AOT on a 1k/4k/16k ladder; its self-test proves the
+    # ratio checker rejects a quadratic fixture rather than only accepting a
+    # green run. The VM parity corpus carries the same arithmetic shape on the
+    # second engine.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh")
+        add_test(
+            NAME nested_expr_compile_time_gate
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+        )
+        add_test(
+            NAME nested_expr_compile_time_gate_selftest
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/perf/nested_expr_compile_time_test.sh"
+                    --self-test
+        )
+        set_tests_properties(nested_expr_compile_time_gate
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: nested-expression compile-time/RSS scaling is approximately linear"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        set_tests_properties(nested_expr_compile_time_gate_selftest
+            PROPERTIES
+                TIMEOUT 60
+                PASS_REGULAR_EXPRESSION "PASS: nested-expression compile-time gate self-test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+
     if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
         add_test(
             NAME memory_store_cross_engine_durability

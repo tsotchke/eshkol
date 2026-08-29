@@ -482,6 +482,7 @@ jobs:
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
           bash scripts/test_run_all_tests_failure_attribution.sh
+          bash tests/perf/nested_expr_compile_time_test.sh --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -1381,6 +1382,22 @@ jobs:
             export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
           fi
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      # ESH-0103: keep the LLVM codegen path's deeply nested-expression
+      # compile-time and peak-RSS curve approximately linear. This is a
+      # bounded 1k/4k/16k ladder over both native JIT and AOT; run it once on
+      # the representative Linux x64 lite lane because the codegen contract is
+      # platform-independent and the matrix already exercises the same binary
+      # on the other native lanes.
+      - name: ESH-0103 nested-expression compile-time/RSS gate
+        if: matrix.name == 'linux-x64-lite'
+        timeout-minutes: 30
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          bash tests/perf/nested_expr_compile_time_test.sh "$BUILD_DIR/eshkol-run"
 
       # Catches the failure mode where a new C runtime helper
       # (eshkol_intern_symbol_lookup, region_create, …) is added on the

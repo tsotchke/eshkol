@@ -165,7 +165,29 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     static thread_local int expansion_depth = 0;
     struct DepthGuard { DepthGuard() { ++expansion_depth; } ~DepthGuard() { --expansion_depth; } } depth_guard;
     if (expansion_depth > 1000) {
-        eshkol_error("macro expansion depth limit exceeded (>1000)");
+        // A deeply nested ordinary call is AST traversal, not macro
+        // expansion. Reporting it as a macro-depth failure made a pure
+        // arithmetic expression fail before LLVM codegen could measure its
+        // actual complexity (ESH-0103). Keep the bound for real macro forms,
+        // where it prevents runaway syntax expansion, but let non-macro
+        // subtrees pass through unchanged. The caller's existing recursive
+        // walk then returns the original deep subtree and codegen processes it
+        // without inventing diagnostics for a macro-free program.
+        bool is_macro_form = false;
+        if (ast.type == ESHKOL_OP) {
+            const auto op = ast.operation.op;
+            if (op == ESHKOL_LET_SYNTAX_OP || op == ESHKOL_LETREC_SYNTAX_OP) {
+                is_macro_form = true;
+            } else if (op == ESHKOL_CALL_OP && ast.operation.call_op.func &&
+                       ast.operation.call_op.func->type == ESHKOL_VAR &&
+                       ast.operation.call_op.func->variable.id) {
+                is_macro_form = isMacro(ast.operation.call_op.func->variable.id);
+            }
+        }
+        if (is_macro_form) {
+            eshkol_error("macro expansion depth limit exceeded (>1000)");
+            return ast;
+        }
         return ast;
     }
     eshkol_ast_t current = ast;

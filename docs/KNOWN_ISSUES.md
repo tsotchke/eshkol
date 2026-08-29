@@ -564,8 +564,19 @@ block ordinary use.
   (fixed, ESH-0104, ESH-0107).** Was: not fully wired. Both have green
   assertions at `tests/parser/quote_dispatch_family_test.esk:94-102` and
   `:104-113` (conformity audit 2026-08-25, item e2).
-- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
-  unaffected (ESH-0103).
+- **Deeply nested native expressions now have a bounded compile-time/RSS gate
+  (fixed, ESH-0103).** The former cliff came from inlining the complete
+  numeric-tower dispatch at every operator into one LLVM function. LLVM SROA
+  then promoted a growing set of allocas across a growing set of blocks,
+  making the optimizer's work superlinear. `ArithmeticCodegen` now emits each
+  binary dispatch once as a module-local `noinline` helper, leaving one call at
+  each expression node. The frontend no longer reports ordinary non-macro
+  descent as a macro-expansion overflow, so the deep probe reaches codegen
+  without inventing a diagnostic. `tests/perf/nested_expr_compile_time_test.sh`
+  measures native JIT and AOT at depths 1,000/4,000/16,000 and asserts both
+  time and peak-RSS ratios stay below the bounded near-linear threshold; it is
+  wired into CTest and the Linux CI lane. The same arithmetic shape is present
+  in `tests/vm_parity/corpus/72_nested_expression.esk` for VM parity.
 
 **VM parity**
 - The VM implements a documented subset of the language, tracked row-by-row in
