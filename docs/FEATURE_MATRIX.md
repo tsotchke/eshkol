@@ -636,6 +636,10 @@ from the manifest again.
 | Reduce operations | Yes | CUDA | Custom kernels |
 | Softmax | Yes | CUDA | Numerically stable |
 | Transpose | Yes | CUDA | cuBLAS transpose |
+| **WebGPU (Emscripten/wasm)** |
+| Ordinary GPU dispatch seam | Partial | WebGPU/WGSL | Browser adapter selected at runtime; CPU fallback when unavailable; headless gate evidence required before COMPLETE |
+| Matmul, algebraic elementwise, and reductions | Partial | WebGPU/WGSL | `high` has df32 kernels but currently refuses dispatch until the adapter meets `GPU_GATE_TOL=1e-9`; unsupported work uses CPU |
+| Exact IEEE f64 / Ozaki path | Unsupported | CPU fallback | WGSL has no f64; no exact WebGPU claim is made |
 | **Dispatch** |
 | Automatic CPU/GPU selection | Yes | Runtime | Cost model based |
 | Threshold-based dispatch | Yes | Runtime | XLA → cBLAS → SIMD → scalar |

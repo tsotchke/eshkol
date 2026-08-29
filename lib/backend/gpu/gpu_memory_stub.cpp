@@ -43,6 +43,7 @@ const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
         case ESHKOL_GPU_METAL:  return "Apple Metal (not available)";
         case ESHKOL_GPU_CUDA:   return "NVIDIA CUDA (not available)";
         case ESHKOL_GPU_VULKAN: return "Vulkan (not available)";
+        case ESHKOL_GPU_WEBGPU: return "WebGPU (not available)";
         default:                return "Unknown";
     }
 }
