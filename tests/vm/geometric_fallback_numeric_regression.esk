@@ -81,6 +81,30 @@
                   (angle-close? (great-circle-distance wide-x wide-y) half-pi))
              "PASS" "FAIL")) (display ": scale-invariant spherical angle") (newline)
 
+;; Bit-exact denormal-pivot counterexample. The old exact-collinearity test
+;; multiplied a denormal pivot by every normalized coordinate, so the products
+;; all underflowed to zero and this valid theta ~= 3.0352963674903606 pair was
+;; falsely reported as an antipode.
+(define denormal-x
+  (tensor 3 4.9406564584124654e-324 0.99498743710662 -0.1))
+(define denormal-y
+  (tensor 3 -4.9406564584124654e-324 -0.9787619731068428 0.205))
+(define denormal-angle
+  (guard (e (#t 'caught))
+         (great-circle-distance denormal-x denormal-y)))
+(display (if (and (number? denormal-angle)
+                  (angle-close? denormal-angle 3.0352963674903606))
+             "PASS" "FAIL"))
+(display ": denormal pivot keeps valid spherical pair") (newline)
+
+;; Non-finite coordinates follow IEEE propagation rather than the old
+;; !(norm > 0) zero fallback, in both the portable and linked VM dispatches.
+(define nan-angle
+  (great-circle-distance (tensor 2 +nan.0 1.0)
+                         (tensor 2 0.0 1.0)))
+(display (if (nan? nan-angle) "PASS" "FAIL"))
+(display ": NaN spherical coordinate propagates") (newline)
+
 (manifold-destroy! h)
 (display "PASS: geometric fallback numeric regression complete")
 (newline)

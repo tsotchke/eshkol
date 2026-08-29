@@ -407,7 +407,9 @@ from the norm of the pairwise cross products. This is `0.0` if either norm is
 zero. An antipodal pair raises a named condition because the shortest geodesic
 is not unique; the refusal is limited to vectors that are exactly negatively
 collinear after canonicalization, so genuine near-antipodes are still
-evaluated. `()` on a size mismatch.
+evaluated. `()` on a size mismatch. If either tensor contains a non-finite
+coordinate, the result is `NaN` under IEEE floating-point propagation; the
+portable and linked VM dispatches agree on this result.
 
 ```scheme
 (define x (make-tensor '(3) 1.0))
