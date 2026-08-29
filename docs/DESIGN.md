@@ -54,8 +54,8 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
-| llvm_codegen.cpp | 43,959 | Main codegen, dispatch, builtins |
-| autodiff_codegen.cpp | 14,083 | Forward/reverse mode AD |
+| llvm_codegen.cpp | 44,003 | Main codegen, dispatch, builtins |
+| autodiff_codegen.cpp | 14,545 | Forward/reverse mode AD |
 | arithmetic_codegen.cpp | 4,012 | Numeric ops, bignum, rational, complex |
 | string_io_codegen.cpp | 3,860 | String, I/O, JSON, CSV operations |
 | collection_codegen.cpp | 3,173 | Vector, list, hash table operations |
@@ -249,7 +249,7 @@ Eshkol has two production execution backends serving different purposes:
 
 **LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,390 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,407 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
