@@ -5154,10 +5154,23 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
         VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (!vec) return NULL;
 
-        /* Fast path: a flat homogeneous numeric vector -> a fresh 1-D tensor. */
+        /* Fast path: a flat homogeneous numeric vector -> a fresh 1-D tensor.
+         * Forward-mode derivative calls use the same vector shape with one or
+         * more VAL_DUAL elements. Preserve those carriers in a parallel
+         * VmDual array instead of rejecting them or retaining only primals. */
         int all_numeric = 1;
+        int has_dual = 0;
         for (int i = 0; i < vec->len; i++) {
-            if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
+            if (vec->items[i].type == VAL_DUAL) {
+                if (!is_valid_heap_ptr(vm, vec->items[i].as.ptr) ||
+                    !vm->heap.objects[vec->items[i].as.ptr] ||
+                    vm->heap.objects[vec->items[i].as.ptr]->type != HEAP_DUAL ||
+                    !vm->heap.objects[vec->items[i].as.ptr]->opaque.ptr) {
+                    all_numeric = 0;
+                    break;
+                }
+                has_dual = 1;
+            } else if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
                 all_numeric = 0;
                 break;
             }
@@ -5166,7 +5179,25 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
             int64_t shape1[1] = { vec->len };
             VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
             if (!t) return NULL;
-            for (int i = 0; i < vec->len; i++) t->data[i] = as_number(vec->items[i]);
+            if (has_dual) {
+                t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
+                    (size_t)vec->len * sizeof(VmDual));
+                if (!t->dual_data) return NULL;
+                t->dtype = VM_TENSOR_DTYPE_DUAL;
+            }
+            for (int i = 0; i < vec->len; i++) {
+                if (vec->items[i].type == VAL_DUAL) {
+                    t->dual_data[i] = *(VmDual*)vm->heap.objects[
+                        vec->items[i].as.ptr]->opaque.ptr;
+                    t->data[i] = t->dual_data[i].primal;
+                } else {
+                    t->data[i] = as_number_vm(vm, vec->items[i]);
+                    if (has_dual) {
+                        t->dual_data[i].primal = t->data[i];
+                        t->dual_data[i].tangent = 0.0;
+                    }
+                }
+            }
             return t;
         }
 
@@ -8993,7 +9024,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
                 break;
             }
-            vm_push(vm, FLOAT_VAL(t->data[flat]));
+            if (t->dual_data) {
+                VmDual d = t->dual_data[flat];
+                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
+            } else {
+                vm_push(vm, FLOAT_VAL(t->data[flat]));
+            }
         } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
             /* Multi-dim index, given as a list or a vector.  Same bounds
              * contract as the flat path above: vm_tensor_ref() answers 0.0 for
@@ -9007,7 +9043,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
                 break;
             }
-            vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
+            int64_t flat = vm_tensor_flat_offset(t, indices, nd);
+            if (t->dual_data) {
+                VmDual d = t->dual_data[flat];
+                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
+            } else {
+                vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
+            }
         } else {
             /* Anything else is not an index — fabricating 0.0 hid the mistake. */
             vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector");
@@ -9391,6 +9433,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, t);
         vm_push(vm, INT_VAL(-1));
         vm_dispatch_native(vm, target);
+        break;
+    }
+
+    case 475: { /* layer-norm(tensor, gamma, beta, epsilon) */
+        Value eps_val = vm_pop(vm), beta_val = vm_pop(vm), gamma_val = vm_pop(vm);
+        Value input_val = vm_pop(vm);
+        VmTensor* input = vm_tensor_operand(vm, input_val, "layer-norm");
+        if (!input) break;
+        VmTensor* out = vm_tensor_layer_norm_scalar(&vm->heap.regions, input,
+            as_number_vm(vm, gamma_val), as_number_vm(vm, beta_val),
+            as_number_vm(vm, eps_val));
+        if (!out) { vm_raise_error_msg(vm, "layer-norm: failed to allocate result"); break; }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 477: { /* scaled-dot-attention(Q, K, V) */
+        Value v_val = vm_pop(vm), k_val = vm_pop(vm), q_val = vm_pop(vm);
+        VmTensor* q = vm_tensor_operand(vm, q_val, "scaled-dot-attention");
+        if (!q) break;
+        VmTensor* k = vm_tensor_operand(vm, k_val, "scaled-dot-attention");
+        if (!k) break;
+        VmTensor* v = vm_tensor_operand(vm, v_val, "scaled-dot-attention");
+        if (!v) break;
+        VmTensor* out = vm_tensor_scaled_dot_attention(&vm->heap.regions,
+                                                       q, k, v, NULL);
+        if (!out) {
+            vm_raise_error_msg(vm,
+                "scaled-dot-attention: expected matching rank-2 Q/K/V tensors");
+            break;
+        }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
 

@@ -826,17 +826,62 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_scalar", func);
     llvm::BasicBlock* slice_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_slice", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_done", func);
+    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
+    llvm::Value* tget_ad_active = ctx_.builder().CreateLoad(
+        ctx_.int1Type(), ctx_.adModeActive());
 
     ctx_.builder().CreateCondBr(is_full_index, scalar_bb, slice_bb);
 
-    // ===== SCALAR PATH: Full indexing - return element as double =====
+    // ===== SCALAR PATH: Full indexing - preserve dual tensor elements =====
     ctx_.builder().SetInsertPoint(scalar_bb);
 
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
     llvm::Value* elem_bits = ctx_.builder().CreateLoad(ctx_.int64Type(), elem_ptr);
     llvm::Value* elem_double = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
-    llvm::Value* scalar_result = tagged_.packDouble(elem_double);
+    llvm::Function* tget_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_dual = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_dual_scalar", tget_fn);
+    llvm::BasicBlock* tget_numeric = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_numeric_scalar", tget_fn);
+    llvm::BasicBlock* tget_scalar_merge = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_scalar_merge", tget_fn);
+    ctx_.builder().CreateCondBr(is_dual_tensor, tget_dual, tget_numeric);
 
+    ctx_.builder().SetInsertPoint(tget_dual);
+    llvm::Value* dual_elem_ptr = ctx_.builder().CreateGEP(
+        ctx_.taggedValueType(), elements_ptr, linear_offset);
+    llvm::Value* dual_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), dual_elem_ptr);
+    llvm::BasicBlock* dual_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_numeric);
+    llvm::Function* tget_ad_fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* tget_ad = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_ad_scalar", tget_ad_fn);
+    llvm::BasicBlock* tget_plain = llvm::BasicBlock::Create(
+        ctx_.context(), "tget_plain_scalar", tget_ad_fn);
+    ctx_.builder().CreateCondBr(tget_ad_active, tget_ad, tget_plain);
+
+    ctx_.builder().SetInsertPoint(tget_ad);
+    llvm::Value* tget_node = adNodeFromTensorElementBits(
+        elem_bits, "tensor_get_ad");
+    llvm::Value* ad_result = tagged_.packPtr(tget_node,
+        ESHKOL_VALUE_CALLABLE);
+    llvm::BasicBlock* ad_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_plain);
+    llvm::Value* numeric_result = tagged_.packDouble(elem_double);
+    llvm::BasicBlock* numeric_scalar_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(tget_scalar_merge);
+
+    ctx_.builder().SetInsertPoint(tget_scalar_merge);
+    llvm::PHINode* scalar_result = ctx_.builder().CreatePHI(
+        ctx_.taggedValueType(), 3, "tget_scalar_result");
+    scalar_result->addIncoming(dual_result, dual_scalar_exit);
+    scalar_result->addIncoming(ad_result, ad_scalar_exit);
+    scalar_result->addIncoming(numeric_result, numeric_scalar_exit);
     ctx_.builder().CreateBr(merge_bb);
     llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
 
@@ -903,13 +948,24 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(new_ndim, f1);
 
     // Field 2: elements pointer (view into original at offset)
-    llvm::Value* slice_start = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, linear_offset);
+    llvm::Value* element_bytes = ctx_.builder().CreateSelect(
+        is_dual_tensor,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)),
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Value* slice_byte_offset = ctx_.builder().CreateMul(
+        linear_offset, element_bytes);
+    llvm::Value* slice_start = ctx_.builder().CreateGEP(
+        ctx_.int8Type(), elements_ptr, slice_byte_offset);
     llvm::Value* f2 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 2);
     ctx_.builder().CreateStore(slice_start, f2);
 
     // Field 3: total_elements
     llvm::Value* f3 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 3);
     ctx_.builder().CreateStore(slice_total, f3);
+    llvm::Value* f4 = ctx_.builder().CreateStructGEP(tensor_type, new_tensor, 4);
+    llvm::Value* source_dtype = ctx_.builder().CreateLoad(
+        ctx_.int64Type(), ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 4));
+    ctx_.builder().CreateStore(source_dtype, f4);
 
     // Pack as consolidated HEAP_PTR tagged value (subtype in header)
     llvm::Value* slice_result = tagged_.packHeapPtr(new_tensor);

@@ -4655,6 +4655,53 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
                      --self-test)
+
+    # ADR-0002 / SW-48: compile and execute the dense tensor AD gradcheck in
+    # both codegen lowerings, then compare the gradients byte-for-byte and
+    # require the dense tape to be smaller.  This is intentionally a CTest
+    # entry rather than a source-only assertion: an unexecuted dense node is
+    # the defect this test exists to prevent.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dense_tensor_ad_gate.sh")
+        add_test(
+            NAME dense_tensor_ad_gradcheck
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dense_tensor_ad_gate.sh")
+        set_tests_properties(dense_tensor_ad_gradcheck PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "dense tensor AD gate: PASS"
+            FAIL_REGULAR_EXPRESSION "dense tensor AD gate: FAIL|fatal signal|LLVM module verification failed")
+    endif()
+endif()
+
+# Issue #551: forward-mode dual values inside Scheme vectors must survive the
+# tensor boundary used by transformer operations.  The test retains all three
+# original reproducers, checks attention and layer-norm against independent
+# central differences, and runs in both JIT and AOT modes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk")
+    add_test(
+        NAME issue_551_tensor_transformer_dual_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(issue_551_tensor_transformer_dual_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME issue_551_tensor_transformer_dual_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/issue_551_tensor_transformer_dual_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/issue_551_tensor_transformer_dual_aot'"
+    )
+    set_tests_properties(issue_551_tensor_transformer_dual_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")
@@ -5319,6 +5366,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
+
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/551_tensor_transformer_dual.esk")
+        add_test(
+            NAME issue_551_tensor_transformer_dual_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/551_tensor_transformer_dual.esk"
+        )
+        set_tests_properties(issue_551_tensor_transformer_dual_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual"
+                FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+    endif()
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at

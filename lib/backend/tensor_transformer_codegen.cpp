@@ -109,6 +109,48 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* v_elems_field = builder.CreateStructGEP(tensor_type, v_ptr, 2);
     llvm::Value* v_elems = builder.CreateLoad(ctx_.ptrType(), v_elems_field);
 
+    /* A forward derivative may arrive as a Scheme vector of DUAL_NUMBER
+     * values. The checked operand boundary preserves that vector as a dual
+     * tensor; keep it on an exact forward path instead of feeding its tagged
+     * elements to the reverse-mode pointer heuristic below. */
+    llvm::Value* attention_result_slot = nullptr;
+    llvm::BasicBlock* attention_dual_merge = nullptr;
+    const bool attention_has_dual_path = autodiff_ != nullptr;
+    if (attention_has_dual_path) {
+        llvm::Value* q_dual = isDualTensor(q_ptr);
+        llvm::Value* k_dual = isDualTensor(k_ptr);
+        llvm::Value* v_dual = isDualTensor(v_ptr);
+        llvm::Value* any_dual = builder.CreateOr(q_dual,
+            builder.CreateOr(k_dual, v_dual));
+        llvm::Function* attention_fn = builder.GetInsertBlock()->getParent();
+        attention_result_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "attention_result_slot");
+        llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_dual_tensor", attention_fn);
+        llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_numeric_tensor", attention_fn);
+        attention_dual_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_dual_merge", attention_fn);
+        builder.CreateCondBr(any_dual, dual_bb, numeric_bb);
+
+        builder.SetInsertPoint(dual_bb);
+        llvm::FunctionType* dual_type = llvm::FunctionType::get(
+            ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+            false);
+        llvm::FunctionCallee dual_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_scaled_dot_attention_dual", dual_type);
+        llvm::Value* mask_arg = mask_ptr_checked
+            ? mask_ptr_checked
+            : llvm::ConstantPointerNull::get(ctx_.ptrType());
+        llvm::Value* dual_result = builder.CreateCall(
+            dual_fn, {q_ptr, k_ptr, v_ptr, mask_arg}, "attention_dual_result");
+        builder.CreateStore(tagged_.packHeapPtr(dual_result), attention_result_slot);
+        builder.CreateBr(attention_dual_merge);
+
+        builder.SetInsertPoint(numeric_bb);
+    }
+
     // Rank guard: Q/K/V are (seq, d_k) or (batch, seq, d_k). Every dimension
     // read below indexes dims[1] (and dims[2] when batched), so a rank-1
     // operand would load past the end of the dimensions array.
@@ -932,7 +974,13 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
     builder.CreateStore(output_size, r_total_field);
 
-    return tagged_.packHeapPtr(result_ptr);
+    llvm::Value* numeric_result = tagged_.packHeapPtr(result_ptr);
+    if (!attention_has_dual_path) return numeric_result;
+    builder.CreateStore(numeric_result, attention_result_slot);
+    builder.CreateBr(attention_dual_merge);
+    builder.SetInsertPoint(attention_dual_merge);
+    return builder.CreateLoad(ctx_.taggedValueType(), attention_result_slot,
+                              "attention_result");
 }
 
 // === Track 8.2: Multi-Head Attention ===

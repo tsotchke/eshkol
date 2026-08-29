@@ -26,6 +26,8 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -35,6 +37,17 @@
 #endif
 
 namespace eshkol {
+
+bool denseTensorADNodesEnabled() {
+    static const bool enabled = [] {
+        const char* raw = std::getenv("ESHKOL_DENSE_TENSOR_AD_NODES");
+        if (!raw) return true;                 /* dense is the shipped path */
+        std::string v(raw);
+        for (char& c : v) c = (char)std::tolower((unsigned char)c);
+        return !(v == "0" || v == "off" || v == "false" || v == "no");
+    }();
+    return enabled;
+}
 
 AutodiffCodegen::AutodiffCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
@@ -2727,6 +2740,163 @@ llvm::Value* AutodiffCodegen::recordADNodeTensor(
     }
 
     return node_ptr;
+}
+
+llvm::Value* AutodiffCodegen::emitDenseTensorOperand(
+    llvm::Value* existing_node,
+    llvm::Value* elems, llvm::Value* total,
+    llvm::Value* shape, llvm::Value* ndim,
+    llvm::Value** out_dense,
+    const std::string& name)
+{
+    if (!elems || !total || !out_dense) return nullptr;
+    *out_dense = nullptr;
+
+    auto& b = ctx_.builder();
+    llvm::Value* arena_ptr = getArenaPtr();
+    llvm::Function* raw_alloc = mem_.getArenaAllocate();
+    if (!arena_ptr || !raw_alloc) return nullptr;
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+
+    // ── Already dense? ───────────────────────────────────────────────────
+    // An operand produced by another dense tensor op arrives as an AD-node
+    // handle whose tensor_value IS the f64 buffer.  Packing it would copy
+    // plain doubles and record NULL scalar slots, i.e. would silently sever
+    // the chain.  Reuse the node instead: that is what makes dense op chains
+    // (matmul of a matmul) O(1) per op rather than O(1) at the ends only.
+    llvm::BasicBlock* reuse_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_reuse", fn);
+    llvm::BasicBlock* pack_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_pack", fn);
+    llvm::BasicBlock* join_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_join", fn);
+
+    llvm::Value* have_node = existing_node
+        ? b.CreateICmpNE(existing_node, null_ptr)
+        : llvm::ConstantInt::getFalse(ctx_.context());
+    llvm::BasicBlock* entry_bb = b.GetInsertBlock();
+    b.CreateCondBr(have_node, reuse_bb, pack_bb);
+
+    b.SetInsertPoint(reuse_bb);
+    llvm::Value* reuse_dense = null_ptr;
+    if (existing_node) {
+        reuse_dense = b.CreateLoad(ctx_.ptrType(),
+            b.CreateStructGEP(ctx_.adNodeType(), existing_node,
+                              TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+    }
+    // A CALLABLE AD node with no tensor_value is a SCALAR node, not a dense
+    // tensor: fall back to packing the element slots we were handed.
+    llvm::Value* reuse_ok = b.CreateICmpNE(reuse_dense, null_ptr);
+    llvm::BasicBlock* reuse_yes = llvm::BasicBlock::Create(ctx_.context(), name + "_reuse_ok", fn);
+    b.CreateCondBr(reuse_ok, reuse_yes, pack_bb);
+    b.SetInsertPoint(reuse_yes);
+    llvm::BasicBlock* reuse_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    // ── Pack: densify element slots that may hold scalar AD-node pointers ──
+    b.SetInsertPoint(pack_bb);
+    llvm::Value* eight = llvm::ConstantInt::get(ctx_.int64Type(), 8);
+    llvm::Value* bytes = b.CreateMul(total, eight);
+    llvm::Value* dense = b.CreateCall(raw_alloc, {arena_ptr, bytes}, name + "_dense");
+    llvm::Value* slots = b.CreateCall(raw_alloc, {arena_ptr, bytes}, name + "_slots");
+
+    llvm::Value* idx = b.CreateAlloca(ctx_.int64Type(), nullptr, name + "_i");
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), idx);
+
+    llvm::BasicBlock* cond = llvm::BasicBlock::Create(ctx_.context(), name + "_cond", fn);
+    llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), name + "_body", fn);
+    llvm::BasicBlock* exit = llvm::BasicBlock::Create(ctx_.context(), name + "_exit", fn);
+    b.CreateBr(cond);
+
+    b.SetInsertPoint(cond);
+    llvm::Value* i = b.CreateLoad(ctx_.int64Type(), idx);
+    b.CreateCondBr(b.CreateICmpULT(i, total), body, exit);
+
+    b.SetInsertPoint(body);
+    llvm::Value* bits = b.CreateLoad(ctx_.int64Type(),
+        b.CreateGEP(ctx_.int64Type(), elems, i));
+
+    // Case 1: a small non-negative integer stored raw.  The scalarizing path
+    // decodes these with SIToFP; mirror it exactly so the two paths agree on
+    // the PRIMAL as well as on the gradient.
+    llvm::Value* is_small = b.CreateICmpULT(bits,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1000));
+
+    llvm::BasicBlock* small_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_small", fn);
+    llvm::BasicBlock* probe_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_probe", fn);
+    llvm::BasicBlock* node_bb  = llvm::BasicBlock::Create(ctx_.context(), name + "_node", fn);
+    llvm::BasicBlock* dbl_bb   = llvm::BasicBlock::Create(ctx_.context(), name + "_double", fn);
+    llvm::BasicBlock* store_bb = llvm::BasicBlock::Create(ctx_.context(), name + "_store", fn);
+    b.CreateCondBr(is_small, small_bb, probe_bb);
+
+    b.SetInsertPoint(small_bb);
+    llvm::Value* small_val = b.CreateSIToFP(bits, ctx_.doubleType());
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* small_exit = b.GetInsertBlock();
+
+    // Case 2: a live AD node.  Residency-first -- eshkol_ad_node_probe
+    // establishes that the address lies in the AD arena and only then reads
+    // the tag, so a subnormal double's bit pattern is rejected without a load
+    // through it.
+    b.SetInsertPoint(probe_bb);
+    llvm::Value* is_node = emitAdNodeProbe(bits, /*any type=*/-1);
+    b.CreateCondBr(is_node, node_bb, dbl_bb);
+
+    b.SetInsertPoint(node_bb);
+    llvm::Value* node = b.CreateIntToPtr(bits, ctx_.ptrType());
+    llvm::Value* node_val = b.CreateLoad(ctx_.doubleType(),
+        b.CreateStructGEP(ctx_.adNodeType(), node, 1));
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* node_exit = b.GetInsertBlock();
+
+    // Case 3: an ordinary f64 bit pattern.
+    b.SetInsertPoint(dbl_bb);
+    llvm::Value* dbl_val = b.CreateBitCast(bits, ctx_.doubleType());
+    b.CreateBr(store_bb);
+    llvm::BasicBlock* dbl_exit = b.GetInsertBlock();
+
+    b.SetInsertPoint(store_bb);
+    llvm::PHINode* val_phi = b.CreatePHI(ctx_.doubleType(), 3, name + "_val");
+    val_phi->addIncoming(small_val, small_exit);
+    val_phi->addIncoming(node_val, node_exit);
+    val_phi->addIncoming(dbl_val, dbl_exit);
+    llvm::PHINode* node_phi = b.CreatePHI(ctx_.ptrType(), 3, name + "_slot");
+    node_phi->addIncoming(null_ptr, small_exit);
+    node_phi->addIncoming(node, node_exit);
+    node_phi->addIncoming(null_ptr, dbl_exit);
+
+    b.CreateStore(val_phi, b.CreateGEP(ctx_.doubleType(), dense, i));
+    b.CreateStore(node_phi, b.CreateGEP(ctx_.ptrType(), slots, i));
+    b.CreateStore(b.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), idx);
+    b.CreateBr(cond);
+
+    b.SetInsertPoint(exit);
+    llvm::Value* pack = recordADNodeTensor(
+        static_cast<uint32_t>(AD_NODE_TENSOR_PACK),
+        nullptr, nullptr, nullptr, nullptr,
+        dense,            // tensor_value: the dense f64 view of this operand
+        slots, total,     // saved_tensors: the scalar node each element came from
+        shape, ndim);
+    if (!pack) return nullptr;
+
+    // params[0] mirrors num_saved so the backward can bound its scatter
+    // without trusting a shape array it does not own.
+    llvm::ArrayType* params_type = llvm::ArrayType::get(ctx_.int64Type(), 6);
+    llvm::Value* params_ptr = b.CreateStructGEP(ctx_.adNodeType(), pack, 12);
+    b.CreateStore(total, b.CreateConstGEP2_32(params_type, params_ptr, 0, 0));
+    llvm::BasicBlock* pack_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* dense_phi = b.CreatePHI(ctx_.ptrType(), 2, name + "_buf");
+    dense_phi->addIncoming(reuse_dense, reuse_exit);
+    dense_phi->addIncoming(dense, pack_exit);
+    llvm::PHINode* out_node = b.CreatePHI(ctx_.ptrType(), 2, name + "_node");
+    out_node->addIncoming(existing_node ? existing_node : null_ptr, reuse_exit);
+    out_node->addIncoming(pack, pack_exit);
+
+    (void)entry_bb;
+    *out_dense = dense_phi;
+    return out_node;
 }
 
 // === Custom scalar VJP AD Node Recording ===
@@ -5602,6 +5772,14 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         return gradientHigherOrder(op);
     }
 
+    // Count the user-function evaluation once at the shared reverse-gradient
+    // entry.  The old sites were inside the scalar/vector branch bodies, so a
+    // tensor-valued point could execute an exact route without incrementing
+    // the public counter even though one primal call occurred.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_primal",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
+
     // Resolve function (lambda or function reference)
     Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
 
@@ -7089,10 +7267,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_scalar = ctx_.builder().CreateCall(seed_swap_scalar, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
 
     // ESH-0093: restore the previously active seed node
@@ -7329,10 +7503,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_vector = ctx_.builder().CreateCall(seed_swap_vector, {active_var_node});
 
-    // AD Phase A counter: one primal (user-function) evaluation.
-    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-        "eshkol_ad_count_primal",
-        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
 
     // ESH-0093: restore the previously active seed node
@@ -7390,9 +7560,47 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     BasicBlock* out_vecval = BasicBlock::Create(ctx_.context(), "grad_out_vecval", current_func);
     BasicBlock* out_tscalar = BasicBlock::Create(ctx_.context(), "grad_out_tscalar", current_func);
     BasicBlock* out_decide = BasicBlock::Create(ctx_.context(), "grad_out_decide", current_func);
+
+    // DENSE TENSOR AD NODE AS THE LOSS (ADR-0002 Position A).
+    //
+    // On the dense path a tensor op returns the AD NODE, tagged CALLABLE, so a
+    // vector-valued body — `(gradient (lambda (x) (matmul x c)) x)` — now hands
+    // back a CALLABLE whose tensor_value holds M*N elements, where it used to
+    // hand back a HEAP_PTR tensor. The multi-element check below reads the
+    // HEAP_PTR form and would not see it, and seeding a multi-element node with
+    // all-ones would answer the gradient of the SUM of the outputs: a plausible
+    // number in place of the clean "gradient is undefined for a vector-valued
+    // function, the Jacobian is the right object" diagnostic. Same rule, same
+    // message, applied to the node form.
+    BasicBlock* out_adnode = BasicBlock::Create(ctx_.context(), "grad_out_adnode", current_func);
+    BasicBlock* out_adnode_len = BasicBlock::Create(ctx_.context(), "grad_out_adnode_len", current_func);
+    BasicBlock* out_adnode_vecval = BasicBlock::Create(ctx_.context(), "grad_out_adnode_vecval", current_func);
+    BasicBlock* out_hp_entry = BasicBlock::Create(ctx_.context(), "grad_out_hp_entry", current_func);
+    ctx_.builder().CreateCondBr(output_is_ad_node, out_adnode, out_hp_entry);
+
+    ctx_.builder().SetInsertPoint(out_hp_entry);
+    ctx_.builder().CreateCondBr(output_is_heap, out_tcheck, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode);
+    Value* out_ad_tv = ctx_.builder().CreateLoad(ctx_.ptrType(),
+        ctx_.builder().CreateStructGEP(ctx_.adNodeType(), output_node_ptr,
+                                       TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
     ctx_.builder().CreateCondBr(
-        ctx_.builder().CreateAnd(output_is_heap, ctx_.builder().CreateNot(output_is_ad_node)),
-        out_tcheck, out_decide);
+        ctx_.builder().CreateICmpNE(out_ad_tv,
+            ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()))),
+        out_adnode_len, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_len);
+    FunctionCallee out_ad_total_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_total_elements",
+        FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    Value* out_ad_m = ctx_.builder().CreateCall(out_ad_total_fn, {output_node_ptr}, "grad_out_ad_m");
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateICmpUGT(out_ad_m, ConstantInt::get(ctx_.int64Type(), 1)),
+        out_adnode_vecval, out_decide);
+
+    ctx_.builder().SetInsertPoint(out_adnode_vecval);
+    emitVectorValuedGradientError(out_ad_m);
 
     ctx_.builder().SetInsertPoint(out_tcheck);
     Value* out_hp = tagged_.unpackPtr(output_tagged);
@@ -12264,17 +12472,37 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // Create done block first (referenced by tensor dispatch path below)
     llvm::BasicBlock* done_block = llvm::BasicBlock::Create(ctx_.context(), "grad_done", current_func);
 
-    // === TENSOR GRADIENT FAST PATH ===
-    // If tensor_gradient (field 7) is non-null, the node was recorded as a tensor
-    // operation via recordADNodeTensor. Dispatch to the C runtime backward function
-    // which reads saved_tensors, params, shape/ndim and calls the appropriate
-    // eshkol_backward_* function (conv2d, matmul, attention, etc.)
+    // === TENSOR NODE FAST PATH ===
+    // Select the C runtime tensor backward for any node that IS a tensor node.
+    //
+    // The discriminator is `tensor_value` (field 6) OR `tensor_gradient`
+    // (field 7).  It used to be field 7 alone, and that was one of the three
+    // defects that kept the dense tensor AD path unreachable (SW-48):
+    // recordADNodeTensor leaves field 7 null, because a node's gradient is not
+    // known until the reverse pass reaches it -- so a tensor node that no
+    // consumer had reached yet failed the test, fell into the SCALAR dispatch
+    // below, and dereferenced the input1/input2 a tensor node legitimately
+    // leaves null.  That is the SIGSEGV the ledger records.
+    //
+    // Field 6 is the honest discriminator: ad_node_t documents it as null for
+    // scalar nodes, every tensor producer sets it at record time, and the
+    // allocator zeroes it, so no scalar node can pass.  Field 7 stays in the
+    // test because the qLLM bridge's C entry points seed it directly on nodes
+    // they did not build here.  eshkol_tensor_backward_dispatch bridges a
+    // scalar-seeded one-element node into its tensor gradient and returns
+    // without touching anything when a larger node has no upstream gradient.
     {
+        llvm::Value* tv_field_ptr = ctx_.builder().CreateStructGEP(
+            ad_node_type, node_ptr, TypeSystem::AD_NODE_TENSOR_VALUE_IDX);
+        llvm::Value* tv_val = ctx_.builder().CreateLoad(ctx_.ptrType(), tv_field_ptr);
         llvm::Value* tg_field_ptr = ctx_.builder().CreateStructGEP(
             ad_node_type, node_ptr, TypeSystem::AD_NODE_TENSOR_GRADIENT_IDX);
         llvm::Value* tg_val = ctx_.builder().CreateLoad(ctx_.ptrType(), tg_field_ptr);
-        llvm::Value* has_tensor = ctx_.builder().CreateICmpNE(tg_val,
-            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+        llvm::Value* null_p =
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context()));
+        llvm::Value* has_tensor = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpNE(tv_val, null_p),
+            ctx_.builder().CreateICmpNE(tg_val, null_p));
 
         llvm::BasicBlock* tensor_dispatch_bb = llvm::BasicBlock::Create(
             ctx_.context(), "tensor_backward_dispatch", current_func);

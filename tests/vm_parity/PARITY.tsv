@@ -417,7 +417,7 @@ l-bfgs	gap	ml faculty has no VM fid coverage
 label-smoothing-loss	gap	ml faculty has no VM fid coverage
 last	gap	no VM name binding
 last-pair	vm-supported	
-layer-norm	gap	ml faculty has no VM fid coverage
+layer-norm	vm-supported	forward dual carrier and scalar layer-norm path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 lcm	vm-supported	
 leaky-relu	gap	ml faculty has no VM fid coverage
 lecun-normal!	gap	ml faculty has no VM fid coverage
@@ -475,7 +475,7 @@ make-tensor	vm-supported
 make-vector	vm-supported	
 make-workspace	vm-supported	
 map	vm-supported	1-list map verified on all routes; multi-list map correct on vm-src but drops lists on the --emit-eskb route (found/map_two_lists_eskb_route.esk)
-matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk
+matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002 Position A, ledger SW-48): under reverse-mode AD native now records ONE dense AD_NODE_MATMUL per matmul and lets eshkol_backward_matmul carry the adjoint, where it used to record 2*M*N*K scalar nodes. The VM has no corresponding path and cannot acquire one by wiring: lib/backend/vm_autodiff.c has its own scalar AdNode representation and no vm_*.c file references ad_node_t or any AD_NODE_* constant, so there is no tensor node type for a dense matmul node to be. The VM's (gradient f x) is the forward-mode VmDual carrier and builds no reverse tape at all (see op:GRADIENT), so the difference is not a divergence in the ANSWER — both substrates are exact, and corpus/31_tensor_matmul.esk plus corpus/32_gradient_reverse.esk compare them — but in tape cost, which the VM does not have. Promotion needs the same chunked non-relocating AdNode storage and shared reverse rule that AD_NODE_CUSTOM needs on the VM (docs/reference/ad/architecture.md); until then this is native-only by construction, not by omission.
 matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
 max-pool2d	gap	ml faculty has no VM fid coverage
@@ -718,7 +718,7 @@ right?	gap	no VM name binding
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
-scaled-dot-attention	gap	ml faculty has no VM fid coverage
+scaled-dot-attention	vm-supported	forward dual carrier and scalar scaled-dot-attention path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 scheme-report-environment	gap	port/file IO surface missing in VM
 sdnc-improve!	gap	core.sdnc has no VM fids
 sdnc-params	gap	core.sdnc has no VM fids
@@ -815,7 +815,7 @@ temp-directory	vm-supported
 tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (found/tensor_nested_collection_native.esk)
 tensor->vector	gap	tensor linalg/manipulation fid missing in VM
 tensor-abs	vm-supported	
-tensor-add	vm-supported	
+tensor-add	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_ADD_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-apply	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmax	gap	tensor linalg/manipulation fid missing in VM
 tensor-argmin	gap	tensor linalg/manipulation fid missing in VM
@@ -827,7 +827,7 @@ tensor-cov	gap	tensor linalg/manipulation fid missing in VM
 tensor-data	vm-supported	returns a VECTOR like native (it built a list) and no longer truncates silently at 1024 elements (corpus/41_tensor_literals.esk)
 tensor-det	gap	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	gap	tensor linalg/manipulation fid missing in VM
-tensor-div	vm-supported	
+tensor-div	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_DIV_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-dot	vm-supported	
 tensor-dtype	vm-supported	
 tensor-exp	vm-supported	
@@ -843,7 +843,7 @@ tensor-maximum	vm-supported
 tensor-mean	vm-supported	
 tensor-min	vm-supported	
 tensor-minimum	vm-supported	
-tensor-mul	vm-supported	
+tensor-mul	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_MUL_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-neg	vm-supported	
 tensor-norm	gap	tensor linalg/manipulation fid missing in VM
 tensor-pow	vm-supported	
@@ -862,7 +862,7 @@ tensor-sin	vm-supported
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM
 tensor-sqrt	vm-supported	
 tensor-std	gap	tensor linalg/manipulation fid missing in VM
-tensor-sub	vm-supported	
+tensor-sub	vm-supported	AD EXECUTION MODEL DIVERGES, VALUES DO NOT (ADR-0002, SW-48): native reverse-mode AD records one dense AD_NODE_TENSOR_SUB_DENSE or broadcast variant and uses the exact dense VJP; the VM keeps its scalar/forward-mode carrier and has no matching dense reverse node. Ordinary tensor values remain parity-tested by the vm-parity corpus.
 tensor-sum	vm-supported	
 tensor-svd	gap	tensor linalg/manipulation fid missing in VM
 tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM
