@@ -21,7 +21,7 @@
 #
 # Usage: scripts/run_guard_tail_context.sh
 #   BUILD_DIR selects the build directory (default: build).
-set -u
+set -euo pipefail
 
 BUILD_DIR="${BUILD_DIR:-build}"
 ESHKOL_RUN="${ESHKOL_RUN:-$BUILD_DIR/eshkol-run}"
@@ -32,9 +32,13 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     echo "run_guard_tail_context.sh: $ESHKOL_RUN not found — build eshkol-run first." >&2
     exit 1
 fi
+if [ ! -x "$ESHKOL_VM" ]; then
+    echo "run_guard_tail_context.sh: $ESHKOL_VM not found — build the bytecode VM first." >&2
+    exit 1
+fi
 
 # fixture basename <TAB> reference answer (chibi-scheme 0.12)
-read -r -d '' EXPECTED <<'TABLE'
+read -r -d '' EXPECTED <<'TABLE' || true
 01_outer_guard_catches_callee_raise	(caught-by-a 0)
 02_innermost_guard_wins	(gb 0)
 03_nested_guards_inner_answers	inner
@@ -44,11 +48,24 @@ read -r -d '' EXPECTED <<'TABLE'
 07_nested_guards_reraise_through_both	(outer-answered 1 (i o i o i . boom))
 08_guard_dynamic_wind_order	((before 0) (before 1) (before 2) (after 2) (handler 2) (after 1) (handler 1) (after 0) (caught 0))
 09_clause_reads_a_binding_the_loop_rebinds	(inner 0 0)
+10_shadowed_guard_test	1
+11_guard_arrow_receiver	ok
+12_guard_clause_type_raise	(inner 1)
 TABLE
 
 SCRATCH_ROOT="${ESHKOL_TCO_SCRATCH_ROOT:-.scratch/tco-context}"
-mkdir -p "$SCRATCH_ROOT"
-WORK="$(mktemp -d "$SCRATCH_ROOT/run.XXXXXX")"
+if ! mkdir -p "$SCRATCH_ROOT"; then
+    echo "run_guard_tail_context.sh: cannot create scratch directory: $SCRATCH_ROOT" >&2
+    exit 1
+fi
+if ! WORK="$(mktemp -d "$SCRATCH_ROOT/run.XXXXXX")"; then
+    echo "run_guard_tail_context.sh: cannot create scratch work directory under $SCRATCH_ROOT" >&2
+    exit 1
+fi
+if [ ! -d "$WORK" ]; then
+    echo "run_guard_tail_context.sh: mktemp returned no directory: $WORK" >&2
+    exit 1
+fi
 trap 'rm -rf "$WORK"' EXIT
 
 pass=0

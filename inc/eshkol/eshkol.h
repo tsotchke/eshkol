@@ -1543,6 +1543,10 @@ void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
  */
 int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count);
 
+/* Native continuation support for the heap/TLS exception-handler chain. */
+void* eshkol_exception_handler_snapshot(void);
+void eshkol_exception_handler_restore_snapshot(void* snapshot);
+
 /**
  * @brief Snapshot the current native promise-evaluation chain.
  * @return Opaque mark accepted by eshkol_promise_eval_commit_to() and
@@ -1623,6 +1627,12 @@ typedef struct eshkol_continuation_state {
     // Such a continuation is never resumed: failing at capture is safer than
     // allowing a later resume to dereference an arena that has been reclaimed.
     uint8_t region_pin_failed;
+    // Native continuations also capture the dynamic exception-handler chain.
+    // The handler nodes contain jmp_buf pointers into the saved stack image,
+    // so the chain must be restored before resuming that image. The snapshot
+    // is an opaque runtime-owned template; each resume receives a fresh clone
+    // so multi-shot invocation cannot consume it.
+    void* handler_snapshot;
 } eshkol_continuation_state_t;
 
 /**
@@ -1764,6 +1774,8 @@ void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
  * @param state_ptr Continuation state from eshkol_make_continuation_state().
  */
 void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
+/** Capture the currently installed native exception-handler chain. */
+void eshkol_continuation_capture_handlers(void* state_ptr);
 /**
  * @brief Resume a captured continuation, delivering state->value. Never returns.
  *
@@ -1774,6 +1786,8 @@ void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
  * @param state_ptr Continuation state to resume.
  */
 void eshkol_continuation_resume(void* state_ptr);
+/** Restore the handler chain captured in a native continuation. */
+void eshkol_continuation_restore_handlers(void* state_ptr);
 /**
  * @brief Move the dynamic-wind stack to @p target_mark, running the `after`
  *        thunks of extents being left and the `before` thunks of extents being

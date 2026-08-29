@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <string.h>
+#include <vector>
 
 // ===== EXCEPTION HANDLING IMPLEMENTATION =====
 // Runtime support for R7RS-compatible exception handling
@@ -1005,6 +1006,72 @@ extern "C" int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t c
     }
     memcpy(out, h->replay_values, (size_t)count * sizeof(eshkol_tagged_value_t));
     return 1;
+}
+
+// Native call/cc continuations copy the C stack, but the exception-handler
+// chain is heap/TLS state. Keep an independent template for the captured
+// dynamic environment and clone it on every resume. A resume may be
+// multi-shot, and sharing nodes with the live chain would let the first raise
+// consume the state needed by the next invocation.
+static void free_handler_chain_copy(eshkol_exception_handler_t* chain) {
+    while (chain) {
+        eshkol_exception_handler_t* next = chain->prev;
+        free(chain->replay_values);
+        free(chain);
+        chain = next;
+    }
+}
+
+static eshkol_exception_handler_t* clone_handler_chain(
+    const eshkol_exception_handler_t* source) {
+    std::vector<const eshkol_exception_handler_t*> nodes;
+    for (auto* h = source; h; h = h->prev) nodes.push_back(h);
+
+    eshkol_exception_handler_t* clone = nullptr;
+    for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
+        auto* copy = (eshkol_exception_handler_t*)calloc(
+            1, sizeof(eshkol_exception_handler_t));
+        if (!copy) {
+            free_handler_chain_copy(clone);
+            return nullptr;
+        }
+        *copy = **it;
+        copy->prev = clone;
+        copy->replay_values = nullptr;
+        if ((*it)->replay_capacity > 0) {
+            copy->replay_values = (eshkol_tagged_value_t*)malloc(
+                (size_t)(*it)->replay_capacity * sizeof(eshkol_tagged_value_t));
+            if (!copy->replay_values) {
+                free(copy);
+                free_handler_chain_copy(clone);
+                return nullptr;
+            }
+            memcpy(copy->replay_values, (*it)->replay_values,
+                   (size_t)(*it)->replay_capacity * sizeof(eshkol_tagged_value_t));
+        }
+        clone = copy;
+    }
+    return clone;
+}
+
+extern "C" void* eshkol_exception_handler_snapshot(void) {
+    return (void*)clone_handler_chain(g_exception_handler_stack);
+}
+
+extern "C" void eshkol_exception_handler_restore_snapshot(void* snapshot) {
+    while (g_exception_handler_stack) eshkol_pop_exception_handler();
+    if (!snapshot) return;
+
+    eshkol_exception_handler_t* restored = clone_handler_chain(
+        (const eshkol_exception_handler_t*)snapshot);
+    if (!restored) {
+        eshkol_error("Failed to restore continuation exception handlers");
+        return;
+    }
+    int64_t depth = 0;
+    for (auto* h = restored; h; h = h->prev) depth++;
+    g_exception_handler_stack = restored;
+    g_exception_handler_depth = depth;
 }
 
 // Check if exception matches a specific type

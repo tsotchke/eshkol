@@ -8,6 +8,7 @@ static int vm_is_definition_form(Node* node) {
            (strcmp(node->children[0]->symbol, "define") == 0 ||
             strcmp(node->children[0]->symbol, "define-values") == 0);
 }
+static int vm_head_user_rebound(FuncChunk* c, const char* name);
 
 static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
     if (!tail) return 0;
@@ -17,9 +18,9 @@ static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
     return 1;
 }
 
-static int vm_guard_expr_cannot_raise(const Node* node) {
+static int vm_guard_expr_cannot_raise(FuncChunk* c, const Node* node) {
     static const char* const safe_calls[] = {
-        "=", "<", ">", "<=", ">=", "eq?", "eqv?", "equal?",
+        "eq?", "eqv?", "equal?",
         "not", "boolean?", "symbol?", "number?", "integer?", "real?",
         "zero?", "positive?", "negative?", "cons", "list"
     };
@@ -27,18 +28,19 @@ static int vm_guard_expr_cannot_raise(const Node* node) {
     if (node->n_children == 0 || node->children[0]->type != N_SYMBOL) return 0;
     const char* name = node->children[0]->symbol;
     if (strcmp(name, "quote") == 0) return 1;
+    if (vm_head_user_rebound(c, name)) return 0;
     int safe = 0;
     for (size_t i = 0; i < sizeof(safe_calls) / sizeof(safe_calls[0]); i++) {
         if (strcmp(name, safe_calls[i]) == 0) { safe = 1; break; }
     }
     if (!safe) return 0;
     for (int i = 1; i < node->n_children; i++) {
-        if (!vm_guard_expr_cannot_raise(node->children[i])) return 0;
+        if (!vm_guard_expr_cannot_raise(c, node->children[i])) return 0;
     }
     return 1;
 }
 
-static int vm_guard_is_collapsible(Node* clause_list) {
+static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
     if (!clause_list || clause_list->type != N_LIST || clause_list->n_children < 2)
         return 0;
     int catch_all = 0;
@@ -49,9 +51,12 @@ static int vm_guard_is_collapsible(Node* clause_list) {
         int is_else = test->type == N_SYMBOL && strcmp(test->symbol, "else") == 0;
         int is_true = test->type == N_BOOL && test->numval != 0;
         if (is_else || is_true) catch_all = 1;
-        if (!is_else && !vm_guard_expr_cannot_raise(test)) return 0;
+        if (!is_else && !vm_guard_expr_cannot_raise(c, test)) return 0;
+        if (clause->n_children == 3 && clause->children[1]->type == N_SYMBOL &&
+            strcmp(clause->children[1]->symbol, "=>") == 0)
+            return 0;
         for (int j = 1; j < clause->n_children; j++) {
-            if (!vm_guard_expr_cannot_raise(clause->children[j])) return 0;
+            if (!vm_guard_expr_cannot_raise(c, clause->children[j])) return 0;
         }
     }
     return catch_all;
@@ -1628,7 +1633,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int saved_guard_self_tail_only = c->guard_self_tail_only;
     int saved_guard_pop_on_self_tail = c->guard_pop_on_self_tail;
     c->guard_self_tail_only = tail && c->function_name != NULL;
-    if (c->guard_self_tail_only && vm_guard_is_collapsible(clause_list))
+    if (c->guard_self_tail_only && vm_guard_is_collapsible(c, clause_list))
         c->guard_pop_on_self_tail++;
     for (int i = 2; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
@@ -1647,6 +1652,8 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     FuncChunk handler_func; chunk_init_arrays(&handler_func);
     handler_func.enclosing = c;
     handler_func.param_count = 1;
+    handler_func.function_name = c->function_name;
+    handler_func.guard_self_tail_only = c->function_name != NULL;
     add_local(&handler_func, exn_name); /* exn is local 0 */
 
     /* Compile clauses inside the handler function */
@@ -1665,9 +1672,18 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         compile_expr(&handler_func, clause->children[0], 0);
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-            else compile_expr(&handler_func, clause->children[j], 1);
+        if (clause->n_children == 3 && clause->children[1]->type == N_SYMBOL &&
+            strcmp(clause->children[1]->symbol, "=>") == 0) {
+            /* R7RS cond-style receiver: evaluate the receiver only after the
+             * test succeeds, then apply it to the raised value. */
+            compile_expr(&handler_func, clause->children[2], 0);
+            chunk_emit(&handler_func, OP_GET_LOCAL, 0);
+            chunk_emit(&handler_func, OP_CALL, 1);
+        } else {
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                else compile_expr(&handler_func, clause->children[j], 1);
+            }
         }
         chunk_emit(&handler_func, OP_RETURN, 0);
         patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);

@@ -8676,6 +8676,17 @@ private:
             }
             builder->CreateCall(region_unwind_func, {state_ptr});
 
+            Function* restore_handlers_func = module->getFunction(
+                "eshkol_continuation_restore_handlers");
+            if (!restore_handlers_func) {
+                FunctionType* restore_handlers_type = FunctionType::get(
+                    builder->getVoidTy(), {builder->getPtrTy()}, false);
+                restore_handlers_func = Function::Create(
+                    restore_handlers_type, Function::ExternalLinkage,
+                    "eshkol_continuation_restore_handlers", module.get());
+            }
+            builder->CreateCall(restore_handlers_func, {state_ptr});
+
             // Hand off to the runtime, which restores the continuation's saved
             // stack image to its original addresses and then longjmps. Doing
             // the longjmp here instead would resume on whatever now occupies
@@ -23291,16 +23302,36 @@ private:
                     // Then block - evaluate body expressions
                     builder->SetInsertPoint(then_block);
                     Value* result = nullptr;
-                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
-                        TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
-                        // NORETURN SAFETY: If a body expression raised, stop
-                        if (builder->GetInsertBlock()->getTerminator()) {
-                            break;
+                    bool is_arrow =
+                        clause->operation.call_op.num_vars == 2 &&
+                        clause->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                        clause->operation.call_op.variables[0].variable.id &&
+                        strcmp(clause->operation.call_op.variables[0].variable.id, "=>") == 0;
+                    if (is_arrow) {
+                        // R7RS cond-style receiver: evaluate the receiver
+                        // only after the test, then apply it to the raised
+                        // value. The ordinary closure call keeps receiver
+                        // errors on the enclosing handler chain.
+                        TypedValue receiver_typed = codegenTypedAST(
+                            &clause->operation.call_op.variables[1]);
+                        if (!builder->GetInsertBlock()->getTerminator()) {
+                            Value* receiver = typedValueToTaggedValue(receiver_typed);
+                            std::vector<Value*> receiver_args = {raised_tagged};
+                            result = codegenClosureCall(receiver, receiver_args,
+                                                        "guard-arrow-receiver");
                         }
-                        // Convert to tagged value for consistent PHI node type
-                        result = typedValueToTaggedValue(typed);
-                        if (builder->GetInsertBlock()->getTerminator()) {
-                            break;
+                    } else {
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            TypedValue typed = codegenTypedAST(&clause->operation.call_op.variables[j]);
+                            // NORETURN SAFETY: If a body expression raised, stop
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                break;
+                            }
+                            // Convert to tagged value for consistent PHI node type
+                            result = typedValueToTaggedValue(typed);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                break;
+                            }
                         }
                     }
                     if (!result && !builder->GetInsertBlock()->getTerminator()) {
@@ -23686,6 +23717,21 @@ private:
             }
             builder->CreateCall(capture_stack_func, {cont_arena, state_ptr});
         }
+
+        // The C stack image does not include the heap/TLS exception-handler
+        // chain. Capture it after setjmp has initialized the jump buffer and
+        // before the procedure can invoke the continuation or leave the
+        // current dynamic extent.
+        Function* capture_handlers_func = module->getFunction(
+            "eshkol_continuation_capture_handlers");
+        if (!capture_handlers_func) {
+            FunctionType* capture_handlers_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            capture_handlers_func = Function::Create(
+                capture_handlers_type, Function::ExternalLinkage,
+                "eshkol_continuation_capture_handlers", module.get());
+        }
+        builder->CreateCall(capture_handlers_func, {state_ptr});
 
         // Evaluate the procedure argument
         Value* proc_val = codegenAST(op->call_cc_op.proc);
@@ -27825,7 +27871,7 @@ private:
     // wrong answer, so the set may be grown by measurement but never guessed.
     static const std::set<std::string>& guardNonRaisingOperators() {
         static const std::set<std::string> ops = {
-            "+", "-", "*", "=", "<", ">", "<=", ">=",
+            "+", "-", "*",
             "not", "eq?", "eqv?", "equal?",
             "null?", "pair?", "zero?", "boolean?", "symbol?", "string?",
             "number?", "procedure?", "vector?", "char?",
@@ -27863,8 +27909,9 @@ private:
                 std::string name = (f && f->type == ESHKOL_VAR && f->variable.id)
                                        ? f->variable.id : std::string();
                 if (name.empty()) return false;
-                const bool ok = (name == "if") || (name == loop_name) ||
-                                guardNonRaisingOperators().count(name) > 0;
+                const bool ok = (name == "if") ||
+                                (guardNonRaisingOperators().count(name) > 0 &&
+                                 !hasUserShadow(name));
                 if (!ok) return false;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (!guardClauseExprCannotRaise(&op->call_op.variables[i], loop_name)) {
@@ -28333,6 +28380,16 @@ private:
                 break;
             }
             const eshkol_ast_t* test = clause->operation.call_op.func;
+            if (clause->operation.call_op.num_vars == 2 &&
+                clause->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                clause->operation.call_op.variables[0].variable.id &&
+                strcmp(clause->operation.call_op.variables[0].variable.id, "=>") == 0) {
+                // The receiver application is a real call and may raise; do
+                // not collapse a guard whose cond-style arrow clause can
+                // transfer to an enclosing handler.
+                clauses_total = false;
+                break;
+            }
             bool is_else = test && test->type == ESHKOL_VAR && test->variable.id &&
                            strcmp(test->variable.id, "else") == 0;
             if (!is_else && !guardClauseExprCannotRaise(test, loop_name)) {

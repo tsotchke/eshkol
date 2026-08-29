@@ -52,7 +52,7 @@ work, and the unit of work is usually a loop:
 handler chain the program observes is exactly the one it would observe if every
 activation kept a native frame.** Both halves of that sentence are gated:
 `tests/tco/guard_tail_position_test.esk` runs a million guarded iterations under
-a reduced `ulimit -s`, and the nine fixtures in `tests/tco/guard_tail_context/`
+a reduced `ulimit -s`, and the twelve fixtures in `tests/tco/guard_tail_context/`
 are checked against chibi-scheme 0.12's answers on the native JIT, the native
 AOT path and the bytecode VM by `scripts/run_guard_tail_context.sh`.
 
@@ -95,7 +95,7 @@ Three lowerings are chosen per loop, and all three are exact:
 
 | lowering | when | stack | handler frames |
 |---|---|---|---|
-| collapse | the guard has a catch-all clause and no clause test or body can raise, so the enclosing activations are unobservable | flat | one, reused |
+| collapse | the guard has a catch-all clause, every callable clause expression resolves to an unshadowed non-raising builtin, and no clause test or body can raise, so the enclosing activations are unobservable | flat | one, reused |
 | replay | anything else the loop's parameters can restore | flat | one per live guard, on the heap |
 | ordinary call | the clauses read a binding the loop re-establishes each iteration, which no snapshot of the *parameters* can restore | one frame per activation | one per live guard, on the stack |
 

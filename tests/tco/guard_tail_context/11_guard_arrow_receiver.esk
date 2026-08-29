@@ -1,0 +1,6 @@
+; R7RS guard clauses have cond semantics, including => receiver clauses.
+(display
+  (guard (e ((pair? e) => car)
+            (else 'bad))
+    (raise '(ok))))
+(newline)

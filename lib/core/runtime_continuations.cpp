@@ -111,6 +111,21 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
     state->saved_len = (uint64_t)len;
 }
 
+extern "C" void eshkol_continuation_capture_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    state->handler_snapshot = eshkol_exception_handler_snapshot();
+    if (g_exception_handler_stack && !state->handler_snapshot) {
+        eshkol_error("Failed to capture continuation exception handlers");
+    }
+}
+
+extern "C" void eshkol_continuation_restore_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    eshkol_exception_handler_restore_snapshot(state->handler_snapshot);
+}
+
 /**
  * @brief Push this frame below the region about to be restored, then restore.
  *
@@ -235,6 +250,7 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
     state->stack_hi = nullptr;
     state->saved_stack = nullptr;
     state->saved_len = 0;
+    state->handler_snapshot = nullptr;
     return state;
 }
 

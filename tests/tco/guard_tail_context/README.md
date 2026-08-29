@@ -45,6 +45,9 @@ which is the only edit — Eshkol takes these forms without an import prologue.
 | `07_nested_guards_reraise_through_both.esk` | `(outer-answered 1 (i o i o i . boom))` | two guards per activation: the chain alternates inner, outer, inner, … |
 | `08_guard_dynamic_wind_order.esk` | `((before 0) (before 1) (before 2) (after 2) (handler 2) (after 1) (handler 1) (after 0) (caught 0))` | after-thunks run innermost-first, interleaved with the handlers that let the condition past |
 | `09_clause_reads_a_binding_the_loop_rebinds.esk` | `(inner 0 0)` | the clause reads a `let` binding the loop re-establishes each iteration |
+| `10_shadowed_guard_test.esk` | `1` | a user-defined `=` must not be classified as the non-raising builtin |
+| `11_guard_arrow_receiver.esk` | `ok` | R7RS `=>` applies the receiver to the raised value |
+| `12_guard_clause_type_raise.esk` | `(inner 1)` | a type error in a clause test reaches the previous live guard |
 
 ## What Eshkol answers
 
