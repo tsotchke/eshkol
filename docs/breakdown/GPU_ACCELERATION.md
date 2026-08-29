@@ -25,15 +25,48 @@ if the chosen backend fails, execution falls through to the next-best option.
 | File | Lines | Role |
 |------|-------|------|
 | `lib/backend/blas_backend.cpp` | 1,281 | Cost model, dispatch, SIMD/BLAS |
-| `lib/backend/gpu/gpu_memory.mm` | 4,485 | Metal compute pipeline (Obj-C++) |
+| `lib/backend/gpu/gpu_memory.mm` | 4,486 | Metal compute pipeline (Obj-C++) |
 | `lib/backend/gpu/metal_softfloat.h` | 4,469 | SF64 IEEE 754 f64 emulation (MSL) |
-| `lib/backend/gpu/gpu_memory_cuda.cpp` | 1,576 | CUDA backend (cuBLAS + kernels) |
+| `lib/backend/gpu/gpu_memory_cuda.cpp` | 1,577 | CUDA backend (cuBLAS + kernels) |
 | `lib/backend/gpu/gpu_cuda_kernels.cu` | 800 | CUDA kernel implementations |
-| `lib/backend/gpu/gpu_memory_stub.cpp` | 449 | No-op stub for platforms without GPU |
+| `lib/backend/gpu/gpu_memory_stub.cpp` | 450 | No-op stub for platforms without GPU |
+| `lib/backend/gpu/gpu_memory_webgpu.cpp` | wasm target | WebGPU C seam and CPU fallback |
+| `lib/backend/gpu/wgsl/` | wasm target | Canonical f32/df32 matmul, elementwise, and reduction kernels |
 
 Build-time flags select the backend: `ESHKOL_GPU_METAL_ENABLED` (macOS),
-`ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows), or the stub (no GPU). The stub logs
+`ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows), `ESHKOL_GPU_WEBGPU_ENABLED`
+(Emscripten/wasm), or the stub (no GPU). The stub logs
 actionable errors via `eshkol_error()` (`gpu_memory_stub.cpp`).
+
+### WebGPU (Emscripten/wasm)
+
+WebGPU is part of the same `eshkol_gpu_*` and `eshkol_matmul_dispatch` seam as
+Metal and CUDA. CMake selects `gpu_memory_webgpu.cpp` when `EMSCRIPTEN` is
+true, enables the Emscripten Dawn WebGPU port with
+`--use-port=emdawnwebgpu` (the current replacement for `-sUSE_WEBGPU=1`), and enables
+`-sASYNCIFY` by default through `ESHKOL_WEBGPU_ASYNCIFY`. The page loads
+`eshkol-webgpu.js` and calls `initWebGPU()` before WASM instantiation. If
+`navigator.gpu`, an adapter, Asyncify, or a live device is absent, the active
+backend is `ESHKOL_GPU_NONE` and the ordinary CPU path runs.
+
+WGSL has no f64 type. The browser backend therefore has these explicit tiers:
+
+| Tier | WebGPU behavior | Claim |
+|---|---|---|
+| `exact` | Refuses GPU and falls back to CPU | IEEE f64 correctness remains a CPU/native-backend claim |
+| `high` | df32 `(hi, lo)` f32 emulation | Present but currently refuses browser dispatch until `GPU_GATE_TOL` (default `1e-9`) is met |
+| `fast` | f32 kernels | Never used by the 1e-9 correctness gate; callers must opt into its lower-precision contract |
+
+The `two_sum` and `two_prod` compensation terms in
+`lib/backend/gpu/wgsl/double_float.wgsl` use a zero-valued storage read as an
+opaque barrier. This is required because WGSL has no precise-math attribute
+and an optimizer may otherwise fold the error term away. The barrier is bound
+by each df32 pipeline and is checked by the browser differential runner.
+
+The verified browser scope is matmul, algebraic elementwise operations, and
+sum/min/max/mean reductions. Transpose, softmax, normalization, and backward
+GPU kernels remain CPU fallbacks until they have their own WGSL implementation
+and a correctness witness; they are not advertised as WebGPU-complete.
 
 ---
 
@@ -954,7 +987,7 @@ are then set to `nil` in order.
 
 ### Implementation Scope
 
-The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,576 lines) is a
+The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,577 lines) is a
 fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal
 backend which requires SF64 software emulation, CUDA provides native f64
 hardware, so no precision emulation is needed.
@@ -1045,7 +1078,7 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   `ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows builds) are set by CMake.
   `gpu_memory.mm` is compiled as Objective-C++ on macOS;
   `gpu_memory_cuda.cpp` is compiled as standard C++ on Linux/Windows.
-  A stub file (`gpu_memory_stub.cpp`, 449 lines) provides no-op
+  A stub file (`gpu_memory_stub.cpp`, 450 lines) provides no-op
   implementations when neither backend is available.
 
 - **Runtime**: `eshkol_gpu_init` (`gpu_memory_cuda.cpp`) tries CUDA
