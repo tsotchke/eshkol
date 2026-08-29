@@ -88,6 +88,10 @@ on:
     # llvm-sdk-cache-keepalive runs on it.
     - cron: '0 6 * * 1'
 
+permissions:
+  contents: read
+  id-token: none
+
 concurrency:
   # One group per pull request, or per branch for the push runs. Keying a PR
   # run on its NUMBER rather than on `github.ref` keeps the group stable across
@@ -168,6 +172,7 @@ jobs:
     name: changes
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     # Scoped to this job only; the rest of the workflow keeps the repository
     # default. `pull-requests: read` is what lets the API strategy below work.
     permissions:
@@ -308,6 +313,7 @@ jobs:
     name: mesh-gate-advisory (advisory, no-op)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     continue-on-error: true
     steps:
       - name: Report mesh verdict (placeholder)
@@ -341,6 +347,7 @@ jobs:
     name: surface-manifest
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Manifest matches the source-extracted surface
@@ -443,6 +450,7 @@ jobs:
     name: assurance-gates
     if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - name: Install PyYAML
@@ -1106,6 +1114,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     strategy:
       matrix:
         name:
@@ -1132,6 +1141,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -1574,6 +1584,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false

@@ -55,8 +55,8 @@ name: CI (mesh, self-hosted)
 #      default, and the state this file ships in) means every job here is
 #      SKIPPED — it never queues, never occupies a runner, never reports.
 #   2. `mesh-preflight` runs on a HOSTED runner and refuses to fan out when
-#      no runner carrying the `eshkol` label is registered, so switching the
-#      variable on before registering a runner still cannot leave jobs
+#      no runner carrying both the `eshkol` and `linux-mesh` labels is
+#      registered, so switching the variable on before registering a runner still cannot leave jobs
 #      queued against absent labels.
 #   3. Every mesh job carries `timeout-minutes`, so even a runner that
 #      registers and then wedges releases the run.
@@ -82,6 +82,7 @@ on:
 
 permissions:
   contents: read
+  id-token: none
 
 concurrency:
   # Mirrors ci.yml: one group per PR, one per branch for push runs. Mesh
@@ -136,19 +137,19 @@ jobs:
           # reported as unknown and treated as "go ahead" — the per-job
           # timeout-minutes is the backstop in that case, not a guess here.
           online=$(gh api "repos/$REPO/actions/runners" \
-                     --jq '[.runners[] | select(.status == "online") | select([.labels[].name] | index("eshkol"))] | length' \
+                     --jq '[.runners[] | select(.status == "online") | select([.labels[].name] | index("eshkol")) | select([.labels[].name] | index("linux-mesh"))] | length' \
                    2>/dev/null || echo unknown)
 
           if [ "$online" = "0" ]; then
             echo "dispatch=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Mesh CI enabled but no runner registered::ESHKOL_MESH_CI is 'on' but no ONLINE self-hosted runner carries the 'eshkol' label. Mesh lanes skipped rather than left queued. See docs/platform/SELF_HOSTED_RUNNERS.md."
-            echo "ESHKOL_MESH_CI is on, but 0 online runners carry the \`eshkol\` label — mesh lanes skipped." \
+            echo "::warning title=Mesh CI enabled but no runner registered::ESHKOL_MESH_CI is 'on' but no ONLINE ephemeral runner carries both the 'eshkol' and 'linux-mesh' labels. Mesh lanes skipped rather than left queued. See docs/platform/SELF_HOSTED_RUNNERS.md."
+            echo "ESHKOL_MESH_CI is on, but 0 online runners carry the \`eshkol,linux-mesh\` labels — mesh lanes skipped." \
               >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           echo "dispatch=true" >> "$GITHUB_OUTPUT"
-          echo "Mesh lanes dispatching. Online runners carrying \`eshkol\`: $online." \
+          echo "Mesh lanes dispatching. Online ephemeral runners carrying \`eshkol,linux-mesh\`: $online." \
             >> "$GITHUB_STEP_SUMMARY"
 
   # ───────────────────────────────────────────────────────────────────
@@ -158,7 +159,7 @@ jobs:
   # `cuda`); which physical box answers is the runbook's business, so a
   # node can be swapped without editing this file. `self-hosted`, the OS
   # label and the arch label are applied by GitHub automatically at
-  # registration; `eshkol`, `cuda` and `metal` are custom and are assigned
+  # registration; `eshkol`, `linux-mesh`, `cuda` and `metal` are custom and are assigned
   # per docs/platform/SELF_HOSTED_RUNNERS.md § Label taxonomy.
   #
   # These lanes deliberately do NOT apt-get/brew install a toolchain the
@@ -183,7 +184,7 @@ jobs:
       matrix:
         include:
           - name: mesh-linux-x64-lite
-            labels: '["self-hosted", "linux", "x64", "eshkol"]'
+            labels: '["self-hosted", "linux", "x64", "eshkol", "linux-mesh"]'
             build_dir: build-mesh
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -221,6 +222,16 @@ jobs:
             timeout: 120
 
     steps:
+      - name: Require ephemeral container runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${ESHKOL_RUNNER_CONTAINER:-}" != "1" || "${ESHKOL_RUNNER_EPHEMERAL:-}" != "1" ]] || \
+             { [[ ! -f /.dockerenv ]] && [[ ! -f /run/.containerenv ]]; }; then
+            echo "::error::This job requires the pinned ephemeral container runner image; refusing to run on a host runner."
+            exit 1
+          fi
+
       - uses: actions/checkout@v6
 
       # Self-hosted runners keep their workspace between runs, so a lane that
@@ -304,23 +315,18 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          fetchcontent_args=()
-          fetchcontent_cache="$HOME/lanes/_deps"
-          if [[ -f "$fetchcontent_cache/.eshkol-fetchcontent-cache-ready" ]]; then
-            echo "Using shared FetchContent cache: $fetchcontent_cache"
-            fetchcontent_args+=("-DFETCHCONTENT_BASE_DIR=$fetchcontent_cache")
-            fetchcontent_args+=("-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
-          else
-            echo "Shared FetchContent cache is not seeded; retaining network fallback"
-          fi
+          : "${FETCHCONTENT_BASE_DIR:?runner image must set FETCHCONTENT_BASE_DIR}"
+          test "$FETCHCONTENT_BASE_DIR" = /deps
+          test -f /deps/.eshkol-fetchcontent-cache-ready
           cmake -S . -B "${{ matrix.build_dir }}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR" \
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
-            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
-            "${fetchcontent_args[@]}"
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}
 
       # Same guard ci.yml applies to its CUDA lanes: reject a build graph that
       # quietly picked up gpu_memory_stub.cpp instead of the real kernels.

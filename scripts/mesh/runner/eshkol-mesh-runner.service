@@ -1,0 +1,16 @@
+[Unit]
+Description=Eshkol ephemeral container runner supervisor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+EnvironmentFile=%h/.config/eshkol/runner-launcher.env
+ExecStart=%h/eshkol/scripts/mesh/runner/launch_ephemeral_runners.sh 1
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

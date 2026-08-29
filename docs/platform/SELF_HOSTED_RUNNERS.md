@@ -1,7 +1,8 @@
 # Self-hosted runners (the mesh)
 
-How to attach the maintainer's own machines to this repository as GitHub Actions
-runners, what each label means, and what changes once a runner is online.
+How to attach the maintainer's own machines to this repository as safe, ephemeral
+GitHub Actions runners, what each label means, and what changes once a runner is
+online.
 
 Everything here is something **only the repository owner can do** — registering a
 runner requires a registration token, which requires repo-admin rights. Nothing in
@@ -43,19 +44,21 @@ removed: `self-hosted`, an OS label (`Linux` / `macOS` / `Windows`), and an
 architecture label (`X64` / `ARM64` / `ARM`). Label matching is case-insensitive,
 which is why the workflows spell them lowercase.
 
-On top of those, this repository defines exactly four custom labels. Keep the set
+On top of those, this repository defines exactly five custom labels. Keep the set
 small: a label is a contract a lane relies on, and an unmet contract is a lane that
 either queues forever or lies.
 
 | label | meaning — assign it only if this is true | consumed by |
 |---|---|---|
 | `eshkol` | This runner is provisioned for **this repository's** build: LLVM 21, cmake, ninja, python3, and (Linux) `ld.lld`. Every mesh lane requires it. | `ci-mesh.yml` (all lanes), `mesh-preflight`'s online-runner probe |
+| `linux-mesh` | The runner is the pinned Ubuntu CI image launched by `launch_ephemeral_runners.sh`; it is not a persistent host runner. | `ci-mesh.yml`'s containerized Linux lane and `mesh-preflight` |
 | `gpu` | The host has a **real, addressable GPU device** — not merely a GPU toolchain. `nvidia-smi` lists a device, or the host is Apple Silicon with a working Metal device. | `gpu-execution-gate.yml` (`runs-on: [self-hosted, gpu]`) |
 | `cuda` | The host has a CUDA device *and* `nvcc` on `PATH`. Implies `gpu`; assign both. | `mesh-linux-x64-cuda-exec` |
 | `metal` | Apple Silicon host with a working Metal device. Implies `gpu`; assign both. Reserved for a future Metal execution lane. | (none yet) |
 
-So a full label set looks like `--labels eshkol` for a plain build node, or
-`--labels eshkol,gpu,cuda` for the CUDA execution node.
+The supplied launcher registers `eshkol,linux-mesh`. GPU labels are intentionally
+not added by that launcher: a GPU execution image needs a separate device-aware
+deployment and must not be implied by a CPU-only container.
 
 **Do not** assign `gpu` to a host that only has the CUDA *toolkit* installed. That
 is precisely the failure the GPU execution gate exists to expose, and a mislabelled
@@ -80,143 +83,122 @@ this machine. That volatility is the reason for §6.
 
 ---
 
-## 4. Provisioning a node
+## 4. Provisioning the container runner
 
-Do this **before** registering the runner. The mesh lanes deliberately do not
-install anything: CI has no business mutating a machine you own, and self-installing
-would require handing the runner passwordless `sudo`.
+The host only runs Docker and the launcher. The compiler toolchain, Python gate
+dependencies, pinned Actions runner, and pinned Emscripten SDK are inside
+`scripts/mesh/runner/Dockerfile`. The image uses a non-root `runner` account and
+contains no SSH client or cloud credentials.
 
-### Linux (Debian / Ubuntu)
-
-```bash
-# LLVM 21 from apt.llvm.org (adjust the distro codename)
-wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" \
-  | sudo tee /etc/apt/sources.list.d/llvm.list
-sudo apt-get update
-sudo apt-get install -y \
-  cmake ninja-build git python3 pkg-config \
-  llvm-21 llvm-21-dev lld-21 \
-  libreadline-dev libssl-dev libncurses-dev \
-  libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev
-```
-
-`-fuse-ld=lld` looks for an unversioned `ld.lld`. `ci-mesh.yml` shims it into the
-runner's own `PATH` rather than symlinking into `/usr/bin` with sudo, so nothing
-further is needed — but a system-wide `sudo ln -sf /usr/bin/ld.lld-21 /usr/bin/ld.lld`
-is harmless if you prefer it.
-
-For a `cuda` node, additionally confirm **both** of these answer:
+Build and inspect it from a checkout:
 
 ```bash
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
-nvcc --version
+docker build --tag eshkol-ci-runner:local scripts/mesh/runner
+docker run --rm --entrypoint /usr/local/bin/eshkol-toolchain-self-check \
+  eshkol-ci-runner:local
 ```
 
-### macOS
+Seed the shared FetchContent cache on the host before starting jobs. The seed
+script uses the lane's `_deps` area, and the launcher exposes it read-only as
+`/deps`; the workflow sets `-DFETCHCONTENT_BASE_DIR=/deps` and refuses to run
+without the cache marker.
 
 ```bash
-brew install llvm@21 cmake ninja readline pcre2 sqlite
+scripts/mesh/seed_fetchcontent_cache.sh
 ```
 
-### Verify the toolchain the way CI will
+The image is Linux x64. It registers only the `eshkol,linux-mesh` capability
+labels, so it cannot accidentally claim an ARM, macOS, or GPU lane.
+
+## 5. Registering ephemeral containers
+
+### 5.1 Create the registration credential
+
+Create a fine-grained personal access token at **Profile picture → Settings →
+Developer settings → Fine-grained personal access tokens → Generate new token**.
+Choose only this repository, grant **Administration: Read and write**, and set the
+expiration to **90 days**. This is the long-lived credential used only to mint
+one-shot runner registration tokens; it is not placed in the image or workflow.
+
+### 5.2 Store the credential and configure the launcher
+
+Use a host-only file with mode `600`, and a separate mode-`600` container
+environment file copied from `scripts/mesh/runner/runner.env.example`:
 
 ```bash
-git clone https://github.com/tsotchke/eshkol && cd eshkol
-cmake -S . -B build-check -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DESHKOL_REQUIRED_LLVM_MAJOR=21 \
-  -DLLVM_CONFIG_EXECUTABLE="$(command -v llvm-config-21 || echo /opt/homebrew/opt/llvm@21/bin/llvm-config)"
-cmake --build build-check --parallel
-./scripts/run_all_tests.sh
+export ESHKOL_RUNNER_TOKEN_FILE="$HOME/.config/eshkol/runner-token"
+export ESHKOL_RUNNER_ENV_FILE="$HOME/.config/eshkol/runner-container.env"
+export ESHKOL_FETCHCONTENT_CACHE="$HOME/lanes/_deps"
+export ESHKOL_RUNNER_REPOSITORY='OWNER/REPOSITORY'
+export ESHKOL_RUNNER_URL='https://github.com/OWNER/REPOSITORY'
+export ESHKOL_RUNNER_API_URL='https://api.github.com'
+export ESHKOL_RUNNER_IMAGE='eshkol-ci-runner:local'
+export ESHKOL_RUNNER_PREFIX='eshkol-mesh'
+export ESHKOL_RUNNER_LOG_FILE="$HOME/.local/state/eshkol/runner.log"
+
+install -D -m 600 /dev/null "$ESHKOL_RUNNER_TOKEN_FILE"
+IFS= read -r -s RUNNER_PAT
+printf '%s' "$RUNNER_PAT" > "$ESHKOL_RUNNER_TOKEN_FILE"
+unset RUNNER_PAT
+install -D -m 600 scripts/mesh/runner/runner.env.example "$ESHKOL_RUNNER_ENV_FILE"
 ```
 
-If that passes by hand, the mesh lane will pass. If it does not, fix it here — a
-runner registered against a broken toolchain produces red lanes that look like code
-regressions.
-
----
-
-## 5. Registering the runner
-
-### 5.1 Get a registration token
-
-Registration tokens are **single-use and expire in one hour**. Get a fresh one per
-node.
-
-- Web: **Settings → Actions → Runners → New self-hosted runner**, and copy the
-  token out of the `./config.sh` line the page shows.
-- CLI (needs repo-admin scope):
-  ```bash
-  gh api -X POST repos/tsotchke/eshkol/actions/runners/registration-token --jq .token
-  ```
-
-### 5.2 Install and configure
-
-Pick a directory that is **not** inside a checkout of this repo and has room for
-the build trees (25 GiB minimum, 30 GiB for the CUDA lane).
+For the user service, put the same non-secret launcher settings in its host-only
+environment file (including the absolute paths selected above):
 
 ```bash
-mkdir -p ~/actions-runner && cd ~/actions-runner
-
-# Linux x64 — swap the asset for linux-arm64 / osx-arm64 / win-x64 as needed.
-# Check https://github.com/actions/runner/releases for the current version.
-RUNNER_VERSION=2.330.0
-curl -o runner.tar.gz -L \
-  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
-tar xzf runner.tar.gz && rm runner.tar.gz
-
-./config.sh \
-  --url https://github.com/tsotchke/eshkol \
-  --token <REGISTRATION_TOKEN> \
-  --labels eshkol,gpu,cuda \
-  --work _work \
-  --unattended \
-  --replace
+export ESHKOL_RUNNER_LAUNCHER_ENV="$HOME/.config/eshkol/runner-launcher.env"
+install -D -m 600 /dev/null "$ESHKOL_RUNNER_LAUNCHER_ENV"
+{
+  printf '%s\n' "ESHKOL_RUNNER_TOKEN_FILE=$ESHKOL_RUNNER_TOKEN_FILE"
+  printf '%s\n' "ESHKOL_RUNNER_ENV_FILE=$ESHKOL_RUNNER_ENV_FILE"
+  printf '%s\n' "ESHKOL_FETCHCONTENT_CACHE=$ESHKOL_FETCHCONTENT_CACHE"
+  printf '%s\n' "ESHKOL_RUNNER_REPOSITORY=$ESHKOL_RUNNER_REPOSITORY"
+  printf '%s\n' "ESHKOL_RUNNER_URL=$ESHKOL_RUNNER_URL"
+  printf '%s\n' "ESHKOL_RUNNER_API_URL=$ESHKOL_RUNNER_API_URL"
+  printf '%s\n' "ESHKOL_RUNNER_IMAGE=$ESHKOL_RUNNER_IMAGE"
+  printf '%s\n' "ESHKOL_RUNNER_PREFIX=$ESHKOL_RUNNER_PREFIX"
+  printf '%s\n' "ESHKOL_RUNNER_LOG_FILE=$ESHKOL_RUNNER_LOG_FILE"
+} > "$ESHKOL_RUNNER_LAUNCHER_ENV"
+chmod 600 "$ESHKOL_RUNNER_LAUNCHER_ENV"
 ```
 
-- `--name` — use the mesh node name. It is how you will tell runners apart in the
-  Settings UI and in `gh api .../actions/runners`.
-- `--labels` — from §2. Custom labels only; `self-hosted`, the OS and the arch are
-  added for you.
-- `--replace` — makes re-registering the same node idempotent.
-- `--unattended` — no interactive prompts.
+The launcher reads the credential only on the host, uses it to mint a fresh
+registration token for each slot, and passes that short-lived token only as the
+`--token` argument to `config.sh` at container start. It never mounts the
+credential file.
 
-macOS uses the identical `./config.sh`; Windows uses `./config.cmd` with the same
-flags.
+### 5.3 Start and keep the launcher alive
 
-### 5.3 Install as a service
-
-A runner started from a shell dies with the shell. Install it as a service so it
-survives reboots:
+Start one or more slots from the checkout:
 
 ```bash
-# Linux (systemd)
-sudo ./svc.sh install
-sudo ./svc.sh start
-sudo ./svc.sh status
-
-# macOS (launchd) — no sudo
-./svc.sh install
-./svc.sh start
-./svc.sh status
+scripts/mesh/runner/launch_ephemeral_runners.sh N
 ```
 
-On Windows, `./config.cmd` offers to install the service during configuration;
-answer yes.
+Each slot uses `--ephemeral`, `--rm`, a read-only image root, resource caps, no
+privileges or Docker socket, the default Docker network, a read-only `/deps` bind,
+and a per-slot `/work` volume. The volume is removed whenever that container
+exits. The default cap is 16 CPUs and 32 GiB of memory per slot; operators may
+lower either cap with `ESHKOL_RUNNER_CPUS` and `ESHKOL_RUNNER_MEMORY`. The launcher
+prints the exact systemd --user commands for restart-on-login:
 
-> `nix-shell nix/jetson/shell.nix` or it will have no CUDA device. Either wrap the
+```bash
+install -D -m 600 scripts/mesh/runner/eshkol-mesh-runner.service \
+  "$HOME/.config/systemd/user/eshkol-mesh-runner.service"
+systemctl --user daemon-reload
+systemctl --user enable --now eshkol-mesh-runner.service
+```
+
+The service reads the launcher variables from
+`$HOME/.config/eshkol/runner-launcher.env`; keep that file host-only and do not
+put credentials other than the token-file path in it.
 
 ### 5.4 Turn the mesh lanes on
 
-`ci-mesh.yml` ships **off**. After at least one runner is online:
-
-Before enabling lanes, seed the shared FetchContent source cache on each Linux
-runner with `scripts/mesh/seed_fetchcontent_cache.sh`. The script populates
-`$HOME/lanes/_deps`; subsequent lane configurations use
-`-DFETCHCONTENT_BASE_DIR="$HOME/lanes/_deps"` and
-`-DFETCHCONTENT_FULLY_DISCONNECTED=ON` when the cache marker is present. If
-the marker is absent, CI retains its normal network-fetch fallback.
+`ci-mesh.yml` ships **off**. After at least one runner is online, confirm the
+container self-check passed, the cache marker exists, and the runner list shows
+only ephemeral containers carrying both `eshkol` and `linux-mesh`.
 
 ```bash
 gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body on
@@ -259,31 +241,67 @@ what happens to open PRs when it is not.
 
 ## 7. Security
 
-A self-hosted runner executes whatever a workflow tells it to, on a machine you own,
-on your network, **with a filesystem that persists between jobs**. On a public
-repository that is a real exposure: a pull request from a fork can modify the very
-workflow that tests it, so a fork PR reaching a self-hosted runner is arbitrary code
-execution on your hardware, and anything it leaves on disk is visible to the next
-job.
+An untrusted pull request can modify the workflow that tests it. If that workflow
+reaches a self-hosted runner, it has arbitrary code execution inside the runner's
+security boundary. The assets at risk are the host filesystem, Docker control,
+registration credentials, network access, and data left by an earlier job.
 
-Controls, in order of load-bearing-ness:
+Controls, in order of importance:
 
-1. **Fork PRs never reach the mesh.** Every job in `ci-mesh.yml` carries
-   `if: github.event.pull_request.head.repo.full_name == github.repository`
-   (via the `mesh-preflight` gate that all lanes depend on). This is implemented and
-   is the control that actually matters — it does not depend on anyone remembering a
-   setting.
-2. **Require approval for all outside collaborators.** Settings → Actions → General →
-   *Fork pull request workflows from outside collaborators*. GitHub's default is
-   "require approval for first-time contributors", which still lets a contributor's
-   *second* PR run without review. Set it to **all outside collaborators**.
-3. **Never put secrets on a mesh lane.** None of the mesh lanes consume repository
-   secrets, and none should; a persistent filesystem plus a long-lived machine is a
-   poor place for them.
-4. **Ephemeral-ish workspace.** Each lane's final step removes its build tree, and
-   the disk-budget step fails early rather than filling the node. For stronger
-   isolation, register with `--ephemeral` so the runner deregisters after one job and
-   is re-registered by a supervising script — at the cost of losing warm build state.
+1. **Fork PRs never reach the mesh.** The hosted `mesh-preflight` gate rejects fork
+   pull requests before any self-hosted job can be dispatched. Every self-hosted job
+   also checks the container markers before checkout.
+2. **Require approval for all outside collaborators.** In the repository UI, go to
+   **Settings → Actions → General**. Under **Approval for running fork pull request
+   workflows from contributors**, select **Require approval for all external
+   contributors**, then click **Save**. Review proposed workflow changes before
+   approving a fork workflow.
+3. **Ephemeral containers and no host mounts.** The launcher uses `--rm`, a read-only
+   root, dropped capabilities, no privileged mode, no Docker socket, resource caps,
+   the default network, and only a read-only `/deps` cache plus a per-slot `/work`
+   volume. The work volume is removed after every container exit.
+4. **Least-privilege registration credential.** The token file is host-only, mode
+   `600`, and never mounted into the container. The launcher uses it only to mint a
+   one-shot registration token and redacts that token from its log.
+5. **No secrets on self-hosted jobs.** No self-hosted job references repository
+   secrets. Workflow permissions default to `contents: read` and `id-token: none`.
+
+### Operator checklist
+
+Before enabling `ESHKOL_MESH_CI`:
+
+- Build the pinned image and run `eshkol-toolchain-self-check`.
+- Seed the shared FetchContent cache with
+  `scripts/mesh/seed_fetchcontent_cache.sh`; expose that directory read-only as
+  `/deps`.
+- Copy `runner.env.example` to a host-only runner environment file. Keep
+  `FETCHCONTENT_BASE_DIR=/deps`; do not put credentials in this file.
+- Create a fine-grained personal access token through **Profile picture → Settings
+  → Developer settings → Fine-grained personal access tokens → Generate new token**.
+  Select only this repository, **Administration: Read and write**, and a **90-day
+  expiration**.
+- Store only that token in `ESHKOL_RUNNER_TOKEN_FILE`, set its mode to `600`, and
+  confirm the file is not in the checkout or the cache.
+- Install the supplied user unit, start the launcher, and confirm the GitHub runner
+  list shows only ephemeral `eshkol,linux-mesh` runners.
+- Enable the repository variable `ESHKOL_MESH_CI=on` only after the checks above pass.
+
+The launcher prints the exact `systemctl --user` commands for persistent startup.
+Install `eshkol-mesh-runner.service` as a user unit before running those commands.
+
+### Credential rotation
+
+1. Turn `ESHKOL_MESH_CI` off and stop the user service. Existing ephemeral
+   containers finish or can be allowed to exit; do not reuse their registration
+   tokens.
+2. In **Settings → Actions → Runners**, remove any stale runner registrations.
+3. Revoke the old token from the account's fine-grained token settings.
+4. Create a replacement with the same repository-only scope, **Administration: Read
+   and write** permission, and a new 90-day expiration.
+5. Replace the contents of the mode-`600` token file without adding it to the
+   repository, run the image self-check, and restart the launcher.
+6. Confirm that a fresh job uses a new ephemeral registration, then set
+   `ESHKOL_MESH_CI=on` again.
 
 ---
 
@@ -315,19 +333,12 @@ gh variable set ESHKOL_MESH_CI --repo tsotchke/eshkol --body off
 ```
 
 ```bash
-# Full deregistration, on the node:
-cd ~/actions-runner
-sudo ./svc.sh stop && sudo ./svc.sh uninstall     # omit sudo on macOS
-./config.sh remove --token <REMOVAL_TOKEN>
+# Stop the supervisor. Each container is --rm and each runner is --ephemeral.
+systemctl --user disable --now eshkol-mesh-runner.service
 ```
 
-Get the removal token from **Settings → Actions → Runners → (runner) → Remove**, or:
-
-```bash
-gh api -X POST repos/tsotchke/eshkol/actions/runners/remove-token --jq .token
-```
-
-If the machine is gone and cannot be cleaned up locally, delete the registration
-from the Settings → Actions → Runners page instead. Because nothing in the required
-set depends on a mesh runner, removing one at any time is safe: the mesh lanes stop
-reporting and no PR is affected.
+If a container was interrupted before Docker could remove it, the launcher cleanup
+removes only the named containers and per-slot volumes it created. If a stale
+registration remains in **Settings → Actions → Runners**, remove that registration
+there. Because nothing in the required set depends on a mesh runner, stopping it is
+safe: the mesh lanes stop reporting and no PR is affected.
