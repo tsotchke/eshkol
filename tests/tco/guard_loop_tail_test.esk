@@ -106,6 +106,20 @@
   (if (= r expected) (display "PASS") (begin (display "FAIL got=") (display r) (display " want=") (display expected))))
 (newline)
 
+;; The loop-bound analysis must walk non-call union layouts safely. In
+;; particular, the_op is not call_op; this named-let body used to make the
+;; compiler interpret its type and expression fields as a function and crash.
+(define (union-layout-loop limit)
+  (let loop ((i 0) (acc 0))
+    (if (>= i limit)
+        acc
+        (loop (+ i 1) (the number (+ acc 1))))))
+(display "Union-layout AST visitor regression: ")
+(if (= (union-layout-loop 8) 8)
+    (display "PASS")
+    (display "FAIL"))
+(newline)
+
 ;; --- Shape (c): `(apply loop lst)` variant. `apply` does NOT participate
 ;;     in TCO in Eshkol today (call_apply_codegen.cpp never consults
 ;;     binding_->isTCOActive()/TailCallContext — every apply call is a

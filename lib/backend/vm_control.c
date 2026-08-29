@@ -242,7 +242,7 @@ static void vm_exec_invoke_cc(VM* vm) {
 }
 
 static void vm_exec_push_handler(VM* vm, int32_t operand) {
-    if (vm->n_handlers >= 16) { fprintf(stderr, "HANDLER STACK OVERFLOW\n"); vm->error = 1; return; }
+    if (!vm_ensure_handler_capacity(vm, vm->n_handlers + 1)) { vm->error = 1; return; }
     vm->handler_stack[vm->n_handlers].pc = operand;
     vm->handler_stack[vm->n_handlers].sp = vm->sp;
     vm->handler_stack[vm->n_handlers].fp = vm->fp;
@@ -252,5 +252,11 @@ static void vm_exec_push_handler(VM* vm, int32_t operand) {
     vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
     vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
     vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
+    vm->handler_stack[vm->n_handlers].owner_generation = vm_current_frame_generation(vm);
+    vm->handler_stack[vm->n_handlers].tail_retained = 0;
+    if (!vm_capture_handler_values(vm, &vm->handler_stack[vm->n_handlers])) {
+        vm->error = 1;
+        return;
+    }
     vm->n_handlers++;
 }

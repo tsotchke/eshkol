@@ -7151,7 +7151,7 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
         VmExceptionHandler handler = vm->handler_stack[vm->n_handlers - 1];
         int target_winds = handler.n_winds;
         if (handler.saved_value_count > 0 && handler.saved_values) {
-            memcpy(vm->stack + handler.fp, handler.saved_values,
+            memcpy(vm->stack + handler.saved_value_base, handler.saved_values,
                    (size_t)handler.saved_value_count * sizeof(Value));
         }
         vm_pop_handler(vm);
@@ -7795,6 +7795,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl70->closure.func_pc;
+        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
         vm->frame_count++;
         vm->fp = vm->sp - argc;
         vm->pc = cl70->closure.func_pc;

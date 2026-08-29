@@ -665,6 +665,7 @@ typedef struct {
     int32_t return_pc;
     int32_t return_fp;
     int32_t func_pc;     /* for debugging */
+    uint64_t generation; /* identity of this logical activation */
 } CallFrame;
 
 typedef struct {
@@ -678,7 +679,10 @@ typedef struct {
     uint64_t region_handle_mark;
     int region_bracket_mark;
     Value* saved_values;
+    int saved_value_base;
     int saved_value_count;
+    uint64_t owner_generation;
+    uint8_t tail_retained;
 } VmExceptionHandler;
 
 #define VM_INITIAL_HANDLER_CAP 16
@@ -710,6 +714,7 @@ typedef struct VM {
     CallFrame frames[MAX_FRAMES];
     int32_t fp;           /* frame pointer (base of current frame's locals) */
     int frame_count;
+    uint64_t next_frame_generation;
 
     /* Heap */
     Heap heap;
@@ -954,6 +959,18 @@ static char** g_vm_argv = NULL;
  *         602 (`command-line`). */
 static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_argv = argv; }
 
+static uint64_t vm_new_frame_generation(VM* vm) {
+    if (!vm) return 0;
+    vm->next_frame_generation++;
+    if (vm->next_frame_generation == 0) vm->next_frame_generation++;
+    return vm->next_frame_generation;
+}
+
+static uint64_t vm_current_frame_generation(const VM* vm) {
+    if (!vm || vm->frame_count <= 0) return 0;
+    return vm->frames[vm->frame_count - 1].generation;
+}
+
 static int vm_ensure_handler_capacity(VM* vm, int need) {
     if (!vm || need < 0) return 0;
     if (need <= vm->handler_cap) return 1;
@@ -986,6 +1003,30 @@ static void vm_pop_handler(VM* vm) {
     vm->n_handlers--;
 }
 
+/* A tail call replaces the current logical activation. Only handlers owned by
+ * that activation may survive the transfer, and only an explicit tail
+ * transfer may make them eligible for return cleanup. The owner generation is
+ * deliberately distinct from frame_count: an enclosing handler can have the
+ * same depth after a tail call has collapsed a frame. */
+static void vm_mark_tail_retained_handlers(VM* vm) {
+    uint64_t generation = vm_current_frame_generation(vm);
+    for (int i = 0; i < vm->n_handlers; i++) {
+        if (vm->handler_stack[i].owner_generation == generation) {
+            vm->handler_stack[i].tail_retained = 1;
+        }
+    }
+}
+
+static void vm_pop_tail_retained_handlers(VM* vm) {
+    if (!vm) return;
+    uint64_t generation = vm_current_frame_generation(vm);
+    while (vm->n_handlers > 0) {
+        VmExceptionHandler* handler = &vm->handler_stack[vm->n_handlers - 1];
+        if (handler->owner_generation != generation || !handler->tail_retained) break;
+        vm_pop_handler(vm);
+    }
+}
+
 static void vm_clear_handlers(VM* vm) {
     if (!vm) return;
     while (vm->n_handlers > 0) vm_pop_handler(vm);
@@ -993,8 +1034,17 @@ static void vm_clear_handlers(VM* vm) {
 
 static int vm_capture_handler_values(VM* vm, VmExceptionHandler* handler) {
     if (!vm || !handler) return 0;
-    int count = vm->sp - vm->fp;
+    // A top-level VM frame has no lexical locals to snapshot. Its fp is zero
+    // even though the operand stack already contains the top-level store, so
+    // using fp here would roll back global set! mutations when a nested native
+    // call raises. The current sp is the control-stack boundary at a top-level
+    // handler push; nested frames still snapshot their locals from fp.
+    int base = vm->frame_count > 0 ? vm->fp : vm->sp;
+    if (base < 0) base = 0;
+    if (base > vm->sp) base = vm->sp;
+    int count = vm->sp - base;
     if (count < 0) count = 0;
+    handler->saved_value_base = base;
     handler->saved_values = NULL;
     handler->saved_value_count = count;
     if (count == 0) return 1;
@@ -1435,6 +1485,7 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->frames[vm->frame_count].return_pc = -1; /* SENTINEL: return to native */
     vm->frames[vm->frame_count].return_fp = saved_fp;
     vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
+    vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
     vm->frame_count++;
     vm->fp = vm->sp - argc;
     vm->pc = cl->closure.func_pc;

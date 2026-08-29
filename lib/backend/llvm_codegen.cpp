@@ -27933,7 +27933,79 @@ private:
         }
         if (ast->type != ESHKOL_OP) return;
         const eshkol_operations_t* op = &ast->operation;
+
+        // The operation payload is a tagged union. Every access below must
+        // match the active member selected by op->op: treating an unhandled
+        // operation as call_op reads unrelated pointer/count fields from the
+        // union. That was undefined behaviour for layouts such as
+        // with_region_op and the AD operators, and was observed as an invalid
+        // eshkol_type_t load while compiling ordinary memory fixtures.
+        auto collectCallOperands = [&](const eshkol_operations_t* call) {
+            collectLoopBoundNames(call->call_op.func, out);
+            for (uint64_t i = 0; i < call->call_op.num_vars; i++) {
+                collectLoopBoundNames(&call->call_op.variables[i], out);
+            }
+        };
+
         switch (op->op) {
+            // These forms use the func/variables[] layout, even though some
+            // are special forms rather than ordinary calls.
+            case ESHKOL_IF_OP:
+            case ESHKOL_CALL_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_QUOTE_OP:
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP:
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP:
+                collectCallOperands(op);
+                return;
+            case ESHKOL_COMPOSE_OP:
+                collectLoopBoundNames(op->compose_op.func_a, out);
+                collectLoopBoundNames(op->compose_op.func_b, out);
+                return;
             case ESHKOL_LET_OP:
             case ESHKOL_LET_STAR_OP:
             case ESHKOL_LETREC_OP:
@@ -27982,13 +28054,165 @@ private:
                 if (op->define_op.name) out.insert(op->define_op.name);
                 collectLoopBoundNames(op->define_op.value, out);
                 return;
-            default:
-                // Generic descent over the call_op-shaped forms, which is every
-                // remaining form that can contain a binder.
-                collectLoopBoundNames(op->call_op.func, out);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    collectLoopBoundNames(&op->call_op.variables[i], out);
+            case ESHKOL_EXTERN_OP:
+                for (uint64_t i = 0; i < op->extern_op.num_params; i++) {
+                    collectLoopBoundNames(&op->extern_op.parameters[i], out);
                 }
+                return;
+            case ESHKOL_EXTERN_VAR_OP:
+            case ESHKOL_INVALID_OP:
+            case ESHKOL_ADD_OP:
+            case ESHKOL_SUB_OP:
+            case ESHKOL_MUL_OP:
+            case ESHKOL_DIV_OP:
+            case ESHKOL_DEFINE_TYPE_OP:
+            case ESHKOL_IMPORT_OP:
+            case ESHKOL_REQUIRE_OP:
+            case ESHKOL_PROVIDE_OP:
+            case ESHKOL_TYPE_ANNOTATION_OP:
+            case ESHKOL_FORALL_OP:
+            case ESHKOL_DEFINE_SYNTAX_OP:
+            case ESHKOL_COND_EXPAND_OP:
+            case ESHKOL_INCLUDE_OP:
+            case ESHKOL_SYNTAX_ERROR_OP:
+            case ESHKOL_LOGIC_VAR_OP:
+                return;
+            case ESHKOL_SET_OP:
+                collectLoopBoundNames(op->set_op.value, out);
+                return;
+            case ESHKOL_THE_OP:
+                collectLoopBoundNames(op->the_op.expr, out);
+                return;
+            case ESHKOL_TENSOR_OP:
+                for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
+                    collectLoopBoundNames(&op->tensor_op.elements[i], out);
+                }
+                return;
+            case ESHKOL_DIFF_OP:
+                collectLoopBoundNames(op->diff_op.expression, out);
+                return;
+            case ESHKOL_DERIVATIVE_OP:
+                collectLoopBoundNames(op->derivative_op.function, out);
+                collectLoopBoundNames(op->derivative_op.point, out);
+                return;
+            case ESHKOL_TAYLOR_OP:
+            case ESHKOL_DERIVATIVE_N_OP:
+                collectLoopBoundNames(op->taylor_op.function, out);
+                collectLoopBoundNames(op->taylor_op.point, out);
+                collectLoopBoundNames(op->taylor_op.order, out);
+                return;
+            case ESHKOL_GRADIENT_OP:
+                collectLoopBoundNames(op->gradient_op.function, out);
+                collectLoopBoundNames(op->gradient_op.point, out);
+                return;
+            case ESHKOL_JACOBIAN_OP:
+                collectLoopBoundNames(op->jacobian_op.function, out);
+                collectLoopBoundNames(op->jacobian_op.point, out);
+                return;
+            case ESHKOL_HESSIAN_OP:
+                collectLoopBoundNames(op->hessian_op.function, out);
+                collectLoopBoundNames(op->hessian_op.point, out);
+                return;
+            case ESHKOL_DIVERGENCE_OP:
+                collectLoopBoundNames(op->divergence_op.function, out);
+                collectLoopBoundNames(op->divergence_op.point, out);
+                return;
+            case ESHKOL_CURL_OP:
+                collectLoopBoundNames(op->curl_op.function, out);
+                collectLoopBoundNames(op->curl_op.point, out);
+                return;
+            case ESHKOL_LAPLACIAN_OP:
+                collectLoopBoundNames(op->laplacian_op.function, out);
+                collectLoopBoundNames(op->laplacian_op.point, out);
+                return;
+            case ESHKOL_DIRECTIONAL_DERIV_OP:
+                collectLoopBoundNames(op->directional_deriv_op.function, out);
+                collectLoopBoundNames(op->directional_deriv_op.point, out);
+                collectLoopBoundNames(op->directional_deriv_op.direction, out);
+                return;
+            case ESHKOL_RAISE_OP:
+                collectLoopBoundNames(op->raise_op.exception, out);
+                return;
+            case ESHKOL_VALUES_OP:
+                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                    collectLoopBoundNames(&op->values_op.expressions[i], out);
+                }
+                return;
+            case ESHKOL_CALL_WITH_VALUES_OP:
+                collectLoopBoundNames(op->call_with_values_op.producer, out);
+                collectLoopBoundNames(op->call_with_values_op.consumer, out);
+                return;
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP:
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++) {
+                        if (op->let_values_op.binding_vars[i][j]) {
+                            out.insert(op->let_values_op.binding_vars[i][j]);
+                        }
+                    }
+                    collectLoopBoundNames(&op->let_values_op.producers[i], out);
+                }
+                collectLoopBoundNames(op->let_values_op.body, out);
+                return;
+            case ESHKOL_MATCH_OP:
+                collectLoopBoundNames(op->match_op.expr, out);
+                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                    collectLoopBoundNames(op->match_op.clauses[i].guard, out);
+                    collectLoopBoundNames(op->match_op.clauses[i].body, out);
+                }
+                return;
+            case ESHKOL_CALL_CC_OP:
+                collectLoopBoundNames(op->call_cc_op.proc, out);
+                return;
+            case ESHKOL_DYNAMIC_WIND_OP:
+                collectLoopBoundNames(op->dynamic_wind_op.before, out);
+                collectLoopBoundNames(op->dynamic_wind_op.thunk, out);
+                collectLoopBoundNames(op->dynamic_wind_op.after, out);
+                return;
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                    collectLoopBoundNames(&op->with_region_op.body[i], out);
+                }
+                return;
+            case ESHKOL_OWNED_OP:
+                collectLoopBoundNames(op->owned_op.value, out);
+                return;
+            case ESHKOL_MOVE_OP:
+                collectLoopBoundNames(op->move_op.value, out);
+                return;
+            case ESHKOL_BORROW_OP:
+                collectLoopBoundNames(op->borrow_op.value, out);
+                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
+                    collectLoopBoundNames(&op->borrow_op.body[i], out);
+                }
+                return;
+            case ESHKOL_SHARED_OP:
+                collectLoopBoundNames(op->shared_op.value, out);
+                return;
+            case ESHKOL_WEAK_REF_OP:
+                collectLoopBoundNames(op->weak_ref_op.value, out);
+                return;
+            case ESHKOL_CASE_LAMBDA_OP:
+                for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
+                    collectLoopBoundNames(&op->case_lambda_op.clauses[i], out);
+                }
+                return;
+            case ESHKOL_LET_SYNTAX_OP:
+            case ESHKOL_LETREC_SYNTAX_OP:
+                collectLoopBoundNames(op->let_syntax_op.body, out);
+                return;
+            case ESHKOL_PARAMETERIZE_OP:
+                for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
+                    collectLoopBoundNames(&op->parameterize_op.params[i], out);
+                    collectLoopBoundNames(&op->parameterize_op.values[i], out);
+                }
+                collectLoopBoundNames(op->parameterize_op.body, out);
+                return;
+            default:
+                // Unknown future tags are leaves until their union layout is
+                // explicitly added here. A safe false negative is preferable
+                // to interpreting a new payload through call_op and invoking
+                // undefined behaviour during compilation.
                 return;
         }
     }
@@ -28166,7 +28390,65 @@ private:
             }
             return false;
         }
+        auto scanCallOperands = [&](const eshkol_operations_t* call) {
+            if (loopNeedsGuardReplay(call->call_op.func, loop_name, loop_bound)) return true;
+            for (uint64_t i = 0; i < call->call_op.num_vars; i++) {
+                if (loopNeedsGuardReplay(&call->call_op.variables[i], loop_name, loop_bound)) return true;
+            }
+            return false;
+        };
         switch (op->op) {
+            case ESHKOL_IF_OP:
+            case ESHKOL_CALL_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_QUOTE_OP:
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP:
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP:
+                return scanCallOperands(op);
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
@@ -28189,12 +28471,113 @@ private:
                 return loopNeedsGuardReplay(op->lambda_op.body, loop_name, loop_bound);
             case ESHKOL_DEFINE_OP:
                 return loopNeedsGuardReplay(op->define_op.value, loop_name, loop_bound);
-            default:
-                if (loopNeedsGuardReplay(op->call_op.func, loop_name, loop_bound)) return true;
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    if (loopNeedsGuardReplay(&op->call_op.variables[i], loop_name, loop_bound))
-                        return true;
+            case ESHKOL_COMPOSE_OP:
+                return loopNeedsGuardReplay(op->compose_op.func_a, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->compose_op.func_b, loop_name, loop_bound);
+            case ESHKOL_SET_OP:
+                return loopNeedsGuardReplay(op->set_op.value, loop_name, loop_bound);
+            case ESHKOL_THE_OP:
+                return loopNeedsGuardReplay(op->the_op.expr, loop_name, loop_bound);
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                    if (loopNeedsGuardReplay(&op->with_region_op.body[i], loop_name, loop_bound)) return true;
                 }
+                return false;
+            case ESHKOL_BORROW_OP:
+                if (loopNeedsGuardReplay(op->borrow_op.value, loop_name, loop_bound)) return true;
+                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
+                    if (loopNeedsGuardReplay(&op->borrow_op.body[i], loop_name, loop_bound)) return true;
+                }
+                return false;
+            case ESHKOL_OWNED_OP:
+                return loopNeedsGuardReplay(op->owned_op.value, loop_name, loop_bound);
+            case ESHKOL_MOVE_OP:
+                return loopNeedsGuardReplay(op->move_op.value, loop_name, loop_bound);
+            case ESHKOL_SHARED_OP:
+                return loopNeedsGuardReplay(op->shared_op.value, loop_name, loop_bound);
+            case ESHKOL_WEAK_REF_OP:
+                return loopNeedsGuardReplay(op->weak_ref_op.value, loop_name, loop_bound);
+            case ESHKOL_TENSOR_OP:
+                for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
+                    if (loopNeedsGuardReplay(&op->tensor_op.elements[i], loop_name, loop_bound)) return true;
+                }
+                return false;
+            case ESHKOL_DIFF_OP:
+                return loopNeedsGuardReplay(op->diff_op.expression, loop_name, loop_bound);
+            case ESHKOL_DERIVATIVE_OP:
+                return loopNeedsGuardReplay(op->derivative_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->derivative_op.point, loop_name, loop_bound);
+            case ESHKOL_TAYLOR_OP:
+            case ESHKOL_DERIVATIVE_N_OP:
+                return loopNeedsGuardReplay(op->taylor_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->taylor_op.point, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->taylor_op.order, loop_name, loop_bound);
+            case ESHKOL_GRADIENT_OP:
+                return loopNeedsGuardReplay(op->gradient_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->gradient_op.point, loop_name, loop_bound);
+            case ESHKOL_JACOBIAN_OP:
+                return loopNeedsGuardReplay(op->jacobian_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->jacobian_op.point, loop_name, loop_bound);
+            case ESHKOL_HESSIAN_OP:
+                return loopNeedsGuardReplay(op->hessian_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->hessian_op.point, loop_name, loop_bound);
+            case ESHKOL_DIVERGENCE_OP:
+                return loopNeedsGuardReplay(op->divergence_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->divergence_op.point, loop_name, loop_bound);
+            case ESHKOL_CURL_OP:
+                return loopNeedsGuardReplay(op->curl_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->curl_op.point, loop_name, loop_bound);
+            case ESHKOL_LAPLACIAN_OP:
+                return loopNeedsGuardReplay(op->laplacian_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->laplacian_op.point, loop_name, loop_bound);
+            case ESHKOL_DIRECTIONAL_DERIV_OP:
+                return loopNeedsGuardReplay(op->directional_deriv_op.function, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->directional_deriv_op.point, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->directional_deriv_op.direction, loop_name, loop_bound);
+            case ESHKOL_RAISE_OP:
+                return loopNeedsGuardReplay(op->raise_op.exception, loop_name, loop_bound);
+            case ESHKOL_VALUES_OP:
+                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                    if (loopNeedsGuardReplay(&op->values_op.expressions[i], loop_name, loop_bound)) return true;
+                }
+                return false;
+            case ESHKOL_CALL_WITH_VALUES_OP:
+                return loopNeedsGuardReplay(op->call_with_values_op.producer, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->call_with_values_op.consumer, loop_name, loop_bound);
+            case ESHKOL_MATCH_OP:
+                if (loopNeedsGuardReplay(op->match_op.expr, loop_name, loop_bound)) return true;
+                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                    if (loopNeedsGuardReplay(op->match_op.clauses[i].guard, loop_name, loop_bound) ||
+                        loopNeedsGuardReplay(op->match_op.clauses[i].body, loop_name, loop_bound)) return true;
+                }
+                return false;
+            case ESHKOL_CALL_CC_OP:
+                return loopNeedsGuardReplay(op->call_cc_op.proc, loop_name, loop_bound);
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return loopNeedsGuardReplay(op->dynamic_wind_op.before, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->dynamic_wind_op.thunk, loop_name, loop_bound) ||
+                       loopNeedsGuardReplay(op->dynamic_wind_op.after, loop_name, loop_bound);
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP:
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    if (loopNeedsGuardReplay(&op->let_values_op.producers[i], loop_name, loop_bound)) return true;
+                }
+                return loopNeedsGuardReplay(op->let_values_op.body, loop_name, loop_bound);
+            case ESHKOL_CASE_LAMBDA_OP:
+                for (uint64_t i = 0; i < op->case_lambda_op.num_clauses; i++) {
+                    if (loopNeedsGuardReplay(&op->case_lambda_op.clauses[i], loop_name, loop_bound)) return true;
+                }
+                return false;
+            case ESHKOL_LET_SYNTAX_OP:
+            case ESHKOL_LETREC_SYNTAX_OP:
+                return loopNeedsGuardReplay(op->let_syntax_op.body, loop_name, loop_bound);
+            case ESHKOL_PARAMETERIZE_OP:
+                for (uint64_t i = 0; i < op->parameterize_op.num_bindings; i++) {
+                    if (loopNeedsGuardReplay(&op->parameterize_op.params[i], loop_name, loop_bound) ||
+                        loopNeedsGuardReplay(&op->parameterize_op.values[i], loop_name, loop_bound)) return true;
+                }
+                return loopNeedsGuardReplay(op->parameterize_op.body, loop_name, loop_bound);
+            default:
                 return false;
         }
     }

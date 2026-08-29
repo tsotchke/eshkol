@@ -104,6 +104,11 @@ static void vm_exec_closure(VM* vm, int32_t operand) {
 
 static void vm_exec_return(VM* vm) {
     Value result = vm_pop(vm);
+    // A tail transfer intentionally leaves its guard handlers live so a
+    // re-raise reaches the next logical activation. Retire only handlers
+    // explicitly marked by that transfer and owned by this frame generation;
+    // frame_count alone is not an identity and can match an enclosing frame.
+    vm_pop_tail_retained_handlers(vm);
     if (vm->frame_count <= 0) {
         vm_push(vm, result);
         vm->halted = 1;
