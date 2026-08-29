@@ -170,6 +170,27 @@ static double eshkol_rm_max_abs(const double* a, int n) {
     return m;
 }
 
+/* Return the exponent of an exact power-of-two scale for a finite nonzero
+ * magnitude. The scale itself must not be materialised: for a minimum
+ * subnormal, its reciprocal power of two is outside binary64 even though
+ * multiplying each component by that power is representable. */
+static int eshkol_rm_scale_exponent(double magnitude) {
+    int exponent = 0;
+    (void)frexp(magnitude, &exponent);
+    return exponent;
+}
+
+static double eshkol_rm_scaled_component(double value, int exponent) {
+    return ldexp(value, -exponent);
+}
+
+static int eshkol_rm_all_finite(const double* a, int n) {
+    if (!a) return 0;
+    for (int i = 0; i < n; i++)
+        if (!isfinite(a[i])) return 0;
+    return 1;
+}
+
 static int eshkol_rm_product_equal(double a, double b, double c, double d) {
     double p = a * b;
     double q = c * d;
@@ -180,27 +201,89 @@ static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
     double xn = eshkol_rm_max_abs(x, n);
     double yn = eshkol_rm_max_abs(y, n);
     if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+    int xe = eshkol_rm_scale_exponent(xn);
+    int ye = eshkol_rm_scale_exponent(yn);
 
     int pivot = -1;
+    double pivot_magnitude = 0.0;
     for (int i = 0; i < n; i++) {
-        double xi = x[i] / xn;
-        double yi = y[i] / yn;
+        double xi = eshkol_rm_scaled_component(x[i], xe);
+        double yi = eshkol_rm_scaled_component(y[i], ye);
         if (xi != 0.0 || yi != 0.0) {
             if (xi == 0.0 || yi == 0.0 || (xi < 0.0) == (yi < 0.0))
                 return 0;
-            if (pivot < 0) pivot = i;
+            double magnitude = fmax(fabs(xi), fabs(yi));
+            if (magnitude > pivot_magnitude) {
+                pivot = i;
+                pivot_magnitude = magnitude;
+            }
         }
     }
     if (pivot < 0) return 0;
 
-    double xp = x[pivot] / xn;
-    double yp = y[pivot] / yn;
+    double xp = eshkol_rm_scaled_component(x[pivot], xe);
+    double yp = eshkol_rm_scaled_component(y[pivot], ye);
     for (int i = 0; i < n; i++) {
-        double xi = x[i] / xn;
-        double yi = y[i] / yn;
+        double xi = eshkol_rm_scaled_component(x[i], xe);
+        double yi = eshkol_rm_scaled_component(y[i], ye);
         if (!eshkol_rm_product_equal(xi, yp, xp, yi)) return 0;
     }
     return 1;
+}
+
+/* Stable logarithmic map on the sphere, derived from the atan2 angle. For
+ * unit a=x/|x| and b=y/|y|, let c=<a,b>, s=||a wedge b||, and
+ * theta=atan2(s,c). If T_k is the derivative of s^2/2 with respect to a_k,
+ * then dtheta/da_k = (c*T_k/s - s*b_k)/(s^2+c^2). Computing T from the wedge
+ * products avoids forming b_k - c*a_k: at a near-antipode that subtraction
+ * loses the tangent component when c rounds to -1. The returned map is
+ * log_x(y) = -R*theta*dtheta/da, the same mathematical vector as the usual
+ * tangent formula but with those components retained. */
+static const char* eshkol_rm_sphere_log_map_stable(const double* x,
+                                                   const double* y,
+                                                   double R, int n,
+                                                   double* out) {
+    double xn = eshkol_rm_norm(x, n);
+    double yn = eshkol_rm_norm(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0)) return "a sphere point has zero norm";
+
+    double cosine = 0.0;
+    double sine = 0.0;
+    for (int i = 0; i < n; i++) {
+        double ai = x[i] / xn;
+        double bi = y[i] / yn;
+        cosine += ai * bi;
+        for (int j = i + 1; j < n; j++) {
+            double aj = x[j] / xn;
+            double bj = y[j] / yn;
+            sine = hypot(sine, ai * bj - aj * bi);
+        }
+        out[i] = 0.0;
+    }
+    if (!(sine > 0.0)) return "the points are coincident: sphere log is zero";
+
+    /* out is T_k = sum wedge_ij * d(wedge_ij)/d(a_k). */
+    for (int i = 0; i < n; i++) {
+        double ai = x[i] / xn;
+        double bi = y[i] / yn;
+        for (int j = i + 1; j < n; j++) {
+            double aj = x[j] / xn;
+            double bj = y[j] / yn;
+            double wedge = ai * bj - aj * bi;
+            out[i] += wedge * bj;
+            out[j] -= wedge * bi;
+        }
+    }
+
+    double theta = atan2(sine, cosine);
+    double denominator = sine * sine + cosine * cosine;
+    for (int i = 0; i < n; i++) {
+        double bi = y[i] / yn;
+        double dtheta = (cosine * (out[i] / sine) - sine * bi) /
+                        denominator;
+        out[i] = -R * theta * dtheta;
+    }
+    return NULL;
 }
 
 /* Scale-invariant spherical geometry.  The input points are canonicalized to
@@ -782,18 +865,10 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
          * This makes the diagonal and near-diagonal cases independent of the
          * validator's radius tolerance. */
         double R  = 1.0 / sqrt(K);
-        double* u = scratch;
         if (eshkol_rm_sphere_antipodal(x, y, n))
             return "the two points are antipodal: log is not single-valued there";
-        double th = eshkol_rm_sphere_angle(x, y, R, n, u);
-        double un = eshkol_rm_norm(u, n);
-        if (un == 0.0) {
-            for (int i = 0; i < n; i++) out[i] = 0.0;
-            return NULL;
-        }
-        double coef = th * R / un;
-        for (int i = 0; i < n; i++) out[i] = coef * u[i];
-        return NULL;
+        (void)scratch;
+        return eshkol_rm_sphere_log_map_stable(x, y, R, n, out);
     }
 }
 
