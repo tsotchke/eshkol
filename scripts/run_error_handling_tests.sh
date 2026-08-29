@@ -71,6 +71,15 @@ fi
 echo "Found $TEST_COUNT test file(s)"
 echo ""
 
+# An expected-fatal fixture is a deliberate negative control. The marker lives
+# beside the source so the fixture declares its contract and the runner does
+# not need a filename-specific exception. Such a fixture must compile, exit
+# nonzero at runtime, report the required diagnostic, and stop before its
+# MUST-NOT-PRINT sentinel. Any missing part is a real suite failure.
+is_expected_fatal_test() {
+    grep -q '^; EXPECTED-FATAL:' "$1"
+}
+
 # Run each .esk test
 for test_file in "$TEST_DIR"/*.esk; do
     if [ ! -f "$test_file" ]; then
@@ -85,7 +94,27 @@ for test_file in "$TEST_DIR"/*.esk; do
     # Try to compile
     if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
         # Compilation succeeded, try to run
-        if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
+        if is_expected_fatal_test "$test_file"; then
+            if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
+                echo -e "${RED}EXPECTED FATAL MISMATCH (exit 0)${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++)) || true
+            else
+                exit_code=$?
+                if ! grep -Fq "handler returned from non-continuable raise" "$ESHKOL_TEST_OUT"; then
+                    echo -e "${RED}EXPECTED FATAL MISMATCH (missing secondary diagnostic)${NC}"
+                    FAILED_TESTS+=("$test_name")
+                    ((FAIL++)) || true
+                elif grep -Fq "MUST-NOT-PRINT" "$ESHKOL_TEST_OUT"; then
+                    echo -e "${RED}EXPECTED FATAL MISMATCH (continued after fatal form)${NC}"
+                    FAILED_TESTS+=("$test_name")
+                    ((FAIL++)) || true
+                else
+                    echo -e "${GREEN}EXPECTED FATAL PASS (exit $exit_code)${NC}"
+                    ((PASS++)) || true
+                fi
+            fi
+        elif "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # A failure marker anywhere in the output fails the test — the old
             # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
             # form that most test programs actually print.

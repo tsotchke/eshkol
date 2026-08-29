@@ -5341,6 +5341,48 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    # SW-84: R7RS 6.11 requires a secondary exception when a handler returns
+    # from a non-continuable raise. The enclosing guard must observe it; the
+    # old lowering returned the handler value and exited successfully. Keep
+    # native JIT/AOT and VM source execution as separate ctest axes; the VM
+    # parity corpus adds the serialized ESKB route.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        add_test(
+            NAME sw84_noncontinuable_handler_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        set_tests_properties(sw84_noncontinuable_handler_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_aot_o0_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O0 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o0' && '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o0'")
+        set_tests_properties(sw84_noncontinuable_handler_aot_o0_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_aot_o2_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O2 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/sw84_noncontinuable_handler_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o2' && '${CMAKE_CURRENT_BINARY_DIR}/sw84_noncontinuable_handler_o2'")
+        set_tests_properties(sw84_noncontinuable_handler_aot_o2_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME sw84_noncontinuable_handler_vm_src_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/error_handling/sw84_noncontinuable_handler_test.esk")
+        set_tests_properties(sw84_noncontinuable_handler_vm_src_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: SW-84 non-continuable handler return semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —

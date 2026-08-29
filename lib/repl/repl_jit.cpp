@@ -1128,6 +1128,7 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // ===== EXCEPTION HANDLING =====
     ADD_SYMBOL(eshkol_raise);
+    ADD_SYMBOL(eshkol_raise_secondary_exception);
     ADD_SYMBOL(eshkol_make_exception);
     ADD_SYMBOL(eshkol_make_exception_with_header);
     ADD_SYMBOL(eshkol_push_exception_handler);
