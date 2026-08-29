@@ -38,6 +38,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
 fi
 source "$ESHKOL_TEST_LIB"
 eshkol_test_isolation_init "all"
+# shellcheck source=lib/test_failure_attribution.sh
+. "$SCRIPT_DIR/lib/test_failure_attribution.sh"
 
 # Counters
 SUITES_PASS=0
@@ -196,73 +198,15 @@ extract_failures() {
     local clean_file="$TMPDIR_TESTS/${suite_name}_clean.log"
     sed 's/\x1b\[[0-9;]*m//g' "$output_file" > "$clean_file"
 
-    # Pattern 1: Test result lines — a .esk filename on the same line as a failure keyword
-    # Matches all known formats across every test script:
-    #   "Testing some_test.esk                  COMPILE FAIL"
-    #   "Testing some_test.esk                  RUNTIME FAIL"
-    #   "Testing some_test.esk                  RUNTIME FAIL (exit 139)"
-    #   "Testing some_test.esk                  RUNTIME ERROR"
-    #   "Testing some_test.esk                  ASSERTION FAIL"
-    #   "Testing some_test.esk                  TESTS FAILED"
-    #   "Testing some_test.esk                  SEGFAULT"
-    #   "Testing some_test.esk                  FAIL"
-    #   "[  1/  5] some_test.esk                RUNTIME FAIL (exit 1)"
-    #
-    # EDGE CASE: Segfaults can split the output — the shell prints the crash
-    # message between printf and the echo, so the .esk filename and the
-    # failure keyword end up on SEPARATE lines:
-    #   "Testing some_test.esk                  <segfault message>"
-    #   "RUNTIME FAIL (exit 139)"
-    # For these, we track the last-seen .esk filename and use it.
-    #
-    # NOTE: No \b word boundaries — "TESTS FAILED" must match even though
-    # "FAILED" has no boundary after "FAIL". Order matters for grep -oE:
-    # longer patterns first so "COMPILE FAIL" matches before bare "FAIL".
-    local FAIL_PATTERN='(COMPILE FAIL|RUNTIME FAIL|RUNTIME ERROR|ASSERTION FAIL|TESTS FAILED|SEGFAULT|FAIL)'
-    local last_test_file=""
-    while IFS= read -r line; do
-        # Track the most recent .esk filename we've seen
-        local line_esk=$(echo "$line" | grep -oE '[A-Za-z0-9_/.-]+\.esk' | head -1)
-        if [ -n "$line_esk" ]; then
-            last_test_file="$line_esk"
-        fi
-
-        # Check if this line has a failure keyword
-        # Skip summary lines like "Failed: 0", "Failed Tests:", "Compile Failures: 2"
-        local fail_type=""
-        if ! echo "$line" | grep -qE '^\s*(Failed|Passed|Total|Compile Failures|Runtime|Pass Rate|Some .* failed|Fix these)'; then
-            fail_type=$(echo "$line" | grep -oE "$FAIL_PATTERN" | head -1)
-        fi
-        if [ -n "$fail_type" ]; then
-            # Use .esk from this line if present, otherwise use last-seen
-            local matched_file="${line_esk:-$last_test_file}"
-            if [ -n "$matched_file" ]; then
-                ALL_FAILURES+=("$suite_name: $matched_file ($fail_type)")
-            fi
-        fi
-    done < "$clean_file"
-
-    # Pattern 2: "FAIL: description" assertion lines printed by test programs
-    # These appear on their own lines, NOT on the "Testing foo.esk" line
-    # e.g. "FAIL: Accumulator pattern: build list of 1000 elements"
-    # The colon is NOT required and the marker is NOT anchored: test programs
-    # print `  <case>: FAIL` (indented, bare FAIL, no colon after it) as often
-    # as they print `FAIL: <case>`. Requiring `^\s*FAIL:` here hid whole classes
-    # of assertion failure — tests/gpu/sf64_primitives_test.esk being the case
-    # that exposed it.
-    # Filter the whole log once — zero-count summaries and decorative titles
-    # out, "Testing foo.esk" result lines out (Pattern 1 owns those) — then take
-    # what is left. Filtering per line would fork two processes per log line.
-    local assert_file="$TMPDIR_TESTS/${suite_name}_assertions.log"
-    grep -v '\.esk' "$clean_file" 2>/dev/null \
-        | eshkol_test_filter_verdict_noise \
-        | grep -E '(^|[^A-Za-z0-9_])FAIL([^A-Za-z0-9_]|$)' \
-        > "$assert_file" 2>/dev/null || true
-    while IFS= read -r line; do
-        desc=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+$//')
-        [ -n "$desc" ] || continue
-        ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
-    done < "$assert_file"
+    # Only records with an explicit test name are added to ALL_FAILURES.
+    # The helper permits the one safe split-line crash form; ordinary bare
+    # FAIL lines cannot inherit a stale filename from an earlier PASS.
+    local failure_record record_suite record_test record_type
+    while IFS="$(printf '\t')" read -r record_suite record_test record_type; do
+        [ -n "$record_test" ] || continue
+        failure_record="$record_suite: $record_test ($record_type)"
+        ALL_FAILURES+=("$failure_record")
+    done < <(eshkol_extract_failure_records "$suite_name" "$clean_file")
 
     # Count passes and fails from suite summary lines.
     # Handles:
@@ -350,7 +294,8 @@ for script in "${TEST_SCRIPTS[@]}"; do
     echo ""
 done
 
-# Deduplicate ALL_FAILURES (Pattern 1 and Pattern 2 can overlap)
+# Deduplicate ALL_FAILURES (a suite may repeat a named failure in its result
+# line and its summary list)
 # Use a newline-delimited seen list (bash 3.2 compatible — no associative arrays)
 declare -a UNIQUE_FAILURES
 _SEEN_LIST=""

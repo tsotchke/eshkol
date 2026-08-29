@@ -472,6 +472,7 @@ jobs:
           python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
+          bash scripts/test_run_all_tests_failure_attribution.sh
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
