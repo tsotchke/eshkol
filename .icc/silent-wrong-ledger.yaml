@@ -6983,7 +6983,7 @@ entries:
     caught_by: [consumer-triage, direct-measurement]
     missed_by: [icc-readiness, prior-terminal-surface-test]
 
-  - id: SW-130
+  - id: SW-139
     bucket: PARITY-RATCHET
     status: closed
     closed_at: "worktree-rb-567"
