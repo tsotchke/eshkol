@@ -7688,6 +7688,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'q'); break; }
+        /* Exact fixnums must stay in the integer domain.  Converting them
+         * through double first rounds values near INT64_MAX to 2^63; the
+         * implementation-defined conversion back to int64_t then turns a
+         * positive dividend into INT64_MIN.  That made quotient silently
+         * return -4611686018427387904 for
+         * (quotient 9223372036854775806 2). */
+        if (a.type == VAL_INT && b.type == VAL_INT) {
+            if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
+            if (a.as.i == INT64_MIN && b.as.i == -1) {
+                /* The exact quotient does not fit a fixnum; promote it to
+                 * the VM's arbitrary-precision integer representation. */
+                vm_bignum_arith(vm, a, b, 'q');
+                break;
+            }
+            vm_push(vm, INT_VAL(a.as.i / b.as.i));
+            break;
+        }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
@@ -7780,10 +7797,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, func);
         int argc = 0;
         Value cur = args_list;
-        while (cur.type == VAL_PAIR && argc < 16) {
+        /* `apply` has no language-level sixteen-argument limit.  The old
+         * fixed cap silently dropped the tail of a proper argument list, so
+         * (apply + (list ...)) returned a plausible partial sum with exit 0.
+         * Use the VM stack as the actual finite resource and fail loudly if
+         * the caller asks for more arguments than this invocation can hold. */
+        while (cur.type == VAL_PAIR && vm->sp < STACK_SIZE) {
             vm_push(vm, vm->heap.objects[cur.as.ptr]->cons.car);
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             argc++;
+        }
+        if (cur.type == VAL_PAIR) {
+            fprintf(stderr, "ERROR: apply: argument list exceeds VM stack capacity\n");
+            vm->error = 1;
+            break;
         }
         HeapObject* cl70 = vm->heap.objects[func.as.ptr];
         if (vm->frame_count >= MAX_FRAMES) { vm->error = 1; break; }

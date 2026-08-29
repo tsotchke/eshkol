@@ -6884,3 +6884,30 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
+  - id: SW-107
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "4b88413cbb19fe9f0d8db6d6b186f74007e58196 (post-fix working tree)"
+    title: "VM quotient rounds an exact near-INT64_MAX dividend through double"
+    repro: "tests/vm_parity/corpus/75_integer_boundary_quotient.esk"
+    observed: "VM printed -4611686018427387904 for (quotient 9223372036854775806 2), exited 0."
+    correct: "4611686018427387903, an exact integer"
+    cross_engine: "The native LLVM engine was correct; the VM was silently wrong."
+    fixed_by: "lib/backend/vm_native.c case 38 divides VAL_INT operands directly and handles INT64_MIN/-1 through bignum."
+    evidence: "The corpus case prints the same exact value on native and VM after the fix; the pre-fix VM run was wrong with exit 0."
+    caught_by: [engine-parity-threshold-gate, direct-measurement]
+    missed_by: [vm-parity-curated-corpus, icc-readiness]
+
+  - id: SW-108
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "4b88413cbb19fe9f0d8db6d6b186f74007e58196 (post-fix working tree)"
+    title: "VM apply silently truncates proper argument lists at sixteen values"
+    repro: "tests/vm_parity/corpus/76_parallel_map_large_apply.esk"
+    observed: "VM exited 0 and returned 1240 instead of 332833500 for the 1000-element case."
+    correct: "apply passes the complete proper list and returns 332833500."
+    cross_engine: "The native LLVM engine was correct; the VM was silently wrong."
+    fixed_by: "lib/backend/vm_native.c case 70 unpacks until the VM stack is full and errors instead of truncating."
+    evidence: "The corpus case prints 1000 and 332833500 identically on native and VM after the fix; the pre-fix VM run truncated the result."
+    caught_by: [engine-parity-threshold-gate, direct-measurement]
+    missed_by: [vm-parity-curated-corpus, icc-readiness]

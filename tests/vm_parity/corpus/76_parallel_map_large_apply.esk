@@ -1,0 +1,14 @@
+; apply must pass every element of a proper list to its procedure.  This also
+; pins parallel-map's documented ordered-result contract at a size that uses
+; the VM pool path.
+(define (range n)
+  (let loop ((i 0) (acc '()))
+    (if (>= i n)
+        (reverse acc)
+        (loop (+ i 1) (cons i acc)))))
+
+(define squares (parallel-map (lambda (x) (* x x)) (range 1000)))
+(display (length squares))
+(newline)
+(display (apply + squares))
+(newline)
