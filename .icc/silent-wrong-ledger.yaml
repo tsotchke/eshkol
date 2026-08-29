@@ -4281,6 +4281,50 @@ entries:
       was never at fault in any of the three — it recorded is_char, is_inexact and the
       vector origin correctly every time. The loss was always downstream, in a
       consumer that read a subset of what the reader had written down.
+  - id: SW-86
+    bucket: SILENT-WRONG
+    status: fixed
+    title: "VM char-alphabetic? and char-numeric? expose non-canonical ctype results as booleans"
+    repro: >-
+      build/eshkol-vm-standalone-test tests/integration/first_class_builtins_vm_test.esk
+      on Linux with the system g++/glibc build.
+    observed: >-
+      The VM returned a non-canonical nonzero boolean payload from glibc's
+      isalpha('a') and isdigit('5') (the predicates printed as failures when
+      compared with #t using eq?), while the process exited 0 with no diagnostic.
+      The required smoke therefore reported FAIL: char-alphabetic? and FAIL:
+      char-numeric? and then FAIL: first-class builtins on the VM.
+    correct: >-
+      Both predicates return the canonical Scheme boolean #t for ASCII letters
+      and decimal digits, and classify Unicode codepoints identically on native
+      and VM engines.
+    root_cause: >-
+      lib/backend/vm_native.c passed the implementation-defined nonzero return
+      value of isalpha()/isdigit() directly into the VM boolean payload. glibc
+      returns ctype bitmasks such as 1024 or 2048 rather than the canonical 1;
+      eq? therefore rejected a predicate result that was only accidentally
+      truthy. The same path also accepted host ctype semantics for Unicode
+      codepoints, which is not a defined R7RS character classification.
+    fix: >-
+      lib/core/unicode.cpp provides deterministic codepoint range classifiers
+      for Unicode letters and decimal digits. Native LLVM lowering and VM native
+      dispatch both call those shared functions, whose results are exactly 0 or
+      1 and do not depend on locale, ctype tables, or signed-char behavior.
+      lib/backend/vm_parser.c also decodes the complete UTF-8 sequence for a
+      non-ASCII character literal before creating the VM character value.
+    evidence: >-
+      Baseline reproduction on old-donkey at c459f292: ctest -R
+      first_class_builtins_vm_smoke --output-on-failure failed, while the
+      underlying VM file exited 0 with the two predicate FAIL lines. The edited
+      worktree's mesh build and tests are the closure evidence for this entry.
+      tests/vm_parity/corpus/char_predicates_unicode.esk covers ASCII, Latin-1,
+      Greek, and Arabic-Indic decimal codepoints across native, VM source, and
+      VM ESKB routes; the final mesh run reports 193 passed, 0 failed, 0 infra.
+    caught_by: [direct-measurement, first_class_builtins_vm_smoke]
+    missed_by: [ci-cross-platform, vm-parity-pre-unicode-corpus]
+    notes: >-
+      This is a silent wrong boolean payload, not an uninitialized read: the
+      ctype calls were defined as nonzero truth values but were not normalized.
   # ───────────────────────── PARITY-RATCHET ─────────────────────────
 
   - id: PR-01

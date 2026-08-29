@@ -144,6 +144,8 @@ int main(int argc, char** argv) {
         parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_CORE_SRC");
     const std::vector<std::string> runtime_hosted_src =
         parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_HOSTED_SRC");
+    const std::string wasm_differential_script =
+        read_file(source_root / "scripts" / "run_wasm_differential.sh");
 
     if (runtime_core_src.empty()) {
         return fail("runtime core source set is empty or missing");
@@ -172,6 +174,7 @@ int main(int argc, char** argv) {
              "lib/core/runtime_regions.cpp",
              "lib/core/runtime_shared_memory.cpp",
              "lib/core/runtime_string.cpp",
+             "lib/core/unicode.cpp",
              "lib/core/runtime_tagged_cons.cpp",
              "lib/core/runtime_tensor_alloc.cpp",
              "lib/core/runtime_tensor_index.cpp",
@@ -231,6 +234,17 @@ int main(int argc, char** argv) {
     }
     if (const int rc = require_sources_exist(source_root, runtime_hosted_src, "runtime hosted")) {
         return rc;
+    }
+
+    if (wasm_differential_script.empty()) {
+        return fail("failed to read scripts/run_wasm_differential.sh");
+    }
+    if (!contains_marker(wasm_differential_script, "WASM_VM_SOURCES=(") ||
+        !contains_marker(wasm_differential_script,
+                         "$REPO_ROOT/lib/core/unicode.cpp") ||
+        !contains_marker(wasm_differential_script,
+                         "\"${WASM_VM_SOURCES[@]}\"")) {
+        return fail("WASM VM link is missing the shared Unicode classifier source");
     }
 
     const std::vector<std::string_view> forbidden_markers = {

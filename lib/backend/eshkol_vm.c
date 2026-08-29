@@ -87,6 +87,7 @@
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/core/resource_limits.h"
 #include "eshkol/backend/vm.h"
+#include "eshkol/core/unicode.h"
 #ifndef ESHKOL_VM_WASM
 #include "eshkol/core/runtime.h"
 #endif
