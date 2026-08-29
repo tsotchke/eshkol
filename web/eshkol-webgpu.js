@@ -16,7 +16,8 @@
  *           the CPU path. (An sf64/Ozaki-II WGSL port is a named follow-up.)
  *   high  : df32 -- each f64 carried as an unevaluated (hi, lo) pair of f32,
  *           Dekker/Knuth double-float arithmetic. ~48 bits of mantissa against
- *           f64's 53. THIS IS THE WebGPU DEFAULT.
+ *           f64's 53. THIS IS THE WebGPU DEFAULT and is admitted only when the
+ *           fused-fma probe succeeds.
  *   fast  : plain f32, ~24 bits.
  *
  * Defaulting to `high` rather than `exact` is a deliberate, documented
@@ -62,6 +63,7 @@
     const REDUCE_WORKGROUP = 256;
     const GEMM_TILE = 8;
     const ELEM_WORKGROUP = 64;
+    const GPU_GATE_TOL = 1e-9;
 
     /* ===================== WGSL ===================== */
 
@@ -158,7 +160,7 @@ struct Params { n: u32, op: u32, pad0: u32, pad1: u32 };
 @group(0) @binding(2) var<storage, read_write> OUT: array<f32>;
 @group(0) @binding(3) var<uniform> p: Params;
 
-@compute @workgroup_size(1, 1, 1)
+@compute @workgroup_size(${ELEM_WORKGROUP}, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.n) { return; }
@@ -325,11 +327,16 @@ fn main() {
             this.threshold = (typeof o.threshold === 'number' && o.threshold > 0)
                 ? o.threshold : DEFAULT_THRESHOLD;
             this.precision = o.precision || 'high';
+            this.gateTolerance = (typeof o.gateTolerance === 'number' &&
+                                  Number.isFinite(o.gateTolerance) &&
+                                  o.gateTolerance > 0) ? o.gateTolerance : GPU_GATE_TOL;
             this.pipelines = new Map();
             this.uniformPool = [];
             /* Non-vacuity telemetry: a differential gate asserts these move. */
             this.dispatchCount = 0;
             this.fallbackCount = 0;
+            this.executionMarker = 0;
+            this.lastExecutionMarker = 0;
             this.lastPath = 'none';
             this.fmaFused = true;
             this.memory = null;
@@ -430,21 +437,29 @@ fn main() {
          * element-count threshold. The `exact` tier has no WGSL implementation,
          * so it reports false and the caller takes the CPU path. */
         shouldUse(numElements) {
-            if (!this.device) return false;
-            if (this.precision === 'exact') return false;
+            if (!this.device || this.precision === 'exact') return false;
+            /* The checked-in df32 shader is intentionally fail-closed until
+             * the browser differential gate certifies its compensation path.
+             * Selection and operation support must agree: neither may claim
+             * that the unverified high tier is GPU-capable. */
+            if (this.precision === 'high') return false;
+            if (this.precision === 'fast' && this.gateTolerance <= GPU_GATE_TOL) return false;
             return numElements >= this.threshold;
         }
 
         supportsOperation(kind, op) {
-            /* The checked-in df32 path is present, but this browser/runtime
-             * has not met the repository's 1e-9 gate. Refuse it until a
-             * verified precise-math or Ozaki implementation is available. */
-            if (!this.device || this.precision === 'exact' || this.precision === 'high' || !this.fmaFused) return false;
-            if (this.precision === 'fast') return true;
+            if (!this.device || this.precision === 'exact') return false;
+            if (this.precision === 'high') return false;
+            if (this.precision === 'fast') {
+                /* f32 is never admitted to the 1e-9 gate. It is available only
+                 * when the caller explicitly supplies a looser contract, and
+                 * reductions remain unsupported because their kernel is df32. */
+                return this.gateTolerance > GPU_GATE_TOL &&
+                    ['matmul', 'elementwise'].includes(kind);
+            }
             if (kind === 'elementwise') return Number(op) <= ELEM.ABS;
             if (kind === 'reduce') {
-                return this.precision !== 'fast' &&
-                    [REDUCE.SUM, REDUCE.MIN, REDUCE.MAX, REDUCE.MEAN].includes(Number(op));
+                return [REDUCE.SUM, REDUCE.MIN, REDUCE.MAX, REDUCE.MEAN].includes(Number(op));
             }
             return kind === 'matmul';
         }
@@ -500,22 +515,41 @@ fn main() {
             return buf;
         }
 
+        _recordExecution(path) {
+            const marker = ++this.executionMarker;
+            this.lastExecutionMarker = marker;
+            this.dispatchCount++;
+            this.lastPath = path;
+            return marker;
+        }
+
+        _destroyBuffers(...buffers) {
+            for (const buffer of buffers) if (buffer) buffer.destroy();
+        }
+
         /* The single async boundary. Everything above is synchronous JS;
          * only the readback suspends, and JSPI carries the wasm stack across
          * exactly this await. */
         async _readback(gpuBuf, bytes) {
-            const read = this.device.createBuffer({
-                size: bytes,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-            });
-            const enc = this.device.createCommandEncoder();
-            enc.copyBufferToBuffer(gpuBuf, 0, read, 0, bytes);
-            this.device.queue.submit([enc.finish()]);
-            await read.mapAsync(GPUMapMode.READ);
-            const copy = read.getMappedRange().slice(0);
-            read.unmap();
-            read.destroy();
-            return copy;
+            let read = null;
+            let mapped = false;
+            try {
+                read = this.device.createBuffer({
+                    size: bytes,
+                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+                });
+                const enc = this.device.createCommandEncoder();
+                enc.copyBufferToBuffer(gpuBuf, 0, read, 0, bytes);
+                this.device.queue.submit([enc.finish()]);
+                await read.mapAsync(GPUMapMode.READ);
+                mapped = true;
+                return read.getMappedRange().slice(0);
+            } finally {
+                if (read) {
+                    if (mapped) read.unmap();
+                    read.destroy();
+                }
+            }
         }
 
         /* ---------------- GEMM ---------------- */
@@ -531,43 +565,42 @@ fn main() {
             const encB = df ? encodeDf32(B, K * N) : encodeF32(B, K * N);
             const outBytes = M * N * (df ? 8 : 4);
 
-            const bufA = this._storage(encA);
-            const bufB = this._storage(encB);
-            const bufC = this._outStorage(outBytes);
-            const dims = this._uniform([M, K, N, 0]);
-            const opaque = df ? this._opaque(M * N) : null;
+            let bufA = null, bufB = null, bufC = null, dims = null, opaque = null;
+            try {
+                bufA = this._storage(encA);
+                bufB = this._storage(encB);
+                bufC = this._outStorage(outBytes);
+                dims = this._uniform([M, K, N, 0]);
+                opaque = df ? this._opaque(M * N) : null;
 
-            const pipe = this._pipeline(df ? 'gemm_df32' : 'gemm_f32',
-                                        df ? WGSL_GEMM_DF32 : WGSL_GEMM_F32);
-            const bg = this.device.createBindGroup({
-                layout: pipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: bufA } },
-                    { binding: 1, resource: { buffer: bufB } },
-                    { binding: 2, resource: { buffer: bufC } },
-                    { binding: 3, resource: { buffer: dims } },
-                    ...(opaque ? [{ binding: 4, resource: { buffer: opaque } }] : [])
-                ]
-            });
-            const enc = this.device.createCommandEncoder();
-            const pass = enc.beginComputePass();
-            pass.setPipeline(pipe);
-            pass.setBindGroup(0, bg);
-            pass.dispatchWorkgroups(
-                N, M, 1);
-            pass.end();
-            this.device.queue.submit([enc.finish()]);
+                const pipe = this._pipeline(df ? 'gemm_df32' : 'gemm_f32',
+                                            df ? WGSL_GEMM_DF32 : WGSL_GEMM_F32);
+                const bg = this.device.createBindGroup({
+                    layout: pipe.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: bufA } },
+                        { binding: 1, resource: { buffer: bufB } },
+                        { binding: 2, resource: { buffer: bufC } },
+                        { binding: 3, resource: { buffer: dims } },
+                        ...(opaque ? [{ binding: 4, resource: { buffer: opaque } }] : [])
+                    ]
+                });
+                const enc = this.device.createCommandEncoder();
+                const pass = enc.beginComputePass();
+                pass.setPipeline(pipe);
+                pass.setBindGroup(0, bg);
+                pass.dispatchWorkgroups(Math.ceil(N / GEMM_TILE), Math.ceil(M / GEMM_TILE), 1);
+                pass.end();
+                this.device.queue.submit([enc.finish()]);
 
-            const raw = await this._readback(bufC, outBytes);
-            const C = this._f64View(cPtr, M * N);
-            if (df) decodeDf32(new Float32Array(raw), C, M * N);
-            else { const f = new Float32Array(raw); for (let i = 0; i < M * N; i++) C[i] = f[i]; }
-
-            bufA.destroy(); bufB.destroy(); bufC.destroy(); dims.destroy();
-            if (opaque) opaque.destroy();
-            this.dispatchCount++;
-            this.lastPath = df ? 'webgpu:gemm_df32' : 'webgpu:gemm_f32';
-            return 0;
+                const raw = await this._readback(bufC, outBytes);
+                const C = this._f64View(cPtr, M * N);
+                if (df) decodeDf32(new Float32Array(raw), C, M * N);
+                else { const f = new Float32Array(raw); for (let i = 0; i < M * N; i++) C[i] = f[i]; }
+                return this._recordExecution(df ? 'webgpu:gemm_df32' : 'webgpu:gemm_f32');
+            } finally {
+                this._destroyBuffers(bufA, bufB, bufC, dims, opaque);
+            }
         }
 
         /* ---------------- elementwise ---------------- */
@@ -605,42 +638,42 @@ fn main() {
             }
 
             const bytes = n * (df ? 8 : 4);
-            const bufA = this._storage(encA);
-            const bufB = this._storage(encB);
-            const bufO = this._outStorage(bytes);
-            const params = this._uniform([n, op, 0, 0]);
-            const opaque = df ? this._opaque(n) : null;
+            let bufA = null, bufB = null, bufO = null, params = null, opaque = null;
+            try {
+                bufA = this._storage(encA);
+                bufB = this._storage(encB);
+                bufO = this._outStorage(bytes);
+                params = this._uniform([n, op, 0, 0]);
+                opaque = df ? this._opaque(n) : null;
 
-            const pipe = this._pipeline(df ? 'elem_df32' : 'elem_f32',
-                                        df ? WGSL_ELEM_DF32 : WGSL_ELEM_F32);
-            const bg = this.device.createBindGroup({
-                layout: pipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: bufA } },
-                    { binding: 1, resource: { buffer: bufB } },
-                    { binding: 2, resource: { buffer: bufO } },
-                    { binding: 3, resource: { buffer: params } },
-                    ...(opaque ? [{ binding: 4, resource: { buffer: opaque } }] : [])
-                ]
-            });
-            const enc = this.device.createCommandEncoder();
-            const pass = enc.beginComputePass();
-            pass.setPipeline(pipe);
-            pass.setBindGroup(0, bg);
-            pass.dispatchWorkgroups(n, 1, 1);
-            pass.end();
-            this.device.queue.submit([enc.finish()]);
+                const pipe = this._pipeline(df ? 'elem_df32' : 'elem_f32',
+                                            df ? WGSL_ELEM_DF32 : WGSL_ELEM_F32);
+                const bg = this.device.createBindGroup({
+                    layout: pipe.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: bufA } },
+                        { binding: 1, resource: { buffer: bufB } },
+                        { binding: 2, resource: { buffer: bufO } },
+                        { binding: 3, resource: { buffer: params } },
+                        ...(opaque ? [{ binding: 4, resource: { buffer: opaque } }] : [])
+                    ]
+                });
+                const enc = this.device.createCommandEncoder();
+                const pass = enc.beginComputePass();
+                pass.setPipeline(pipe);
+                pass.setBindGroup(0, bg);
+                pass.dispatchWorkgroups(Math.ceil(n / ELEM_WORKGROUP), 1, 1);
+                pass.end();
+                this.device.queue.submit([enc.finish()]);
 
-            const raw = await this._readback(bufO, bytes);
-            const O = this._f64View(outPtr, n);
-            if (df) decodeDf32(new Float32Array(raw), O, n);
-            else { const f = new Float32Array(raw); for (let i = 0; i < n; i++) O[i] = f[i]; }
-
-            bufA.destroy(); bufB.destroy(); bufO.destroy(); params.destroy();
-            if (opaque) opaque.destroy();
-            this.dispatchCount++;
-            this.lastPath = df ? 'webgpu:elem_df32' : 'webgpu:elem_f32';
-            return 0;
+                const raw = await this._readback(bufO, bytes);
+                const O = this._f64View(outPtr, n);
+                if (df) decodeDf32(new Float32Array(raw), O, n);
+                else { const f = new Float32Array(raw); for (let i = 0; i < n; i++) O[i] = f[i]; }
+                return this._recordExecution(df ? 'webgpu:elem_df32' : 'webgpu:elem_f32');
+            } finally {
+                this._destroyBuffers(bufA, bufB, bufO, params, opaque);
+            }
         }
 
         /* ---------------- reduction ---------------- */
@@ -660,57 +693,57 @@ fn main() {
             const groups = Math.min(64, Math.max(1, Math.ceil(n / REDUCE_WORKGROUP)));
             const perGroup = Math.ceil(n / groups);
 
-            const bufIn = this._storage(enc0);
-            const bufOut = this._outStorage(groups * 8);
-            const params = this._uniform([n, kernelOp, perGroup, 0]);
-            const opaque = this._opaque(groups);
+            let bufIn = null, bufOut = null, params = null, opaque = null;
+            try {
+                bufIn = this._storage(enc0);
+                bufOut = this._outStorage(groups * 8);
+                params = this._uniform([n, kernelOp, perGroup, 0]);
+                opaque = this._opaque(groups);
 
-            const pipe = this._pipeline('reduce_df32', WGSL_REDUCE_DF32);
-            const bg = this.device.createBindGroup({
-                layout: pipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: bufIn } },
-                    { binding: 1, resource: { buffer: bufOut } },
-                    { binding: 2, resource: { buffer: params } },
-                    { binding: 4, resource: { buffer: opaque } }
-                ]
-            });
-            const enc = this.device.createCommandEncoder();
-            const pass = enc.beginComputePass();
-            pass.setPipeline(pipe);
-            pass.setBindGroup(0, bg);
-            pass.dispatchWorkgroups(groups, 1, 1);
-            pass.end();
-            this.device.queue.submit([enc.finish()]);
+                const pipe = this._pipeline('reduce_df32', WGSL_REDUCE_DF32);
+                const bg = this.device.createBindGroup({
+                    layout: pipe.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: bufIn } },
+                        { binding: 1, resource: { buffer: bufOut } },
+                        { binding: 2, resource: { buffer: params } },
+                        { binding: 4, resource: { buffer: opaque } }
+                    ]
+                });
+                const enc = this.device.createCommandEncoder();
+                const pass = enc.beginComputePass();
+                pass.setPipeline(pipe);
+                pass.setBindGroup(0, bg);
+                pass.dispatchWorkgroups(groups, 1, 1);
+                pass.end();
+                this.device.queue.submit([enc.finish()]);
 
-            const raw = await this._readback(bufOut, groups * 8);
-            const partials = new Float32Array(raw);
+                const raw = await this._readback(bufOut, groups * 8);
+                const partials = new Float32Array(raw);
 
-            /* Final cross-group combine on the host in full f64. */
-            let acc;
-            switch (kernelOp) {
-                case REDUCE.PROD: acc = 1; break;
-                case REDUCE.MIN: acc = Infinity; break;
-                case REDUCE.MAX: acc = -Infinity; break;
-                default: acc = 0; break;
-            }
-            for (let g = 0; g < groups; g++) {
-                const v = partials[g * 2] + partials[g * 2 + 1];
+                /* Final cross-group combine on the host in full f64. */
+                let acc;
                 switch (kernelOp) {
-                    case REDUCE.PROD: acc *= v; break;
-                    case REDUCE.MIN: acc = v < acc ? v : acc; break;
-                    case REDUCE.MAX: acc = v > acc ? v : acc; break;
-                    default: acc += v; break;
+                    case REDUCE.PROD: acc = 1; break;
+                    case REDUCE.MIN: acc = Infinity; break;
+                    case REDUCE.MAX: acc = -Infinity; break;
+                    default: acc = 0; break;
                 }
+                for (let g = 0; g < groups; g++) {
+                    const v = partials[g * 2] + partials[g * 2 + 1];
+                    switch (kernelOp) {
+                        case REDUCE.PROD: acc *= v; break;
+                        case REDUCE.MIN: acc = v < acc ? v : acc; break;
+                        case REDUCE.MAX: acc = v > acc ? v : acc; break;
+                        default: acc += v; break;
+                    }
+                }
+                if (op === REDUCE.MEAN) acc /= n;
+                this._f64View(outPtr, 1)[0] = acc;
+                return this._recordExecution('webgpu:reduce_df32');
+            } finally {
+                this._destroyBuffers(bufIn, bufOut, params, opaque);
             }
-            if (op === REDUCE.MEAN) acc /= n;
-            this._f64View(outPtr, 1)[0] = acc;
-
-            bufIn.destroy(); bufOut.destroy(); params.destroy();
-            if (opaque) opaque.destroy();
-            this.dispatchCount++;
-            this.lastPath = 'webgpu:reduce_df32';
-            return 0;
         }
     }
 
@@ -800,12 +833,18 @@ fn main() {
      * the program correctly, just on the CPU.
      */
     function makeImports(backend, memoryRef) {
-        const jspi = (typeof WebAssembly.Suspending === 'function');
+        const jspi = jspiAvailable();
         const mem = () => (backend && backend.memory) || memoryRef();
 
         function sync(fn) { return fn; }
         function suspending(fn) {
             return jspi ? new WebAssembly.Suspending(fn) : null;
+        }
+
+        function verified(marker, before) {
+            return Number.isSafeInteger(marker) && marker > before &&
+                   backend.executionMarker === marker &&
+                   backend.lastExecutionMarker === marker;
         }
 
         /* Each entry: if the GPU can serve this call, suspend into the async
@@ -822,7 +861,12 @@ fn main() {
                     M = Number(M); K = Number(K); N = Number(N);
                     backend.setMemory(mem());
                     if (backend.shouldUse(M * N) && backend.supportsOperation('matmul')) {
-                        try { return void (await backend.matmulF64(aPtr, bPtr, cPtr, M, K, N)); }
+                        const before = backend.executionMarker;
+                        try {
+                            const marker = await backend.matmulF64(aPtr, bPtr, cPtr, M, K, N);
+                            if (verified(marker, before)) return 0;
+                            throw new Error('missing WebGPU execution marker');
+                        }
                         catch (e) { backend.diagnostics.push('gemm failed, CPU fallback: ' + e); }
                     }
                     if (backend.shouldUse(M * N)) backend.diagnostics.push('UNSUPPORTED: matmul refused before GPU_GATE_TOL certification');
@@ -836,7 +880,12 @@ fn main() {
                     n = Number(n); op = Number(op);
                     backend.setMemory(mem());
                     if (backend.shouldUse(n) && backend.supportsOperation('elementwise', op)) {
-                        try { await backend.elementwiseF64(aPtr, bPtr, outPtr, n, op); return 0; }
+                        const before = backend.executionMarker;
+                        try {
+                            const marker = await backend.elementwiseF64(aPtr, bPtr, outPtr, n, op);
+                            if (verified(marker, before)) return 0;
+                            throw new Error('missing WebGPU execution marker');
+                        }
                         catch (e) { backend.diagnostics.push('elementwise failed, CPU fallback: ' + e); }
                     }
                     if (backend.shouldUse(n)) backend.diagnostics.push('UNSUPPORTED: elementwise operation refused before GPU_GATE_TOL certification');
@@ -851,7 +900,12 @@ fn main() {
                     n = Number(n); op = Number(op);
                     backend.setMemory(mem());
                     if (backend.shouldUse(n) && backend.supportsOperation('reduce', op)) {
-                        try { await backend.reduceF64(inPtr, outPtr, n, op); return 0; }
+                        const before = backend.executionMarker;
+                        try {
+                            const marker = await backend.reduceF64(inPtr, outPtr, n, op);
+                            if (verified(marker, before)) return 0;
+                            throw new Error('missing WebGPU execution marker');
+                        }
                         catch (e) { backend.diagnostics.push('reduce failed, CPU fallback: ' + e); }
                     }
                     if (backend.shouldUse(n)) backend.diagnostics.push('UNSUPPORTED: reduction refused before GPU_GATE_TOL certification');
@@ -880,7 +934,7 @@ fn main() {
         /* Batched matmul has no browser WGSL kernel yet. Keep the import
          * callable and route it through the CPU reference; it must never be
          * mistaken for a GPU dispatch. */
-        entries.eshkol_batch_matmul_dispatch = (aPtr, bPtr, cPtr, batch, M, K, N) =>
+        entries.eshkol_batch_matmul_dispatch = (aPtr, bPtr, cPtr, batch, M, K, N, dtype) =>
             cpu.batchMatmul(mem(), aPtr, bPtr, cPtr,
                             Number(batch), Number(M), Number(K), Number(N));
 
@@ -910,6 +964,20 @@ fn main() {
         return fn;
     }
 
+    /* A WebAssembly.Instance exports object is not replaceable in place. Build
+     * a public export facade so every synchronous wasm entry that can reach a
+     * suspending GPU import is paired with WebAssembly.promising. Keeping the
+     * non-function exports (memory, tables, globals) intact preserves the
+     * loader ABI. */
+    function promisingExports(exports) {
+        if (!jspiAvailable()) return exports;
+        const wrapped = {};
+        for (const [name, value] of Object.entries(exports)) {
+            wrapped[name] = typeof value === 'function' ? promisingEntry(value) : value;
+        }
+        return wrapped;
+    }
+
     function jspiAvailable() {
         return typeof WebAssembly.Suspending === 'function' &&
                typeof WebAssembly.promising === 'function';
@@ -920,6 +988,7 @@ fn main() {
         create: EshkolWebGPU.create,
         makeImports,
         promisingEntry,
+        promisingExports,
         jspiAvailable,
         cpu,
         ELEM,

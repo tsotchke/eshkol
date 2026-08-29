@@ -224,10 +224,17 @@ class EshkolRepl {
 
         try {
             const instance = await WebAssembly.instantiate(module, imports);
-            this.instances.push(instance);
+            const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+            const publicExports = G && typeof G.promisingExports === 'function'
+                ? G.promisingExports(instance.exports) : instance.exports;
+            /* WebAssembly.Instance exports are immutable as a property of the
+             * instance. Keep the raw instance available while exposing the
+             * JSPI-promising export facade to every REPL caller. */
+            const publicInstance = { rawInstance: instance, exports: publicExports };
+            this.instances.push(publicInstance);
 
             // Register exports as symbols
-            for (const [name, value] of Object.entries(instance.exports)) {
+            for (const [name, value] of Object.entries(publicExports)) {
                 if (typeof value === 'function') {
                     this.symbols.set(name, {
                         func: value,
@@ -237,8 +244,8 @@ class EshkolRepl {
             }
 
             return {
-                instance: instance,
-                exports: instance.exports
+                instance: publicInstance,
+                exports: publicExports
             };
         } catch (e) {
             console.error('Instantiation failed:', e);
@@ -501,6 +508,7 @@ class EshkolRepl {
                 // the INV-wasm-import-glue-equality invariant in
                 // .icc/architecture-model.yaml is critical-severity.
                 eshkol_matmul_dispatch: gpu.eshkol_matmul_dispatch,
+                eshkol_batch_matmul_dispatch: gpu.eshkol_batch_matmul_dispatch,
                 eshkol_gpu_elementwise_f64: gpu.eshkol_gpu_elementwise_f64,
                 eshkol_gpu_reduce_f64: gpu.eshkol_gpu_reduce_f64,
                 eshkol_gpu_init: gpu.eshkol_gpu_init,

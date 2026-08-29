@@ -35,6 +35,13 @@ class EshkolRuntime {
         this.memory = instance.exports.memory || this._importedMemory;
     }
 
+    wrapInstance(instance) {
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        const exports = G && typeof G.promisingExports === 'function'
+            ? G.promisingExports(instance.exports) : instance.exports;
+        return { rawInstance: instance, exports };
+    }
+
     // === Handle System ===
 
     createHandle(obj) {
@@ -541,6 +548,7 @@ class EshkolRuntime {
                 // INV-wasm-import-glue-equality invariant in
                 // .icc/architecture-model.yaml is critical-severity.
                 eshkol_matmul_dispatch: gpu.eshkol_matmul_dispatch,
+                eshkol_batch_matmul_dispatch: gpu.eshkol_batch_matmul_dispatch,
                 eshkol_gpu_elementwise_f64: gpu.eshkol_gpu_elementwise_f64,
                 eshkol_gpu_reduce_f64: gpu.eshkol_gpu_reduce_f64,
                 eshkol_gpu_init: gpu.eshkol_gpu_init,

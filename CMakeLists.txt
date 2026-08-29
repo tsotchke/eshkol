@@ -1514,7 +1514,9 @@ if(ESHKOL_GPU_ENABLED)
         # web/eshkol-webgpu.js through EM_ASYNC_JS, so there is nothing to
         # find — the "device" is whatever the hosting page published. The
         # Emscripten WebGPU port supplies webgpu.h and the browser bindings;
-        # Asyncify is required because the C API remains synchronous.
+        # Asyncify is required because the C API remains synchronous. The
+        # browser-side direct WASM import path additionally requires JSPI and
+        # wraps every callable export with WebAssembly.promising.
         set(GPU_FOUND TRUE)
         set(ESHKOL_GPU_BACKEND "WEBGPU" CACHE INTERNAL
             "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
