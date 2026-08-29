@@ -589,7 +589,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  582 `vm-supported`, 44 `native-only-justified`, 330 `gap`. `op:GRADIENT` and
+  584 `vm-supported`, 44 `native-only-justified`, 328 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release-cut
@@ -603,7 +603,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
   see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
   item e6/g6).
-- Of the 330 `gap` rows, every row has a canonical disposition in
+- Of the 328 `gap` rows, every row has a canonical disposition in
   `tests/vm_parity/GAP_DISPOSITIONS.tsv`; rows with a historical reproducer
   reference a live file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
