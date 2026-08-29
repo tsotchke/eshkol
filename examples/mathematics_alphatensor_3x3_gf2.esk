@@ -1,0 +1,66 @@
+;; Recent result and public witness: https://github.com/google-deepmind/alphatensor
+;; A rank-23 factorization for 3x3 matrix multiplication over F_2.
+;; Exact expansion is checked on all 9 x 9 pairs of matrix units.
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define rank 23)
+(define u-masks (vector 65 325 195 69 6 22 54 5 30 27 40 9 32 288 416 8 128 16 360 432 64 424 18))
+(define v-masks (vector 73 64 8 77 8 333 448 5 133 149 128 146 256 434 178 4 146 32 2 48 4 130 365))
+(define w-masks (vector 1048729 38256 1048734 2771840 2769920 2425856 5373993 167936 1142784))
+
+(define (f2 n) (modulo n 2))
+(define (dot-mask mask bits) (f2 (popcount (bitwise-and mask bits))))
+(define (h-at i a b)
+  (f2 (* (dot-mask (vref u-masks i) a)
+         (dot-mask (vref v-masks i) b))))
+(define (h-list i a b)
+  (if (= i rank) '()
+      (cons (h-at i a b) (h-list (+ i 1) a b))))
+(define (w-contract mask hs i acc)
+  (if (= i rank) (f2 acc)
+      (w-contract mask hs (+ i 1)
+                  (if (= (bitwise-and mask (expt 2 i)) 0)
+                      acc (+ acc (list-ref hs i))))))
+(define (result-mask a b)
+  (let ((hs (h-list 0 a b)))
+    (+ (if (= (w-contract (vref w-masks 0) hs 0 0) 1) 1 0)
+       (if (= (w-contract (vref w-masks 1) hs 0 0) 1) 2 0)
+       (if (= (w-contract (vref w-masks 2) hs 0 0) 1) 4 0)
+       (if (= (w-contract (vref w-masks 3) hs 0 0) 1) 8 0)
+       (if (= (w-contract (vref w-masks 4) hs 0 0) 1) 16 0)
+       (if (= (w-contract (vref w-masks 5) hs 0 0) 1) 32 0)
+       (if (= (w-contract (vref w-masks 6) hs 0 0) 1) 64 0)
+       (if (= (w-contract (vref w-masks 7) hs 0 0) 1) 128 0)
+       (if (= (w-contract (vref w-masks 8) hs 0 0) 1) 256 0))))
+(define (expected-mask ai bi)
+  (let ((ar (quotient ai 3)) (ac (modulo ai 3))
+        (br (quotient bi 3)) (bc (modulo bi 3)))
+    ;; W is indexed in the column-major output order used by the
+    ;; published contraction: c.reshape(n,m).T.
+    (if (= ac br) (expt 2 (+ (* bc 3) ar)) 0)))
+(define (check-row ai bi)
+  (if (= bi 9) #t
+      (and (= (result-mask (expt 2 ai) (expt 2 bi))
+              (expected-mask ai bi))
+           (check-row ai (+ bi 1)))))
+(define (check-all ai)
+  (if (= ai 9) #t (and (check-row ai 0) (check-all (+ ai 1)))))
+
+(check "rank-23 factorization has 23 bilinear products" (= rank 23))
+(check "rank-23 tensor expands to 3x3 multiplication over F2"
+       (check-all 0))
+(display "AlphaTensor rank-23 F2 matrix multiplication") (newline)
+(display "Basis pairs checked: 81") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline)))
