@@ -2521,12 +2521,66 @@ entries:
   - id: IF-06
     bucket: IN-FLIGHT
     silent_wrong_class: false
-    status: open
+    status: closed
+    closed_at: "2026-08-28"
     title: "A non-store value passed to a memory-store accessor SIGSEGVs at address 0"
-    fix_lane: "PR #418 — OPEN"
-    evidence: "lib/core/memory_store.esk; PR #416 Escalation 5. No test in tests/ exercises memory-store-append! at all."
+    fix_lane: "closed"
+    evidence: >-
+      lib/core/memory_store.esk now validates the mem-store tag and vector shape
+      before every public accessor and operation. tests/memory/memory_store_test.esk
+      exercises non-store, mistagged-vector, and real-store cases, including
+      memory-store-append!, memory-store-verify, count, and head; the same fixture
+      is run under native JIT and AOT by the cross-engine memory-store durability gate.
+    observed_after: >-
+      Non-store inputs raise catchable errors instead of dereferencing an invalid
+      vector address, and valid compatibility/durable stores remain usable.
     caught_by: [pr-record-416]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
+
+  - id: SW-97
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: memory/durability
+    status: closed
+    closed_at: "2026-08-28"
+    title: "core.memory_store lacked strict linear journal evidence and a bounded durable writer path"
+    repro: >-
+      Open a core.memory_store journal, append events, then audit a journal with
+      a torn row, a fork, or a stale sidecar; the prior surface had no strict
+      linear evidence descriptor, no durable writer ownership, and no compact
+      tail-only open for the event-log CRDT.
+    observed: >-
+      origin/master exposed only the permissive parent-existence audit and
+      compatibility open. It could not provide count/head/byte evidence for a
+      strict linear rebuild gate, and its replay path skipped malformed rows.
+    correct: >-
+      Durable journal consumers can acquire one writer, persist before advancing
+      the in-memory head, strictly replay or scan every canonical row, reject
+      forks/torn rows/hash mismatches, and obtain ownership-bound linear evidence
+      without retaining the historic RGA projection.
+    root_cause: >-
+      core.memory_store stopped at the original compatibility file wrapper:
+      persistence, sidecar hints, and the CRDT's content audit were separate
+      concerns, with no strict canonical-journal reader or ownership-aware
+      evidence contract.
+    fix: >-
+      Added strict canonical parsing and replay, durable and fast-durable
+      single-writer constructors with close semantics, fsync plus parent-directory
+      publication, compact authoritative tail/count state, bounded canonical rows,
+      memory-store-audit-linear, and memory-store-linear-evidence. Kept
+      core.memory unchanged from current master so the closed SW-63 strict LWW
+      fix is not duplicated.
+    evidence: >-
+      tests/memory/fixtures/memory_store_durability_test.esk reports 44 passed and 0
+      failed under native JIT and native AOT, covering durable ownership,
+      persist-before-advance, stale-sidecar healing, head-publication failure,
+      ambiguous parent-sync poisoning/recovery, strict torn/trailing/fork rows,
+      compact bounded state, WAL-sized payloads, byte limits, and both audit
+      descriptors. The same gate runs the core.memory CRDT fixture with 12 passed
+      and 0 failed under native JIT, plus VM vector-clock dependency parity.
+      CTest memory_store_cross_engine_durability passes 1/1 in 180.09 seconds.
+    caught_by: [sol-scope-audit-2026-08-28]
+    missed_by: [icc-smoke, icc-readiness, ctest]
 
   - id: IF-07
     bucket: IN-FLIGHT

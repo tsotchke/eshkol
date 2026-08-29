@@ -1,0 +1,252 @@
+;;; Canonical journal durability/ownership adversarial gate.
+;;;
+;;; This intentionally tests the production constructor, not the legacy
+;;; compatibility open.  It is bounded (64 appends) while proving compact
+;;; append-only handles do not retain a historic RGA projection.
+
+(require stdlib)
+(require core.memory)
+(require core.sexp)
+(require core.memory_store)
+
+(define passed 0)
+(define failed 0)
+(define (check name ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display name) (newline))))
+
+(define configured-root (getenv "ESHKOL_MEMORY_STORE_TEST_ROOT"))
+(define root (if (string? configured-root)
+                configured-root
+                ".scratch/memory-store-durability"))
+(define journal (string-append root ".log"))
+(define trailing (string-append root ".trailing.log"))
+(define malformed (string-append root ".malformed.log"))
+(define head-failure (string-append root ".head-failure.log"))
+(define parent-sync-failure (string-append root ".parent-sync-failure.log"))
+(define forked (string-append root ".forked.log"))
+(define wal-derived (string-append root ".wal-derived.log"))
+(define oversized (string-append root ".oversized.log"))
+
+(define (clean path)
+  (if (file-exists? path) (delete-file path) #t)
+  (if (file-exists? (string-append path ".head"))
+      (directory-delete-recursive (string-append path ".head")) #t)
+  (if (file-exists? (string-append path ".head.tmp")) (delete-file (string-append path ".head.tmp")) #t)
+  (if (file-exists? (string-append path ".lock")) (delete-file (string-append path ".lock")) #t))
+
+(define (overwrite path text)
+  (let ((p (open-output-file path)))
+    (write-string text p)
+    (close-port p)))
+
+(define (append-text path text)
+  (let ((p (open-output-file-append path)))
+    (write-string text p)
+    (close-port p)))
+
+(define (append-n store n last)
+  (if (= n 0) last
+      (append-n store (- n 1)
+                (memory-store-append! store 'cycle (list (cons 'n n))))))
+
+(clean journal)
+(clean trailing)
+(clean malformed)
+(clean head-failure)
+(clean parent-sync-failure)
+(clean forked)
+(clean wal-derived)
+(clean oversized)
+
+;; A compact durable handle owns its journal lock for the entire lifetime and
+;; retains the full tail event while its event-list projection remains empty.
+(define writer (memory-store-open-fast-durable 'journal-node journal))
+(check "durable compact open acquires a writer" writer)
+(define first (memory-store-append! writer 'cycle (list (cons 'phase "first"))))
+(check "first durable append returns canonical event" first)
+(check "compact handle keeps full authoritative tail"
+       (equal? (memory-store-tail writer) first))
+(check "compact handle head equals tail id"
+       (equal? (memory-store-head writer) (memory-event-id first)))
+(check "compact handle reports logical committed count" (= (memory-store-count writer) 1))
+(check "compact handle retains no historic RGA events"
+       (= (length (memory-events (memory-store-log writer))) 0))
+(check "second durable owner is refused while first is live"
+       (not (memory-store-open-durable 'journal-node journal)))
+(define last (append-n writer 64 first))
+(check "bounded compact append batch commits" last)
+(check "bounded compact append batch reports logical journal count"
+       (= (memory-store-count writer) 65))
+(check "bounded compact append batch keeps resident RGA bounded"
+       (= (length (memory-events (memory-store-log writer))) 0))
+(check "compact tail advances through batch" (equal? (memory-store-tail writer) last))
+(check "compact verification re-scans file truth" (eq? (memory-store-verify writer) #t))
+(define writer-linear-evidence (memory-store-linear-evidence writer))
+(check "durable linear evidence is exact and O(1)-scan shaped"
+       (and (equal? (list-ref writer-linear-evidence 0) 'ms-audit-linear-v1)
+            (eq? (list-ref writer-linear-evidence 1) #t)
+            (= (list-ref writer-linear-evidence 2) 65)
+            (equal? (list-ref writer-linear-evidence 3) (memory-event-id last))
+            (> (list-ref writer-linear-evidence 4) 0)))
+(check "close releases durable writer ownership" (memory-store-close! writer))
+
+;; A deliberately stale sidecar must not determine the next parent.  The file
+;; tail is strictly validated and heals the cache before the next append.
+(overwrite (string-append journal ".head") "(ms-head-v1 \"stale\" ())\n")
+(define healed (memory-store-open-fast-durable 'journal-node journal))
+(check "reopen heals stale sidecar from strict journal tail"
+       (equal? (memory-store-tail healed) last))
+(check "healed compact head is canonical tail id"
+       (equal? (memory-store-head healed) (memory-event-id last)))
+(define after-heal (memory-store-append! healed 'cycle (list (cons 'phase "after-heal"))))
+(check "append after stale sidecar links to file tail"
+       (equal? (memory-event-prev after-heal) (memory-event-id last)))
+(memory-store-close! healed)
+
+;; A fully committed journal line remains acknowledged if publishing `.head`
+;; fails.  We block rename by making the target sidecar a directory, then
+;; remove it and confirm reopen/append continues from file truth.
+(define blocked (memory-store-open-fast-durable 'journal-node head-failure))
+(make-directory (string-append head-failure ".head"))
+(define committed-without-head
+  (memory-store-append! blocked 'cycle (list (cons 'phase "head-failure"))))
+(check "journal commit survives head publication failure" committed-without-head)
+(check "live handle advances after committed head failure"
+       (equal? (memory-store-head blocked) (memory-event-id committed-without-head)))
+(memory-store-close! blocked)
+(directory-delete-recursive (string-append head-failure ".head"))
+(if (file-exists? (string-append head-failure ".head.tmp"))
+    (delete-file (string-append head-failure ".head.tmp")) #t)
+(define recovered (memory-store-open-fast-durable 'journal-node head-failure))
+(check "reopen recovers committed line with no sidecar"
+       (equal? (memory-store-tail recovered) committed-without-head))
+(define after-head-failure (memory-store-append! recovered 'cycle (list (cons 'phase "recovered"))))
+(check "recovered append links to committed line"
+       (equal? (memory-event-prev after-head-failure) (memory-event-id committed-without-head)))
+(memory-store-close! recovered)
+
+;; A first-file parent-directory sync failure is ambiguous: the journal bytes
+;; have committed, but the filename durability boundary was not confirmed.
+;; The one-shot seam fires only at that boundary, after the row write/flush/
+;; fsync/close sequence.  The throwing append must poison (close) its durable
+;; handle so the caller cannot continue mutating from an unknown commit state;
+;; after restart, strict replay is the sole authority and recovers the row.
+(define parent-sync-store
+  (memory-store-open-fast-durable 'journal-node parent-sync-failure))
+(check "parent-sync fault fixture opens a durable writer" parent-sync-store)
+(memory-store-test-fail-next-first-file-parent-sync!)
+(define parent-sync-ambiguous-raised #f)
+(guard (exn (#t (set! parent-sync-ambiguous-raised #t)))
+  (memory-store-append! parent-sync-store 'cycle
+                        (list (cons 'phase "parent-sync-ambiguous"))))
+(check "committed first-file parent-sync failure raises ambiguous commit"
+       parent-sync-ambiguous-raised)
+(check "ambiguous commit poisons the durable handle"
+       (not (memory-store-append! parent-sync-store 'cycle
+                                   (list (cons 'phase "must-not-continue")))))
+(check "poisoned ambiguous handle never advances its in-memory count"
+       (= (memory-store-count parent-sync-store) 0))
+(check "strict restart recovers the row committed before parent-sync failure"
+       (let ((restarted (memory-store-open-durable 'journal-node parent-sync-failure)))
+         (if (not restarted)
+             #f
+             (let ((recovered-tail (memory-store-tail restarted)))
+               (let ((ok (and (= (memory-store-count restarted) 1)
+                              (equal? (memory-event-type recovered-tail) 'cycle)
+                              (equal? (cdr (list-ref (memory-event-payload recovered-tail) 0))
+                                      "parent-sync-ambiguous"))))
+                 (memory-store-close! restarted)
+                 ok)))))
+
+;; A strict linear evidence scan rejects a fork even though the legacy CRDT
+;; audit accepts and counts concurrent children of one parent.
+(define fork-base (make-memory-log 'journal-node))
+(vector-set! fork-base 3 (memory-event-vclock first))
+(vector-set! fork-base 4 (memory-event-id first))
+(define fork-event (memory-append! fork-base 'cycle (list (cons 'phase "fork"))))
+(define fork-base-2 (make-memory-log 'journal-node))
+(vector-set! fork-base-2 3 (memory-event-vclock first))
+(vector-set! fork-base-2 4 (memory-event-id first))
+(define fork-event-2 (memory-append! fork-base-2 'cycle (list (cons 'phase "fork-two"))))
+(overwrite forked
+           (string-append (sexp->canonical-string first) "\n"
+                          (sexp->canonical-string fork-event) "\n"
+                          (sexp->canonical-string fork-event-2) "\n"))
+(check "legacy audit counts a repeated child as a fork"
+       (equal? (memory-store-audit forked) (list 'ms-audit-v1 #t 3 1)))
+(check "linear audit rejects the forked linkage"
+       (equal? (memory-store-audit-linear forked) (cons 3 'linkage-broken)))
+
+;; Strict row parsing must reject a valid canonical prefix with trailing bytes,
+;; and a torn/malformed row.  Both canonical and compatibility opens fail
+;; closed rather than replaying a partial prefix.
+(define valid-for-trailing (memory-store-open-fast-durable 'journal-node trailing))
+(memory-store-append! valid-for-trailing 'cycle (list (cons 'phase "valid")))
+(memory-store-close! valid-for-trailing)
+(append-text trailing "trailing-garbage\n")
+(check "linear audit reports the precise trailing-row failure"
+       (equal? (memory-store-audit-linear trailing) (cons 2 'unparseable)))
+(check "durable open rejects trailing garbage row"
+       (not (memory-store-open-durable 'journal-node trailing)))
+(check "ordinary strict open rejects trailing garbage row"
+       (not (memory-store-open 'journal-node trailing)))
+(overwrite malformed "(mem-ev-v1 \"torn\"\n")
+(check "durable open rejects torn row" (not (memory-store-open-durable 'journal-node malformed)))
+
+;; Failed persistence cannot advance a legacy in-memory log either: this is a
+;; deterministic fault injection through a missing parent directory.
+(define failed-store
+  (make-memory-store (make-memory-log 'journal-node)
+                     (path-join root "missing-parent" "journal.log")))
+(check "failed append returns false" (not (memory-store-append! failed-store 'cycle (list (cons 'phase "fail")))))
+(check "failed append does not advance in-memory count" (= (memory-store-count failed-store) 0))
+(check "failed append does not advance in-memory head" (not (memory-store-head failed-store)))
+
+;; canonical_learning_history_capacity.esk admits a 47,104-byte WAL
+;; transaction in two base64 fields (transaction + ledger).  Each encodes to
+;; 62,808 characters, so this models that largest legal envelope exactly.
+(define wal-store (memory-store-open-durable 'journal-node wal-derived))
+(define wal-base64-payload (make-string 62808 #\A))
+(define wal-event
+  (memory-store-append! wal-store 'canonical-learning-history
+                        (list (cons 'transaction-base64 wal-base64-payload)
+                              (cons 'ledger-base64 wal-base64-payload))))
+(check "max legal WAL canonical envelope commits" wal-event)
+(check "max legal WAL canonical envelope preserves exact transaction base64"
+       (equal? (cdr (list-ref (memory-event-payload wal-event) 0)) wal-base64-payload))
+(check "max legal WAL canonical envelope preserves exact ledger base64"
+       (equal? (cdr (list-ref (memory-event-payload wal-event) 1)) wal-base64-payload))
+(check "max legal WAL canonical envelope audits clean"
+       (equal? (memory-store-audit wal-derived) (list 'ms-audit-v1 #t 1 0)))
+(memory-store-close! wal-store)
+(define wal-reopened (memory-store-open 'journal-node wal-derived))
+(check "max legal WAL canonical envelope reopens" wal-reopened)
+(check "max legal WAL canonical envelope reopens exact transaction base64"
+       (equal? (cdr (list-ref (memory-event-payload (memory-store-tail wal-reopened)) 0))
+               wal-base64-payload))
+
+;; The canonical event-line ceiling is enforced before any I/O or in-memory
+;; advancement; an over-bound record must not create its otherwise valid path.
+(define oversized-store
+  (make-memory-store (make-memory-log 'journal-node)
+                     oversized))
+(check "oversized canonical event is refused before append"
+       (not (memory-store-append! oversized-store 'cycle
+                                  (list (cons 'payload (make-string 131072 #\x))))))
+(check "oversized event refusal leaves count unchanged" (= (memory-store-count oversized-store) 0))
+(check "oversized canonical event refusal occurs before file I/O"
+       (not (file-exists? oversized)))
+
+(clean journal)
+(clean trailing)
+(clean malformed)
+(clean head-failure)
+(clean parent-sync-failure)
+(clean forked)
+(clean wal-derived)
+(clean oversized)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

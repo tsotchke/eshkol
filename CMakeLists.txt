@@ -5341,6 +5341,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1")
 
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh")
+        add_test(
+            NAME memory_store_cross_engine_durability
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_store_durability_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+        )
+        set_tests_properties(memory_store_cross_engine_durability
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "memory_store_durability_test.sh: PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
