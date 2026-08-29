@@ -1393,7 +1393,8 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     switch (ast.type) {
         case ESHKOL_STRING:
             if (ast.str_val.ptr) {
-                result.str_val.ptr = strdup(ast.str_val.ptr);
+                result.str_val.ptr = new char[ast.str_val.size];
+                memcpy(result.str_val.ptr, ast.str_val.ptr, ast.str_val.size);
                 result.str_val.size = ast.str_val.size;
             }
             break;

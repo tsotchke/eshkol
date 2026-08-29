@@ -13,6 +13,7 @@
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
+#include <cstdint>
 
 namespace eshkol {
 
@@ -295,8 +296,35 @@ llvm::Value* CodegenContext::internStringWithHeader(const std::string& str, uint
     // Check if already interned with header
     std::string key = str + "_hdr_" + std::to_string(subtype);
     auto it = headered_strings_.find(key);
-    if (it != headered_strings_.end()) {
+    if (str.find('\0') == std::string::npos && it != headered_strings_.end()) {
         return it->second;
+    }
+
+    // A global constant whose payload begins with NUL can be shortened by the
+    // object/linker pipeline even when its LLVM type and header retain the
+    // full length.  Materialize such literals in the arena instead, writing
+    // the complete payload with explicit byte offsets.  This keeps the
+    // length-carrying string contract intact for literals as well as runtime
+    // strings and avoids any C-string interpretation at this boundary.
+    if (subtype == HEAP_SUBTYPE_STRING && str.find('\0') != std::string::npos) {
+        llvm::Value* arena = builder_.CreateLoad(ptrType(), globalArena());
+        llvm::Value* length = llvm::ConstantInt::get(int64Type(), str.size());
+        llvm::Value* result = builder_.CreateCall(
+            memory().getArenaAllocateStringWithHeader(), {arena, length},
+            "nul_string_literal");
+        builder_.CreateMemSet(result, llvm::ConstantInt::get(int8Type(), 0),
+                              length, llvm::MaybeAlign(1));
+        for (size_t i = 0; i < str.size(); i++) {
+            if (str[i] == '\0') continue;
+            llvm::Value* byte_ptr = builder_.CreateGEP(
+                int8Type(), result,
+                llvm::ConstantInt::get(int64Type(), i));
+            builder_.CreateStore(
+                llvm::ConstantInt::get(int8Type(),
+                                       static_cast<unsigned char>(str[i])),
+                byte_ptr);
+        }
+        return result;
     }
 
     // Create struct type: {i8 subtype, i8 flags, i16 ref_count, i32 size, [N x i8] data}
@@ -316,8 +344,19 @@ llvm::Value* CodegenContext::internStringWithHeader(const std::string& str, uint
     llvm::Constant* ref_count_const = llvm::ConstantInt::get(int16Type(), 0);
     llvm::Constant* size_const = llvm::ConstantInt::get(int32Type(), (uint32_t)str_len);
 
-    // Create string data constant
-    llvm::Constant* str_data = llvm::ConstantDataArray::getString(context_, str, true);
+    // Create the payload from explicit bytes.  ConstantDataArray::getString
+    // treats an embedded NUL as the end of C-string text on this LLVM path,
+    // leaving the rest of a length-recorded literal undefined.  That made a
+    // long NUL-bearing literal have the right header but nondeterministic
+    // contents.  The byte-array overload preserves the complete payload.
+    std::vector<llvm::Constant*> str_bytes;
+    str_bytes.reserve(str_len);
+    for (unsigned char byte : str) {
+        str_bytes.push_back(llvm::ConstantInt::get(int8Type(), byte));
+    }
+    str_bytes.push_back(llvm::ConstantInt::get(int8Type(), 0));
+    llvm::Constant* str_data = llvm::ConstantArray::get(
+        str_array_type, str_bytes);
 
     // Create the complete struct initializer
     llvm::Constant* struct_init = llvm::ConstantStruct::get(

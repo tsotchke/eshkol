@@ -34588,7 +34588,10 @@ private:
             case ESHKOL_STRING:
                 // Return string literal with header for HEAP_PTR
                 return packPtrToTaggedValue(
-                    ctx_->internStringWithHeader(ast->str_val.ptr, HEAP_SUBTYPE_STRING),
+                    ctx_->internStringWithHeader(
+                        std::string(ast->str_val.ptr,
+                                    ast->str_val.size > 0 ? ast->str_val.size - 1 : 0),
+                        HEAP_SUBTYPE_STRING),
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_CHAR:

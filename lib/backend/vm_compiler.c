@@ -3426,13 +3426,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type == N_STRING) {
         /* String literal → emit packed char data + NATIVE_CALL 100 to build heap string.
          * Pack up to 8 chars per int64 constant, push them, then call build-string. */
-        int len = (int)strlen(node->symbol);
+        int len = (int)node->string_len;
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
         for (int p = 0; p < n_packs; p++) {
             int64_t pack = 0;
             for (int b = 0; b < 8 && p * 8 + b < len; b++) {
-                pack |= ((int64_t)(unsigned char)node->symbol[p * 8 + b]) << (b * 8);
+                pack |= ((int64_t)(unsigned char)node->string_data[p * 8 + b]) << (b * 8);
             }
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
@@ -4746,7 +4746,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "syntax-error")) {
         if (node->n_children >= 2)
             fprintf(stderr, "SYNTAX ERROR: %s\n",
-                    node->children[1]->type == N_STRING ? node->children[1]->symbol : "unknown");
+                    node->children[1]->type == N_STRING ? node->children[1]->string_data : "unknown");
         return;
     }
 

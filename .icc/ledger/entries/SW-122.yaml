@@ -1,0 +1,29 @@
+id: SW-122
+bucket: SILENT-WRONG
+status: closed
+closed_at: "agent-strings@171928a0"
+title: "Downcased and Unicode strings failed equality/search despite printing correctly"
+repro: >-
+  (string-contains "psql -c 'drop table users'"
+                   (string-downcase "DROP TABLE"));
+  (string-contains (string-append "a" (string (integer->char #x2502)) "b")
+                   (string (integer->char #x2502)))
+observed: "#f for both searches"
+correct: "#t for both searches"
+root_cause: >-
+  Native string search crossed the C-string boundary through strstr, so
+  it did not use Eshkol's recorded byte length and returned byte offsets
+  rather than character indices. This disagreed with VM length-carrying
+  strings and exposed malformed downcase results to search callers.
+fix: >-
+  string_io_codegen.cpp now calls the length-aware runtime UTF-8 search;
+  runtime_string.cpp compares the recorded byte ranges and converts a
+  match to a codepoint index. The VM exposes the same string-contains
+  operation through its builtin table and retains VmString lengths.
+evidence: >-
+  tests/v1_2_edge_cases/string_semantics_regression_test.esk checks the
+  exact DROP TABLE reduction and the box-drawing reduction under native
+  JIT, native AOT, and VM. tests/vm_parity/corpus/73_string_escape_nul_search.esk
+  adds the same checks to native-vs-VM and ESKB parity.
+caught_by: [consumer-reduction, direct-measurement]
+missed_by: [icc-smoke, icc-readiness, pre-fix-string-tests]

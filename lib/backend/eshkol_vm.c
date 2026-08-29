@@ -431,6 +431,7 @@ static const BuiltinDef BUILTINS[] = {
     {"substring", 553, 3},
     {"_string-append-2", 554, 2},  /* 2-arg; prelude defines variadic string-append */
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
+    {"string-contains", 555, 2},
     {"string=?", 560, 2}, {"string<?", 561, 2}, {"string-ci=?", 562, 2},
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     {"string-byte-length", 571, 1},
@@ -1159,7 +1160,6 @@ static int compile_and_run(const char* source) {
      * where?  Known before any import is compiled so an import written above
      * its `define-library` is refused rather than silently satisfied by the
      * body that gets spliced in below it. */
-    vm_clear_compile_failure();
     vm_plan_unit_libraries(top_exprs, n_top_exprs);
 
     /* Pass 2: Scan for top-level defines that need boxing.

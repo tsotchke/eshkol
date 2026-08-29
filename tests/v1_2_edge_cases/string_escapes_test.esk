@@ -34,10 +34,10 @@
 (check "backspace"        "\b" (make-string 1 (integer->char 8)))
 (check "vertical-bar"     "\|" "|")
 
-;; Graceful fallback for malformed forms — must not crash
-(check "x-no-semi-keeps-x"   "\xZZ" "xZZ")
-(check "x-empty-keeps-x"     "\x;"  "x;")
-(check "u-non-hex-keeps-u"   "\uZZZZ" "uZZZZ")
+;; Common bounded octal escapes.  Malformed forms are covered by the
+;; source-diagnostic companion test and must not become literal text.
+(check "octal-ESC"         "\033" (make-string 1 (integer->char 27)))
+(check "octal-NUL"         "\0"   (make-string 1 (integer->char 0)))
 
 ;; Existing escapes still work
 (check "newline"          "a\nb" (string-append "a" (make-string 1 (integer->char 10)) "b"))

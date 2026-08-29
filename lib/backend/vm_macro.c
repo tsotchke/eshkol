@@ -42,6 +42,8 @@ typedef struct MacroNode {
     MacroNodeType    type;
     double           numval;
     char             symbol[128];
+    char*            string_data;
+    size_t           string_len;
     struct MacroNode** children;
     int              n_children;
     int              _cap;       /* allocation capacity for children */
@@ -92,6 +94,13 @@ static MacroNode* macro_node_deep_copy(const MacroNode* src) {
     MacroNode* dst = (MacroNode*)calloc(1, sizeof(MacroNode));
     if (!dst) { fprintf(stderr, "ERROR: macro_node_deep_copy: alloc failed\n"); return NULL; }
     *dst = *src;                 /* every scalar field, hub-agnostic */
+    dst->string_data = NULL;
+    if (src->string_data) {
+        dst->string_data = (char*)malloc(src->string_len + 1);
+        if (!dst->string_data) { free(dst); return NULL; }
+        memcpy(dst->string_data, src->string_data, src->string_len);
+        dst->string_data[src->string_len] = 0;
+    }
     dst->children   = NULL;      /* deep-copied below; never aliased */
     dst->n_children = 0;
     dst->_cap       = 0;
@@ -107,6 +116,7 @@ static void macro_node_free(MacroNode* n) {
     for (int i = 0; i < n->n_children; i++) {
         macro_node_free(n->children[i]);
     }
+    free(n->string_data);
     free(n->children);
     free(n);
 }
@@ -396,7 +406,9 @@ static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
     /* ── String literal: must match exactly ── */
     if (pattern->type == N_STRING) {
         return input->type == N_STRING &&
-               strcmp(pattern->symbol, input->symbol) == 0;
+               pattern->string_len == input->string_len &&
+               memcmp(pattern->string_data, input->string_data,
+                      pattern->string_len) == 0;
     }
 
     /* ── Boolean literal ── */
@@ -1071,7 +1083,9 @@ static void macro_node_print(const MacroNode* n, int depth) {
             printf("%s", n->symbol);
             break;
         case N_STRING:
-            printf("\"%s\"", n->symbol);
+            printf("\"");
+            if (n->string_data) fwrite(n->string_data, 1, n->string_len, stdout);
+            printf("\"");
             break;
         case N_BOOL:
             printf("%s", n->numval ? "#t" : "#f");

@@ -21,6 +21,8 @@
 #include <vector>
 #include <string>
 
+extern "C" int64_t eshkol_string_byte_length(const char* s);
+
 namespace {
 
 // ============================================================================
@@ -1040,8 +1042,11 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
         const char* str = get_string_value(sexp);
         eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
         ast->type = ESHKOL_STRING;
-        ast->str_val.ptr = strdup(str);
-        ast->str_val.size = strlen(str);
+        size_t len = (size_t)eshkol_string_byte_length(str);
+        ast->str_val.ptr = new char[len + 1];
+        memcpy(ast->str_val.ptr, str, len);
+        ast->str_val.ptr[len] = 0;
+        ast->str_val.size = len + 1;
         return ast;
     }
 
@@ -1161,10 +1166,13 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
             const char* str = (const char*)(uintptr_t)sexp.data.ptr_val;
             eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
             ast->type = ESHKOL_STRING;
-            size_t len = strlen(str);
-            ast->str_val.ptr = (char*)arena_allocate(get_global_arena(), len + 1);
-            if (ast->str_val.ptr) memcpy(ast->str_val.ptr, str, len + 1);
-            ast->str_val.size = len;
+            size_t len = (size_t)eshkol_string_byte_length(str);
+            ast->str_val.ptr = new char[len + 1];
+            if (ast->str_val.ptr) {
+                memcpy(ast->str_val.ptr, str, len);
+                ast->str_val.ptr[len] = 0;
+            }
+            ast->str_val.size = len + 1;
             return ast;
         }
         case HEAP_SUBTYPE_VECTOR:

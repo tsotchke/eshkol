@@ -72,7 +72,7 @@ found/quote_sugar_in_guard.esk	both	run	60	384	160	1	-	OK quote-in-guard
 found/nested_quasiquote.esk	both	run	60	384	160	1	-	OK nested-quasiquote
 found/list_length_1m.esk	both	run	120	1024	1024	0	ESH-0108	OK 1000000
 found/sort_100k.esk	both	run	120	1024	1024	0	ESH-0098	OK 0
-found/string_nul_long_literal.esk	both	run	60	384	160	1	ESH-0099	OK 300
+found/string_nul_long_literal.esk	both	run	60	384	160	1	-	OK 300
 found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	ESH-0100	OK
 found/serialized_counter_10k.esk	both	run	120	1024	1024	0	ESH-0094	OK 10000
 found/deep_recursion_270k_no_diagnostic.esk	both	run	60	1024	1024	0	ESH-0101	OK 300000

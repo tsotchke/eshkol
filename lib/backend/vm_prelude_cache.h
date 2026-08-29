@@ -4360,6 +4360,7 @@ static const char* prelude_local_names[] = {
     "_string-append-2",
     "string-upcase",
     "string-downcase",
+    "string-contains",
     "string=?",
     "string<?",
     "string-ci=?",

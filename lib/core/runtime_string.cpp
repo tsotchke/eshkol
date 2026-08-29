@@ -79,6 +79,29 @@ int64_t eshkol_utf8_strlen(const char* s) {
     return count;
 }
 
+/** Find a byte-delimited substring and return its UTF-8 codepoint index. */
+int64_t eshkol_utf8_index_of(const char* s, const char* sub) {
+    if (!s || !sub) return -1;
+    const int64_t s_len = eshkol_string_byte_length(s);
+    const int64_t sub_len = eshkol_string_byte_length(sub);
+    if (sub_len == 0) return 0;
+    if (sub_len > s_len) return -1;
+    for (int64_t byte = 0; byte <= s_len - sub_len; byte++) {
+        if (std::memcmp(s + byte, sub, static_cast<std::size_t>(sub_len)) == 0) {
+            int64_t chars = 0;
+            for (int64_t i = 0; i < byte; i++) {
+                if ((static_cast<unsigned char>(s[i]) & 0xC0u) != 0x80u) chars++;
+            }
+            return chars;
+        }
+    }
+    return -1;
+}
+
+int32_t eshkol_utf8_contains(const char* s, const char* sub) {
+    return eshkol_utf8_index_of(s, sub) >= 0 ? 1 : 0;
+}
+
 /**
  * @brief Decode one UTF-8 codepoint starting at `*s`, advancing `*s` past it.
  *

@@ -6819,6 +6819,108 @@ entries:
       value with an embedded NUL, including the type discriminator and suffix.
     caught_by: [direct-measurement]
     missed_by: [consumer-session-tests, icc-readiness]
+  - id: SW-120
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "agent-strings@171928a0"
+    title: "Multi-digit octal string escapes decoded only as the first digit"
+    repro: "(char->integer (string-ref \"\\033[\" 0))"
+    observed: "0"
+    correct: "27"
+    root_cause: >-
+      The readers treated \\0 as a complete escape and left the remaining
+      octal digits in the string. That made ANSI escape literals begin with
+      NUL while returning exit status zero.
+    fix: >-
+      inc/eshkol/core/string_escape.h now decodes one through three bounded
+      octal digits, and the frontend tokenizer, VM source parser, VM runtime
+      reader, and hosted runtime reader all call that decoder.
+    evidence: >-
+      tests/v1_2_edge_cases/string_semantics_regression_test.esk checks both
+      bytes of \\033[; the native JIT, native AOT, direct VM, and ESKB VM
+      parity runs all report the expected codepoints.
+    caught_by: [consumer-reduction, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, pre-fix-reader-tests]
+  - id: SW-121
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "agent-strings@171928a0"
+    title: "Malformed hexadecimal string escapes became literal text"
+    repro: "(display \"bad \\xZZ\")"
+    observed: "The program accepted the form and produced xZZ with exit status zero"
+    correct: "A sourceful malformed string-escape diagnostic and nonzero status"
+    root_cause: >-
+      The frontend's malformed \\x branch retained only the x and the other
+      readers accepted unknown escapes as ordinary characters, so malformed
+      input silently changed program data.
+    fix: >-
+      Shared escape decoding requires at least one hexadecimal digit and the
+      R7RS terminating semicolon, rejects invalid Unicode scalars, and reports
+      a diagnostic in every reader. The native tokenizer attaches the source
+      token location; runtime readers report the reader error and fail closed.
+    evidence: >-
+      tests/v1_2_edge_cases/string_escape_diagnostic_test.sh verifies native
+      source diagnostics contain malformed.esk: and verifies the VM rejects
+      the same source. Existing string_escapes_test no longer asserts the
+      obsolete literal fallback.
+    caught_by: [consumer-reduction, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, pre-fix-reader-tests]
+  - id: SW-122
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "agent-strings@171928a0"
+    title: "Downcased and Unicode strings failed equality/search despite printing correctly"
+    repro: >-
+      (string-contains "psql -c 'drop table users'"
+                       (string-downcase "DROP TABLE"));
+      (string-contains (string-append "a" (string (integer->char #x2502)) "b")
+                       (string (integer->char #x2502)))
+    observed: "#f for both searches"
+    correct: "#t for both searches"
+    root_cause: >-
+      Native string search crossed the C-string boundary through strstr, so
+      it did not use Eshkol's recorded byte length and returned byte offsets
+      rather than character indices. This disagreed with VM length-carrying
+      strings and exposed malformed downcase results to search callers.
+    fix: >-
+      string_io_codegen.cpp now calls the length-aware runtime UTF-8 search;
+      runtime_string.cpp compares the recorded byte ranges and converts a
+      match to a codepoint index. The VM exposes the same string-contains
+      operation through its builtin table and retains VmString lengths.
+    evidence: >-
+      tests/v1_2_edge_cases/string_semantics_regression_test.esk checks the
+      exact DROP TABLE reduction and the box-drawing reduction under native
+      JIT, native AOT, and VM. tests/vm_parity/corpus/73_string_escape_nul_search.esk
+      adds the same checks to native-vs-VM and ESKB parity.
+    caught_by: [consumer-reduction, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, pre-fix-string-tests]
+  - id: SW-123
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "agent-strings@171928a0"
+    title: "Long and embedded-NUL string literals lost payload bytes"
+    repro: "(string-append \"echo\" (string (integer->char 0)) \"evil\")"
+    observed: "echoevil or a long literal length/content differing between native and VM"
+    correct: "The value contains echo, one NUL byte, and evil; the long literal length is 300"
+    root_cause: >-
+      Length-carrying native paths were not used by every representation
+      boundary: VM source literals were stored in a fixed 128-byte field and
+      packed-string construction rejected lengths at or above 256; AST copies
+      and runtime S-expression conversion also used strlen/strdup.
+    fix: >-
+      VM N_STRING nodes now own a length-delimited buffer, packed construction
+      allocates and copies the complete payload, AST conversion/copying keeps
+      the recorded size, and native search and literal interning use explicit
+      lengths. Hosted and VM runtime readers also grow their literal buffers
+      while preserving embedded NUL bytes.
+    evidence: >-
+      tests/stress/found/string_nul_long_literal.esk now passes the existing
+      expected OK 300 stress assertion without an XKNOWN exemption.
+      tests/v1_2_edge_cases/string_semantics_regression_test.esk checks the
+      exact echo/NUL/evil bytes, and tests/vm_parity/corpus/73_string_escape_nul_search.esk
+      checks the same value on native and VM paths.
+    caught_by: [ESH-0099, consumer-reduction, direct-measurement]
+    missed_by: [icc-smoke, icc-readiness, pre-fix-stress-row]
   - id: SW-135
     bucket: SILENT-WRONG
     subtag: crash

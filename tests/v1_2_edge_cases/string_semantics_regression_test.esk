@@ -1,0 +1,56 @@
+;; String reader and representation regressions.
+;; Every check is value-based so embedded NULs are tested without relying on
+;; display or C-string termination.
+(require core.strings)
+
+(define pass 0)
+(define fail 0)
+
+(define (check label got expected)
+  (if (equal? got expected)
+      (begin (set! pass (+ pass 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail (+ fail 1))
+             (display "FAIL: ") (display label)
+             (display " got=") (display got)
+             (display " expected=") (display expected) (newline))))
+
+;; Source tokenizer: common bounded octal and R7RS hex escapes.
+(check "source octal ESC" (char->integer (string-ref "\033[" 0)) 27)
+(check "source octal suffix" (char->integer (string-ref "\033[" 1)) 91)
+(check "source hex ESC" (char->integer (string-ref "\x1b;" 0)) 27)
+(check "source hex ASCII" (string-ref "\x41;" 0) #\A)
+
+;; The long literal is deliberately built from escaped NULs.  The payload
+;; length and the bytes on both sides of NUL must survive the native path.
+(define nul-value
+  (string-append "echo" (string (integer->char 0)) "evil"))
+(check "embedded NUL length" (string-length nul-value) 9)
+(check "embedded NUL byte" (char->integer (string-ref nul-value 4)) 0)
+(check "embedded NUL suffix" (string-ref nul-value 5) #\e)
+(check "embedded NUL contains" (string-contains? nul-value "evil") #t)
+(check "embedded NUL index" (string-index nul-value "evil") 5)
+
+;; The downcase result must remain a normal searchable string.
+(check "downcase search"
+       (string-contains "psql -c 'drop table users'"
+                        (string-downcase "DROP TABLE"))
+       #t)
+
+;; Search must use the same UTF-8 representation that construction creates.
+(define box (string (integer->char 9474)))
+(check "box drawing search" (string-contains (string-append "a" box "b") box) #t)
+
+;; Hosted runtime datum reader and VM runtime datum reader use the same escape
+;; grammar as source parsing.
+(define read-port (open-input-string "\"\\033[\""))
+(define read-value (read read-port))
+(check "runtime reader octal ESC" (char->integer (string-ref read-value 0)) 27)
+(check "runtime reader octal suffix" (char->integer (string-ref read-value 1)) 91)
+(define read-hex (read (open-input-string "\"\\x1b;\"")))
+(check "runtime reader hex ESC" (char->integer (string-ref read-hex 0)) 27)
+
+(display "Total: ") (display (+ pass fail))
+(display ", PASS: ") (display pass)
+(display ", FAIL: ") (display fail) (newline)
+(if (> fail 0) (exit 1) (exit 0))

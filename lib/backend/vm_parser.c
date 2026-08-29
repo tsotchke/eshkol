@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "../../inc/eshkol/core/string_escape.h"
 
 /*******************************************************************************
  * S-Expression Parser (reused from stackvm_codegen.c)
@@ -14,6 +15,8 @@ typedef struct Node {
     NodeType type;
     double numval;
     char symbol[128];
+    char* string_data; /* length-carrying storage for N_STRING nodes */
+    size_t string_len;
     struct Node** children;
     int n_children;
     int is_char;      /* N_NUMBER node that originated from a #\ character literal */
@@ -136,6 +139,7 @@ static void add_child(Node* p, Node* c) {
 
 static void free_node(Node* n);
 static Node* parse_sexp(void);
+static void vm_compile_error(const char* message, const char* detail);
 
 /** @brief Append one character to a growable char buffer (*@p buf,
  *         *@p len, *@p cap), doubling capacity via realloc when nearly
@@ -163,14 +167,22 @@ static Node* make_symbol_node(const char* text) {
     return n;
 }
 
-/** @brief Build an N_STRING leaf node from @p text (truncated to 127
- *         chars). */
-static Node* make_string_node(const char* text) {
+/** @brief Build an N_STRING leaf node from a length-delimited byte string. */
+static Node* make_string_node_n(const char* text, size_t len) {
     Node* n = make_node(N_STRING);
     if (!n) return NULL;
-    strncpy(n->symbol, text ? text : "", 127);
-    n->symbol[127] = 0;
+    n->string_data = (char*)malloc(len + 1);
+    if (!n->string_data) { free(n); return NULL; }
+    if (len > 0) memcpy(n->string_data, text, len);
+    n->string_data[len] = 0;
+    n->string_len = len;
     return n;
+}
+
+/** @brief Build an N_STRING leaf node from a NUL-terminated text string. */
+static Node* make_string_node(const char* text) {
+    const char* value = text ? text : "";
+    return make_string_node_n(value, strlen(value));
 }
 
 /** @brief Build an N_LIST call-form node `(name)` with head symbol
@@ -275,20 +287,27 @@ static Node* parse_string_literal(void) {
     int has_interpolation = 0;
 
     while (*src_ptr && *src_ptr != '"') {
-        if (src_ptr[0] == '\\' && src_ptr[1]) {
-            src_ptr++;
-            char out = *src_ptr;
-            switch (*src_ptr) {
-                case 'n': out = '\n'; break;
-                case 't': out = '\t'; break;
-                case '\\': out = '\\'; break;
-                case '"': out = '"'; break;
-                default: break;
-            }
-            if (append_char_buf(&buf, &len, &buf_cap, out) != 0) {
+        if (src_ptr[0] == '\\') {
+            unsigned char decoded[4] = {0, 0, 0, 0};
+            size_t decoded_len = 0;
+            size_t consumed = 0;
+            int status = eshkol_decode_string_escape(
+                (const unsigned char*)src_ptr, strlen(src_ptr),
+                decoded, &decoded_len, &consumed);
+            if (status != ESHKOL_STRING_ESCAPE_OK) {
+                vm_compile_error(
+                    status == ESHKOL_STRING_ESCAPE_INCOMPLETE
+                        ? "incomplete string escape"
+                        : "malformed string escape",
+                    "string escapes must use a supported named, bounded octal, or terminated hex form");
                 free(buf); free(parts); return NULL;
             }
-            src_ptr++;
+            for (size_t i = 0; i < decoded_len; i++) {
+                if (append_char_buf(&buf, &len, &buf_cap, (char)decoded[i]) != 0) {
+                    free(buf); free(parts); return NULL;
+                }
+            }
+            src_ptr += consumed;
             continue;
         }
 
@@ -304,8 +323,8 @@ static Node* parse_string_literal(void) {
         if (src_ptr[0] == '~' && src_ptr[1] == '{') {
             has_interpolation = 1;
             if (len > 0) {
-                buf[len] = 0;
-                if (add_part(&parts, &n_parts, &cap_parts, make_string_node(buf)) != 0) {
+                if (add_part(&parts, &n_parts, &cap_parts,
+                             make_string_node_n(buf, (size_t)len)) != 0) {
                     free(buf); free(parts); return NULL;
                 }
                 len = 0;
@@ -386,13 +405,14 @@ static Node* parse_string_literal(void) {
     buf[len] = 0;
 
     if (!has_interpolation) {
-        Node* n = make_string_node(buf);
+        Node* n = make_string_node_n(buf, (size_t)len);
         free(buf);
         return n;
     }
 
     if (len > 0) {
-        if (add_part(&parts, &n_parts, &cap_parts, make_string_node(buf)) != 0) {
+        if (add_part(&parts, &n_parts, &cap_parts,
+                     make_string_node_n(buf, (size_t)len)) != 0) {
             free(buf); free(parts); return NULL;
         }
     }
@@ -695,7 +715,13 @@ static Node* parse_sexp(void) {
 }
 
 /** @brief Recursively free an AST Node and all its children. */
-static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i++) free_node(n->children[i]); free(n->children); free(n); }
+static void free_node(Node* n) {
+    if (!n) return;
+    for (int i = 0; i < n->n_children; i++) free_node(n->children[i]);
+    free(n->children);
+    free(n->string_data);
+    free(n);
+}
 
 /*******************************************************************************
  * Compiler: AST → Bytecode

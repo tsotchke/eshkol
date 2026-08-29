@@ -1597,8 +1597,8 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
 }
 
 /**
- * @brief Codegen for `(string-contains? s substr)`: calls libc `strstr` and
- *        packs whether a non-null match pointer was returned.
+ * @brief Codegen for `(string-contains? s substr)`: uses the length-aware
+ *        runtime search so embedded NULs and UTF-8 byte lengths are honored.
  */
 llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
@@ -1622,21 +1622,21 @@ llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
     llvm::Value* ptr2_int = tagged_.unpackInt64(substr_arg);
     llvm::Value* substr_ptr = ctx_.builder().CreateIntToPtr(ptr2_int, ctx_.ptrType());
 
-    // Get strstr function
-    llvm::Function* strstr_func = ctx_.funcs().getStrstr();
-
-    // Call strstr and check if result is not null
-    llvm::Value* result = ctx_.builder().CreateCall(strstr_func, {str_ptr, substr_ptr});
-    llvm::Value* found = ctx_.builder().CreateICmpNE(result,
-        llvm::ConstantPointerNull::get(ctx_.ptrType()));
+    llvm::FunctionType* contains_type = llvm::FunctionType::get(
+        ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+    llvm::FunctionCallee contains_func = ctx_.module().getOrInsertFunction(
+        "eshkol_utf8_contains", contains_type);
+    llvm::Value* found_i32 = ctx_.builder().CreateCall(
+        contains_func, {str_ptr, substr_ptr});
+    llvm::Value* found = ctx_.builder().CreateICmpNE(
+        found_i32, llvm::ConstantInt::get(ctx_.int32Type(), 0));
 
     return tagged_.packBool(found);
 }
 
 /**
- * @brief Codegen for `(string-index s substr)`: like stringContains() but
- *        returns the byte offset of the match (via pointer subtraction), or
- *        -1 if not found.
+ * @brief Codegen for `(string-index s substr)`: returns the UTF-8 codepoint
+ *        index from the length-aware runtime search, or -1 if not found.
  */
 llvm::Value* StringIOCodegen::stringIndex(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
@@ -1660,22 +1660,13 @@ llvm::Value* StringIOCodegen::stringIndex(const eshkol_operations_t* op) {
     llvm::Value* ptr2_int = tagged_.unpackInt64(substr_arg);
     llvm::Value* substr_ptr = ctx_.builder().CreateIntToPtr(ptr2_int, ctx_.ptrType());
 
-    // Get strstr function
-    llvm::Function* strstr_func = ctx_.funcs().getStrstr();
-
-    // Call strstr
-    llvm::Value* result = ctx_.builder().CreateCall(strstr_func, {str_ptr, substr_ptr});
-    llvm::Value* found = ctx_.builder().CreateICmpNE(result,
-        llvm::ConstantPointerNull::get(ctx_.ptrType()));
-
-    // Calculate index: result - str_ptr, or -1 if not found
-    llvm::Value* str_int = ctx_.builder().CreatePtrToInt(str_ptr, ctx_.int64Type());
-    llvm::Value* result_int = ctx_.builder().CreatePtrToInt(result, ctx_.int64Type());
-    llvm::Value* index = ctx_.builder().CreateSub(result_int, str_int);
-    llvm::Value* neg_one = llvm::ConstantInt::get(ctx_.int64Type(), -1);
-    llvm::Value* final_index = ctx_.builder().CreateSelect(found, index, neg_one);
-
-    return tagged_.packInt64(final_index, true);
+    llvm::FunctionType* index_type = llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+    llvm::FunctionCallee index_func = ctx_.module().getOrInsertFunction(
+        "eshkol_utf8_index_of", index_type);
+    llvm::Value* index = ctx_.builder().CreateCall(
+        index_func, {str_ptr, substr_ptr});
+    return tagged_.packInt64(index, true);
 }
 
 /**

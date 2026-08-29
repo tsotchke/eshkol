@@ -9,6 +9,7 @@
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
+#include <eshkol/core/string_escape.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
 
@@ -484,7 +485,43 @@ private:
         };
 
         while (pos < length && input[pos] != '"') {
-            if (input[pos] == '\\' && pos + 1 < length) {
+            if (input[pos] == '\\') {
+                size_t escape_start = pos;
+                unsigned char decoded[4] = {0, 0, 0, 0};
+                size_t decoded_len = 0;
+                size_t consumed = 0;
+                int status = eshkol_decode_string_escape(
+                    reinterpret_cast<const unsigned char*>(input.data() + pos),
+                    length - pos, decoded, &decoded_len, &consumed);
+                if (status != ESHKOL_STRING_ESCAPE_OK) {
+                    Token escape_token{TOKEN_STRING, value, start, tok_line, tok_col};
+                    PARSE_ERROR_AT(escape_token, status == ESHKOL_STRING_ESCAPE_INCOMPLETE
+                                   ? "incomplete string escape"
+                                   : "malformed string escape");
+                    return escape_token;
+                }
+                value.append(reinterpret_cast<const char*>(decoded), decoded_len);
+                bool saw_newline = false;
+                for (size_t raw = escape_start; raw < escape_start + consumed; raw++) {
+                    if (input[raw] == '\n') {
+                        line_++;
+                        line_start_ = raw + 1;
+                        saw_newline = true;
+                    } else if (input[raw] == '\r' &&
+                               (raw + 1 >= escape_start + consumed || input[raw + 1] != '\n')) {
+                        line_++;
+                        line_start_ = raw + 1;
+                        saw_newline = true;
+                    }
+                }
+                pos += consumed;
+                column_ = saw_newline
+                    ? static_cast<uint32_t>(pos - line_start_ + 1)
+                    : column_ + static_cast<uint32_t>(consumed);
+                continue;
+            }
+            /* Escape decoding is handled by the shared decoder above. */
+            if (false && input[pos] == '\\' && pos + 1 < length) {
                 pos++;
                 column_++;
                 char esc = input[pos];
@@ -1144,7 +1181,10 @@ static eshkol_ast_t make_parser_string_ast(const std::string& value,
     stamp_node(ast, line, column);
     size_t len = value.length();
     char* ptr = new char[len + 1];
-    if (ptr) memcpy(ptr, value.c_str(), len + 1);
+    if (ptr) {
+        for (size_t i = 0; i < len; i++) ptr[i] = value[i];
+        ptr[len] = 0;
+    }
     eshkol_ast_make_string(&ast, ptr, len + 1);
     return ast;
 }

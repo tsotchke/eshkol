@@ -16,6 +16,7 @@ extern int64_t eshkol_linear_solve(
 #ifndef ESHKOL_VM_WASM
 #include "eshkol/core/event_loop.h"
 #endif
+#include "../../inc/eshkol/core/string_escape.h"
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -6763,6 +6764,72 @@ static Value vm_reader_vector(VM* vm, VmPort* port, int depth, int* ok) {
     return (Value){.type = VAL_VECTOR, .as.ptr = ptr};
 }
 
+static int vm_reader_decode_escape(VM* vm, VmPort* port,
+                                   unsigned char out[4], size_t* out_len,
+                                   int* ok) {
+    unsigned char raw[16];
+    size_t n = 0;
+    int next;
+    size_t consumed = 0;
+    int status;
+    if (!vm || !port || !out || !out_len || !ok) return -1;
+    raw[n++] = '\\';
+    next = vm_port_read_byte(port);
+    if (next < 0) {
+        fprintf(stderr, "ERROR: incomplete string escape in VM reader\n");
+        *ok = 0; vm->error = 1; return -1;
+    }
+    raw[n++] = (unsigned char)next;
+
+    if (next == 'x' || next == 'X') {
+        while (n < sizeof(raw) - 1) {
+            next = vm_port_peek_byte(port);
+            if (next < 0 || eshkol_string_escape_hex_digit((unsigned char)next) < 0) break;
+            raw[n++] = (unsigned char)vm_port_read_byte(port);
+        }
+        if (vm_port_peek_byte(port) == ';') raw[n++] = (unsigned char)vm_port_read_byte(port);
+    } else if (next == 'u') {
+        while (n < 6) {
+            next = vm_port_read_byte(port);
+            if (next < 0) break;
+            raw[n++] = (unsigned char)next;
+        }
+    } else if (next >= '0' && next <= '7') {
+        while (n < 4) {
+            next = vm_port_peek_byte(port);
+            if (next < '0' || next > '7') break;
+            raw[n++] = (unsigned char)vm_port_read_byte(port);
+        }
+    } else if (next == ' ' || next == '\t') {
+        while (n < sizeof(raw) - 1) {
+            next = vm_port_peek_byte(port);
+            if (next != ' ' && next != '\t') break;
+            raw[n++] = (unsigned char)vm_port_read_byte(port);
+        }
+        if (next == '\n' || next == '\r') {
+            raw[n++] = (unsigned char)vm_port_read_byte(port);
+            if (raw[n - 1] == '\r' && vm_port_peek_byte(port) == '\n')
+                raw[n++] = (unsigned char)vm_port_read_byte(port);
+            while (n < sizeof(raw) - 1) {
+                next = vm_port_peek_byte(port);
+                if (next != ' ' && next != '\t') break;
+                raw[n++] = (unsigned char)vm_port_read_byte(port);
+            }
+        }
+    } else if (next == '\n' || next == '\r') {
+        if (next == '\r' && vm_port_peek_byte(port) == '\n')
+            raw[n++] = (unsigned char)vm_port_read_byte(port);
+    }
+
+    status = eshkol_decode_string_escape(raw, n, out, out_len, &consumed);
+    if (status != ESHKOL_STRING_ESCAPE_OK) {
+        fprintf(stderr, "ERROR: %s string escape in VM reader\n",
+                status == ESHKOL_STRING_ESCAPE_INCOMPLETE ? "incomplete" : "malformed");
+        *ok = 0; vm->error = 1; return -1;
+    }
+    return 0;
+}
+
 static Value vm_reader_string(VM* vm, VmPort* port, int* ok) {
     size_t cap = 64, len = 0;
     char* bytes = (char*)malloc(cap);
@@ -6772,12 +6839,25 @@ static Value vm_reader_string(VM* vm, VmPort* port, int* ok) {
         if (ch < 0) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
         if (ch == '"') break;
         if (ch == '\\') {
-            ch = vm_port_read_byte(port);
-            if (ch < 0) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
-            if (ch == 'n') ch = '\n';
-            else if (ch == 'r') ch = '\r';
-            else if (ch == 't') ch = '\t';
-            else if (ch == '\n') continue;
+            unsigned char decoded[4] = {0, 0, 0, 0};
+            size_t decoded_len = 0;
+            if (vm_reader_decode_escape(vm, port, decoded, &decoded_len, ok) != 0) {
+                free(bytes); return NIL_VAL;
+            }
+            for (size_t i = 0; i < decoded_len; i++) {
+                if (len >= VM_READER_MAX_TOKEN) {
+                    free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+                }
+                if (len == cap) {
+                    size_t next_cap = cap * 2;
+                    char* grown = (char*)realloc(bytes, next_cap);
+                    if (!grown) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
+                    bytes = grown;
+                    cap = next_cap;
+                }
+                bytes[len++] = (char)decoded[i];
+            }
+            continue;
         }
         if (len >= VM_READER_MAX_TOKEN) {
             free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
@@ -13904,19 +13984,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* The compiler pushes: CONST(len), CONST(pack0), ..., CONST(packN-1), NATIVE_CALL 100 */
         /* So TOS-N = len, TOS-(N-1) through TOS-0 = packs, where N = (len+7)/8 */
         /* We need to scan backwards from TOS to find the length */
-        for (int try_n = 0; try_n < 64; try_n++) {
+        for (int try_n = 0; try_n <= vm->sp; try_n++) {
             int len_pos = vm->sp - try_n - 1;
             if (len_pos >= 0 && vm->stack[len_pos].type == VAL_INT) {
                 int candidate = (int)vm->stack[len_pos].as.i;
-                int expected_packs = (candidate + 7) / 8;
-                if (expected_packs == try_n && candidate >= 0 && candidate < 256) {
+                int expected_packs = candidate >= 0 &&
+                    candidate <= VM_READER_MAX_TOKEN ? (candidate + 7) / 8 : -1;
+                /* A zero-filled pack is also a valid candidate length of 0.
+                 * Select the furthest matching length slot so an all-NUL
+                 * literal cannot be mistaken for its top zero-valued pack. */
+                if (expected_packs == try_n && try_n >= n_packs_guess) {
                     slen = candidate;
                     n_packs_guess = try_n;
-                    break;
                 }
             }
         }
-        char buf[256];
+        char* buf = (char*)malloc((size_t)slen + 1);
+        if (!buf) {
+            vm->error = 1;
+            vm_push(vm, NIL_VAL);
+            break;
+        }
         for (int p = n_packs_guess - 1; p >= 0; p--) {
             Value pack_v = vm_pop(vm);
             int64_t pack = pack_v.as.i;
@@ -13925,7 +14013,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         vm_pop(vm); /* pop length */
         buf[slen] = 0;
-        VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
+        VmString* s = vm_string_new(&vm->heap.regions, buf, slen);
+        free(buf);
         if (s) {
             int32_t ptr = heap_alloc(&vm->heap);
             if (ptr >= 0) {

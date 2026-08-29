@@ -1,4 +1,4 @@
-; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0099). XKNOWN.
+; RESOLVED by the shared length-carrying string literal path (ESH-0099).
 ;
 ; A string LITERAL that (a) contains at least one NUL escape (\x0;) AND
 ; (b) is longer than 512 SOURCE bytes decodes to the WRONG length/content.

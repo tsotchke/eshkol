@@ -1,0 +1,24 @@
+id: SW-121
+bucket: SILENT-WRONG
+status: closed
+closed_at: "agent-strings@171928a0"
+title: "Malformed hexadecimal string escapes became literal text"
+repro: "(display \"bad \\xZZ\")"
+observed: "The program accepted the form and produced xZZ with exit status zero"
+correct: "A sourceful malformed string-escape diagnostic and nonzero status"
+root_cause: >-
+  The frontend's malformed \\x branch retained only the x and the other
+  readers accepted unknown escapes as ordinary characters, so malformed
+  input silently changed program data.
+fix: >-
+  Shared escape decoding requires at least one hexadecimal digit and the
+  R7RS terminating semicolon, rejects invalid Unicode scalars, and reports
+  a diagnostic in every reader. The native tokenizer attaches the source
+  token location; runtime readers report the reader error and fail closed.
+evidence: >-
+  tests/v1_2_edge_cases/string_escape_diagnostic_test.sh verifies native
+  source diagnostics contain malformed.esk: and verifies the VM rejects
+  the same source. Existing string_escapes_test no longer asserts the
+  obsolete literal fallback.
+caught_by: [consumer-reduction, direct-measurement]
+missed_by: [icc-smoke, icc-readiness, pre-fix-reader-tests]

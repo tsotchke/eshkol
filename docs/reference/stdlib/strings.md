@@ -227,34 +227,30 @@ codegen path that defaults the missing bounds (`start=0`, `end=length`), so the
 1-, 2-, and 3-argument R7RS forms all work. (The 2-/3-arg forms may still emit a
 harmless gradual-typing arity note.)
 
-### Embedded NUL: builtin search truncates, stdlib search does not
-The builtins `string-index` and `string-contains?` use C `strstr`-style search
-that stops at the first NUL byte, so they cannot find anything past a NUL. The
-pure-Scheme stdlib functions `string-find`, `string-contains`, and
-`string-count` use `substring`/`string=?` (which honour the string header
-length) and are NUL-safe. `string-length` and `substring` themselves preserve
-NUL bytes. This produces an observable disagreement on the same input:
+### Embedded NUL: length-aware search
+The builtins `string-index` and `string-contains?` use the string header's byte
+length, so they search past embedded NUL bytes. `string-length`, `substring`,
+`string-append`, and the pure-Scheme helpers preserve the same bytes as well.
+This is observable on one input:
 
 ```scheme
 (require core.strings)
 (define s (list->string (list #\a (integer->char 0) #\b)))  ; "a\0b", length 3
-(display (string-index s "b"))     (newline)  ; -1  (builtin, NUL-truncated)
-(display (string-contains? s "b")) (newline)  ; #f  (builtin, NUL-truncated)
+(display (string-index s "b"))     (newline)  ; 2
+(display (string-contains? s "b")) (newline)  ; #t
 (display (string-find s "b"))      (newline)  ; 2   (stdlib, NUL-safe)
 (display (string-contains s "b"))  (newline)  ; #t  (stdlib, NUL-safe)
 (display (string-count s "b"))     (newline)  ; 1   (stdlib, NUL-safe)
 ```
 ```
--1
-#f
+2
+#t
 2
 #t
 1
 ```
-See also **ESH-0099** (open): string *literals* that contain a `\x0;` NUL escape
-and exceed 512 source bytes decode to the wrong length/content — a separate
-literal-intern bug in the corruption family, distinct from the search-truncation
-above.
+The large NUL-bearing literal regression **ESH-0099** is covered by the stress
+suite and now passes on native and VM readers.
 
 ### Char needle to the builtin `string-index` SIGSEGVs
 Passing a char (rather than a string) needle directly to the builtin

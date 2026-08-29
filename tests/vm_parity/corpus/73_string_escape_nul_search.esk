@@ -1,0 +1,23 @@
+;; Native JIT, ESKB VM, and direct VM source parity for string readers.
+(define ok
+  (and
+   (= (char->integer (string-ref "\033[" 0)) 27)
+   (= (char->integer (string-ref "\033[" 1)) 91)
+   (= (char->integer (string-ref "\x1b;" 0)) 27)
+   (string-contains "psql -c 'drop table users'"
+                    (string-downcase "DROP TABLE"))
+   (string-contains
+    (string-append "a" (make-string 1 (integer->char 9474)) "b")
+    (make-string 1 (integer->char 9474)))
+   (= (string-length
+       (string-append "echo" (make-string 1 (integer->char 0)) "evil")) 9)
+   (string-contains
+    (string-append "echo" (make-string 1 (integer->char 0)) "evil")
+    "evil")
+   (= (char->integer
+       (string-ref (read (open-input-string "\"\\x1b;\"")) 0)) 27)
+   (= (char->integer
+       (string-ref (read (open-input-string "\"\\033[\"")) 0)) 27)))
+(if ok
+    (begin (display "OK string-escape-nul-search") (newline))
+    (begin (display "FAIL string-escape-nul-search") (newline)))

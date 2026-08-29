@@ -1,0 +1,22 @@
+id: SW-120
+bucket: SILENT-WRONG
+status: closed
+closed_at: "agent-strings@171928a0"
+title: "Multi-digit octal string escapes decoded only as the first digit"
+repro: "(char->integer (string-ref \"\\033[\" 0))"
+observed: "0"
+correct: "27"
+root_cause: >-
+  The readers treated \\0 as a complete escape and left the remaining
+  octal digits in the string. That made ANSI escape literals begin with
+  NUL while returning exit status zero.
+fix: >-
+  inc/eshkol/core/string_escape.h now decodes one through three bounded
+  octal digits, and the frontend tokenizer, VM source parser, VM runtime
+  reader, and hosted runtime reader all call that decoder.
+evidence: >-
+  tests/v1_2_edge_cases/string_semantics_regression_test.esk checks both
+  bytes of \\033[; the native JIT, native AOT, direct VM, and ESKB VM
+  parity runs all report the expected codepoints.
+caught_by: [consumer-reduction, direct-measurement]
+missed_by: [icc-smoke, icc-readiness, pre-fix-reader-tests]

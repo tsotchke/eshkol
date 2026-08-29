@@ -9,6 +9,7 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/core/rational.h"
 #include "../../inc/eshkol/core/symbol_syntax.h"
+#include "../../inc/eshkol/core/string_escape.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -427,36 +428,122 @@ static eshkol_tagged_value_t read_vector(arena_t* arena, FILE* fp) {
 // / return-address overwrite surface reachable via (read port) on
 // untrusted input. Apply the bound uniformly and consume-without-
 // storing past the cap so the delimiter search still terminates.
+static int read_hosted_string_escape(FILE* fp, unsigned char out[4], size_t* out_len) {
+    unsigned char raw[16];
+    size_t n = 0;
+    size_t consumed = 0;
+    int c;
+    int status;
+    raw[n++] = '\\';
+    c = fgetc(fp);
+    if (c == EOF) return ESHKOL_STRING_ESCAPE_INCOMPLETE;
+    raw[n++] = (unsigned char)c;
+    if (c == 'x' || c == 'X') {
+        while (n < sizeof(raw) - 1) {
+            c = fgetc(fp);
+            if (c == EOF) break;
+            if (eshkol_string_escape_hex_digit((unsigned char)c) < 0) {
+                if (c == ';') raw[n++] = (unsigned char)c;
+                else ungetc(c, fp);
+                break;
+            }
+            raw[n++] = (unsigned char)c;
+        }
+    } else if (c == 'u') {
+        while (n < 6 && (c = fgetc(fp)) != EOF) raw[n++] = (unsigned char)c;
+    } else if (c >= '0' && c <= '7') {
+        while (n < 4) {
+            c = fgetc(fp);
+            if (c < '0' || c > '7') {
+                if (c != EOF) ungetc(c, fp);
+                break;
+            }
+            raw[n++] = (unsigned char)c;
+        }
+    } else if (c == ' ' || c == '\t') {
+        while (n < sizeof(raw) - 1) {
+            c = fgetc(fp);
+            if (c != ' ' && c != '\t') break;
+            raw[n++] = (unsigned char)c;
+        }
+        if (c == '\n' || c == '\r') {
+            raw[n++] = (unsigned char)c;
+            if (c == '\r') {
+                c = fgetc(fp);
+                if (c == '\n') raw[n++] = (unsigned char)c;
+                else if (c != EOF) ungetc(c, fp);
+            }
+            while (n < sizeof(raw) - 1) {
+                c = fgetc(fp);
+                if (c != ' ' && c != '\t') {
+                    if (c != EOF) ungetc(c, fp);
+                    break;
+                }
+                raw[n++] = (unsigned char)c;
+            }
+        } else if (c != EOF) {
+            ungetc(c, fp);
+        }
+    } else if (c == '\r') {
+        c = fgetc(fp);
+        if (c == '\n') raw[n++] = (unsigned char)c;
+        else if (c != EOF) ungetc(c, fp);
+    }
+    status = eshkol_decode_string_escape(raw, n, out, out_len, &consumed);
+    return status;
+}
+
 static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_string_literal(
     arena_t* arena, FILE* fp) {
-    char buf[4096];
-    int len = 0;
+    size_t cap = 64, len = 0;
+    char* buf = (char*)malloc(cap);
     int ch;
+    if (!buf) return make_null_tagged();
     while ((ch = fgetc(fp)) != EOF && ch != '"') {
-        char decoded;
         if (ch == '\\') {
-            ch = fgetc(fp);
-            if (ch == EOF) break;
-            switch (ch) {
-                case 'n':  decoded = '\n'; break;
-                case 't':  decoded = '\t'; break;
-                case 'r':  decoded = '\r'; break;
-                case '\\': decoded = '\\'; break;
-                case '"':  decoded = '"';  break;
-                default:   decoded = (char)ch; break;
+            unsigned char decoded[4] = {0, 0, 0, 0};
+            size_t decoded_len = 0;
+            int status = read_hosted_string_escape(fp, decoded, &decoded_len);
+            if (status != ESHKOL_STRING_ESCAPE_OK) {
+                fprintf(stderr, "read: %s string escape\n",
+                        status == ESHKOL_STRING_ESCAPE_INCOMPLETE ? "incomplete" : "malformed");
+                free(buf);
+                return make_null_tagged();
+            }
+            for (size_t i = 0; i < decoded_len; i++) {
+                if (len == 1024 * 1024) {
+                    fprintf(stderr, "read: string literal exceeds 1048576 bytes\n");
+                    free(buf);
+                    return make_null_tagged();
+                }
+                if (len == cap) {
+                    size_t next_cap = cap * 2;
+                    char* grown = (char*)realloc(buf, next_cap);
+                    if (!grown) { free(buf); return make_null_tagged(); }
+                    buf = grown;
+                    cap = next_cap;
+                }
+                buf[len++] = (char)decoded[i];
             }
         } else {
-            decoded = (char)ch;
+            if (len == 1024 * 1024) {
+                fprintf(stderr, "read: string literal exceeds 1048576 bytes\n");
+                free(buf);
+                return make_null_tagged();
+            }
+            if (len == cap) {
+                size_t next_cap = cap * 2;
+                char* grown = (char*)realloc(buf, next_cap);
+                if (!grown) { free(buf); return make_null_tagged(); }
+                buf = grown;
+                cap = next_cap;
+            }
+            buf[len++] = (char)ch;
         }
-        if (len < (int)sizeof(buf) - 1) {
-            buf[len++] = decoded;
-        }
-        /* else: silently drop past cap. An error-raising variant
-         * would be more correct but would change a 1-byte overflow
-         * from an RCE primitive into a hard-fail DoS; the cap is
-         * documented as a reader-level string-length ceiling. */
     }
-    return make_string_tagged(arena, buf, len);
+    eshkol_tagged_value_t result = make_string_tagged(arena, buf, len);
+    free(buf);
+    return result;
 }
 
 // Leaf: #t / #f / #\char / unknown-#-symbol. NOT #( — that is dispatched
