@@ -40,6 +40,8 @@ const opt = (name, dflt) => {
 const CORRUPT = opt('corrupt', null);
 const JSON_OUT = argv.includes('--json');
 const HEADED = argv.includes('--headed');
+const REGRESSIONS = argv.includes('--regressions');
+const FAST_REGRESSION_TOL = 1e-4;
 
 /* ---- kernel corruptions for the red-proof ----
  * Each entry is a [pattern, replacement] applied to the module source. They are
@@ -90,12 +92,16 @@ function loadModuleSource() {
  * operands at real byte offsets, runs the WGSL kernel and the module's own CPU
  * reference over the same bytes, and returns both results. */
 async function runInPage(page, cases) {
-    return page.evaluate(async ({ cases }) => {
+    return page.evaluate(async ({ cases, regression, gateTolerance }) => {
         const G = globalThis.EshkolWebGPU;
         if (!G) return { fatal: 'eshkol-webgpu.js did not load' };
         if (!navigator.gpu) return { skip: 'navigator.gpu unavailable' };
 
-        const created = await G.create({ precision: 'high', threshold: 1 });
+        const created = await G.create({
+            precision: regression ? 'fast' : 'high',
+            gateTolerance,
+            threshold: 1
+        });
         if (!created.ok) {
             return created.unsupported
                 ? { unsupported: created.reason }
@@ -103,7 +109,9 @@ async function runInPage(page, cases) {
         }
         const be = created.backend;
         if (!be.supportsOperation('matmul')) {
-            return { unsupported: 'UNSUPPORTED: WebGPU df32 matmul is not certified at GPU_GATE_TOL=1e-9' };
+            return { unsupported: regression
+                ? 'UNSUPPORTED: WebGPU fast matmul opt-in is not available at gateTolerance=' + gateTolerance
+                : 'UNSUPPORTED: WebGPU df32 matmul is not certified at GPU_GATE_TOL=1e-9' };
         }
 
         /* 16 MB of linear memory: enough for every small shape below, and the
@@ -131,8 +139,8 @@ async function runInPage(page, cases) {
                     const gP = alloc(M * N), cP = alloc(M * N);
                     const A = new Float64Array(memory.buffer, aP, M * K);
                     const B = new Float64Array(memory.buffer, bP, K * N);
-                    for (let i = 0; i < M * K; i++) A[i] = r() * 2 - 1;
-                    for (let i = 0; i < K * N; i++) B[i] = r() * 2 - 1;
+                    for (let i = 0; i < M * K; i++) A[i] = c.values === 'ones' ? 1 : r() * 2 - 1;
+                    for (let i = 0; i < K * N; i++) B[i] = c.values === 'ones' ? 1 : r() * 2 - 1;
                     await be.matmulF64(aP, bP, gP, M, K, N);
                     G.cpu.matmul(fakeMem, aP, bP, cP, M, K, N);
                     entry.gpu = Array.from(new Float64Array(memory.buffer, gP, M * N));
@@ -178,19 +186,21 @@ async function runInPage(page, cases) {
                 ? `${created.adapter.info.vendor}/${created.adapter.info.architecture}`
                 : 'unknown',
         };
-    }, { cases });
+    }, { cases, regression: REGRESSIONS, gateTolerance: REGRESSIONS ? FAST_REGRESSION_TOL : GPU_GATE_TOL });
 }
 
 /* ---- gate tolerance ----
  * This runner is the browser counterpart of tests/gpu/gpu_correctness_gate.sh.
  * It has one contract: a GPU result is acceptable only at GPU_GATE_TOL. The
- * f32 tier is intentionally not included because it cannot promise 1e-9. */
+ * The normal matrix excludes f32 because it cannot promise 1e-9; the
+ * --regressions matrix separately exercises its explicit reduced-precision
+ * contract. */
 const GPU_GATE_TOL = Number(process.env.GPU_GATE_TOL || '1e-9');
 if (!Number.isFinite(GPU_GATE_TOL) || GPU_GATE_TOL <= 0) {
     console.error('webgpu_diff_runner: invalid GPU_GATE_TOL=' + process.env.GPU_GATE_TOL);
     process.exit(2);
 }
-const TOL = { high: GPU_GATE_TOL };
+const TOL = { high: GPU_GATE_TOL, fast: FAST_REGRESSION_TOL };
 
 function compare(entry) {
     if (entry.error) return { ok: false, why: 'threw: ' + entry.error };
@@ -224,17 +234,23 @@ function compare(entry) {
 /* ---- case matrix (small shapes only: this runs in a browser under the RSS
  * discipline, and correctness of the kernel does not need large N) ---- */
 const CASES = [];
-for (const tier of ['high']) {
+for (const tier of REGRESSIONS ? ['fast'] : ['high']) {
     /* Shapes deliberately include non-multiples of the 8x8 workgroup tile so
      * the bounds guards in the kernel are exercised. */
     for (const [M, K, N] of [[8, 8, 8], [16, 32, 16], [33, 17, 9], [1, 64, 1]]) {
         CASES.push({ name: `gemm_${M}x${K}x${N}`, kind: 'gemm', tier, M, K, N, seed: M * 131 + K * 17 + N });
     }
-    for (const [op, nm] of [[0, 'add'], [1, 'sub'], [2, 'mul'], [3, 'div'], [4, 'neg'], [5, 'abs']]) {
-        CASES.push({ name: `elem_${nm}`, kind: 'elementwise', tier, n: 1000, op, seed: 900 + op });
+    if (REGRESSIONS) {
+        CASES.unshift({ name: 'gemm_fast_8x8_8_ones', kind: 'gemm', tier,
+                        M: 8, K: 8, N: 8, values: 'ones', seed: 1 });
     }
-    for (const [op, nm] of [[0, 'sum'], [1, 'prod'], [2, 'min'], [3, 'max'], [4, 'mean']]) {
-        CASES.push({ name: `reduce_${nm}`, kind: 'reduce', tier, n: 4096, op, seed: 700 + op });
+    if (!REGRESSIONS) {
+        for (const [op, nm] of [[0, 'add'], [1, 'sub'], [2, 'mul'], [3, 'div'], [4, 'neg'], [5, 'abs']]) {
+            CASES.push({ name: `elem_${nm}`, kind: 'elementwise', tier, n: 1000, op, seed: 900 + op });
+        }
+        for (const [op, nm] of [[0, 'sum'], [1, 'prod'], [2, 'min'], [3, 'max'], [4, 'mean']]) {
+            CASES.push({ name: `reduce_${nm}`, kind: 'reduce', tier, n: 4096, op, seed: 700 + op });
+        }
     }
 }
 
@@ -308,11 +324,17 @@ for (const e of out.results) {
     const v = compare(e);
     report.cases.push({ name: e.name, tier: e.tier, ok: v.ok, worst: v.worst, tol: v.tol,
                         at: v.at, gpu: v.at >= 0 ? e.gpu?.[v.at] : undefined,
-                        cpu: v.at >= 0 ? e.cpu?.[v.at] : undefined, why: v.why });
+                        cpu: v.at >= 0 ? e.cpu?.[v.at] : undefined,
+                        nonzero: e.gpu ? e.gpu.filter((value) => value !== 0).length : undefined,
+                        first: e.gpu ? e.gpu.slice(0, 8) : undefined, why: v.why });
     if (!v.ok) failed++;
     const id = `webgpu_diff/${e.tier}/${e.name}`;
     if (v.ok) console.log(`PASSED ${id} (rel err ${Number(v.worst).toExponential(2)} <= ${v.tol.toExponential(1)})`);
     else console.log(`FAILED ${id} - ${v.why}`);
+    if (REGRESSIONS && e.name === 'gemm_fast_8x8_8_ones') {
+        console.log(`DETAIL ${id} nonzero=${e.gpu?.filter((value) => value !== 0).length}/${e.gpu?.length} ` +
+                    `first=[${e.gpu?.slice(0, 8).join(',')}]`);
+    }
 }
 
 /* Non-vacuity: a run in which the GPU served nothing is a failed gate. */
