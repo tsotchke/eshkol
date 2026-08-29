@@ -1491,6 +1491,19 @@ oracles:
         label: 'Cloning a linear Qubit is a compile-time error that exits nonzero and writes no artifact in default compilation mode (previously a warning with exit 0); measured against 24 shapes'
         action: cd build && cmake --build . && ctest -R qubit_linearity_engine_parity_gate
 
+      # ESH-0103: ArithmeticCodegen's numeric-tower dispatch is out-of-line
+      # and noinline, so LLVM does not re-run SROA over one growing function at
+      # every nested operator. The runtime event carries measured wall time and
+      # peak RSS for both native JIT and AOT at depths 1k/4k/16k; absent or
+      # non-PASS evidence blocks this release view.
+      - runtime_event:
+          event_kinds: [performance_budget]
+          event_names: ["nested_expr_compile_time_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Deeply nested native expressions scale approximately linearly in compile time and peak RSS on JIT and AOT over the bounded 1,000/4,000/16,000 ladder (ESH-0103)'
+        action: bash tests/perf/nested_expr_compile_time_test.sh build/eshkol-run
+
       # #474/SW-47: the no-finite-differences AD guarantee is enforced
       # (the FD counter had zero callers, so every green assertion was
       # true by construction), plus #487's structural carrier gate that
