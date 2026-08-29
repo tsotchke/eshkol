@@ -982,25 +982,103 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_realpath_v(eshkol_sysbuiltin_val
  * Filesystem Operations
  * ═══════════════════════════════════════════════════════════════════ */
 
-/** Implements `(file-stat path)`: returns the file size in bytes as an
- *  integer (via stat / GetFileAttributesExA). Requires "file-read"; returns
- *  null if the file does not exist or on error. */
+/* Return an epoch nanosecond timestamp without narrowing the sub-second part.
+ * Keep this beside file-stat so the file metadata contract and the watcher
+ * contract use the same platform spelling. */
+#ifndef _WIN32
+static int64_t eshkol_stat_mtime_ns(const struct stat* st) {
+    if (!st) return 0;
+#ifdef __APPLE__
+    int64_t sec = (int64_t)st->st_mtimespec.tv_sec;
+    int64_t nsec = (int64_t)st->st_mtimespec.tv_nsec;
+#else
+    int64_t sec = (int64_t)st->st_mtim.tv_sec;
+    int64_t nsec = (int64_t)st->st_mtim.tv_nsec;
+#endif
+    if (sec > INT64_MAX / 1000000000LL) return INT64_MAX;
+    if (sec < INT64_MIN / 1000000000LL) return INT64_MIN;
+    int64_t result = sec * 1000000000LL;
+    if (nsec > 0 && result > INT64_MAX - nsec) return INT64_MAX;
+    if (nsec < 0 && result < INT64_MIN - nsec) return INT64_MIN;
+    return result + nsec;
+}
+#endif
+
+/* file-stat preserves the original `(size seconds type)` prefix and appends
+ * `(mtime-ns device inode)`. Keeping the prefix stable lets existing callers
+ * continue using cadr for seconds while new callers get a precision-safe,
+ * stable identity tuple. */
+static eshkol_sysbuiltin_value_t eshkol_make_file_stat(int64_t size,
+                                                        int64_t mtime_sec,
+                                                        int64_t mtime_ns,
+                                                        int64_t device,
+                                                        int64_t inode,
+                                                        const char* type) {
+    eshkol_sysbuiltin_value_t result = sys_make_null();
+    result = sys_make_pair(sys_make_int64(inode), result);
+    result = sys_make_pair(sys_make_int64(device), result);
+    result = sys_make_pair(sys_make_int64(mtime_ns), result);
+    result = sys_make_pair(sys_make_string(type), result);
+    result = sys_make_pair(sys_make_int64(mtime_sec), result);
+    result = sys_make_pair(sys_make_int64(size), result);
+    return result;
+}
+
+/** Implements `(file-stat path)`: returns
+ *  `(size mtime-seconds type mtime-nanoseconds device inode)` using lstat so
+ *  the identity describes the path itself, including a symlink. Requires
+ *  "file-read"; returns null if the file does not exist or on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_stat_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
     if (!sys_require_capability("file-read")) return sys_make_null();
 #ifndef _WIN32
     struct stat st;
-    if (stat(path, &st) != 0) return sys_make_null();
-    /* Return size as a simple int64 — could return an alist later */
-    return sys_make_int64((int64_t)st.st_size);
+    if (lstat(path, &st) != 0) return sys_make_null();
+    const char* type = S_ISREG(st.st_mode) ? "f" :
+                       S_ISDIR(st.st_mode) ? "d" :
+                       S_ISLNK(st.st_mode) ? "l" : "?";
+#ifdef __APPLE__
+    int64_t mtime_sec = (int64_t)st.st_mtimespec.tv_sec;
+#else
+    int64_t mtime_sec = (int64_t)st.st_mtim.tv_sec;
+#endif
+    return eshkol_make_file_stat((int64_t)st.st_size, mtime_sec,
+                                 eshkol_stat_mtime_ns(&st),
+                                 (int64_t)st.st_dev, (int64_t)st.st_ino, type);
 #else
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) return sys_make_null();
     LARGE_INTEGER sz;
     sz.HighPart = fad.nFileSizeHigh;
     sz.LowPart = fad.nFileSizeLow;
-    return sys_make_int64((int64_t)sz.QuadPart);
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+    ticks.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+    if (ticks.QuadPart < 116444736000000000ULL) return sys_make_null();
+    uint64_t unix_100ns = ticks.QuadPart - 116444736000000000ULL;
+    int64_t mtime_sec = (int64_t)(unix_100ns / 10000000ULL);
+    int64_t mtime_ns = (int64_t)(unix_100ns * 100ULL);
+    int64_t device = 0;
+    int64_t inode = 0;
+    HANDLE handle = CreateFileA(path, FILE_READ_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 NULL, OPEN_EXISTING,
+                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                 NULL);
+    if (handle != INVALID_HANDLE_VALUE) {
+        BY_HANDLE_FILE_INFORMATION info;
+        if (GetFileInformationByHandle(handle, &info)) {
+            device = (int64_t)info.dwVolumeSerialNumber;
+            inode = (int64_t)(((uint64_t)info.nFileIndexHigh << 32) |
+                              (uint64_t)info.nFileIndexLow);
+        }
+        CloseHandle(handle);
+    }
+    const char* type = (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? "l" :
+                       (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "d" : "f";
+    return eshkol_make_file_stat((int64_t)sz.QuadPart, mtime_sec, mtime_ns,
+                                 device, inode, type);
 #endif
 }
 

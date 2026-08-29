@@ -49,6 +49,18 @@
 (check "with-atomic-output-file re-raises proc exception" "caught" raised)
 (check "with-atomic-output-file preserves original on exception" "new" (read-file path))
 
+;; A destination directory makes the final rename fail.  The helper must not
+;; turn that failed publication into a successful write result.
+(define directory-target (path-join temp-root "eshkol-atomic-target-dir"))
+(mkdir-recursive directory-target)
+(check "atomic-write-file reports final rename failure"
+       #f
+       (atomic-write-file directory-target "must-not-be-published"))
+(check "atomic-write-file leaves failed destination unchanged"
+       #t
+       (directory-exists? directory-target))
+(directory-delete-recursive directory-target)
+
 (delete-file path)
 
 (display "passed=") (display passed)

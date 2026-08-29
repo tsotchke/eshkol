@@ -1970,8 +1970,9 @@ Exports (`files.esk`):
 ```
 
 - `(path-directory path) → string` — returns the directory component (uses `"."` for relative paths without a slash).
+- `(file-stat path) → list or #f` — returns `(size mtime-seconds type mtime-nanoseconds device inode)`; `type` is `"f"`, `"d"`, `"l"`, or `"?"`. The first three fields retain the historical positional contract, while the appended nanosecond timestamp and device/inode identity are stable across the native and VM engines.
 - `(atomic-write-file path data)` — writes via a temp file in the same directory then `rename(2)`s into place; safe against torn writes on crash.
-- `(with-atomic-output-file path proc)` — opens a temp file, calls `(proc port)`, then atomically renames to `path` on normal return; deletes the temp on exception.
+- `(with-atomic-output-file path proc)` — opens a temp file, calls `(proc port)`, then atomically renames to `path` on normal return; returns `#f` if publication fails and deletes the temp on exception.
 
 ### B.10 `core.testing`
 

@@ -106,6 +106,7 @@ pages and lets them fan out to their siblings.
   - [capabilities.md](reference/agent/capabilities.md) — the capability allow-list policy
   - [http.md](reference/agent/http.md) — HTTP client and server
   - [sqlite.md](reference/agent/sqlite.md) — embedded SQLite
+  - [platform.md](reference/agent/platform.md) — precision-safe filesystem metadata and stable file identity
   - [subprocess.md](reference/agent/subprocess.md) — process spawning, ownership/cleanup contract
   - [crypto.md](reference/agent/crypto.md) — SHA-256, HMAC, random bytes, UUIDv4, base64url
   - [eagle.md](reference/agent/eagle.md) — native linear-head training

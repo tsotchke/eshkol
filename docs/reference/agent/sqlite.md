@@ -48,6 +48,12 @@ Source: `lib/agent/sqlite.esk`. C symbols: `eshkol_sqlite_*`.
 dynamically-sized TEXT/BLOB columns are read in full (this fixed an earlier
 fixed-buffer truncation bug — see session-persistence work).
 
+The text binder and reader are byte-length aware. Large TEXT, empty TEXT, and
+TEXT containing embedded NUL bytes round-trip without truncation. SQL NULL is
+returned as the empty string by `sqlite-column-text`; use
+`sqlite-column-type` (value `5`, `SQLITE_NULL`) to distinguish it from empty
+TEXT (value `3`, `SQLITE_TEXT`).
+
 ## Metadata
 
 | Procedure | Returns |

@@ -20,6 +20,7 @@ mechanism and link native C runtimes (`qllm_*`, `eshkol_*`). Load one with
 |--------|-----|---------|
 | `agent.http`, `agent.http-server` | [http](http.md) | HTTP client (GET/POST, SSE), HTTP/Unix-socket/WebSocket server |
 | `agent.sqlite` | [sqlite](sqlite.md) | Embedded SQLite: connections, prepared statements, `with-db`/`with-statement` |
+| platform filesystem ABI | [platform](platform.md) | Precision-safe file metadata and stable file identity |
 | `agent.subprocess` | [subprocess](subprocess.md) | Process spawning (shell + injection-safe argv), ownership/cleanup contract (#94) |
 | `agent.crypto` | [crypto](crypto.md) | SHA-256, HMAC, random bytes/hex, UUIDv4, base64url |
 | `agent.eagle` | [eagle](eagle.md) | Native linear-head training (`qllm_ffi_linear_*`, PR #104) |

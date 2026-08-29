@@ -15450,20 +15450,44 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     else if (S_ISDIR(st.st_mode)) type_ch = 'd';
                     else if (S_ISLNK(st.st_mode)) type_ch = 'l';
 
-                    /* Build list: (size mtime type-string) */
+                    /* Preserve the original (size seconds type) prefix and
+                     * append (mtime-ns device inode), matching the native
+                     * system builtin's file-stat contract. */
                     char type_str[2] = { type_ch, 0 };
                     VmString* ts = vm_string_from_cstr(&vm->heap.regions, type_str);
                     if (!ts) { vm_push(vm, BOOL_VAL(0)); break; }
 
-                    /* Build cons cells: (type . nil) → (mtime . ...) → (size . ...) */
+                    int64_t mtime_ns;
+#ifdef __APPLE__
+                    mtime_ns = (int64_t)st.st_mtimespec.tv_sec * 1000000000LL +
+                               (int64_t)st.st_mtimespec.tv_nsec;
+#else
+                    mtime_ns = (int64_t)st.st_mtim.tv_sec * 1000000000LL +
+                               (int64_t)st.st_mtim.tv_nsec;
+#endif
                     int32_t t_sp = heap_alloc(&vm->heap); if (t_sp < 0) { vm_push(vm, BOOL_VAL(0)); break; }
                     vm->heap.objects[t_sp]->type = HEAP_STRING;
                     vm->heap.objects[t_sp]->opaque.ptr = ts;
 
+                    int32_t c6 = heap_alloc(&vm->heap); if (c6 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c6]->type = HEAP_CONS;
+                    vm->heap.objects[c6]->cons.car = INT_VAL((int64_t)st.st_ino);
+                    vm->heap.objects[c6]->cons.cdr = NIL_VAL;
+
+                    int32_t c5 = heap_alloc(&vm->heap); if (c5 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c5]->type = HEAP_CONS;
+                    vm->heap.objects[c5]->cons.car = INT_VAL((int64_t)st.st_dev);
+                    vm->heap.objects[c5]->cons.cdr = PAIR_VAL(c6);
+
+                    int32_t c4 = heap_alloc(&vm->heap); if (c4 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
+                    vm->heap.objects[c4]->type = HEAP_CONS;
+                    vm->heap.objects[c4]->cons.car = INT_VAL(mtime_ns);
+                    vm->heap.objects[c4]->cons.cdr = PAIR_VAL(c5);
+
                     int32_t c3 = heap_alloc(&vm->heap); if (c3 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
                     vm->heap.objects[c3]->type = HEAP_CONS;
                     vm->heap.objects[c3]->cons.car = (Value){.type = VAL_STRING, .as.ptr = t_sp};
-                    vm->heap.objects[c3]->cons.cdr = NIL_VAL;
+                    vm->heap.objects[c3]->cons.cdr = PAIR_VAL(c4);
 
                     int32_t c2 = heap_alloc(&vm->heap); if (c2 < 0) { vm_push(vm, BOOL_VAL(0)); break; }
                     vm->heap.objects[c2]->type = HEAP_CONS;

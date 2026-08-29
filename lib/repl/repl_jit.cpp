@@ -592,6 +592,7 @@ extern "C" {
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_copy)
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_chmod)
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields)
+    ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields_v2)
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_lock)
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_unlock)
     ESHKOL_AGENT_FFI_SYMBOL(eshkol_file_mmap)
@@ -1372,6 +1373,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_copy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_chmod);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_stat_fields_v2);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_lock);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_unlock);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_file_mmap);

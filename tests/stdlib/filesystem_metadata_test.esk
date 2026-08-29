@@ -1,0 +1,31 @@
+;; Regression for the cross-engine file-stat metadata contract.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label want got)
+  (if (equal? want got)
+      (begin (set! passed (+ passed 1)) (display label) (display ": PASS") (newline))
+      (begin (set! failed (+ failed 1)) (display label) (display ": FAIL want=")
+             (display want) (display " got=") (display got) (newline))))
+
+(define path (path-join (temp-directory) "eshkol-file-stat-metadata.txt"))
+(if (file-exists? path) (delete-file path) #t)
+(check "file-stat publication" #t (atomic-write-file path "metadata"))
+
+(define stat (file-stat path))
+(check "file-stat returns a six-field list" 6 (length stat))
+(check "file-stat size" 8 (list-ref stat 0))
+(check "file-stat seconds mtime is an integer" #t (exact? (list-ref stat 1)))
+(check "file-stat type" "f" (list-ref stat 2))
+(check "file-stat mtime has nanosecond precision" #t
+       (> (list-ref stat 3) 1000000000000000000))
+(check "file-stat device identity is present" #t (number? (list-ref stat 4)))
+(check "file-stat inode identity is present" #t (> (list-ref stat 5) 0))
+
+(delete-file path)
+(display "passed=") (display passed)
+(display " failed=") (display failed) (newline)
+(if (> failed 0) (exit 1) (display "OK\n"))
