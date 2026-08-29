@@ -1508,6 +1508,7 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     compile_expr(c, node->children[1], 0); /* push handler closure */
     chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
     chunk_emit(c, OP_CALL, 1);
+    chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
     patch(c, end_patch, OP_JUMP, c->code_len);
     return;
