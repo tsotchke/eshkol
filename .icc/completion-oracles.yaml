@@ -74,6 +74,15 @@ oracles:
       # (closed / fixed / guarded) backed by a re-measurement SHA or a
       # committed test, or via a waiver with an owner, a reason and an
       # unexpired date. Nothing closes by bare assertion.
+      # Generated docs/api pages must stay synchronized with the public headers.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["api_docs_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
+        action: python3 scripts/gen_api_docs.py --check
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["no_open_silent_wrong"]
@@ -1556,6 +1565,14 @@ oracles:
         severity: high
         label: 'Every tracked *.ps1/*.psm1 file is ASCII, or opens with a UTF-8 BOM, so Windows PowerShell 5.1 and pwsh 7 decode it identically (scripts/check_ps1_encoding.py)'
         action: python3 scripts/check_ps1_encoding.py
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["public_api_docs_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every reviewed DD-11 public header symbol and shipped .esk export has a source-backed documentation page, anchor, and index link (scripts/check_public_api_docs.py)'
+        action: python3 scripts/check_public_api_docs.py
 
       # #455/#465: docs-only PRs report every required context.
       - runtime_event:

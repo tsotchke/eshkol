@@ -4720,9 +4720,17 @@ entries:
 
   - id: DD-11
     bucket: DOC-DEBT
-    status: open
+    status: closed
     title: "68 header symbols and 59 shipped .esk exports have no documentation anywhere"
-    evidence: "PR #416 Appendix A; the drafted doc comments were reverted and the patch kept only in an uncommitted .scratch path"
+    evidence: >-
+      docs/api/public_surface.md and docs/reference/stdlib/shipped_exports.md
+      provide source-backed pages and stable anchors for the reviewed DD-11
+      surface. The generated docs/api index and the standard-library index link
+      every entry. scripts/check_public_api_docs.py validates the two checked-in
+      manifests, source paths, page anchors, and index links.
+    closed_at: "working-tree verification 2026-08-28"
+    closed_by: "scripts/check_public_api_docs.py"
+    observed_after: "public_api_docs: PASS; Header symbols: 68/68 documented and indexed; Eshkol exports: 59/59 documented and indexed"
     caught_by: [pr-record-416]
 
   - id: DD-13
