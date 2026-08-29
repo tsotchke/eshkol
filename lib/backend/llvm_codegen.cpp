@@ -33088,6 +33088,42 @@ private:
         Value* b_ndim_field = builder->CreateStructGEP(tensor_type, ptr_b, 1);
         Value* b_ndim = builder->CreateLoad(int64_type, b_ndim_field);
 
+        // Do not read rank-dependent dimension slots until both operands have
+        // been proved to be supported 1-D/2-D tensors. This is the native
+        // matmul entry boundary; malformed/corrupt shapes must become a
+        // diagnostic rather than an out-of-bounds dimension read.
+        Value* a_rank_ok = builder->CreateOr(
+            builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 2)));
+        Value* b_rank_ok = builder->CreateOr(
+            builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(b_ndim, ConstantInt::get(int64_type, 2)));
+        Value* ranks_ok = builder->CreateAnd(a_rank_ok, b_rank_ok);
+        BasicBlock* rank_ok_bb = BasicBlock::Create(*context, "mm_rank_ok", current_func);
+        BasicBlock* rank_err_bb = BasicBlock::Create(*context, "mm_rank_err", current_func);
+        builder->CreateCondBr(ranks_ok, rank_ok_bb, rank_err_bb);
+        builder->SetInsertPoint(rank_err_bb);
+        ctx_->emitRaiseFmt("matmul: operands must be rank 1 or 2 (got %lldD and %lldD)",
+                           {a_ndim, b_ndim});
+        builder->SetInsertPoint(rank_ok_bb);
+
+        Function* validate_shape_fn = module->getFunction(
+            "eshkol_validate_tensor_shape_or_raise");
+        if (!validate_shape_fn) {
+            FunctionType* validate_shape_ty = FunctionType::get(
+                builder->getVoidTy(),
+                {builder->getPtrTy(), int64_type, int64_type, builder->getPtrTy()}, false);
+            validate_shape_fn = Function::Create(
+                validate_shape_ty, Function::ExternalLinkage,
+                "eshkol_validate_tensor_shape_or_raise", module.get());
+        }
+        Value* shape_no_expected = ConstantInt::get(int64_type, -1, true);
+        Value* matmul_name = builder->CreateGlobalString("matmul", "matmul_shape_op");
+        builder->CreateCall(validate_shape_fn,
+            {a_dims_ptr, a_ndim, shape_no_expected, matmul_name});
+        builder->CreateCall(validate_shape_fn,
+            {b_dims_ptr, b_ndim, shape_no_expected, matmul_name});
+
         // --- Extract A dimensions (safe: only read dims[1] inside 2D branch) ---
         Value* a_is_1d = builder->CreateICmpEQ(a_ndim, ConstantInt::get(int64_type, 1));
         BasicBlock* a_1d_bb = BasicBlock::Create(*context, "mm_a_1d", current_func);

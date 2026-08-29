@@ -30,12 +30,21 @@ static int vm_broadcast_shapes(const int64_t* a_shape, int a_dims,
                                const int64_t* b_shape, int b_dims,
                                int64_t* out_shape, int* out_dims) {
     *out_dims = a_dims > b_dims ? a_dims : b_dims;
-    if (*out_dims <= 0) return -1;
+    if (*out_dims <= 0) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_EMPTY;
+        return -1;
+    }
+    if (vm_tensor_validate_shape(a_shape, a_dims, -1, NULL) != VM_TENSOR_SHAPE_OK ||
+        vm_tensor_validate_shape(b_shape, b_dims, -1, NULL) != VM_TENSOR_SHAPE_OK)
+        return -1;
 
     for (int i = 0; i < *out_dims; i++) {
         int64_t a = (i < a_dims) ? a_shape[a_dims - 1 - i] : 1;
         int64_t b = (i < b_dims) ? b_shape[b_dims - 1 - i] : 1;
-        if (a != b && a != 1 && b != 1) return -1;
+        if (a != b && a != 1 && b != 1) {
+            vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+            return -1;
+        }
         out_shape[*out_dims - 1 - i] = (a > b) ? a : b;
     }
     return 0;
@@ -258,8 +267,17 @@ static VmTensor* vm_tensor_scale(VmRegionStack* rs, const VmTensor* t, double s)
  */
 static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b) return NULL;
-    if (a->n_dims != 1 && a->n_dims != 2) return NULL;
-    if (b->n_dims != 1 && b->n_dims != 2) return NULL;
+    if (vm_tensor_validate_shape(a->shape, a->n_dims, a->total, NULL) != VM_TENSOR_SHAPE_OK ||
+        vm_tensor_validate_shape(b->shape, b->n_dims, b->total, NULL) != VM_TENSOR_SHAPE_OK)
+        return NULL;
+    if (a->n_dims != 1 && a->n_dims != 2) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }
+    if (b->n_dims != 1 && b->n_dims != 2) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }
 
     int a_was_1d = (a->n_dims == 1);
     int b_was_1d = (b->n_dims == 1);
@@ -268,7 +286,10 @@ static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const Vm
     int64_t K = a_was_1d ? a->total : a->shape[1];
     int64_t K2 = b_was_1d ? b->total : b->shape[0];
     int64_t N = b_was_1d ? 1 : b->shape[1];
-    if (K != K2) return NULL;
+    if (K != K2) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }
 
     int64_t out_shape[2] = { M, N };
     VmTensor* out = vm_tensor_zeros(rs, out_shape, 2);
@@ -302,9 +323,21 @@ static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const Vm
  *         (batch size and K must match). */
 static VmTensor* vm_tensor_batch_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b) return NULL;
-    if (a->n_dims != 3 || b->n_dims != 3) return NULL;
-    if (a->shape[0] != b->shape[0]) return NULL;  /* batch size must match */
-    if (a->shape[2] != b->shape[1]) return NULL;  /* K must match */
+    if (vm_tensor_validate_shape(a->shape, a->n_dims, a->total, NULL) != VM_TENSOR_SHAPE_OK ||
+        vm_tensor_validate_shape(b->shape, b->n_dims, b->total, NULL) != VM_TENSOR_SHAPE_OK)
+        return NULL;
+    if (a->n_dims != 3 || b->n_dims != 3) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }
+    if (a->shape[0] != b->shape[0]) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }  /* batch size must match */
+    if (a->shape[2] != b->shape[1]) {
+        vm_tensor_last_shape_error = VM_TENSOR_SHAPE_MISMATCH;
+        return NULL;
+    }  /* K must match */
 
     int64_t B = a->shape[0], M = a->shape[1], K = a->shape[2], N = b->shape[2];
     int64_t out_shape[3] = { B, M, N };

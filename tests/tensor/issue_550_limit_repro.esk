@@ -1,0 +1,1 @@
+(display (make-tensor (list 2 3) 0.0))

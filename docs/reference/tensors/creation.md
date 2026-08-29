@@ -51,6 +51,13 @@ t                               ;; => #(1 2 3)
 `shape`-dimensional. Reshape a flat tensor into higher rank with
 `tensor-reshape` (see [operations.md](operations.md)).
 
+Shape dimensions are exact positive integers. Every constructor rejects a
+zero, negative, non-integer, overflowing, or over-limit dimension with a
+catchable diagnostic before allocating tensor elements. The tensor element
+limit is `ESHKOL_MAX_TENSOR_ELEMS` when enabled (default ceiling
+`ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS`); the native and VM engines apply the
+same rule.
+
 ### From a nested collection
 
 `(tensor X)` on a single collection argument takes its shape from the value's

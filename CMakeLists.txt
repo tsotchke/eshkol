@@ -3197,6 +3197,56 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # SW-110 / issue #550: malformed dimensions and incompatible tensor shapes
+    # must fail with a bounded diagnostic on native JIT/AOT. The guarded
+    # matrix below also checks that valid broadcast remains usable; the exact
+    # issue reproducers below ensure the original unguarded forms cannot exit
+    # successfully or print a fabricated value.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/malformed_shape_validation_test.esk")
+        add_test(
+            NAME tensor_malformed_shape_validation_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/malformed_shape_validation_test.esk"
+        )
+        set_tests_properties(tensor_malformed_shape_validation_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: tensor shape validation rejects malformed shapes"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME tensor_malformed_shape_validation_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_malformed_shape_validation_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/malformed_shape_validation_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_malformed_shape_validation_aot'"
+        )
+        set_tests_properties(tensor_malformed_shape_validation_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: tensor shape validation rejects malformed shapes"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    foreach(_issue_550_case IN ITEMS
+            broadcast_repro reshape_repro negative_dimension_repro
+            non_integer_dimension_repro zero_dimension_repro
+            overflow_dimension_repro matmul_mismatch_repro)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/issue_550_${_issue_550_case}.esk")
+            add_test(
+                NAME tensor_issue_550_${_issue_550_case}_jit_reject
+                COMMAND $<TARGET_FILE:eshkol-run> -r
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/issue_550_${_issue_550_case}.esk"
+            )
+            set_tests_properties(tensor_issue_550_${_issue_550_case}_jit_reject PROPERTIES
+                WILL_FAIL TRUE
+                TIMEOUT 120
+                FAIL_REGULAR_EXPRESSION "MALFORMED_INPUT_ACCEPTED|LLVM module verification failed|fatal signal")
+            add_test(
+                NAME tensor_issue_550_${_issue_550_case}_aot_reject
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tensor_issue_550_${_issue_550_case}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/issue_550_${_issue_550_case}.esk' && '${CMAKE_CURRENT_BINARY_DIR}/tensor_issue_550_${_issue_550_case}_aot'"
+            )
+            set_tests_properties(tensor_issue_550_${_issue_550_case}_aot_reject PROPERTIES
+                WILL_FAIL TRUE
+                TIMEOUT 180
+                FAIL_REGULAR_EXPRESSION "MALFORMED_INPUT_ACCEPTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
     # Task #100 ("Bug A") guard: the logic-variable representation was split
     # three ways (KB matcher wanted a "?"-string, unify wanted a raw int id,
     # logic-var? wanted a heap object nothing built), and a quoted ?x compiles
