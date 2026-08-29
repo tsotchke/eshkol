@@ -3,11 +3,13 @@
 
 (display "=== Exception Handling Tests ===") (newline)
 
-;; Test 1: with-exception-handler + raise (handler receives raised value)
+;; Test 1: with-exception-handler receives a non-continuable raise and
+;; re-raises it; the enclosing guard performs the legal recovery.
 (display "Test 1 - basic raise/handler: ")
-(display (with-exception-handler
-  (lambda (err) 42)
-  (lambda () (raise "error!"))))
+(display (guard (err (#t 42))
+  (with-exception-handler
+    (lambda (err) (raise err))
+    (lambda () (raise "error!")))))
 (newline)
 
 ;; Test 2: guard expression (R7RS: exn bound to raised value)
@@ -23,14 +25,12 @@
   (lambda () (+ 10 20))))
 (newline)
 
-;; Test 4: Nested exception handlers
+;; Test 4: A handler-raised condition reaches the enclosing guard.
 (display "Test 4 - nested: ")
-(display (with-exception-handler
-  (lambda (err) (+ err 1000))
-  (lambda ()
-    (with-exception-handler
-      (lambda (err) (raise (+ err 100)))
-      (lambda () (raise 5))))))
+(display (guard (err (#t (+ err 1000)))
+  (with-exception-handler
+    (lambda (err) (raise (+ err 100)))
+    (lambda () (raise 5)))))
 (newline)
 
 (display "=== Exception Tests Complete ===") (newline)
