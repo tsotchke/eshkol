@@ -1,0 +1,8 @@
+;; ESH-0101 guard coverage — FAIL-CLOSED probe.
+;; A guard whose clauses all fail to match re-raises; with no enclosing
+;; handler that re-raise must be fatal exactly like a bare raise. A guard
+;; that swallowed the condition and returned some value instead would print
+;; the sentinel.
+(display "BEFORE ")
+(display (guard (e ((number? e) "num")) (raise "not-a-number")))
+(display "MUST-NOT-PRINT")

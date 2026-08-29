@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two of the four cond-clause shapes R7RS allows inside `guard` were silently
+  wrong, on the native backend and the bytecode VM alike** (`SW-78`, `SW-79`).
+
+  A guard clause *is* a `cond` clause (R7RS 4.2.7), so `(test => receiver)` and
+  the test-only `(test)` are as legal there as `(test body …)` and `else`.
+  Neither clause reader recognised them. For `=>`, native code generation
+  reached the body loop and emitted the literal identifier `=>` as a variable
+  reference, and the VM compiled it as an ordinary body expression; for
+  `(test)`, native substituted `'()` for the missing body and the VM returned
+  whatever the stack happened to hold. Both answered without a diagnostic.
+
+  Fixed in `LLVMCodeGenerator::codegenGuard` and `compile_form_guard`, using the
+  same shape detection `ControlFlowCodegen::codegenCond` already used, so the
+  two clause readers cannot drift apart again. The VM's `cond` turned out to be
+  missing `=>` for the same reason — the native side gained it when ESH-0109
+  closed and the VM was never brought along — so `compile_form_cond` is fixed in
+  the same place.
+
+  These are the shape of defect a differential harness cannot see: both engines
+  were wrong the *same* way, so every native-vs-VM comparison passed by
+  agreement. They were found by grading each engine against a hand-authored
+  R7RS golden instead (below).
+
 ### Added
+
+- **A `guard` coverage gate across five execution axes (ESH-0101).**
+  `scripts/run_guard_coverage.sh` runs `tests/error_handling/guard_coverage/`
+  under the JIT (`-r`), AOT at `-O0` **and** `-O2`, `vm-src` and `vm-eskb`, and
+  compares each engine's output to a per-case golden written from R7RS rather
+  than to another engine — so a defect shared by both backends fails instead of
+  passing by agreement.
+
+  It closes two holes at once. `guard` previously had no multi-engine coverage
+  at all: `scripts/run_error_handling_tests.sh` compiles its programs AOT and
+  runs them, so no `guard` program in the repo had ever executed under `-r` or
+  on the VM. And the harnesses that do span engines are differentials, which is
+  the blind spot `SW-78`/`SW-79` lived in.
+
+  Covered: every clause shape, first-match-wins, the no-clause-matched re-raise
+  (including across two non-matching guards, and an explicit re-raise from a
+  clause body), nesting and callee-owned guards, the guard variable's binding
+  discipline (shadowing, restoration, capture, non-visibility in the body),
+  `guard` × `dynamic-wind` escape ordering and after-thunk counts, `guard` ×
+  `with-exception-handler` × `call/cc`, `error` with the error-object
+  accessors, every raised value kind, and `guard` in each non-tail expression
+  context. Two AOT optimization levels are separate axes because the
+  differential finding this corpus inherits was an `-O1`+-only crash.
+
+  Plus fail-closed probes (`fatal/`): an unhandled `raise`, an unmatched
+  guard's re-raise and an uncaught `error` must each exit nonzero, print a
+  diagnostic on stderr, and never reach their `MUST-NOT-PRINT` sentinel.
+
+  Any `(case, axis)` pair that is not required is declared with a mandatory
+  justification in `tests/error_handling/guard_coverage/ENGINES.tsv`, and the
+  gate fails on a stale or unjustified row, so an engine losing a form has to
+  be written down. Wired into CI's `pillars-fast` job and registered as the
+  `guard_coverage_gate` criterion in `.icc/completion-oracles.yaml`.
+
+  `guard` in tail position is deliberately out of scope — that is `SW-58`,
+  pinned by `tests/tco/guard_tail_context/`.
 
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table

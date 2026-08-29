@@ -1,0 +1,23 @@
+;; ESH-0101 guard coverage — `dynamic-wind` NORMAL exit around/inside a `guard`.
+;; Split across three files on purpose: each block below compiles and runs
+;; correctly on every axis ALONE, but all three in ONE module fail native LLVM
+;; module verification ("Instruction does not dominate all uses"). That
+;; interaction is filed as found/guard_wind_multi_module_dominance.esk; keeping
+;; the blocks separate here preserves the per-construct coverage on the native
+;; axes instead of losing all of it to one module-level defect.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; two sequential winds inside one guard body: two befores, two afters
+(define b3 0) (define a3 0)
+(define (wound v)
+  (dynamic-wind (lambda () (set! b3 (+ b3 1)))
+                (lambda () v)
+                (lambda () (set! a3 (+ a3 1)))))
+(chk "sequential-winds-value"
+     (equal? (guard (e (#t 'unreached)) (+ (wound 1) (wound 2))) 3))
+(chk "sequential-winds-before-twice" (equal? b3 2))
+(chk "sequential-winds-after-twice" (equal? a3 2))

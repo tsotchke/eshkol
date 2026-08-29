@@ -1,0 +1,37 @@
+;; ESH-0101 guard coverage — the guard VARIABLE's binding discipline.
+;; The variable is bound only inside the clauses, shadows an outer binding of
+;; the same name only there, and never leaks into the body or out of the form.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; an outer variable of the same name is shadowed inside the clauses
+(define e "outer-value")
+(chk "shadows-outer" (equal? (guard (e (#t e)) (raise "raised")) "raised"))
+
+;; ...and is restored afterwards
+(chk "outer-restored" (equal? e "outer-value"))
+
+;; the guard variable is NOT visible in the guard BODY (the body sees the
+;; outer binding, because the body runs before any condition exists)
+(chk "body-sees-outer" (equal? (guard (e (#t "caught")) e) "outer-value"))
+
+;; the clause variable does not leak out of the guard form
+(define leaked (guard (q (#t 1)) (raise 'x)))
+(chk "no-leak" (and (equal? leaked 1) (equal? e "outer-value")))
+
+;; a guard variable shadowing a PROCEDURE name inside the clauses only
+(define (f x) (* x 2))
+(chk "shadows-proc-name"
+     (equal? (guard (f (#t (list 'caught f))) (raise 'boom)) (list 'caught 'boom)))
+(chk "proc-name-restored" (equal? (f 21) 42))
+
+
+;; a closure created in a clause captures the guard variable's value
+
+;; two sequential guards with the same variable name do not alias
+(define s1 (guard (e (#t e)) (raise 'first)))
+(define s2 (guard (e (#t e)) (raise 'second)))
+(chk "sequential-no-alias" (and (equal? s1 'first) (equal? s2 'second)))

@@ -1,0 +1,23 @@
+# tests/error_handling/guard_coverage/ENGINES.tsv — ESH-0101 engine manifest.
+#
+# The DEFAULT is that every case runs on every axis (jit, aot-o0, aot-o2,
+# vm-src, vm-eskb) and must match its hand-authored golden. This file is the
+# only way to exempt a (case, axis) pair, and every row needs a justification,
+# so an engine losing a `guard` form has to be written down rather than
+# quietly dropped. scripts/run_guard_coverage.sh fails on a row naming a case
+# or axis that does not exist (a stale waiver) and on a row with no
+# justification.
+#
+# Format: case<TAB>axis<TAB>not-required<TAB>justification
+#   case  — basename without .esk (corpus or fatal/)
+#   axis  — jit | aot-o0 | aot-o2 | vm-src | vm-eskb
+11_error_irritants	vm-src	not-required	The VM's `error` is a fixed 1-argument native (fid 237) and its error-object-irritants always answers '(): a divergence already filed upstream at tests/vm_parity/found/error_object_irritants_empty.esk. error-object? / -message / the empty-irritants case are all required on this axis and pass, in 06_error_objects.esk; only the variadic-irritant checks are exempt here.
+11_error_irritants	vm-eskb	not-required	Same VM `error` arity limit as the vm-src row above; the ESKB route runs the same native. See tests/vm_parity/found/error_object_irritants_empty.esk.
+15_clause_side_effects	vm-src	not-required	A `set!` to a top-level binding from inside a guard CLAUSE body does not reach that binding on the VM: the handler is its own closure frame and the write lands there. Silent - the clause still returns the right value. Repro found/vm_setbang_global_from_guard_clause_lost.esk, ledger SW-85. Both native axes are required and pass.
+15_clause_side_effects	vm-eskb	not-required	Same VM binding defect as the vm-src row; the ESKB route compiles the same handler-as-closure shape. See found/vm_setbang_global_from_guard_clause_lost.esk (SW-85).
+16_internal_defines_in_body	vm-src	not-required	Internal `define`s in a guard BODY do not yield the body's value on the VM. Repro found/vm_internal_defines_in_guard_body.esk, ledger SW-86. Both native axes are required and pass.
+16_internal_defines_in_body	vm-eskb	not-required	Same as the vm-src row. See found/vm_internal_defines_in_guard_body.esk (SW-86).
+17_wind_unwind_order	vm-eskb	not-required	The ESKB route runs the guard clause body before the dynamic-wind after-thunk, inverting the R7RS order. vm-src and all three native axes agree with R7RS and are required here, so this waiver is one axis wide and is itself a native-vs-vm-src-vs-vm-eskb three-way divergence. Repro found/vm_eskb_wind_order_vs_clause.esk, ledger SW-89.
+18_guard_variable_mutation	jit	not-required	Native binds the guard variable to an SSA value rather than an alloca, so `set!` on it is rejected: "variable 'e' is not mutable". LOUD, not silent. Both VM axes are required here and pass, so this row also records that the native side is the nonconforming one. Repro found/native_guard_variable_not_a_binding.esk, ledger SW-87.
+18_guard_variable_mutation	aot-o0	not-required	Same native binding limitation as the jit row. See found/native_guard_variable_not_a_binding.esk (SW-87).
+18_guard_variable_mutation	aot-o2	not-required	Same native binding limitation as the jit row. See found/native_guard_variable_not_a_binding.esk (SW-87).

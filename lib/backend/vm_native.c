@@ -7234,6 +7234,45 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
     }
 }
 
+/* R7RS 6.11: a handler installed by with-exception-handler is for a
+ * non-continuable raise. If that handler returns, raise a secondary condition
+ * after the original handler has been removed, leaving an enclosing handler
+ * as the only possible catcher. */
+static void vm_raise_secondary_exception(VM* vm) {
+    char original[256];
+    original[0] = '\0';
+    Value exn = vm->current_exception;
+    if (exn.type == VAL_ERROR_OBJ && is_valid_heap_ptr(vm, exn.as.ptr)) {
+        VmError* err = (VmError*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+        if (err) snprintf(original, sizeof(original), "%s", err->message);
+    } else if ((exn.type == VAL_STRING || exn.type == VAL_SYMBOL) &&
+               is_valid_heap_ptr(vm, exn.as.ptr)) {
+        VmString* str = (VmString*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+        if (str && str->data) snprintf(original, sizeof(original), "%s", str->data);
+    } else if (exn.type == VAL_INT) {
+        snprintf(original, sizeof(original), "%lld", (long long)exn.as.i);
+    } else if (exn.type == VAL_BOOL) {
+        snprintf(original, sizeof(original), "#%c", exn.as.b ? 't' : 'f');
+    } else {
+        snprintf(original, sizeof(original), "condition");
+    }
+
+    char message[320];
+    snprintf(message, sizeof(message),
+             "handler returned from non-continuable raise: %s", original);
+    VmError* err = vm_error_make(&vm->heap.regions, "error", message, NULL, 0);
+    Value secondary = NIL_VAL;
+    if (err) {
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr >= 0) {
+            vm->heap.objects[ptr]->type = HEAP_ERROR;
+            vm->heap.objects[ptr]->opaque.ptr = err;
+            secondary = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ptr};
+        }
+    }
+    vm_dispatch_exception(vm, secondary);
+}
+
 /*
  * Raise `msg` as a catchable error condition, exactly as `(error msg)` would.
  *

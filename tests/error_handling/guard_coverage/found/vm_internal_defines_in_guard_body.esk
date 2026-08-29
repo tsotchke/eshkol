@@ -1,0 +1,9 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-86.
+;; VM ONLY (vm-src and vm-eskb); both native axes are correct.
+;;
+;; Internal `define`s in a guard BODY (the protected expression, not a clause)
+;; do not produce the body's value correctly on the VM.
+;;
+;; want: 42
+(display (guard (e (#t -1)) (define x 10) (define y 32) (+ x y)))
+(newline)

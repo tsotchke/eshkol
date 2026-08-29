@@ -1,0 +1,47 @@
+;; ESH-0101 guard coverage — `guard` x `with-exception-handler` x `call/cc`.
+;; guard is specified in terms of with-exception-handler + continuations, so
+;; the two must compose: a guard inside a handler's thunk, a handler inside a
+;; guard body, and a call/cc escape out of a guard body.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; a guard inside the thunk of with-exception-handler catches first; the
+;; handler never runs
+(define handler-ran #f)
+(define r1
+  (with-exception-handler
+    (lambda (e) (set! handler-ran #t) "handler")
+    (lambda () (guard (e (#t "guard")) (raise 'x)))))
+(chk "guard-inside-weh" (equal? r1 "guard"))
+(chk "weh-handler-not-run" (equal? handler-ran #f))
+
+;; with-exception-handler inside a guard body: an escaping raise from the
+;; handler reaches the enclosing guard
+(chk "weh-inside-guard"
+     (equal? (guard (g (#t (list 'guard g)))
+               (call-with-current-continuation
+                 (lambda (k)
+                   (with-exception-handler
+                     (lambda (e) (k (raise (list 'rethrown e))))
+                     (lambda () (raise 'inner))))))
+             (list 'guard (list 'rethrown 'inner))))
+
+;; call/cc escape OUT of a guard body: the guard clause must not fire
+(define clause-ran #f)
+(define r3
+  (call-with-current-continuation
+    (lambda (k)
+      (guard (e (#t (set! clause-ran #t) "clause"))
+        (k "escaped")))))
+(chk "callcc-escape-value" (equal? r3 "escaped"))
+(chk "callcc-escape-no-clause" (equal? clause-ran #f))
+
+;; call/cc used as the escape mechanism FROM a guard clause body
+(chk "callcc-from-clause"
+     (equal? (call-with-current-continuation
+               (lambda (k) (guard (e (#t (k (list 'early e)))) (raise 'v))))
+             (list 'early 'v)))
+

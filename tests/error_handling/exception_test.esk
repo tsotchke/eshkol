@@ -3,11 +3,14 @@
 
 (display "=== Exception Handling Tests ===") (newline)
 
-;; Test 1: with-exception-handler + raise (handler receives raised value)
+;; Test 1: a returned handler causes a secondary exception, caught by guard.
+;; The sentinel differs from the handler's old return value so the old
+;; swallowing behaviour cannot pass this smoke test.
 (display "Test 1 - basic raise/handler: ")
-(display (with-exception-handler
-  (lambda (err) 42)
-  (lambda () (raise "error!"))))
+(display (guard (secondary (#t 'secondary-handler-return))
+  (with-exception-handler
+    (lambda (err) 42)
+    (lambda () (raise "error!")))))
 (newline)
 
 ;; Test 2: guard expression (R7RS: exn bound to raised value)
@@ -23,14 +26,15 @@
   (lambda () (+ 10 20))))
 (newline)
 
-;; Test 4: Nested exception handlers
+;; Test 4: nested handlers, with the outer returned-handler secondary caught
 (display "Test 4 - nested: ")
-(display (with-exception-handler
-  (lambda (err) (+ err 1000))
-  (lambda ()
-    (with-exception-handler
-      (lambda (err) (raise (+ err 100)))
-      (lambda () (raise 5))))))
+(display (guard (secondary (#t 1005))
+  (with-exception-handler
+    (lambda (err) (+ err 1000))
+    (lambda ()
+      (with-exception-handler
+        (lambda (err) (raise (+ err 100)))
+        (lambda () (raise 5)))))))
 (newline)
 
 (display "=== Exception Tests Complete ===") (newline)

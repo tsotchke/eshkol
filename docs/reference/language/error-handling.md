@@ -26,8 +26,8 @@ list, or an error object built with `error`.
 (guard (var clause …) body …)
 ```
 Evaluates `body`. If an exception is raised, `var` is bound to the raised object
-and the `clause`s are tried like a `cond` (each `(test result …)`, optional
-`else`). The value of the matching clause becomes the value of the `guard` form.
+and the `clause`s are tried like a `cond`. The value of the matching clause
+becomes the value of the `guard` form.
 
 ```scheme
 (display (guard (e ((symbol? e) (list 'sym e))
@@ -38,6 +38,39 @@ and the `clause`s are tried like a `cond` (each `(test result …)`, optional
 ```
 (str oops)
 ```
+
+### Clause shapes
+
+A guard clause *is* a `cond` clause, so all four shapes are available (R7RS
+4.2.7):
+
+| Shape | Value of the `guard` form |
+|---|---|
+| `(test expr …)` | the last `expr` |
+| `(test => receiver)` | `(receiver <the test's value>)` |
+| `(test)` | the **test's own** value |
+| `(else expr …)` | the last `expr` |
+
+```scheme
+;; => passes the TEST's value (not `e`) to the receiver
+(display (guard (e ((assoc 'b e) => cdr))
+  (raise (list (cons 'a 1) (cons 'b 2))))) (newline)
+
+;; a test-only clause returns what the test computed
+(display (guard (e ((memq e (list 1 2 3))))
+  (raise 2))) (newline)
+```
+```
+2
+(2 3)
+```
+
+`=>` and the test-only clause are checked on every engine — JIT, AOT at `-O0`
+and `-O2`, and both VM axes — by the gate described in
+[TESTING.md](../../TESTING.md#guard-coverage-gate-esh-0101).
+
+`guard` is **not** a tail context in R7RS, and a self tail call in a guard body
+is not one here either — see [tail-calls.md](tail-calls.md).
 
 ### Quoted symbols inside `guard` (ESH-0106, closed)
 
@@ -53,14 +86,24 @@ boom
 boom
 ```
 
-### Known issues — differential `guard` findings (ESH-0101 / ESH-0102)
+### Differential `guard` findings (closed)
 
-The project's differential/adversarial harness has open findings around `guard`:
-value corruption across clause paths (ESH-0101) and an optimization-level-dependent
-crash when a displayed `guard` catching a `raise` is followed by a second `guard`
-form (ESH-0102, reported at `-O1`/`-O2`/`-O3`). Simple two-`guard` programs run
-correctly at `-O0`/JIT and in many `-O2` cases; treat heavy `guard` nesting under
-aggressive optimization as not-yet-hardened and test at your target `-O` level.
+Two adversarial-harness findings used to be listed here: a `guard`-caught value
+that was garbage and differed per clause path, and an optimization-level-
+dependent crash when a displayed `guard` catching a `raise` was followed by a
+second `guard` form at `-O1`/`-O2`/`-O3`. Both were fixed by #117 and are now
+pinned by `tests/differential/corpus/41_guard_value_and_double.esk`, which every
+execution axis must agree on, and re-checked per-engine against an independent
+golden by the guard coverage gate
+([TESTING.md](../../TESTING.md#guard-coverage-gate-esh-0101)) — including at
+`-O2`, which is the level that used to crash.
+
+Earlier revisions of this page attributed those two findings to the ledger ids
+`ESH-0101` and `ESH-0102`. That was a misattribution: `ESH-0101` is the
+recursion-depth guard-coverage item (a deep non-tail recursion dies without a
+diagnostic — see [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md)) and `ESH-0102` is
+mutual tail-call optimization, since closed. Neither ever denoted a `guard`
+defect.
 
 ## `error`
 
@@ -97,13 +140,27 @@ native path.
 
 ```scheme
 (display
-  (with-exception-handler
-    (lambda (e) (display "handler ") 100)
-    (lambda () (+ 1 (raise-continuable 'warn)))))
+  (guard (e (#t (list 'caught e)))
+    (with-exception-handler
+      (lambda (e) (display "handler ") 100)
+      (lambda () (raise 'warn)))))
 ```
-The above uses `raise-continuable`, which is **not available** in the native path
-(`Unknown function`); it is VM-only. `with-exception-handler` combined with a plain
-`raise` (non-continuable, escaping) works in native code.
+
+### `raise-continuable` is not implemented
+
+`raise-continuable` is **not available on any substrate** — not the native LLVM
+path and not the bytecode VM. It appears in no builtin table, no special-form
+dispatch and no prelude; the name occurs exactly once in the compiler, as an
+entry in an iteration-scope blacklist, which is not an implementation.
+`docs/COMPLETE_LANGUAGE_SPECIFICATION.md` has this right ("all raises are
+non-continuable"); earlier revisions of *this* page and of
+[INDEX.md](INDEX.md) said it was "VM-only", which was never true of any build.
+The correction is ledgered as `SW-80`, and implementing it is a build item, not
+a documented limitation.
+
+`with-exception-handler` itself **works** in the native path, combined with a
+plain (non-continuable, escaping) `raise` — including under an enclosing
+`guard`, which the guard coverage gate checks on every engine.
 
 ## The capability-denied signal
 

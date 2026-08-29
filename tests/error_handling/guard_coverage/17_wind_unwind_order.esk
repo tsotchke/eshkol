@@ -1,0 +1,20 @@
+;; ESH-0101 guard coverage — the ORDER of dynamic-wind unwinding relative to a
+;; guard clause body. R7RS derives `guard` so the handler re-enters the guard's
+;; own continuation BEFORE the clauses run, so an escaping raise must run the
+;; after-thunk first and the clause body second. Own case because vm-eskb
+;; disagrees while vm-src and all three native axes agree.
+;; Repro: found/vm_eskb_wind_order_vs_clause.esk (ledger SW-89).
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+(define order '())
+(define r
+  (guard (e (#t (set! order (cons 'clause order)) "done"))
+    (dynamic-wind (lambda () (set! order (cons 'before order)))
+                  (lambda () (raise 'x))
+                  (lambda () (set! order (cons 'after order))))))
+(chk "wind-escape-value" (equal? r "done"))
+(chk "wind-order" (equal? order (list 'clause 'after 'before)))

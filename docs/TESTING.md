@@ -196,6 +196,42 @@ native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught
 Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
 (`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
 
+### Guard coverage gate (ESH-0101)
+
+**What:** R7RS `guard` on every engine, graded against a **hand-authored
+golden** rather than against another engine. `guard` previously had two kinds
+of coverage and neither was complete: `tests/error_handling/*.esk` are
+compiled AOT and run by `scripts/run_error_handling_tests.sh`, so no `guard`
+program was ever executed under `-r` or on the VM; and the harnesses that do
+run several engines (P1 differential, P5 parity) compare the engines to *each
+other*, so a clause form both backends get wrong the same way passes by
+agreement. That blind spot is why `(test => receiver)` and the test-only
+`(test)` clause — two of the three cond-clause shapes R7RS 4.2.7 allows inside
+`guard` — were silently wrong on native *and* on the VM (`SW-78`, `SW-79`).
+
+Each case in `tests/error_handling/guard_coverage/` carries a
+`<case>.expected` golden and runs on five axes: `jit` (`-r`), `aot-o0`,
+`aot-o2` (two optimization levels, because the ESH-0102 lineage was an
+`-O1`+-only crash), `vm-src` and `vm-eskb`. `fatal/*.esk` are fail-closed
+probes: an unhandled `raise`, an unmatched guard's re-raise, and an uncaught
+`error` must each exit nonzero, print a diagnostic on stderr, and never reach
+their `MUST-NOT-PRINT` sentinel. Any `(case, axis)` pair that is not required
+is declared — with a mandatory justification — in
+`tests/error_handling/guard_coverage/ENGINES.tsv`, and the gate fails on a
+stale or unjustified row, so an engine losing a form must be written down.
+
+`guard` in **tail position** is deliberately out of scope here; that is
+`SW-58` and is pinned by `tests/tco/guard_tail_context/`.
+
+```bash
+BUILD_DIR=build scripts/run_guard_coverage.sh
+```
+
+Trace kind: `guard_coverage` (`guard_coverage_gate` is the whole-gate
+verdict), consumed by the `guard_coverage_gate` criterion in
+`.icc/completion-oracles.yaml`. Runs in CI's `pillars-fast` job, which already
+builds the three targets it needs.
+
 
 ## P8 — escape-closure pillar
 

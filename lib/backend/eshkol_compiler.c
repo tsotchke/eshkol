@@ -66,7 +66,15 @@ typedef enum {
     OP_WIND_PUSH=61,    /* push after thunk onto wind stack */
     OP_WIND_POP=62,     /* pop from wind stack */
 
-    OP_COUNT=63
+    /* Keep the standalone/ESKB emitter's numbering aligned with vm_core.c. */
+    OP_VOID=63,
+    OP_LANGUAGE_COVERAGE=64,
+    OP_LANGUAGE_COVERAGE_CALL=65,
+    OP_GLOBAL_MARK=66,
+    /* R7RS secondary exception after a returned non-continuable handler. */
+    OP_RAISE_SECONDARY=67,
+
+    OP_COUNT=68
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -1060,7 +1068,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int n_patches = 0;
         for (int i = 1; i < node->n_children; i++) {
             Node* clause = node->children[i];
-            if (clause->type != N_LIST || clause->n_children < 2) continue;
+            if (clause->type != N_LIST || clause->n_children < 1) continue;
+            /* R7RS 4.2.1 `(<test>)`: a clause with NO body evaluates to the
+             * TEST's value when the test is truthy, and falls through when it
+             * is not. An `n_children < 2` skip dropped such clauses outright,
+             * so `(cond ((f x)) (else 'fail))` chose `else` here while
+             * answering `(f x)` natively. lib/backend/vm_compiler.c's copy of
+             * this compiler was fixed for that; this one — the ESKB emitter,
+             * i.e. the `vm-eskb` axis — had drifted and still had it. */
+            if (clause->n_children == 1 && !is_sym(clause->children[0], "else")) {
+                compile_expr(c, clause->children[0], 0);   /* test -> TOS     */
+                chunk_emit(c, OP_DUP, 0);                  /* keep a copy     */
+                int jfall = placeholder(c);                /* pops the copy   */
+                if (n_patches < 64) end_patches[n_patches++] = placeholder(c);
+                patch(c, jfall, OP_JUMP_IF_FALSE, c->code_len);
+                chunk_emit(c, OP_POP, 0);                  /* falsy: discard  */
+                continue;
+            }
+            if (clause->n_children < 2) continue;
             if (is_sym(clause->children[0], "else")) {
                 /* else clause — always taken */
                 for (int j = 1; j < clause->n_children; j++) {
@@ -1069,16 +1094,43 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
                 break;
             }
+            /* R7RS 4.2.1 `(test => receiver)`: apply the receiver to the
+             * TEST's value. Native has had this since ESH-0109 closed; both
+             * bytecode compilers compiled `=>` as an ordinary body expression.
+             * Kept identical to compile_form_cond() in
+             * lib/backend/vm_compiler.c. (Ledger: SW-78.) */
+            int is_arrow = (clause->n_children == 3 &&
+                            clause->children[1]->type == N_SYMBOL &&
+                            strcmp(clause->children[1]->symbol, "=>") == 0);
+            int saved_clause_locals = c->n_locals;
+
             /* Test → if false, jump to next clause */
             compile_expr(c, clause->children[0], 0);
+            if (is_arrow) chunk_emit(c, OP_DUP, 0);
+            int arrow_tmp = -1;
+            if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
             int jnext = placeholder(c);
-            /* Body */
-            for (int j = 1; j < clause->n_children; j++) {
-                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-                else compile_expr(c, clause->children[j], tail);
+            if (is_arrow) {
+                /* Receiver evaluated only on the truthy path, then the test
+                 * value re-pushed above it for OP_CALL 1. `cond` must leave
+                 * exactly one value, so the trailing OP_SET_LOCAL writes the
+                 * result down over the stale copy and pops — which is also why
+                 * this call is never OP_TAIL_CALL. */
+                compile_expr(c, clause->children[2], 0);
+                chunk_emit(c, OP_GET_LOCAL, arrow_tmp);
+                chunk_emit(c, OP_CALL, 1);
+                chunk_emit(c, OP_SET_LOCAL, arrow_tmp);
+            } else {
+                /* Body */
+                for (int j = 1; j < clause->n_children; j++) {
+                    if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                    else compile_expr(c, clause->children[j], tail);
+                }
             }
             if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
             patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
+            if (is_arrow) chunk_emit(c, OP_POP, 0); /* falsy: discard the copy */
+            c->n_locals = saved_clause_locals;
         }
         /* Patch all end jumps */
         for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
@@ -1466,6 +1518,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0); /* push handler closure */
         chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
         chunk_emit(c, OP_CALL, 1);
+        chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
         patch(c, end_patch, OP_JUMP, c->code_len);
         return;
@@ -1561,15 +1614,52 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 chunk_emit(&handler_func, OP_RETURN, 0);
                 break;
             }
+            /* R7RS 4.2.7: a guard clause is a cond clause, so `(test =>
+             * receiver)` and the test-only `(test)` are as legal as
+             * `(test body ...)`. Neither was handled: `=>` was compiled as an
+             * ordinary body expression and `(test)` fell through the body loop
+             * leaving OP_RETURN with nothing pushed for it. Kept
+             * instruction-for-instruction identical to compile_form_guard() in
+             * lib/backend/vm_compiler.c — this file is the ESKB emitter's own
+             * copy of that compiler (the `vm-eskb` axis; vm_compiler.c serves
+             * the standalone VM's `vm-src` axis), and the two must not answer
+             * differently. (Ledger: SW-78 arrow, SW-79 test-only.) */
+            int is_arrow = (clause->n_children == 3 &&
+                            clause->children[1]->type == N_SYMBOL &&
+                            strcmp(clause->children[1]->symbol, "=>") == 0);
+            int is_test_only = (clause->n_children == 1);
+            int saved_clause_locals = handler_func.n_locals;
+
             compile_expr(&handler_func, clause->children[0], 0);
+            if (is_arrow || is_test_only) chunk_emit(&handler_func, OP_DUP, 0);
+            /* `n_locals` is the stack-depth counter here, so claiming the slot
+             * with the test value on top names the offset it already occupies;
+             * claiming it after a SET_LOCAL/pop would alias the slot the
+             * receiver is about to be pushed into. */
+            int arrow_tmp = -1;
+            if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
             int jnext = handler_func.code_len;
             chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-            for (int j = 1; j < clause->n_children; j++) {
-                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-                else compile_expr(&handler_func, clause->children[j], 1);
+            if (is_test_only) {
+                /* TOS is already the test's value — that IS the clause's value. */
+            } else if (is_arrow) {
+                /* Receiver evaluated only on the truthy path (R7RS), then the
+                 * test value re-pushed above it so OP_CALL 1 reads
+                 * [.., receiver, argument]. OP_RETURN resets sp to fp-1, so
+                 * the stale copy underneath is discarded with the frame. */
+                compile_expr(&handler_func, clause->children[2], 0);
+                chunk_emit(&handler_func, OP_GET_LOCAL, arrow_tmp);
+                chunk_emit(&handler_func, OP_CALL, 1);
+            } else {
+                for (int j = 1; j < clause->n_children; j++) {
+                    if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                    else compile_expr(&handler_func, clause->children[j], 1);
+                }
             }
             chunk_emit(&handler_func, OP_RETURN, 0);
             patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
+            if (is_arrow || is_test_only) chunk_emit(&handler_func, OP_POP, 0);
+            handler_func.n_locals = saved_clause_locals;
         }
         /* If no clause matched: re-raise */
         chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
@@ -1590,7 +1680,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int hfunc_pc = c->code_len;
         c->constants[hfunc_const].as.i = hfunc_pc;
 
-        /* Copy handler function code with remapping */
+        /* Copy handler function code with remapping.
+         *
+         * A `lambda` inside a guard CLAUSE stores its entry pc in a constant
+         * that OP_CLOSURE names by index. The index was remapped here; the pc
+         * it points at never was, even though it is relative to handler_func
+         * and handler_func is being relocated to hfunc_pc. Every closure built
+         * inside a guard clause therefore pointed at unrelated code near the
+         * start of the program — silently, producing a callable that runs the
+         * wrong thing rather than failing. Identical to the fix in
+         * compile_form_guard() in lib/backend/vm_compiler.c; this file is the
+         * ESKB emitter's own copy of that compiler and the two must not answer
+         * differently. (Ledger: SW-83.)
+         *
+         * reloc_seen[] keeps the += idempotent when two OP_CLOSURE
+         * instructions share one constant. */
+        unsigned char reloc_seen[MAX_CONSTS];
+        memset(reloc_seen, 0, sizeof(reloc_seen));
         for (int i = 0; i < handler_func.code_len; i++) {
             Instr fi = handler_func.code[i];
             if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
@@ -1599,7 +1705,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             if (fi.op == OP_CLOSURE) {
                 int ci2 = fi.operand & 0xFFFF;
                 int nu2 = (fi.operand >> 16) & 0xFF;
-                fi.operand = const_map_h[ci2] | (nu2 << 16);
+                int mapped = const_map_h[ci2];
+                if (mapped >= 0 && mapped < MAX_CONSTS && !reloc_seen[mapped]) {
+                    c->constants[mapped].as.i += hfunc_pc;
+                    reloc_seen[mapped] = 1;
+                }
+                fi.operand = mapped | (nu2 << 16);
             }
             c->code[c->code_len++] = fi;
         }
@@ -4252,6 +4363,23 @@ static void execute_chunk(FuncChunk* chunk) {
         /* Push current exception value (set by most recent raise) */
         case OP_GET_EXN: {
             PUSH(current_exn);
+            break;
+        }
+
+        /* A returned handler is not a normal result for non-continuable
+         * raise. Re-dispatch the condition after removing this handler so an
+         * enclosing handler observes the secondary exception. */
+        case OP_RAISE_SECONDARY: {
+            if (handler_count <= 0) {
+                printf("ERROR: handler returned from non-continuable raise\n");
+                error = 1;
+                break;
+            }
+            handler_count--;
+            sp = exc_handlers[handler_count].saved_sp;
+            fp = exc_handlers[handler_count].saved_fp;
+            frame_count = exc_handlers[handler_count].saved_frame_count;
+            pc = exc_handlers[handler_count].handler_pc;
             break;
         }
 

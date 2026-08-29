@@ -432,16 +432,52 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
             }
             break;
         }
+        /* R7RS 4.2.1 `(test => receiver)`: apply the receiver to the TEST's
+         * value. The native backend has had this since
+         * ControlFlowCodegen::codegenCond; the VM compiled `=>` as an
+         * ordinary body expression, so `(cond ((assoc k al) => cdr))`
+         * silently answered the receiver's own value instead of applying it.
+         * Same DUP/JUMP_IF_FALSE shape as the no-body clause above.
+         * (Ledger: SW-78.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+        int saved_clause_locals = c->n_locals;
+
         /* Test → if false, jump to next clause */
         compile_expr(c, clause->children[0], 0);
+        if (is_arrow) chunk_emit(c, OP_DUP, 0);
+        /* `n_locals` is this compiler's stack-depth counter, so the slot
+         * claimed here — test value on top, nothing emitted since — is the
+         * frame offset that value already occupies. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
         int jnext = placeholder(c);
-        /* Body */
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
-            else compile_expr(c, clause->children[j], tail);
+        if (is_arrow) {
+            /* The receiver is evaluated only on the truthy path (R7RS), then
+             * the test value is re-pushed on top of it so OP_CALL 1 reads
+             * [.., receiver, argument]. Unlike the guard handler — where
+             * OP_RETURN resets sp to fp-1 and swallows anything left below —
+             * `cond` is an expression that must leave EXACTLY ONE value, so
+             * the trailing OP_SET_LOCAL writes the result down over the stale
+             * copy and pops, collapsing [.., test, result] to [.., result].
+             * That collapse is also why this call is never OP_TAIL_CALL: a
+             * tail call leaves the frame and the collapse would not run. */
+            compile_expr(c, clause->children[2], 0);
+            chunk_emit(c, OP_GET_LOCAL, arrow_tmp);
+            chunk_emit(c, OP_CALL, 1);
+            chunk_emit(c, OP_SET_LOCAL, arrow_tmp);
+        } else {
+            /* Body */
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(c, clause->children[j], 0); chunk_emit(c, OP_POP, 0); }
+                else compile_expr(c, clause->children[j], tail);
+            }
         }
         if (n_patches < 64) end_patches[n_patches++] = placeholder(c); /* jump to end */
         patch(c, jnext, OP_JUMP_IF_FALSE, c->code_len);
+        if (is_arrow) chunk_emit(c, OP_POP, 0); /* falsy: discard the copy */
+        c->n_locals = saved_clause_locals;
     }
     /* Patch all end jumps */
     for (int i = 0; i < n_patches; i++) patch(c, end_patches[i], OP_JUMP, c->code_len);
@@ -1472,6 +1508,7 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     compile_expr(c, node->children[1], 0); /* push handler closure */
     chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
     chunk_emit(c, OP_CALL, 1);
+    chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
     patch(c, end_patch, OP_JUMP, c->code_len);
     return;
@@ -1553,15 +1590,69 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
             chunk_emit(&handler_func, OP_RETURN, 0);
             break;
         }
+        /* R7RS 4.2.7: guard clauses ARE cond clauses, so all three shapes are
+         * legal, not just (test body ...):
+         *
+         *   (test)          value is the TEST's own value
+         *   (test => recv)  value is (recv <the test's value>)
+         *   (test body ...) value is the last body expression
+         *
+         * Only the last was compiled here. `(test)` fell through the body
+         * loop and left OP_RETURN with nothing pushed for it; `=>` compiled
+         * the literal identifier `=>` as an ordinary body expression. Both
+         * are silent wrong answers with no diagnostic. The DUP/JUMP_IF_FALSE
+         * shape below is the same one compile_form_cond() already uses for
+         * its no-body clause, so the two clause readers stay in step.
+         * (Ledger: SW-78 arrow, SW-79 test-only.) */
+        int is_arrow = (clause->n_children == 3 &&
+                        clause->children[1]->type == N_SYMBOL &&
+                        strcmp(clause->children[1]->symbol, "=>") == 0);
+        int is_test_only = (clause->n_children == 1);
+        int saved_clause_locals = handler_func.n_locals;
+
         compile_expr(&handler_func, clause->children[0], 0);
+        if (is_arrow || is_test_only) {
+            /* Both shapes need the test's VALUE, and OP_JUMP_IF_FALSE consumes
+             * exactly one stack slot on both paths, so keep a copy: the truthy
+             * path uses the survivor, the fall-through path pops it. */
+            chunk_emit(&handler_func, OP_DUP, 0);
+        }
+        /* `n_locals` in this compiler is the stack-depth counter (the generic
+         * call path does `compile_expr(arg); add_local(...)` per argument), so
+         * claiming the slot HERE — with the test value on top and nothing
+         * emitted since — makes `tmp` exactly the frame offset that value
+         * already occupies. Claiming it after a SET_LOCAL/pop instead would
+         * alias the slot the receiver is about to be pushed into, which is
+         * what the first cut of this fix did. */
+        int arrow_tmp = -1;
+        if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
-        for (int j = 1; j < clause->n_children; j++) {
-            if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
-            else compile_expr(&handler_func, clause->children[j], 1);
+        if (is_test_only) {
+            /* TOS is already the test's value — that IS the clause's value. */
+        } else if (is_arrow) {
+            /* Evaluate the receiver only now (R7RS: not evaluated when the
+             * test is false), then re-push the test value on top of it so the
+             * stack reads [.., receiver, argument] for OP_CALL 1, which takes
+             * its callee from sp-argc-1. The stale copy underneath is
+             * discarded by OP_RETURN, which resets sp to fp-1 regardless. */
+            compile_expr(&handler_func, clause->children[2], 0);
+            chunk_emit(&handler_func, OP_GET_LOCAL, arrow_tmp);
+            chunk_emit(&handler_func, OP_CALL, 1);
+        } else {
+            for (int j = 1; j < clause->n_children; j++) {
+                if (j < clause->n_children - 1) { compile_expr(&handler_func, clause->children[j], 0); chunk_emit(&handler_func, OP_POP, 0); }
+                else compile_expr(&handler_func, clause->children[j], 1);
+            }
         }
         chunk_emit(&handler_func, OP_RETURN, 0);
         patch(&handler_func, jnext, OP_JUMP_IF_FALSE, handler_func.code_len);
+        if (is_arrow || is_test_only) {
+            chunk_emit(&handler_func, OP_POP, 0); /* falsy: discard the copy */
+        }
+        /* Back to the pre-clause depth for the next clause, so a later
+         * clause's test lands on the slot its own add_local would name. */
+        handler_func.n_locals = saved_clause_locals;
     }
     /* If no clause matched: re-raise */
     chunk_emit(&handler_func, OP_GET_LOCAL, 0); /* push exn */
@@ -1582,7 +1673,29 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     int hfunc_pc = c->code_len;
     c->constants[hfunc_const].as.i = hfunc_pc;
 
-    /* Copy handler function code with remapping */
+    /* Copy handler function code with remapping.
+     *
+     * A `lambda` written inside a guard CLAUSE compiles into handler_func with
+     * its body emitted inline and its entry pc stored in a CONSTANT, which
+     * OP_CLOSURE names by index. The loop below used to remap that index but
+     * never the pc it points at — and the pc is relative to handler_func,
+     * which is about to be relocated to hfunc_pc. So every closure built
+     * inside a guard clause pointed at whatever happened to live at its
+     * unrelocated offset near the start of the program.
+     *
+     * It did not crash: it silently produced a callable that runs the wrong
+     * code. `(define f (guard (e (#t (lambda (x) (+ x 100)))) (raise 1)))`
+     * then `(f 1)` answered 1 instead of 101, exit 0. The `=>` receiver form
+     * is what finally made it loud — an arrow clause CALLS the closure
+     * immediately, so a lambda receiver re-entered the top of the program and
+     * ran until STACK OVERFLOW instead of quietly returning a wrong value.
+     * (Ledger: SW-83.)
+     *
+     * relocated[] keeps the += idempotent: two OP_CLOSURE instructions may
+     * share one constant, and adding hfunc_pc twice would be a fresh bug of
+     * exactly the same shape. */
+    unsigned char reloc_seen[MAX_CONSTS];
+    memset(reloc_seen, 0, sizeof(reloc_seen));
     for (int i = 0; i < handler_func.code_len; i++) {
         Instr fi = handler_func.code[i];
         if (fi.op == OP_CONST) fi.operand = const_map_h[fi.operand];
@@ -1591,7 +1704,12 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
         if (fi.op == OP_CLOSURE) {
             int ci2 = fi.operand & 0xFFFF;
             int nu2 = (fi.operand >> 16) & 0xFF;
-            fi.operand = const_map_h[ci2] | (nu2 << 16);
+            int mapped = const_map_h[ci2];
+            if (mapped >= 0 && mapped < MAX_CONSTS && !reloc_seen[mapped]) {
+                c->constants[mapped].as.i += hfunc_pc;
+                reloc_seen[mapped] = 1;
+            }
+            fi.operand = mapped | (nu2 << 16);
         }
         chunk_emit_instr(c, fi);
     }

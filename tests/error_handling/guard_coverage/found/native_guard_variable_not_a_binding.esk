@@ -1,0 +1,29 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-87.
+;; NATIVE ONLY (jit, aot-o0, aot-o2). Both VM axes run this correctly.
+;;
+;; codegenGuard binds the guard variable to an SSA VALUE
+;; (symbol_table[var_name] = raised_tagged) rather than to an entry-block
+;; alloca, so it is not a real binding. Two consequences, one loud per form and
+;; one loud per MODULE:
+;;
+;;   (a) `set!` on it is rejected:
+;;         ERROR: set!: variable 'e' is not mutable
+;;                (not an alloca, global, or capture pointer)
+;;
+;;   (b) CAPTURING it in a closure fails LLVM module verification outright,
+;;       because the value is defined in the handler block and the capture does
+;;       not dominate its uses:
+;;         Failed to generate LLVM IR from batch
+;;         ERROR: LLVM module verification failed:
+;;                Instruction does not dominate all uses!
+;;       (b) takes the whole compilation unit down, not just the offending form.
+;;
+;; R7RS derives `guard` through `(let ((var condition)) ...)`, and a let-bound
+;; variable is both assignable and capturable.
+;;
+;; want: (mutated orig) captured-value
+(display (guard (e (#t (set! e (list 'mutated e)) e)) (raise 'orig)))
+(display " ")
+(define captured (guard (e (#t (lambda () e))) (raise 'captured-value)))
+(display (captured))
+(newline)
