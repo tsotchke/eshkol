@@ -145,6 +145,33 @@ The arena API lives in `lib/core/arena_memory.h` (impl in `lib/core/`).
   allocated) via `arena_create_thread_local` — zero cross-thread contention.
   `arena_merge_to_parent` publishes results back.
 
+## Native stack overflow protection
+
+Hosted native execution (JIT and AOT) applies `ESHKOL_STACK_SIZE` as a target
+for the process stack and as the ceiling named by the native stack guard. The
+default target is 512 MiB; values use the shared size grammar documented in
+[Environment variables](environment-variables.md). Every generated user
+function begins with a cheap stack-headroom check that reserves space for its
+own diagnostic. The check is stateless, so it does not add a push/pop pair and
+does not interfere with proper tail calls.
+
+If recursion reaches the reserved margin, execution ends with status 121 and
+the diagnostic `eshkol: stack overflow: recursion depth exceeded the N MiB
+stack (ESHKOL_STACK_SIZE); ...`. A large native frame can skip the cheap check
+and fault in the guard region instead. On POSIX hosts, SIGSEGV and SIGBUS are
+handled on an alternate signal stack and the fault is identified as stack
+exhaustion before termination. This is a diagnostic boundary, not recoverable
+continuation: unwinding arbitrary user frames after native stack exhaustion is
+not sound.
+
+The initial thread's Linux stack extent is determined at process launch by the
+inherited `ulimit -s`; a later `setrlimit` call cannot enlarge an already-small
+mapping. The deep-recursion hard gate therefore uses `ulimit -s 1048576` before
+testing `ESHKOL_STACK_SIZE=1G`. Parallel-map workers use
+`ESHKOL_WORKER_STACK_BYTES` instead of the process target, and each
+runtime-created worker installs its own alternate signal stack because the
+POSIX altstack is per thread.
+
 ## Regions and `with-region`
 
 Regions are lexically-scoped arenas layered on top of the allocator

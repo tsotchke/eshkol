@@ -539,9 +539,9 @@ release).
   SW-44). See [docs/reference/bindings/python.md](docs/reference/bindings/python.md).
   The separate exactness-across-the-Python-boundary design doc remains a
   v1.4.0-connection item (implementation, not this fix).
-- AD: SW-05 forward-over-reverse; ESH-0101 (recursion-depth guard coverage
-  for top-level `define`d self-recursive functions, maintainer ruling
-  2026-08-13 — see KNOWN_ISSUES.md); P6/P11 exact-coefficient and
+- AD: SW-05 forward-over-reverse; ESH-0101 (native stack guard coverage for
+  top-level `define`d self-recursive functions, closed by the hard gate in
+  `scripts/run_stack_overflow_diagnostic.sh` — see KNOWN_ISSUES.md); P6/P11 exact-coefficient and
   user-numerics re-cut on post-P5 master (verify exact-coefficient and
   reverse-Taylor suites together — both were shipped complete in
   v1.3.0-evolve and this is a re-verification pass, not new staging).

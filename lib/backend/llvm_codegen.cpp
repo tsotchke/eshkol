@@ -6227,6 +6227,40 @@ private:
     // call: the REPL keeps the process alive across evaluations (it calls
     // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
     // real process exit), and WASM has no runtime_init call to pair with.
+    /**
+     * ESH-0101 / SW-81: emit the native stack-headroom check at the entry of a
+     * user function body.
+     *
+     * Plain non-tail user recursion had NO guard at all. The frame-counting
+     * `eshkol_check_recursion_depth` is emitted only at lambda entry, and its
+     * ceiling (ESHKOL_MAX_STACK, default 100000) is a proxy for the wrong
+     * resource: raising it to cover legitimate 250k-frame recursion would make
+     * it useless, and lowering it to fire before overflow would break programs
+     * that fit. So the stack ran into its guard page and the process died with
+     * a bare SIGSEGV/SIGILL and no message.
+     *
+     * This call watches the actual resource — bytes left on this thread's
+     * stack — and is stateless, so unlike the depth counter it needs no
+     * matching decrement before returns and therefore cannot interfere with
+     * tail-call optimization.
+     *
+     * Not emitted for freestanding native or wasm objects: those profiles do
+     * not link the hosted stack runtime. A freestanding object must remain
+     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
+     */
+    void emitStackGuardCheck() {
+        if (freestanding_codegen_ || module->getTargetTriple().isWasm()) {
+            return;
+        }
+        Function* guard_func = module->getFunction("eshkol_stack_guard_check");
+        if (!guard_func) {
+            FunctionType* guard_type = FunctionType::get(void_type, false);
+            guard_func = Function::Create(guard_type, Function::ExternalLinkage,
+                "eshkol_stack_guard_check", module.get());
+        }
+        builder->CreateCall(guard_func);
+    }
+
     void emitRuntimeShutdownBeforeMainReturn() {
         if (g_repl_mode_enabled || module->getTargetTriple().isWasm()) {
             return;
@@ -12710,6 +12744,11 @@ private:
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
 
+        // ESH-0101: a top-level `(define (f ...) ...)` is the ordinary shape of
+        // user recursion and was the one function shape with no stack guard at
+        // all. This is the entry the ESH-0101 repro recurses through.
+        emitStackGuardCheck();
+
         // DWARF DEBUG INFO: this function is now a definition, so upgrade the
         // declaration subprogram createFunctionDeclaration attached into a real
         // definition subprogram. Must happen before any body instruction is
@@ -13428,6 +13467,9 @@ private:
         // nested_func carries no DISubprogram of its own, so the enclosing
         // function's location must not follow us in here.
         anchorDebugLocationToCurrentFunction();
+
+        // ESH-0101: internal defines recurse exactly as top-level ones do.
+        emitStackGuardCheck();
 
         // Save and set current function
         Function* prev_function = current_function;
@@ -30701,6 +30743,12 @@ private:
         // otherwise the recursion-depth call below is scoped to the *enclosing*
         // function's subprogram. Restored together with old_point at the end.
         anchorDebugLocationToCurrentFunction();
+
+        // ESH-0101: the frame counter below enforces the documented
+        // ESHKOL_MAX_STACK ceiling; this enforces the one the hardware cares
+        // about. A lambda whose frames are large can exhaust the native stack
+        // long before 100000 of them exist.
+        emitStackGuardCheck();
 
         // STACK OVERFLOW PROTECTION: Check recursion depth at function entry
         {
