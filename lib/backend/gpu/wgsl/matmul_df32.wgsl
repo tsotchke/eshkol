@@ -9,5 +9,5 @@ fn two_sum(a:f32,b:f32,s:u32)->vec2<f32>{let aa=opaque_f32(a,s);let bb0=opaque_f
 fn two_prod(a:f32,b:f32,s:u32)->vec2<f32>{let aa=opaque_f32(a,s);let bb=opaque_f32(b,s);let p=opaque_f32(aa*bb,s);return vec2<f32>(p,opaque_f32(fma(aa,bb,-p),s));}
 fn df_add(a:vec2<f32>,b:vec2<f32>,s:u32)->vec2<f32>{let z=two_sum(a.x,b.x,s);return two_sum(z.x,z.y+a.y+b.y,s);}
 fn df_mul(a:vec2<f32>,b:vec2<f32>,s:u32)->vec2<f32>{let p=two_prod(a.x,b.x,s);return two_sum(p.x,p.y+fma(a.x,b.y,a.y*b.x),s);}
-@compute @workgroup_size(1,1,1)
+@compute @workgroup_size(8,8,1)
 fn main(@builtin(global_invocation_id) gid:vec3<u32>){let row=gid.y;let col=gid.x;if(row>=d.M||col>=d.N){return;}let s=row*d.N+col;var acc=vec2<f32>(0.0,0.0);for(var k=0u;k<d.K;k=k+1u){acc=df_add(acc,df_mul(A[row*d.K+k],B[k*d.N+col],s),s);}C[row*d.N+col]=acc;}

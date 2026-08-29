@@ -26,7 +26,8 @@ function installMockJSPI() {
 
 function testPrecisionContracts() {
     const device = {};
-    const high = new G.EshkolWebGPU(device, { threshold: 1 });
+    const logs = [];
+    const high = new G.EshkolWebGPU(device, { threshold: 1, log: (msg) => logs.push(msg) });
     assert.equal(high.shouldUse(1), false);
     assert.equal(high.supportsOperation('matmul'), false);
     assert.equal(high.supportsOperation('elementwise', G.ELEM.ADD), false);
@@ -41,12 +42,57 @@ function testPrecisionContracts() {
     const fast = new G.EshkolWebGPU(device, { precision: 'fast', threshold: 1 });
     assert.equal(fast.shouldUse(1), false);
     assert.equal(fast.supportsOperation('matmul'), false);
+    const almostGate = new G.EshkolWebGPU(device, {
+        precision: 'fast', threshold: 1, gateTolerance: 1.000001e-9
+    });
+    assert.equal(almostGate.shouldUse(1), false);
+    assert.equal(almostGate.supportsOperation('matmul'), false);
     const explicitlyLoose = new G.EshkolWebGPU(device, {
-        precision: 'fast', threshold: 1, gateTolerance: 1e-4
+        precision: 'fast', threshold: 1, gateTolerance: 1e-4,
+        log: (msg) => logs.push(msg)
     });
     assert.equal(explicitlyLoose.shouldUse(1), true);
     assert.equal(explicitlyLoose.supportsOperation('matmul'), true);
     assert.equal(explicitlyLoose.supportsOperation('reduce', G.REDUCE.SUM), false);
+    assert.match(explicitlyLoose.diagnostics.join('\n'), /explicit reduced-precision opt-in/);
+    assert.match(logs.find((msg) => msg.includes('explicit reduced-precision opt-in')) || '',
+                 /fast tier/);
+
+    for (const precision of ['default', 'auto', 'bogus']) {
+        const unknown = new G.EshkolWebGPU(device, { precision, threshold: 1 });
+        assert.equal(unknown.shouldUse(1), false);
+        assert.equal(unknown.supportsOperation('matmul'), false);
+        assert.equal(unknown.supportsOperation('elementwise', G.ELEM.ADD), false);
+    }
+}
+
+function testCpuReferenceShape() {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const M = 3, K = 5, N = 7;
+    const aPtr = 0, bPtr = 128, cPtr = 512;
+    const A = new Float64Array(memory.buffer, aPtr, M * K);
+    const B = new Float64Array(memory.buffer, bPtr, K * N);
+    A.set(Array.from({ length: M * K }, (_, i) => (i - 7) / 3));
+    B.set(Array.from({ length: K * N }, (_, i) => (11 - i) / 5));
+    G.cpu.matmul({ buffer: memory.buffer }, aPtr, bPtr, cPtr, M, K, N);
+
+    const expected = [];
+    for (let i = 0; i < M; i++) {
+        for (let j = 0; j < N; j++) {
+            let sum = 0;
+            for (let k = 0; k < K; k++) sum += A[i * K + k] * B[k * N + j];
+            expected.push(sum);
+        }
+    }
+    assert.deepEqual(Array.from(new Float64Array(memory.buffer, cPtr, M * N)), expected);
+}
+
+function testHeadlessCpuPathFailsClosed() {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const imports = G.makeImports(null, () => memory);
+    assert.equal(imports.eshkol_gpu_init(), 0);
+    assert.equal(imports.eshkol_gpu_should_use(1), 0);
+    assert.equal(imports.eshkol_gpu_backend_available(G.ESHKOL_GPU_WEBGPU), 0);
 }
 
 async function testExecutionMarkerAndCPUFallback() {
@@ -111,6 +157,8 @@ function testIntegrationContracts() {
     const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'gpu-execution-gate.yml'), 'utf8');
 
     assert.equal(siteWebgpu, webgpu);
+    assert.match(webgpu, /@workgroup_size\(\$\{GEMM_TILE\}, \$\{GEMM_TILE\}, 1\)/);
+    assert.match(webgpu, /dispatchWorkgroups\(Math\.ceil\(N \/ GEMM_TILE\), Math\.ceil\(M \/ GEMM_TILE\), 1\)/);
     assert.match(webgpu, /@workgroup_size\(\$\{ELEM_WORKGROUP\}, 1, 1\)/);
     assert.match(webgpu, /dispatchWorkgroups\(Math\.ceil\(n \/ ELEM_WORKGROUP\), 1, 1\)/);
     assert.match(webgpu, /executionMarker/);
@@ -119,11 +167,17 @@ function testIntegrationContracts() {
     assert.match(runtime, /eshkol_batch_matmul_dispatch: gpu\.eshkol_batch_matmul_dispatch/);
     assert.match(repl, /G\.promisingExports\(instance\.exports\)/);
     assert.match(runtime, /G\.promisingExports\(instance\.exports\)/);
+    assert.match(repl, /promisingEntry\(fn\)/);
+    assert.match(runtime, /promisingEntry\(fn\)/);
+    assert.doesNotMatch(repl, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
+    assert.doesNotMatch(runtime, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
     assert.match(workflow, /GPU_GATE_TOL: '1e-9'/);
     assert.match(workflow, /node scripts\/lib\/webgpu_diff_runner\.mjs/);
 }
 
 testPrecisionContracts();
+testCpuReferenceShape();
+testHeadlessCpuPathFailsClosed();
 await testExecutionMarkerAndCPUFallback();
 await testPromisingExports();
 testIntegrationContracts();

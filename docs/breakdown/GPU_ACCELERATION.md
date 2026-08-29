@@ -57,7 +57,7 @@ WGSL has no f64 type. The browser backend therefore has these explicit tiers:
 |---|---|---|
 | `exact` | Refuses GPU and falls back to CPU | IEEE f64 correctness remains a CPU/native-backend claim |
 | `high` | df32 `(hi, lo)` f32 emulation | Refuses browser dispatch until the live differential gate certifies the compensation path at `GPU_GATE_TOL` (default `1e-9`) |
-| `fast` | f32 kernels | Refused by the 1e-9 gate; callers must explicitly provide a looser `gateTolerance` contract |
+| `fast` | f32 kernels | Refused by the 1e-9 gate; callers must explicitly opt in with `precision: "fast"` and provide `gateTolerance >= 1e-6` |
 
 The `two_sum` and `two_prod` compensation terms in
 `lib/backend/gpu/wgsl/double_float.wgsl` use a zero-valued storage read as an

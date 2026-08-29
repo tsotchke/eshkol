@@ -64,6 +64,10 @@
     const GEMM_TILE = 8;
     const ELEM_WORKGROUP = 64;
     const GPU_GATE_TOL = 1e-9;
+    /* Plain f32 has about seven decimal digits of relative precision. A
+     * tolerance just above the df32 gate is not an honest f32 contract. */
+    const FAST_GATE_TOL = 1e-6;
+    const PRECISION_TIERS = new Set(['exact', 'high', 'fast']);
 
     /* ===================== WGSL ===================== */
 
@@ -116,7 +120,7 @@ struct Dims { M: u32, K: u32, N: u32, pad: u32 };
 @group(0) @binding(2) var<storage, read_write> C: array<f32>;
 @group(0) @binding(3) var<uniform> d: Dims;
 
-@compute @workgroup_size(1, 1, 1)
+@compute @workgroup_size(${GEMM_TILE}, ${GEMM_TILE}, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let row = gid.y;
     let col = gid.x;
@@ -326,7 +330,9 @@ fn main() {
             this.device = device;
             this.threshold = (typeof o.threshold === 'number' && o.threshold > 0)
                 ? o.threshold : DEFAULT_THRESHOLD;
-            this.precision = o.precision || 'high';
+            const requestedPrecision = o.precision === undefined ? 'high' : o.precision;
+            this.precision = requestedPrecision;
+            this.precisionKnown = PRECISION_TIERS.has(requestedPrecision);
             this.gateTolerance = (typeof o.gateTolerance === 'number' &&
                                   Number.isFinite(o.gateTolerance) &&
                                   o.gateTolerance > 0) ? o.gateTolerance : GPU_GATE_TOL;
@@ -342,6 +348,16 @@ fn main() {
             this.memory = null;
             this.log = o.log || function () {};
             this.diagnostics = [];
+            if (!this.precisionKnown) {
+                this.diagnostics.push('UNSUPPORTED: unknown WebGPU precision tier ' +
+                                       String(requestedPrecision));
+                this.log('[WebGPU] ' + this.diagnostics[this.diagnostics.length - 1]);
+            } else if (this.precision === 'fast') {
+                const optIn = 'explicit reduced-precision opt-in: fast tier, ' +
+                    'gate tolerance=' + this.gateTolerance;
+                this.diagnostics.push(optIn);
+                this.log('[WebGPU] ' + optIn);
+            }
         }
 
         /* Async device acquisition. Done once, before the wasm module is
@@ -386,7 +402,10 @@ fn main() {
 
         async _probeFma() {
             try {
-                const out = this.device.createBuffer({
+                let out = null;
+                let read = null;
+                let mapped = false;
+                out = this.device.createBuffer({
                     size: 4,
                     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
                 });
@@ -403,17 +422,21 @@ fn main() {
                 pass.setBindGroup(0, bg);
                 pass.dispatchWorkgroups(1);
                 pass.end();
-                const read = this.device.createBuffer({
+                read = this.device.createBuffer({
                     size: 4,
                     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
                 });
                 enc.copyBufferToBuffer(out, 0, read, 0, 4);
                 this.device.queue.submit([enc.finish()]);
                 await read.mapAsync(GPUMapMode.READ);
+                mapped = true;
                 const v = new Float32Array(read.getMappedRange().slice(0))[0];
                 read.unmap();
+                mapped = false;
                 read.destroy();
+                read = null;
                 out.destroy();
+                out = null;
                 this.fmaFused = (v !== 0);
                 if (!this.fmaFused) {
                     this.diagnostics.push(
@@ -423,6 +446,12 @@ fn main() {
             } catch (e) {
                 this.fmaFused = false;
                 this.diagnostics.push('fma probe failed: ' + e);
+            } finally {
+                if (read) {
+                    if (mapped) read.unmap();
+                    read.destroy();
+                }
+                if (out) out.destroy();
             }
         }
 
@@ -433,28 +462,34 @@ fn main() {
         setThreshold(t) { if (t > 0) this.threshold = t; }
         getThreshold() { return this.threshold; }
 
+        fastAdmitted() {
+            return this.precision === 'fast' && this.precisionKnown &&
+                this.gateTolerance >= FAST_GATE_TOL;
+        }
+
         /* Mirrors eshkol_gpu_should_use(): active backend AND at or above the
          * element-count threshold. The `exact` tier has no WGSL implementation,
          * so it reports false and the caller takes the CPU path. */
         shouldUse(numElements) {
-            if (!this.device || this.precision === 'exact') return false;
+            if (!this.device || !this.precisionKnown || this.precision === 'exact') return false;
             /* The checked-in df32 shader is intentionally fail-closed until
              * the browser differential gate certifies its compensation path.
              * Selection and operation support must agree: neither may claim
              * that the unverified high tier is GPU-capable. */
             if (this.precision === 'high') return false;
-            if (this.precision === 'fast' && this.gateTolerance <= GPU_GATE_TOL) return false;
+            if (this.precision === 'fast' && !this.fastAdmitted()) return false;
             return numElements >= this.threshold;
         }
 
         supportsOperation(kind, op) {
-            if (!this.device || this.precision === 'exact') return false;
+            if (!this.device || !this.precisionKnown || this.precision === 'exact') return false;
             if (this.precision === 'high') return false;
             if (this.precision === 'fast') {
                 /* f32 is never admitted to the 1e-9 gate. It is available only
-                 * when the caller explicitly supplies a looser contract, and
+                 * when the caller explicitly opts into a contract no tighter
+                 * than the f32 floor, and
                  * reductions remain unsupported because their kernel is df32. */
-                return this.gateTolerance > GPU_GATE_TOL &&
+                return this.fastAdmitted() &&
                     ['matmul', 'elementwise'].includes(kind);
             }
             if (kind === 'elementwise') return Number(op) <= ELEM.ABS;
@@ -994,6 +1029,8 @@ fn main() {
         ELEM,
         REDUCE,
         DEFAULT_THRESHOLD,
+        GPU_GATE_TOL,
+        FAST_GATE_TOL,
         ESHKOL_GPU_WEBGPU
     };
 });

@@ -99,6 +99,18 @@ jobs:
           fi
           exit "$rc"
 
+      - name: Run browser WebGPU dispatch regressions
+        shell: bash
+        run: |
+          set +e
+          node scripts/lib/webgpu_diff_runner.mjs --regressions
+          rc=$?
+          if [ "$rc" -eq 77 ]; then
+            echo 'webgpu_diff_runner: SKIP - browser WebGPU regression evidence is unavailable on this runner'
+            exit 0
+          fi
+          exit "$rc"
+
       - name: Upload gate logs
         if: always()
         uses: actions/upload-artifact@v7

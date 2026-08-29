@@ -1363,6 +1363,14 @@ jobs:
           set -euxo pipefail
           python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
 
+      # Browser-independent WebGPU glue contracts belong in the ordinary
+      # WASM/lite lane: the no-GPU path must refuse GPU dispatch and still
+      # produce the CPU reference result.
+      - name: WebGPU regression contracts (CPU/lite path)
+        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        shell: bash
+        run: node tests/webgpu/webgpu_regressions_test.mjs
+
       # Guards the stdlib dead-strip on the --wasm path (issue #240 follow-up):
       # a stdlib-using program compiled WITHOUT --no-stdlib must dead-strip the
       # unused stdlib and stay small + instantiable, rather than pinning the

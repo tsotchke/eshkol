@@ -253,6 +253,20 @@ class EshkolRepl {
         }
     }
 
+    /* Function-table entries are not part of the export facade, so a browser
+     * callback must wrap the raw table entry at its JS entry point too. This
+     * pairs callback-side GPU suspensions with JSPI just like direct exports. */
+    invokeWasmCallback(callbackFuncPtr, ...args) {
+        const current = this.instances[this.instances.length - 1];
+        const table = current?.exports?.__indirect_function_table;
+        const fn = table && table.get(callbackFuncPtr);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        const entry = G && typeof G.promisingEntry === 'function'
+            ? G.promisingEntry(fn) : fn;
+        return entry(...args);
+    }
+
     // === WebGPU compute backend ===
 
     /**
@@ -1383,14 +1397,18 @@ class EshkolRepl {
                         const callback = (e) => {
                             // Store event data for access from WASM
                             const eventHandle = this.createHandle(e);
+                            let releaseAfterPromise = false;
                             try {
                                 // Call the WASM function
-                                const fn = this.instances[this.instances.length - 1]?.exports;
-                                if (fn && fn.__indirect_function_table) {
-                                    fn.__indirect_function_table.get(callbackFuncPtr)(eventHandle);
+                                const result = this.invokeWasmCallback(callbackFuncPtr, eventHandle);
+                                if (result && typeof result.then === 'function') {
+                                    releaseAfterPromise = true;
+                                    result.catch((error) => console.error('Event callback error:', error))
+                                        .finally(() => this.releaseHandle(eventHandle));
+                                    return;
                                 }
                             } finally {
-                                this.releaseHandle(eventHandle);
+                                if (!releaseAfterPromise) this.releaseHandle(eventHandle);
                             }
                         };
                         el.addEventListener(event, callback);
@@ -1461,9 +1479,9 @@ class EshkolRepl {
                 web_set_timeout: (callbackFuncPtr, delayMs) => {
                     const id = setTimeout(() => {
                         try {
-                            const fn = this.instances[this.instances.length - 1]?.exports;
-                            if (fn && fn.__indirect_function_table) {
-                                fn.__indirect_function_table.get(callbackFuncPtr)();
+                            const result = this.invokeWasmCallback(callbackFuncPtr);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((error) => console.error('Timeout callback error:', error));
                             }
                         } catch (e) {
                             console.error('Timeout callback error:', e);
@@ -1474,9 +1492,9 @@ class EshkolRepl {
                 web_set_interval: (callbackFuncPtr, delayMs) => {
                     const id = setInterval(() => {
                         try {
-                            const fn = this.instances[this.instances.length - 1]?.exports;
-                            if (fn && fn.__indirect_function_table) {
-                                fn.__indirect_function_table.get(callbackFuncPtr)();
+                            const result = this.invokeWasmCallback(callbackFuncPtr);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((error) => console.error('Interval callback error:', error));
                             }
                         } catch (e) {
                             console.error('Interval callback error:', e);
@@ -1493,9 +1511,9 @@ class EshkolRepl {
                 web_request_animation_frame: (callbackFuncPtr) => {
                     return requestAnimationFrame((timestamp) => {
                         try {
-                            const fn = this.instances[this.instances.length - 1]?.exports;
-                            if (fn && fn.__indirect_function_table) {
-                                fn.__indirect_function_table.get(callbackFuncPtr)(timestamp);
+                            const result = this.invokeWasmCallback(callbackFuncPtr, timestamp);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((error) => console.error('RAF callback error:', error));
                             }
                         } catch (e) {
                             console.error('RAF callback error:', e);
