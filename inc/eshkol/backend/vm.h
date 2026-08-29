@@ -209,6 +209,8 @@ extern uint64_t g_eshkol_vm_max_insn;            /* 0 = unlimited */
 extern int      g_eshkol_vm_insn_limit_active;   /* opt-in, like every ceiling */
 extern int      g_eshkol_vm_enforce_hard_limits;
 extern void   (*g_eshkol_vm_poll_interrupt)(void);
+extern uint64_t g_eshkol_vm_max_tensor_elements;
+extern int      g_eshkol_vm_tensor_limit_active;
 
 /**
  * @brief Install the resolved limit configuration from a hosted entry point.
@@ -219,6 +221,10 @@ extern void   (*g_eshkol_vm_poll_interrupt)(void);
  */
 void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
                               void (*poll)(void));
+
+/* Install the tensor-element ceiling resolved by a hosted entry point. */
+void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active,
+                                    int enforce);
 
 /* Helpers callable only from a registered host-native callback. */
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out);

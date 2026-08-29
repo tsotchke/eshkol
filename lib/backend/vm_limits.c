@@ -45,6 +45,8 @@ uint64_t g_eshkol_vm_max_insn = ESHKOL_VM_DEFAULT_MAX_INSN;
 int      g_eshkol_vm_insn_limit_active = 0;   /* opt-in, like every ceiling */
 int      g_eshkol_vm_enforce_hard_limits = 1;
 void   (*g_eshkol_vm_poll_interrupt)(void) = 0;
+uint64_t g_eshkol_vm_max_tensor_elements = ESHKOL_DEFAULT_MAX_TENSOR_ELEMENTS;
+int      g_eshkol_vm_tensor_limit_active = 0;
 
 /** Install the resolved limit configuration from a hosted entry point.
  *
@@ -58,6 +60,13 @@ void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
     g_eshkol_vm_insn_limit_active = active;
     g_eshkol_vm_enforce_hard_limits = enforce;
     g_eshkol_vm_poll_interrupt = poll;
+}
+
+void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active,
+                                    int enforce) {
+    g_eshkol_vm_max_tensor_elements = max_elements;
+    g_eshkol_vm_tensor_limit_active = active;
+    g_eshkol_vm_enforce_hard_limits = enforce;
 }
 
 /** Periodic limit checkpoint. Returns 1 if the VM should keep running. */

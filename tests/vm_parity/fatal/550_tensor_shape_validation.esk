@@ -1,0 +1,4 @@
+;; Issue #550 reproducer: a malformed broadcast must fail before the native
+;; operation can read an incompatible source shape or fabricate a result.
+(display (tensor-add (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3) #(10.0 20.0)))
+(display "MUST-NOT-PRINT") (newline)

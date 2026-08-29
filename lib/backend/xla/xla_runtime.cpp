@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <mutex>
+#include <limits>
 
 // Use the existing BLAS matmul for now
 extern "C" {
@@ -97,8 +98,11 @@ extern "C" void* eshkol_xla_matmul(
     int64_t a_rank,
     int64_t b_rank) {
 
-    // Currently only support 2D matmul
-    if (a_rank != 2 || b_rank != 2) {
+    // Currently only support 2D matmul. Validate the shape before reading
+    // rank-dependent slots or converting dimensions to unsigned sizes.
+    if (!a_data || !b_data || !a_shape || !b_shape ||
+        a_rank != 2 || b_rank != 2 || a_shape[0] <= 0 || a_shape[1] <= 0 ||
+        b_shape[0] <= 0 || b_shape[1] <= 0) {
         return nullptr;
     }
 
@@ -110,6 +114,10 @@ extern "C" void* eshkol_xla_matmul(
 
     // Verify inner dimensions match
     if (K != K2) {
+        return nullptr;
+    }
+    if (M > std::numeric_limits<uint64_t>::max() / N ||
+        M * N > static_cast<uint64_t>(SIZE_MAX / sizeof(int64_t))) {
         return nullptr;
     }
 
@@ -927,10 +935,21 @@ extern "C" void* eshkol_xla_broadcast(
     const uint64_t* tgt_shape,
     int64_t tgt_rank) {
 
-    if (!data || tgt_rank <= 0) return nullptr;
+    if (!data || !src_shape || !tgt_shape || tgt_rank <= 0) return nullptr;
     if (tgt_rank > 16 || src_rank > 16) return nullptr;  // P1: tgt_strides[16]/src_strides[16] stack arrays
     if (src_rank < 0) return nullptr;
     if (src_rank > tgt_rank) return nullptr;  // SW-22: broadcasting never reduces rank
+
+    uint64_t target_total = 1;
+    for (int64_t i = 0; i < src_rank; ++i)
+        if (src_shape[i] == 0) return nullptr;
+    for (int64_t i = 0; i < tgt_rank; ++i) {
+        if (tgt_shape[i] == 0 ||
+            target_total > std::numeric_limits<uint64_t>::max() / tgt_shape[i] ||
+            target_total > static_cast<uint64_t>(SIZE_MAX / sizeof(int64_t)) / tgt_shape[i])
+            return nullptr;
+        target_total *= tgt_shape[i];
+    }
 
     // SW-22: validate NumPy-style broadcast compatibility per right-aligned
     // dimension pair before computing any strides. A source dimension may
@@ -954,8 +973,7 @@ extern "C" void* eshkol_xla_broadcast(
         }
     }
 
-    uint64_t total = 1;
-    for (int64_t i = 0; i < tgt_rank; i++) total *= tgt_shape[i];
+    uint64_t total = target_total;
 
     eshkol_tensor_t* result = arena_allocate_tensor_full(
         reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(tgt_rank), total);

@@ -1567,29 +1567,15 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         }
 
         if (value_type != ctx_.taggedValueType()) {
-            llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
-            llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
-                ctx_.context(), "reshape_dim_type_error", func);
-            ctx_.builder().CreateBr(err_block);
-            ctx_.builder().SetInsertPoint(err_block);
-            set_error_location();
-
-            llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error");
-            if (!type_error_fn) {
-                llvm::FunctionType* ft = llvm::FunctionType::get(
-                    ctx_.builder().getVoidTy(),
-                    {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
-                    false);
-                type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                    "eshkol_type_error", &ctx_.module());
-                type_error_fn->setDoesNotReturn();
-            }
-
-            llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "struct_int_proc");
-            llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "struct_int_expected");
-            ctx_.builder().CreateCall(type_error_fn, {proc, expected});
-            ctx_.builder().CreateUnreachable();
-            return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+            /* Raw floating-point dimensions are compile-time malformed input
+             * in the native AST. The old branch emitted an unreachable block
+             * and then continued emitting reshape instructions into that same
+             * block, yielding invalid LLVM IR instead of a diagnostic. Stop
+             * code generation cleanly; dynamic tagged values use the branch
+             * below and remain catchable at runtime. */
+            (void)set_error_location;
+            eshkol_error("%s: %s", proc_name, expected_type);
+            return nullptr;
         }
 
         llvm::Value* type_tag = tagged_.getType(value);
@@ -1630,6 +1616,8 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     // Get source tensor properties (needed for all paths)
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 2);
     llvm::Value* src_elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elements_field_ptr);
+    llvm::Value* src_total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
+    llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
 
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
 
@@ -1785,6 +1773,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(single_path);
         llvm::Value* single_dim = extract_structural_int(
             dim_arg, "reshape", "integer dimension");
+        if (!single_dim) return nullptr;
         // Allocate 1-element dims array
         llvm::Value* single_arena = ctx_.builder().CreateLoad(
             llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
@@ -1834,6 +1823,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
             llvm::Value* dim = codegenAST(&op->call_op.variables[i]);
             if (!dim) return nullptr;
             dim = extract_structural_int(dim, "reshape", "integer dimension");
+            if (!dim) return nullptr;
             llvm::Value* dim_slot = ctx_.builder().CreateGEP(
                 ctx_.int64Type(), multi_dims_array,
                 llvm::ConstantInt::get(ctx_.int64Type(), i - 1));
@@ -1852,6 +1842,9 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     }
 
     // Allocate using arena
+    emitTensorShapeValidation(final_dims_ptr, final_ndim,
+                              src_total, "reshape");
+
     llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
 
