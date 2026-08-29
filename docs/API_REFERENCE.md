@@ -890,10 +890,7 @@ Loads a tensor checkpoint from disk.
 ```
 
 **Type**: Serialization  
-**Returns**: Tensor on success, `()`/null-equivalent on failure. The ESKM
-magic, version, shape, payload size, complete record boundary, and CRC-32 are
-validated before the tensor is materialized; invalid or missing files emit an
-`ERROR` diagnostic.
+**Returns**: Tensor on success, `()`/null-equivalent on failure
 
 ---
 
@@ -923,10 +920,7 @@ Loads a multi-tensor checkpoint from disk.
 ```
 
 **Type**: Serialization  
-**Returns**: List of `(name . tensor)` pairs on success, `()`/null-equivalent
-on failure. The ESKM magic, version, shape, payload size, complete record
-boundary, and CRC-32 are validated before tensors are materialized; invalid or
-missing files emit an `ERROR` diagnostic.
+**Returns**: List of `(name . tensor)` pairs on success, `()`/null-equivalent on failure
 
 ---
 
@@ -1815,10 +1809,6 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 
 **Type**: File handle (opaque pointer)  
 **Implementation**: [`openInputFile()`](../lib/backend/string_io_codegen.cpp)
-
-If the path cannot be opened, `open-input-file` raises a catchable I/O error.
-Capability-policy denial remains the documented false result. `read-line`
-also raises a catchable error when given anything other than an open input port.
 
 ---
 
@@ -7135,7 +7125,7 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 44,003 lines
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 44,314 lines
 **Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus 22,355 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
 **Compiler Modules**: 36 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
