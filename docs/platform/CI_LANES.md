@@ -60,14 +60,15 @@ for pull requests and for non-`master` branches; `master` is never cancelled.
 
 ## Self-hosted (mesh) lanes
 
-`ci-mesh.yml` adds four **advisory, non-required** lanes that run on the
-maintainer's own hardware: `mesh-linux-x64-lite`, `mesh-linux-arm64-lite`,
-`mesh-macos-arm64-lite`, and `mesh-linux-x64-cuda-exec`. The last of these is the
-only lane in the repository that runs `run_gpu_tests.sh` against a **real** CUDA
-device — lanes 5, 6 and 14 above are compile-only, because hosted runners have no
-GPU. The whole workflow is off unless the repository variable `ESHKOL_MESH_CI` is
-`on` *and* a runner carrying the `eshkol` label is online, and none of its jobs is
-(or may become) a required status check. See
+`ci-mesh.yml` retains four **advisory, non-required** lanes for compatibility:
+`mesh-linux-x64-lite`, `mesh-linux-arm64-lite`, `mesh-macos-arm64-lite`, and
+`mesh-linux-x64-cuda-exec`. It is suppressed when `ESHKOL_MESH_PRIMARY=on`, so
+the primary `ci.yml` lanes do not run twice. With primary routing enabled,
+`ci.yml` sends the Linux x64 required lanes to `[self-hosted, Linux, X64,
+eshkol, linux-mesh]` and `linux-x64-cuda` to `[self-hosted, Linux, X64, eshkol,
+cuda]`; the four x64 runners allow four concurrent jobs and the CUDA runner
+allows one. The whole advisory workflow is off unless `ESHKOL_MESH_CI` is `on`
+and a runner carrying `eshkol` is online. See
 [Self-hosted runners](SELF_HOSTED_RUNNERS.md).
 
 Other workflows: `pages.yml` (docs site), `release.yml` (release packaging),

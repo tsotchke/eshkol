@@ -3,8 +3,8 @@ name: CI (mesh, self-hosted)
 # ─────────────────────────────────────────────────────────────────────────
 # WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
 #
-# This workflow runs a subset of the ci.yml lane batteries on the
-# maintainer's own hardware (the "mesh") instead of GitHub-hosted runners.
+# This workflow runs a legacy advisory subset of the ci.yml lane batteries on
+# the maintainer's own hardware (the "mesh") when primary routing is off.
 # Its purpose is capacity and honesty:
 #
 #   - CAPACITY. The hosted matrix in ci.yml is 14 lanes plus Windows SDK
@@ -21,7 +21,8 @@ name: CI (mesh, self-hosted)
 #     gpu-execution-gate.yml and shares this workflow's `gpu` label — see
 #     the runbook.)
 #
-# IT IS NOT A MERGE GATE, AND MUST NOT BECOME ONE BY ACCIDENT.
+# When ESHKOL_MESH_PRIMARY is on, ci.yml owns the mesh-routed lane names and
+# this advisory matrix is suppressed so a lane never runs twice.
 #
 # Nothing in this file appears in branch protection's required-contexts
 # list, and nothing in this file may be added to it without the maintainer
@@ -54,6 +55,8 @@ name: CI (mesh, self-hosted)
 #   1. Repository variable `ESHKOL_MESH_CI` must equal `on`. Unset (the
 #      default, and the state this file ships in) means every job here is
 #      SKIPPED — it never queues, never occupies a runner, never reports.
+#      `ESHKOL_MESH_PRIMARY=on` also suppresses this legacy workflow's lanes;
+#      the same lane names are then owned by ci.yml.
 #   2. `mesh-preflight` runs on a HOSTED runner and refuses to fan out when
 #      no runner carrying the `eshkol` label is registered, so switching the
 #      variable on before registering a runner still cannot leave jobs
@@ -121,12 +124,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           MESH_CI: ${{ vars.ESHKOL_MESH_CI }}
+          MESH_PRIMARY: ${{ vars.ESHKOL_MESH_PRIMARY }}
         run: |
           set -u
 
           if [ "${MESH_CI:-}" != "on" ]; then
             echo "dispatch=false" >> "$GITHUB_OUTPUT"
             echo "Repository variable ESHKOL_MESH_CI is '${MESH_CI:-<unset>}', not 'on'. Mesh lanes stay off." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "${MESH_PRIMARY:-}" = "on" ]; then
+            echo "dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "ESHKOL_MESH_PRIMARY is on; ci.yml owns the primary mesh lanes, so advisory lanes are suppressed." \
               >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -175,6 +186,8 @@ jobs:
     if: needs.mesh-preflight.outputs.dispatch == 'true'
     runs-on: ${{ fromJSON(matrix.labels) }}
     timeout-minutes: ${{ matrix.timeout }}
+    env:
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     strategy:
       fail-fast: false
       # One runner per node; don't let two lanes fight over the same box's
@@ -273,6 +286,7 @@ jobs:
           command -v cmake >/dev/null 2>&1 || note "cmake is not installed on this runner."
           command -v ninja >/dev/null 2>&1 || note "ninja is not installed on this runner."
           command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
+          command -v jq >/dev/null 2>&1 || note "jq is not installed on this runner."
 
           # `-fuse-ld=lld` (AArch64 Linux codegen) wants an unversioned ld.lld
           # in PATH. ci.yml symlinks it with sudo; a self-hosted runner must
@@ -313,7 +327,7 @@ jobs:
           else
             echo "Shared FetchContent cache is not seeded; retaining network fallback"
           fi
-          cmake -S . -B "${{ matrix.build_dir }}" -G Ninja \
+          cmake -S . -B "$MESH_JOB_BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
@@ -330,19 +344,19 @@ jobs:
         run: |
           set -euxo pipefail
           python3 scripts/verify_gpu_backend.py \
-            --build-dir "${{ matrix.build_dir }}" \
+            --build-dir "$MESH_JOB_BUILD_DIR" \
             --expected CUDA
 
       - name: Build
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build "${{ matrix.build_dir }}" --parallel
+          cmake --build "$MESH_JOB_BUILD_DIR" --parallel
 
       - name: Run tests
         shell: bash
         env:
-          BUILD_DIR: ${{ matrix.build_dir }}
+          BUILD_DIR: ${{ env.MESH_JOB_BUILD_DIR }}
         run: |
           set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
@@ -382,5 +396,5 @@ jobs:
         shell: bash
         run: |
           set -u
-          rm -rf "${{ matrix.build_dir }}" || true
+          rm -rf "$MESH_JOB_BUILD_DIR" || true
           df -Pk . | awk 'NR==2 {printf "free after reclaim: %d GiB\n", int($4/1048576)}'

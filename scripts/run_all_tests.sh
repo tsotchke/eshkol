@@ -174,8 +174,9 @@ require_regular_executable "eshkol-run" "$BUILD_DIR/eshkol-run"
 # Pin the compiler for the duration of the run.
 #
 # This aggregator runs for tens of minutes and delegates to sub-suites whose
-# BUILD_DIR contract is repository-relative (`./$BUILD_DIR/eshkol-run`), so we
-# cannot redirect them at a private copy without changing that interface. What
+# BUILD_DIR contract is runner-relative (`$BUILD_DIR/eshkol-run` from the
+# checked-out workspace), so we cannot redirect them at a private copy without
+# changing that interface. What
 # we can do is refuse to report results gathered across a rebuild: a run that
 # straddled two relinks once reported "93% pass, 6 failures including SEGFAULT
 # in examples/autodiff.esk" — every one of which passes on a stable build. The
