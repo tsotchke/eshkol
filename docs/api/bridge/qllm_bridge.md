@@ -241,7 +241,7 @@ Output tensor node [num_indices, d_model], or NULL on error.
 
 ### `ad_hyperbolic_distance`
 
-*Function* — line 231
+*Function* — line 235
 
 ```c
 ad_node_t* ad_hyperbolic_distance(
@@ -252,11 +252,11 @@ ad_node_t* ad_hyperbolic_distance(
 );
 ```
 
-Hyperbolic distance in the Poincare ball model. d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2))) NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
+Hyperbolic distance in the Poincare ball model, computed by the shared f64 primitives in `inc/eshkol/backend/riemannian_core.h`. `curvature` is sectional curvature and must be negative; both points must be strictly inside the ball. It is NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
 
 ### `ad_poincare_exp_map`
 
-*Function* — line 243
+*Function* — line 249
 
 ```c
 ad_node_t* ad_poincare_exp_map(
@@ -267,11 +267,11 @@ ad_node_t* ad_poincare_exp_map(
 );
 ```
 
-Poincare exponential map. Maps a tangent vector at x to a point on the manifold.
+Poincare exponential map through the shared f64 primitives in `inc/eshkol/backend/riemannian_core.h`. `curvature` is sectional curvature and must be negative; the base point must be strictly inside the ball. Maps a tangent vector at x to a point on the manifold.
 
 ### `ad_poincare_log_map`
 
-*Function* — line 255
+*Function* — line 263
 
 ```c
 ad_node_t* ad_poincare_log_map(
@@ -282,11 +282,11 @@ ad_node_t* ad_poincare_log_map(
 );
 ```
 
-Poincare logarithmic map. Maps a point y back to the tangent space at x.
+Poincare logarithmic map through the shared f64 primitives in `inc/eshkol/backend/riemannian_core.h`. `curvature` is sectional curvature and must be negative; both points must be strictly inside the ball. Maps a point y back to the tangent space at x.
 
 ### `ad_geodesic_attention`
 
-*Function* — line 278
+*Function* — line 287
 
 ```c
 ad_node_t* ad_geodesic_attention(
@@ -300,7 +300,7 @@ ad_node_t* ad_geodesic_attention(
 );
 ```
 
-Geodesic attention with curvature-adaptive scaling. Replaces dot-product with geodesic distance in attention scores: s_ij = -d(Q_i, K_j) / (sqrt(c) * sqrt(head_dim)), then softmax over j and a value-weighted sum. The forward retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere.
+Geodesic attention with curvature-adaptive scaling. Replaces dot-product with geodesic distance in attention scores: s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The forward retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere. The forward uses the same `riemannian_core.h` distance as the VM.
 
 ### `ad_frechet_mean`
 

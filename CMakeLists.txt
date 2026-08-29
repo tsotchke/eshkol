@@ -6262,6 +6262,38 @@ if(ESHKOL_BUILD_TESTS AND
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/riemannian_core_adversarial_regression_test.cpp")
+    add_executable(riemannian_core_adversarial_regression_test
+        tests/bridge/riemannian_core_adversarial_regression_test.cpp)
+    target_compile_features(riemannian_core_adversarial_regression_test PRIVATE cxx_std_20)
+    target_include_directories(riemannian_core_adversarial_regression_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME riemannian_core_adversarial_regression
+             COMMAND riemannian_core_adversarial_regression_test)
+    set_tests_properties(riemannian_core_adversarial_regression PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 6 passed, 0 failed")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp")
+    add_executable(qllm_bridge_geometry_surface_regression_test
+        tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp)
+    target_compile_features(qllm_bridge_geometry_surface_regression_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_geometry_surface_regression_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_geometry_surface_regression_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_geometry_surface_regression_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_geometry_surface_regression_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_geometry_surface_regression
+             COMMAND qllm_bridge_geometry_surface_regression_test)
+    set_tests_properties(qllm_bridge_geometry_surface_regression PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 4 passed, 0 failed")
+endif()
+
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
 # `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
 # weight_matrices tool) and executes Eshkol bytecode by running the transformer

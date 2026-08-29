@@ -158,6 +158,8 @@ static double eshkol_rm_norm(const double* a, int n) {
  * overflows for otherwise valid finite coordinates; multiplying the factor by
  * max_abs before multiplying by max_abs again preserves finite results such as
  * B * (1e308)^2 when B is small. */
+static double eshkol_rm_scaled_product4(double a, double b, double c, double d);
+
 static double eshkol_rm_scaled_norm2_times(const double* a, double factor, int n) {
     double max_abs = 0.0;
     for (int i = 0; i < n; i++) {
@@ -171,7 +173,35 @@ static double eshkol_rm_scaled_norm2_times(const double* a, double factor, int n
         double z = a[i] / max_abs;
         scaled_norm2 += z * z;
     }
-    return (factor * max_abs) * max_abs * scaled_norm2;
+    return eshkol_rm_scaled_product4(factor, max_abs, max_abs,
+                                     scaled_norm2);
+}
+
+/* Multiply four finite factors in one exponent-scaled operation.  In
+ * particular, do not form factor*max_abs first: that product can underflow
+ * even when factor*max_abs*max_abs*sum is representable. */
+static double eshkol_rm_scaled_product4(double a, double b, double c, double d) {
+    if (a == 0.0 || b == 0.0 || c == 0.0 || d == 0.0) return 0.0;
+    int ea, eb, ec, ed;
+    double ma = frexp(a, &ea), mb = frexp(b, &eb);
+    double mc = frexp(c, &ec), md = frexp(d, &ed);
+    return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
+}
+
+static double eshkol_rm_difference_norm2(const double* a, const double* b, int n) {
+    double max_abs = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = fabs(a[i] - b[i]);
+        if (!isfinite(d)) return d;
+        if (d > max_abs) max_abs = d;
+    }
+    if (max_abs == 0.0) return 0.0;
+    double scaled = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = (a[i] - b[i]) / max_abs;
+        scaled += d * d;
+    }
+    return eshkol_rm_scaled_product4(1.0, max_abs, max_abs, scaled);
 }
 
 /* A scaled dot product for formulas whose true value is multiplied by factor.
@@ -188,7 +218,7 @@ static double eshkol_rm_scaled_dot_factor(const double* a, const double* b,
     if (ma == 0.0 || mb == 0.0 || factor == 0.0) return 0.0;
     double sum = 0.0;
     for (int i = 0; i < n; i++) sum += (a[i] / ma) * (b[i] / mb);
-    return (factor * ma) * mb * sum;
+    return eshkol_rm_scaled_product4(factor, ma, mb, sum);
 }
 
 /* Exact equality is the only coincidence predicate. In particular, a nonzero
@@ -288,6 +318,10 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
 /** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
  *         precision. */
 static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
+    double lo = 0.0;
+    double hi = eshkol_rm_dot_dd(x, x, n, &lo);
+    if (isfinite(hi))
+        return fma(-B, lo, fma(-B, hi, 1.0));
     return 1.0 - eshkol_rm_scaled_norm2_times(x, B, n);
 }
 
@@ -571,10 +605,26 @@ static const char* eshkol_rm_require_interior(const double* out, double K, int n
 static const char* eshkol_rm_check_tangent(const double* x, const double* v,
                                            double K, int n) {
     if (K <= 0.0) return NULL;
-    double R  = 1.0 / sqrt(K);
     double vn = eshkol_rm_norm(v, n);
     if (vn == 0.0) return NULL;
-    if (!(fabs(eshkol_rm_dot(x, v, n)) <= ESHKOL_RM_TANGENT_TOL * R * vn))
+    double xm = 0.0, vm = 0.0, x2 = 0.0, v2 = 0.0, dot = 0.0;
+    for (int i = 0; i < n; i++) {
+        double ax = fabs(x[i]), av = fabs(v[i]);
+        if (!isfinite(ax) || !isfinite(av))
+            return "a tangent-vector component is not finite";
+        if (ax > xm) xm = ax;
+        if (av > vm) vm = av;
+    }
+    if (xm == 0.0 || vm == 0.0) return NULL;
+    for (int i = 0; i < n; i++) {
+        double nx = x[i] / xm, nv = v[i] / vm;
+        dot += nx * nv;
+        x2 += nx * nx;
+        v2 += nv * nv;
+    }
+    /* Compare normalized quantities. The unscaled dot can underflow at the
+     * same exponent boundary where a wholly radial vector must be rejected. */
+    if (!(fabs(dot) <= ESHKOL_RM_TANGENT_TOL * sqrt(x2) * sqrt(v2)))
         return "the vector is not tangent to the sphere at this point (<x,v> "
                "must vanish)";
     return NULL;
@@ -939,7 +989,6 @@ static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
         return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
     }
     {
-        double R = 1.0 / sqrt(K);
         double gx = eshkol_rm_scaled_dot_factor(g, x, K, n);
         for (int i = 0; i < n; i++) out[i] = g[i] - gx * x[i];
         return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
@@ -1007,8 +1056,7 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
                "K = 0 branch returns ESHKOL_RM_FLAT_LAMBDA |x-y|, so with those "
                "two constants unequal the metric family is discontinuous there";
 
-    double E = 0.0;
-    for (int i = 0; i < n; i++) { double t = x[i] - y[i]; E += t * t; }
+    double E = eshkol_rm_difference_norm2(x, y, n);
 
     if (K <= 0.0) {
         if (E <= 0.0) {
@@ -1019,8 +1067,8 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
             *d2_out = 0.0;
             return NULL;
         }
-        double a = eshkol_rm_dot(x, x, n);
-        double b = eshkol_rm_dot(y, y, n);
+        double a = eshkol_rm_scaled_norm2_times(x, 1.0, n);
+        double b = eshkol_rm_scaled_norm2_times(y, 1.0, n);
         double B = eshkol_rm_ball_param(-K);
         /* dB/dc = LAMBDA0^2/4 and c = -K, so dB/dK = -LAMBDA0^2/4. */
         double dBdK = -(ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
@@ -1055,6 +1103,8 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
         if (d_out) *d_out = d;
         *d1_out = dB1 * dBdK;
         *d2_out = dB2 * dBdK * dBdK;
+        if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
+            return "the curvature derivative is not finite";
         return NULL;
     }
 
