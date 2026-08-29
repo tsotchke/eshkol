@@ -124,7 +124,7 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c \
+  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
   -o site/static/eshkol-vm.js -lm
 ```
 

@@ -98,6 +98,14 @@ WASM_DIFF_DIR="${WASM_DIFF_DIR:-$BUILD_DIR/wasm-diff}"
 WASM_MODULE="$WASM_DIFF_DIR/eshkol-vm-diff.js"
 RUNNER_JS="$REPO_ROOT/scripts/lib/wasm_diff_runner.js"
 VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
+# The VM is a C unity build, but the Unicode classifier is a separate C++
+# translation unit.  Keep every source that belongs to this link in one list:
+# otherwise the C header declaration is visible while the WASM link silently
+# supplies an aborting unresolved-symbol stub.
+WASM_VM_SOURCES=(
+    "$VM_WASM_SRC"
+    "$REPO_ROOT/lib/core/unicode.cpp"
+)
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
 
@@ -223,7 +231,8 @@ need_build=1
 if [ -f "$WASM_MODULE" ] && [ -f "${WASM_MODULE%.js}.wasm" ]; then
     need_build=0
     [ "$WASM_MODULE" -nt "$0" ] || need_build=1
-    for _src in "$REPO_ROOT"/lib/backend/vm_*.c "$REPO_ROOT"/lib/backend/vm_*.h \
+    for _src in "${WASM_VM_SOURCES[@]}" \
+                "$REPO_ROOT"/lib/backend/vm_*.c "$REPO_ROOT"/lib/backend/vm_*.h \
                 "$REPO_ROOT"/lib/backend/eshkol_vm.c \
                 "$REPO_ROOT"/lib/backend/weight_matrices.c \
                 "$REPO_ROOT"/inc/eshkol/backend/vm_*.h; do
@@ -247,7 +256,7 @@ if [ "$need_build" -eq 1 ]; then
             -s EXPORTED_FUNCTIONS='["_run_program","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
             -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-            -I"$REPO_ROOT/inc" -I"$REPO_ROOT/lib/backend" "$VM_WASM_SRC" \
+            -I"$REPO_ROOT/inc" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
             -o "$WASM_MODULE" -lm 2> "$WASM_DIFF_DIR/emcc.log"; then
         echo "run_wasm_differential.sh: emcc build FAILED:" >&2
         tail -20 "$WASM_DIFF_DIR/emcc.log" >&2
