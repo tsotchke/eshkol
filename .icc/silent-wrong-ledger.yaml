@@ -6047,9 +6047,18 @@ entries:
     bucket: SILENT-WRONG
     subtag: exactness
     family: vm-ad-carrier/exact-point-forward-mode
-    status: open
-    needs_decision: true
-    fix_lane: "UNASSIGNED — needs its own lane (VM exact AD carrier); found from the bi30d P6/P11 re-verification lane, which does not own the VM dual"
+    status: fixed
+    needs_decision: false
+    fix_lane: "BI-30(d)"
+    closed_at: "2026-08-28"
+    fixed_by: >-
+      BI-30(d): lib/backend/vm_dual.c and vm_numeric.h add exact rational
+      halves and a K+1 Taylor carrier; vm_native.c seeds/extracts them;
+      vm_region_evac.c retains their arena-owned coefficient graphs.
+    evidence: >-
+      build-core CTest: selected AD/Taylor set 18/18 passed, including
+      exact_taylor 68/68, reverse_over_taylor 18/18, exhaustive_dispatch and
+      ad_vm_exactness_gate. tests/vm/vm_exact_ad_test.esk: 19/19 checks.
     title: "The bytecode VM's forward-mode AD answers INEXACTLY at an exact point where native answers exactly, and RELEASE_NOTES states the opposite — exact AD is claimed 'available on every substrate'"
     repro: >-
       Measured on cosbox at origin/master e7f2c685, same source file on both
@@ -6104,31 +6113,18 @@ entries:
       exact halves dangle into a freed region arena. That is precisely the
       SW-66 defect class, one subtype over.
     scope_note: >-
-      This entry covers FIRST-ORDER exactness only (derivative/gradient at
-      an exact scalar point). It does NOT cover derivative-n/taylor, which
-      are not implemented on the VM at all (tests/vm_parity/PARITY.tsv rows
-      op:DERIVATIVE_N and op:TAYLOR) and need a full VM Taylor tower — a
-      K+1 coefficient array — rather than an exact dual. The two share the
-      same missing-carrier root but are separate pillars, and the tower is
-      much the larger of the two.
+      This entry covers exact scalar-point forward AD on the VM. BI-30(d)
+      closes derivative, gradient, derivative-n and taylor together: the
+      existing dual envelope now carries exact rational halves for first-order
+      results and a K+1 Taylor coefficient array for arbitrary-order results.
     doc_conflict: >-
-      RELEASE_NOTES.md:9 reads "`gradient` now runs at full parity on the
-      bytecode VM as well as native codegen, so exact automatic
-      differentiation is available on every substrate." The first clause is
-      true for INEXACT points; the inference in the second is not. Per the
-      docs-are-blueprint ruling the claim is NOT to be edited down — it is
-      filed here as a build item so the implementation rises to meet it.
-      tests/vm_parity/PARITY.tsv's op:DERIVATIVE and op:GRADIENT rows
-      already record this divergence accurately and in detail; the
-      release-notes sentence is the only place that overstates it.
+      RELEASE_NOTES.md:9's claim that exact automatic differentiation is
+      available on every substrate is now met for the scalar derivative,
+      gradient, derivative-n and taylor surfaces. Exact vector gradients
+      remain outside this scalar-carrier scope and are documented separately.
     notes: >-
-      Surfaced by an adversarial audit of the release notes and confirmed
-      by measurement in the bi30d lane (P6/P11 exact-coefficient
-      re-verification). That lane deliberately did NOT implement the fix:
-      it owns the native exact-coefficient tier, the change is VM numeric
-      surgery in a carrier used by every AD entry point on that substrate,
-      and the lane could not obtain a build to verify it against — the
-      cosbox build lock had 25 waiters and the lane's own build had
-      produced 4 object files. Landing unverified exactness surgery in the
-      AD carrier is the exact hazard the P5-then-P6 hand-layered merge
-      existed to avoid.
+      Surfaced by the release-notes audit and fixed in BI-30(d). The VM
+      exact-point suite passes 19/19, including derivative-n/taylor parity;
+      the native exact-coefficient and reverse-over-Taylor suites pass 68/68
+      and 18/18 together. The carrier's exact halves and Taylor arrays are
+      covered by vm_region_evac.c's deep-walk.

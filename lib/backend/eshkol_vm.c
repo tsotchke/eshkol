@@ -425,6 +425,7 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 1849, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
+    {"taylor", 757, 3}, {"derivative-n", 758, 3},
     /* `gradient` is intercepted by a compiler special form (currying + point
      * spreading; see compile_expr).  The table entry is kept so a first-class
      * reference `(map gradient …)` still resolves to the arity-2 primitive,

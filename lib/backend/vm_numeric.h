@@ -113,7 +113,7 @@ typedef struct {
     VmBignum* big_den;  /* valid iff is_big == 1; > 0 */
 } VmRational;
 
-/* ── Dual Number (forward-mode AD: primal + tangent*ε) ──
+/* ── Dual Number (forward-mode AD: primal + tangent*epsilon) ──
  *
  * SW-85: the two `double` fields used to be the WHOLE carrier, and that made
  * the VM answer inexactly at an exact point where native answers exactly:
@@ -139,11 +139,20 @@ typedef struct {
  *
  * NOTE for the region evacuator: a dual carrying exact halves owns INTERIOR
  * arena pointers, so it is no longer a leaf — see vm_region_evac.c. */
+#define VM_DUAL_KIND_SCALAR  0u
+#define VM_DUAL_KIND_TAYLOR  1u
+
 typedef struct {
     double primal;
     double tangent;
     VmRational* eprimal;   /* NULL = primal is inexact  */
     VmRational* etangent;  /* NULL = tangent is inexact */
+    /* A Taylor tower uses the same VAL_DUAL/HEAP_DUAL envelope so the VM's
+     * existing arithmetic dispatch remains one closed carrier family. */
+    uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
+    uint32_t order;        /* highest coefficient index for a Taylor tower */
+    double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
+    VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
 } VmDual;
 
 /* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
@@ -166,6 +175,15 @@ double      vm_rational_to_double(const VmRational *r);
 VmDual*     vm_dual_make_exact_seed(VmRegionStack* rs, VmRational* point);
 VmRational* vm_dual_exact_tangent(const VmDual* d);
 VmRational* vm_dual_exact_primal(const VmDual* d);
+VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
+                                     double point_value, uint32_t order,
+                                     int exact);
+int         vm_dual_is_taylor(const VmDual* d);
+int         vm_dual_taylor_is_exact(const VmDual* d);
+double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);
+VmRational* vm_dual_taylor_exact_coeff(const VmDual* d, uint32_t n);
+VmRational* vm_dual_taylor_exact_derivative(VmRegionStack* rs,
+                                             const VmDual* d, uint32_t n);
 
 /* ── Hyper-Dual Number (exact second derivatives via ε₁, ε₂)  ──
  * h = f + f₁·ε₁ + f₂·ε₂ + f₁₂·ε₁ε₂

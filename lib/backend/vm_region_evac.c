@@ -777,6 +777,30 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
             if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);
                               vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
         }
+        if (d->kind == VM_DUAL_KIND_TAYLOR) {
+            if (d->coeff) {
+                vm_evac_retain_ptr(bs, d->coeff);
+                vm_evac_scan_range(bs, d->coeff,
+                                   (size_t)(d->order + 1) * sizeof(double));
+            }
+            if (d->exact_coeff) {
+                vm_evac_retain_ptr(bs, d->exact_coeff);
+                vm_evac_scan_range(bs, d->exact_coeff,
+                                   (size_t)(d->order + 1) * sizeof(VmRational*));
+                for (uint32_t i = 0; i <= d->order; i++) {
+                    const VmRational* er = d->exact_coeff[i];
+                    if (!er) continue;
+                    vm_evac_retain_ptr(bs, er);
+                    vm_evac_scan_range(bs, er, sizeof(VmRational));
+                    if (er->is_big) {
+                        if (er->big_num) { vm_evac_retain_ptr(bs, er->big_num);
+                                           vm_evac_scan_range(bs, er->big_num, sizeof(VmBignum)); }
+                        if (er->big_den) { vm_evac_retain_ptr(bs, er->big_den);
+                                           vm_evac_scan_range(bs, er->big_den, sizeof(VmBignum)); }
+                    }
+                }
+            }
+        }
         break;
     }
     case HEAP_KB: {

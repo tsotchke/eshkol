@@ -5287,6 +5287,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
 
+    # SW-85 / BI-30(d): exact scalar-point derivative, gradient, derivative-n
+    # and taylor must be exercised by the VM itself. The divergence/curl gate
+    # above does not cover this carrier because it intentionally tests a
+    # different VM AD surface.
+    if(TARGET eshkol-vm-standalone-test AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/vm_exact_ad_test.esk")
+        add_test(NAME vm_exact_ad_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/vm_exact_ad_test.esk")
+        set_tests_properties(vm_exact_ad_runtime_smoke PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact AD at exact points"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated")
+    endif()
+
     # R7RS-small 5.6.1 same-unit library resolution, on the VM.  The VM
     # compiler has its own reader and its own module machinery, so the native
     # front end being fixed proves nothing here: `define-library`, `import`
