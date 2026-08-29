@@ -526,7 +526,7 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
 llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // tensor-dot: (tensor-dot A B) - Dot product for 1D vectors, matrix multiplication for 2D
     if (op->call_op.num_vars != 2) {
-        eshkol_error("tensor-dot requires exactly 2 arguments: tensor A and tensor B");
+        eshkol_arity_error_current("tensor-dot requires exactly 2 arguments: tensor A and tensor B");
         return nullptr;
     }
 
@@ -1169,7 +1169,7 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     // tensor-apply: (tensor-apply tensor function)
     // Applies a function to each element of a tensor, returning a new tensor
     if (op->call_op.num_vars != 2) {
-        eshkol_error("tensor-apply requires exactly 2 arguments: tensor and function");
+        eshkol_arity_error_current("tensor-apply requires exactly 2 arguments: tensor and function");
         return nullptr;
     }
 
@@ -1304,7 +1304,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     // tensor-reduce-all: (tensor-reduce-all tensor function initial-value)
     // Reduces entire tensor to a single value by applying a binary function
     if (op->call_op.num_vars != 3) {
-        eshkol_error("tensor-reduce requires exactly 3 arguments: tensor, function, and initial value");
+        eshkol_arity_error_current("tensor-reduce requires exactly 3 arguments: tensor, function, and initial value");
         return nullptr;
     }
 
@@ -1519,7 +1519,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     // Reduces tensor along specified dimension, returning tensor with reduced dimensionality
     // Supports N-D tensors of any rank via eshkol_xla_reduce runtime (with GPU dispatch)
     if (op->call_op.num_vars != 4) {
-        eshkol_error("tensor-reduce requires exactly 4 arguments: tensor, function, initial-value, dimension");
+        eshkol_arity_error_current("tensor-reduce requires exactly 4 arguments: tensor, function, initial-value, dimension");
         return nullptr;
     }
 

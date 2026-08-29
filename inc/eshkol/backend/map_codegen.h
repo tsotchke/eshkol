@@ -215,6 +215,15 @@ private:
     llvm::Value* mapWithClosure(llvm::Value* closure_val, llvm::Value* list);
 
     /**
+     * Map with a runtime closure over N lists in lockstep.
+     * R7RS stops at the shortest list and passes one element from every list
+     * to the closure on each iteration.
+     */
+    llvm::Value* mapWithClosureN(
+        llvm::Value* closure_val,
+        const std::vector<llvm::Value*>& lists);
+
+    /**
      * Map over a single list with known function.
      */
     llvm::Value* mapSingleList(llvm::Function* proc_func, llvm::Value* list);

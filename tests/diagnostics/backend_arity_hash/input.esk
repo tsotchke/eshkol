@@ -1,0 +1,2 @@
+(require stdlib)
+(hash-set! (make-hash-table) "key")

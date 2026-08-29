@@ -14723,7 +14723,7 @@ private:
         // Power function with dual number support for autodiff
         if (func_name == "pow" || func_name == "expt") {
             if (op->call_op.num_vars != 2) {
-                eshkol_warn("pow/expt requires exactly 2 arguments");
+                eshkol_arity_error_current("pow/expt requires exactly 2 arguments");
                 return nullptr;
             }
             // Use codegenTypedAST and convert to tagged_value like other arithmetic ops
@@ -14833,7 +14833,7 @@ private:
         }
         if (func_name == "volatile-load") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("volatile-load requires exactly 2 arguments");
+                eshkol_arity_error_current("volatile-load requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -14863,7 +14863,7 @@ private:
         }
         if (func_name == "volatile-store!") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("volatile-store! requires exactly 3 arguments");
+                eshkol_arity_error_current("volatile-store! requires exactly 3 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -14889,7 +14889,7 @@ private:
         }
         if (func_name == "atomic-load") {
             if (op->call_op.num_vars != 3) {
-                eshkol_error("atomic-load requires exactly 3 arguments");
+                eshkol_arity_error_current("atomic-load requires exactly 3 arguments");
                 return nullptr;
             }
 
@@ -14922,7 +14922,7 @@ private:
         }
         if (func_name == "atomic-store!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-store! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-store! requires exactly 4 arguments");
                 return packNullToTaggedValue();
             }
 
@@ -14951,7 +14951,7 @@ private:
         }
         if (func_name == "atomic-exchange!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("atomic-exchange! requires exactly 4 arguments");
+                eshkol_arity_error_current("atomic-exchange! requires exactly 4 arguments");
                 return nullptr;
             }
 
@@ -14984,7 +14984,7 @@ private:
         }
         if (func_name == "atomic-compare-exchange!") {
             if (op->call_op.num_vars != 6) {
-                eshkol_error("atomic-compare-exchange! requires exactly 6 arguments");
+                eshkol_arity_error_current("atomic-compare-exchange! requires exactly 6 arguments");
                 return nullptr;
             }
 
@@ -15034,7 +15034,7 @@ private:
             func_name == "atomic-fetch-and!" || func_name == "atomic-fetch-or!" ||
             func_name == "atomic-fetch-xor!") {
             if (op->call_op.num_vars != 4) {
-                eshkol_error("%s requires exactly 4 arguments", func_name.c_str());
+                eshkol_arity_error_current("%s requires exactly 4 arguments", func_name.c_str());
                 return nullptr;
             }
 
@@ -15123,7 +15123,7 @@ private:
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("compiler-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("compiler-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -15135,7 +15135,7 @@ private:
         }
         if (func_name == "memory-fence") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("memory-fence requires exactly 1 ordering argument");
+                eshkol_arity_error_current("memory-fence requires exactly 1 ordering argument");
                 return packNullToTaggedValue();
             }
 
@@ -15147,7 +15147,7 @@ private:
         }
         if (func_name == "addr-of") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("addr-of requires exactly 1 argument");
+                eshkol_arity_error_current("addr-of requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -15214,7 +15214,7 @@ private:
         }
         if (func_name == "ptr->usize") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("ptr->usize requires exactly 1 argument");
+                eshkol_arity_error_current("ptr->usize requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -15244,7 +15244,7 @@ private:
         }
         if (func_name == "usize->ptr") {
             if (op->call_op.num_vars != 1) {
-                eshkol_error("usize->ptr requires exactly 1 argument");
+                eshkol_arity_error_current("usize->ptr requires exactly 1 argument");
                 return nullptr;
             }
 
@@ -15264,7 +15264,7 @@ private:
         }
         if (func_name == "ptr-add") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("ptr-add requires exactly 2 arguments");
+                eshkol_arity_error_current("ptr-add requires exactly 2 arguments");
                 return nullptr;
             }
 
@@ -17491,7 +17491,7 @@ private:
         // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x
         if (func_name == "rationalize") {
             if (op->call_op.num_vars != 2) {
-                eshkol_error("rationalize requires exactly 2 arguments");
+                eshkol_arity_error_current("rationalize requires exactly 2 arguments");
                 return nullptr;
             }
             TypedValue x_tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -17537,7 +17537,7 @@ private:
         if (func_name == "parameter?") {
             // (parameter? obj) — heap-subtype check for HEAP_SUBTYPE_PARAMETER.
             if (op->call_op.num_vars != 1) {
-                eshkol_warn("parameter? requires exactly 1 argument");
+                eshkol_arity_error_current("parameter? requires exactly 1 argument");
                 return packBoolToTaggedValue(ConstantInt::getFalse(*context));
             }
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -21303,7 +21303,7 @@ private:
     
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", func_name.c_str());
             return nullptr;
         }
 
@@ -21834,7 +21834,7 @@ private:
     // for numeric types (int64, double, bignum)
     Value* codegenAbs(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("abs requires exactly 1 argument");
+            eshkol_arity_error_current("abs requires exactly 1 argument");
             return nullptr;
         }
 
@@ -21939,7 +21939,7 @@ private:
     // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
     Value* codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments", func_name.c_str());
+            eshkol_arity_error_current("%s requires exactly 2 arguments", func_name.c_str());
             return nullptr;
         }
 
@@ -22092,7 +22092,7 @@ private:
     // Modulo operation - Scheme semantics (result has same sign as divisor)
     Value* codegenModulo(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("modulo requires exactly 2 arguments");
+            eshkol_arity_error_current("modulo requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -22313,7 +22313,7 @@ private:
     // Uses truncated division semantics (sign of result matches dividend)
     Value* codegenRemainder(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remainder requires exactly 2 arguments");
+            eshkol_arity_error_current("remainder requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -22331,7 +22331,7 @@ private:
     // Integer quotient (truncated division)
     Value* codegenQuotient(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quotient requires exactly 2 arguments");
+            eshkol_arity_error_current("quotient requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -25024,7 +25024,7 @@ private:
 
     Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-and requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-and requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -25038,7 +25038,7 @@ private:
     // bitwise-or: (bitwise-or a b) -> integer OR
     Value* codegenBitwiseOr(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-or requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-or requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -25052,7 +25052,7 @@ private:
     // bitwise-xor: (bitwise-xor a b) -> integer XOR
     Value* codegenBitwiseXor(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("bitwise-xor requires exactly 2 arguments");
+            eshkol_arity_error_current("bitwise-xor requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -25066,7 +25066,7 @@ private:
     // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
     Value* codegenBitwiseNot(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("bitwise-not requires exactly 1 argument");
+            eshkol_arity_error_current("bitwise-not requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_a = codegenTypedAST(&op->call_op.variables[0]);
@@ -25116,7 +25116,7 @@ private:
     // Positive count = left shift, negative count = right shift (arithmetic)
     Value* codegenArithmeticShift(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("arithmetic-shift requires exactly 2 arguments");
+            eshkol_arity_error_current("arithmetic-shift requires exactly 2 arguments");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -25144,7 +25144,7 @@ private:
     Value* codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
         const char* name = shift_right ? "bit-shift-right" : "bit-shift-left";
         if (op->call_op.num_vars != 2) {
-            eshkol_error("%s requires exactly 2 arguments", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments", name);
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -25182,7 +25182,7 @@ private:
      */
     Value* codegenPopcount(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("popcount requires exactly 1 argument");
+            eshkol_arity_error_current("popcount requires exactly 1 argument");
             return nullptr;
         }
         TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
@@ -25342,7 +25342,7 @@ private:
     // For immediate types: checks type directly
     Value* codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25361,7 +25361,7 @@ private:
     // Consolidated type predicates - check HEAP_PTR/CALLABLE and subtype in header
     Value* codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
+            eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25377,7 +25377,7 @@ private:
     // and tensor literals created with #(...) syntax (HEAP_SUBTYPE_TENSOR)
     Value* codegenVectorPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("vector? requires exactly 1 argument");
+            eshkol_arity_error_current("vector? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25410,7 +25410,7 @@ private:
     // Size field at offset -4 contains string length + 1 (for null terminator)
     Value* codegenSymbolToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("symbol->string requires exactly 1 argument");
+            eshkol_arity_error_current("symbol->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25462,7 +25462,7 @@ private:
     // into a properly-headered symbol allocation.
     Value* codegenStringToSymbol(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("string->symbol requires exactly 1 argument");
+            eshkol_arity_error_current("string->symbol requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25495,7 +25495,7 @@ private:
     // HEAP_SUBTYPE_SYMBOL for it).
     Value* codegenGensym(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 0) {
-            eshkol_warn("gensym requires exactly 0 arguments");
+            eshkol_arity_error_current("gensym requires exactly 0 arguments");
             return nullptr;
         }
 
@@ -25519,7 +25519,7 @@ private:
     // This enables: (display (ptr->string (system-capture "echo hello")))
     Value* codegenPtrToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("ptr->string requires exactly 1 argument");
+            eshkol_arity_error_current("ptr->string requires exactly 1 argument");
             return nullptr;
         }
 
@@ -25576,7 +25576,7 @@ private:
     // APIs such as HTTP responses that return a pointer and an explicit length.
     Value* codegenPtrToStringN(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("ptr->string-n requires exactly 2 arguments");
+            eshkol_arity_error_current("ptr->string-n requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -25758,7 +25758,7 @@ private:
     // Numeric predicates
     Value* codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", pred.c_str());
+            eshkol_arity_error_current("%s requires exactly 1 argument", pred.c_str());
             return nullptr;
         }
 
@@ -25998,7 +25998,7 @@ private:
     // eq? - Identity comparison (pointer equality for lists, value equality for primitives)
     Value* codegenEq(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eq? requires exactly 2 arguments");
+            eshkol_arity_error_current("eq? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -26065,7 +26065,7 @@ private:
     // eqv? - Value equality for numbers (including bignums), identity for everything else
     Value* codegenEqv(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("eqv? requires exactly 2 arguments");
+            eshkol_arity_error_current("eqv? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -26207,7 +26207,7 @@ private:
     // equal? - Deep structural equality using runtime helper
     Value* codegenEqual(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("equal? requires exactly 2 arguments");
+            eshkol_arity_error_current("equal? requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -26239,7 +26239,7 @@ private:
     // (error-object? obj) — #t iff obj is an error object created by `error`.
     Value* codegenErrorObjectPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("error-object? requires exactly 1 argument");
+            eshkol_arity_error_current("error-object? requires exactly 1 argument");
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -26266,7 +26266,7 @@ private:
     Value* codegenErrorObjectAccessor(const eshkol_operations_t* op,
                                       const char* runtime_fn, const char* scheme_name) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("%s requires exactly 1 argument", scheme_name);
+            eshkol_arity_error_current("%s requires exactly 1 argument", scheme_name);
             return nullptr;
         }
         TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
@@ -32424,7 +32424,7 @@ private:
         // Simplified 1D tensor access for numerical arrays
         // PHASE 3/4 FIX: Now AD-aware - detects and preserves AD node pointers
         if (op->call_op.num_vars != 2) {
-            eshkol_error("vref requires exactly 2 arguments: tensor and index");
+            eshkol_arity_error_current("vref requires exactly 2 arguments: tensor and index");
             return nullptr;
         }
 
@@ -32753,7 +32753,7 @@ private:
     // Uses BLAS (Accelerate/OpenBLAS) for large matrices via runtime dispatch
     Value* codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("matmul requires exactly 2 arguments");
+            eshkol_arity_error_current("matmul requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -33346,7 +33346,7 @@ private:
     // trace: (trace matrix) - Sum of diagonal elements
     Value* codegenTrace(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("trace requires exactly 1 argument");
+            eshkol_arity_error_current("trace requires exactly 1 argument");
             return nullptr;
         }
 
@@ -33444,7 +33444,7 @@ private:
     // norm: (norm vector) - Euclidean norm (L2 norm)
     Value* codegenNorm(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("norm requires exactly 1 argument");
+            eshkol_arity_error_current("norm requires exactly 1 argument");
             return nullptr;
         }
 
@@ -33576,7 +33576,7 @@ private:
     // outer: (outer v1 v2) - Outer product of two vectors
     Value* codegenOuterProduct(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("outer requires exactly 2 arguments");
+            eshkol_arity_error_current("outer requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -36272,7 +36272,7 @@ private:
         // vector-to-string: (vector-to-string vector)
         // Converts a vector to a string representation like "[1, 2, 3]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("vector-to-string requires exactly 1 argument: vector");
+            eshkol_arity_error_current("vector-to-string requires exactly 1 argument: vector");
             return nullptr;
         }
 
@@ -36461,7 +36461,7 @@ private:
         // matrix-to-string: (matrix-to-string matrix)
         // Converts a matrix to a string representation like "[[1, 2], [3, 4]]"
         if (op->call_op.num_vars != 1) {
-            eshkol_error("matrix-to-string requires exactly 1 argument: matrix");
+            eshkol_arity_error_current("matrix-to-string requires exactly 1 argument: matrix");
             return nullptr;
         }
 
@@ -36674,7 +36674,7 @@ private:
     // Production implementation: Compound car/cdr operations using TAGGED cons cells
     Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("compound car/cdr requires exactly 1 argument");
+            eshkol_arity_error_current("compound car/cdr requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37454,7 +37454,7 @@ private:
 
     Value* codegenSetRandomSeed(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("set-random-seed! requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("set-random-seed! requires exactly 1 argument (seed)");
             return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -37487,7 +37487,7 @@ private:
 
     Value* codegenMakePrng(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("make-prng requires exactly 1 argument (seed)");
+            eshkol_arity_error_current("make-prng requires exactly 1 argument (seed)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -37508,7 +37508,7 @@ private:
 
     Value* codegenPrngP(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng? requires exactly 1 argument");
+            eshkol_arity_error_current("prng? requires exactly 1 argument");
             return packBoolToTaggedValue(ConstantInt::getFalse(*context));
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -37520,7 +37520,7 @@ private:
 
     Value* codegenPrngRandom(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("prng-random requires exactly 1 argument (prng)");
+            eshkol_arity_error_current("prng-random requires exactly 1 argument (prng)");
             return nullptr;
         }
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
@@ -37544,7 +37544,7 @@ private:
 
     Value* codegenPrngRandomInteger(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("prng-random-integer requires exactly 2 arguments (prng n)");
+            eshkol_arity_error_current("prng-random-integer requires exactly 2 arguments (prng n)");
             return nullptr;
         }
         TypedValue tv_p = codegenTypedAST(&op->call_op.variables[0]);
@@ -37591,7 +37591,7 @@ private:
      */
     Value* codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
         if (!op || op->call_op.num_vars != 2) {
-            eshkol_error("vqe-energy requires exactly a Hamiltonian and parameter vector");
+            eshkol_arity_error_current("vqe-energy requires exactly a Hamiltonian and parameter vector");
             return nullptr;
         }
 
@@ -37679,7 +37679,7 @@ private:
     // the documented [0, bound) contract.
     Value* codegenQuantumRandomInt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("quantum-random-int requires exactly 1 argument (bound)");
+            eshkol_arity_error_current("quantum-random-int requires exactly 1 argument (bound)");
             return nullptr;
         }
         Function* qrng_uint64_func = function_table["eshkol_qrng_uint64"];
@@ -37716,7 +37716,7 @@ private:
     // Quantum random range: (quantum-random-range min max) returns int in [min, max]
     Value* codegenQuantumRandomRange(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("quantum-random-range requires exactly 2 arguments (min max)");
+            eshkol_arity_error_current("quantum-random-range requires exactly 2 arguments (min max)");
             return nullptr;
         }
 
@@ -37890,7 +37890,7 @@ private:
     // (make-rectangular real imag) - Create complex from rectangular coordinates
     Value* codegenMakeRectangular(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-rectangular requires exactly 2 arguments");
+            eshkol_arity_error_current("make-rectangular requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -37910,7 +37910,7 @@ private:
     // (make-polar magnitude angle) - Create complex from polar coordinates
     Value* codegenMakePolar(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_error("make-polar requires exactly 2 arguments");
+            eshkol_arity_error_current("make-polar requires exactly 2 arguments");
             return nullptr;
         }
 
@@ -37938,7 +37938,7 @@ private:
     // (real-part z) - Extract real component
     Value* codegenRealPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("real-part requires exactly 1 argument");
+            eshkol_arity_error_current("real-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -37982,7 +37982,7 @@ private:
     // (imag-part z) - Extract imaginary component
     Value* codegenImagPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("imag-part requires exactly 1 argument");
+            eshkol_arity_error_current("imag-part requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38025,7 +38025,7 @@ private:
     // (magnitude z) - |z| = sqrt(real² + imag²)
     Value* codegenMagnitude(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("magnitude requires exactly 1 argument");
+            eshkol_arity_error_current("magnitude requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38089,7 +38089,7 @@ private:
     // (angle z) - arg(z) = atan2(imag, real)
     Value* codegenAngle(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("angle requires exactly 1 argument");
+            eshkol_arity_error_current("angle requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38145,7 +38145,7 @@ private:
     // (complex? x) - Type predicate
     Value* codegenComplexPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("complex? requires exactly 1 argument");
+            eshkol_arity_error_current("complex? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38187,7 +38187,7 @@ private:
     // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
     Value* codegenConjugate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("conjugate requires exactly 1 argument");
+            eshkol_arity_error_current("conjugate requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38238,7 +38238,7 @@ private:
     // (inject-left value) or (inject-right value) — construct sum type variant
     Value* codegenSumInject(const eshkol_operations_t* op, int tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
+            eshkol_arity_error_current("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
             return nullptr;
         }
 
@@ -38258,7 +38258,7 @@ private:
     // (sum-tag sum-val) — extract tag from sum type (0 = left, 1 = right)
     Value* codegenSumTag(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-tag requires exactly 1 argument");
+            eshkol_arity_error_current("sum-tag requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38275,7 +38275,7 @@ private:
     // (sum-value sum-val) — extract inner value from sum type
     Value* codegenSumValue(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("sum-value requires exactly 1 argument");
+            eshkol_arity_error_current("sum-value requires exactly 1 argument");
             return nullptr;
         }
 
@@ -38291,7 +38291,7 @@ private:
     // (left? sum-val) or (right? sum-val) — check sum variant
     Value* codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
+            eshkol_arity_error_current("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
             return nullptr;
         }
 
@@ -38414,7 +38414,7 @@ private:
     // Output: vector of complex numbers
     Value* codegenFFT(const eshkol_operations_t* op, bool inverse) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
+            eshkol_arity_error_current("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
             return nullptr;
         }
 
@@ -39054,7 +39054,7 @@ private:
     // Boolean predicate: checks if value is #t or #f
     Value* codegenBooleanPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("boolean? requires exactly 1 argument");
+            eshkol_arity_error_current("boolean? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -39075,7 +39075,7 @@ private:
     //   - a cons cell whose cdr is also a proper list
     Value* codegenListPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("list? requires exactly 1 argument");
+            eshkol_arity_error_current("list? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -39189,7 +39189,7 @@ private:
     // Procedure predicate: checks if value is a function
     Value* codegenProcedurePredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_error("procedure? requires exactly 1 argument");
+            eshkol_arity_error_current("procedure? requires exactly 1 argument");
             return nullptr;
         }
 
@@ -39276,7 +39276,7 @@ private:
 
     Value* codegenProcedureArity(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("procedure-arity requires exactly 1 argument");
+            eshkol_arity_error_current("procedure-arity requires exactly 1 argument");
             return nullptr;
         }
         Value* val = codegenAST(&op->call_op.variables[0]);
@@ -39316,7 +39316,7 @@ private:
     Value* codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
         const char* name = is_cdr_bit ? "set-cdr!" : "set-car!";
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("%s requires exactly 2 arguments: pair and new-value", name);
+            eshkol_arity_error_current("%s requires exactly 2 arguments: pair and new-value", name);
             return nullptr;
         }
 
@@ -40213,7 +40213,7 @@ private:
     // Production implementation: Acons (association constructor)
     Value* codegenAcons(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 3) {
-            eshkol_warn("acons requires exactly 3 arguments: key, value, and alist");
+            eshkol_arity_error_current("acons requires exactly 3 arguments: key, value, and alist");
             return nullptr;
         }
         
@@ -40248,7 +40248,7 @@ private:
     // Production implementation: Split-at function (split list at index)
     Value* codegenSplitAt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("split-at requires exactly 2 arguments: list and index");
+            eshkol_arity_error_current("split-at requires exactly 2 arguments: list and index");
             return nullptr;
         }
         
@@ -40372,7 +40372,7 @@ private:
     // and predicate-based removal: (remove even? '(1 2 3 4)) => (1 3)
     Value* codegenRemove(const eshkol_operations_t* op, const std::string& comparison_type) {
         if (op->call_op.num_vars != 2) {
-            eshkol_warn("remove requires exactly 2 arguments: item/predicate and list");
+            eshkol_arity_error_current("remove requires exactly 2 arguments: item/predicate and list");
             return nullptr;
         }
 
@@ -40595,7 +40595,7 @@ private:
     // Production implementation: Last function (return last element)
     Value* codegenLast(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last requires exactly 1 argument: list");
+            eshkol_arity_error_current("last requires exactly 1 argument: list");
             return nullptr;
         }
 
@@ -40676,7 +40676,7 @@ private:
     // Production implementation: Last-pair function (return last cons cell)
     Value* codegenLastPair(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
-            eshkol_warn("last-pair requires exactly 1 argument: list");
+            eshkol_arity_error_current("last-pair requires exactly 1 argument: list");
             return nullptr;
         }
 

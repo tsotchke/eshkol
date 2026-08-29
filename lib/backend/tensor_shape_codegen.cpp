@@ -315,7 +315,7 @@ llvm::Value* TensorCodegen::flatten(const eshkol_operations_t* op) {
     // Flatten: convert tensor to 1D
     // (flatten tensor) - all dimensions become a single dimension
     if (op->call_op.num_vars != 1) {
-        eshkol_error("flatten requires exactly 1 argument (tensor)");
+        eshkol_arity_error_current("flatten requires exactly 1 argument (tensor)");
         return nullptr;
     }
 
@@ -1012,7 +1012,7 @@ llvm::Value* TensorCodegen::slice(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     // tensor-shape: (tensor-shape tensor) -> returns dimensions as a Scheme list
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor-shape requires exactly 1 tensor argument");
+        eshkol_arity_error_current("tensor-shape requires exactly 1 tensor argument");
         return nullptr;
     }
 
@@ -1131,7 +1131,7 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::tensorLength(const eshkol_operations_t* op) {
     // tensor-length: (tensor-length tensor) -> total number of elements
     if (op->call_op.num_vars != 1) {
-        eshkol_error("tensor-length requires exactly 1 argument");
+        eshkol_arity_error_current("tensor-length requires exactly 1 argument");
         return nullptr;
     }
 
@@ -1150,7 +1150,7 @@ llvm::Value* TensorCodegen::tensorLength(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
     // transpose: (transpose tensor) - Transpose 2D matrix (swap rows and cols)
     if (op->call_op.num_vars != 1) {
-        eshkol_error("transpose requires exactly 1 argument");
+        eshkol_arity_error_current("transpose requires exactly 1 argument");
         return nullptr;
     }
 

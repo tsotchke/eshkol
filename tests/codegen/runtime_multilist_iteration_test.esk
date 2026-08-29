@@ -1,0 +1,113 @@
+;; Codegen regressions for runtime closures used by list and vector iteration.
+;; The same source is run by the native JIT, native AOT, and the bytecode VM.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name actual expected)
+  (if (equal? actual expected)
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual) (newline))))
+
+;; The procedure is a function parameter at the map call site.  Native code
+;; must use its runtime-closure path, and the VM must preserve all list args.
+(define (apply-map-2 proc a b)
+  (map proc a b))
+(define (apply-map-3 proc a b c)
+  (map proc a b c))
+(define (apply-map-4 proc a b c d)
+  (map proc a b c d))
+
+(define (add2 a b) (+ a b))
+(define (add3 a b c) (+ a b c))
+(define (add4 a b c d) (+ a b c d))
+
+(check "runtime closure map with two lists"
+       (apply-map-2 add2 '(1 2 3) '(10 20))
+       '(11 22))
+(check "runtime closure map with three lists"
+       (apply-map-3 add3 '(1 2 3) '(10 20) '(100 200 300 400))
+       '(111 222))
+(check "runtime closure map with four lists"
+       (apply-map-4 add4 '(1 2 3 4) '(10 20 30) '(100 200 300 400 500) '(1000 2000 3000 4000))
+       '(1111 2222 3333))
+
+;; A captured runtime closure exercises the same path without relying on a
+;; statically known procedure symbol.
+(define (make-offset n)
+  (lambda (a b c d) (+ a b c d n)))
+(check "captured runtime closure map with four lists"
+       (apply-map-4 (make-offset 1) '(1 2) '(10 20 30) '(100 200) '(1000 2000))
+       '(1112 2223))
+
+;; The native stdlib and VM prelude both use the generic lockstep contract for
+;; for-each.  The order check also catches a reversed or dropped cursor.
+(define for-each-seen '())
+(for-each (lambda (a b c d)
+            (set! for-each-seen
+                  (cons (+ a b c d) for-each-seen)))
+          '(1 2 3 4) '(10 20 30) '(100 200 300 400) '(1000 2000 3000 4000))
+(check "for-each with four lists stops at shortest"
+       for-each-seen
+       '(3333 2222 1111))
+
+;; vector-map and vector-for-each must pass every vector element to the same
+;; runtime closure and stop at the shortest vector.
+(define (apply-vector-map-2 proc a b)
+  (vector-map proc a b))
+(define (apply-vector-map-4 proc a b c d)
+  (vector-map proc a b c d))
+(check "runtime closure vector-map with two vectors"
+       (vector->list (apply-vector-map-2 add2 (vector 1 2 3) (vector 10 20)))
+       '(11 22))
+(check "runtime closure vector-map with four vectors"
+       (vector->list (apply-vector-map-4 add4 (vector 1 2 3 4) (vector 10 20 30)
+                                         (vector 100 200 300 400) (vector 1000 2000 3000 4000)))
+       '(1111 2222 3333))
+
+(define vector-for-each-seen '())
+(vector-for-each (lambda (a b c) (set! vector-for-each-seen
+                                       (cons (+ a b c) vector-for-each-seen)))
+                 (vector 1 2 3 4) (vector 10 20 30) (vector 100 200 300 400))
+(check "vector-for-each with three vectors stops at shortest"
+       vector-for-each-seen
+       '(333 222 111))
+
+;; Exact consumer constructor reduction: the inline (or value '()) is passed
+;; directly to hash-set! and the constructor must return its table.
+(define (make-consumer-config maybe-label)
+  (let ((config (make-hash-table)))
+    (hash-set! config "label" (or maybe-label '()))
+    (hash-set! config "items" (or #f '()))
+    config))
+(define consumer-config (make-consumer-config #f))
+(check "hash constructor preserves table"
+       (hash-table? consumer-config)
+       #t)
+
+;; Exact TUI-style scanner reduction: string-ref returns CHAR values which are
+;; compared inside an and/or chain through the numeric comparison builtin.
+(define (tui-scanner-separator? text index)
+  (and (< index (string-length text))
+       (or (= (string-ref text index) #\space)
+           (= (string-ref text index) #\tab)
+           (= (string-ref text index) #\newline))))
+(check "TUI scanner accepts space in boolean chain"
+       (tui-scanner-separator? "a b" 1)
+       #t)
+(check "TUI scanner accepts tab in boolean chain"
+       (tui-scanner-separator? "\t" 0)
+       #t)
+(check "TUI scanner rejects ordinary character"
+       (tui-scanner-separator? "abc" 1)
+       #f)
+
+(display "SUMMARY: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)

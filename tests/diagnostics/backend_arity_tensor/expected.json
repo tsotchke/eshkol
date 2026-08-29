@@ -1,0 +1,10 @@
+{
+  "description": "Tensor builtin arity failures carry the source span.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "tensor-dot requires exactly 2 arguments",
+      "span": {"file": "input.esk", "line": 2, "col": 2}
+    }
+  ]
+}
