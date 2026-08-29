@@ -1,0 +1,38 @@
+id: SW-124
+bucket: SILENT-WRONG
+subtag: hash-constructor
+family: hash-tables
+status: closed
+closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+title: "hash-set! with an inline or fallback discarded the constructed table"
+repro: >-
+  (define (make-entry value)
+    (let ((entry (make-hash-table)))
+      (hash-set! entry "value" (or value '()))
+      entry))
+  (define entry (make-entry #f))
+  (hash-table? entry)
+observed: >-
+  The native constructor returned '() instead of its hash table, with exit
+  0 and no diagnostic. The consumer therefore lost the object it had just
+  populated. The same source shape was required to stay correct on the VM.
+correct: >-
+  The constructor returns a hash table and its "value" entry contains the
+  inline-or fallback '(). hash-set! remains a three-argument mutation that
+  returns the original table on the native engine.
+observed_after: >-
+  The constructor regression passes on native JIT and AOT and on the VM
+  source and emitted-ESKB parity routes. The source-form arity diagnostic
+  also rejects malformed hash-set! calls before either backend lowers them.
+evidence: >-
+  tests/v1_2_edge_cases/hash_table_test.esk checks the constructor shape;
+  tests/vm_parity/corpus/73_hash_set_constructor_or.esk checks native
+  versus VM output; tests/diagnostics/hash_set_arity pins the fatal span.
+  Verification was run against the uncommitted worktree on old-donkey.
+close_condition: >-
+  Reopen if the constructor test returns a non-hash value, loses the
+  fallback entry, or any engine exits 0 without the expected value.
+notes: >-
+  The backend retains a fatal guard for synthesized ASTs, while parsed
+  source is rejected by the frontend so invalid arity cannot become a
+  null value or a locationless warning.

@@ -4909,6 +4909,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     std::vector<eshkol_ast_t> elements;
 
     Token token = tokenizer.nextToken();
+    const Token head_token = token;
     // Set source location from first token in the list
     stamp_node(ast, token.line, token.column);
     
@@ -10659,6 +10660,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 elements.push_back(element);
             }
+        }
+
+        // Hash mutation is a fixed-arity primitive on both engines.  Check
+        // the source form here, before backend lowering can turn a malformed
+        // call into a null value or a locationless warning.  The backend
+        // keeps a matching fatal guard for synthesized/macro-generated ASTs
+        // that do not pass through this parser branch.
+        if (first_symbol == "hash-set!" && elements.size() != 3) {
+            PARSE_ERROR_AT(head_token,
+                "hash-set! requires exactly 3 arguments (table key value); got %zu",
+                elements.size());
+            ast.type = ESHKOL_INVALID;
+            return ast;
         }
 
         // Set up operation based on type and arguments

@@ -1,0 +1,13 @@
+; Hash-table constructors must keep the table when hash-set! receives an
+; inline (or value fallback).  This runs through native LLVM and all VM
+; parity routes.
+(define key "value")
+
+(define (make-entry value)
+  (let ((entry (make-hash-table)))
+    (hash-set! entry key (or value '()))
+    entry))
+
+(define entry (make-entry #f))
+(display (hash-table? entry)) (newline)
+(display (hash-has-key? entry key)) (newline)

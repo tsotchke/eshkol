@@ -1,0 +1,10 @@
+{
+  "description": "hash-set! with two arguments is a fatal, source-spanned compile-time diagnostic.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "hash-set! requires exactly 3 arguments (table key value); got 2",
+      "span": {"file": "input.esk", "line": 2, "col": 2}
+    }
+  ]
+}

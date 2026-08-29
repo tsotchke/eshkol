@@ -122,11 +122,8 @@
 ;; JSON Value Parser (main recursive parser)
 ;; ============================================================================
 
-;; Forward declare for mutual recursion
-(define json-parse-val #f)
-
 ;; Parse array contents (after opening bracket)
-(define (json-parse-arr str pos len)
+(define (json-parse-arr str pos len parse-val)
   (define (loop p elements)
     (let ((p2 (json-skip-ws str p len)))
       (if (>= p2 len)
@@ -134,7 +131,7 @@
           (if (= (char->integer (string-ref str p2)) 93)
               (cons (reverse elements) (+ p2 1))
               ;; Parse element
-              (let ((val-result (json-parse-val str p2 len)))
+              (let ((val-result (parse-val str p2 len)))
                 (let ((p3 (json-skip-ws str (cdr val-result) len)))
                   (if (>= p3 len)
                       (cons (reverse (cons (car val-result) elements)) p3)
@@ -151,12 +148,12 @@
 ;; Parse object contents (after opening brace)
 ;; IMPORTANT: Use let for hash table to create LOCAL binding
 ;; Using define would create a GLOBAL that gets shared across recursive calls
-(define (json-parse-obj str pos len)
+(define (json-parse-obj str pos len parse-val)
   (let ((ht (make-hash-table)))
-    (json-parse-obj-loop str pos len ht)))
+    (json-parse-obj-loop str pos len ht parse-val)))
 
 ;; Helper function to parse object with given hash table
-(define (json-parse-obj-loop str p len ht)
+(define (json-parse-obj-loop str p len ht parse-val)
   (let ((p2 (json-skip-ws str p len)))
     (if (>= p2 len)
         (cons ht p2)
@@ -174,7 +171,7 @@
                        (not (= (char->integer (string-ref str p3)) 58)))
                    (cons ht p3)
                    ;; Parse value
-                   (let ((val-result (json-parse-val str (+ p3 1) len)))
+                   (let ((val-result (parse-val str (+ p3 1) len)))
                      (hash-set! ht key (car val-result))
                      (let ((p4 (json-skip-ws str (cdr val-result) len)))
                        (if (>= p4 len)
@@ -182,7 +179,7 @@
                            (let ((c4 (char->integer (string-ref str p4))))
                              (cond
                                ((= c4 44)
-                                (json-parse-obj-loop str (+ p4 1) len ht))
+                                (json-parse-obj-loop str (+ p4 1) len ht parse-val))
                                ((= c4 125)
                                 (cons ht (+ p4 1)))
                                (else
@@ -190,8 +187,8 @@
             (else
              (cons ht p2)))))))
 
-;; Implementation of json-parse-val
-(define (json-parse-val-impl str pos len)
+;; Implementation of the lexical parse-val binding.
+(define (json-parse-value-impl str pos len parse-val parse-arr parse-obj)
   (let ((p (json-skip-ws str pos len)))
     (if (>= p len)
         (cons '() p)
@@ -207,11 +204,11 @@
 
             ;; Object
             ((= c 123)
-             (json-parse-obj str (+ p 1) len))
+             (parse-obj str (+ p 1) len))
 
             ;; Array
             ((= c 91)
-             (json-parse-arr str (+ p 1) len))
+             (parse-arr str (+ p 1) len))
 
             ;; true
             ((= c 116)
@@ -245,19 +242,34 @@
             (else
              (cons '() p)))))))
 
-;; Set up forward reference
-(set! json-parse-val json-parse-val-impl)
+;; Bind the recursive parser lexically.  The helper functions receive the
+;; same parse-val binding explicitly, so no global name is ever initialized to
+;; a non-procedure and later repaired with set! during module loading.
+(define (json-parse-document str)
+  (letrec ((parse-arr
+            (lambda (s p l)
+              (json-parse-arr s p l parse-val)))
+           (parse-obj
+            (lambda (s p l)
+              (json-parse-obj s p l parse-val)))
+           (parse-val
+            (lambda (s p l)
+              (json-parse-value-impl s p l parse-val parse-arr parse-obj))))
+    (parse-val str 0 (string-length str))))
 
 ;; ============================================================================
 ;; Public API - Parsing
 ;; ============================================================================
 
-;; Parse a JSON string into an Eshkol value (legacy permissive entry).
-;; Returns the parsed value on success and a degenerate '() on partial /
-;; malformed input — callers can't distinguish "valid JSON null" from
-;; "garbage input." Kept for backwards compat; prefer json-try-parse.
+;; Parse a JSON string into an Eshkol value.  This compatibility entry point
+;; delegates to the same strict Result parser as json-try-parse and collapses
+;; an error to '(), preserving the historical return type without maintaining
+;; a second parser or a second acceptance contract.
 (define (json-parse str)
-  (car (json-parse-val str 0 (string-length str))))
+  (let ((result (json-try-parse str)))
+    (if (json-result-ok? result)
+        (json-result-value result)
+        '())))
 
 ;; ============================================================================
 ;; Result-typed parser (#246)
@@ -369,7 +381,7 @@
            (let ((struct-err (json-structural-error str len)))
              (if struct-err
                  (cons 'json-err struct-err)
-                 (let* ((result (json-parse-val str 0 len))
+                 (let* ((result (json-parse-document str))
                         (value (car result))
                         (end-pos (cdr result))
                         (after-ws (json-skip-trailing-ws str end-pos len)))

@@ -96,6 +96,19 @@
 (check "big[250] = 500" (= (hash-ref big 250 -1) 500))
 (check "big[499] = 998" (= (hash-ref big 499 -1) 998))
 
+;; ---- Constructor regression: inline `or` must not discard the table ----
+;; This is the exact consumer shape that once returned '() instead of the
+;; constructed hash table on native lowering.
+(define (make-consumer-entry value)
+  (let ((entry (make-hash-table)))
+    (hash-set! entry "value" (or value '()))
+    entry))
+(define consumer-entry (make-consumer-entry #f))
+(check "constructor with inline or returns hash table"
+       (hash-table? consumer-entry))
+(check "constructor stores inline-or fallback"
+       (null? (hash-ref consumer-entry "value" #t)))
+
 (newline)
 (display "=== Summary ===") (newline)
 (display "Passed: ") (display pass-count) (newline)

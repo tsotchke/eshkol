@@ -3828,7 +3828,7 @@ public:
                 eshkol_debug("Finalized DWARF debug info");
             }
 
-            if (fatal_codegen_error_) {
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
                 eshkol_error("Failed to generate LLVM IR due to earlier code generation errors");
                 return std::make_pair(nullptr, nullptr);
             }

@@ -392,7 +392,16 @@ void HashCodegen::requireHashTable(llvm::Value* arg, const char* func_name) {
 // (hash-set! table key value) => table
 llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 3) {
-        eshkol_warn("hash-set! requires exactly 3 arguments (table key value)");
+        // Parsed source calls are rejected in the frontend.  This guard is
+        // still required for macro/synthetic ASTs that bypass that check:
+        // an invalid operation must be an error and must stop the owning
+        // module, never return a null value that later gets packed as null.
+        eshkol_error_at(
+            ctx_.currentSourceFile().empty() ? nullptr : ctx_.currentSourceFile().c_str(),
+            ctx_.currentSourceLine(), ctx_.currentSourceColumn(), nullptr,
+            "hash-set! requires exactly 3 arguments (table key value); got %llu",
+            (unsigned long long)op->call_op.num_vars);
+        ctx_.markFatalCodegenError();
         return nullptr;
     }
 

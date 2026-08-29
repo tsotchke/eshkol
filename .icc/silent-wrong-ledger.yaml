@@ -6921,6 +6921,104 @@ entries:
       checks the same value on native and VM paths.
     caught_by: [ESH-0099, consumer-reduction, direct-measurement]
     missed_by: [icc-smoke, icc-readiness, pre-fix-stress-row]
+  - id: SW-124
+    bucket: SILENT-WRONG
+    subtag: hash-constructor
+    family: hash-tables
+    status: closed
+    closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+    title: "hash-set! with an inline or fallback discarded the constructed table"
+    repro: >-
+      (define (make-entry value)
+        (let ((entry (make-hash-table)))
+          (hash-set! entry "value" (or value '()))
+          entry))
+      (define entry (make-entry #f))
+      (hash-table? entry)
+    observed: >-
+      The native constructor returned '() instead of its hash table, with exit
+      0 and no diagnostic. The consumer therefore lost the object it had just
+      populated. The same source shape was required to stay correct on the VM.
+    correct: >-
+      The constructor returns a hash table and its "value" entry contains the
+      inline-or fallback '(). hash-set! remains a three-argument mutation that
+      returns the original table on the native engine.
+    observed_after: >-
+      The constructor regression passes on native JIT and AOT and on the VM
+      source and emitted-ESKB parity routes. The source-form arity diagnostic
+      also rejects malformed hash-set! calls before either backend lowers them.
+    evidence: >-
+      tests/v1_2_edge_cases/hash_table_test.esk checks the constructor shape;
+      tests/vm_parity/corpus/73_hash_set_constructor_or.esk checks native
+      versus VM output; tests/diagnostics/hash_set_arity pins the fatal span.
+      Verification was run against the uncommitted worktree on old-donkey.
+    close_condition: >-
+      Reopen if the constructor test returns a non-hash value, loses the
+      fallback entry, or any engine exits 0 without the expected value.
+    notes: >-
+      The backend retains a fatal guard for synthesized ASTs, while parsed
+      source is rejected by the frontend so invalid arity cannot become a
+      null value or a locationless warning.
+  - id: SW-125
+    bucket: LOUD-ERROR
+    subtag: crash
+    family: json-parser
+    status: closed
+    closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+    title: "json-parse-val was temporarily bound to #f and called as a procedure"
+    repro: >-
+      Loading core.json and parsing a valid nested JSON document could reach
+      json-parse-val while its module-global binding still held #f, producing
+      "json-parse-val is not a procedure" instead of a parse Result.
+    observed: >-
+      A valid JSON settings/session payload terminated the consumer during
+      load with a visible runtime error rather than returning a normal result.
+    correct: >-
+      Valid nested JSON returns (json-ok . value); malformed input returns
+      (json-err . message), and no parser function is ever temporarily
+      non-callable during module initialization.
+    observed_after: >-
+      The parser functions are mutually recursive lexical bindings in one
+      letrec. json-try-parse returns the single Result contract, while
+      json-parse is only a compatibility wrapper over that same parser.
+    evidence: >-
+      tests/json/json_test.esk exercises nested Result parsing, malformed
+      trailing input, and the compatibility wrapper on native JIT and AOT;
+      the source contains no global json-parse-val #f initializer or set!
+      repair. Verification was run against the uncommitted worktree on
+      old-donkey.
+    close_condition: >-
+      Reopen if a valid nested JSON parse raises, returns a non-Result from
+      json-try-parse, or a global temporary parser binding reappears.
+  - id: SW-126
+    bucket: LOUD-ERROR
+    subtag: crash
+    family: json-stringify
+    status: closed
+    closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+    title: "json-stringify crashed on nested session-message alists"
+    repro: >-
+      json-stringify of an alist-shaped session message containing a nested
+      content object and a tool_calls array of nested function objects.
+    observed: >-
+      The consumer's nested session-message reduction terminated in the JSON
+      serializer instead of producing JSON, so session persistence could not
+      complete normally.
+    correct: >-
+      The nested alists serialize as JSON objects, tool_calls remains an array,
+      nested function arguments remain an object, and the command text is
+      preserved in the resulting JSON string.
+    observed_after: >-
+      The core JSON suite serializes the exact nested session-message shape and
+      checks the complete JSON output plus the nested command field without a
+      crash.
+    evidence: >-
+      tests/json/json_test.esk section 12 contains the nested session-message
+      reduction and exact expected JSON. Verification was run against the
+      uncommitted worktree on old-donkey.
+    close_condition: >-
+      Reopen if the nested session-message test crashes, drops tool_calls or
+      function arguments, or changes the object-versus-array classification.
   - id: SW-127
     bucket: SILENT-WRONG
     status: closed

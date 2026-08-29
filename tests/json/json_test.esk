@@ -192,6 +192,48 @@
 (check "inner has value" #t (pair? (hash-keys inner)))
 
 ;; ============================================================================
+;; Section 12: Result parser and nested session-message stringify regressions
+;; ============================================================================
+(display "\n=== Section 12: Result parser and nested messages ===\n")
+
+;; json-parse is only a compatibility view over the Result parser.  Both
+;; spellings therefore share the same acceptance boundary.
+(define parsed-result (json-try-parse "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"))
+(check "json-try-parse returns Ok for nested object"
+       #t (json-result-ok? parsed-result))
+(check "json-try-parse nested message value"
+       "user"
+       (json-get (json-array-ref (json-get (json-result-value parsed-result) "messages") 0)
+                 "role"))
+(check "json-try-parse rejects trailing input"
+       #f (json-result-ok? (json-try-parse "{\"k\":1} trailing")))
+(check "json-parse compatibility wrapper collapses Err"
+       '() (json-parse "{\"k\":1} trailing"))
+
+;; Session messages are alists with nested object and array values.  In
+;; particular, tool_calls is an array containing an object containing another
+;; object; the outer list must not be mistaken for an object alist.
+(define nested-session-message
+  (list
+    (cons 'role 'assistant)
+    (cons 'content
+          (list (cons 'type 'text)
+                (cons 'text "ready")))
+    (cons 'tool_calls
+          (list
+            (list (cons 'id "call-1")
+                  (cons 'function
+                        (list (cons 'name 'bash)
+                              (cons 'arguments
+                                    (list (cons 'command "echo ready"))))))))))
+(define nested-session-json (json-stringify nested-session-message))
+(check "nested session-message stringify"
+       "{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ready\"},\"tool_calls\":[{\"id\":\"call-1\",\"function\":{\"name\":\"bash\",\"arguments\":{\"command\":\"echo ready\"}}}]}"
+       nested-session-json)
+(check "nested session-message preserves tool input"
+       #t (string-contains? nested-session-json "\"command\":\"echo ready\""))
+
+;; ============================================================================
 ;; SUMMARY
 ;; ============================================================================
 (display "\n═══════════════════════════════════════════════════════════════\n")

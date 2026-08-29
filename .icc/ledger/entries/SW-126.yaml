@@ -1,0 +1,29 @@
+id: SW-126
+bucket: LOUD-ERROR
+subtag: crash
+family: json-stringify
+status: closed
+closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+title: "json-stringify crashed on nested session-message alists"
+repro: >-
+  json-stringify of an alist-shaped session message containing a nested
+  content object and a tool_calls array of nested function objects.
+observed: >-
+  The consumer's nested session-message reduction terminated in the JSON
+  serializer instead of producing JSON, so session persistence could not
+  complete normally.
+correct: >-
+  The nested alists serialize as JSON objects, tool_calls remains an array,
+  nested function arguments remain an object, and the command text is
+  preserved in the resulting JSON string.
+observed_after: >-
+  The core JSON suite serializes the exact nested session-message shape and
+  checks the complete JSON output plus the nested command field without a
+  crash.
+evidence: >-
+  tests/json/json_test.esk section 12 contains the nested session-message
+  reduction and exact expected JSON. Verification was run against the
+  uncommitted worktree on old-donkey.
+close_condition: >-
+  Reopen if the nested session-message test crashes, drops tool_calls or
+  function arguments, or changes the object-versus-array classification.

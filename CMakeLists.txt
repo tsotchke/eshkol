@@ -7608,6 +7608,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-runtime AND
     add_subdirectory(tests/build_integration)
 endif()
 
+# Hash/JSON regressions are intentionally exercised on both native execution
+# axes.  The VM parity corpus carries the corresponding hash reduction through
+# vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
+# drifting independently.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME hash_constructor_or_jit_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/v1_2_edge_cases/hash_table_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(hash_constructor_or_jit_smoke PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME hash_constructor_or_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/hash_constructor_or_aot' tests/v1_2_edge_cases/hash_table_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/hash_constructor_or_aot'"
+    )
+    set_tests_properties(hash_constructor_or_aot_smoke PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME json_core_jit_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/json/json_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(json_core_jit_smoke PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "ALL TESTS PASSED!"
+        FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME json_core_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/json_core_aot' tests/json/json_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/json_core_aot'"
+    )
+    set_tests_properties(json_core_aot_smoke PROPERTIES
+        TIMEOUT 1200
+        PASS_REGULAR_EXPRESSION "ALL TESTS PASSED!"
+        FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
+endif()
+
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)

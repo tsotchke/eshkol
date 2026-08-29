@@ -366,6 +366,13 @@ public:
         current_source_column_ = column;
     }
 
+    // A sub-codegen can discover a fatal source error while lowering an
+    // operation.  Keep that state in the shared context so the owning
+    // compiler rejects the module even when the operation was synthesized
+    // after parsing and therefore never passed through the frontend check.
+    void markFatalCodegenError() { fatal_codegen_error_ = true; }
+    bool hasFatalCodegenError() const { return fatal_codegen_error_; }
+
     // === Mode Flags ===
 
     /** Get/set whether the module is being compiled as a library (no
@@ -494,6 +501,7 @@ private:
     std::string current_source_file_;
     uint32_t current_source_line_ = 0;
     uint32_t current_source_column_ = 0;
+    bool fatal_codegen_error_ = false;
 
     // Mode flags
     bool library_mode_ = false;

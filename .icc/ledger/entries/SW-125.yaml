@@ -1,0 +1,31 @@
+id: SW-125
+bucket: LOUD-ERROR
+subtag: crash
+family: json-parser
+status: closed
+closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e (worktree verification)"
+title: "json-parse-val was temporarily bound to #f and called as a procedure"
+repro: >-
+  Loading core.json and parsing a valid nested JSON document could reach
+  json-parse-val while its module-global binding still held #f, producing
+  "json-parse-val is not a procedure" instead of a parse Result.
+observed: >-
+  A valid JSON settings/session payload terminated the consumer during
+  load with a visible runtime error rather than returning a normal result.
+correct: >-
+  Valid nested JSON returns (json-ok . value); malformed input returns
+  (json-err . message), and no parser function is ever temporarily
+  non-callable during module initialization.
+observed_after: >-
+  The parser functions are mutually recursive lexical bindings in one
+  letrec. json-try-parse returns the single Result contract, while
+  json-parse is only a compatibility wrapper over that same parser.
+evidence: >-
+  tests/json/json_test.esk exercises nested Result parsing, malformed
+  trailing input, and the compatibility wrapper on native JIT and AOT;
+  the source contains no global json-parse-val #f initializer or set!
+  repair. Verification was run against the uncommitted worktree on
+  old-donkey.
+close_condition: >-
+  Reopen if a valid nested JSON parse raises, returns a non-Result from
+  json-try-parse, or a global temporary parser binding reappears.

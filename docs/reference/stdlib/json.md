@@ -14,16 +14,20 @@ Pure-Eshkol JSON reader/writer. Value mapping:
 | `true` / `false` | `#t` / `#f` |
 | `null` | `'()` |
 
-Because both JSON `null` and "unparseable input" map to `'()`, use
-`json-try-parse` (Result-typed) when you must distinguish them. This module is
-also summarised in [`docs/STDLIB_V1_2_API.md`](../../STDLIB_V1_2_API.md). No bugs
-were observed.
+Because both JSON `null` and an error collapsed by the compatibility wrapper map
+to `'()`, use `json-try-parse` (Result-typed) when you must distinguish them.
+Both public entry points use the same parser and acceptance rules. This module
+is also summarised in [`docs/STDLIB_V1_2_API.md`](../../STDLIB_V1_2_API.md).
 
 ## Parsing
 
 ### `(json-parse str)`
-Permissive parser: returns the parsed value, or a degenerate `'()` on malformed
-or partial input (cannot signal failure). Kept for backwards compat.
+Compatibility wrapper: returns the parsed value on success and `'()` when the
+shared parser returns an error. It is intentionally unable to distinguish an
+error from JSON `null`; callers that need that distinction must use
+`json-try-parse`. It does not maintain a separate permissive grammar, so
+partial input and trailing garbage are rejected by the same parser used by
+`json-try-parse`.
 
 ```scheme
 (require core.json)
@@ -46,7 +50,8 @@ hi
 ### `(json-try-parse str)` — Result-typed
 Returns a **Result**: `(json-ok . value)` on success, `(json-err . "reason")` on
 failure. Does structural balance checking and rejects trailing garbage, so it
-catches partial input that `json-parse` would silently accept.
+catches partial input that the compatibility wrapper would otherwise collapse
+to `'()`.
 
 ```scheme
 (define r (json-try-parse "{\"k\":1}"))

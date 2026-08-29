@@ -1,0 +1,2 @@
+;; The hash-set! arity check belongs to the frontend diagnostic path.
+(hash-set! (make-hash-table) "key")
