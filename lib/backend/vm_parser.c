@@ -73,13 +73,19 @@ typedef NodeType MacroNodeType;
 typedef struct Node MacroNode;
 #include "vm_macro.c"
 
-/* Compiler context — encapsulates all mutable state for reentrancy and REPL */
+/* Compiler context — encapsulates all mutable state for reentrancy and REPL. */
+#define VM_MAX_LOADED_MODULES 256
+#define VM_MAX_MODULE_PATH 1024
 typedef struct {
     const char* src_ptr;       /* Current parse position */
     int trace_on;              /* Trace execution flag */
     const char* eskb_output;   /* ESKB output path (--emit-eskb) */
     const char* source_path;   /* Source file path */
-    char loaded_modules[64][128]; /* Module cache for require */
+    /* Canonical paths are returned by the shared resolver. Keep the complete
+     * path and enough entries for the documented transitive module graph; a
+     * truncated or silently capped cache defeats cycle and duplicate-load
+     * protection. */
+    char loaded_modules[VM_MAX_LOADED_MODULES][VM_MAX_MODULE_PATH];
     int n_loaded;
     /* R7RS-small 5.6.1: the libraries this compilation unit defines itself.
      * A `(define-library (my lib) …)` records its dotted name here once its

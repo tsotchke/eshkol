@@ -11,6 +11,11 @@
 (define (or-a n) (if (= n 0) 0 (or #f (or-b (- n 1)))))
 (define (or-b n) (if (= n 0) 0 (or #f (or-a (- n 1)))))
 
+;; A single operand is still a tail-position expression. The first operand
+;; path is the one that previously hard-coded tail=0 and missed these cases.
+(define (and-single n) (if (= n 0) 0 (and (and-single (- n 1)))))
+(define (or-single n) (if (= n 0) 0 (or (or-single (- n 1)))))
+
 (define (let-a n) (if (= n 0) 0 (let ((next (- n 1))) (let-b next))))
 (define (let-b n) (if (= n 0) 0 (let ((next (- n 1))) (let-a next))))
 
@@ -18,5 +23,7 @@
 (display (unless-a 5000))
 (display (and-a 5000))
 (display (or-a 5000))
+(display (and-single 5000))
+(display (or-single 5000))
 (display (let-a 5000))
 (display "PASS: VM tail-position forms")

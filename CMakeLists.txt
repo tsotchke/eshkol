@@ -5542,6 +5542,29 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: VM first-class builtin families"
             FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
 
+    add_test(
+        NAME vm_first_class_builtin_arity_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && tests/integration/vm_first_class_builtin_arity_test.sh"
+    )
+    set_tests_properties(vm_first_class_builtin_arity_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity enforcement"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(
+        NAME vm_load_semantics_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/integration/vm_load_semantics_test.esk"
+    )
+    set_tests_properties(vm_load_semantics_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: VM load semantics"
+            FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+
     # Compound accessors in call position must raise exactly like their plain
     # car/cdr composition when an intermediate value is not a pair. Run the
     # same differential-by-construction family test on both engines.

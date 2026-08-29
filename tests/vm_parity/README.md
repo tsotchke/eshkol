@@ -124,7 +124,6 @@ header. Filed while building this gate, 2026-07:
 | `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
 | `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
 | `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the exit-0 half is fixed; the depth limit remains) |
-| `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
 | `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |

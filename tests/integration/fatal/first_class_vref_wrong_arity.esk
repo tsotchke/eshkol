@@ -1,0 +1,4 @@
+; A first-class vref call must reject a surplus argument.
+(define vref-value vref)
+(display (vref-value (vector 10 20) 1 99))
+(display "MUST-NOT-PRINT")

@@ -1362,7 +1362,6 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
             case HEAP_SUBTYPE_PROMISE:
             case HEAP_SUBTYPE_RATIONAL:
             case HEAP_SUBTYPE_TAYLOR:
-            case HEAP_SUBTYPE_PARAMETER:
                 break;
         }
     }
