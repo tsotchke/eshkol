@@ -6212,9 +6212,18 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME qllm_bridge_geometric_gradcheck
              COMMAND qllm_bridge_geometric_gradcheck_test)
     set_tests_properties(qllm_bridge_geometric_gradcheck PROPERTIES
-        # 3 distance + 5 exp/log + 3 geodesic + 2 structural. Pinned: a bare
-        # "0 failed" would stay green if a check silently stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 13 passed, 0 failed"
+        # 3 distance + 5 exp/log + 3 geodesic + 2 structural, then 25 for the
+        # SW-76 contract. Boundary (19): 4 near-boundary exactness (distance
+        # identity, distance FD, exp/log inverse, artanh-near-1) + 1
+        # stable near-antipodal log + 8 on/outside-boundary refusals + 3 NaN
+        # refusals + 3 geodesic slice. Curvature sign and branches: 3
+        # Poincare-only ops refusing K >= 0 and NaN + 1 K=0-was-hyperbolic + 1
+        # all-keys-off-manifold. Euclidean/spherical attention gradchecks and
+        # the VM/bridge agreement add 4 checks: adversarial reverse, stable
+        # close-distance reverse, VM softmax, and attention domain/shape cases.
+        # Pinned: a bare "0 failed" would stay green if a check silently
+        # stopped running.
+        PASS_REGULAR_EXPRESSION "Results: 44 passed, 0 failed"
     )
 endif()
 

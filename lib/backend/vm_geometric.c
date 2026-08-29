@@ -74,6 +74,35 @@ static void vm_raise_error_msg(VM* vm, const char* msg);
  * the derivation, the convergence criterion and why the gate is measured in
  * Riemannian units. */
 #include "eshkol/backend/frechet_mean_core.h"
+#include "eshkol/backend/riemannian_core.h"
+
+static double* vm_geometric_scratch(VM* vm, int n, int mult) {
+    if (n <= 0) return NULL;
+    return (double*)vm_alloc(&vm->heap.regions,
+                             (size_t)(n * mult + 2) * sizeof(double));
+}
+
+static void vm_geometric_raise(VM* vm, const char* op, const char* why, double K) {
+    char msg[320];
+    snprintf(msg, sizeof msg,
+             "%s: %s (sectional curvature K = %.17g; K < 0 is the Poincare "
+             "ball, K = 0 is Euclidean, K > 0 is the sphere)", op, why, K);
+    vm_raise_error_msg(vm, msg);
+}
+
+static int vm_geometric_validate_rows(VM* vm, const char* op,
+                                      const VmTensor* q, const VmTensor* k,
+                                      int nq, int nk, int dim, double K) {
+    for (int i = 0; i < nq; ++i) {
+        const char* why = eshkol_rm_check_point(q->data + (int64_t)i * dim, K, dim);
+        if (why) { vm_geometric_raise(vm, op, why, K); return 0; }
+    }
+    for (int j = 0; j < nk; ++j) {
+        const char* why = eshkol_rm_check_point(k->data + (int64_t)j * dim, K, dim);
+        if (why) { vm_geometric_raise(vm, op, why, K); return 0; }
+    }
+    return 1;
+}
 
 /**
  * @brief Shared implementation of native id 817 for both the portable and the
@@ -591,25 +620,51 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
     }
 
     case 809: case 842: { /* exp-map/retraction(base, tangent, curvature) */
-        (void)as_number(vm_pop(vm));
+        double K = as_number(vm_pop(vm));
         VmTensor* tangent = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
-        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, base, 1.0, tangent, 1.0));
+        if (!base || !tangent || !base->data || !tangent->data ||
+            base->total != tangent->total || base->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, base->shape, base->n_dims);
+        double* scratch = vm_geometric_scratch(vm, (int)base->total, 5);
+        if (!out || !scratch) { vm_push(vm, NIL_VAL); break; }
+        const char* why = eshkol_rm_exp_map(base->data, tangent->data, K,
+                                            (int)base->total, out->data, scratch);
+        if (why) { vm_geometric_raise(vm, fid == 842 ? "retraction" : "exp-map", why, K); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 810: case 822: { /* log-map(base, point, curvature) / spherical-log(base, point) */
-        if (fid == 810) (void)as_number(vm_pop(vm));
+        double K = fid == 810 ? as_number(vm_pop(vm)) : 1.0;
         VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
-        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, base, -1.0));
+        if (!base || !point || !base->data || !point->data ||
+            base->total != point->total || base->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, base->shape, base->n_dims);
+        double* scratch = vm_geometric_scratch(vm, (int)base->total, 5);
+        if (!out || !scratch) { vm_push(vm, NIL_VAL); break; }
+        const char* why = eshkol_rm_log_map(base->data, point->data, K,
+                                            (int)base->total, out->data, scratch);
+        if (why) { vm_geometric_raise(vm, fid == 822 ? "spherical-log" : "log-map", why, K); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 811: case 816: { /* geodesic-distance/poincare-distance(x, y, curvature) */
-        (void)as_number(vm_pop(vm));
+        double K = as_number(vm_pop(vm));
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
-        if (x && y && x->total == y->total) vm_push_float(vm, vm_tensor_distance_for_geometry(x, y));
-        else vm_push(vm, NIL_VAL);
+        if (!x || !y || !x->data || !y->data || x->total != y->total || x->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        double distance = 0.0;
+        const char* why = eshkol_rm_distance(x->data, y->data, K,
+                                             (int)x->total, &distance);
+        if (why) { vm_geometric_raise(vm, fid == 816 ? "poincare-distance" : "geodesic-distance", why, K); break; }
+        vm_push_float(vm, distance);
         break;
     }
     case 812: case 843: { /* parallel/vector transport(x, y, v, curvature) */
@@ -627,17 +682,39 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         break;
     }
     case 814: { /* mobius-add(x, y, curvature) */
-        (void)as_number(vm_pop(vm));
+        double K = as_number(vm_pop(vm));
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
-        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, x, 1.0, y, 1.0));
+        if (!x || !y || !x->data || !y->data || x->total != y->total || x->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        if (K >= 0.0) {
+            vm_geometric_raise(vm, "mobius-add", "the Mobius operation requires negative curvature", K);
+            break;
+        }
+        const char* why = eshkol_rm_check_point(x->data, K, (int)x->total);
+        if (!why) why = eshkol_rm_check_point(y->data, K, (int)y->total);
+        if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        eshkol_rm_mobius_add(x->data, y->data, eshkol_rm_ball_param(-K),
+                             (int)x->total, out->data);
+        why = eshkol_rm_require_interior(out->data, K, (int)x->total);
+        if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 815: { /* mobius-scalar-mul(r, x, curvature) */
-        (void)as_number(vm_pop(vm));
+        double K = as_number(vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
         double r = as_number(vm_pop(vm));
-        vm_push_tensor_or_nil(vm, vm_tensor_scale_for_geometry(vm, x, r));
+        if (!x || !x->data || x->total <= 0) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        const char* why = eshkol_rm_mobius_scalar(r, x->data, K,
+                                                  (int)x->total, out->data);
+        if (why) { vm_geometric_raise(vm, "mobius-scalar-mul", why, K); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 817: /* frechet-mean(points, weights, curvature) */
@@ -672,9 +749,17 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
     case 821: { /* spherical-exp(base, tangent) */
         VmTensor* tangent = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
-        VmTensor* out = vm_tensor_linear_combo_for_geometry(vm, base, 1.0, tangent, 1.0);
-        vm_tensor_normalize_for_geometry(out);
-        vm_push_tensor_or_nil(vm, out);
+        if (!base || !tangent || !base->data || !tangent->data ||
+            base->total != tangent->total || base->total <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, base->shape, base->n_dims);
+        double* scratch = vm_geometric_scratch(vm, (int)base->total, 5);
+        if (!out || !scratch) { vm_push(vm, NIL_VAL); break; }
+        const char* why = eshkol_rm_exp_map(base->data, tangent->data, 1.0,
+                                            (int)base->total, out->data, scratch);
+        if (why) { vm_geometric_raise(vm, "spherical-exp", why, 1.0); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 823: { /* spherical-project(x) */
@@ -915,7 +1000,7 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
     }
 
     case 844: { /* geodesic-attention-scores(Q, K, curvature) */
-        (void)as_number(vm_pop(vm));
+        double Kc = as_number(vm_pop(vm));
         VmTensor* k = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* q = vm_get_tensor(vm, vm_pop(vm));
         if (!q || !k || !q->data || !k->data) { vm_push(vm, NIL_VAL); break; }
@@ -924,17 +1009,19 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         int qdim = (q->n_dims >= 2) ? (int)q->shape[1] : (int)q->total;
         int kdim = (k->n_dims >= 2) ? (int)k->shape[1] : (int)k->total;
         if (qdim != kdim) { vm_push(vm, NIL_VAL); break; }
+        if (!vm_geometric_validate_rows(vm, "geodesic-attention-scores",
+                                        q, k, nq, nk, qdim, Kc)) break;
         int64_t shape[2] = {nq, nk};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         for (int i = 0; i < nq; i++) {
             for (int j = 0; j < nk; j++) {
-                double sum = 0.0;
-                for (int d = 0; d < qdim; d++) {
-                    double diff = q->data[i * qdim + d] - k->data[j * kdim + d];
-                    sum += diff * diff;
-                }
-                out->data[i * nk + j] = -sqrt(sum);
+                double distance = 0.0;
+                const char* why = eshkol_rm_distance(
+                    q->data + (int64_t)i * qdim, k->data + (int64_t)j * kdim,
+                    Kc, qdim, &distance);
+                if (why) { vm_geometric_raise(vm, "geodesic-attention-scores", why, Kc); return; }
+                out->data[i * nk + j] = -distance;
             }
         }
         VM_PUSH_TENSOR(vm, out);
@@ -978,7 +1065,7 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         break;
     }
     case 847: { /* geodesic-attention-forward(Q, K, V, curvature) */
-        (void)as_number(vm_pop(vm));
+        double Kc = as_number(vm_pop(vm));
         VmTensor* values = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* k = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* q = vm_get_tensor(vm, vm_pop(vm));
@@ -988,23 +1075,60 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         int nq = (int)q->shape[0], nk = (int)k->shape[0], dim = (int)q->shape[1];
         int vdim = (int)values->shape[1];
         if ((int)k->shape[1] != dim || (int)values->shape[0] < nk) { vm_push(vm, NIL_VAL); break; }
+        if (!isfinite(Kc) || nk <= 0 || dim <= 0 || vdim <= 0) {
+            vm_geometric_raise(vm, "geodesic-attention-forward",
+                               "curvature and tensor dimensions must be finite and positive", Kc);
+            return;
+        }
+        if (!vm_geometric_validate_rows(vm, "geodesic-attention-forward",
+                                        q, k, nq, nk, dim, Kc)) return;
+        double* scores = vm_geometric_scratch(vm, nk, 1);
+        if (!scores) { vm_push(vm, NIL_VAL); break; }
         int64_t shape[2] = {nq, vdim};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         for (int i = 0; i < nq; i++) {
+            double max_score = -HUGE_VAL;
+            for (int j = 0; j < nk; j++) {
+                double distance = 0.0;
+                const char* why = eshkol_rm_distance(
+                    q->data + (int64_t)i * dim, k->data + (int64_t)j * dim,
+                    Kc, dim, &distance);
+                if (why) { vm_geometric_raise(vm, "geodesic-attention-forward", why, Kc); return; }
+                double metric_scale = Kc < 0.0 ? sqrt(-Kc) : 1.0;
+                scores[j] = -distance / (metric_scale * sqrt((double)dim));
+                if (!isfinite(scores[j])) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                       "distance produced a non-finite attention score", Kc);
+                    return;
+                }
+                if (scores[j] > max_score) max_score = scores[j];
+            }
+            if (!isfinite(max_score)) {
+                vm_geometric_raise(vm, "geodesic-attention-forward",
+                                   "attention score maximum is not finite", Kc);
+                return;
+            }
             double wsum = 0.0;
             for (int j = 0; j < nk; j++) {
-                double dist2 = 0.0;
-                for (int d = 0; d < dim; d++) {
-                    double diff = q->data[i * dim + d] - k->data[j * dim + d];
-                    dist2 += diff * diff;
+                scores[j] = exp(scores[j] - max_score);
+                if (!isfinite(scores[j])) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                       "softmax produced a non-finite weight", Kc);
+                    return;
                 }
-                double w = exp(-sqrt(dist2));
-                wsum += w;
-                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] += w * values->data[j * vdim + d];
+                wsum += scores[j];
             }
-            if (wsum != 0.0)
-                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] /= wsum;
+            if (!(wsum > 0.0) || !isfinite(wsum)) {
+                vm_geometric_raise(vm, "geodesic-attention-forward",
+                                   "softmax produced an invalid weight sum", Kc);
+                return;
+            }
+            for (int j = 0; j < nk; j++) {
+                double w = scores[j] / wsum;
+                for (int d = 0; d < vdim; d++)
+                    out->data[i * vdim + d] += w * values->data[j * vdim + d];
+            }
         }
         VM_PUSH_TENSOR(vm, out);
         break;
