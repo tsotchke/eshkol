@@ -50,7 +50,11 @@
  *       E = |bar_y-bar_x|^2, s = 1-E/(2R^2),
  *       u_x = (bar_y-bar_x) + (E/(2R^2))*bar_x,
  *       theta = atan2(|u_x|/R, s),  d^2 = R^2 theta^2
- *       grad_x d^2 = -2 log_x(y), with the exact antipode refused.
+ *       The forward uses bar_x = R*x/|x| and bar_y = R*y/|y|. Therefore the
+ *       coordinate gradient for accepted raw inputs is
+ *       grad_x d^2 = -2*(R/|x|)*log_bar_x(bar_y), with the exact/representable
+ *       antipode refused. On-manifold inputs have |x| = R, so this reduces to
+ *       the familiar -2 log_x(y).
  *
  *   euclidean
  *       d^2 = |delta|^2, grad_x = 2*(x - y). Exact to floating point, and

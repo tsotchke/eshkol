@@ -93,15 +93,14 @@ The suite is registered in `scripts/run_all_tests.sh`, so a plain
 (`cmake --build build --target eshkol-run stdlib`); override the build tree
 with `BUILD_DIR=...`.
 
-The JSON under `golden/` is a **committed build product**: qLLM consumes it as
-a reference, so a change in the numbers must appear as a reviewable diff.
-There is no RNG anywhere in the exporters — every seed point is hardcoded and
-rescaled to an exact requested radius — so regeneration is deterministic and
-`git diff tests/qllm_oracle/golden` after a run is the drift check.
-
-The JIT (`-r`) and AOT lanes produce **byte-identical** golden vectors; this
-was verified by diffing the two output trees. The JIT lane is the one that
-writes `golden/`, so the two lanes cannot race on the same files.
+The JSON under `golden/` is a **committed independent reference**: qLLM
+consumes it as a reference, and the runner never overwrites it. The runner
+generates candidates under `.scratch/qllm-oracle` (or `ORACLE_SCRATCH_DIR`),
+validates every candidate's schema, and byte-compares `squared_distance.json`
+with its committed reference. A changed implementation therefore cannot
+refresh its own squared-distance oracle into green. Two older geometric
+goldens are schema-validated only because their host/compiler-sensitive text
+has pre-existing byte drift.
 
 ### Version pinning for qLLM consumers
 
@@ -534,7 +533,7 @@ aborts naming itself instead of returning zero, while `LEAF` rows keep
   `poincare_maps.esk`, `sheaf_ee_step.esk`, `squared_distance.esk` — one
   exporter per primitive family. Each self-checks, prints `PASS:`/`FAIL:` lines and a
   `Passed:`/`Failed:` summary, exits nonzero on failure, and writes its JSON
-  to `$QLLM_ORACLE_OUT` (default `tests/qllm_oracle/golden`).
+  to `$QLLM_ORACLE_OUT` (the runner supplies a lane-local scratch directory).
 - `golden/*.json` — the committed golden vectors.
 
 Current corpus: **82 in-language checks across 6 exporters / 10 JSON files**,

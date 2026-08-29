@@ -547,7 +547,18 @@ int main() {
         double theta = std::acos(dotv(x, y, 3) / 0.25);
         double want = 0.25 * theta * theta;
         double rel = std::fabs(r.d2 - want) / (1.0 + want);
-        report("audit: non-unit positive curvature keeps its radius", r.ok && rel < 1e-13);
+        const double off_radius_x[2] = { 1.0 + 5e-10, 0.0 };
+        const double off_radius_y[2] = { 0.0, 1.0 };
+        Run canonical = run_single(off_radius_x, off_radius_y, 2,
+                                   ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        const double pi = std::acos(-1.0);
+        double canonical_gx = -pi / (1.0 + 5e-10);
+        bool chain_ok = canonical.ok &&
+                        std::fabs(canonical.d2 - 0.25 * pi * pi) < 1e-14 &&
+                        std::fabs(canonical.gx[1] - canonical_gx) < 1e-14 &&
+                        std::fabs(canonical.gy[0] + pi) < 1e-14;
+        report("audit: non-unit positive curvature and canonicalization chain rule",
+               r.ok && rel < 1e-13 && chain_ok);
     }
 
     /* The old shared 1e-15 direction cutoff erased this valid derivative.  The
@@ -567,8 +578,18 @@ int main() {
         char detail[128];
         std::snprintf(detail, sizeof detail, "gx %.17g ref %.17g, gy %.17g ref %.17g",
                       r.gx[0], want_x[0], r.gy[0], want_y[0]);
+        const double huge_x[1] = { 0.0 };
+        const double huge_y[1] = { 5e-155 };
+        Run huge = run_single(huge_x, huge_y, 1,
+                              ESHKOL_SPACE_FORM_HYPERBOLIC, -1e308);
+        /* This is the stable Poincare value 4*asinh(1/sqrt(3))^2 / 1e308;
+         * in particular, no c*4 intermediate is allowed to overflow. */
+        const double huge_expected = 1.206948960812582e-308;
         report("audit: tiny nonzero H separation keeps its finite gradient",
-               r.ok && ex < 1e-12 && ey < 1e-12, detail);
+               r.ok && ex < 1e-12 && ey < 1e-12 && huge.ok &&
+               std::isfinite(huge.d2) &&
+               std::fabs(huge.d2 - huge_expected) / huge_expected < 1e-12,
+               detail);
     }
     {
         const double x[3] = { 0.13, -0.21, 0.17 };
@@ -595,10 +616,21 @@ int main() {
         char detail[128];
         std::snprintf(detail, sizeof detail, "d2 %.17g, gy %.17g expected %.17g",
                       r.d2, r.gx[1], expected);
-        report("audit: high-curvature tiny sphere keeps its direction gradient",
+        const double tiny_K = 9.99988867182683e-321;
+        const double tiny_R = 1.0 / std::sqrt(tiny_K);
+        const double tiny_x[2] = { tiny_R, 0.0 };
+        const double tiny_y[2] = { tiny_R * std::cos(1e-10),
+                                   tiny_R * std::sin(1e-10) };
+        Run tiny = run_single(tiny_x, tiny_y, 2,
+                              ESHKOL_SPACE_FORM_SPHERICAL, tiny_K);
+        const double tiny_expected_d2 = 1.000011132941258e300;
+        bool tiny_ok = tiny.ok && std::isfinite(tiny.d2) &&
+                       std::fabs(tiny.d2 - tiny_expected_d2) /
+                           tiny_expected_d2 < 1e-12;
+        report("audit: spherical scaling stays finite before squaring",
                r.ok && std::fabs(r.d2 - expected_d2) < 1e-45 &&
                std::fabs(r.gx[0]) < 1e-30 &&
-               std::fabs(r.gx[1] - expected) < 1e-30,
+               std::fabs(r.gx[1] - expected) < 1e-30 && tiny_ok,
                detail);
     }
 
@@ -914,9 +946,16 @@ int main() {
     }
     {
         const double y[3] = { -kSphY[0], -kSphY[1], -kSphY[2] };
+        const double exact_x[3] = { 0.9999999925494194,
+                                    0.0001220703115905053, 0.0 };
+        const double exact_y[3] = { -0.999999993480742,
+                                    -0.00012207031170419214, -0.0 };
         Run r = run_single(kSphY, y, 3,
                            ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
-        report("audit: rounded spherical antipode is refused consistently", !r.ok);
+        Run exact = run_single(exact_x, exact_y, 3,
+                               ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        report("audit: exact spherical antipodes are refused consistently",
+               !r.ok && !exact.ok);
     }
     {
         const double x[3] = { 1.0, 0.0, 0.0 };
@@ -952,9 +991,22 @@ int main() {
         Run zero = run_product(x, y, 1, &f, 1);
         f.weight = 1.0;
         Run positive = run_product(x, y, 1, &f, 1);
+        const double wx[1] = { 1e155 };
+        const double wy[1] = { -1e155 };
+        eshkol_manifold_factor_t weighted = {
+            ESHKOL_SPACE_FORM_EUCLIDEAN, 0, 1, 0.0, 1e-3 };
+        Run finite_weight = run_product(wx, wy, 1, &weighted, 1);
+        double weight_d2_rel = 1.0, weight_gx_rel = 1.0, weight_gy_rel = 1.0;
+        if (finite_weight.ok) {
+            weight_d2_rel = std::fabs(finite_weight.d2 - 4e307) / 4e307;
+            weight_gx_rel = std::fabs(finite_weight.gx[0] - 4e152) / 4e152;
+            weight_gy_rel = std::fabs(finite_weight.gy[0] + 4e152) / 4e152;
+        }
         report("audit: zero weight skips overflowing distance arithmetic",
                zero.ok && zero.d2 == 0.0 && all_exactly(zero.gx, 0.0) &&
-               all_exactly(zero.gy, 0.0) && !positive.ok);
+               all_exactly(zero.gy, 0.0) && !positive.ok && finite_weight.ok &&
+               weight_d2_rel < 1e-14 && weight_gx_rel < 1e-14 &&
+               weight_gy_rel < 1e-14);
     }
     {
         Run neg = run_single(kEucX, kEucY, 3,
