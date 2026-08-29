@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2195/3994 public symbols documented (55.0%), 1799 undocumented.
+**Coverage:** 2212/4719 public symbols documented (46.9%), 2507 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -38,7 +38,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1180/1993 symbols documented.
+1197/2718 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -59,6 +59,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/function_codegen.h`](backend/function_codegen.md) | 20 | 8 |
 | [`backend/hash_codegen.h`](backend/hash_codegen.md) | 38 | 9 |
 | [`backend/homoiconic_codegen.h`](backend/homoiconic_codegen.md) | 16 | 11 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 725 | 17 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 42 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 53 | 22 |
 | [`backend/memory_codegen.h`](backend/memory_codegen.md) | 90 | 39 |
