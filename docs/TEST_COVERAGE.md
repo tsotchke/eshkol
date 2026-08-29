@@ -12,8 +12,8 @@ across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
 **188/188** on the release cut over a **956-row** manifest (581
 `vm-supported`, 44 `native-only-justified`, 331 `gap`); the parity-backlog
-Linux remeasurement is **194/194** over the current 956-row manifest (582
-`vm-supported`, 44 `native-only-justified`, 330 `gap`) plus its 330-row
+Linux remeasurement is **194/194** over the current 956-row manifest (584
+`vm-supported`, 44 `native-only-justified`, 328 `gap`) plus its 328-row
 gap-disposition sidecar; qLLM oracle gate **10/10**; ICC readiness
 **100**, verdict `ready`. CTest, executable language coverage and the VM
 parity differential were remeasured at commit `afbaaf5b` on 2026-08-26

@@ -91,8 +91,8 @@ elu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no
 embedding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 emergency-exit	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 eof-object	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
-eq?	behavioral-divergence	tests/vm_parity/found/equal_eq_structural_false.esk	symbol identity returns #f (found/equal_eq_structural_false.esk)
-eqv?	behavioral-divergence	tests/vm_parity/found/equal_eq_structural_false.esk	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
+eq?	behavioral-divergence	tests/vm_parity/resolved/equal_eq_structural_false.esk	symbol identity returns #f (found/equal_eq_structural_false.esk)
+eqv?	behavioral-divergence	tests/vm_parity/resolved/equal_eq_structural_false.esk	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
 eval	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval/environment reflection has no VM binding
 exact	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 exact-integer?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
@@ -114,7 +114,7 @@ floor-remainder	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM
 floor/	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 flush-output-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 focal-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-force	behavioral-divergence	tests/vm_parity/found/force_returns_promise.esk	returns raw promise object (found/force_returns_promise.esk)
+force	behavioral-divergence	tests/vm_parity/resolved/force_returns_promise.esk	returns raw promise object (found/force_returns_promise.esk)
 frequency-response	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 gelu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 gradient-descent	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
@@ -173,7 +173,7 @@ null-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval
 onnx-export-tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 op:CASE_LAMBDA	behavioral-divergence	tests/vm_parity/found/case_lambda_wrong_clause.esk	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	compose undefined in VM
-op:DEFINE_SYNTAX	behavioral-divergence	tests/vm_parity/found/recursive_macro_zero.esk	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
+op:DEFINE_SYNTAX	behavioral-divergence	tests/vm_parity/resolved/recursive_macro_zero.esk	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
 op:DERIVATIVE_N	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	arbitrary-order Taylor-tower AD operator not implemented on VM surface
 op:DIFF	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
@@ -185,8 +185,8 @@ op:DNC_PRED	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc 
 op:DNC_READ	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 op:DNC_READ_GRAD	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 op:DNC_WRITE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
-op:DO	behavioral-divergence	tests/vm_parity/found/do_composition_broken.esk	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (found/do_composition_broken.esk, found/consecutive_do_state_leak.esk, found/define_after_do_corrupted.esk)
-op:DYNAMIC_WIND	behavioral-divergence	tests/vm_parity/found/dynamic_wind_after_twice.esk	after-thunk runs twice (found/dynamic_wind_after_twice.esk)
+op:DO	behavioral-divergence	tests/vm_parity/resolved/do_composition_broken.esk	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (found/do_composition_broken.esk, found/consecutive_do_state_leak.esk, found/define_after_do_corrupted.esk)
+op:DYNAMIC_WIND	behavioral-divergence	tests/vm_parity/resolved/dynamic_wind_after_twice.esk	after-thunk runs twice (found/dynamic_wind_after_twice.esk)
 op:HESSIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	returns 0 (found/ad_gradient_wrong.esk)
 op:JACOBIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
 op:KB_QUERY_PREFIX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	kb-query-prefix has no VM binding
@@ -205,7 +205,7 @@ op:SDNC_RUN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc
 op:SDNC_SET_PARAMS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:SDNC_WEIGHT_GRAD	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:TAYLOR	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	arbitrary-order Taylor-series AD operator not implemented on VM surface
-op:UNQUOTE_SPLICING	behavioral-divergence	tests/vm_parity/found/splice_middle_order.esk	mid-template splicing reorders elements (found/splice_middle_order.esk)
+op:UNQUOTE_SPLICING	behavioral-divergence	tests/vm_parity/resolved/splice_middle_order.esk	mid-template splicing reorders elements (found/splice_middle_order.esk)
 op:WHEN	behavioral-divergence	tests/vm_parity/found/when_tail_call_no_tco.esk	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
 open-output-file-append	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 outer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM

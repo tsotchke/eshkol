@@ -30,9 +30,10 @@ to miss.
   prior baseline entry.
 - **Canonical gap evidence (PR-05).** Every `gap` row in `PARITY.tsv` has a
   matching row in `tests/vm_parity/GAP_DISPOSITIONS.tsv`. The sidecar records
-  an explicit disposition, a live `found/` reproducer when one exists, or the
+  an explicit disposition, a live `found/` or reclassified `resolved/`
+  reproducer when one exists, or the
   deterministic generated probe route used for an unimplemented surface. The
-  sidecar currently contains **330** rows; `op:LET_VALUES` was promoted to
+  sidecar currently contains **328** rows; `op:LET_VALUES` was promoted to
   `vm-supported` after `corpus/28_multiple_values_complete.esk` verified both
   VM routes.
 - **Differential floor (PR-10).** `scripts/run_engine_parity_coverage.py`
@@ -83,15 +84,15 @@ statuses:
 **"Justification mandatory" is formally true (0 rows have an empty
 justification field) and substantively uneven** — corrected 2026-08-25,
 conformity audit item g2: 20 of the 44 `native-only-justified` rows share one
-boilerplate string, and roughly 55% of the 330 `gap` rows share four bulk
+boilerplate string, and roughly 55% of the 328 `gap` rows share four bulk
 strings; only a minority carry a per-symbol argument. Raising justification
 specificity across the ledger is a low-priority build item — the field is
 present and non-empty everywhere, which is what the ledger schema enforces
 today.
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 582
-`vm-supported`, 44 `native-only-justified`, 330 `gap`** (counted from
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 584
+`vm-supported`, 44 `native-only-justified`, 328 `gap`** (counted from
 `tests/vm_parity/PARITY.tsv`). The separate gap-evidence sidecar is checked by
 `scripts/canonicalize_vm_gaps.py` before the runtime stages. The three most
 recent promotions are
@@ -122,7 +123,7 @@ and entirely outside the `PARITY.tsv` ledger above — they were excused from
 the ratchet rather than entered into it. The project's own ledger (PR-02,
 `.icc/silent-wrong-ledger.yaml`) puts it plainly: "the parity accounting
 understates the real delta by about a third." Any statement of VM parity that
-cites only the 956-row breakdown (582/44/330) without this
+cites only the 956-row breakdown (584/44/328) without this
 baseline understates the gap; both numbers should be read together.
 
 ## The ratchet workflow

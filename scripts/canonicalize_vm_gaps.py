@@ -4,9 +4,10 @@
 PARITY.tsv is the status ledger, not the evidence ledger.  A ``gap`` row is
 useful only when a reader can answer two questions without guessing: what
 kind of gap is it, and what can be run to observe it?  This tool keeps those
-answers in a generated, one-row-per-gap sidecar.  Existing ``found/`` files
-are live reproducers; rows without a filed behavioural reproducer use the
-deterministic probe generator below and are explicitly marked as such.
+answers in a generated, one-row-per-gap sidecar.  Existing ``found/`` and
+reclassified ``resolved/`` files are live reproducers; rows without a filed
+behavioural reproducer use the deterministic probe generator below and are
+explicitly marked as such.
 
 The checker is intentionally build-free.  It validates the source and the
 reproducer routes before a native/VM run, so a missing or stale evidence path
@@ -24,7 +25,9 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PARITY = os.path.join(REPO, "tests", "vm_parity", "PARITY.tsv")
 DISPOSITIONS = os.path.join(REPO, "tests", "vm_parity", "GAP_DISPOSITIONS.tsv")
-FOUND_RE = re.compile(r"(?:tests/vm_parity/)?found/[A-Za-z0-9_.-]+\.esk")
+FOUND_RE = re.compile(
+    r"(?:tests/vm_parity/)?(?:found|resolved)/[A-Za-z0-9_.-]+\.esk"
+)
 VALID = {
     "behavioral-divergence",
     "native-defect",
@@ -57,6 +60,14 @@ def _found_path(justification: str) -> str | None:
     path = match.group(0)
     if not path.startswith("tests/"):
         path = "tests/vm_parity/" + path
+    # Master reclassifies agreement reproducers under resolved/ while the
+    # parity ledger retains the original found/ citation as historical
+    # evidence.  Keep that citation meaningful without resurrecting deleted
+    # files.
+    if path.startswith("tests/vm_parity/found/"):
+        resolved = path.replace("tests/vm_parity/found/", "tests/vm_parity/resolved/", 1)
+        if os.path.isfile(os.path.join(REPO, resolved)):
+            return resolved
     return path
 
 
