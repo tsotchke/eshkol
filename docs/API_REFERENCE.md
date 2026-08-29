@@ -890,7 +890,10 @@ Loads a tensor checkpoint from disk.
 ```
 
 **Type**: Serialization  
-**Returns**: Tensor on success, `()`/null-equivalent on failure
+**Returns**: Tensor on success, `()`/null-equivalent on failure. The ESKM
+magic, version, shape, payload size, complete record boundary, and CRC-32 are
+validated before the tensor is materialized; invalid or missing files emit an
+`ERROR` diagnostic.
 
 ---
 
@@ -920,7 +923,10 @@ Loads a multi-tensor checkpoint from disk.
 ```
 
 **Type**: Serialization  
-**Returns**: List of `(name . tensor)` pairs on success, `()`/null-equivalent on failure
+**Returns**: List of `(name . tensor)` pairs on success, `()`/null-equivalent
+on failure. The ESKM magic, version, shape, payload size, complete record
+boundary, and CRC-32 are validated before tensors are materialized; invalid or
+missing files emit an `ERROR` diagnostic.
 
 ---
 
@@ -1809,6 +1815,10 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 
 **Type**: File handle (opaque pointer)  
 **Implementation**: [`openInputFile()`](../lib/backend/string_io_codegen.cpp)
+
+If the path cannot be opened, `open-input-file` raises a catchable I/O error.
+Capability-policy denial remains the documented false result. `read-line`
+also raises a catchable error when given anything other than an open input port.
 
 ---
 

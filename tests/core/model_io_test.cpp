@@ -3,6 +3,7 @@
 #include "../../lib/core/arena_memory.h"
 
 #include <bit>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -14,6 +15,31 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t* data, std::size_t len) {
+    crc = ~crc;
+    for (std::size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit) {
+            const std::uint32_t mask = -(crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
+void store_u32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+    for (int i = 0; i < 4; ++i) bytes[offset + i] = static_cast<std::uint8_t>(value >> (8 * i));
+}
+
+void store_u64(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint64_t value) {
+    for (int i = 0; i < 8; ++i) bytes[offset + i] = static_cast<std::uint8_t>(value >> (8 * i));
+}
+
+void refresh_crc(std::vector<std::uint8_t>& bytes) {
+    store_u32(bytes, bytes.size() - 4,
+              crc32_update(0, bytes.data(), bytes.size() - 4));
+}
 
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << std::endl;
@@ -139,8 +165,10 @@ int main() {
     arena_t* arena = arena_create(1 << 26);
     if (!arena) return fail("failed to create arena");
 
-    const fs::path temp_root = fs::temp_directory_path() / "eshkol-model-io-test";
+    const fs::path scratch_root = fs::current_path() / ".scratch";
+    const fs::path temp_root = scratch_root / "eshkol-model-io-test";
     std::error_code ec;
+    fs::create_directories(scratch_root, ec);
     fs::remove_all(temp_root, ec);
     fs::create_directories(temp_root, ec);
 
@@ -245,6 +273,7 @@ int main() {
     }
     bytes[4] = 2;
     bytes[5] = bytes[6] = bytes[7] = 0;
+    refresh_crc(bytes);
     {
         std::ofstream output(model_path, std::ios::binary | std::ios::trunc);
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -252,6 +281,58 @@ int main() {
     eshkol_model_load_tagged(arena, &model_path_value, &load_result);
     if (load_result.type != ESHKOL_VALUE_NULL) {
         return fail("unsupported version should be rejected");
+    }
+
+    eshkol_model_save_tagged(arena, &model_path_value, &model_entries, &save_result);
+    bytes.clear();
+    {
+        std::ifstream input(model_path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }
+    store_u32(bytes, 12, 1); // Reserved flags must remain zero in ESKM v1.
+    refresh_crc(bytes);
+    {
+        std::ofstream output(model_path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    eshkol_model_load_tagged(arena, &model_path_value, &load_result);
+    if (load_result.type != ESHKOL_VALUE_NULL) {
+        return fail("nonzero reserved flags should be rejected");
+    }
+
+    eshkol_model_save_tagged(arena, &model_path_value, &model_entries, &save_result);
+    bytes.clear();
+    {
+        std::ifstream input(model_path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }
+    store_u32(bytes, 8, UINT32_MAX); // Count cannot exceed records present in the payload.
+    refresh_crc(bytes);
+    {
+        std::ofstream output(model_path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    eshkol_model_load_tagged(arena, &model_path_value, &load_result);
+    if (load_result.type != ESHKOL_VALUE_NULL) {
+        return fail("record count exceeding payload should be rejected");
+    }
+
+    eshkol_model_save_tagged(arena, &model_path_value, &model_entries, &save_result);
+    bytes.clear();
+    {
+        std::ifstream input(model_path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }
+    // First record: 16-byte header, zero name length, zero name, two dims.
+    store_u64(bytes, 24, 3); // The file contains four elements, not six.
+    refresh_crc(bytes);
+    {
+        std::ofstream output(model_path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    eshkol_model_load_tagged(arena, &model_path_value, &load_result);
+    if (load_result.type != ESHKOL_VALUE_NULL) {
+        return fail("shape whose element payload is too short should be rejected");
     }
 
     eshkol_model_save_tagged(arena, &model_path_value, &model_entries, &save_result);
