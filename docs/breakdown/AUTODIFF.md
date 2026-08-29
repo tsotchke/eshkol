@@ -344,7 +344,7 @@ per-cell oracle evidence.
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,083 | All 3 AD modes, vector calculus |
+| **AD Codegen** | [`lib/backend/autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,545 | All 3 AD modes, vector calculus |
 | **AD Runtime** | [`inc/eshkol/eshkol.h:1011-1080`](../../inc/eshkol/eshkol.h) | 70 | AD node structures, tape definition |
 | **Dual Numbers** | [`inc/eshkol/eshkol.h:212-215`](../../inc/eshkol/eshkol.h) | 4 | Forward-mode dual number struct |
 | **Type System** | [`lib/backend/type_system.cpp`](../../lib/backend/type_system.cpp) | 187 | AD type generation (dual_t, ad_node_t) |
