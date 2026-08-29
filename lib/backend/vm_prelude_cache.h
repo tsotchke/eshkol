@@ -1175,6 +1175,8 @@ static const char* prelude_local_names[] = {
     "_tensor-reduce-mean",
     "_tensor-reduce-max",
     "_tensor-reduce-min",
+    "layer-norm",
+    "scaled-dot-attention",
     "gpu-elementwise",
     "gpu-reduce",
     "linear-solve",

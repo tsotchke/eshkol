@@ -1822,6 +1822,48 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
 
     // Unpack input tensor
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "layer-norm");
+    llvm::Value* ln_dual_result_slot = nullptr;
+    llvm::BasicBlock* ln_dual_merge = nullptr;
+    const bool ln_has_dual_path = autodiff_ != nullptr;
+    if (ln_has_dual_path) {
+        llvm::Value* input_is_dual = isDualTensor(input_ptr);
+        llvm::Function* ln_fn = builder.GetInsertBlock()->getParent();
+        ln_dual_result_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_result_slot");
+        llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_dual_tensor", ln_fn);
+        llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_numeric_tensor", ln_fn);
+        ln_dual_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "ln_dual_merge", ln_fn);
+        builder.CreateCondBr(input_is_dual, dual_bb, numeric_bb);
+
+        builder.SetInsertPoint(dual_bb);
+        llvm::FunctionType* dual_type = llvm::FunctionType::get(
+            ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType()},
+            false);
+        llvm::FunctionCallee dual_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_layer_norm_dual", dual_type);
+        llvm::Value* gamma_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_gamma");
+        llvm::Value* beta_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "ln_dual_beta");
+        builder.CreateStore(tagged_.ensureTagged(gamma_val), gamma_slot);
+        builder.CreateStore(tagged_.ensureTagged(beta_val), beta_slot);
+        llvm::Value* epsilon_d = eps_arg;
+        if (eps_arg->getType() == ctx_.taggedValueType())
+            epsilon_d = tagged_.unpackDouble(eps_arg);
+        else if (eps_arg->getType()->isIntegerTy(64))
+            epsilon_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
+        llvm::Value* dual_result = builder.CreateCall(
+            dual_fn, {input_ptr, gamma_slot, beta_slot, epsilon_d},
+            "ln_dual_result");
+        builder.CreateStore(tagged_.packHeapPtr(dual_result), ln_dual_result_slot);
+        builder.CreateBr(ln_dual_merge);
+
+        builder.SetInsertPoint(numeric_bb);
+    }
     llvm::Value* in_dims_field = builder.CreateStructGEP(tensor_type, input_ptr, 0);
     llvm::Value* in_dims = builder.CreateLoad(ctx_.ptrType(), in_dims_field);
     llvm::Value* in_ndim_field = builder.CreateStructGEP(tensor_type, input_ptr, 1);
@@ -1888,7 +1930,8 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
             epsilon, eps_arg, ad_done, "ln");
         // Numeric path (dispatch leaves the builder at its numeric_path). The
         // runtime kernel decodes gamma/beta as scalar OR per-feature tensor.
-        llvm::Value* numeric_packed = emitNumericNormalize(input_val, gamma_val,
+        llvm::Value* numeric_packed = emitNumericNormalize(
+            tagged_.packHeapPtr(input_ptr), gamma_val,
             beta_val, epsilon, ln_group_len, ln_inner_stride);
         builder.CreateBr(merge_block);
         llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
@@ -1902,10 +1945,19 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "ln_result_phi");
         result_phi->addIncoming(ad_packed, ad_exit);
         result_phi->addIncoming(numeric_packed, numeric_exit);
-        return result_phi;
+        if (!ln_has_dual_path) return result_phi;
+        builder.CreateStore(result_phi, ln_dual_result_slot);
+        builder.CreateBr(ln_dual_merge);
+        builder.SetInsertPoint(ln_dual_merge);
+        return builder.CreateLoad(ctx_.taggedValueType(), ln_dual_result_slot,
+                                  "ln_result");
     }
 
-    return emitNumericNormalize(input_val, gamma_val, beta_val, epsilon,
+    /* input_ptr is the checked/coerced tensor. Passing the original Scheme
+     * vector here made the numeric runtime helper reject a perfectly valid
+     * vector even though the codegen had already normalized its type. */
+    llvm::Value* normalized_input_val = tagged_.packHeapPtr(input_ptr);
+    return emitNumericNormalize(normalized_input_val, gamma_val, beta_val, epsilon,
         ln_group_len, ln_inner_stride);
 }
 

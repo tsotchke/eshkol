@@ -862,6 +862,165 @@ static VmTensor* vm_tensor_layer_norm(VmRegionStack* rs, const VmTensor* t,
     return out;
 }
 
+/* Forward-mode tensor carrier used by transformer AD entry points.  VmTensor's
+ * ordinary data remains the primal array so existing shape/printer code keeps
+ * its ABI; dual_data carries the tangent in parallel when a dual-bearing
+ * Scheme vector crosses the tensor boundary. */
+static VmDual vm_tensor_dual_at(const VmTensor* t, int64_t index) {
+    if (t && t->dual_data) return t->dual_data[index];
+    return (VmDual){t ? t->data[index] : 0.0, 0.0};
+}
+
+static VmDual vm_tensor_dual_add(VmDual a, VmDual b) {
+    return (VmDual){a.primal + b.primal, a.tangent + b.tangent};
+}
+
+static VmDual vm_tensor_dual_sub(VmDual a, VmDual b) {
+    return (VmDual){a.primal - b.primal, a.tangent - b.tangent};
+}
+
+static VmDual vm_tensor_dual_mul(VmDual a, VmDual b) {
+    return (VmDual){a.primal * b.primal,
+                    a.tangent * b.primal + a.primal * b.tangent};
+}
+
+static VmDual vm_tensor_dual_div(VmDual a, VmDual b) {
+    double inv = 1.0 / b.primal;
+    return (VmDual){a.primal * inv,
+                    (a.tangent * b.primal - a.primal * b.tangent) * inv * inv};
+}
+
+static VmDual vm_tensor_dual_sqrt(VmDual a) {
+    double root = sqrt(a.primal);
+    return (VmDual){root, root == 0.0 ? 0.0 : a.tangent / (2.0 * root)};
+}
+
+static VmDual vm_tensor_dual_exp(VmDual a) {
+    double value = exp(a.primal);
+    return (VmDual){value, value * a.tangent};
+}
+
+/** @brief Exact first-order layer-norm evaluation for a dual tensor. */
+static VmTensor* vm_tensor_layer_norm_scalar(VmRegionStack* rs, const VmTensor* t,
+                                             double gamma, double beta, double eps) {
+    if (!t || t->n_dims < 1) return NULL;
+    VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
+    if (!out) return NULL;
+    out->dtype = t->dual_data ? VM_TENSOR_DTYPE_DUAL : t->dtype;
+    if (!t->dual_data) {
+        int64_t last_dim = t->shape[t->n_dims - 1];
+        int64_t n_slices = t->total / last_dim;
+        for (int64_t s = 0; s < n_slices; s++) {
+            double* src = t->data + s * last_dim;
+            double* dst = out->data + s * last_dim;
+            double mean = 0.0;
+            for (int64_t i = 0; i < last_dim; i++) mean += src[i];
+            mean /= (double)last_dim;
+            double var = 0.0;
+            for (int64_t i = 0; i < last_dim; i++) {
+                double d = src[i] - mean;
+                var += d * d;
+            }
+            double inv_std = 1.0 / sqrt(var / (double)last_dim + eps);
+            for (int64_t i = 0; i < last_dim; i++)
+                dst[i] = ((src[i] - mean) * inv_std) * gamma + beta;
+        }
+        return out;
+    }
+
+    out->dual_data = (VmDual*)vm_alloc(rs, (size_t)t->total * sizeof(VmDual));
+    if (!out->dual_data) return NULL;
+    int64_t width = t->shape[t->n_dims - 1];
+    int64_t groups = t->total / width;
+    for (int64_t group = 0; group < groups; group++) {
+        VmDual mean = {0.0, 0.0};
+        for (int64_t i = 0; i < width; i++)
+            mean = vm_tensor_dual_add(mean, vm_tensor_dual_at(t, group * width + i));
+        mean = vm_tensor_dual_div(mean, (VmDual){(double)width, 0.0});
+        VmDual variance = {0.0, 0.0};
+        for (int64_t i = 0; i < width; i++) {
+            VmDual centered = vm_tensor_dual_sub(
+                vm_tensor_dual_at(t, group * width + i), mean);
+            variance = vm_tensor_dual_add(variance,
+                                          vm_tensor_dual_mul(centered, centered));
+        }
+        variance = vm_tensor_dual_div(variance, (VmDual){(double)width, 0.0});
+        VmDual stddev = vm_tensor_dual_sqrt(
+            vm_tensor_dual_add(variance, (VmDual){eps, 0.0}));
+        for (int64_t i = 0; i < width; i++) {
+            int64_t index = group * width + i;
+            VmDual centered = vm_tensor_dual_sub(vm_tensor_dual_at(t, index), mean);
+            VmDual value = vm_tensor_dual_div(centered, stddev);
+            value = vm_tensor_dual_mul(value, (VmDual){gamma, 0.0});
+            value = vm_tensor_dual_add(value, (VmDual){beta, 0.0});
+            out->dual_data[index] = value;
+            out->data[index] = value.primal;
+        }
+    }
+    return out;
+}
+
+/** @brief Exact first-order scaled-dot-product attention for dual tensors. */
+static VmTensor* vm_tensor_scaled_dot_attention(VmRegionStack* rs,
+                                                const VmTensor* q,
+                                                const VmTensor* k,
+                                                const VmTensor* v,
+                                                const VmTensor* mask) {
+    if (!q || !k || !v || q->n_dims != 2 || k->n_dims != 2 || v->n_dims != 2 ||
+        q->shape[1] != k->shape[1] || q->shape[0] == 0 ||
+        k->shape[0] != v->shape[0]) return NULL;
+    int64_t seq_q = q->shape[0], seq_k = k->shape[0], d_k = q->shape[1], d_v = v->shape[1];
+    int64_t out_shape[2] = {seq_q, d_v};
+    VmTensor* out = vm_tensor_new(rs, out_shape, 2);
+    if (!out) return NULL;
+    out->dtype = (q->dual_data || k->dual_data || v->dual_data ||
+                  (mask && mask->dual_data)) ? VM_TENSOR_DTYPE_DUAL : VM_TENSOR_DTYPE_F64;
+    if (out->dtype == VM_TENSOR_DTYPE_DUAL) {
+        out->dual_data = (VmDual*)vm_alloc(rs, (size_t)out->total * sizeof(VmDual));
+        if (!out->dual_data) return NULL;
+    }
+    VmDual* scores = (VmDual*)vm_alloc(rs, (size_t)seq_q * (size_t)seq_k * sizeof(VmDual));
+    if (!scores) return NULL;
+    VmDual scale = {(double)sqrt((double)d_k), 0.0};
+    for (int64_t i = 0; i < seq_q; i++) {
+        for (int64_t j = 0; j < seq_k; j++) {
+            VmDual score = {0.0, 0.0};
+            for (int64_t x = 0; x < d_k; x++)
+                score = vm_tensor_dual_add(score,
+                    vm_tensor_dual_mul(vm_tensor_dual_at(q, i * d_k + x),
+                                       vm_tensor_dual_at(k, j * d_k + x)));
+            score = vm_tensor_dual_div(score, scale);
+            if (mask) score = vm_tensor_dual_add(score,
+                vm_tensor_dual_at(mask, i * seq_k + j));
+            scores[i * seq_k + j] = score;
+        }
+        VmDual max_score = scores[i * seq_k];
+        for (int64_t j = 1; j < seq_k; j++)
+            if (scores[i * seq_k + j].primal > max_score.primal)
+                max_score = scores[i * seq_k + j];
+        VmDual exp_sum = {0.0, 0.0};
+        for (int64_t j = 0; j < seq_k; j++) {
+            scores[i * seq_k + j] = vm_tensor_dual_exp(
+                vm_tensor_dual_sub(scores[i * seq_k + j], max_score));
+            exp_sum = vm_tensor_dual_add(exp_sum, scores[i * seq_k + j]);
+        }
+        for (int64_t j = 0; j < seq_k; j++)
+            scores[i * seq_k + j] = vm_tensor_dual_div(scores[i * seq_k + j], exp_sum);
+    }
+    for (int64_t i = 0; i < seq_q; i++) {
+        for (int64_t j = 0; j < d_v; j++) {
+            VmDual value = {0.0, 0.0};
+            for (int64_t x = 0; x < seq_k; x++)
+                value = vm_tensor_dual_add(value,
+                    vm_tensor_dual_mul(scores[i * seq_k + x],
+                                       vm_tensor_dual_at(v, x * d_v + j)));
+            out->data[i * d_v + j] = value.primal;
+            if (out->dual_data) out->dual_data[i * d_v + j] = value;
+        }
+    }
+    return out;
+}
+
 /* ══════════════════════════════════════════════════════════════════════════════
  *  Comparison
  * ══════════════════════════════════════════════════════════════════════════════*/

@@ -5308,13 +5308,14 @@ entries:
 
   - id: SW-48
     bucket: DOC-DEBT
-    status: open
+    status: closed
     family: ad/architecture
     title: "ADR-0002's dense tensor AD node has never executed: the guard admitting it is unsatisfiable, and the node it would build is routed to the scalar backward and crashes"
     bucket_justification: >-
       Not SILENT-WRONG: measured on this branch, every matmul gradient is exact
-      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal call,
-      one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE: there
+      today (2x2/3x3/4x4 checked against closed form to 1e-9, one primal
+      call, one reverse pass, zero finite differences). Not VACUOUS-ASSURANCE:
+      there
       was no green check here proving nothing, because ADR-0000's Stage-7 gate
       (`scalar_ad_nodes_from_matmul == 0`) was never implemented at all — nothing
       counted the nodes. What diverges is the ARCHITECTURE from the ADRs that
@@ -5369,31 +5370,43 @@ entries:
       a dense matmul writing plain doubles there would sever the chain at the
       next tensor op.
     interim: >-
-      The deadness is now DECLARED rather than accidental: the block is gated on
-      a named `constexpr bool kDenseTensorADNodesEnabled = false` with the three
-      blockers and the crash evidence recorded beside it, and stays compiled and
-      type-checked so it cannot bit-rot. The divergence is now MEASURED:
-      tests/ad/matmul_tape_node_count_test.esk records today's scalar node
-      counts as a shrink-only ratchet (33 / 100 / 225 for 2x2 / 3x3 / 4x4)
-      alongside exactness of the gradients, so the day the dense path lands the
-      drop is provable and a regression that inflates the tape is caught. Run by
-      scripts/run_ad_exactness_gate.sh.
+      The former deadness was replaced by a satisfiable, runtime-guarded dense
+      path.  The existing matmul ratchet and the dense differential gate now
+      measure both exactness and the tape-size reduction.
     close_condition: >-
-      recordADNodeTensor allocates tensor_gradient so its nodes reach the tensor
+      recordADNodeTensor sets tensor_value so its nodes reach the tensor
       backward; the dense node is returned as an AD-node-tagged tensor value and
       consumed by the downstream tensor ops; matmul under AD records ONE node;
       the ratchet ceilings in tests/ad/matmul_tape_node_count_test.esk drop to
       O(1) per matmul with the gradients unchanged. That is ADR-0002 Position A
-      ("dense resident tape"), scheduled for v1.6 and unstarted.
+      ("dense resident tape"), now implemented for the ADR-0002 matmul,
+      reduction and elementwise scope.
+    observed_after: >-
+      The compiled LLVM path now takes a satisfiable AD-mode branch.  Matmul,
+      tensor-sum and tensor-mean record one dense node per tensor operation;
+      dense add/sub/mul/div and their broadcast forms record AD_NODE values
+      84-91 and dispatch to the exact shape-aware VJP.  The dense gradcheck
+      covers square, non-square, one-dimensional contraction, dense chains,
+      both matmul operands, elementwise arithmetic and broadcast accumulation.
+      Its finite-difference comparisons and closed-form vectors pass, and the
+      2x2 and 6x6 matmul tape counts are both 4 under the dense lowering.
+    evidence: >-
+      tests/ad/dense_tensor_ad_gradcheck_test.esk;
+      scripts/run_dense_tensor_ad_gate.sh;
+      scripts/gate_exhaustive_dispatch.py;
+      inc/eshkol/ad_node_registry.def rows 84-91;
+      lib/backend/tensor_backward.cpp dense elementwise VJP and dispatcher
+      cases.  The dense gate runs the JIT dense and scalar lowerings and
+      requires byte-identical GRAD lines plus a smaller dense tape.
     caught_by: [architecture-audit-2026-08-25]
     missed_by: [icc-readiness, icc-smoke, ad-adversarial, ctest, vm-parity]
     notes: >-
       Checked for the same dead-guard SHAPE elsewhere: `!after_*_compute`
-      appears exactly once in the tree. conv2d, batch-norm, layer-norm,
-      attention, elementwise tensor arithmetic and the reductions do not carry a
-      dead dense block — they have no dense block at all, scalarizing through
-      recordADNodeBinary/recordADNodeUnary in live loops. So the count of this
-      bug shape is ONE; the count of tensor ops still scalarizing is all of them.
+      appears exactly once in the tree. conv2d, batch-norm, layer-norm and
+      attention do not carry a dead dense block; they remain scalarizing until
+      their own exact VJPs are routed. The dense path now covers the ADR-0002
+      matmul, reduction and elementwise scope. So the count of this specific
+      dead-guard shape is ONE.
 
   - id: SW-49
     bucket: LOUD-ERROR
@@ -6408,3 +6421,76 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+
+  - id: SW-111
+    bucket: SILENT-WRONG
+    subtag: tensor-ad
+    family: ad/tensor-transformer
+    status: closed
+    closed_at: "3ce3006c+issue-551-working-tree"
+    closed_by: "issue-551 tensor dual carrier"
+    title: "Forward dual inputs crossing transformer tensor operations were rejected or lost their tangent"
+    repro: >-
+      (define actual
+        (gradient (lambda (v)
+                    (+ (* (tensor-get v 0) (tensor-get v 0))
+                       (* 3.0 (tensor-get v 1))))
+                  #(2.0 5.0)))
+      (display actual) (newline)
+      (define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+      (define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+      (define (f x)
+        (tensor-get (scaled-dot-attention q k
+                      (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+      (display (derivative f 1.0)) (newline)
+      (define (f-ln x)
+        (tensor-get (layer-norm (vector x 2.0 3.0) 1.0 0.0 1e-5) 0))
+      (display (derivative f-ln 1.0)) (newline)
+    observed: >-
+      The generic tensor gradient returned a value that failed the expected
+      #(4.0 3.0) vector, while scaled-dot-attention and layer-norm rejected a
+      vector containing a live forward dual with "expected tensor or numeric
+      vector". Before the fix, a path that did accept the primal tensor would
+      decode its dual-bearing elements as f64 bit patterns and lose the
+      tangent, which is a wrong derivative with exit 0.
+    correct: >-
+      The generic gradient is #(4.0 3.0); the attention V derivative is 0.5
+      for the reproducer; and layer-norm returns the exact forward derivative
+      of its normalized feature. All results must match central finite
+      differences, with no rejection or silent tangent loss, on native JIT,
+      native AOT, and the VM where the documented transformer operation is
+      available.
+    root_cause: >-
+      Tensor collection coercion admitted only int64/double elements, and
+      tensor-get always loaded an element as an f64 bit pattern. Transformer
+      producers therefore either rejected a dual-bearing Scheme vector before
+      their arithmetic or severed its forward carrier at the tensor boundary.
+    fix: >-
+      Preserve a dual-bearing numeric collection as a dtype-DUAL tensor, add
+      exact forward dual implementations for scaled-dot-attention and
+      layer-norm, and make tensor-get return the tagged dual element. Add
+      matching VM carrier and transformer paths, registry declarations, and
+      executable JIT/AOT/VM regression coverage.
+    observed_after: >-
+      Native JIT and AOT each print #(4 3) for the generic tensor gradient,
+      0.5 for the attention value derivative, and
+      0.20413179969792872 for the layer-norm derivative. The attention and
+      layer-norm derivatives, including nonzero-score and middle-feature
+      adversarial placements, match central finite differences; the native
+      regression reports Results: 7 passed, 0 failed. The VM parity corpus
+      prints the same primal/derivative pairs and exits 0.
+    evidence: >-
+      CTest focused run: 4/4 passed, including dense_tensor_ad_gradcheck,
+      issue_551_tensor_transformer_dual_runtime_smoke,
+      issue_551_tensor_transformer_dual_aot_smoke, and
+      issue_551_tensor_transformer_dual_vm_smoke. Direct native JIT and AOT
+      output each reports "PASS: issue_551_tensor_transformer_dual_test";
+      direct VM output reports "PASS: issue_551_tensor_transformer_dual".
+      Full VM parity surface audit passed, and its focused corpus case passed;
+      the artifact-wide run later stopped with the node filesystem at 100%
+      (No space left on device), causing only missing-artifact cascades.
+    caught_by: [issue-551-report, direct-measurement]
+    missed_by: [ad-oracle, vm-parity, ctest]
+    notes: >-
+      Keep this entry open until both the original reproducer and adversarial
+      placements of the dual in attention and layer-norm have been executed.
