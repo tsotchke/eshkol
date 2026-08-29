@@ -8783,9 +8783,22 @@ private:
         V s(n_);
         s[0] = libm1("fabs", u[0]);
         llvm::Value* isneg = b().CreateFCmpOLT(u[0], cst(0.0));
-        llvm::Value* sgn = b().CreateSelect(isneg, cst(-1.0), cst(1.0));
+        llvm::Value* ispos = b().CreateFCmpOGT(u[0], cst(0.0));
+        llvm::Value* sgn = b().CreateSelect(isneg, cst(-1.0),
+            b().CreateSelect(ispos, cst(1.0), cst(0.0)));
         for (int k = 1; k < n_; k++) s[k] = b().CreateFMul(sgn, u[k]);
         return s;
+    }
+    V e_relu(const V& u) {
+        V s(n_);
+        llvm::Value* active = b().CreateFCmpOGT(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++) s[k] = b().CreateSelect(active, u[k], cst(0.0));
+        return s;
+    }
+    V e_sigmoid(const V& u) {
+        V one = zeros();
+        one[0] = cst(1.0);
+        return e_div(one, e_add(one, e_exp(e_neg(u))));
     }
     V e_sinh(const V& u) {
         V ep = e_exp(u), em = e_exp(e_neg(u)), s(n_);
@@ -8899,6 +8912,8 @@ private:
                 case TMONO_UOP_sinh: return e_sinh(u);
                 case TMONO_UOP_cosh: return e_cosh(u);
                 case TMONO_UOP_tanh: return e_tanh(u);
+                case TMONO_UOP_relu: return e_relu(u);
+                case TMONO_UOP_sigmoid: return e_sigmoid(u);
                 default: return {};
             }
         }

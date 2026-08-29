@@ -3343,6 +3343,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(reverse_over_taylor_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0190 (P5) in the AOT lane. P5 and P6 rewrote the SAME tower-extraction
@@ -3360,6 +3361,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(reverse_over_taylor_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: reverse-over-Taylor"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -3741,6 +3743,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_numerics_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     # ESH-0196 (P11) in the AOT lane. The file's own header says "Runs
@@ -3757,6 +3760,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_numerics_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: tower user-numerics"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     # ESH-0186 (P1) / ESH-0187 (P2): the BASE runtime Taylor tower and the
@@ -3775,6 +3779,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_tower_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: taylor tower "
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
@@ -3785,6 +3790,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_tower_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: taylor tower "
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
@@ -3796,6 +3802,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_tower_mono_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
@@ -3806,6 +3813,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(taylor_tower_mono_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: taylor tower mono==runtime"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
@@ -3882,6 +3890,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(exact_taylor_runtime_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -3892,6 +3901,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(exact_taylor_aot_smoke
         PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # SW-66: HEAP_SUBTYPE_TAYLOR's exact (COEFF_RATIONAL) representation
@@ -3912,7 +3922,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(region_evac_taylor_exact_runtime_smoke
         PROPERTIES
             TIMEOUT 300
-            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1;${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -3923,7 +3933,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(region_evac_taylor_exact_aot_smoke
         PROPERTIES
             TIMEOUT 600
-            ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+            ENVIRONMENT "ESHKOL_ARENA_POISON=1;${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: region-evac exact-Taylor deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # `hessian` over a lambda that CAPTURES free variables. A capturing lambda

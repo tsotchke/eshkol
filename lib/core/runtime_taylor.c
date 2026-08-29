@@ -34,9 +34,9 @@
  * bignum / rational, produced through Eshkol's existing exact numeric
  * tower -- lib/core/rational.c, lib/core/bignum.cpp) instead of raw
  * doubles. R7RS exactness contagion governs everything: seeding from an
- * exact point yields an exact tower; add/sub/mul/div and non-negative-
+ * exact point yields an exact tower; add/sub/mul/div and integer
  * integer pow stay exact; the moment an operand is inexact, an exact op
- * overflows the int64-limited rational substrate, or a transcendental
+ * operation cannot be represented exactly, or a transcendental
  * primitive (exp/log/sin/cos/tan/sqrt/sinh/cosh/tanh) is applied, the
  * WHOLE result tower is rebuilt as COEFF_F64 -- coefficients are never
  * mixed-tagged within one tower (design section 4/12).
@@ -213,8 +213,24 @@ static inline int tagged_is_rational(const eshkol_tagged_value_t* v) {
  */
 static inline int tagged_is_negative_exact(const eshkol_tagged_value_t* v) {
     if (tagged_is_bignum(v)) return eshkol_bignum_is_negative((eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
-    if (tagged_is_rational(v)) return eshkol_rational_numerator((void*)(uintptr_t)v->data.ptr_val) < 0;
+    if (tagged_is_rational(v)) {
+        const eshkol_rational_t* r =
+            (const eshkol_rational_t*)(uintptr_t)v->data.ptr_val;
+        return r->is_big ? eshkol_bignum_is_negative(r->big_num)
+                         : r->numerator < 0;
+    }
     return v->data.int_val < 0; /* int64 */
+}
+
+static inline int tagged_is_zero_exact(const eshkol_tagged_value_t* v) {
+    if (tagged_is_bignum(v))
+        return eshkol_bignum_is_zero((eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
+    if (tagged_is_rational(v)) {
+        const eshkol_rational_t* r =
+            (const eshkol_rational_t*)(uintptr_t)v->data.ptr_val;
+        return r->is_big ? eshkol_bignum_is_zero(r->big_num) : r->numerator == 0;
+    }
+    return v->data.int_val == 0;
 }
 
 /* Convert ANY numeric tagged value (double, int64, bignum, rational) to a
@@ -231,9 +247,8 @@ static double tagged_any_to_double(const eshkol_tagged_value_t* v) {
 /* Exact scalar binary dispatch (op: 0=add,1=sub,2=mul,3=div). Routes pure
  * integer add/sub/mul through the bignum substrate (arbitrary precision --
  * the "bignum-scale" gate), and division / any rational operand through the
- * int64-limited rational substrate; gracefully degrades to double the
- * moment an operand is already inexact, or a genuine (int64-overflowing)
- * bignum meets the rational substrate (which cannot represent it) -- this
+ * exact rational substrate; gracefully degrades to double only when the
+ * moment an operand is already inexact -- this
  * IS the exactness-contagion rule (design section 9), applied per-scalar so
  * a single coefficient's overflow doesn't require special-casing by the
  * caller: the tower-level contagion check (taylor_materialize_exact_or_demote)
@@ -250,7 +265,6 @@ static eshkol_tagged_value_t exact_binary(arena_t* arena, eshkol_tagged_value_t 
     }
 
     int a_rat = tagged_is_rational(&a), b_rat = tagged_is_rational(&b);
-    int a_big = tagged_is_bignum(&a),   b_big = tagged_is_bignum(&b);
 
     if (op != 3 && !a_rat && !b_rat) {
         /* pure-integer add/sub/mul: arbitrary precision via the bignum
@@ -259,17 +273,9 @@ static eshkol_tagged_value_t exact_binary(arena_t* arena, eshkol_tagged_value_t 
         eshkol_bignum_binary_tagged(arena, &a, &b, op, &r);
         return r;
     }
-    if (a_big || b_big) {
-        /* A genuine (int64-overflowing) bignum meeting a rational, or a
-         * bignum division -- outside the int64-limited rational substrate.
-         * Documented graceful degradation to double, exactly like the
-         * transcendental-op promotion (design section 9). */
-        double da = tagged_any_to_double(&a), db = tagged_any_to_double(&b);
-        double r;
-        switch (op) { case 0: r = da + db; break; case 1: r = da - db; break;
-                      case 2: r = da * db; break; default: r = (db != 0.0) ? da / db : 0.0; break; }
-        return eshkol_make_double(r);
-    }
+    /* The rational backend is bignum-capable.  Do not demote a bignum
+     * numerator or denominator merely because the fast int64 fields cannot
+     * hold it; that was the exactness loss in x/3 at bignum scale. */
     eshkol_tagged_value_t r;
     eshkol_rational_binary_tagged_ptr((void*)arena, &a, &b, op, &r);
     return r;
@@ -289,7 +295,7 @@ static eshkol_tagged_value_t* alloc_exact_series(arena_t* arena, int n) {
 }
 
 /* If every entry of `s` (length n) is still an exact number, materialize an
- * EXACT tower; otherwise (an intermediate op overflowed the int64-limited
+ * EXACT tower; otherwise (an intermediate op could not be represented by the
  * rational substrate) rebuild the SAME n entries as a COEFF_F64 tower --
  * a tower's coefficients are never mixed-tagged (design section 4). */
 static void taylor_materialize_exact_or_demote(arena_t* arena, const eshkol_tagged_value_t* s, int n,
@@ -617,6 +623,34 @@ static void tr_pow_const(double* s, const double* u, double r, int n) {
     }
 }
 
+#define ESH_TAYLOR_STACKN 64
+
+static void tr_relu(double* s, const double* u, int n) {
+    double sign = u[0] > 0.0 ? 1.0 : 0.0;
+    for (int k = 0; k < n; k++) s[k] = sign * u[k];
+}
+
+static void tr_sigmoid(double* s, const double* u, int n, arena_t* arena) {
+    double nb[ESH_TAYLOR_STACKN], eb[ESH_TAYLOR_STACKN], db[ESH_TAYLOR_STACKN];
+    double *nu = nb, *ex = eb, *den = db;
+    if (n > ESH_TAYLOR_STACKN) {
+        nu = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        ex = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        den = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+    }
+    tr_neg(nu, u, n);
+    tr_exp(ex, nu, n);
+    den[0] = 1.0 + ex[0];
+    for (int k = 1; k < n; k++) den[k] = ex[k];
+    /* The numerator is the constant series 1. */
+    s[0] = 1.0 / den[0];
+    for (int k = 1; k < n; k++) {
+        double acc = 0.0;
+        for (int j = 1; j <= k; j++) acc = fma(-den[j], s[k-j], acc);
+        s[k] = acc / den[0];
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 /* dual recurrences: value + first-order seed tangent (P5, ESH-0190)        */
 /* ----------------------------------------------------------------------- */
@@ -630,8 +664,6 @@ static void tr_pow_const(double* s, const double* u, double r, int n) {
 
 /* Small stack buffer avoids a heap alloc for the common orders; falls back
  * to the arena for very high K. */
-#define ESH_TAYLOR_STACKN 64
-
 /* s = convolution(a, b): s_k = sum_{j=0..k} a_j * b_{k-j}. */
 static void tr_conv(double* s, const double* a, const double* b, int n) {
     for (int k = 0; k < n; k++) {
@@ -744,6 +776,41 @@ static void ddual_pow_const(double* sv, double* st, const double* uv, const doub
     for (int k = 0; k < n; k++) st[k] = r * st[k];
 }
 
+static void ddual_relu(double* sv, double* st, const double* uv, const double* ut, int n) {
+    tr_relu(sv, uv, n);
+    double sign = uv[0] > 0.0 ? 1.0 : 0.0;
+    for (int k = 0; k < n; k++) st[k] = sign * ut[k];
+}
+
+static void ddual_sigmoid(double* sv, double* st, const double* uv, const double* ut,
+                          int n, arena_t* arena) {
+    double nb[ESH_TAYLOR_STACKN], ntb[ESH_TAYLOR_STACKN];
+    double eb[ESH_TAYLOR_STACKN], etb[ESH_TAYLOR_STACKN];
+    double db[ESH_TAYLOR_STACKN], dtb[ESH_TAYLOR_STACKN];
+    double *nu=nb, *nut=ntb, *ex=eb, *ext=etb, *den=db, *dent=dtb;
+    if (n > ESH_TAYLOR_STACKN) {
+        nu=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        nut=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        ex=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        ext=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        den=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        dent=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+    }
+    tr_neg(nu, uv, n); tr_neg(nut, ut, n);
+    ddual_exp(ex, ext, nu, nut, n);
+    den[0] = 1.0 + ex[0]; dent[0] = ext[0];
+    for (int k = 1; k < n; k++) { den[k] = ex[k]; dent[k] = ext[k]; }
+    double one[ESH_TAYLOR_STACKN], onet[ESH_TAYLOR_STACKN];
+    double *ov=one,*ot=onet;
+    if (n > ESH_TAYLOR_STACKN) {
+        ov=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+        ot=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+    }
+    ov[0]=1.0; ot[0]=0.0;
+    for (int k=1;k<n;k++) { ov[k]=0.0; ot[k]=0.0; }
+    ddual_div(sv, st, ov, ot, den, dent, n);
+}
+
 /* s = u / w : s_k = ( u_k - sum_{j=1..k} w_j * s_{k-j} ) / w_0. */
 static void tre_div(arena_t* ar, eshkol_tagged_value_t* s,
                     const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
@@ -822,14 +889,14 @@ static int operand_is_exact_for_taylor(const eshkol_tagged_value_t* tv, uint32_t
     return taylor_is_exact(t);
 }
 
-/* True iff `right`, at `active_epoch`, reduces to a plain constant
- * non-negative integer (a scalar, or a foreign-epoch tower's c[0]) -- the
- * only exponent shape the exact integer-power recurrence supports. A
+/* True iff `right`, at `active_epoch`, reduces to a plain constant integer (a
+ * scalar, or a foreign-epoch tower's c[0]) -- the exponent shape the exact
+ * integer-power recurrence supports. A
  * same-epoch tower (the exponent itself depends on the differentiation
  * variable) is intentionally left unhandled here: pow falls through to the
  * existing (inexact) general recurrence for that rare shape. */
-static int exact_pow_exponent_as_nonneg_int(const eshkol_tagged_value_t* right,
-                                            uint32_t active_epoch, int64_t* out) {
+static int exact_pow_exponent_as_int(const eshkol_tagged_value_t* right,
+                                     uint32_t active_epoch, int64_t* out) {
     esh_taylor_t* t = tagged_as_taylor(right);
     eshkol_tagged_value_t c0;
     if (t) {
@@ -841,27 +908,26 @@ static int exact_pow_exponent_as_nonneg_int(const eshkol_tagged_value_t* right,
     }
     uint8_t bt = (uint8_t)(c0.type & 0x0F);
     if (bt == ESHKOL_VALUE_INT64) {
-        if (c0.data.int_val < 0) return 0;
         *out = c0.data.int_val;
         return 1;
     }
     if (tagged_is_bignum(&c0)) {
         eshkol_bignum_t* bn = (eshkol_bignum_t*)(uintptr_t)c0.data.ptr_val;
         int64_t v;
-        if (eshkol_bignum_is_negative(bn) || !eshkol_bignum_fits_int64(bn, &v)) return 0;
+        if (!eshkol_bignum_fits_int64(bn, &v)) return 0;
         *out = v;
         return 1;
     }
     return 0; /* rational (non-integer) exponent, or inexact -- not integer-power */
 }
 
-/* s = u^p for a compile-time-unknown but RUNTIME-constant non-negative
- * integer p, via exact binary exponentiation (repeated series
+/* s = u^p for a compile-time-unknown but RUNTIME-constant integer p, via
+ * exact binary exponentiation (repeated series
  * multiplication) -- keeps monomial/polynomial derivatives exact without
  * the general real-exponent recurrence's division (which would force the
  * F64 tier for every pow, even integer ones). */
 static void taylor_pow_exact(arena_t* arena, const eshkol_tagged_value_t* left,
-                             uint32_t order_k, uint32_t epoch, uint64_t p,
+                             uint32_t order_k, uint32_t epoch, int64_t p,
                              eshkol_tagged_value_t* result) {
     int n = (int)order_k + 1;
     eshkol_tagged_value_t* u    = alloc_exact_series(arena, n);
@@ -877,7 +943,7 @@ static void taylor_pow_exact(arena_t* arena, const eshkol_tagged_value_t* left,
     for (int k = 1; k < n; k++) acc[k] = zero;
     for (int k = 0; k < n; k++) base[k] = u[k];
 
-    uint64_t e = p;
+    uint64_t e = p < 0 ? (uint64_t)(-(p + 1)) + 1u : (uint64_t)p;
     while (e > 0) {
         if (e & 1u) {
             tre_mul(arena, tmp, acc, base, n);
@@ -888,6 +954,15 @@ static void taylor_pow_exact(arena_t* arena, const eshkol_tagged_value_t* left,
             tre_mul(arena, tmp, base, base, n);
             for (int k = 0; k < n; k++) base[k] = tmp[k];
         }
+    }
+    if (p < 0) {
+        /* 1/(u^|p|), with the same exact division recurrence used by the
+         * ordinary exact tower.  The caller has already established that the
+         * base point is nonzero, so this remains an exact rational series. */
+        for (int k = 0; k < n; k++) base[k] = eshkol_make_int64(0, true);
+        base[0] = eshkol_make_int64(1, true);
+        tre_div(arena, tmp, base, acc, n);
+        for (int k = 0; k < n; k++) acc[k] = tmp[k];
     }
     taylor_materialize_exact_or_demote(arena, acc, n, order_k, epoch, result);
 }
@@ -1019,7 +1094,7 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
  *      propagated via the ddual_* recurrences (or tr_add/tr_sub for
  *      add/sub, which are already linear).
  *   2. Exact-coefficient path, when both operands are exact at the active
- *      epoch (P6/ESH-0191): add/sub/mul/div and non-negative-integer pow
+ *      epoch (P6/ESH-0191): add/sub/mul/div and integer pow
  *      stay exact via taylor_binary_exact()/taylor_pow_exact(); any other
  *      op/exponent shape falls through to the next tier.
  *   3. General COEFF_F64 path: normalises both operands to raw double
@@ -1101,11 +1176,11 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     }
 
     /* P6 (ESH-0191): exact-coefficient dispatch. add/sub/mul/div and
-     * non-negative-integer pow stay exact when BOTH operands are exact at
+     * integer pow stay exact when BOTH operands are exact at
      * this epoch (a same-epoch exact tower, an exact scalar, or a
      * foreign-epoch exact tower lifted as a constant, section 5a); any
      * other operand/op shape falls through to the unchanged F64 kernel
-     * below (a real/negative pow, or any inexact operand -- the R7RS
+     * below (a real/non-constant pow, or any inexact operand -- the R7RS
      * contagion rule, design section 9). */
     if (operand_is_exact_for_taylor(left, epoch) && operand_is_exact_for_taylor(right, epoch)) {
         if (op == ESH_TAYLOR_OP_add || op == ESH_TAYLOR_OP_sub ||
@@ -1115,9 +1190,16 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
         }
         if (op == ESH_TAYLOR_OP_pow) {
             int64_t p;
-            if (exact_pow_exponent_as_nonneg_int(right, epoch, &p)) {
-                taylor_pow_exact(arena, left, order_k, epoch, (uint64_t)p, result);
-                return;
+            if (exact_pow_exponent_as_int(right, epoch, &p) && p >= -4096 && p <= 4096) {
+                eshkol_tagged_value_t base0;
+                normalise_operand_exact(left, epoch, &base0, 1);
+                /* zero is valid only for non-negative powers; a negative
+                 * power remains on the general path at the singularity. */
+                if (tagged_is_exact_number(&base0) &&
+                    (p >= 0 || !tagged_is_zero_exact(&base0))) {
+                    taylor_pow_exact(arena, left, order_k, epoch, p, result);
+                    return;
+                }
             }
             /* non-integer / negative / non-constant exponent: fall through
              * to the general (inexact) pow recurrence below. */
@@ -1281,6 +1363,8 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
                 }
                 break;
             }
+            case ESH_TAYLOR_UOP_relu: ddual_relu(ov, ot, uv, ut, n); break;
+            case ESH_TAYLOR_UOP_sigmoid: ddual_sigmoid(ov, ot, uv, ut, n, arena); break;
             default: memcpy(ov, uv, (size_t)n*sizeof(double)); memcpy(ot, ut, (size_t)n*sizeof(double)); break;
         }
         *result = taylor_to_tagged(out);
@@ -1294,20 +1378,26 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
      * exp(1) is irrational) -- those fall through to the unchanged F64
      * kernel below, which is the documented graceful promotion (design
      * section 9); normalise_operand demotes the exact input correctly. */
-    if (t && taylor_is_exact(t) && (op == ESH_TAYLOR_UOP_neg || op == ESH_TAYLOR_UOP_abs)) {
+    if (t && taylor_is_exact(t) && (op == ESH_TAYLOR_UOP_neg ||
+                                    op == ESH_TAYLOR_UOP_abs ||
+                                    op == ESH_TAYLOR_UOP_relu)) {
         const eshkol_tagged_value_t* u = taylor_exact_c_const(t);
         eshkol_tagged_value_t* s = alloc_exact_series(arena, n);
         if (!s) { *result = eshkol_make_double(0.0); return; }
         if (op == ESH_TAYLOR_UOP_neg) {
             eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
             for (int k = 0; k < n; k++) s[k] = exact_sub(arena, zero, u[k]);
-        } else { /* abs: sign is fixed by c[0]'s sign (a truncated series
+        } else { /* abs/relu: sign is fixed by c[0]'s sign (a truncated series
                   * around x0 -- the classic |x| kink at x0=0 is a pre-existing,
                   * documented limitation of this recurrence, unchanged from
                   * the F64 tr_* version above). */
             int neg0 = tagged_is_negative_exact(&u[0]);
+            int zero0 = tagged_is_zero_exact(&u[0]);
+            int active = op == ESH_TAYLOR_UOP_relu;
             eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
-            for (int k = 0; k < n; k++) s[k] = neg0 ? exact_sub(arena, zero, u[k]) : u[k];
+            for (int k = 0; k < n; k++)
+                s[k] = active ? ((neg0 || zero0) ? zero : u[k])
+                              : (zero0 ? zero : (neg0 ? exact_sub(arena, zero, u[k]) : u[k]));
         }
         taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result);
         return;
@@ -1358,11 +1448,13 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
         }
         case ESH_TAYLOR_UOP_sqrt: tr_pow_const(out->c, u, 0.5, n); break;
         case ESH_TAYLOR_UOP_abs: {
-            double sgn = (u[0] < 0.0) ? -1.0 : 1.0;
+            double sgn = (u[0] < 0.0) ? -1.0 : (u[0] > 0.0 ? 1.0 : 0.0);
             out->c[0] = fabs(u[0]);
             for (int k = 1; k < n; k++) out->c[k] = sgn * u[k];
             break;
         }
+        case ESH_TAYLOR_UOP_relu: tr_relu(out->c, u, n); break;
+        case ESH_TAYLOR_UOP_sigmoid: tr_sigmoid(out->c, u, n, arena); break;
         case ESH_TAYLOR_UOP_sinh: {
             /* sinh(u) = (exp(u) - exp(-u))/2 */
             double eb[ESH_TAYLOR_STACKN], nb[ESH_TAYLOR_STACKN], mb[ESH_TAYLOR_STACKN];

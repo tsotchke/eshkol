@@ -274,6 +274,16 @@ double vm_rational_to_double(const VmRational *r) {
     return (double)r->num / (double)r->denom;
 }
 
+int vm_rational_is_zero(const VmRational *r) {
+    if (!r) return 0;
+    return r->is_big ? bignum_is_zero(r->big_num) : r->num == 0;
+}
+
+int vm_rational_sign(const VmRational *r) {
+    if (!r || vm_rational_is_zero(r)) return 0;
+    return r->is_big ? bignum_sign(r->big_num) : (r->num < 0 ? -1 : 1);
+}
+
 /* ============================================================================
  * Arithmetic: __int128_t intermediates, NULL on overflow
  * ============================================================================ */

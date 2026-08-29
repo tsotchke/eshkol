@@ -14507,6 +14507,12 @@ private:
         if (func_name == "<=") return codegenComparison(op, "le");
         if (func_name == ">=") return codegenComparison(op, "ge");
         
+        // Scalar activations share the numeric dispatch with the tensor names.
+        // In particular, a Taylor carrier must not be handed to the tensor
+        // implementation, which only understands tensor layout.
+        if (func_name == "relu") return codegenActivationFunction(op, true);
+        if (func_name == "sigmoid") return codegenActivationFunction(op, false);
+
         // Handle math functions with dual number support (Phase 2)
         if (func_name == "sin") return codegenMathFunction(op, "sin");
         if (func_name == "cos") return codegenMathFunction(op, "cos");
@@ -21745,6 +21751,82 @@ private:
         return builder->CreateLoad(tagged_value_type, mf_cpx_slot);
     }
 
+    Value* codegenActivationFunction(const eshkol_operations_t* op, bool relu) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("%s requires exactly 1 argument", relu ? "relu" : "sigmoid");
+            return nullptr;
+        }
+        TypedValue arg_tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (!arg_tv.llvm_value) return nullptr;
+        Value* arg = autodiff_->maybeJetLiftTapeOperand(typedValueToTaggedValue(arg_tv));
+        Value* base = getBaseType(getTaggedValueType(arg));
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* twr_bb = BasicBlock::Create(*context, relu ? "relu_taylor" : "sigmoid_taylor", fn);
+        BasicBlock* check_callable = BasicBlock::Create(*context, relu ? "relu_check_callable" : "sigmoid_check_callable", fn);
+        BasicBlock* check_ad = BasicBlock::Create(*context, relu ? "relu_check_ad" : "sigmoid_check_ad", fn);
+        BasicBlock* ad_bb = BasicBlock::Create(*context, relu ? "relu_ad" : "sigmoid_ad", fn);
+        BasicBlock* dual_check = BasicBlock::Create(*context, relu ? "relu_dual_check" : "sigmoid_dual_check", fn);
+        BasicBlock* dual_bb = BasicBlock::Create(*context, relu ? "relu_dual" : "sigmoid_dual", fn);
+        BasicBlock* regular_bb = BasicBlock::Create(*context, relu ? "relu_regular" : "sigmoid_regular", fn);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, relu ? "relu_merge" : "sigmoid_merge", fn);
+        Value* is_twr = isHeapSubtype(arg, HEAP_SUBTYPE_TAYLOR);
+        Value* is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        Value* is_dual = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
+        builder->CreateCondBr(is_twr, twr_bb, check_callable);
+
+        builder->SetInsertPoint(twr_bb);
+        Value* twr_result = arith_->emitTaylorUnaryCall(arg, relu ? 11 : 12);
+        builder->CreateBr(merge_bb);
+        BasicBlock* twr_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(check_callable);
+        builder->CreateCondBr(is_callable, check_ad, dual_check);
+        builder->SetInsertPoint(check_ad);
+        Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+        builder->CreateCondBr(is_ad, ad_bb, dual_check);
+        builder->SetInsertPoint(ad_bb);
+        Value* ad_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), PointerType::getUnqual(*context));
+        Value* ad_node = recordADNodeUnary(relu ? 12 : 13, ad_ptr);
+        Value* ad_result = packPtrToTaggedValue(builder->CreatePtrToInt(ad_node, int64_type), ESHKOL_VALUE_CALLABLE);
+        builder->CreateBr(merge_bb);
+        BasicBlock* ad_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(dual_check);
+        builder->CreateCondBr(is_dual, dual_bb, regular_bb);
+        builder->SetInsertPoint(dual_bb);
+        Value* dual_result = relu
+            ? autodiff_->dualRelu(unpackDualFromTaggedValue(arg))
+            : autodiff_->dualSigmoid(unpackDualFromTaggedValue(arg));
+        Value* tagged_dual = packDualToTaggedValue(dual_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* dual_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(regular_bb);
+        Value* value = arith_->extractAsDouble(arg);
+        Value* regular_result;
+        if (relu) {
+            Value* active = builder->CreateFCmpOGT(value, ConstantFP::get(double_type, 0.0));
+            regular_result = packDoubleToTaggedValue(builder->CreateSelect(active, value, ConstantFP::get(double_type, 0.0)));
+        } else {
+            Function* exp_fn = module->getFunction("exp");
+            if (!exp_fn) exp_fn = Function::Create(FunctionType::get(double_type, {double_type}, false),
+                Function::ExternalLinkage, "exp", module.get());
+            Value* denominator = builder->CreateFAdd(ConstantFP::get(double_type, 1.0),
+                builder->CreateCall(exp_fn, {builder->CreateFNeg(value)}));
+            regular_result = packDoubleToTaggedValue(builder->CreateFDiv(ConstantFP::get(double_type, 1.0), denominator));
+        }
+        builder->CreateBr(merge_bb);
+        BasicBlock* regular_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 4, relu ? "relu_result" : "sigmoid_result");
+        result->addIncoming(twr_result, twr_exit);
+        result->addIncoming(ad_result, ad_exit);
+        result->addIncoming(tagged_dual, dual_exit);
+        result->addIncoming(regular_result, regular_exit);
+        return result;
+    }
+
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
     // for numeric types (int64, double, bignum)
     Value* codegenAbs(const eshkol_operations_t* op) {
@@ -21777,11 +21859,25 @@ private:
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* ad_node_path = BasicBlock::Create(*context, "abs_ad_node", current_func);
+        BasicBlock* check_taylor = BasicBlock::Create(*context, "abs_check_taylor", current_func);
+        BasicBlock* taylor_path = BasicBlock::Create(*context, "abs_taylor", current_func);
         BasicBlock* check_dual = BasicBlock::Create(*context, "abs_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "abs_dual", current_func);
         BasicBlock* numeric_path = BasicBlock::Create(*context, "abs_numeric", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
 
+        // Taylor towers must stay intact: the ordinary numeric abs dispatcher
+        // sees only a heap pointer and would send the tower into the bignum
+        // arm. Route it through the same Taylor kernel as fabs/other math.
+        builder->CreateCondBr(arith_->emitIsTaylorSingle(arg_tagged),
+                              taylor_path, check_taylor);
+
+        builder->SetInsertPoint(taylor_path);
+        Value* taylor_result = arith_->emitTaylorUnaryCall(arg_tagged, 7);
+        builder->CreateBr(merge);
+        BasicBlock* taylor_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(check_taylor);
         // First check for AD node
         builder->CreateCondBr(arg_is_ad_node, ad_node_path, check_dual);
 
@@ -21815,7 +21911,8 @@ private:
 
         // Merge paths
         builder->SetInsertPoint(merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "abs_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "abs_result");
+        result_phi->addIncoming(taylor_result, taylor_exit);
         result_phi->addIncoming(ad_result, ad_node_exit);
         result_phi->addIncoming(tagged_dual_result, dual_exit);
         result_phi->addIncoming(numeric_result, numeric_exit);

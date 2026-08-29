@@ -168,6 +168,8 @@ VmRational* vm_rational_from_bignum(VmRegionStack *rs, VmBignum *n);
 VmRational* vm_rational_from_int(VmArena *arena, int64_t n);
 VmRational* vm_rational_make(VmArena *arena, int64_t num, int64_t denom);
 double      vm_rational_to_double(const VmRational *r);
+int         vm_rational_is_zero(const VmRational *r);
+int         vm_rational_sign(const VmRational *r);
 
 /* ── Forward-mode dual: exact seed and exact extraction (SW-85) ──
  * The only cross-translation-unit surface the exact halves need. Everything

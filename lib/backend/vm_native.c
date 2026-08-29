@@ -7772,6 +7772,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         if (a.type == VAL_DUAL || b.type == VAL_DUAL) {
+            VmDual* ad_ptr = a.type == VAL_DUAL
+                ? (VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr : NULL;
+            VmDual* bd_ptr = b.type == VAL_DUAL
+                ? (VmDual*)vm->heap.objects[b.as.ptr]->opaque.ptr : NULL;
+            /* A Taylor tower is a complete coefficient series. Selection
+             * operators must select that original carrier, not reconstruct a
+             * first-order dual and discard c[2..K]. */
+            if ((ad_ptr && vm_dual_is_taylor(ad_ptr)) ||
+                (bd_ptr && vm_dual_is_taylor(bd_ptr))) {
+                double ap = ad_ptr && vm_dual_is_taylor(ad_ptr)
+                    ? vm_dual_taylor_coeff(ad_ptr, 0) : as_number_vm(vm, a);
+                double bp = bd_ptr && vm_dual_is_taylor(bd_ptr)
+                    ? vm_dual_taylor_coeff(bd_ptr, 0) : as_number_vm(vm, b);
+                int pick_left = want_max ? (ap >= bp) : (ap <= bp);
+                vm_push(vm, pick_left ? a : b);
+                break;
+            }
             VmDual ad = {as_number_vm(vm,a), 0.0};
             VmDual bd = {as_number_vm(vm,b), 0.0};
             if (a.type == VAL_DUAL) ad = *(VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
@@ -9468,6 +9485,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 462: case 463: case 464: case 465: case 466: case 467: case 468: { /* activations: relu,sigmoid,tanh,leaky_relu,elu,gelu,swish */
         Value t_val = vm_pop(vm);
+        if (t_val.type == VAL_DUAL && (fid == 462 || fid == 464)) {
+            VmDual* input = (VmDual*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+            VmDual* output = (fid == 462)
+                ? vm_dual_relu(&vm->heap.regions, input)
+                : vm_dual_sigmoid(&vm->heap.regions, input);
+            if (!output) { vm_push(vm, NIL_VAL); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, output);
+            break;
+        }
         /* Scalar fallback: tensors now have dedicated VAL_TENSOR type.
          * Plain VAL_INT and VAL_FLOAT are genuine scalars. */
         int is_tensor_or_vector = (t_val.type == VAL_TENSOR || t_val.type == VAL_VECTOR);
@@ -14867,7 +14893,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
     case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
-    case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break; vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
+    case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break;
+        if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 387); break; }
+        vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
     case 726: { /* write-line */
         Value s = vm_pop(vm);
         if (s.type == VAL_STRING) { VmString* vs = (VmString*)vm->heap.objects[s.as.ptr]->opaque.ptr;

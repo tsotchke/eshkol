@@ -206,7 +206,12 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : 1;
     if (b->kind == VM_DUAL_KIND_TAYLOR && b->order > n) n = b->order;
     int exact = dual_exact_operand(a) && dual_exact_operand(b);
-    if (op == '/' && taylor_coeff_as_double(b, 0) == 0.0) exact = 0;
+    /* Test exact denominators as exact values.  Very small nonzero rationals
+     * round to 0.0, so a double comparison would silently discard exactness. */
+    if (op == '/' && exact) {
+        VmRational* denominator = taylor_coeff_as_exact(b, 0);
+        if (!denominator || vm_rational_is_zero(denominator)) exact = 0;
+    }
     VmDual* r = taylor_alloc(rs, n, exact);
     if (!r) return NULL;
     for (uint32_t k = 0; k <= n; k++) {
@@ -264,9 +269,13 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
     if (op == 0) { /* neg */
         for (uint32_t k=0;k<=n;k++) r->coeff[k] = -taylor_coeff_as_double(a,k);
     } else if (op == 1 || op == 2) { /* abs / relu */
-        double s = op == 2 ? (u0 > 0.0 ? 1.0 : 0.0) : (u0 < 0.0 ? -1.0 : 1.0);
-        if (op == 2 && u0 <= 0.0) s = 0.0;
-        for (uint32_t k=0;k<=n;k++) r->coeff[k] = s * taylor_coeff_as_double(a,k);
+        /* abs has one sign for the complete series, not one abs() per
+         * coefficient.  Both abs and ReLU use the zero subgradient at 0. */
+        double s = op == 2 ? (u0 > 0.0 ? 1.0 : 0.0)
+                           : (u0 > 0.0 ? 1.0 : (u0 < 0.0 ? -1.0 : 0.0));
+        for (uint32_t k=0;k<=n;k++)
+            r->coeff[k] = (k == 0 && op == 1) ? fabs(u0)
+                                              : s * taylor_coeff_as_double(a,k);
     } else if (op == 3) { /* exp */
         r->coeff[0] = exp(u0);
         for (uint32_t k=1;k<=n;k++) {
@@ -285,8 +294,10 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
                 sum += i*taylor_coeff_as_double(a,i)*other[k-i];
                 osum += i*taylor_coeff_as_double(a,i)*r->coeff[k-i];
             }
-            r->coeff[k] = sum/k;
-            other[k] = -osum/k;
+            /* For sin, r'=other and other'=-r.  For cos the roles are
+             * reversed: r'=-other and other'=r. */
+            r->coeff[k] = (op == 4 ? sum : -sum) / k;
+            other[k] = (op == 4 ? -osum : osum) / k;
         }
     } else if (op == 6) { /* log */
         r->coeff[0] = log(u0);
@@ -313,8 +324,13 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
             VmRational* out = NULL;
             if (op == 0) out = vm_rational_negate_exact(rs, in);
             else if (op == 1 || op == 2) {
-                if (op == 2 && u0 <= 0.0) out = vm_rational_from_int(vm_active_arena(rs), 0);
-                else out = vm_rational_absolute_exact(rs, in);
+                if (op == 2 && u0 <= 0.0)
+                    out = vm_rational_from_int(vm_active_arena(rs), 0);
+                else if (op == 1) {
+                    int sign = vm_rational_sign(taylor_coeff_as_exact(a, 0));
+                    out = sign < 0 ? vm_rational_negate_exact(rs, in) :
+                          (sign > 0 ? in : vm_rational_from_int(vm_active_arena(rs), 0));
+                } else out = vm_rational_absolute_exact(rs, in);
             }
             if (!out) { r->exact_coeff = NULL; break; }
             r->exact_coeff[k] = out;
@@ -324,7 +340,7 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
     return r;
 }
 
-static VmDual* taylor_pow_integer(VmRegionStack* rs, const VmDual* a, uint64_t k) {
+static VmDual* taylor_pow_integer(VmRegionStack* rs, const VmDual* a, int64_t exponent) {
     VmDual one = {0};
     one.primal = 1.0;
     one.eprimal = vm_rational_from_int(vm_active_arena(rs), 1);
@@ -339,10 +355,22 @@ static VmDual* taylor_pow_integer(VmRegionStack* rs, const VmDual* a, uint64_t k
         for (uint32_t i = 1; i <= out->order; i++)
             out->exact_coeff[i] = one.etangent;
     }
+    uint64_t k = exponent < 0 ? (uint64_t)(-(exponent + 1)) + 1u
+                              : (uint64_t)exponent;
     for (uint64_t i=0; i<k; i++) {
         VmDual* next = taylor_binary(rs, out, a, '*');
         if (!next) return NULL;
         out = next;
+    }
+    if (exponent < 0) {
+        VmDual one = {0};
+        one.primal = 1.0;
+        one.eprimal = vm_rational_from_int(vm_active_arena(rs), 1);
+        one.etangent = vm_rational_from_int(vm_active_arena(rs), 0);
+        if (!one.eprimal || !one.etangent) return NULL;
+        VmDual* reciprocal = taylor_binary(rs, &one, out, '/');
+        if (!reciprocal) return NULL;
+        out = reciprocal;
     }
     out->primal=out->coeff[0]; out->tangent=out->order>=1?out->coeff[1]:0.0;
     return out;
@@ -485,8 +513,8 @@ VmDual* vm_dual_sqrt(VmRegionStack* rs, const VmDual* a) {
  */
 VmDual* vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n) {
     if (vm_dual_is_taylor(a)) {
-        if (n >= 0.0 && n == floor(n) && n <= 4096.0)
-            return taylor_pow_integer(rs, a, (uint64_t)n);
+        if (n == floor(n) && fabs(n) <= 4096.0)
+            return taylor_pow_integer(rs, a, (int64_t)n);
         VmDual* ln = taylor_unary(rs, a, 6);
         VmDual scale = {0}; scale.primal = n;
         VmDual* product = ln ? taylor_binary(rs, &scale, ln, '*') : NULL;
@@ -500,17 +528,29 @@ VmDual* vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n) {
      * a reciprocal that need not be rational), and pow() itself is a
      * transcendental, so those keep the double path — the same line native's
      * tower draws between taylor_pow_exact and the COEFF_F64 demotion. */
-    if (dual_is_exact(a) && n >= 0.0 && n == floor(n) && n <= 1024.0) {
+    if (dual_is_exact(a) && n == floor(n) && fabs(n) <= 1024.0) {
         int64_t k = (int64_t)n;
         VmRational* acc = vm_rational_from_int(vm_active_arena(rs), 1);   /* a^k   */
         VmRational* acck1 = NULL;                                        /* a^(k-1) */
         int ok = (acc != NULL);
-        for (int64_t i = 0; ok && i < k; i++) {
+        uint64_t magnitude = k < 0 ? (uint64_t)(-(k + 1)) + 1u : (uint64_t)k;
+        for (uint64_t i = 0; ok && i < magnitude; i++) {
             acck1 = acc;
             acc = rex(rs, acc, a->eprimal, '*');
             if (!acc) ok = 0;
         }
-        if (ok && k == 0) {
+        if (ok && k < 0) {
+            VmRational* one = vm_rational_from_int(vm_active_arena(rs), 1);
+            VmRational* value = one ? rex(rs, one, acc, '/') : NULL;
+            VmRational* magnitude_r = vm_rational_from_int(
+                vm_active_arena(rs), (int64_t)magnitude);
+            VmRational* derivative = magnitude_r ? rex(rs, magnitude_r, value, '*') : NULL;
+            derivative = derivative ? rex(rs, derivative, a->eprimal, '/') : NULL;
+            VmRational* neg = derivative ? vm_rational_negate_exact(rs, derivative) : NULL;
+            derivative = neg ? rex(rs, neg, a->etangent, '*') : NULL;
+            if (value && derivative)
+                return vm_dual_new_exact(rs, value, derivative, p, dp);
+        } else if (ok && k == 0) {
             /* d/dx of a constant 1 is 0 */
             VmRational* zero = vm_rational_from_int(vm_active_arena(rs), 0);
             if (zero) return vm_dual_new_exact(rs, acc, zero, p, dp);
@@ -563,7 +603,8 @@ VmDual* vm_dual_sigmoid(VmRegionStack* rs, const VmDual* a) {
         VmDual one = {0}; one.primal = 1.0;
         VmDual* neg = taylor_unary(rs, a, 0);
         VmDual* e = neg ? taylor_unary(rs, neg, 3) : NULL;
-        return e ? taylor_binary(rs, &one, e, '/') : NULL;
+        VmDual* denominator = e ? taylor_binary(rs, &one, e, '+') : NULL;
+        return denominator ? taylor_binary(rs, &one, denominator, '/') : NULL;
     }
     double sig = 1.0 / (1.0 + exp(-a->primal));
     return vm_dual_new(rs, sig, a->tangent * sig * (1.0 - sig));

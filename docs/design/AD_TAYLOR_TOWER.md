@@ -131,6 +131,12 @@ pow   s = u^r        : s_k = (1/(k·u_0)) Σ_{j=1..k} (j·r − (k−j)) · u_j 
 sqrt, tan, atan, tanh, exp2, expm1, log1p : derived from the above / their own linear recurrences
 ```
 
+For the piecewise unary primitives, `abs` uses the sign of the base
+coefficient for the entire smooth-side series (`abs(u₀)`, then
+`sign(u₀)·u_k` for `k>0`), and uses the zero subgradient at `u₀ = 0`.
+`relu` uses the same whole-series rule with zero for the non-positive branch.
+These rules are applied by both the native and VM Taylor dispatchers.
+
 Add/sub/scale are elementwise. Constants seed `c = {value, 0, 0, …}`; the differentiation variable seeds `c = {x₀, 1, 0, …}`.
 
 All recurrences above are **verified numerically in the Phase-0 POC** (`tests/ad_taylor_poc/taylor_poc.c`) to d=8 at rel-err < 1e-12 (see §15).
@@ -331,7 +337,7 @@ Eshkol already carries a full exact numeric tower — rationals and bignums with
 
 - The `COEFF_MASK` field (§4) selects the coefficient type. `COEFF_RATIONAL` stores each `c_k` as a tagged `esh_value_t` (rational or bignum) rather than a raw double.
 - The recurrences of §5 are reused verbatim, but the multiply-accumulate dispatches through `arith_->{mul,add,sub,div}` (the exact numeric tower) instead of `fma`. `div`/`pow` stay exact when the divisor is rational; `exp`/`log`/`sin`/`cos` fall back to `COEFF_F64` (they are transcendental — no exact rational series), with a clear predicate `taylor-exact?` telling the user which regime they are in.
-- **Contagion:** seeding an exact input (`(taylor f (exact x0) k)`) yields exact coefficients through the whole polynomial/rational subgraph; the first transcendental op demotes to `COEFF_F64` with a recorded flag, matching Eshkol's existing exactness-contagion semantics.
+- **Contagion:** seeding an exact input (`(taylor f (exact x0) k)`) yields exact coefficients through the whole polynomial/rational subgraph; the first transcendental op demotes to `COEFF_F64` with a recorded flag, matching Eshkol's existing exactness-contagion semantics. Integer powers, including negative powers at a nonzero base point, remain exact through the bignum-capable rational backend.
 - **Gate:** exact reference derivatives of `x^p`, `p(x)/q(x)` computed with the rational tower must match a symbolic/bignum oracle **bit-for-bit** (not just 1e-12), plus the `numeric_depth` exactness-contagion suite extended with a `taylor` column.
 
 ---

@@ -130,6 +130,81 @@
            (display "FAIL x^5 with double x0 must stay inexact") (newline)))
 (check-inexact-close "x^5 double x0 n=3" (derivative-n x5-mul 2.0 3) 240.0)
 
+;; ---------------------------------------------------------------------
+;; Gate 6: elementary Taylor coefficients against closed forms.
+;; Every list below has K+1 entries for K=8 and is an independent reference
+;; for c[n] = f^(n)(x0)/n!, rather than a comparison against another AD path.
+;; abs uses the fixed-sign series on either smooth side and the zero
+;; subgradient convention at its kink.
+;; ---------------------------------------------------------------------
+(define (check-coeff-series name f x0 expected)
+  (let ((cs (taylor f x0 8)))
+    (let loop ((n 0) (cs cs) (es expected))
+    (if (not (null? es))
+        (begin
+          (check-inexact-close (string-append name " c=" (number->string n))
+                               (car cs) (car es))
+          (loop (+ n 1) (cdr cs) (cdr es)))))))
+
+(check-coeff-series "sin closed form" (lambda (x) (sin x)) 0.0
+                    (list 0.0 1.0 0.0 (/ -1.0 6.0) 0.0 (/ 1.0 120.0)
+                          0.0 (/ -1.0 5040.0) 0.0))
+(check-coeff-series "cos closed form" (lambda (x) (cos x)) 0.0
+                    (list 1.0 0.0 (/ -1.0 2.0) 0.0 (/ 1.0 24.0) 0.0
+                          (/ -1.0 720.0) 0.0 (/ 1.0 40320.0)))
+(check-coeff-series "exp closed form" (lambda (x) (exp x)) 0.0
+                    (list 1.0 1.0 (/ 1.0 2.0) (/ 1.0 6.0) (/ 1.0 24.0)
+                          (/ 1.0 120.0) (/ 1.0 720.0) (/ 1.0 5040.0)
+                          (/ 1.0 40320.0)))
+(check-coeff-series "log closed form" (lambda (x) (log x)) 1.0
+                    (list 0.0 1.0 (/ -1.0 2.0) (/ 1.0 3.0) (/ -1.0 4.0)
+                          (/ 1.0 5.0) (/ -1.0 6.0) (/ 1.0 7.0) (/ -1.0 8.0)))
+(check-coeff-series "sqrt closed form" (lambda (x) (sqrt x)) 1.0
+                    (list 1.0 (/ 1.0 2.0) (/ -1.0 8.0) (/ 1.0 16.0)
+                          (/ -5.0 128.0) (/ 7.0 256.0) (/ -21.0 1024.0)
+                          (/ 33.0 2048.0) (/ -429.0 32768.0)))
+(check-coeff-series "tan closed form" (lambda (x) (tan x)) 0.0
+                    (list 0.0 1.0 0.0 (/ 1.0 3.0) 0.0 (/ 2.0 15.0) 0.0
+                          (/ 17.0 315.0) 0.0))
+
+(let ((abs-neg (taylor (lambda (x) (abs x)) -2 8))
+      (abs-pos (taylor (lambda (x) (abs x)) 2 8))
+      (abs-zero (taylor (lambda (x) (abs x)) 0 8)))
+  (let loop ((n 0) (ns abs-neg) (ps abs-pos) (zs abs-zero))
+    (if (<= n 8)
+        (begin
+          (check-exact-eq (string-append "abs negative c=" (number->string n))
+                          (car ns) (if (= n 0) 2 (if (= n 1) -1 0)))
+          (check-exact-eq (string-append "abs positive c=" (number->string n))
+                          (car ps) (if (= n 0) 2 (if (= n 1) 1 0)))
+          (check-exact-eq (string-append "abs zero c=" (number->string n))
+                          (car zs) 0)
+          (loop (+ n 1) (cdr ns) (cdr ps) (cdr zs))))))
+
+(check-exact-eq "negative integer power c0"
+                (car (taylor (lambda (x) (expt x -1)) 2 8)) (/ 1 2))
+(check-exact-eq "negative integer power c1"
+                (car (cdr (taylor (lambda (x) (expt x -1)) 2 8))) (/ -1 4))
+(check-exact-eq "negative integer power derivative"
+                (derivative-n (lambda (x) (expt x -1)) 2 1) (/ -1 4))
+
+;; Audit counterexamples and dispatch coverage.
+(check-inexact-close "cos derivative sign at 1"
+                     (derivative-n (lambda (x) (cos x)) 1.0 1) (- (sin 1.0)))
+(check-exact-eq "bignum division derivative stays exact"
+                (derivative-n (lambda (x) (/ x 3)) (expt 2 100) 1) (/ 1 3))
+(check-exact-eq "tiny exact denominator stays exact"
+                (derivative-n (lambda (x) (/ 1 x)) (/ 1 (expt 10 400)) 0)
+                (expt 10 400))
+(check-exact-eq "max preserves Taylor order"
+                (derivative-n (lambda (x) (max x 0)) 2 1) 1)
+(check-exact-eq "relu preserves Taylor order"
+                (derivative-n (lambda (x) (relu x)) 2 1) 1)
+(check-inexact-close "sigmoid Taylor derivative at zero"
+                     (derivative-n (lambda (x) (sigmoid x)) 0 1) 0.25)
+(check-inexact-close "tanh Taylor derivative at zero"
+                     (derivative-n (lambda (x) (tanh x)) 0 1) 1.0)
+
 (display "----") (newline)
 (display "exact-taylor tests: ") (display npass) (display " passed, ")
 (display nfail) (display " failed") (newline)
@@ -145,10 +220,12 @@
 ;; live risks here: every gate below is a loop, and the exact tier this file
 ;; certifies is the oracle `derivative`/`gradient`/`hessian` route to at an
 ;; exact point, so a quietly-shrunken suite would take those three with it.
+;; 159 = 68 original checks + 54 elementary transcendental coefficients + 27
+;; abs coefficients + 3 negative-power checks + 7 audit/dispatch checks.
 ;; 68 = 18 (x^5 mul/pow, n=0..8) + 9 (x^5 taylor coefficients) + 11 (geometric
 ;; at 1/2, n=0..10) + 21 (x^20 at 3, n=0..20) + 2 (x^30 bignum) + 5
 ;; (transcendental demotion) + 2 (inexact point stays inexact).
-(define expected-checks 68)
+(define expected-checks 159)
 (if (and (= nfail 0) (= npass expected-checks))
     (begin (display "PASS: exact-coefficient Taylor tier ")
            (display npass) (display "/") (display expected-checks)
