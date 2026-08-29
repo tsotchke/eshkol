@@ -1,7 +1,7 @@
 /* prng.cpp — isolated PRNG state for deterministic replay and per-task isolation.
  *
- * The global drand48-like PRNG (eshkol_drand48, eshkol_srand48) in
- * platform_runtime.cpp is mutex-protected — every thread shares one state.
+ * The global drand48-like PRNG (eshkol_drand48, eshkol_srand48) in the hosted
+ * runtime exports is mutex-protected — every thread shares one state.
  * For parallel-map workloads or paper artifact reproducibility, callers
  * need their own PRNG so two threads sampling concurrently get reproducible,
  * non-interleaved sequences.
@@ -33,12 +33,9 @@ extern "C" {
     void* arena_allocate_with_header(arena_t* arena, size_t data_size,
                                       uint8_t subtype, uint8_t flags);
     arena_t* get_global_arena();
-    /* Use the symbol that the codegen for (random) actually links against.
-     * On Linux/macOS that's libc's srand48 (and codegenRandom calls libc's
-     * drand48 via function_table["drand48"]). On Windows the eshkol shim
-     * is exported as srand48/drand48 by platform_runtime.cpp so both paths
-     * end up at the same state. */
-    void srand48(long seed);
+    /* The explicit seed helper must use the same stable runtime state as
+     * generated random calls on every backend. */
+    void eshkol_srand48(int64_t seed);
 }
 
 namespace {
@@ -92,5 +89,5 @@ extern "C" int64_t eshkol_prng_random_integer(uint64_t* state, int64_t n) {
  * __random_seeded__ so the codegen's auto-seed-from-time doesn't override —
  * that's done by the codegen for set-random-seed! (see codegenSetRandomSeed). */
 extern "C" void eshkol_random_seed(int64_t seed) {
-    srand48(static_cast<long>(seed));
+    eshkol_srand48(seed);
 }

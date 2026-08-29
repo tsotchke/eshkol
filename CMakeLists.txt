@@ -5409,6 +5409,27 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
 
+    # SW-113: the seeded drand48-compatible generator is one runtime contract,
+    # so a fixed seed must produce identical scalar and tensor-random sequences
+    # through native JIT, native AOT, and the bytecode VM. The test script also
+    # covers reseeding, negative seeds, low-32-bit seed truncation, and the
+    # filed reproducer in tests/vm_parity/corpus/58_rng_seed_parity.esk.
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh")
+        add_test(
+            NAME rng_seed_parity_cross_engine
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(rng_seed_parity_cross_engine PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: SW-113 seeded PRNG sequence agrees across JIT, AOT, and VM"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —

@@ -6884,3 +6884,57 @@ entries:
       correctness contract is value equality with the corresponding inexact
       coordinates. Exact scalar points use the exact Taylor tier where the
       carrier can preserve exact coefficients.
+
+  - id: SW-113
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: seeded-prng/native-vm-parity
+    status: closed
+    closed_at: "3ce3006c+issue-553-worktree"
+    title: "A fixed seed selected different random generator state under native AOT and JIT"
+    repro: >-
+      The issue 553 reproducer was:
+      `(srand48 20260828)`, followed by two `(random)` calls and
+      `(rand 2 3)`. Native AOT and JIT each repeated their own output
+      byte-for-byte across fresh processes, but the sequences differed from
+      each other because the generated code bound its random calls to the
+      POSIX `drand48`/`srand48` names while the JIT exported the Eshkol
+      runtime wrappers under `eshkol_drand48`/`eshkol_srand48`.
+    observed: >-
+      The filed representative first values were AOT
+      `0.7091796121831102`, `0.09244651589276032` and JIT
+      `0.05806272414429614`, `0.45770322866471247`; a fixed seed therefore
+      did not identify one sequence across native engines.
+    correct: >-
+      A seed must initialize one 48-bit drand48-compatible LCG contract, and
+      native JIT, native AOT, and the bytecode VM must emit the same first N
+      values for the same seed, including values consumed by tensor `rand`.
+    root_cause: >-
+      llvm_codegen.cpp declared generated calls as libc `drand48` and
+      `srand48`, while the runtime and JIT export table owned the portable
+      `eshkol_drand48` and `eshkol_srand48` state. In addition, direct
+      `srand48` calls did not set `__random_seeded__`, so the first `random`
+      call could reseed from wall-clock time after the explicit seed.
+      The VM had no seeded pseudorandom or tensor-random dispatch.
+    fix: >-
+      Native scalar and tensor-random codegen now uses the stable runtime
+      symbol constants from inc/eshkol/runtime_exports.h, and the public
+      `srand48` spelling shares codegenSetRandomSeed so it marks the
+      explicit-seed flag. The VM now routes random and srand48 through the
+      same hosted runtime state, supplies the identical algorithm for WASM,
+      and implements validated variadic tensor `rand`; its prelude cache and
+      parity manifest were regenerated.
+    evidence: >-
+      `ctest --test-dir build -R
+      rng_seed_parity_cross_engine|vm_prelude_cache_is_current
+      --output-on-failure` passed 2/2 on old-donkey. The focused test pins
+      eight scalar outputs for seed 20260828, checks reseeding, negative
+      seeds, and low-32-bit truncation, and runs the issue reproducer through
+      JIT, AOT, and VM. `scripts/run_vm_parity.sh --no-eskb` passed with
+      `vm-parity: 109 passed, 0 failed, 0 infra (no verdict)`, including
+      `tests/vm_parity/corpus/58_rng_seed_parity.esk`.
+    caught_by: [issue-553, rng_seed_parity_cross_engine, vm-parity]
+    missed_by: [pre-existing native-only seeded-random coverage]
+    notes: >-
+      The worktree is intentionally uncommitted; `3ce3006c` is the checked-out
+      base and the suffix identifies the measured fix state.
