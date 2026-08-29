@@ -844,8 +844,9 @@ static void vm_mangle_private_node(Node* node, const char* module_name,
     if (!node) return;
     if (node->type == N_SYMBOL) {
         if (vm_private_name_contains(private_names, n_private, node->symbol) &&
-            !vm_bound_name_contains(bound, n_bound, node->symbol))
+            !vm_bound_name_contains(bound, n_bound, node->symbol)) {
             vm_mangle_private_name(node->symbol, module_name);
+        }
         return;
     }
     if (node->type != N_LIST || node->n_children == 0) return;
@@ -903,6 +904,23 @@ static void vm_mangle_private_node(Node* node, const char* module_name,
 static void vm_mangle_module_form(Node* form, const char* module_name,
                                   const char private_names[][128], int n_private) {
     if (!form || form->type != N_LIST || form->n_children < 1) return;
+    if (is_sym(form->children[0], "define-syntax") && form->n_children >= 3) {
+        /* Syntax-rules stores its template as ordinary Node data, but that
+         * data is later copied into the macro registry. Visit only rule
+         * templates explicitly so a private binding captured by an exported
+         * macro is qualified before the registry receives its copy. Pattern
+         * identifiers are not references and must remain unchanged. */
+        Node* syntax_rules = form->children[2];
+        if (syntax_rules->type == N_LIST && syntax_rules->n_children >= 3) {
+            for (int i = 2; i < syntax_rules->n_children; ++i) {
+                Node* rule = syntax_rules->children[i];
+                if (rule->type == N_LIST && rule->n_children >= 2)
+                    vm_mangle_private_node(rule->children[1], module_name,
+                                           private_names, n_private, NULL, 0);
+            }
+        }
+        return;
+    }
     if (is_sym(form->children[0], "define") && form->n_children >= 3) {
         Node* name = form->children[1];
         if (name->type == N_SYMBOL &&
@@ -936,6 +954,8 @@ static void vm_mangle_module_form(Node* form, const char* module_name,
 #define VM_MAX_PRIVATE_IMPORTS 256
 static char g_vm_private_imports[VM_MAX_PRIVATE_IMPORTS][128];
 static int g_vm_n_private_imports = 0;
+static char g_vm_public_imports[VM_MAX_PRIVATE_IMPORTS][128];
+static int g_vm_n_public_imports = 0;
 
 static void vm_register_private_import(const char* name) {
     if (!name || !*name) return;
@@ -944,6 +964,31 @@ static void vm_register_private_import(const char* name) {
     if (g_vm_n_private_imports >= VM_MAX_PRIVATE_IMPORTS) return;
     strncpy(g_vm_private_imports[g_vm_n_private_imports], name, 127);
     g_vm_private_imports[g_vm_n_private_imports++][127] = '\0';
+}
+
+static int vm_private_import_matches_unqualified(const char* name) {
+    if (!name || !*name) return 0;
+    for (int i = 0; i < g_vm_n_public_imports; ++i)
+        if (strcmp(g_vm_public_imports[i], name) == 0) return 0;
+    char suffix[256];
+    snprintf(suffix, sizeof(suffix), "__%s", name);
+    for (int i = 0; i < g_vm_n_private_imports; ++i) {
+        size_t length = strlen(g_vm_private_imports[i]);
+        size_t suffix_length = strlen(suffix);
+        if (length >= suffix_length &&
+            strcmp(g_vm_private_imports[i] + length - suffix_length, suffix) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void vm_register_public_import(const char* name) {
+    if (!name || !*name) return;
+    for (int i = 0; i < g_vm_n_public_imports; ++i)
+        if (strcmp(g_vm_public_imports[i], name) == 0) return;
+    if (g_vm_n_public_imports >= VM_MAX_PRIVATE_IMPORTS) return;
+    strncpy(g_vm_public_imports[g_vm_n_public_imports], name, 127);
+    g_vm_public_imports[g_vm_n_public_imports++][127] = '\0';
 }
 
 /**
@@ -972,11 +1017,16 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     char path[512];
     snprintf(path, sizeof(path), "lib/");
     int pi = 4;
-    for (const char* p = mod_name; *p && pi < 500; p++) {
-        path[pi++] = (*p == '.') ? '/' : *p;
+    if (strchr(mod_name, '/') ||
+        (strlen(mod_name) >= 4 && strcmp(mod_name + strlen(mod_name) - 4, ".esk") == 0)) {
+        snprintf(path, sizeof(path), "%s", mod_name);
+    } else {
+        for (const char* p = mod_name; *p && pi < 500; p++) {
+            path[pi++] = (*p == '.') ? '/' : *p;
+        }
+        path[pi] = '\0';
+        strncat(path, ".esk", sizeof(path) - pi - 1);
     }
-    path[pi] = '\0';
-    strncat(path, ".esk", sizeof(path) - pi - 1);
 
 #ifdef ESHKOL_VM_NO_DISASM
     /* WASM mode: no filesystem access. Prelude builtins already available. */
@@ -1045,11 +1095,17 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             char private_names[128][128];
             int n_private = 0;
             if (enforce_visibility && has_provide) {
+                for (int i = 0; i < n_exported; ++i)
+                    vm_register_public_import(exported[i]);
                 for (int i = 0; i < n_defined && n_private < 128; ++i) {
                     if (!vm_private_name_contains(exported, n_exported, defined[i])) {
                         strncpy(private_names[n_private], defined[i], 127);
                         private_names[n_private++][127] = '\0';
-                        vm_register_private_import(defined[i]);
+                        char mangled[128];
+                        strncpy(mangled, defined[i], sizeof(mangled) - 1);
+                        mangled[sizeof(mangled) - 1] = '\0';
+                        vm_mangle_private_name(mangled, mod_name);
+                        vm_register_private_import(mangled);
                     }
                 }
                 for (int i = 0; i < n_forms; ++i)
@@ -1102,7 +1158,8 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
      * the caller's POP balances; the file-loading path adds real bindings, so a
      * placeholder is emitted there only if it happened to add none. */
     int locals_at_start = c->n_locals;
-    if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
+    if (node->n_children >= 2 &&
+        (node->children[1]->type == N_SYMBOL || node->children[1]->type == N_STRING)) {
         /* A `require` may also name a library this unit defines: the two
          * module styles share one namespace, so `(require m)` after
          * `(define-library (m) …)` must not go to disk either. */
@@ -3452,9 +3509,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
-        } else if (vm_private_name_contains(g_vm_private_imports,
-                                            g_vm_n_private_imports,
-                                            node->symbol)) {
+        } else if (vm_private_import_matches_unqualified(node->symbol)) {
             vm_compile_error("module-private binding is not visible to this importer",
                              node->symbol);
             chunk_emit(c, OP_NIL, 0);
@@ -4056,7 +4111,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (require module.name) — load and compile the module */
-    if (is_sym(head, "require")) { compile_form_require(c, node, tail); return; }
+    if (is_sym(head, "require") || is_sym(head, "load")) {
+        compile_form_require(c, node, tail); return;
+    }
     /* (define-library (name …) <declaration> …) — R7RS-small 5.6.1 */
     if (is_sym(head, "define-library") && node->n_children >= 2 &&
         node->children[1]->type == N_LIST) {

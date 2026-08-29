@@ -1,0 +1,9 @@
+(provide param-identity private-owner expose-hidden)
+
+(define hidden 99)
+(define (param-identity hidden) hidden)
+(define (private-owner) hidden)
+
+(define-syntax expose-hidden
+  (syntax-rules ()
+    ((_ ) hidden)))

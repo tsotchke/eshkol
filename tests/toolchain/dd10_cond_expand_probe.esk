@@ -1,0 +1,15 @@
+(cond-expand
+  ((and ALPHA (not MISSING))
+   (display "and=alpha") (newline))
+  ((or MISSING BETA)
+   (display "or=beta") (newline))
+  (else
+   (display "else=selected") (newline)))
+
+(cond-expand
+  ((and MISSING (not ALPHA))
+   (display "wrong=and") (newline))
+  ((or MISSING BETA)
+   (display "or=beta") (newline))
+  (else
+   (display "wrong=else") (newline)))

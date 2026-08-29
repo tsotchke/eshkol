@@ -255,10 +255,6 @@ private:
     // Maps module name -> set of exported symbol names
     std::unordered_map<std::string, std::unordered_set<std::string>> module_exports_;
 
-    // Track private symbols (defined but not exported)
-    // These are only accessible within their defining module
-    std::unordered_set<std::string> private_symbols_;
-
     // Persistent module macros visible to later REPL/JIT batches. Loaded
     // files are compiled in one batch, while following top-level forms are
     // compiled in fresh batches with fresh MacroExpander instances. Keep

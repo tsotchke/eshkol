@@ -1,0 +1,3 @@
+(provide loaded-private)
+(define hidden 11)
+(define (loaded-private) hidden)

@@ -1,0 +1,3 @@
+(load "lib/test/modules/dd10_loaded_private.esk")
+(write (list 'loaded-private (loaded-private)))
+(newline)

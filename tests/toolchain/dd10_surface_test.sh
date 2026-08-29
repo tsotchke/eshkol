@@ -62,6 +62,59 @@ esac
 VM_BIN="$BUILD_DIR/eshkol-vm-standalone-test"
 [ -x "$VM_BIN" ] || VM_BIN="$BUILD_DIR/eshkol-vm-standalone"
 [ -x "$VM_BIN" ] || fail "VM standalone executable is unavailable"
+
+run_probe() {
+    local name="$1"
+    local source="$2"
+    local expected="$3"
+    shift 3
+    local defines=("$@")
+    local vm_defines=""
+    local i=0
+    while [ "$i" -lt "${#defines[@]}" ]; do
+        if [ "${defines[$i]}" = "-D" ] &&
+           [ "$((i + 1))" -lt "${#defines[@]}" ]; then
+            [ -z "$vm_defines" ] || vm_defines="$vm_defines,"
+            vm_defines="$vm_defines${defines[$((i + 1))]}"
+            i=$((i + 2))
+        else
+            i=$((i + 1))
+        fi
+    done
+    local actual
+
+    actual="$($RUN -n "${defines[@]}" -r "$source" 2>&1)" \
+        || fail "$name: native JIT rejected probe"
+    actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
+    [ "$actual" = "$expected" ] || fail "$name: native JIT output: $actual"
+
+    local native_bin="$ESHKOL_TEST_TMPDIR/$name-native"
+    "$RUN" -n "${defines[@]}" "$source" -o "$native_bin" \
+        >"$ESHKOL_TEST_TMPDIR/$name-aot-build.log" 2>&1 \
+        || fail "$name: native AOT rejected probe"
+    actual="$($native_bin 2>&1)" || fail "$name: native AOT executable failed"
+    actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
+    [ "$actual" = "$expected" ] || fail "$name: native AOT output: $actual"
+
+    actual="$(cd "$ROOT" && ESHKOL_COMMAND_DEFINES="$vm_defines" \
+        "$VM_BIN" "$source" 2>&1)" \
+        || fail "$name: VM source execution failed"
+    actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
+    case "$actual" in
+        *"$expected"*) ;;
+        *) fail "$name: VM source output: $actual" ;;
+    esac
+}
+
+run_probe "dd10-scope" "$ROOT/tests/toolchain/dd10_scope_probe.esk" \
+    $'(7 hidden 99 22 99)'
+run_probe "dd10-load" "$ROOT/tests/toolchain/dd10_load_probe.esk" \
+    $'(loaded-private 11)'
+run_probe "dd10-cond-expand" "$ROOT/tests/toolchain/dd10_cond_expand_probe.esk" \
+    $'and=alpha\nor=beta' "-D" "ALPHA=1" "-D" "BETA=two"
+run_probe "dd10-cond-expand-fallback" "$ROOT/tests/toolchain/dd10_cond_expand_probe.esk" \
+    $'or=beta\nor=beta' "-D" "BETA=two"
+
 actual="$($VM_BIN "$VM_BC" 2>&1)" || fail "VM ESKB executable failed"
 case "$actual" in
     *"PASS: -D feature"*) ;;

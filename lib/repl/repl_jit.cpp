@@ -8,6 +8,7 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/llvm_backend.h>
+#include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/model_io.h>
@@ -2968,9 +2969,9 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
  * resolves the module's source path (resolveModulePath()), reads and parses
  * it into ASTs, and processes it in two passes: `(provide ...)` and
  * `(define ...)` forms determine each module's exported vs. private symbol
- * surface (recorded into module_exports_ and, for private symbols,
- * private_symbols_ / eshkol_repl_register_private_symbol() after compilation
- * so intra-module forward references still work during loading); then
+ * surface (recorded into module_exports_) and qualifies private names in the
+ * module AST before compilation so intra-module forward references remain
+ * valid without a process-wide private-name registry; then
  * `(require/import ...)` dependency forms are executed immediately
  * (continuing past a failed dependency with a warning rather than aborting
  * the whole module), while all remaining top-level forms are collected and
@@ -3077,17 +3078,15 @@ bool ReplJITContext::loadModule(const std::string& module_name,
     module_exports_[module_name] = has_provide ? exported_symbols : defined_symbols;
     module_exports_[module_path] = module_exports_[module_name];
 
-    // Mark private symbols (defined but not exported) - only if module has provide.
-    // Delay registering them with codegen until after the module finishes compiling
-    // so internal forward references still work while loading the module itself.
-    std::vector<std::string> private_symbols_to_register;
+    // Establish the module boundary in the module's own AST before it is
+    // compiled. Private names become module-qualified, while lexical binders
+    // and quoted data remain untouched. This keeps each module's private
+    // namespace separate without a process-wide spelling registry.
     if (enforce_visibility && has_provide) {
-        for (const auto& sym : defined_symbols) {
-            if (exported_symbols.find(sym) == exported_symbols.end()) {
-                private_symbols_.insert(sym);
-                private_symbols_to_register.push_back(sym);
-            }
-        }
+        const std::set<std::string> exported_for_rename(
+            exported_symbols.begin(), exported_symbols.end());
+        eshkol::rename_private_symbols(module_asts, module_name,
+                                       exported_for_rename);
     }
 
     // SINGLE-PASS MODULE LOADING with deferred batch compilation:
@@ -3133,11 +3132,6 @@ bool ReplJITContext::loadModule(const std::string& module_name,
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
-    }
-
-    for (const auto& sym : private_symbols_to_register) {
-        // Register after module compilation so only external accesses are blocked.
-        eshkol_repl_register_private_symbol(sym.c_str());
     }
 
     // Clean up ASTs

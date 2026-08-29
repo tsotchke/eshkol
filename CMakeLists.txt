@@ -4343,6 +4343,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(dd10_surface_test
             PROPERTIES
                 TIMEOUT 300
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 PASS_REGULAR_EXPRESSION "PASS: dd10_surface_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()

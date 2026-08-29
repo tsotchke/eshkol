@@ -1,0 +1,5 @@
+(require test.modules.dd10_privacy_scope)
+(require test.modules.dd10_public_hidden)
+
+(write (list (param-identity 7) 'hidden (expose-hidden) hidden (private-owner)))
+(newline)

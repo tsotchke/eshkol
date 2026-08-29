@@ -16,6 +16,7 @@
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
+#include <eshkol/module_visibility.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/frontend/library_registry.h"
 
@@ -4021,8 +4022,8 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 // loading dependencies. The module's own references are then
                 // rewritten while they are still separate from dependency ASTs.
                 if (!inline_load && !exports.empty()) {
-                    rename_private_symbols(module_asts, module_name, exports,
-                                           debug_mode);
+                    eshkol::rename_private_symbols(module_asts, module_name,
+                                                   exports);
                 }
 
                 // Recursively process requires in the loaded module

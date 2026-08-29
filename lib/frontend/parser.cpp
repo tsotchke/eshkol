@@ -7451,6 +7451,70 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             bool matched = false;
             std::vector<eshkol_ast_t> matched_body;
 
+            // Feature requirements are recursive R7RS datums. In particular,
+            // `(and ALPHA (not MISSING))` must consume the nested requirement
+            // as one operand; treating its tokens as a flat stream makes the
+            // following clause body look like part of the requirement.
+            std::function<bool()> parse_feature_requirement = [&]() -> bool {
+                Token head = tokenizer.nextToken();
+                if (head.type == TOKEN_SYMBOL) {
+                    if (head.value == "and" || head.value == "or") {
+                        bool result = head.value == "and";
+                        bool saw_operand = false;
+                        while (true) {
+                            Token operand = tokenizer.nextToken();
+                            if (operand.type == TOKEN_RPAREN) break;
+                            saw_operand = true;
+                            bool value = false;
+                            if (operand.type == TOKEN_LPAREN) {
+                                value = parse_feature_requirement();
+                            } else if (operand.type == TOKEN_SYMBOL) {
+                                value = hasFeature(operand.value);
+                            }
+                            if (head.value == "and") result = result && value;
+                            else result = result || value;
+                        }
+                        return saw_operand && result;
+                    }
+                    if (head.value == "not") {
+                        Token operand = tokenizer.nextToken();
+                        bool value = false;
+                        if (operand.type == TOKEN_LPAREN) {
+                            value = parse_feature_requirement();
+                        } else if (operand.type == TOKEN_SYMBOL) {
+                            value = hasFeature(operand.value);
+                        }
+                        Token close = tokenizer.nextToken();
+                        if (close.type != TOKEN_RPAREN) {
+                            while (close.type != TOKEN_RPAREN && close.type != TOKEN_EOF)
+                                close = tokenizer.nextToken();
+                        }
+                        return !value;
+                    }
+
+                    // `(library ...)` and future compound feature forms are
+                    // syntactically consumed as one requirement. They do not
+                    // match until the corresponding feature is implemented.
+                    int depth = 1;
+                    while (depth > 0) {
+                        Token rest = tokenizer.nextToken();
+                        if (rest.type == TOKEN_LPAREN) ++depth;
+                        else if (rest.type == TOKEN_RPAREN) --depth;
+                        else if (rest.type == TOKEN_EOF) break;
+                    }
+                    return false;
+                }
+
+                int depth = 1;
+                while (depth > 0) {
+                    Token rest = tokenizer.nextToken();
+                    if (rest.type == TOKEN_LPAREN) ++depth;
+                    else if (rest.type == TOKEN_RPAREN) --depth;
+                    else if (rest.type == TOKEN_EOF) break;
+                }
+                return false;
+            };
+
             while (true) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
@@ -7475,41 +7539,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 } else if (token.type == TOKEN_SYMBOL) {
                     clause_matches = !matched && hasFeature(token.value);
                 } else if (token.type == TOKEN_LPAREN) {
-                    // Complex feature req: (and f1 f2), (or f1 f2), (not f), (library name)
-                    Token req_type = tokenizer.nextToken();
-                    if (req_type.type == TOKEN_SYMBOL && req_type.value == "and") {
-                        clause_matches = true;
-                        while (true) {
-                            Token ft = tokenizer.nextToken();
-                            if (ft.type == TOKEN_RPAREN) break;
-                            if (ft.type == TOKEN_SYMBOL && !hasFeature(ft.value)) {
-                                clause_matches = false;
-                            }
-                        }
-                        clause_matches = clause_matches && !matched;
-                    } else if (req_type.type == TOKEN_SYMBOL && req_type.value == "or") {
-                        clause_matches = false;
-                        while (true) {
-                            Token ft = tokenizer.nextToken();
-                            if (ft.type == TOKEN_RPAREN) break;
-                            if (ft.type == TOKEN_SYMBOL && hasFeature(ft.value)) {
-                                clause_matches = true;
-                            }
-                        }
-                        clause_matches = clause_matches && !matched;
-                    } else if (req_type.type == TOKEN_SYMBOL && req_type.value == "not") {
-                        Token ft = tokenizer.nextToken();
-                        clause_matches = !matched && ft.type == TOKEN_SYMBOL && !hasFeature(ft.value);
-                        token = tokenizer.nextToken(); // consume rparen
-                    } else {
-                        // Skip unknown compound feature requirement
-                        int depth = 1;
-                        while (depth > 0) {
-                            token = tokenizer.nextToken();
-                            if (token.type == TOKEN_LPAREN) depth++;
-                            else if (token.type == TOKEN_RPAREN) depth--;
-                        }
-                    }
+                    clause_matches = !matched && parse_feature_requirement();
                 }
 
                 // Parse body expressions of this clause
