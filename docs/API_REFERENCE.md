@@ -5599,6 +5599,10 @@ Pseudorandom and hardware-entropy random number generation with support for comm
 **Module**: `lib/random/random.esk`
 **Import**: `(require "random")`
 
+The seeded pseudorandom generator is a 48-bit drand48-compatible LCG owned by
+the Eshkol runtime. A given seed starts the same sequence on native JIT, native
+AOT, and the bytecode VM; backend choice does not change seeded results.
+
 ### Basic Pseudorandom Functions
 
 #### `random-float`
@@ -5982,7 +5986,9 @@ Selects an element from `items` with probability proportional to the correspondi
 #### `set-random-seed!`
 **Syntax**: `(set-random-seed! seed)`
 
-Sets the pseudorandom number generator seed (drand48). Use for reproducible experiments.
+Sets the shared pseudorandom number generator seed (drand48-compatible). Use
+for reproducible experiments and checkpoint/resume across native JIT, native
+AOT, and the bytecode VM.
 
 **Examples**:
 ```scheme

@@ -16,6 +16,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/cpu_features.h>
+#include <eshkol/runtime_exports.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/Config/llvm-config.h>
@@ -1623,10 +1624,13 @@ llvm::Value* TensorCodegen::tensorRand(const eshkol_operations_t* op) {
     llvm::Value* elems_ptr = builder.CreateLoad(ctx_.ptrType(), elems_field);
 
     // Get drand48 function for uniform [0, 1)
-    llvm::Function* drand48_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand48_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand48_func) {
         llvm::FunctionType* drand48_type = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand48_func = llvm::Function::Create(drand48_type, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand48_func = llvm::Function::Create(
+            drand48_type, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
 
     // Fill loop
@@ -1696,10 +1700,13 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
     llvm::Value* elems_ptr = builder.CreateLoad(ctx_.ptrType(), elems_field);
 
     // Get math functions
-    llvm::Function* drand48_func = ctx_.module().getFunction("drand48");
+    llvm::Function* drand48_func =
+        ctx_.module().getFunction(eshkol::runtime::drand48_symbol);
     if (!drand48_func) {
         llvm::FunctionType* drand48_type = llvm::FunctionType::get(ctx_.doubleType(), {}, false);
-        drand48_func = llvm::Function::Create(drand48_type, llvm::Function::ExternalLinkage, "drand48", &ctx_.module());
+        drand48_func = llvm::Function::Create(
+            drand48_type, llvm::Function::ExternalLinkage,
+            eshkol::runtime::drand48_symbol, &ctx_.module());
     }
     llvm::Function* log_func = ctx_.module().getFunction("log");
     if (!log_func) {

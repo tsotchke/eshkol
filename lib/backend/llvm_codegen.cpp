@@ -15205,6 +15205,7 @@ private:
 
         // Handle random number generation
         if (func_name == "random") return codegenRandom(op);
+        if (func_name == "srand48") return codegenSetRandomSeed(op);
         if (func_name == "set-random-seed!") return codegenSetRandomSeed(op);
         if (func_name == "make-prng") return codegenMakePrng(op);
         if (func_name == "prng?") return codegenPrngP(op);
@@ -35912,13 +35913,17 @@ private:
         if (!tv.llvm_value) return nullptr;
         Value* seed = safeExtractInt64(tv.llvm_value);
 
-        Function* seed_fn = function_table["eshkol_random_seed"];
+        /* Use the same canonical runtime declaration as direct `srand48`
+         * calls. The older helper called libc's srand48, which left the
+         * generated code and the Eshkol runtime on different states. */
+        Function* seed_fn = function_table["srand48"];
         if (!seed_fn) {
             FunctionType* ft = FunctionType::get(builder->getVoidTy(),
                                                  {int64_type}, false);
             seed_fn = Function::Create(ft, GlobalValue::ExternalLinkage,
-                                       "eshkol_random_seed", module.get());
-            function_table["eshkol_random_seed"] = seed_fn;
+                                       eshkol::runtime::srand48_symbol,
+                                       module.get());
+            function_table["srand48"] = seed_fn;
         }
         builder->CreateCall(seed_fn, {seed});
 
@@ -41161,10 +41166,13 @@ namespace ControlFlowCallbacks {
                 llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 2);
                 llvm::Value* elems_ptr = builder.CreateLoad(ctx->ptrType(), elems_field);
 
-                llvm::Function* drand48_func = codegen->module->getFunction("drand48");
+                llvm::Function* drand48_func = codegen->module->getFunction(
+                    eshkol::runtime::drand48_symbol);
                 if (!drand48_func) {
                     llvm::FunctionType* drand48_type = llvm::FunctionType::get(ctx->doubleType(), {}, false);
-                    drand48_func = llvm::Function::Create(drand48_type, llvm::Function::ExternalLinkage, "drand48", codegen->module.get());
+                    drand48_func = llvm::Function::Create(
+                        drand48_type, llvm::Function::ExternalLinkage,
+                        eshkol::runtime::drand48_symbol, codegen->module.get());
                 }
 
                 llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(*codegen->context, "fill_cond", current_func);
