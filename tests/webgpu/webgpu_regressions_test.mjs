@@ -132,6 +132,17 @@ async function testExecutionMarkerAndCPUFallback() {
         assert.equal(backend.executionMarker, 1);
         assert.equal(backend.lastPath, 'cpu:elem');
         assert.equal(backend.fallbackCount, 1);
+
+        backend.elementwiseF64 = async () => {
+            const error = new Error('dispatch exceeded device limit');
+            error.webgpuValidation = true;
+            throw error;
+        };
+        await assert.rejects(
+            imports.eshkol_gpu_elementwise_f64(0, 16, 32, 2, G.ELEM.ADD),
+            /dispatch exceeded device limit/);
+        assert.equal(backend.fallbackCount, 1);
+        assert.equal(backend.lastPath, 'webgpu:error');
     } finally {
         restore();
     }
@@ -158,9 +169,13 @@ function testIntegrationContracts() {
 
     assert.equal(siteWebgpu, webgpu);
     assert.match(webgpu, /@workgroup_size\(\$\{GEMM_TILE\}, \$\{GEMM_TILE\}, 1\)/);
-    assert.match(webgpu, /dispatchWorkgroups\(Math\.ceil\(N \/ GEMM_TILE\), Math\.ceil\(M \/ GEMM_TILE\), 1\)/);
+    assert.match(webgpu, /maxComputeWorkgroupsPerDimension/);
+    assert.match(webgpu, /baseX \* GEMM_TILE, baseY \* GEMM_TILE/);
+    assert.match(webgpu, /_submitDispatch\(enc, pass, x, y, 1/);
+    assert.match(webgpu, /pushErrorScope\('validation'\)/);
+    assert.match(webgpu, /webgpuValidation/);
     assert.match(webgpu, /@workgroup_size\(\$\{ELEM_WORKGROUP\}, 1, 1\)/);
-    assert.match(webgpu, /dispatchWorkgroups\(Math\.ceil\(n \/ ELEM_WORKGROUP\), 1, 1\)/);
+    assert.match(webgpu, /await this\._submitDispatch\(enc, pass, Math\.ceil\(n \/ ELEM_WORKGROUP\), 1, 1/);
     assert.match(webgpu, /executionMarker/);
     assert.match(webgpu, /lastExecutionMarker/);
     assert.match(repl, /eshkol_batch_matmul_dispatch: gpu\.eshkol_batch_matmul_dispatch/);
