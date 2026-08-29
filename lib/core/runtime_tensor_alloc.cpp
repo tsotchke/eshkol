@@ -526,6 +526,7 @@ eshkol_tensor_t* arena_allocate_tensor_full(
             // matching note in runtime_object_alloc.cpp for why this does not
             // fail the allocation instead.
             eshkol_limit_enforce(ESHKOL_LIMIT_TENSOR_SIZE, detail);
+            return nullptr;
         }
 
         if (total_elements > SIZE_MAX / sizeof(int64_t)) {

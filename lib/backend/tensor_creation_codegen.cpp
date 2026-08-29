@@ -38,29 +38,31 @@ namespace eshkol {
 
 // ===== TENSOR CREATION HELPER =====
 
-/**
- * @brief Emit the ESHKOL_MAX_TENSOR_ELEMS check for a runtime element count.
- *
- * Shared by both tensor-construction helpers below. The emitted call is a
- * single runtime call per tensor creation — not per element — and does not
- * touch the tensor's data, so it cannot change any computed value.
- */
-void TensorCodegen::emitTensorElementLimitCheck(llvm::Value* total_elements) {
-    if (!total_elements) return;
+void TensorCodegen::emitTensorShapeValidation(llvm::Value* dims_ptr,
+                                               llvm::Value* ndim,
+                                               llvm::Value* expected_elements,
+                                               const char* op_name) {
+    if (!dims_ptr || !ndim) return;
     auto& builder = ctx_.builder();
-    llvm::Module& module = ctx_.module();
-    llvm::Function* fn = module.getFunction("eshkol_enforce_tensor_elements");
+    llvm::Function* fn = ctx_.module().getFunction(
+        "eshkol_validate_tensor_shape_or_raise");
     if (!fn) {
         llvm::FunctionType* ft = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx_.context()), {ctx_.int64Type()}, false);
+            builder.getVoidTy(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()},
+            false);
         fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                    "eshkol_enforce_tensor_elements", &module);
+                                    "eshkol_validate_tensor_shape_or_raise",
+                                    &ctx_.module());
     }
-    llvm::Value* count = total_elements;
-    if (count->getType() != ctx_.int64Type()) {
+    llvm::Value* count = expected_elements
+        ? expected_elements
+        : llvm::ConstantInt::get(ctx_.int64Type(), -1, true);
+    if (count->getType() != ctx_.int64Type())
         count = builder.CreateIntCast(count, ctx_.int64Type(), true);
-    }
-    builder.CreateCall(fn, {count});
+    llvm::Value* name = builder.CreateGlobalString(op_name ? op_name : "tensor",
+                                                   "tensor_shape_op");
+    builder.CreateCall(fn, {dims_ptr, ndim, count, name});
 }
 
 llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>& dims,
@@ -75,22 +77,13 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // Calculate total elements
+    // Calculate total elements. The runtime validator below recomputes the
+    // product with checked arithmetic; this SSA value is only used after that
+    // validation has returned.
     llvm::Value* total_elements = dims[0];
     for (size_t i = 1; i < dims.size(); i++) {
         total_elements = builder.CreateMul(total_elements, dims[i]);
     }
-
-    // SW-10: ESHKOL_MAX_TENSOR_ELEMS. Generated code builds a tensor out of
-    // three separate arena allocations rather than going through
-    // arena_allocate_tensor_full(), so the ceiling has to be applied here,
-    // where the element count first exists, or a compiled `make-tensor` would
-    // escape a limit that a runtime-constructed tensor respects.
-    emitTensorElementLimitCheck(total_elements);
-
-    // Allocate tensor structure with header using arena
-    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
-    llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "new_tensor");
 
     // Allocate dimensions array using arena
     llvm::Value* dims_size = llvm::ConstantInt::get(ctx_.int64Type(), dims.size() * sizeof(uint64_t));
@@ -104,6 +97,16 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
             llvm::ConstantInt::get(ctx_.int64Type(), i));
         builder.CreateStore(dims[i], dim_ptr);
     }
+
+    emitTensorShapeValidation(
+        typed_dims_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), dims.size()),
+        nullptr);
+
+    // Allocate tensor structure with header only after dimensions have passed
+    // positivity, overflow, allocation-size, and resource-limit checks.
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "new_tensor");
 
     // Allocate elements array using arena
     llvm::Value* elements_size = builder.CreateMul(total_elements,
@@ -183,8 +186,10 @@ llvm::Value* TensorCodegen::createTensorFromDimsArray(llvm::Value* dims_ptr,
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
 
-    // SW-10: same ceiling as createTensorWithDims, for the runtime-shape path.
-    emitTensorElementLimitCheck(total);
+    // Validate the caller-owned shape before copying it or allocating tensor
+    // storage. This also recomputes the product, so a wrapped caller total
+    // cannot become an allocation size.
+    emitTensorShapeValidation(dims_ptr, ndim, nullptr);
 
     // Allocate tensor structure with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
