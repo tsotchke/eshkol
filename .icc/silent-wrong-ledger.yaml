@@ -6698,7 +6698,8 @@ entries:
 
   - id: SW-84
     bucket: SILENT-WRONG
-    status: open
+    status: closed
+    closed_at: "working-tree fix"
     title: "a with-exception-handler handler that RETURNS from a non-continuable raise swallows the condition on every engine"
     repro: "(display (guard (g (#t 'guard-fired)) (with-exception-handler (lambda (e) 'ignored) (lambda () (raise 'esc)))))"
     observed: >-
@@ -6712,6 +6713,24 @@ entries:
       exception is unspecified, so the specified, checkable part is only that
       the condition must NOT be absorbed - control has to reach the enclosing
       handler.
+    observed_after: >-
+      The enclosing guard receives the secondary exception for direct, nested,
+      and handler-raises cases on native JIT/AOT and VM source/ESKB routes. An
+      unhandled returned-handler case exits nonzero, reports the secondary
+      diagnostic, and does not print its MUST-NOT-PRINT sentinel.
+    fix: >-
+      Native codegen emits eshkol_raise_secondary_exception after removing the
+      returned handler. Both bytecode compilers emit OP_RAISE_SECONDARY, and
+      both VM dispatch paths create and redispatch the secondary condition after
+      removing the current handler.
+    evidence: >-
+      tests/error_handling/sw84_noncontinuable_handler_test.esk is covered by
+      native JIT/AOT and VM-source ctests; the parity corpus covers native,
+      VM-source, and ESKB routes; the expected-fatal harness checks the
+      secondary diagnostic, nonzero exit, and sentinel absence.
+    notes: >-
+      The secondary condition's exact identity is unspecified by R7RS; the
+      tests assert only the required control transfer and fatal diagnostic.
     caught_by: [guard-coverage-gate]
     missed_by: [vm-parity, differential, error-handling-suite]
     repro_file: tests/error_handling/guard_coverage/found/weh_handler_return_swallows_condition.esk

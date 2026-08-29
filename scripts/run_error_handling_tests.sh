@@ -82,14 +82,23 @@ for test_file in "$TEST_DIR"/*.esk; do
 
     # Clean up stale artifacts
     eshkol_test_reset_bin
+    expected_fatal=0
+    expected_fatal_file="${test_file%.esk}.expected-fatal"
+    if [ -f "$expected_fatal_file" ]; then
+        expected_fatal=1
+    fi
     # Try to compile
     if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
         # Compilation succeeded, try to run
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
+            if [ "$expected_fatal" -eq 1 ]; then
+                echo -e "${RED}EXPECTED FATAL DID NOT OCCUR${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++)) || true
             # A failure marker anywhere in the output fails the test — the old
             # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
             # form that most test programs actually print.
-            if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
+            elif eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
                 echo -e "${RED}ASSERTION FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
                 ((FAIL++)) || true
@@ -100,9 +109,20 @@ for test_file in "$TEST_DIR"/*.esk; do
             fi
         else
             exit_code=$?
-            echo -e "${RED}RUNTIME FAIL (exit $exit_code)${NC}"
-            FAILED_TESTS+=("$test_name")
-            ((FAIL++)) || true
+            if [ "$expected_fatal" -eq 1 ] &&
+               grep -q "handler returned from non-continuable raise" "$ESHKOL_TEST_OUT" &&
+               ! grep -q "MUST-NOT-PRINT" "$ESHKOL_TEST_OUT"; then
+                echo -e "${GREEN}PASS (expected fatal, exit $exit_code)${NC}"
+                ((PASS++)) || true
+            else
+                if [ "$expected_fatal" -eq 1 ]; then
+                    echo -e "${RED}EXPECTED FATAL CONTRACT FAIL (exit $exit_code)${NC}"
+                else
+                    echo -e "${RED}RUNTIME FAIL (exit $exit_code)${NC}"
+                fi
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++)) || true
+            fi
         fi
     else
         echo -e "${RED}COMPILE FAIL${NC}"

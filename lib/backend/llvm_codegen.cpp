@@ -22858,12 +22858,28 @@ private:
         IRBuilder<> guard_entry_builder(&guard_func->getEntryBlock(), guard_func->getEntryBlock().begin());
         AllocaInst* raised_alloca = guard_entry_builder.CreateAlloca(tagged_value_type, nullptr, "guard_raised_val");
         builder->CreateCall(get_raised_func, {raised_alloca});
-        Value* raised_tagged = builder->CreateLoad(tagged_value_type, raised_alloca, "raised_tagged");
 
-        // Bind raised value to variable in scope (R7RS-compliant: original value, not exception struct)
+        // Bind the raised value through entry-block storage while compiling the
+        // clauses.  A load emitted in handler_block is an SSA value defined only
+        // on the exception edge; putting that load directly in symbol_table lets
+        // later clause/closure code use it from blocks that do not dominate the
+        // load.  The alloca is function-scoped and therefore dominates every
+        // clause block, and it also gives the guard variable the mutable binding
+        // required by R7RS's let-based expansion.
         const char* var_name = op->guard_op.var_name;
+        auto previous_binding = symbol_table.find(var_name ? var_name : "");
+        const bool had_previous_binding = var_name && previous_binding != symbol_table.end();
+        Value* previous_binding_value = had_previous_binding ? previous_binding->second : nullptr;
+        auto restore_guard_binding = [&]() {
+            if (!var_name) return;
+            if (had_previous_binding) {
+                symbol_table[var_name] = previous_binding_value;
+            } else {
+                symbol_table.erase(var_name);
+            }
+        };
         if (var_name) {
-            symbol_table[var_name] = raised_tagged;
+            symbol_table[var_name] = raised_alloca;
         }
 
         // Also get exception pointer for fallthrough/re-raise cases
@@ -23061,6 +23077,7 @@ private:
                 PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
                 phi->addIncoming(body_result, try_exit_block);
                 phi->addIncoming(phi_inputs[0].first, phi_inputs[0].second);
+                restore_guard_binding();
                 return phi;
             } else if (phi_inputs.size() > 0) {
                 // Calculate the number of incoming edges (with or without try_exit)
@@ -23072,9 +23089,11 @@ private:
                 for (auto& [val, block] : phi_inputs) {
                     phi->addIncoming(val, block);
                 }
+                restore_guard_binding();
                 return phi;
             } else if (try_exit_block) {
                 // No handler inputs but we have a normal exit
+                restore_guard_binding();
                 return body_result;
             }
         } else {
@@ -23090,13 +23109,16 @@ private:
                 PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "guard_result");
                 phi->addIncoming(body_result, try_exit_block);
                 phi->addIncoming(exc_tagged, handler_exit);  // Use captured block
+                restore_guard_binding();
                 return phi;
             } else {
                 // Body always throws, just return exception value
+                restore_guard_binding();
                 return exc_tagged;
             }
         }
 
+        restore_guard_binding();
         return packNullToTaggedValue();
     }
 
@@ -23471,6 +23493,8 @@ private:
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
         Function* setjmp_func = getOrDeclareSetjmpFunc();
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
+        Function* get_exception_func = module->getFunction("eshkol_get_current_exception");
+        Function* secondary_raise_func = module->getFunction("eshkol_raise_secondary_exception");
 
         if (!push_handler_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
@@ -23483,6 +23507,21 @@ private:
         if (!get_raised_func) {
             FunctionType* get_raised_type = FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false);
             get_raised_func = Function::Create(get_raised_type, Function::ExternalLinkage, "eshkol_get_raised_value", module.get());
+        }
+        if (!get_exception_func) {
+            FunctionType* get_exception_type = FunctionType::get(
+                builder->getPtrTy(), {}, false);
+            get_exception_func = Function::Create(
+                get_exception_type, Function::ExternalLinkage,
+                "eshkol_get_current_exception", module.get());
+        }
+        if (!secondary_raise_func) {
+            FunctionType* secondary_raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            secondary_raise_func = Function::Create(
+                secondary_raise_type, Function::ExternalLinkage,
+                "eshkol_raise_secondary_exception", module.get());
+            secondary_raise_func->setDoesNotReturn();
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -23530,6 +23569,8 @@ private:
         // Handler block: pop handler, get raised value, call handler closure
         builder->SetInsertPoint(handler_block);
         builder->CreateCall(pop_handler_func, {});
+        Value* original_exception = builder->CreateCall(
+            get_exception_func, {}, "weh_original_exception");
 
         // Get the original raised value (R7RS-compliant)
         IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
@@ -23546,8 +23587,8 @@ private:
 
         BasicBlock* handler_exit_block = nullptr;
         if (!handler_terminated) {
-            handler_exit_block = builder->GetInsertBlock();
-            builder->CreateBr(done_block);
+            builder->CreateCall(secondary_raise_func, {original_exception});
+            builder->CreateUnreachable();
         }
 
         // Done block: merge results with PHI
