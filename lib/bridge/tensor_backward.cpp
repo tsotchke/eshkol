@@ -1556,10 +1556,9 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
  * having propagated exactly nothing. Every input gradient came back 0.0 with no
  * diagnostic, which a caller cannot tell from a genuine zero.
  *
- * The rules below are exact. Two of them are compositions the file already
- * differentiates for the Frechet mean, and they reuse that machinery rather
- * than re-deriving it — deriving the same Mobius Jacobian twice is how a sign
- * error survives a gradient check on the other copy.
+ * The rules below are exact. The geometric rules call directional evaluators
+ * in riemannian_core.h, so their adjoints are contractions of the shared
+ * forward formulas rather than separately written square-based copies.
  *
  * WHERE THESE REFUSE, AND WHY IT IS NOT CONSERVATISM. The Riemannian distance
  * d(x, y) behaves like |x - y| near coincidence: it has no derivative at x = y,
@@ -1600,49 +1599,32 @@ double scalar_upstream(const ad_node_t* node) {
  *  @return false when the two points coincide (arg <= 1), where the distance
  *          has no derivative, or when either point is outside the ball.
  */
-bool stable_poincare_direction(const double* from, const double* to, double c,
-                               int64_t n, std::vector<double>* direction) {
-    const int dim = (int)n;
-    const double nf = eshkol_rm_one_minus_bnorm2(from, c, dim);
-    const double nt = eshkol_rm_one_minus_bnorm2(to, c, dim);
-    if (!(nf > 0.0) || !(nt > 0.0)) return false;
-    const double to2 = eshkol_rm_scaled_norm2_times(to, 1.0, dim);
-    const double den = eshkol_rm_mobius_den_negx(from, to, c, dim);
-    const double na = den + c * to2 * nf;
-    direction->resize((size_t)n);
-    double norm = 0.0;
-    for (int64_t i = 0; i < n; ++i) {
-        (*direction)[(size_t)i] = nf * to[i] - na * from[i];
-        norm = std::hypot(norm, (*direction)[(size_t)i]);
-    }
-    if (!(norm > 0.0) || !std::isfinite(norm)) return false;
-    for (int64_t i = 0; i < n; ++i) (*direction)[(size_t)i] /= norm;
-    return true;
-}
-
 bool hyperbolic_distance_grad(const double* x, const double* y, double c,
                               int64_t n, double* gx, double* gy,
                               double* dist_out) {
     if (!(c > 0.0) || !std::isfinite(c) || n <= 0) return false;
-    if (eshkol_rm_check_point(x, -c, (int)n) != nullptr ||
-        eshkol_rm_check_point(y, -c, (int)n) != nullptr) return false;
-    bool distinct = false;
-    for (int64_t i = 0; i < n; ++i)
-        if (x[i] != y[i]) { distinct = true; break; }
-    if (!distinct) return false;
-    double distance = 0.0;
-    if (eshkol_rm_distance(x, y, -c, (int)n, &distance) != nullptr ||
-        !std::isfinite(distance)) return false;
-    if (dist_out) *dist_out = distance;
-    std::vector<double> dx, dy;
-    if (!stable_poincare_direction(x, y, c, n, &dx) ||
-        !stable_poincare_direction(y, x, c, n, &dy)) return false;
-    const double lx = eshkol_rm_lambda(x, -c, (int)n);
-    const double ly = eshkol_rm_lambda(y, -c, (int)n);
-    if (!std::isfinite(lx) || !std::isfinite(ly)) return false;
-    for (int64_t i = 0; i < n; ++i) {
-        if (gx) gx[i] = -lx * dx[(size_t)i];
-        if (gy) gy[i] = -ly * dy[(size_t)i];
+    std::vector<double> zero((size_t)n, 0.0), seed((size_t)n, 0.0);
+    for (int64_t j = 0; j < n; ++j) {
+        seed[(size_t)j] = 1.0;
+        double distance = 0.0, tangent = 0.0;
+        if (!eshkol_rm_distance_directional(x, y, seed.data(), zero.data(),
+                                            -c, (int)n, &distance, &tangent))
+            return false;
+        if (gx) gx[j] = tangent;
+        if (dist_out && j == 0) *dist_out = distance;
+        seed[(size_t)j] = 0.0;
+    }
+    if (gy) {
+        for (int64_t j = 0; j < n; ++j) {
+            seed[(size_t)j] = 1.0;
+            double distance = 0.0, tangent = 0.0;
+            if (!eshkol_rm_distance_directional(x, y, zero.data(), seed.data(),
+                                                -c, (int)n, &distance, &tangent))
+                return false;
+            gy[j] = tangent;
+            if (dist_out && j == 0 && !gx) *dist_out = distance;
+            seed[(size_t)j] = 0.0;
+        }
     }
     return true;
 }
@@ -1696,9 +1678,10 @@ extern "C" void tensor_hyperbolic_distance_backward(ad_node_t* node) {
  *  The forward is out = x (+)_c (coef * v) with
  *      coef = tanh(sqrt(c) * lambda_x * |v| / 2) / (sqrt(c) * |v|),
  *      lambda_x = 2 / (1 - c|x|^2).
- *  So the differential is the Mobius addition's two Jacobians composed with the
- *  differential of the radial factor. The Mobius Jacobians come from the same
- *  routine the Frechet rule uses, so the two cannot disagree about them.
+ *  The differential is evaluated by eshkol_rm_exp_directional, which runs the
+ *  same scaled helpers and multiplication order as eshkol_rm_exp_map. A
+ *  separately written Jacobian would reintroduce direct squares at exactly
+ *  the exponent boundaries the forward path handles.
  *
  *  coef has a removable singularity at |v| = 0: it tends to lambda_x/2, and its
  *  v-derivative tends to 0. Below a threshold the series
@@ -1728,55 +1711,6 @@ extern "C" void tensor_poincare_exp_map_backward(ad_node_t* node) {
     const double* X = (const double*)xn->tensor_value;
     const double* V = (const double*)vn_node->tensor_value;
     const double* g = (const double*)node->tensor_gradient;
-    const double sc = std::sqrt(c);
-
-    double vv = 0.0;
-    for (int64_t i = 0; i < n; i++) vv += V[i] * V[i];
-    const double dx = ESHKOL_RM_LAMBDA0 / eshkol_rm_lambda(X, -c, (int)n);
-    if (!(dx > 0.0)) {
-        eshkol_fatal("poincare-exp-map backward: the base point is on or outside "
-                     "the Poincare ball (1 - c|x|^2 = %.17g).", dx);
-        return;
-    }
-    const double vnorm = std::sqrt(vv);
-
-    /* coef and its two derivative factors. `dcoef_dv_over_v` is the scalar k
-     * with dcoef/dv_j = k * v_j; splitting it out is what lets the |v| -> 0
-     * limit be taken exactly instead of as 0/0. */
-    double coef, dcoef_dv_over_v;
-    const double u = sc * vnorm / dx;
-    const double kSmallU = 1e-6;            /* series is in u, not |v| */
-    if (std::fabs(u) < kSmallU) {
-        coef = 1.0 / dx - c * vv / (3.0 * dx * dx * dx);
-        dcoef_dv_over_v = -2.0 * c / (3.0 * dx * dx * dx);
-    } else {
-        const double th = std::tanh(u);
-        const double sech2 = 1.0 - th * th;
-        coef = th / (sc * vnorm);
-        dcoef_dv_over_v = (sech2 / dx - th / (sc * vnorm)) / vv;
-    }
-    /* dcoef/dx_j = 2 c x_j sech^2(u) / dx^2 (through lambda_x only). */
-    const double th2 = std::tanh(u);
-    const double sech2x = 1.0 - th2 * th2;
-    const double dcoef_dx_scale = 2.0 * c * sech2x / (dx * dx);
-
-    std::vector<double> s((size_t)n);
-    for (int64_t i = 0; i < n; i++) s[(size_t)i] = coef * V[i];
-
-    FrechetGeometry geo(-c, n);
-    std::vector<double> Ja((size_t)(n * n)), Jx((size_t)(n * n)), outv((size_t)n);
-    geo.mobius_add_with_jacobians(X, s.data(), outv.data(), Ja.data(), Jx.data());
-
-    /* w = Jx^T g, the cotangent pulled back to the Mobius second argument. */
-    std::vector<double> w((size_t)n, 0.0);
-    for (int64_t j = 0; j < n; j++) {
-        double acc = 0.0;
-        for (int64_t i = 0; i < n; i++) acc += g[i] * Jx[(size_t)(i * n + j)];
-        w[(size_t)j] = acc;
-    }
-    /* wV = <w, V>, the only way V enters dcoef's contraction. */
-    double wV = 0.0;
-    for (int64_t i = 0; i < n; i++) wV += w[(size_t)i] * V[i];
 
     if (!xn->tensor_gradient) xn->tensor_gradient = alloc_grad((size_t)n);
     if (!vn_node->tensor_gradient) vn_node->tensor_gradient = alloc_grad((size_t)n);
@@ -1784,13 +1718,44 @@ extern "C" void tensor_poincare_exp_map_backward(ad_node_t* node) {
     double* dV = (double*)vn_node->tensor_gradient;
     if (!dX || !dV) return;
 
-    for (int64_t j = 0; j < n; j++) {
-        /* d out/d x = Ja + Jx * (ds/dx),  ds_m/dx_j = V_m * dcoef/dx_j */
-        double direct = 0.0;
-        for (int64_t i = 0; i < n; i++) direct += g[i] * Ja[(size_t)(i * n + j)];
-        dX[j] += direct + wV * dcoef_dx_scale * X[j];
-        /* ds_m/dv_j = coef * delta_mj + V_m * dcoef/dv_j */
-        dV[j] += coef * w[(size_t)j] + wV * dcoef_dv_over_v * V[j];
+    bool zero_v = true;
+    for (int64_t i = 0; i < n; ++i)
+        if (V[i] != 0.0) { zero_v = false; break; }
+    if (zero_v) {
+        for (int64_t i = 0; i < n; ++i) {
+            dX[i] += g[i];
+            dV[i] += g[i];
+        }
+        return;
+    }
+
+    std::vector<double> zero((size_t)n, 0.0), seed((size_t)n, 0.0);
+    std::vector<double> dout((size_t)n);
+    for (int64_t j = 0; j < n; ++j) {
+        seed[(size_t)j] = 1.0;
+        if (!eshkol_rm_exp_directional(X, V, seed.data(), zero.data(),
+                                       -c, (int)n, nullptr, dout.data())) {
+            eshkol_fatal("poincare-exp-map backward: shared scaled forward could "
+                         "not produce a finite directional derivative. Refusing.");
+            return;
+        }
+        double acc = 0.0;
+        for (int64_t i = 0; i < n; ++i) acc += g[i] * dout[(size_t)i];
+        dX[j] += acc;
+        seed[(size_t)j] = 0.0;
+    }
+    for (int64_t j = 0; j < n; ++j) {
+        seed[(size_t)j] = 1.0;
+        if (!eshkol_rm_exp_directional(X, V, zero.data(), seed.data(),
+                                       -c, (int)n, nullptr, dout.data())) {
+            eshkol_fatal("poincare-exp-map backward: shared scaled forward could "
+                         "not produce a finite directional derivative. Refusing.");
+            return;
+        }
+        double acc = 0.0;
+        for (int64_t i = 0; i < n; ++i) acc += g[i] * dout[(size_t)i];
+        dV[j] += acc;
+        seed[(size_t)j] = 0.0;
     }
 }
 
@@ -1799,80 +1764,56 @@ static bool stable_poincare_log_jacobians(
     std::vector<double>* log_out, std::vector<double>* dlog_dx,
     std::vector<double>* dlog_dy) {
     if (!(c > 0.0) || !std::isfinite(c) || n <= 0) return false;
-    const int dim = (int)n;
-    double distance = 0.0;
-    if (eshkol_rm_distance(x, y, -c, dim, &distance) != nullptr) return false;
-    double x2 = eshkol_rm_scaled_norm2_times(x, 1.0, dim);
-    double y2 = eshkol_rm_scaled_norm2_times(y, 1.0, dim);
-    double xy = eshkol_rm_scaled_dot_factor(x, y, 1.0, dim);
-    double nb = eshkol_rm_one_minus_bnorm2(x, c, dim);
-    double den = eshkol_rm_mobius_den_negx(x, y, c, dim);
-    double na = den + c * y2 * nb;
-    std::vector<double> N((size_t)n), dNdx((size_t)(n * n)), dNdy((size_t)(n * n));
-    for (int64_t i = 0; i < n; ++i) N[(size_t)i] = nb * y[i] - na * x[i];
-    double N2 = eshkol_rm_scaled_norm2_times(N.data(), 1.0, dim);
-    double Nnorm = std::sqrt(N2);
-    if (!(Nnorm > 0.0) || !std::isfinite(Nnorm)) return false;
-
-    std::vector<double> dnbx((size_t)n), ddx((size_t)n), ddy((size_t)n);
+    const size_t count = (size_t)n;
+    log_out->assign(count, 0.0);
+    dlog_dx->assign(count * count, 0.0);
+    dlog_dy->assign(count * count, 0.0);
+    std::vector<double> zero(count, 0.0), seed(count, 0.0), values(count);
+    std::vector<double> directional(count);
     for (int64_t j = 0; j < n; ++j) {
-        dnbx[(size_t)j] = -2.0 * c * x[j];
-        const double dqx = -c * y[j], dqy = -c * x[j];
-        const double dgramx = 2.0 * x[j] * y2 - 2.0 * xy * y[j];
-        const double dgramy = 2.0 * y[j] * x2 - 2.0 * xy * x[j];
-        ddx[(size_t)j] = 2.0 * (1.0 - c * xy) * dqx + c * c * dgramx;
-        ddy[(size_t)j] = 2.0 * (1.0 - c * xy) * dqy + c * c * dgramy;
-        for (int64_t i = 0; i < n; ++i) {
-            dNdx[(size_t)(i * n + j)] = dnbx[(size_t)j] * y[i]
-                - (ddx[(size_t)j] + c * y2 * dnbx[(size_t)j]) * x[i]
-                - (i == j ? na : 0.0);
-            dNdy[(size_t)(i * n + j)] = (i == j ? nb : 0.0)
-                - (ddy[(size_t)j] + 2.0 * c * y[j] * nb) * x[i];
-        }
+        seed[(size_t)j] = 1.0;
+        if (!eshkol_rm_log_directional(x, y, seed.data(), zero.data(),
+                                       -c, (int)n, values.data(),
+                                       directional.data()))
+            return false;
+        if (j == 0) *log_out = values;
+        for (int64_t i = 0; i < n; ++i)
+            (*dlog_dx)[(size_t)i * count + (size_t)j] = directional[(size_t)i];
+        seed[(size_t)j] = 0.0;
     }
-    std::vector<double> grad_x((size_t)n), grad_y((size_t)n);
-    if (!hyperbolic_distance_grad(x, y, c, n, grad_x.data(), grad_y.data(), nullptr))
-        return false;
-    const double inv_lambda0 = 1.0 / ESHKOL_RM_LAMBDA0;
-    const double inv_lambda = nb * inv_lambda0;
-    const double a = distance * inv_lambda;
-    std::vector<double> nvec((size_t)n);
-    for (int64_t i = 0; i < n; ++i) nvec[(size_t)i] = N[(size_t)i] / Nnorm;
-    log_out->assign((size_t)n, 0.0);
-    dlog_dx->assign((size_t)(n * n), 0.0);
-    dlog_dy->assign((size_t)(n * n), 0.0);
-    for (int64_t i = 0; i < n; ++i) (*log_out)[(size_t)i] = a * nvec[(size_t)i];
     for (int64_t j = 0; j < n; ++j) {
-        const double da_x = grad_x[(size_t)j] * inv_lambda
-                          + distance * dnbx[(size_t)j] * inv_lambda0;
-        const double da_y = grad_y[(size_t)j] * inv_lambda;
-        double proj_x = 0.0, proj_y = 0.0;
-        for (int64_t m = 0; m < n; ++m) {
-            proj_x += nvec[(size_t)m] * dNdx[(size_t)(m * n + j)];
-            proj_y += nvec[(size_t)m] * dNdy[(size_t)(m * n + j)];
-        }
-        for (int64_t i = 0; i < n; ++i) {
-            (*dlog_dx)[(size_t)(i * n + j)] = da_x * nvec[(size_t)i]
-                + a * (dNdx[(size_t)(i * n + j)] - nvec[(size_t)i] * proj_x) / Nnorm;
-            (*dlog_dy)[(size_t)(i * n + j)] = da_y * nvec[(size_t)i]
-                + a * (dNdy[(size_t)(i * n + j)] - nvec[(size_t)i] * proj_y) / Nnorm;
-        }
+        seed[(size_t)j] = 1.0;
+        if (!eshkol_rm_log_directional(x, y, zero.data(), seed.data(),
+                                       -c, (int)n, values.data(),
+                                       directional.data()))
+            return false;
+        for (int64_t i = 0; i < n; ++i)
+            (*dlog_dy)[(size_t)i * count + (size_t)j] = directional[(size_t)i];
+        seed[(size_t)j] = 0.0;
     }
     return true;
 }
 
 static bool euclidean_distance_grad(const double* x, const double* y, int64_t n,
                                     double* gx, double* gy) {
-    double d2 = 0.0;
-    for (int64_t i = 0; i < n; ++i) {
-        double d = x[i] - y[i];
-        d2 += d * d;
+    std::vector<double> zero((size_t)n, 0.0), seed((size_t)n, 0.0);
+    for (int64_t j = 0; j < n; ++j) {
+        seed[(size_t)j] = 1.0;
+        double tangent = 0.0;
+        if (!eshkol_rm_distance_directional(x, y, seed.data(), zero.data(),
+                                            0.0, (int)n, nullptr, &tangent))
+            return false;
+        gx[j] = tangent;
+        seed[(size_t)j] = 0.0;
     }
-    double d = std::sqrt(d2);
-    if (!(d > 0.0) || !std::isfinite(d)) return false;
-    for (int64_t i = 0; i < n; ++i) {
-        gx[i] = (x[i] - y[i]) / d;
-        gy[i] = -gx[i];
+    for (int64_t j = 0; j < n; ++j) {
+        seed[(size_t)j] = 1.0;
+        double tangent = 0.0;
+        if (!eshkol_rm_distance_directional(x, y, zero.data(), seed.data(),
+                                            0.0, (int)n, nullptr, &tangent))
+            return false;
+        gy[j] = tangent;
+        seed[(size_t)j] = 0.0;
     }
     return true;
 }

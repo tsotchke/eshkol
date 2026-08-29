@@ -1502,19 +1502,32 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         double* row = vm_geometric_scratch(vm, nk, 1);
         if (!row) { vm_push(vm, NIL_VAL); break; }
         for (int i = 0; i < nq; i++) {
-            double mx = -HUGE_VAL;
+            double min_dist = HUGE_VAL;
             for (int j = 0; j < nk; j++) {
                 double dist = 0.0;
                 const char* why = eshkol_rm_distance(q->data + (int64_t)i * dim,
                                                      k->data + (int64_t)j * dim,
                                                      Kc, dim, &dist);
                 if (why) { vm_geometric_raise(vm, "geodesic-attention-forward", why, Kc); return; }
-                row[j] = -dist * scale;
-                if (row[j] > mx) mx = row[j];
+                row[j] = dist;
+                if (dist < min_dist) min_dist = dist;
             }
             double wsum = 0.0;
-            for (int j = 0; j < nk; j++) { row[j] = exp(row[j] - mx); wsum += row[j]; }
-            if (wsum <= 0.0) wsum = 1.0;
+            for (int j = 0; j < nk; j++) {
+                double shifted = -(row[j] - min_dist) * scale;
+                if (isnan(shifted) || shifted > 0.0) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                        "the shifted score is not finite", Kc);
+                    return;
+                }
+                row[j] = exp(shifted);
+                wsum += row[j];
+            }
+            if (!(wsum > 0.0) || !isfinite(wsum)) {
+                vm_geometric_raise(vm, "geodesic-attention-forward",
+                                   "softmax normalisation is not finite", Kc);
+                return;
+            }
             for (int j = 0; j < nk; j++) {
                 double w = row[j] / wsum;
                 for (int d = 0; d < vdim; d++)

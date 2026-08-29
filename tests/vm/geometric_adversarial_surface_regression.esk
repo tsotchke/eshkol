@@ -54,3 +54,52 @@
         "curvature gradient refuses non-finite derivative")
 (report (eq? curvature-hessian-result 'refused)
         "curvature hessian refuses non-finite derivative")
+
+;; log_x(y) is the identity to first order at coincidence, including the
+;; origin. The reverse rule must take this analytic limit instead of dividing
+;; by the vanishing Mobius numerator.
+(define coincident-log
+  (hyperbolic-log-map (vec2 0.0 0.0) (vec2 0.0 0.0) -1.0))
+(report (and (= (tensor-ref coincident-log 0) 0.0)
+             (= (tensor-ref coincident-log 1) 0.0))
+        "log map has an exact zero at coincident origin")
+
+;; Score scaling must be shifted before multiplication. With finite inputs the
+;; scaled distances are finite, but their absolute scores overflow f64.
+(define overflow-q (let ((t (make-tensor '(1 2) 0.0)))
+                     (tensor-set! t 0 0.0)
+                     (tensor-set! t 1 1e149)
+                     t))
+(define overflow-k (let ((t (make-tensor '(2 2) 0.0)))
+                     (tensor-set! t 0 2e149)
+                     (tensor-set! t 2 3e149)
+                     t))
+(define overflow-v (let ((t (make-tensor '(2 1) 0.0)))
+                     (tensor-set! t 0 1.0)
+                     (tensor-set! t 1 2.0)
+                     t))
+(define overflow-attention
+  (guard (e (#t 'refused))
+    (geodesic-attention-forward overflow-q overflow-k overflow-v -1e-320)))
+(report (and (not (eq? overflow-attention 'refused))
+             (finite? (tensor-ref overflow-attention 0)))
+        "geodesic attention remains finite after score scaling")
+
+;; The fixed-angle spherical K derivatives diverge beyond f64 at the positive
+;; subnormal floor. Return a catchable representability refusal, never inf.
+(define tiny-sphere (make-spherical-manifold 2))
+(set-curvature! tiny-sphere 5e-324)
+(define tiny-sphere-pair (let ((t (make-tensor '(4) 0.0)))
+                           (tensor-set! t 0 4.4989137945431964e161)
+                           (tensor-set! t 3 4.4989137945431964e161)
+                           t))
+(define tiny-sphere-gradient
+  (guard (e (#t 'refused))
+    (curvature-gradient tiny-sphere tiny-sphere-pair)))
+(define tiny-sphere-hessian
+  (guard (e (#t 'refused))
+    (curvature-hessian tiny-sphere tiny-sphere-pair)))
+(report (eq? tiny-sphere-gradient 'refused)
+        "spherical curvature gradient refuses unrepresentable derivative")
+(report (eq? tiny-sphere-hessian 'refused)
+        "spherical curvature hessian refuses unrepresentable derivative")

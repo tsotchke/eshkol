@@ -1203,7 +1203,9 @@ The fused path. `Q`, `K` and `V` must all have rank ≥ 2; `K`'s feature dimensi
 equal `Q`'s and `V` must have at least as many rows as `K`. Returns a tensor of shape
 `(nq vdim)` where row `i` is the average of `V`'s rows weighted by the softmax of
 `−d_K(qᵢ, kⱼ)/(√c·√dim)`, the curvature-adaptive scaling `ad_geodesic_attention`
-applies. The maximum is subtracted before exponentiating. The aggregation of `V` is a
+applies. The finite distances are shifted by their row minimum before scaling,
+which is the same maximum shift without ever forming an overflowing absolute
+score. The aggregation of `V` is a
 Euclidean weighted sum, which is what the AD bridge also computes — only the SCORES
 carry the metric. Note this is still **not** the composition of ids 844/846/845,
 whose scalings differ.
@@ -1257,6 +1259,12 @@ vary `K`" is not a curve in any single manifold. The family these ops
 differentiate on the spherical branch holds each pair at **fixed angular
 position** and lets the radius follow `K`: with `θ = arccos(⟨x,y⟩/R²)` fixed,
 `d = θ·K^(−1/2)`, so `d' = −θK^(−3/2)/2` and `d'' = 3θK^(−5/2)/4`.
+
+The spherical derivative is returned only when both analytic values are
+representable in f64. At the positive subnormal curvature floor, a nonzero
+fixed angle can make either derivative exceed f64 even though the distance is
+finite; that case raises rather than returning a successful infinity. The zero
+angle limit is `d' = d'' = 0`.
 
 **Why `K = 0` refuses.** The Poincaré ball of curvature `K` has conformal factor
 `λ_x = 2/(1 − c|x|²)`, so its distance tends to `2|x−y|` as `K → 0⁻` — twice what

@@ -96,6 +96,10 @@
 
 #include <math.h>
 #include <string.h>
+#include <float.h>
+#ifdef __cplusplus
+#include <vector>
+#endif
 
 /* The conformal factor at the origin of the ball chart. See the model block
  * above: this fixes the ball's radius (2/(LAMBDA0 sqrt c)) and the metric's
@@ -1028,6 +1032,12 @@ static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
  * follow K: with theta fixed, d = theta K^(-1/2), so d' = -theta K^(-3/2)/2 and
  * d'' = 3 theta K^(-5/2)/4.
  *
+ * The spherical formulas are published only when both derivatives are
+ * representable in f64. At the positive subnormal floor, the fixed-angle
+ * analytic derivative can be outside f64 even while d itself is finite; that
+ * case is an explicit refusal, never a successful infinity. For theta = 0 the
+ * continuous value is d' = d'' = 0, including at that floor.
+ *
  * K = 0 IS REFUSED WHILE ESHKOL_RM_FLAT_LAMBDA != ESHKOL_RM_LAMBDA0. The ball
  * branch tends to LAMBDA0 |x-y| as K -> 0-, the flat branch returns
  * FLAT_LAMBDA |x-y|, and the spherical branch diverges as K -> 0+. With the two
@@ -1116,10 +1126,341 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
         double th = atan2(sqrt(sn) / R, cs);
         double rk = 1.0 / sqrt(K);
         if (d_out) *d_out = th * rk;
+        if (th == 0.0) {
+            *d1_out = 0.0;
+            *d2_out = 0.0;
+            return NULL;
+        }
+        if (K <= DBL_TRUE_MIN)
+            return "the spherical curvature derivative is outside f64 range "
+                   "at the positive subnormal curvature floor";
+        /* The fixed-angle spherical family has d = theta K^(-1/2), so its
+         * analytic derivatives are -theta K^(-3/2)/2 and
+         * 3 theta K^(-5/2)/4.  At the subnormal end of f64 those values can
+         * exceed the result type even though d itself is finite.  Do not
+         * publish an infinity as a successful derivative: the caller must
+         * see the representability boundary and choose a higher-precision or
+         * reparameterised calculation. */
         *d1_out = -0.5 * th * rk / K;
         *d2_out =  0.75 * th * rk / (K * K);
+        if (!isfinite(*d1_out) || !isfinite(*d2_out))
+            return "the spherical curvature derivative is outside f64 range "
+                   "at this positive K (analytic fixed-angle limit is "
+                   "unrepresentable)";
         return NULL;
     }
 }
+
+#ifdef __cplusplus
+
+/*
+ * Directional derivatives of the shared forward formulas.
+ *
+ * These are deliberately kept beside the C forward implementation.  A
+ * reverse rule must not rebuild a second set of squared norms or Mobius
+ * denominators: those copies lose the max-abs scaling which makes the forward
+ * valid at both exponent ends.  The value members below are obtained from the
+ * shared helpers, while the tangent members differentiate the same algebra
+ * with those scale factors held fixed at the primal point.  Holding a valid
+ * normalization scale fixed is an identity-preserving way to differentiate
+ * the scaled expression, and avoids forming an otherwise overflowing square.
+ */
+struct eshkol_rm_directional {
+    double value;
+    double tangent;
+};
+
+static eshkol_rm_directional eshkol_rm_dadd(eshkol_rm_directional a,
+                                             eshkol_rm_directional b) {
+    return {a.value + b.value, a.tangent + b.tangent};
+}
+
+static eshkol_rm_directional eshkol_rm_dsub(eshkol_rm_directional a,
+                                             eshkol_rm_directional b) {
+    return {a.value - b.value, a.tangent - b.tangent};
+}
+
+static eshkol_rm_directional eshkol_rm_dneg(eshkol_rm_directional a) {
+    return {-a.value, -a.tangent};
+}
+
+static eshkol_rm_directional eshkol_rm_dmul(eshkol_rm_directional a,
+                                             eshkol_rm_directional b) {
+    return {a.value * b.value,
+            a.tangent * b.value + a.value * b.tangent};
+}
+
+static eshkol_rm_directional eshkol_rm_ddiv(eshkol_rm_directional a,
+                                             eshkol_rm_directional b) {
+    const double value = a.value / b.value;
+    return {value, a.tangent / b.value - value * (b.tangent / b.value)};
+}
+
+static eshkol_rm_directional eshkol_rm_dsqrt(eshkol_rm_directional a) {
+    if (a.value == 0.0) return {0.0, 0.0};
+    double r = sqrt(a.value);
+    return {r, a.tangent / (2.0 * r)};
+}
+
+static eshkol_rm_directional eshkol_rm_dtanh_over(eshkol_rm_directional z) {
+    const double small = ESHKOL_RM_TAU_SMALL;
+    const double w = z.value * z.value;
+    if (w < small * small) {
+        const double value = 1.0 - w / 3.0 + 2.0 * w * w / 15.0;
+        const double derivative = (-2.0 * z.value / 3.0 +
+                                   8.0 * z.value * w / 15.0) * z.tangent;
+        return {value, derivative};
+    }
+    const double t = tanh(z.value);
+    const double value = t / z.value;
+    const double derivative = ((1.0 - t * t) * z.value - t) /
+                              (z.value * z.value) * z.tangent;
+    return {value, derivative};
+}
+
+static eshkol_rm_directional eshkol_rm_dnorm(const double* a,
+                                              const double* da, int n) {
+    const double value = eshkol_rm_norm(a, n);
+    if (value == 0.0) return {0.0, 0.0};
+    return {value, eshkol_rm_scaled_dot_factor(a, da, 1.0, n) / value};
+}
+
+static eshkol_rm_directional eshkol_rm_dscaled_norm2_times(
+    const double* a, const double* da, double factor, int n) {
+    return {eshkol_rm_scaled_norm2_times(a, factor, n),
+            2.0 * eshkol_rm_scaled_dot_factor(a, da, factor, n)};
+}
+
+static eshkol_rm_directional eshkol_rm_done_minus_bnorm2(
+    const double* x, const double* dx, double B, int n) {
+    return {eshkol_rm_one_minus_bnorm2(x, B, n),
+            -2.0 * eshkol_rm_scaled_dot_factor(x, dx, B, n)};
+}
+
+static eshkol_rm_directional eshkol_rm_done_plus_dot(
+    const double* a, const double* b, const double* da, const double* db,
+    double B, int n) {
+    return {eshkol_rm_one_plus_dot(a, b, B, n),
+            eshkol_rm_scaled_dot_factor(da, b, B, n) +
+            eshkol_rm_scaled_dot_factor(a, db, B, n)};
+}
+
+static eshkol_rm_directional eshkol_rm_done_minus_dot(
+    const double* a, const double* b, const double* da, const double* db,
+    double B, int n) {
+    return {eshkol_rm_one_minus_dot(a, b, B, n),
+            -eshkol_rm_scaled_dot_factor(da, b, B, n) -
+             eshkol_rm_scaled_dot_factor(a, db, B, n)};
+}
+
+static eshkol_rm_directional eshkol_rm_dmobius_den(
+    const double* a, const double* b, const double* da, const double* db,
+    double B, int n, bool negate_a) {
+    eshkol_rm_directional q = negate_a
+        ? eshkol_rm_done_minus_dot(a, b, da, db, B, n)
+        : eshkol_rm_done_plus_dot(a, b, da, db, B, n);
+    eshkol_rm_directional result = eshkol_rm_dmul(q, q);
+    const double root_B = sqrt(B);
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            eshkol_rm_directional ai = {root_B * a[i], root_B * da[i]};
+            eshkol_rm_directional aj = {root_B * a[j], root_B * da[j]};
+            eshkol_rm_directional bi = {root_B * b[i], root_B * db[i]};
+            eshkol_rm_directional bj = {root_B * b[j], root_B * db[j]};
+            eshkol_rm_directional t = eshkol_rm_dsub(
+                eshkol_rm_dmul(ai, bj), eshkol_rm_dmul(aj, bi));
+            result = eshkol_rm_dadd(result, eshkol_rm_dmul(t, t));
+        }
+    }
+    result.value = negate_a
+        ? eshkol_rm_mobius_den_negx(a, b, B, n)
+        : eshkol_rm_mobius_den(a, b, B, n);
+    return result;
+}
+
+static void eshkol_rm_daxpby_exact(
+    eshkol_rm_directional p, const double* a, const double* da,
+    eshkol_rm_directional q, const double* b, const double* db, int n,
+    eshkol_rm_directional* out) {
+    std::vector<double> values((size_t)n);
+    eshkol_rm_axpby_exact(p.value, a, q.value, b, n, values.data());
+    for (int i = 0; i < n; ++i) {
+        const eshkol_rm_directional pa = {a[i], da[i]};
+        const eshkol_rm_directional pb = {b[i], db[i]};
+        out[i] = {values[(size_t)i],
+                  eshkol_rm_dmul(p, pa).tangent +
+                  eshkol_rm_dmul(q, pb).tangent};
+    }
+}
+
+static void eshkol_rm_dmobius_add(
+    const double* a, const double* b, const double* da, const double* db,
+    double B, int n, eshkol_rm_directional* out) {
+    eshkol_rm_directional den = eshkol_rm_dmobius_den(
+        a, b, da, db, B, n, false);
+    eshkol_rm_directional num_y = eshkol_rm_done_minus_bnorm2(a, da, B, n);
+    eshkol_rm_directional by2 = eshkol_rm_dscaled_norm2_times(b, db, B, n);
+    eshkol_rm_directional num_x = eshkol_rm_dadd(
+        den, eshkol_rm_dmul(by2, num_y));
+    eshkol_rm_daxpby_exact(num_x, a, da, num_y, b, db, n, out);
+    std::vector<double> values((size_t)n);
+    eshkol_rm_mobius_add(a, b, B, n, values.data());
+    for (int i = 0; i < n; ++i) {
+        const double numerator = out[i].value;
+        out[i].value = values[(size_t)i];
+        out[i].tangent = (out[i].tangent * den.value -
+                          numerator * den.tangent) /
+                         (den.value * den.value);
+    }
+}
+
+/* Directional derivative of the exact shared distance. */
+static bool eshkol_rm_distance_directional(
+    const double* x, const double* y, const double* dx, const double* dy,
+    double K, int n, double* out, double* dout) {
+    if (eshkol_rm_check_point(x, K, n) || eshkol_rm_check_point(y, K, n))
+        return false;
+    if (eshkol_rm_points_equal(x, y, n)) return false;
+    if (K == 0.0) {
+        std::vector<double> delta((size_t)n), ddelta((size_t)n);
+        for (int i = 0; i < n; ++i) {
+            delta[(size_t)i] = x[i] - y[i];
+            ddelta[(size_t)i] = dx[i] - dy[i];
+        }
+        eshkol_rm_directional d = eshkol_rm_dnorm(
+            delta.data(), ddelta.data(), n);
+        if (out) *out = ESHKOL_RM_FLAT_LAMBDA * d.value;
+        if (dout) *dout = ESHKOL_RM_FLAT_LAMBDA * d.tangent;
+        return isfinite(d.value) && isfinite(d.tangent);
+    }
+    if (K >= 0.0) return false;
+
+    const double B = eshkol_rm_ball_param(-K);
+    std::vector<double> delta((size_t)n), ddelta((size_t)n);
+    for (int i = 0; i < n; ++i) {
+        delta[(size_t)i] = x[i] - y[i];
+        ddelta[(size_t)i] = dx[i] - dy[i];
+    }
+    eshkol_rm_directional delta_norm = eshkol_rm_dnorm(
+        delta.data(), ddelta.data(), n);
+    eshkol_rm_directional px = eshkol_rm_done_minus_bnorm2(x, dx, B, n);
+    eshkol_rm_directional py = eshkol_rm_done_minus_bnorm2(y, dy, B, n);
+    eshkol_rm_directional P = eshkol_rm_dmul(px, py);
+    eshkol_rm_directional scaled_delta = eshkol_rm_ddiv(
+        delta_norm, eshkol_rm_dsqrt(P));
+    /* Keep the forward's multiplication order.  The squared scaled distance
+     * can overflow before its B factor is applied even when B*distance^2 is
+     * finite. */
+    eshkol_rm_directional w = eshkol_rm_dmul(
+        eshkol_rm_dmul({B, 0.0}, scaled_delta), scaled_delta);
+    double psi1 = 0.0, psi2 = 0.0;
+    const double psi_value = eshkol_rm_psi(w.value, &psi1, &psi2);
+    eshkol_rm_directional distance = {
+        ESHKOL_RM_LAMBDA0 * scaled_delta.value * psi_value,
+        ESHKOL_RM_LAMBDA0 *
+            (scaled_delta.tangent * psi_value +
+             scaled_delta.value * psi1 * w.tangent)};
+    double shared = 0.0;
+    if (eshkol_rm_distance(x, y, K, n, &shared)) return false;
+    if (out) *out = shared;
+    if (dout) *dout = distance.tangent;
+    return isfinite(shared) && isfinite(distance.tangent);
+}
+
+/* Directional derivative of exp_x(v), using the exact shared Mobius forward. */
+static bool eshkol_rm_exp_directional(
+    const double* x, const double* v, const double* dx, const double* dv,
+    double K, int n, double* out, double* dout) {
+    std::vector<double> shared((size_t)n), scratch((size_t)n);
+    if (eshkol_rm_exp_map(x, v, K, n, shared.data(), scratch.data()))
+        return false;
+    if (K >= 0.0) {
+        if (K > 0.0) return false;
+        for (int i = 0; i < n; ++i) {
+            if (out) out[i] = shared[(size_t)i];
+            if (dout) dout[i] = dx[i] + dv[i];
+        }
+        return true;
+    }
+    const double B = eshkol_rm_ball_param(-K);
+    eshkol_rm_directional vn = eshkol_rm_dnorm(v, dv, n);
+    eshkol_rm_directional nb = eshkol_rm_done_minus_bnorm2(x, dx, B, n);
+    eshkol_rm_directional lambda = eshkol_rm_ddiv(
+        {ESHKOL_RM_LAMBDA0, 0.0}, nb);
+    eshkol_rm_directional z = eshkol_rm_dmul(
+        {sqrt(B), 0.0}, eshkol_rm_ddiv(
+            eshkol_rm_dmul(lambda, vn), {ESHKOL_RM_LAMBDA0, 0.0}));
+    eshkol_rm_directional f = eshkol_rm_dmul(
+        eshkol_rm_ddiv(lambda, {ESHKOL_RM_LAMBDA0, 0.0}),
+        eshkol_rm_dtanh_over(z));
+    std::vector<double> s((size_t)n), ds((size_t)n);
+    for (int i = 0; i < n; ++i) {
+        s[(size_t)i] = f.value * v[i];
+        ds[(size_t)i] = f.tangent * v[i] + f.value * dv[i];
+    }
+    std::vector<eshkol_rm_directional> mapped((size_t)n);
+    eshkol_rm_dmobius_add(x, s.data(), dx, ds.data(), B, n, mapped.data());
+    for (int i = 0; i < n; ++i) {
+        if (out) out[i] = shared[(size_t)i];
+        if (dout) dout[i] = mapped[(size_t)i].tangent;
+    }
+    return true;
+}
+
+/* Directional derivative of log_x(y), including the exact coincidence limit. */
+static bool eshkol_rm_log_directional(
+    const double* x, const double* y, const double* dx, const double* dy,
+    double K, int n, double* out, double* dout) {
+    std::vector<double> shared((size_t)n), scratch((size_t)n);
+    if (eshkol_rm_log_map(x, y, K, n, shared.data(), scratch.data()))
+        return false;
+    if (eshkol_rm_points_equal(x, y, n)) {
+        for (int i = 0; i < n; ++i) {
+            if (out) out[i] = shared[(size_t)i];
+            if (dout) dout[i] = dy[i] - dx[i];
+        }
+        return true;
+    }
+    if (K >= 0.0) {
+        if (K > 0.0) return false;
+        for (int i = 0; i < n; ++i) {
+            if (out) out[i] = shared[(size_t)i];
+            if (dout) dout[i] = dy[i] - dx[i];
+        }
+        return true;
+    }
+    const double B = eshkol_rm_ball_param(-K);
+    eshkol_rm_directional den = eshkol_rm_dmobius_den(
+        x, y, dx, dy, B, n, true);
+    eshkol_rm_directional nb = eshkol_rm_done_minus_bnorm2(x, dx, B, n);
+    eshkol_rm_directional y2 = eshkol_rm_dscaled_norm2_times(y, dy, B, n);
+    eshkol_rm_directional na = eshkol_rm_dadd(
+        den, eshkol_rm_dmul(y2, nb));
+    std::vector<eshkol_rm_directional> V((size_t)n);
+    eshkol_rm_daxpby_exact(nb, y, dy, eshkol_rm_dneg(na), x, dx, n,
+                           V.data());
+    std::vector<double> Vv((size_t)n), dV((size_t)n);
+    for (int i = 0; i < n; ++i) {
+        Vv[(size_t)i] = V[(size_t)i].value;
+        dV[(size_t)i] = V[(size_t)i].tangent;
+    }
+    eshkol_rm_directional Vn = eshkol_rm_dnorm(Vv.data(), dV.data(), n);
+    double distance_value = 0.0, distance_tangent = 0.0;
+    if (!eshkol_rm_distance_directional(x, y, dx, dy, K, n,
+                                        &distance_value, &distance_tangent))
+        return false;
+    eshkol_rm_directional coefficient = eshkol_rm_ddiv(
+        eshkol_rm_ddiv({distance_value, distance_tangent},
+                       eshkol_rm_ddiv({ESHKOL_RM_LAMBDA0, 0.0}, nb)), Vn);
+    for (int i = 0; i < n; ++i) {
+        eshkol_rm_directional result = eshkol_rm_dmul(
+            coefficient, V[(size_t)i]);
+        if (out) out[i] = shared[(size_t)i];
+        if (dout) dout[i] = result.tangent;
+    }
+    return true;
+}
+
+#endif /* __cplusplus */
 
 #endif /* ESHKOL_BACKEND_RIEMANNIAN_CORE_H */

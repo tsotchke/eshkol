@@ -907,7 +907,7 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
             for (size_t i = 0; i < seq; ++i) {
                 size_t qi = (b * seq + i) * dim + off;
                 size_t limit = causal ? (i + 1) : seq;
-                double mx = -HUGE_VAL;
+                double min_dist = HUGE_VAL;
                 for (size_t j = 0; j < limit; ++j) {
                     size_t kj = (b * seq + j) * dim + off;
                     double dist = 0.0;
@@ -917,15 +917,34 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                         eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
                         return nullptr;
                     }
-                    scores[j] = -dist * scale;
-                    if (scores[j] > mx) mx = scores[j];
+                    /* Store the finite distance, not the scaled score.  The
+                     * latter can overflow even when the distance and the
+                     * eventual softmax are perfectly well-defined. */
+                    scores[j] = dist;
+                    if (dist < min_dist) min_dist = dist;
                 }
                 double sum = 0.0;
                 for (size_t j = 0; j < limit; ++j) {
-                    scores[j] = std::exp(scores[j] - mx);
+                    /* Subtract the minimum distance before scaling.  This is
+                     * the exact max-shift for scores=-scale*distance, but it
+                     * never forms the overflowing absolute score.  A large
+                     * positive gap is allowed to become -inf: exp(-inf)=0,
+                     * whereas -inf - -inf was the NaN-producing failure. */
+                    const double gap = scores[j] - min_dist;
+                    const double shifted = -gap * scale;
+                    if (std::isnan(shifted) || shifted > 0.0) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention could not "
+                                     "form a finite shifted score");
+                        return nullptr;
+                    }
+                    scores[j] = std::exp(shifted);
                     sum += scores[j];
                 }
-                if (sum <= 0.0) sum = 1.0;
+                if (!(sum > 0.0) || !std::isfinite(sum)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention softmax "
+                                 "normalisation is not finite");
+                    return nullptr;
+                }
                 double* arow =
                     &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
                 for (size_t j = 0; j < limit; ++j) arow[j] = scores[j] / sum;
