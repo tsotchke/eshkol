@@ -1,0 +1,214 @@
+;; Recent result: https://www.ulam.ai/research/jacobian.pdf
+;; Exact rational verification of the polynomial Keller map in Theorem 3.1,
+;; its cubic fiber description, discriminant fiber counts, and Theorem 5.1.
+;;
+;; SW-136: gradient with an exact-rational vector is currently silently wrong.
+;; The AD checks therefore use double vectors.  Exact rational checks use the
+;; explicit partial derivatives below.  TODO(SW-136): replace detJ-exact with
+;; exact AD once the tracked defect is fixed.  SW-135 (gradient through a
+;; closure factory) is avoided by keeping the differentiands named and direct.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (close? a b)
+  (< (abs (- a b)) 1e-9))
+
+(define (A x y) (+ 1 (* x y)))
+(define (B x y z)
+  (+ (* (A x y) (A x y) z)
+     (* y y (+ 4 (* 3 x y)))))
+(define (P x y z) (* (A x y) (B x y z)))
+(define (Q x y z) (+ y (* 3 x (B x y z))))
+(define (R x y z) (- (* 2 x) (* 3 x x y) (* x x x z)))
+
+(define (Pv v) (P (vref v 0) (vref v 1) (vref v 2)))
+(define (Qv v) (Q (vref v 0) (vref v 1) (vref v 2)))
+(define (Rv v) (R (vref v 0) (vref v 1) (vref v 2)))
+
+(define (det3 a b c)
+  (- (+ (* (vref a 0)
+           (- (* (vref b 1) (vref c 2))
+              (* (vref b 2) (vref c 1))))
+        (* (vref a 2)
+           (- (* (vref b 0) (vref c 1))
+              (* (vref b 1) (vref c 0)))))
+     (* (vref a 1)
+        (- (* (vref b 0) (vref c 2))
+           (* (vref b 2) (vref c 0))))))
+
+(define (detJ-ad v)
+  (det3 (gradient Pv v) (gradient Qv v) (gradient Rv v)))
+
+;; Exact partials.  These are the same polynomial derivatives that AD returns.
+(define (Bx x y z)
+  (+ (* 2 (A x y) y z) (* 3 y y y)))
+(define (By x y z)
+  (+ (* 2 (A x y) x z) (* 8 y) (* 9 x y y)))
+(define (Bz x y z) (* (A x y) (A x y)))
+(define (Px x y z) (+ (* y (B x y z)) (* (A x y) (Bx x y z))))
+(define (Py x y z) (+ (* x (B x y z)) (* (A x y) (By x y z))))
+(define (Pz x y z) (* (A x y) (Bz x y z)))
+(define (Qx x y z) (+ (* 3 (B x y z)) (* 3 x (Bx x y z))))
+(define (Qy x y z) (+ 1 (* 3 x (By x y z))))
+(define (Qz x y z) (* 3 x (Bz x y z)))
+(define (Rx x y z) (- 2 (* 6 x y) (* 3 x x z)))
+(define (Ry x y z) (* -3 x x))
+(define (Rz x y z) (* -1 x x x))
+
+(define (detJ-exact x y z)
+  (det3 (vector (Px x y z) (Py x y z) (Pz x y z))
+         (vector (Qx x y z) (Qy x y z) (Qz x y z))
+         (vector (Rx x y z) (Ry x y z) (Rz x y z))))
+
+(define (same-image? v p q r)
+  (and (= (P (vref v 0) (vref v 1) (vref v 2)) p)
+       (= (Q (vref v 0) (vref v 1) (vref v 2)) q)
+       (= (R (vref v 0) (vref v 1) (vref v 2)) r)))
+
+(define target-p -1/4)
+(define target-q 0)
+(define target-r 0)
+(define witness-0 (vector 0 0 -1/4))
+(define witness-1 (vector 1 -3/2 13/2))
+(define witness-2 (vector -1 3/2 13/2))
+(check "three rational preimages share (-1/4,0,0)"
+       (and (same-image? witness-0 target-p target-q target-r)
+            (same-image? witness-1 target-p target-q target-r)
+            (same-image? witness-2 target-p target-q target-r)))
+
+(define (fiber-point p q s r)
+  (let* ((D (+ 1 (* -1 q s) (* 3 p s s)))
+         (y (- q (* 3 p s)))
+         (x (/ s D))
+         (z (- (* p D D D)
+               (* y y (- 4 (* s y)) D))))
+    (vector x y z)))
+
+(check "binary cubic roots 0,2,-2 recover the three points"
+       (and (equal? (fiber-point target-p target-q 0 target-r) witness-0)
+            (equal? (fiber-point target-p target-q 2 target-r) witness-2)
+            (equal? (fiber-point target-p target-q -2 target-r) witness-1)))
+
+(define (delta p q r)
+  (+ (* q q) (* -16 p) (* -1 q q q r)
+     (* 18 p q r) (* -27 p p r r)))
+
+(define (on-gamma? p q r)
+  (and (= (- (* 12 p) (* q q)) 0)
+       (= (- (* 3 q r) 4) 0)))
+
+(define (fiber-count p q r)
+  (if (not (= (delta p q r) 0))
+      3
+      (if (on-gamma? p q r) 0 1)))
+
+(check "discriminant gives a three-point generic fiber"
+       (= (fiber-count 1 0 0) 3))
+(check "discriminant gives one point on the branch surface"
+       (= (fiber-count 0 0 0) 1))
+(check "gamma gives an empty fiber"
+       (= (fiber-count 1/3 2 2/3) 0))
+(check "target discriminant is nonzero with three simple roots"
+       (and (not (= (delta target-p target-q target-r) 0))
+            (not (on-gamma? target-p target-q target-r))
+            (= (fiber-count target-p target-q target-r) 3)))
+
+(define (ad-ok? x y z)
+  (and (close? (vref (gradient Pv (vector (exact->inexact x)
+                                          (exact->inexact y)
+                                          (exact->inexact z))) 0)
+                (exact->inexact (Px x y z)))
+       (close? (vref (gradient Pv (vector (exact->inexact x)
+                                          (exact->inexact y)
+                                          (exact->inexact z))) 1)
+                (exact->inexact (Py x y z)))
+       (close? (vref (gradient Pv (vector (exact->inexact x)
+                                          (exact->inexact y)
+                                          (exact->inexact z))) 2)
+                (exact->inexact (Pz x y z)))))
+
+(check "reverse-mode AD agrees with exact partials at many points"
+       (and (ad-ok? 0 0 -1/4)
+            (ad-ok? 1 -3/2 13/2)
+            (ad-ok? -1 3/2 13/2)
+            (ad-ok? 5/2 -7/10 39/10)
+            (ad-ok? -31/10 2/5 12)))
+(check "AD determinant is -2 at many double points"
+       (and (close? (detJ-ad (vector 0.0 0.0 -0.25)) -2.0)
+            (close? (detJ-ad (vector 1.0 -1.5 6.5)) -2.0)
+            (close? (detJ-ad (vector -1.0 1.5 6.5)) -2.0)
+            (close? (detJ-ad (vector 2.5 -0.7 3.9)) -2.0)
+            (close? (detJ-ad (vector -3.1 0.4 12.0)) -2.0)))
+
+;; Degree bounds for det(Jac F) in (x,y,z) are (8,7,2):
+;; deg_x(P,Q,R) <= (3,3,3), deg_y(P,Q,R) <= (4,3,1), and
+;; deg_z(P,Q,R) <= (1,1,1), and a 3x3 Jacobian term lowers one bound.
+;; The 9 x 8 x 3 exact rational grid is therefore larger than the degree
+;; in every variable, so vanishing on it is a rigorous identity check.
+(define xs (list -2 -1 0 1 2 3 4 5 6))
+(define ys (list -3/2 -1 -1/2 0 1/2 1 3/2 2))
+(define zs (list -1 -1/4 2))
+
+(define (all-z? x y zs)
+  (if (null? zs)
+      #t
+      (and (= (detJ-exact x y (car zs)) -2)
+           (all-z? x y (cdr zs)))))
+(define (all-y? x ys)
+  (if (null? ys)
+      #t
+      (and (all-z? x (car ys) zs)
+           (all-y? x (cdr ys)))))
+(define (all-x? xs)
+  (if (null? xs)
+      #t
+      (and (all-y? (car xs) ys)
+           (all-x? (cdr xs)))))
+(check "exact determinant is identically -2 on the degree grid"
+       (all-x? xs))
+
+;; Theorem 5.1 family, checked at two parameter choices with exact rational
+;; partials.  The base map above is the AD demonstration; this parameterized
+;; family is checked with exact rational evaluation so its determinant claim
+;; does not depend on the known closure-factory limitation.
+(define (FH-det-exact x y z lambda a c)
+  (let* ((aa (+ lambda (* x y)))
+         (w (+ (* c z) (+ x (* 2 y))))
+         (k (/ 3 (* a lambda lambda)))
+         (b (+ (* aa aa w) (* k y y (+ (* 4 lambda) (* 3 x y)))))
+         (bx (+ (* 2 aa y w) (* aa aa) (* 3 k y y y)))
+         (by (+ (* 2 aa x w) (* 2 aa aa)
+                (* k (+ (* 8 lambda y) (* 9 x y y)))))
+         (bz (* aa aa c))
+         (px (+ (* y b) (* aa bx)))
+         (py (+ (* x b) (* aa by)))
+         (pz (* aa bz))
+         (qx (* a (+ b (* x bx))))
+         (qy (+ 1 (* a x by)))
+         (qz (* a x bz))
+         (rx (- (- (/ 2 lambda) (* 6 (/ 1 (* lambda lambda)) x y))
+                (* a x x w) (* (/ a 3) x x x)))
+         (ry (- (* -3 (/ 1 (* lambda lambda)) x x)
+                (* (/ (* 2 a) 3) x x x)))
+         (rz (* -1 (/ (* a c) 3) x x x)))
+    (det3 (vector px py pz) (vector qx qy qz) (vector rx ry rz))))
+
+(check "Theorem 5.1 family determinant lambda=2,a=1,c=3"
+       (= (FH-det-exact 7/10 -4/5 11/10 2 1 3) -24))
+(check "Theorem 5.1 family determinant lambda=-1,a=2,c=1"
+       (= (FH-det-exact -3/5 9/10 7/4 -1 2 1) -2))
+
+(display "Jacobian counterexample and fiber geometry") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline)))

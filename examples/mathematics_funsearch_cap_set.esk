@@ -1,0 +1,138 @@
+;; Recent result and public witness: https://github.com/google-deepmind/funsearch
+;; The checked-in n8_size512.txt witness is an explicit 512-cap in AG(8,3).
+;; This is the compact explicit construction from the accompanying notebook,
+;; followed by an exhaustive exact no-three-collinear check.
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (contains? x xs)
+  (if (null? xs) #f
+      (if (equal? x (car xs)) #t (contains? x (cdr xs)))))
+
+(define (decode-base3 n)
+  (let ((v (make-vector 8 0)))
+    (define (loop i q)
+      (if (= i -1)
+          v
+          (begin (vector-set! v i (modulo q 3))
+                 (loop (- i 1) (quotient q 3)))))
+    (loop 7 n)))
+
+(define (support-loop v i out)
+  (if (= i 8)
+      (reverse out)
+      (support-loop v (+ i 1)
+                    (if (= (vector-ref v i) 0) out (cons i out)))))
+(define (support v) (support-loop v 0 '()))
+
+(define (reflections-loop v i count)
+  (if (= i 4)
+      count
+      (reflections-loop v (+ i 1)
+                        (if (= (vector-ref v i) (vector-ref v (- 8 i)))
+                            (+ count 1) count))))
+(define (reflections v) (reflections-loop v 1 0))
+
+(define supports-16
+  (list (list 0 1 2 3) (list 0 1 2 5) (list 0 3 6 7)
+        (list 0 5 6 7) (list 1 3 4 6) (list 1 4 5 6)
+        (list 2 3 4 7) (list 2 4 5 7)))
+(define supports-8
+  (list (list 0 1 2 7) (list 0 1 2 6) (list 0 1 3 7)
+        (list 0 1 6 7) (list 0 1 5 7) (list 0 2 3 6)
+        (list 0 2 6 7) (list 0 2 5 6) (list 1 2 4 7)
+        (list 1 2 4 6) (list 1 3 4 7) (list 1 4 6 7)
+        (list 1 4 5 7) (list 2 3 4 6) (list 2 4 6 7)
+        (list 2 4 5 6)))
+(define allowed-zeros
+  (list (list 0 4 7) (list 0 2 4) (list 0 1 4) (list 0 4 6)
+        (list 1 2 6) (list 2 6 7) (list 1 2 7) (list 1 6 7)))
+
+(define (weight8? v)
+  (and (= (length (support v)) 8) (>= (reflections v) 2)))
+(define (weight4a? v)
+  (and (= (length (support v)) 4)
+       (contains? (support v) supports-16)))
+(define (weight4b? v)
+  (and (= (length (support v)) 4)
+       (contains? (support v) supports-8)
+       (= (reflections v) 1)))
+;; The zero-support predicate is spelled separately to keep the construction
+;; readable and to avoid depending on an implementation-specific set type.
+(define (zero-support v)
+  (let ((out '()))
+    (define (loop i acc)
+      (if (= i 8) (reverse acc)
+          (loop (+ i 1)
+                (if (= (vector-ref v i) 0) (cons i acc) acc))))
+    (loop 0 out)))
+(define (weight5-clean? v)
+  (and (contains? (zero-support v) allowed-zeros)
+       (<= (reflections v) 1)
+       (not (= (modulo (* (vector-ref v 1) (vector-ref v 7)) 3) 1))
+       (not (= (modulo (* (vector-ref v 2) (vector-ref v 6)) 3) 1))))
+
+(define (in-construction? v)
+  (or (weight8? v) (weight4a? v) (weight4b? v) (weight5-clean? v)))
+
+;; A loop avoids building the 6561-element ambient list.  It is the same exact
+;; enumeration as the public construction and stays within the bytecode VM's
+;; fixed frame budget.
+(define cap
+  (do ((i 0 (+ i 1))
+       (out '() (let ((v (decode-base3 i)))
+                  (if (in-construction? v) (cons v out) out))))
+      ((= i 6561) (reverse out))))
+
+(define (encode v)
+  (let ((out 0))
+    (define (loop i acc)
+      (if (= i 8) acc
+          (loop (+ i 1) (+ (* acc 3) (vector-ref v i)))))
+    (loop 0 out)))
+(define membership (make-vector 6561 0))
+(define (mark xs)
+  (if (null? xs) #t
+      (begin (vector-set! membership (encode (car xs)) 1)
+             (mark (cdr xs)))))
+(mark cap)
+
+(define (third-point a b)
+  (let ((out (make-vector 8 0)))
+    (define (loop i)
+      (if (= i 8) out
+          (begin (vector-set! out i
+                             (modulo (- 0 (+ (vector-ref a i)
+                                             (vector-ref b i))) 3))
+                 (loop (+ i 1)))))
+    (loop 0)))
+
+(define (cap-check cap n)
+  (let ((ok #t))
+    (do ((i 0 (+ i 1)))
+        ((= i n) ok)
+      (do ((j (+ i 1) (+ j 1)))
+          ((= j n))
+        (let ((a (list-ref cap i)) (b (list-ref cap j)))
+          (if (not (= (vector-ref membership (encode (third-point a b))) 0))
+              (set! ok #f)))))))
+
+(check "explicit construction has 512 points" (= (length cap) 512))
+(check "ambient AG(8,3) has 3^8 exact vectors" (= (expt 3 8) 6561))
+(check "512-point witness is a cap in AG(8,3)"
+       (cap-check cap (length cap)))
+
+(display "FunSearch 512-cap in AG(8,3)") (newline)
+(display "Exact pair checks: 130816") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline)))

@@ -1,6 +1,6 @@
 # Eshkol Examples
 
-Twenty runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
+A runnable program collection spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, physical simulation, and exact verification of public mathematical witnesses. Every public example in this directory compiles cleanly, runs in well under a minute, and produces output you can inspect.
 
 ```bash
 # Compile and run any example in one command:
@@ -67,6 +67,19 @@ The consciousness engine: logic programming, active inference, global workspace.
 | Example | What it shows | LOC |
 |---------|--------------|----:|
 | **[bayesian_diagnosis.esk](bayesian_diagnosis.esk)** | Medical triage agent that combines a symbolic KB with a 3-variable factor graph; tracks free energy across three observation regimes | 110 |
+
+## AI-driven mathematics
+
+The public finite witnesses in [AI-driven mathematics examples](../docs/AI_MATHEMATICS_EXAMPLES.md)
+are flat files so the existing examples test target discovers them automatically.
+They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
+
+| Example | What it verifies |
+|---------|------------------|
+| **[mathematics_jacobian_counterexample.esk](mathematics_jacobian_counterexample.esk)** | The 2026 polynomial Keller map, rational fibers, cubic/discriminant geometry, exact determinant identity, AD, and two Theorem 5.1 family instances |
+| **[mathematics_alphatensor_3x3_gf2.esk](mathematics_alphatensor_3x3_gf2.esk)** | Public rank-23 3x3 matrix multiplication over F2 by complete basis-pair expansion |
+| **[mathematics_alphatensor_gf2.esk](mathematics_alphatensor_gf2.esk)** | Public rank-47 4x4 matrix multiplication over F2 by complete basis-pair expansion |
+| **[mathematics_funsearch_cap_set.esk](mathematics_funsearch_cap_set.esk)** | Public 512-point cap in AG(8,3), verified against every pair |
 
 ## Scientific computing
 

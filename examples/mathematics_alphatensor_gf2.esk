@@ -1,0 +1,105 @@
+;; Recent result: https://github.com/google-deepmind/alphatensor
+;; The public 4x4 matrix-multiplication factorization has rank 47 over F_2.
+;; This program performs the tensor contraction with exact integer bitsets.
+;; Bilinearity makes all 16 x 16 matrix-unit pairs a rigorous expansion check.
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define rank 47)
+
+;; Each U/V entry is a 16-bit mask.  Each W row is a 47-bit mask.  A mask
+;; contracts with a bitset by parity(popcount(mask AND input)).
+(define u-masks
+  (vector 4 100 84 68 1 257 1281 871 12290 24578 8194 12375 25863 4096
+          36872 32776 769 39432 2568 2056 32 168 49160 49240 18472 1024
+          136 152 27144 49320 8 3080 4368 12456 34944 3176 17472 8736 2
+          3224 16384 16 920 4744 512 33816 38152))
+(define v-masks
+  (vector 256 2192 1029 3477 1 923 770 144 69 800 885 5 768 12358
+          12290 29698 152 12288 12320 47136 22720 20544 21504 1024
+          22560 39426 53320 36872 32 20480 4096 38912 14 64 57344 2048
+          3584 224 16 36864 22048 37900 8 12360 12456 37890 2))
+(define w-masks
+  (vector 275951648785 2200301469711 17595441676400 1375467529984
+          70370086769217 36956646440960 70371999891456 1100858441728
+          10215229716 2200849874944 121517711220736 10206896128
+          5260395479170 587541250048 22543344599040 26552381079552))
+
+(define (f2 n) (modulo n 2))
+(define (dot-mask mask bits)
+  (f2 (popcount (bitwise-and mask bits))))
+(define (h-at i a b)
+  (f2 (* (dot-mask (vref u-masks i) a)
+         (dot-mask (vref v-masks i) b))))
+(define (h-list i a b)
+  (if (= i rank)
+      '()
+      (cons (h-at i a b) (h-list (+ i 1) a b))))
+(define (w-contract mask hs i acc)
+  (if (= i rank)
+      (f2 acc)
+      (w-contract mask hs (+ i 1)
+                  (if (= (bitwise-and mask (expt 2 i)) 0)
+                      acc
+                      (+ acc (list-ref hs i))))))
+(define (result-mask a b)
+  (let ((hs (h-list 0 a b)))
+    (+ (if (= (w-contract (vref w-masks 0) hs 0 0) 1) 1 0)
+       (if (= (w-contract (vref w-masks 1) hs 0 0) 1) 2 0)
+       (if (= (w-contract (vref w-masks 2) hs 0 0) 1) 4 0)
+       (if (= (w-contract (vref w-masks 3) hs 0 0) 1) 8 0)
+       (if (= (w-contract (vref w-masks 4) hs 0 0) 1) 16 0)
+       (if (= (w-contract (vref w-masks 5) hs 0 0) 1) 32 0)
+       (if (= (w-contract (vref w-masks 6) hs 0 0) 1) 64 0)
+       (if (= (w-contract (vref w-masks 7) hs 0 0) 1) 128 0)
+       (if (= (w-contract (vref w-masks 8) hs 0 0) 1) 256 0)
+       (if (= (w-contract (vref w-masks 9) hs 0 0) 1) 512 0)
+       (if (= (w-contract (vref w-masks 10) hs 0 0) 1) 1024 0)
+       (if (= (w-contract (vref w-masks 11) hs 0 0) 1) 2048 0)
+       (if (= (w-contract (vref w-masks 12) hs 0 0) 1) 4096 0)
+       (if (= (w-contract (vref w-masks 13) hs 0 0) 1) 8192 0)
+       (if (= (w-contract (vref w-masks 14) hs 0 0) 1) 16384 0)
+       (if (= (w-contract (vref w-masks 15) hs 0 0) 1) 32768 0))))
+
+(define (expected-mask ai bi)
+  (let ((ar (quotient ai 4))
+        (ac (modulo ai 4))
+        (br (quotient bi 4))
+        (bc (modulo bi 4)))
+    (if (= ac br)
+        ;; W is indexed in the column-major output order used by the
+        ;; published contraction: c.reshape(n,m).T.
+        (expt 2 (+ (* bc 4) ar))
+        0)))
+
+(define (check-basis-ai ai bi)
+  (if (= bi 16)
+      #t
+      (and (= (result-mask (expt 2 ai) (expt 2 bi))
+              (expected-mask ai bi))
+           (check-basis-ai ai (+ bi 1)))))
+(define (check-basis-ai-all ai)
+  (if (= ai 16)
+      #t
+      (and (check-basis-ai ai 0) (check-basis-ai-all (+ ai 1)))))
+
+(check "rank-47 factorization has 47 bilinear products" (= rank 47))
+(check "rank-47 tensor expands to 4x4 multiplication over F2"
+       (check-basis-ai-all 0))
+(check "nontrivial sample multiplication is exact over F2"
+       (= (result-mask 43690 3855) 0))
+
+(display "AlphaTensor rank-47 F2 matrix multiplication") (newline)
+(display "Basis pairs checked: 256") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline)))

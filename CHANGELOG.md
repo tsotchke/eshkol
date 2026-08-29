@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AI-driven mathematics examples.** Added four pure Eshkol programs that
+  exactly verify public finite witnesses: the 2026 Jacobian-conjecture
+  counterexample and its fiber geometry, AlphaTensor rank-23 and rank-47
+  matrix-multiplication factorizations over F2, and the FunSearch 512-cap in
+  AG(8,3). The examples are discovered by the existing examples test suite and
+  document the exact arithmetic and AD verification boundaries.
+
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
   maps that id to a `SourceSpan` — the first column of the
