@@ -6219,10 +6219,11 @@ if(ESHKOL_BUILD_TESTS AND
         # refusals + 3 geodesic slice. Curvature sign and branches: 3
         # Poincare-only ops refusing K >= 0 and NaN + 1 K=0-was-hyperbolic + 1
         # all-keys-off-manifold. Euclidean/spherical attention gradchecks and
-        # the VM/bridge agreement add 3 checks.
+        # the VM/bridge agreement add 4 checks: adversarial reverse, stable
+        # close-distance reverse, VM softmax, and attention domain/shape cases.
         # Pinned: a bare "0 failed" would stay green if a check silently
         # stopped running.
-        PASS_REGULAR_EXPRESSION "Results: 40 passed, 0 failed"
+        PASS_REGULAR_EXPRESSION "Results: 44 passed, 0 failed"
     )
 endif()
 

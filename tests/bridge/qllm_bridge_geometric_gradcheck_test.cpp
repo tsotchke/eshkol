@@ -44,10 +44,15 @@
  */
 
 #include <cstdio>
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <cstdarg>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 #include <algorithm>
 #include <unistd.h>
@@ -57,6 +62,7 @@
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/tensor_backward.h"
 #include "eshkol/backend/riemannian_core.h"
+#include "eshkol/backend/vm.h"
 
 extern "C" {
     typedef struct arena arena_t;
@@ -350,6 +356,72 @@ static void check_exp_log_fd(void) {
            "aggregate L2 rel err %.3e over 6 partials", rl);
 }
 
+static void check_exp_basepoint_near_boundary(void) {
+    const int64_t sh[1] = { 1 };
+    const double c = 1.0;
+    const double x = 0.9999999;
+    const double h = 1e-10;
+    const double v = 1e-7;
+    const double expected_forward = 0.9999999632120566;
+
+    auto forward = [&](double base, double tangent) {
+        double xb[1] = { base }, vb[1] = { tangent };
+        ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
+        ad_node_t* out = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        return out ? ((const double*)out->tensor_value)[0] : NAN;
+    };
+    auto backward_base = [&](double tangent) {
+        double xb[1] = { x }, vb[1] = { tangent };
+        ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+        ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
+        ad_node_t* out = ad_poincare_exp_map(t, xn, vn, -c);
+        if (!out) return (double)NAN;
+        ((double*)out->tensor_gradient)[0] = 1.0;
+        sweep(t);
+        return ((const double*)xn->tensor_gradient)[0];
+    };
+
+    const double got_forward = forward(x, v);
+    const double fd = (forward(x + h, v) - forward(x - h, v)) / (2.0 * h);
+    const double got_positive = backward_base(v);
+    const double got_negative = backward_base(-v);
+    const double exact_positive = 0.7357588728;
+    const double exact_negative = 1.3459e-7;
+    const bool ok = std::fabs(got_forward - expected_forward) < 1e-15 &&
+                    std::fabs(got_positive - fd) < 1e-5 &&
+                    std::fabs(got_positive - exact_positive) < 1e-5 &&
+                    got_negative > 0.0 &&
+                    std::fabs(got_negative - exact_negative) < 2e-7;
+    report("exp_map.basepoint_near_boundary_series_variable", ok,
+           "forward %.16f, dbase(v=+1e-7) %.10f (FD %.10f, exact %.10f), "
+           "dbase(v=-1e-7) %.3e (exact %.3e)", got_forward, got_positive,
+           fd, exact_positive, got_negative, exact_negative);
+}
+
+static void check_distance_close_distinct_pair(void) {
+    const int64_t sh[1] = { 1 };
+    const double X[1] = { 0.0 }, Y[1] = { 1e-9 };
+    ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
+    ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
+    ad_node_t* out = ad_hyperbolic_distance(t, xn, yn, -1.0);
+    if (!out) {
+        report("distance.close_distinct_stable_backward", false,
+               "forward refused for x=0, y=1e-9");
+        return;
+    }
+    ((double*)out->tensor_gradient)[0] = 1.0;
+    sweep(t);
+    const double distance = ((const double*)out->tensor_value)[0];
+    const double gx = ((const double*)xn->tensor_gradient)[0];
+    const double gy = ((const double*)yn->tensor_gradient)[0];
+    const bool ok = std::fabs(distance - 2e-9) < 1e-15 &&
+                    std::fabs(gx + 2.0) < 1e-12 &&
+                    std::fabs(gy - 2.0) < 1e-12;
+    report("distance.close_distinct_stable_backward", ok,
+           "d %.17g, grad_x %.17g (want -2), grad_y %.17g (want +2)",
+           distance, gx, gy);
+}
+
 /* ================================================ geodesic attention ===== */
 
 enum { GB = 1, GS = 3, GD = 4 };
@@ -447,31 +519,76 @@ static void check_geodesic_spherical_fd(void) {
            fd_q, fd_k, std::max(rel_q, rel_k));
 }
 
-static void check_vm_bridge_agreement(void) {
-    const int64_t sh[3] = { 1, 2, 2 };
-    const double Q[4] = { 0.10, 0.20, -0.15, 0.08 };
-    const double K[4] = { 0.05,-0.20, 0.18, 0.06 };
-    const double V[4] = { 1.0, 2.0, 3.0, 5.0 };
-    ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
-    ad_node_t* out = ad_geodesic_attention(nullptr, q, k, v, 1, 0.0, false);
-    double expected[4] = { 0.0, 0.0, 0.0, 0.0 };
-    for (int i = 0; i < 2; ++i) {
-        double scores[2], mx = -HUGE_VAL, sum = 0.0;
-        for (int j = 0; j < 2; ++j) {
-            double d = 0.0;
-            const char* why = eshkol_rm_distance(Q + 2*i, K + 2*j, 0.0, 2, &d);
-            if (why) { report("vm_bridge.agreement", false, "shared VM distance refused: %s", why); return; }
-            scores[j] = -d / std::sqrt(2.0);
-            mx = std::max(mx, scores[j]);
+static bool run_vm_attention_counterexample(double* result_out) {
+    const std::filesystem::path scratch =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / ".scratch";
+    std::filesystem::create_directories(scratch);
+    const std::filesystem::path eskb = scratch / ("bridge_vm_attention_" +
+                                                   std::to_string((long long)getpid()) + ".eskb");
+    const char* source =
+        "(define q (make-tensor '(2 1) 0.0))\n"
+        "(define k (make-tensor '(2 1) 0.0))\n"
+        "(define v (make-tensor '(2 1) 0.0))\n"
+        "(tensor-set! k '(0 0) 28.460498941515414)\n"
+        "(tensor-set! k '(1 0) 25.298221281347036)\n"
+        "(tensor-set! v '(0 0) 1.0)\n"
+        "(tensor-set! v '(1 0) 2.0)\n"
+        "(define out (geodesic-attention-forward q k v -0.001))\n"
+        "(display (tensor-ref out 0)) (newline)\n";
+    bool ok = false;
+    double result = NAN;
+    if (eshkol_emit_eskb(source, eskb.c_str()) == 0) {
+        std::ifstream input(eskb, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+        EshkolVmHandle* vm = bytes.empty() ? nullptr :
+            eshkol_vm_load_chunk(bytes.data(), bytes.size());
+        if (vm) {
+            int output_pipe[2] = { -1, -1 };
+            const int saved_stdout = dup(STDOUT_FILENO);
+            if (pipe(output_pipe) == 0 && saved_stdout >= 0) {
+                std::fflush(stdout);
+                dup2(output_pipe[1], STDOUT_FILENO);
+                close(output_pipe[1]); output_pipe[1] = -1;
+                const int run_rc = eshkol_vm_run(vm);
+                std::fflush(stdout);
+                dup2(saved_stdout, STDOUT_FILENO);
+                close(saved_stdout);
+                char buffer[128];
+                std::string printed;
+                ssize_t got = 0;
+                while ((got = read(output_pipe[0], buffer, sizeof buffer)) > 0)
+                    printed.append(buffer, (size_t)got);
+                close(output_pipe[0]); output_pipe[0] = -1;
+                char* end = nullptr;
+                result = std::strtod(printed.c_str(), &end);
+                ok = run_rc == 0 && end != printed.c_str() &&
+                     std::isfinite(result) && std::fabs(result - 2.0) < 1e-12;
+            }
+            eshkol_vm_destroy(vm);
         }
-        for (double& s : scores) { s = std::exp(s - mx); sum += s; }
-        for (int j = 0; j < 2; ++j)
-            for (int d = 0; d < 2; ++d) expected[2*i+d] += (scores[j] / sum) * V[2*j+d];
     }
-    double worst = 0.0;
-    if (out) for (int i = 0; i < 4; ++i) worst = std::max(worst, std::fabs(((double*)out->tensor_value)[i] - expected[i]));
-    report("vm_bridge.agreement", out && worst < 1e-14,
-           "shared VM distance/softmax reference versus bridge max abs error %.3e", worst);
+    std::error_code ignored;
+    std::filesystem::remove(eskb, ignored);
+    if (result_out) *result_out = result;
+    return ok;
+}
+
+static void check_vm_bridge_agreement(void) {
+    const int64_t sh[3] = { 1, 2, 1 };
+    const double Q[2] = { 0.0, 0.0 };
+    const double K[2] = { 28.460498941515414, 25.298221281347036 };
+    const double V[2] = { 1.0, 2.0 };
+    ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
+    ad_node_t* out = ad_geodesic_attention(nullptr, q, k, v, 1, -0.001, false);
+    const double bridge = out ? ((const double*)out->tensor_value)[0] : NAN;
+    double vm_result = NAN;
+    const bool vm_ok = run_vm_attention_counterexample(&vm_result);
+    report("vm_bridge.agreement", out && std::isfinite(bridge) &&
+           std::fabs(bridge - 2.0) < 1e-12 && vm_ok,
+           "counterexample K=-0.001, scores about -2944/-2197: bridge %.17g, "
+           "VM output %.17g, max-shift assertion %s", bridge, vm_result,
+           vm_ok ? "passed" : "failed");
 }
 
 static void check_geodesic_causal_fd(void) {
@@ -591,8 +708,8 @@ static void at_radius(double r, double* out) {
 /** @brief A point at radius r on an AXIS, used wherever the test's meaning
  *  depends on |x| being exactly r.
  *
- *  0.6^2 + 0.8^2 happens to round to exactly 1.0 in f64, but that is a fact
- *  about one evaluation order: norm_sq() is a `+=` loop, and a compiler free to
+     *  0.6^2 + 0.8^2 happens to round to exactly 1.0 in f64, but that is a fact
+     *  about one evaluation order: a norm accumulation can be reassociated, and a compiler free to
  *  contract it into an FMA may land a half-ulp below 1. A test whose subject is
  *  "sqrt(c)|x| == 1 exactly refuses" must not be able to drift to |x| = 1 - eps
  *  and quietly start asserting the interior case instead. r^2 + 0 + 0 is exact
@@ -968,6 +1085,49 @@ static void check_geodesic_all_keys_off_manifold_refuses(void) {
            "every K slice at |k| = sqrt(2): refused instead of returning a NaN row");
 }
 
+static void check_geodesic_attention_shape_refusal(void) {
+    const int64_t q_shape[3] = { 1, 2, 2 };
+    const int64_t k_shape[3] = { 1, 1, 2 };
+    const int64_t v_shape[3] = { 1, 2, 2 };
+    const double q_data[4] = { 0.0, 0.0, 0.1, 0.0 };
+    const double k_data[2] = { 0.0, 0.0 };
+    const double v_data[4] = { 1.0, 2.0, 3.0, 4.0 };
+    ad_node_t* q = var_node(q_data, q_shape, 3);
+    ad_node_t* k = var_node(k_data, k_shape, 3);
+    ad_node_t* v = var_node(v_data, v_shape, 3);
+    const bool refused = ad_geodesic_attention(nullptr, q, k, v, 1, -1.0, false) == nullptr;
+    report("geodesic.shape_mismatch_refuses_before_row_indexing", refused,
+           "Q=[1,2,2], K=[1,1,2], V=[1,2,2] %s", refused ? "refused" : "accepted");
+}
+
+static void check_geodesic_attention_finite_domain(void) {
+    const int64_t sh[3] = { 1, 2, 1 };
+    const double zero[2] = { 0.0, 0.0 };
+    const double one[2] = { 1.0, 1.0 };
+    const double huge[2] = { 0.0, DBL_MAX };
+
+    ad_node_t* iq = var_node(zero, sh, 3);
+    ad_node_t* ik = var_node(zero, sh, 3);
+    ad_node_t* iv = var_node(one, sh, 3);
+    const bool inf_curvature_refused =
+        ad_geodesic_attention(nullptr, iq, ik, iv, 1, INFINITY, false) == nullptr;
+
+    const int64_t one_row[3] = { 1, 1, 1 };
+    ad_node_t* fq = var_node(zero, one_row, 3);
+    ad_node_t* fk = var_node(huge + 1, one_row, 3);
+    ad_node_t* fv = var_node(one, one_row, 3);
+    ad_node_t* finite_distance =
+        ad_geodesic_attention(nullptr, fq, fk, fv, 1, 0.0, false);
+    const double finite_output = finite_distance
+        ? ((const double*)finite_distance->tensor_value)[0] : NAN;
+    const bool overflow_case_is_finite = finite_distance &&
+        std::isfinite(finite_output) && std::fabs(finite_output - 1.0) < 1e-15;
+    report("geodesic.finite_domain_rejects_inf_and_scales_euclidean_norm",
+           inf_curvature_refused && overflow_case_is_finite,
+           "K=+inf refused=%s; K=0, k=DBL_MAX output=%.17g",
+           inf_curvature_refused ? "yes" : "NO", finite_output);
+}
+
 int main(void) {
     check_distance_conformal_identity();     /* 1 */
     check_distance_fd();                     /* 1 */
@@ -976,6 +1136,8 @@ int main(void) {
     check_exp_golden();                      /* 1 */
     check_exp_log_inverse_jacobians();       /* 1 */
     check_exp_log_fd();                      /* 2 */
+    check_exp_basepoint_near_boundary();     /* 1 */
+    check_distance_close_distinct_pair();   /* 1 */
     check_geodesic_fd(-1.0, "geodesic.hyperbolic_finite_difference"); /* 1 */
     check_geodesic_fd(0.0, "geodesic.euclidean_finite_difference");   /* 1 */
     check_geodesic_causal_fd();              /* 1 */
@@ -997,6 +1159,8 @@ int main(void) {
     check_ops_refuse_nonnegative_curvature();  /* 4 */
     check_curvature_zero_was_hyperbolic();     /* 1 */
     check_geodesic_all_keys_off_manifold_refuses(); /* 1 */
+    check_geodesic_attention_shape_refusal(); /* 1 */
+    check_geodesic_attention_finite_domain(); /* 1 */
     std::printf("Results: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

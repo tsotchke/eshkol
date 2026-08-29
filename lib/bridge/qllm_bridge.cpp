@@ -189,11 +189,12 @@ void row_split(const ad_node_t* n, size_t* rows, size_t* width) {
 
 double sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
 
-/** @brief Euclidean norm squared. */
-double norm_sq(const double* v, size_t n) {
-    double s = 0.0;
-    for (size_t i = 0; i < n; ++i) s += v[i] * v[i];
-    return s;
+/** @brief Euclidean norm, accumulated with scaling so finite coordinates do
+ *         not turn into an infinite sum of squares. */
+double norm_value(const double* v, size_t n) {
+    double norm = 0.0;
+    for (size_t i = 0; i < n; ++i) norm = std::hypot(norm, v[i]);
+    return norm;
 }
 
 /**
@@ -228,7 +229,7 @@ double norm_sq(const double* v, size_t n) {
  * @return true iff sqrt(c)|p| < 1.
  */
 bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
-    double sn = std::sqrt(c) * std::sqrt(norm_sq(p, n));
+    double sn = std::sqrt(c) * norm_value(p, n);
     if (out_sn) *out_sn = sn;
     return eshkol_rm_check_point(p, -c, (int)n) == nullptr;
 }
@@ -971,6 +972,15 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         eshkol_error("qllm bridge: ad_geodesic_attention expects [batch, seq, dim] tensors");
         return nullptr;
     }
+    for (size_t d = 0; d < 3; ++d) {
+        if (k->shape[d] != q->shape[d] || v->shape[d] != q->shape[d]) {
+            eshkol_error("qllm bridge: ad_geodesic_attention needs Q, K and V to share "
+                         "one [batch, seq, dim] shape (dimension %zu: Q=%lld K=%lld V=%lld)",
+                         d, (long long)q->shape[d], (long long)k->shape[d],
+                         (long long)v->shape[d]);
+            return nullptr;
+        }
+    }
     if (num_heads <= 0) {
         eshkol_error("qllm bridge: ad_geodesic_attention needs num_heads > 0");
         return nullptr;
@@ -978,22 +988,36 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     size_t batch = (size_t)q->shape[0];
     size_t seq   = (size_t)q->shape[1];
     size_t dim   = (size_t)q->shape[2];
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_error("qllm bridge: ad_geodesic_attention got a degenerate shape "
+                     "[%zu, %zu, %zu]", batch, seq, dim);
+        return nullptr;
+    }
     if (dim % (size_t)num_heads != 0) {
         eshkol_error("qllm bridge: ad_geodesic_attention dim %zu not divisible by %d heads",
                      dim, num_heads);
         return nullptr;
     }
     size_t head_dim = dim / (size_t)num_heads;
-    if (!(curvature == curvature)) {
-        eshkol_error("qllm bridge: ad_geodesic_attention got curvature K = NaN; "
+    if (!std::isfinite(curvature)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention got non-finite curvature "
+                     "K = %.17g; "
                      "the Euclidean, hyperbolic, and spherical branches require "
-                     "a finite sectional curvature");
+                     "a finite sectional curvature", curvature);
         return nullptr;
     }
 
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
     const double* V = (const double*)v->tensor_value;
+    const size_t total = batch * seq * dim;
+    for (size_t i = 0; i < total; ++i) {
+        if (!std::isfinite(Q[i]) || !std::isfinite(K[i]) || !std::isfinite(V[i])) {
+            eshkol_error("qllm bridge: ad_geodesic_attention requires finite Q, K "
+                         "and V coordinates; first non-finite element is %zu", i);
+            return nullptr;
+        }
+    }
 
     /* Every Q and K head-slice is a point of the selected constant-curvature
      * manifold, and the score is a geodesic distance between two of them, so
@@ -1018,8 +1042,8 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                 const double norm_scale = curvature == 0.0
                                                ? 1.0
                                                : std::sqrt(std::fabs(curvature));
-                double snq = norm_scale * std::sqrt(norm_sq(Q + off, head_dim));
-                double snk = norm_scale * std::sqrt(norm_sq(K + off, head_dim));
+                double snq = norm_scale * norm_value(Q + off, head_dim);
+                double snk = norm_scale * norm_value(K + off, head_dim);
                 bool okq = eshkol_rm_check_point(Q + off, curvature,
                                                  (int)head_dim) == nullptr;
                 bool okk = eshkol_rm_check_point(K + off, curvature,
@@ -1081,14 +1105,34 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
                         return nullptr;
                     }
                     scores[j] = -dist * scale;
+                    if (!std::isfinite(dist) || !std::isfinite(scores[j])) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention produced a "
+                                     "non-finite distance or score at query row %zu "
+                                     "and key row %zu; refusing before softmax", i, j);
+                        return nullptr;
+                    }
                     if (scores[j] > mx) mx = scores[j];
+                }
+                if (!std::isfinite(mx)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention produced a "
+                                 "non-finite score maximum; refusing before softmax");
+                    return nullptr;
                 }
                 double sum = 0.0;
                 for (size_t j = 0; j < limit; ++j) {
                     scores[j] = std::exp(scores[j] - mx);
+                    if (!std::isfinite(scores[j])) {
+                        eshkol_error("qllm bridge: ad_geodesic_attention produced a "
+                                     "non-finite softmax weight; refusing");
+                        return nullptr;
+                    }
                     sum += scores[j];
                 }
-                if (sum <= 0.0) sum = 1.0;
+                if (!(sum > 0.0) || !std::isfinite(sum)) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention produced an "
+                                 "invalid softmax sum; refusing");
+                    return nullptr;
+                }
                 double* arow =
                     &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
                 for (size_t j = 0; j < limit; ++j) arow[j] = scores[j] / sum;
