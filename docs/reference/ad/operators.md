@@ -79,6 +79,26 @@ A **vector- or tensor-valued** function (ℝ → ℝⁿ) differentiates componen
 
 `jacobian` remains the operator for a vector-valued map of a *vector* point.
 
+Tensor-valued transformer operations preserve this forward carrier at their
+numeric boundary. A Scheme vector containing a live dual may be passed to
+`layer-norm` or to the rank-2/rank-3 `scaled-dot-attention` operation; the
+operation returns a dual tensor, and `tensor-get` returns the tagged dual
+element so the enclosing `derivative` sees its tangent. For example, the
+following returns `0.5` and is checked against a central finite difference:
+
+```scheme
+(define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define (attention-value x)
+  (tensor-get (scaled-dot-attention q k
+                (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+(derivative attention-value 1.0)  ;; => 0.5
+```
+
+This is first-order forward support. Reverse-mode tensor gradients for these
+operations remain scalarizing. Native supports rank-2 and rank-3 attention;
+the VM supports the rank-2 form and the same layer-norm contract.
+
 Second derivative by nesting two `derivative` calls (two perturbation slots,
 exact — see architecture):
 

@@ -19,6 +19,340 @@
 extern "C" void eshkol_type_error_with_operand(const char* proc_name,
                                                 const char* expected_type,
                                                 const eshkol_tagged_value_t* actual);
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
+
+namespace {
+
+/* Forward-mode tensor boundaries use the same 64-byte jet layout emitted by
+ * AutodiffCodegen::packDualToTagged: the first four coefficients are the
+ * value jet and the second four are the reverse-seed derivative jet.  These
+ * transformer kernels are first-order forward consumers, but retaining the
+ * complete storage and copying the untouched slots makes the representation
+ * safe for a caller that is itself nested in another AD operation. */
+struct tensor_dual_jet {
+    double c[8];
+};
+
+static tensor_dual_jet jet_zero(double value = 0.0) {
+    tensor_dual_jet out{};
+    out.c[0] = value;
+    return out;
+}
+
+static tensor_dual_jet jet_from_tagged(const eshkol_tagged_value_t& value,
+                                      const char* op_name) {
+    const uint8_t base = (uint8_t)(value.type & 0x0F);
+    if (base == ESHKOL_VALUE_DUAL_NUMBER) {
+        if (!value.data.ptr_val) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "%s: null forward dual element",
+                                 op_name ? op_name : "tensor AD");
+        }
+        return *(const tensor_dual_jet*)(uintptr_t)value.data.ptr_val;
+    }
+    if (base == ESHKOL_VALUE_DOUBLE) return jet_zero(value.data.double_val);
+    if (base == ESHKOL_VALUE_INT64) return jet_zero((double)value.data.int_val);
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                         "%s: tensor AD requires numeric elements",
+                         op_name ? op_name : "tensor AD");
+    return jet_zero();
+}
+
+static tensor_dual_jet jet_add(const tensor_dual_jet& a,
+                               const tensor_dual_jet& b) {
+    tensor_dual_jet out{};
+    for (int i = 0; i < 8; ++i) out.c[i] = a.c[i] + b.c[i];
+    return out;
+}
+
+static tensor_dual_jet jet_sub(const tensor_dual_jet& a,
+                               const tensor_dual_jet& b) {
+    tensor_dual_jet out{};
+    for (int i = 0; i < 8; ++i) out.c[i] = a.c[i] - b.c[i];
+    return out;
+}
+
+static tensor_dual_jet jet_mul(const tensor_dual_jet& a,
+                               const tensor_dual_jet& b) {
+    tensor_dual_jet out{};
+    for (int i = 0; i < 8; ++i) out.c[i] = a.c[i] * b.c[0] + a.c[0] * b.c[i];
+    out.c[0] = a.c[0] * b.c[0];
+    return out;
+}
+
+static tensor_dual_jet jet_div(const tensor_dual_jet& a,
+                               const tensor_dual_jet& b,
+                               const char* op_name) {
+    if (b.c[0] == 0.0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: division by zero in forward dual tensor",
+                             op_name ? op_name : "tensor AD");
+    }
+    tensor_dual_jet out{};
+    const double inv = 1.0 / b.c[0];
+    const double inv2 = inv * inv;
+    out.c[0] = a.c[0] * inv;
+    for (int i = 1; i < 8; ++i)
+        out.c[i] = a.c[i] * inv - a.c[0] * b.c[i] * inv2;
+    return out;
+}
+
+static tensor_dual_jet jet_unary_sqrt(const tensor_dual_jet& a,
+                                      const char* op_name) {
+    if (a.c[0] < 0.0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: square root domain error in forward dual tensor",
+                             op_name ? op_name : "tensor AD");
+    }
+    tensor_dual_jet out{};
+    const double root = std::sqrt(a.c[0]);
+    out.c[0] = root;
+    if (root == 0.0) {
+        for (int i = 1; i < 8; ++i) out.c[i] = 0.0;
+    } else {
+        for (int i = 1; i < 8; ++i) out.c[i] = a.c[i] / (2.0 * root);
+    }
+    return out;
+}
+
+static tensor_dual_jet jet_unary_exp(const tensor_dual_jet& a) {
+    tensor_dual_jet out{};
+    const double value = std::exp(a.c[0]);
+    out.c[0] = value;
+    for (int i = 1; i < 8; ++i) out.c[i] = value * a.c[i];
+    return out;
+}
+
+static tensor_dual_jet jet_max(const tensor_dual_jet& a,
+                               const tensor_dual_jet& b) {
+    return a.c[0] > b.c[0] ? a : b;
+}
+
+static tensor_dual_jet tensor_jet_at(const eshkol_tensor_t* tensor,
+                                     int64_t index, const char* op_name) {
+    if (!tensor || index < 0 || (uint64_t)index >= tensor->total_elements) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: tensor element index out of bounds",
+                             op_name ? op_name : "tensor AD");
+    }
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+        const auto* elems = (const eshkol_tagged_value_t*)tensor->elements;
+        return jet_from_tagged(elems[index], op_name);
+    }
+    double value = 0.0;
+    std::memcpy(&value, tensor->elements + index, sizeof(value));
+    return jet_zero(value);
+}
+
+static eshkol_tagged_value_t jet_to_tagged(arena_t* arena,
+                                           const tensor_dual_jet& jet,
+                                           const char* op_name) {
+    void* storage = arena_allocate(arena, sizeof(tensor_dual_jet));
+    if (!storage) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: failed to allocate forward dual result",
+                             op_name ? op_name : "tensor AD");
+    }
+    std::memcpy(storage, &jet, sizeof(jet));
+    eshkol_tagged_value_t result{};
+    result.type = ESHKOL_VALUE_DUAL_NUMBER;
+    result.flags = ESHKOL_VALUE_INEXACT_FLAG;
+    result.data.ptr_val = (uint64_t)(uintptr_t)storage;
+    return result;
+}
+
+static eshkol_tensor_t* dual_tensor_result(arena_t* arena,
+                                           const eshkol_tensor_t* shape_like,
+                                           uint64_t total,
+                                           const char* op_name) {
+    if (!arena || !shape_like || shape_like->num_dimensions == 0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: invalid tensor shape for forward dual result",
+                             op_name ? op_name : "tensor AD");
+    }
+    auto* result = arena_allocate_tensor_with_header(arena);
+    if (!result) return nullptr;
+    const size_t dims_bytes = (size_t)shape_like->num_dimensions * sizeof(uint64_t);
+    result->dimensions = (uint64_t*)arena_allocate(arena, dims_bytes);
+    result->elements = (int64_t*)arena_allocate(
+        arena, (size_t)total * sizeof(eshkol_tagged_value_t));
+    if (!result->dimensions || !result->elements) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: failed to allocate forward dual tensor",
+                             op_name ? op_name : "tensor AD");
+    }
+    std::memcpy(result->dimensions, shape_like->dimensions, dims_bytes);
+    result->num_dimensions = shape_like->num_dimensions;
+    result->total_elements = total;
+    result->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+    return result;
+}
+
+static tensor_dual_jet parameter_jet(const eshkol_tagged_value_t* source,
+                                     int64_t index, const char* op_name) {
+    if (!source) return jet_zero();
+    const uint8_t base = (uint8_t)(source->type & 0x0F);
+    if (base == ESHKOL_VALUE_HEAP_PTR && source->data.ptr_val) {
+        void* ptr = (void*)(uintptr_t)source->data.ptr_val;
+        const auto* header = ESHKOL_GET_HEADER(ptr);
+        if (header && header->subtype == HEAP_SUBTYPE_TENSOR) {
+            const auto* tensor = (const eshkol_tensor_t*)ptr;
+            if (tensor->total_elements == 0) return jet_zero();
+            return tensor_jet_at(tensor, index % (int64_t)tensor->total_elements,
+                                 op_name);
+        }
+    }
+    return jet_from_tagged(*source, op_name);
+}
+
+}  // namespace
+
+extern "C" eshkol_tensor_t* eshkol_tensor_layer_norm_dual(
+    const eshkol_tensor_t* input,
+    const eshkol_tagged_value_t* gamma,
+    const eshkol_tagged_value_t* beta,
+    double epsilon) {
+    if (!input || input->num_dimensions < 1 || input->total_elements == 0 ||
+        input->dimensions[input->num_dimensions - 1] == 0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "layer-norm: invalid shape for forward dual input");
+    }
+    arena_t* arena = get_global_arena();
+    const int64_t width = (int64_t)input->dimensions[input->num_dimensions - 1];
+    const int64_t groups = (int64_t)(input->total_elements / (uint64_t)width);
+    auto* result = dual_tensor_result(arena, input, input->total_elements,
+                                       "layer-norm");
+    auto* out = (eshkol_tagged_value_t*)result->elements;
+    const tensor_dual_jet eps = jet_zero(epsilon);
+    const tensor_dual_jet one = jet_zero(1.0);
+    for (int64_t group = 0; group < groups; ++group) {
+        tensor_dual_jet mean = jet_zero();
+        for (int64_t i = 0; i < width; ++i)
+            mean = jet_add(mean, tensor_jet_at(input, group * width + i,
+                                               "layer-norm"));
+        mean = jet_div(mean, jet_zero((double)width), "layer-norm");
+
+        tensor_dual_jet variance = jet_zero();
+        for (int64_t i = 0; i < width; ++i) {
+            const auto centered = jet_sub(
+                tensor_jet_at(input, group * width + i, "layer-norm"), mean);
+            variance = jet_add(variance, jet_mul(centered, centered));
+        }
+        variance = jet_div(variance, jet_zero((double)width), "layer-norm");
+        const auto stddev = jet_unary_sqrt(jet_add(variance, eps), "layer-norm");
+
+        for (int64_t i = 0; i < width; ++i) {
+            const int64_t index = group * width + i;
+            const auto centered = jet_sub(tensor_jet_at(input, index,
+                                                        "layer-norm"), mean);
+            auto normalized = jet_div(centered, stddev, "layer-norm");
+            normalized = jet_mul(normalized, parameter_jet(gamma, i,
+                                                            "layer-norm gamma"));
+            normalized = jet_add(normalized, parameter_jet(beta, i,
+                                                           "layer-norm beta"));
+            out[index] = jet_to_tagged(arena, normalized, "layer-norm");
+        }
+    }
+    (void)one;
+    return result;
+}
+
+extern "C" eshkol_tensor_t* eshkol_tensor_scaled_dot_attention_dual(
+    const eshkol_tensor_t* q,
+    const eshkol_tensor_t* k,
+    const eshkol_tensor_t* v,
+    const eshkol_tensor_t* mask) {
+    if (!q || !k || !v || (q->num_dimensions != 2 && q->num_dimensions != 3) ||
+        k->num_dimensions != q->num_dimensions ||
+        v->num_dimensions != q->num_dimensions) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "scaled-dot-attention: forward dual inputs must have matching rank 2 or rank 3 tensors");
+    }
+    const bool batched = q->num_dimensions == 3;
+    const int64_t batch = batched ? (int64_t)q->dimensions[0] : 1;
+    const int64_t seq_q = (int64_t)q->dimensions[batched ? 1 : 0];
+    const int64_t seq_k = (int64_t)k->dimensions[batched ? 1 : 0];
+    const int64_t d_k = (int64_t)q->dimensions[batched ? 2 : 1];
+    const int64_t k_d = (int64_t)k->dimensions[batched ? 2 : 1];
+    const int64_t d_v = (int64_t)v->dimensions[batched ? 2 : 1];
+    const int64_t v_seq = (int64_t)v->dimensions[batched ? 1 : 0];
+    if (d_k <= 0 || k_d != d_k || v_seq != seq_k || d_v <= 0) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "scaled-dot-attention: incompatible Q/K/V dimensions for forward dual input");
+    }
+    arena_t* arena = get_global_arena();
+    auto* result = dual_tensor_result(arena, v,
+        (uint64_t)batch * (uint64_t)seq_q * (uint64_t)d_v,
+        "scaled-dot-attention");
+    auto* out = (eshkol_tagged_value_t*)result->elements;
+    const size_t score_count = (size_t)batch * (size_t)seq_q * (size_t)seq_k;
+    auto* scores = (tensor_dual_jet*)arena_allocate(
+        arena, score_count * sizeof(tensor_dual_jet));
+    if (!scores) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "scaled-dot-attention: failed to allocate forward dual scores");
+    }
+    const tensor_dual_jet scale = jet_zero(std::sqrt((double)d_k));
+    for (int64_t b = 0; b < batch; ++b) {
+        for (int64_t i = 0; i < seq_q; ++i) {
+            for (int64_t j = 0; j < seq_k; ++j) {
+                tensor_dual_jet score = jet_zero();
+                for (int64_t x = 0; x < d_k; ++x) {
+                    const int64_t q_index = batched
+                        ? b * seq_q * d_k + i * d_k + x : i * d_k + x;
+                    const int64_t k_index = batched
+                        ? b * seq_k * d_k + j * d_k + x : j * d_k + x;
+                    score = jet_add(score, jet_mul(tensor_jet_at(q, q_index,
+                        "scaled-dot-attention"), tensor_jet_at(k, k_index,
+                        "scaled-dot-attention")));
+                }
+                score = jet_div(score, scale, "scaled-dot-attention");
+                if (mask) {
+                    const int64_t mask_index = i * seq_k + j;
+                    score = jet_add(score, tensor_jet_at(mask, mask_index,
+                                                         "scaled-dot-attention"));
+                }
+                scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j] = score;
+            }
+            tensor_dual_jet max_score = scores[(size_t)b * seq_q * seq_k +
+                                               (size_t)i * seq_k];
+            for (int64_t j = 1; j < seq_k; ++j)
+                max_score = jet_max(max_score,
+                    scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j]);
+            tensor_dual_jet exp_sum = jet_zero();
+            for (int64_t j = 0; j < seq_k; ++j) {
+                auto shifted = jet_sub(scores[(size_t)b * seq_q * seq_k +
+                                               (size_t)i * seq_k + j], max_score);
+                scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j] =
+                    jet_unary_exp(shifted);
+                exp_sum = jet_add(exp_sum,
+                    scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j]);
+            }
+            for (int64_t j = 0; j < seq_k; ++j)
+                scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j] =
+                    jet_div(scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + j],
+                            exp_sum, "scaled-dot-attention");
+        }
+        for (int64_t i = 0; i < seq_q; ++i) {
+            for (int64_t j = 0; j < d_v; ++j) {
+                tensor_dual_jet value = jet_zero();
+                for (int64_t x = 0; x < seq_k; ++x) {
+                    const int64_t v_index = batched
+                        ? b * seq_k * d_v + x * d_v + j : x * d_v + j;
+                    value = jet_add(value, jet_mul(
+                        scores[(size_t)b * seq_q * seq_k + (size_t)i * seq_k + x],
+                        tensor_jet_at(v, v_index, "scaled-dot-attention")));
+                }
+                const int64_t out_index = batched
+                    ? b * seq_q * d_v + i * d_v + j : i * d_v + j;
+                out[out_index] = jet_to_tagged(arena, value,
+                                               "scaled-dot-attention");
+            }
+        }
+    }
+    return result;
+}
 
 // LU decomposition with partial pivoting (in-place).
 // A is n x n row-major, piv[i] stores the row swapped with row i.
@@ -641,6 +975,38 @@ static int64_t compute_broadcast_shape(
         }
     }
     return out_ndim;
+}
+
+/** @brief Map a flat broadcast-output index back to one source tensor index.
+ *         Used by the legacy scalarising AD oracle as well as runtime tests. */
+extern "C" int64_t eshkol_broadcast_source_index(
+    int64_t flat, const int64_t* out_dims, int64_t out_ndim,
+    const int64_t* src_dims, int64_t src_ndim)
+{
+    if (flat < 0 || out_ndim < 0 || src_ndim < 0 || out_ndim > 16 ||
+        src_ndim > out_ndim || (out_ndim > 0 && !out_dims) ||
+        (src_ndim > 0 && !src_dims)) return -1;
+    int64_t src_strides[16] = {0};
+    if (src_ndim > 0) {
+        src_strides[src_ndim - 1] = 1;
+        for (int64_t d = src_ndim - 2; d >= 0; --d) {
+            if (src_dims[d + 1] <= 0 ||
+                src_strides[d + 1] > INT64_MAX / src_dims[d + 1]) return -1;
+            src_strides[d] = src_strides[d + 1] * src_dims[d + 1];
+        }
+    }
+    int64_t source_index = 0;
+    int64_t remaining = flat;
+    for (int64_t out_i = out_ndim - 1; out_i >= 0; --out_i) {
+        int64_t dim = out_dims[out_i];
+        if (dim <= 0) return -1;
+        int64_t coordinate = remaining % dim;
+        remaining /= dim;
+        int64_t src_i = out_i - (out_ndim - src_ndim);
+        if (src_i >= 0 && src_dims[src_i] != 1)
+            source_index += coordinate * src_strides[src_i];
+    }
+    return source_index;
 }
 
 /**

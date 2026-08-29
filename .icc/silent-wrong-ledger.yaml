@@ -7342,3 +7342,75 @@ entries:
     notes: >-
       The worktree is intentionally uncommitted; `3ce3006c` is the checked-out
       base and the suffix identifies the measured fix state.
+  - id: SW-111
+    bucket: SILENT-WRONG
+    subtag: tensor-ad
+    family: ad/tensor-transformer
+    status: closed
+    closed_at: "3ce3006c+issue-551-working-tree"
+    closed_by: "issue-551 tensor dual carrier"
+    title: "Forward dual inputs crossing transformer tensor operations were rejected or lost their tangent"
+    repro: >-
+      (define actual
+        (gradient (lambda (v)
+                    (+ (* (tensor-get v 0) (tensor-get v 0))
+                       (* 3.0 (tensor-get v 1))))
+                  #(2.0 5.0)))
+      (display actual) (newline)
+      (define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+      (define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+      (define (f x)
+        (tensor-get (scaled-dot-attention q k
+                      (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+      (display (derivative f 1.0)) (newline)
+      (define (f-ln x)
+        (tensor-get (layer-norm (vector x 2.0 3.0) 1.0 0.0 1e-5) 0))
+      (display (derivative f-ln 1.0)) (newline)
+    observed: >-
+      The generic tensor gradient returned a value that failed the expected
+      #(4.0 3.0) vector, while scaled-dot-attention and layer-norm rejected a
+      vector containing a live forward dual with "expected tensor or numeric
+      vector". Before the fix, a path that did accept the primal tensor would
+      decode its dual-bearing elements as f64 bit patterns and lose the
+      tangent, which is a wrong derivative with exit 0.
+    correct: >-
+      The generic gradient is #(4.0 3.0); the attention V derivative is 0.5
+      for the reproducer; and layer-norm returns the exact forward derivative
+      of its normalized feature. All results must match central finite
+      differences, with no rejection or silent tangent loss, on native JIT,
+      native AOT, and the VM where the documented transformer operation is
+      available.
+    root_cause: >-
+      Tensor collection coercion admitted only int64/double elements, and
+      tensor-get always loaded an element as an f64 bit pattern. Transformer
+      producers therefore either rejected a dual-bearing Scheme vector before
+      their arithmetic or severed its forward carrier at the tensor boundary.
+    fix: >-
+      Preserve a dual-bearing numeric collection as a dtype-DUAL tensor, add
+      exact forward dual implementations for scaled-dot-attention and
+      layer-norm, and make tensor-get return the tagged dual element. Add
+      matching VM carrier and transformer paths, registry declarations, and
+      executable JIT/AOT/VM regression coverage.
+    observed_after: >-
+      Native JIT and AOT each print #(4 3) for the generic tensor gradient,
+      0.5 for the attention value derivative, and
+      0.20413179969792872 for the layer-norm derivative. The attention and
+      layer-norm derivatives, including nonzero-score and middle-feature
+      adversarial placements, match central finite differences; the native
+      regression reports Results: 7 passed, 0 failed. The VM parity corpus
+      prints the same primal/derivative pairs and exits 0.
+    evidence: >-
+      CTest focused run: 4/4 passed, including dense_tensor_ad_gradcheck,
+      issue_551_tensor_transformer_dual_runtime_smoke,
+      issue_551_tensor_transformer_dual_aot_smoke, and
+      issue_551_tensor_transformer_dual_vm_smoke. Direct native JIT and AOT
+      output each reports "PASS: issue_551_tensor_transformer_dual_test";
+      direct VM output reports "PASS: issue_551_tensor_transformer_dual".
+      Full VM parity surface audit passed, and its focused corpus case passed;
+      the artifact-wide run later stopped with the node filesystem at 100%
+      (No space left on device), causing only missing-artifact cascades.
+    caught_by: [issue-551-report, direct-measurement]
+    missed_by: [ad-oracle, vm-parity, ctest]
+    notes: >-
+      Keep this entry open until both the original reproducer and adversarial
+      placements of the dual in attention and layer-norm have been executed.

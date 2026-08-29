@@ -33,6 +33,22 @@
 namespace eshkol {
 
 /**
+ * @brief Is the dense tensor AD-node path enabled for this compilation?
+ *
+ * ADR-0002 Position A ("dense resident tape") records ONE tape node per tensor
+ * operation instead of the 2*M*N*K scalar nodes the scalarizing path emits.
+ * It is the shipped path; the environment variable
+ * `ESHKOL_DENSE_TENSOR_AD_NODES=0` (also `off`, `false`, `no`) selects the
+ * older scalarizing lowering instead.
+ *
+ * Read once and cached.  It is consulted at CODEGEN time, so the choice is
+ * structural -- the emitted IR contains one lowering or the other, never a
+ * runtime switch between them -- which is what makes the two paths
+ * differentially testable against each other.
+ */
+bool denseTensorADNodesEnabled();
+
+/**
  * AutodiffCodegen handles automatic differentiation operations.
  *
  * Eshkol supports two modes of automatic differentiation:
@@ -335,6 +351,41 @@ public:
         llvm::Value* tensor_result,
         llvm::Value* saved_tensors, llvm::Value* num_saved,
         llvm::Value* shape, llvm::Value* ndim);
+
+    /**
+     * Produce the dense f64 buffer and the parent AD node for one operand of a
+     * dense tensor operation (ADR-0002 Position A).
+     *
+     * Two cases, decided at runtime:
+     *
+     *  - the operand is ALREADY an AD-node handle carrying a dense buffer (it
+     *    came from another dense tensor op): the node and its `tensor_value`
+     *    are reused, so a chain of dense ops stays one node per op;
+     *  - otherwise the operand is a tensor whose element slots may hold SCALAR
+     *    AD-node pointers -- that is how `(gradient f x)` seeds a tensor
+     *    differentiation point, and how every scalarizing tensor op publishes
+     *    its result.  Each slot is decoded (small integer / live AD node / f64
+     *    bit pattern, the same three cases the scalarizing path decodes, with
+     *    the residency-first probe rather than a raw address heuristic),
+     *    written into a fresh arena buffer, and remembered in an
+     *    AD_NODE_TENSOR_PACK node whose backward is the identity scatter.
+     *
+     * Packing changes the representation of a gradient and never its value.
+     *
+     * @param existing_node the operand's AD node, or null if it has none
+     * @param elems      i64-typed pointer to the source tensor's element slots
+     * @param total      element count
+     * @param shape      int64_t* shape array (borrowed from the source tensor)
+     * @param ndim       number of dimensions
+     * @param out_dense  receives the f64 buffer the dense kernel must read
+     * @param name       IR name prefix for the emitted blocks
+     * @return the parent AD node for this operand, or nullptr on failure
+     */
+    llvm::Value* emitDenseTensorOperand(llvm::Value* existing_node,
+                                        llvm::Value* elems, llvm::Value* total,
+                                        llvm::Value* shape, llvm::Value* ndim,
+                                        llvm::Value** out_dense,
+                                        const std::string& name);
 
     /**
      * Record an opaque scalar primitive with an externally supplied VJP.

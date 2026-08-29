@@ -107,16 +107,23 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                     return ptr;  /* already a tensor — zero-copy fast path */
                 }
                 if (hdr->subtype == HEAP_SUBTYPE_VECTOR) {
-                    /* Coerce a *homogeneous numeric* vector to a 1-D tensor.
-                     * Layout: [len:i64][eshkol_tagged_value_t elems...]. */
+                    /* Coerce a homogeneous numeric vector to a 1-D tensor.
+                     * Layout: [len:i64][eshkol_tagged_value_t elems...].
+                     * A forward-mode derivative deliberately uses the same
+                     * collection carrier, with DUAL_NUMBER elements.  Keep
+                     * those tagged jets in a dual tensor instead of rejecting
+                     * them or flattening them to their primal values. */
                     char* v = (char*)ptr;
                     int64_t len = *(int64_t*)v;
                     if (len < 0) len = 0;
                     const eshkol_tagged_value_t* elems =
                         (const eshkol_tagged_value_t*)(v + sizeof(int64_t));
+                    bool has_dual = false;
                     for (int64_t i = 0; i < len; i++) {
                         uint8_t bt = (uint8_t)(elems[i].type & 0x0F);
-                        if (bt != ESHKOL_VALUE_INT64 && bt != ESHKOL_VALUE_DOUBLE) {
+                        if (bt == ESHKOL_VALUE_DUAL_NUMBER) {
+                            has_dual = true;
+                        } else if (bt != ESHKOL_VALUE_INT64 && bt != ESHKOL_VALUE_DOUBLE) {
                             /* heterogeneous / non-numeric vector — not coercible */
                             eshkol_type_error_with_operand(
                                 op_name, "tensor or numeric vector", val);
@@ -128,6 +135,20 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                         arena_allocate_tensor_full(arena, 1, (uint64_t)len);
                     if (!t) return nullptr;
                     if (t->dimensions) t->dimensions[0] = (uint64_t)len;
+                    if (has_dual) {
+                        /* The ordinary allocator reserves f64 bit-patterns.
+                         * Replace that element allocation with tagged slots;
+                         * the abandoned arena bytes are harmless and remain
+                         * owned by the same arena. */
+                        void* dual_elems = arena_allocate(
+                            arena, (size_t)len * sizeof(eshkol_tagged_value_t));
+                        if (!dual_elems) return nullptr;
+                        t->elements = (int64_t*)dual_elems;
+                        t->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+                        std::memcpy(t->elements, elems,
+                                    (size_t)len * sizeof(eshkol_tagged_value_t));
+                        return t;
+                    }
                     for (int64_t i = 0; i < len; i++) {
                         const eshkol_tagged_value_t* e = &elems[i];
                         double d = ((e->type & 0x0F) == ESHKOL_VALUE_DOUBLE)
