@@ -153,6 +153,9 @@ private:
     using RegisterFuncBindingFunc = void (*)(const char* var_name, void* typed_value, void* context);
     // Decide whether a lexical binding is the target of set! in its scope.
     using IsVarSetFunc = bool (*)(const void* ast, const char* name, void* context);
+    // Decide whether an escaping continuation may restore control across the
+    // scope, requiring the mutable cell to outlive the native stack frame.
+    using IsContinuationEscapeFunc = bool (*)(const void* ast, void* context);
 
     // Stored callback instances set via setCodegenCallbacks() (see the
     // typedefs above for each callback's signature/purpose)
@@ -162,6 +165,7 @@ private:
     GetTypedValueTypeFunc get_typed_value_type_callback_ = nullptr;
     RegisterFuncBindingFunc register_func_binding_callback_ = nullptr;
     IsVarSetFunc is_var_set_callback_ = nullptr;
+    IsContinuationEscapeFunc is_continuation_escape_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Symbol tables (references to main codegen's tables)
@@ -243,6 +247,10 @@ public:
         is_var_set_callback_ = callback;
     }
 
+    void setContinuationEscapeAnalysisCallback(IsContinuationEscapeFunc callback) {
+        is_continuation_escape_callback_ = callback;
+    }
+
     /**
      * Set symbol table references.
      */
@@ -295,7 +303,7 @@ public:
     struct TailCallContext {
         std::string func_name = "";           // Name of function being compiled
         llvm::BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
-        std::vector<llvm::AllocaInst*> param_allocas;  // Allocas for mutable parameters
+        std::vector<llvm::Value*> param_allocas;  // Mutable parameter cells
         std::vector<std::string> param_names;    // Parameter names for lookup
         bool enabled = false;                 // Whether TCO is enabled for current lambda
         bool iter_scope = false;              // ESH-0214b: loop body runs inside a

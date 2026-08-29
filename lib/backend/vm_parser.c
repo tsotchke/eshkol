@@ -968,19 +968,120 @@ static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
-static int scan_for_set(Node* node, const char* name) {
+static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
         if (head->type == N_SYMBOL && strcmp(head->symbol, "set!") == 0
             && node->children[1]->type == N_SYMBOL
-            && strcmp(node->children[1]->symbol, name) == 0)
+            && !shadowed && strcmp(node->children[1]->symbol, name) == 0)
             return 1;
     }
     if (node->type == N_LIST) {
+        Node* head = node->n_children ? node->children[0] : NULL;
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < node->children[1]->n_children; i++)
+                if (node->children[1]->children[i]->type == N_SYMBOL &&
+                    strcmp(node->children[1]->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+            && node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* sig = node->children[1];
+            int inner_shadowed = shadowed;
+            for (int i = 0; i < sig->n_children; i++)
+                if (sig->children[i]->type == N_SYMBOL &&
+                    strcmp(sig->children[i]->symbol, name) == 0)
+                    inner_shadowed = 1;
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+            && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
+            && node->children[2]->type == N_LIST) {
+            Node* bindings = node->children[2];
+            int body_shadowed = shadowed || strcmp(node->children[1]->symbol, name) == 0;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 3; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
+        if (head && head->type == N_SYMBOL &&
+            (strcmp(head->symbol, "let") == 0 || strcmp(head->symbol, "let*") == 0 ||
+             strcmp(head->symbol, "letrec") == 0 || strcmp(head->symbol, "letrec*") == 0) &&
+            node->n_children >= 3 && node->children[1]->type == N_LIST) {
+            Node* bindings = node->children[1];
+            int body_shadowed = shadowed;
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                if (b->n_children >= 2 &&
+                    scan_for_set_scoped(b->children[1], name, shadowed)) return 1;
+                if (b->children[0]->type == N_SYMBOL &&
+                    strcmp(b->children[0]->symbol, name) == 0) body_shadowed = 1;
+            }
+            for (int i = 2; i < node->n_children; i++)
+                if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
+            return 0;
+        }
         for (int i = 0; i < node->n_children; i++)
-            if (scan_for_set(node->children[i], name)) return 1;
+            if (scan_for_set_scoped(node->children[i], name, shadowed)) return 1;
     }
+    return 0;
+}
+
+static int scan_for_set(Node* node, const char* name) {
+    return scan_for_set_scoped(node, name, 0);
+}
+
+/* A mutated local only needs a heap cell when a closure or a continuation can
+ * observe its location after the current control frame is copied.  Plain
+ * mutation remains a direct stack-slot store; this is the VM counterpart of
+ * native assignment conversion's alloca fast path and keeps hot loops flat. */
+static int scan_for_callcc(Node* node) {
+    if (!node) return 0;
+    if (node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        strcmp(node->children[0]->symbol, "quote") == 0)
+        return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
+        (strcmp(node->children[0]->symbol, "call/cc") == 0 ||
+         strcmp(node->children[0]->symbol, "call-with-current-continuation") == 0))
+        return 1;
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_callcc(node->children[i])) return 1;
+    return 0;
+}
+
+/* Conservative closure presence test for local escape pruning.  The precise
+ * capture walk is intentionally not used for the storage-class fast path:
+ * an internal define or a nested binder may relay a location through more
+ * than one lowered scope. Seeing any closure constructor keeps the local in a
+ * shared cell; the no-closure case is the performance case we can prove. */
+static int scan_for_closure(Node* node) {
+    if (!node || node->type != N_LIST) return 0;
+    if (node->n_children > 0 && node->children[0]->type == N_SYMBOL) {
+        const char* head = node->children[0]->symbol;
+        if (strcmp(head, "lambda") == 0 || strcmp(head, "define") == 0 ||
+            (strcmp(head, "let") == 0 && node->n_children >= 4 &&
+             node->children[1]->type == N_SYMBOL))
+            return 1;
+    }
+    for (int i = 0; i < node->n_children; i++)
+        if (scan_for_closure(node->children[i])) return 1;
     return 0;
 }
 
@@ -1056,7 +1157,8 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
             return 0;
         }
         if (head->type == N_SYMBOL && (strcmp(head->symbol, "let") == 0 ||
-            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0)) {
+            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
+            strcmp(head->symbol, "letrec*") == 0)) {
             /* Check if name is rebound in this let's bindings */
             if (node->n_children >= 3 && node->children[1]->type == N_LIST) {
                 Node* bindings = node->children[1];
@@ -1088,6 +1190,32 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
         if (scan_for_set(body_nodes[i], name)) has_set = 1;
     }
     return has_set;
+}
+
+/* Local binding forms can avoid the vector cell when neither a nested
+ * closure nor a continuation can observe the location. Parameters keep the
+ * conservative entry conversion below because their frame may outlive the
+ * point where the nested closure is created. */
+static int needs_local_boxing(Node* body_nodes[], int n_bodies,
+                              const char* name) {
+    int has_set = 0;
+    int has_capture = 0;
+    int has_callcc = 0;
+    for (int i = 0; i < n_bodies; i++) {
+        if (scan_for_set(body_nodes[i], name)) has_set = 1;
+        if (scan_for_closure(body_nodes[i])) has_capture = 1;
+        if (scan_for_callcc(body_nodes[i])) has_callcc = 1;
+    }
+    return has_set && (has_capture || has_callcc);
+}
+
+/* Parameters have a distinct lifetime from let locals: a nested closure can
+ * capture a parameter before the call site's frame is retired. Keep the
+ * parameter entry conversion conservative while local binding forms use the
+ * escape-pruned needs_boxing() path above. */
+static int needs_parameter_boxing(Node* body_nodes[], int n_bodies,
+                                  const char* name) {
+    return needs_boxing(body_nodes, n_bodies, name);
 }
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as

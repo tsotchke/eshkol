@@ -650,11 +650,37 @@ eshkol_region_t* region_current(void) {
  * for users, and .icc/silent-wrong-ledger.yaml SW-59/SW-74 for the defects
  * this closes.
  */
-void eshkol_region_pin_all(void) {
+// A continuation keeps an opaque native stack image, so a pinned region cannot
+// be reclaimed by the typed evacuator. Bound the otherwise process-lifetime
+// retention and fail closed once the bound is reached.
+static constexpr size_t ESHKOL_CONTINUATION_PIN_BUDGET = 64u * 1024u * 1024u;
+static size_t g_continuation_pinned_bytes = 0;
+static std::mutex g_continuation_pin_mutex;
+
+int eshkol_region_pin_all(void) {
+    std::lock_guard<std::mutex> lock(g_continuation_pin_mutex);
+    size_t additional = 0;
     for (uint64_t i = 0; i < __region_stack_depth; ++i) {
         eshkol_region_t* r = __region_stack[i];
-        if (r) r->pinned = 1;
+        if (r && !r->pinned && r->arena)
+            additional += arena_get_used_memory(r->arena);
     }
+    if (additional > ESHKOL_CONTINUATION_PIN_BUDGET -
+                    (g_continuation_pinned_bytes < ESHKOL_CONTINUATION_PIN_BUDGET
+                         ? g_continuation_pinned_bytes : ESHKOL_CONTINUATION_PIN_BUDGET)) {
+        eshkol_error("continuation region-pin budget exceeded (%zu bytes); "
+                     "resume rejected to prevent an unbounded pinned-region leak",
+                     ESHKOL_CONTINUATION_PIN_BUDGET);
+        return 0;
+    }
+    for (uint64_t i = 0; i < __region_stack_depth; ++i) {
+        eshkol_region_t* r = __region_stack[i];
+        if (r && !r->pinned) {
+            r->pinned = 1;
+            if (r->arena) g_continuation_pinned_bytes += arena_get_used_memory(r->arena);
+        }
+    }
+    return 1;
 }
 
 /**

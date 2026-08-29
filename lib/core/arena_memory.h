@@ -549,12 +549,15 @@ int eshkol_region_any_handle_owned_open(void);
 // eshkol_make_continuation_state_flags(), runtime_continuations.cpp) whenever
 // the stack is non-empty at capture time — exactly the condition the VM checks
 // (`vm->heap.regions.depth > 0`) before its own heap_region_pin_all().
-// Idempotent and safe to call with no regions open.
+// Returns zero when the bounded cumulative pin budget would be exceeded; in
+// that case no newly requested region is pinned and the continuation must be
+// rejected rather than leaving a dangling snapshot. Idempotent and safe to
+// call with no regions open.
 //
 // Every OPEN region is pinned, not just the innermost: the continuation's stack
 // snapshot may hold interior pointers into any of them, and a `call/cc` nested
 // two `with-region`s deep can be re-entered after both have exited.
-void eshkol_region_pin_all(void);
+int eshkol_region_pin_all(void);
 
 // Thread-local region stack (safe for parallel-map + with-region)
 #define MAX_REGION_DEPTH 64

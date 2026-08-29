@@ -1301,8 +1301,10 @@ static void vm_region_bracket_unwind_to(VM* vm, int target_brackets) {
  * a continuation could reach is never released at all. This costs reclamation
  * only in the rare `call/cc`-across-`with-region` case, and it costs it in the
  * direction of a leak. */
-static void vm_region_bracket_unwind_pinned(VM* vm, int target_brackets) {
-    if (vm->heap.regions.depth > 0)
-        heap_region_pin_all(&vm->heap, "a continuation crossed the region boundary");
+static int vm_region_bracket_unwind_pinned(VM* vm, int target_brackets) {
+    if (vm->heap.regions.depth > 0 &&
+        !heap_region_pin_all(&vm->heap, "a continuation crossed the region boundary"))
+        return 0;
     vm_region_bracket_unwind_to(vm, target_brackets);
+    return 1;
 }

@@ -45,8 +45,8 @@ static void vm_capture_continuation_stack(VM* vm, VmContinuation* cont) {
            (size_t)vm->frame_count * sizeof(CallFrame));
 }
 
-static void vm_capture_continuation_dynamic_state(VM* vm,
-                                                  VmContinuation* cont) {
+static int vm_capture_continuation_dynamic_state(VM* vm,
+                                                 VmContinuation* cont) {
     char* cursor = (char*)cont->saved_frames +
         (size_t)vm->frame_count * sizeof(CallFrame);
     cont->n_winds = vm->n_winds;
@@ -58,8 +58,9 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
      * capture time is PINNED — it will be promoted whole rather than freed.
      * The cost is reclamation in the rare call/cc-inside-with-region case, and
      * it is paid in the direction of a leak, never a dangling index. */
-    if (vm->heap.regions.depth > 0)
-        heap_region_pin_all(&vm->heap, "a continuation was captured inside a region");
+    if (vm->heap.regions.depth > 0 &&
+        !heap_region_pin_all(&vm->heap, "a continuation was captured inside a region"))
+        return 0;
     cont->saved_wind_befores = (Value*)cursor;
     cursor += (size_t)cont->n_winds * sizeof(Value);
     cont->saved_wind_afters = (Value*)cursor;
@@ -79,6 +80,7 @@ static void vm_capture_continuation_dynamic_state(VM* vm,
         if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
         else cont->saved_parameter_values[i] = NIL_VAL;
     }
+    return 1;
 }
 
 /* Restore the control half of a captured continuation: the operand slots at
@@ -182,7 +184,10 @@ static void vm_restore_continuation_dynamic_state(VM* vm,
      * The regions are pinned first, so nothing the abandoned path allocated is
      * freed — the continuation's value may live anywhere in it and, unlike a
      * raise, there is no single in-flight slot to promote. */
-    vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets);
+    if (!vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets)) {
+        vm->error = 1;
+        return;
+    }
 
     for (int i = 0; i < cont->n_winds; i++) {
         vm->wind_stack[i].before = cont->saved_wind_befores[i];

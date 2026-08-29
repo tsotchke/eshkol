@@ -1558,6 +1558,7 @@ namespace ControlFlowCallbacks {
     static bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     static bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    static bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
     static llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
     // Wrapper for resolving comparison/equality/predicate builtins (for apply)
@@ -1578,6 +1579,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
     friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
     friend void ControlFlowCallbacks::registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
@@ -1791,6 +1793,13 @@ private:
     // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
     // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
     std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
+
+    // Per-AST mutation summaries. Binding decisions ask the same lexical body
+    // once per binding; retaining the flat set! targets turns the common
+    // generated N-binding case from repeated whole-body walks into one pass.
+    std::unordered_map<const eshkol_ast_t*, std::unordered_set<std::string>>
+        flat_mutation_targets_;
+    std::unordered_set<const eshkol_ast_t*> flat_mutation_ineligible_;
 
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
@@ -4761,6 +4770,7 @@ private:
         binding_->setLambdaTracking(&last_generated_lambda_name, &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
         binding_->setMutationAnalysisCallback(ControlFlowCallbacks::isVarSetWrapper);
+        binding_->setContinuationEscapeAnalysisCallback(ControlFlowCallbacks::continuationEscapeWrapper);
         // Set up TCO callbacks for tail call optimization
         binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
         eshkol_debug("Created BindingCodegen with callbacks and TCO support");
@@ -13024,7 +13034,11 @@ private:
             tco_ctx.param_allocas.clear();
             tco_ctx.param_names.clear();
 
-            // Convert parameters to allocas for mutability
+            // Convert parameters to mutable cells. A cell is arena-backed when
+            // an escaping continuation can re-enter this function after the
+            // native frame has changed; otherwise the entry alloca is reused
+            // by every TCO iteration (no per-iteration allocation).
+            const bool params_need_durable_cells = astHasEscapingCallCC(op->define_op.value);
             arg_it = function->arg_begin();
             if (op->define_op.parameters) {
                 for (uint64_t i = 0; i < op->define_op.num_params && arg_it != function->arg_end(); ++i, ++arg_it) {
@@ -13032,9 +13046,15 @@ private:
                         op->define_op.parameters[i].variable.id) {
                         std::string param_name = op->define_op.parameters[i].variable.id;
 
-                        // Create alloca for this parameter
-                        AllocaInst* param_alloca = builder->CreateAlloca(
-                            tagged_value_type, nullptr, param_name + "_tco");
+                        Value* param_alloca = nullptr;
+                        if (params_need_durable_cells) {
+                            param_alloca = builder->CreateCall(
+                                getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                                param_name + "_tco_cell");
+                        } else {
+                            param_alloca = builder->CreateAlloca(
+                                tagged_value_type, nullptr, param_name + "_tco");
+                        }
 
                         // Store initial argument value
                         builder->CreateStore(&(*arg_it), param_alloca);
@@ -13108,7 +13128,11 @@ private:
                         op->define_op.parameters[i].variable.id) {
                         std::string pname = op->define_op.parameters[i].variable.id;
                         if (astSetsVar(op->define_op.value, pname)) {
-                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            Value* box = astHasEscapingCallCC(op->define_op.value)
+                                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                                    {getArenaPtr(), sizeConst(16)}, pname + "_cell"))
+                                : static_cast<Value*>(builder->CreateAlloca(
+                                    tagged_value_type, nullptr, pname));
                             builder->CreateStore(&(*box_arg_it), box);
                             symbol_table[pname] = box;
                             eshkol_debug("Assignment conversion: boxed set!-mutated param %s in %s",
@@ -13129,7 +13153,11 @@ private:
             if (is_variadic && box_arg_it != function->arg_end() &&
                 astSetsVar(op->define_op.value, op->define_op.rest_param)) {
                 std::string pname = op->define_op.rest_param;
-                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                Value* box = astHasEscapingCallCC(op->define_op.value)
+                    ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                        {getArenaPtr(), sizeConst(16)}, pname + "_rest_cell"))
+                    : static_cast<Value*>(builder->CreateAlloca(
+                        tagged_value_type, nullptr, pname));
                 builder->CreateStore(&(*box_arg_it), box);
                 symbol_table[pname] = box;
                 eshkol_debug("Assignment conversion: boxed set!-mutated rest param %s in %s",
@@ -23371,6 +23399,58 @@ private:
         return continuationUseStaysLocal(pop->lambda_op.body, params[0].variable.id);
     }
 
+    bool astHasEscapingCallCC(const eshkol_ast_t* ast) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_CONS)
+            return astHasEscapingCallCC(ast->cons_cell.car) ||
+                   astHasEscapingCallCC(ast->cons_cell.cdr);
+        if (ast->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_CC_OP:
+                return !callCCContinuationStaysLocal(op) ||
+                       astHasEscapingCallCC(op->call_cc_op.proc);
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                    if (astHasEscapingCallCC(&op->sequence_op.expressions[i])) return true;
+                return false;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                    if (astHasEscapingCallCC(&op->let_op.bindings[i])) return true;
+                return astHasEscapingCallCC(op->let_op.body);
+            case ESHKOL_LAMBDA_OP:
+                return astHasEscapingCallCC(op->lambda_op.body);
+            case ESHKOL_DEFINE_OP:
+                return astHasEscapingCallCC(op->define_op.value);
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_DO_OP:
+                if (astHasEscapingCallCC(op->call_op.func)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    if (astHasEscapingCallCC(&op->call_op.variables[i])) return true;
+                return false;
+            case ESHKOL_GUARD_OP:
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++)
+                    if (astHasEscapingCallCC(&op->guard_op.clauses[i])) return true;
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++)
+                    if (astHasEscapingCallCC(&op->guard_op.body[i])) return true;
+                return false;
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
+                    if (astHasEscapingCallCC(&op->with_region_op.body[i])) return true;
+                return false;
+            default:
+                return false;
+        }
+    }
+
     Value* codegenCallCC(const eshkol_operations_t* op) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -24051,7 +24131,28 @@ private:
                     single_ok_bb ? 2 : 1, std::string("lv_") + vars[j]);
                 phi->addIncoming(multi_vals[j], multi_exit_bb);
                 if (single_ok_bb) phi->addIncoming(produced, single_exit_bb);
-                symbol_table[vars[j]] = phi;
+                const std::string var_name = vars[j] ? vars[j] : "";
+                if (astSetsVar(op->let_values_op.body, var_name)) {
+                    Value* storage = nullptr;
+                    const bool durable = astHasEscapingCallCC(op->let_values_op.body);
+                    if (durable) {
+                        storage = builder->CreateCall(
+                            getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                            var_name + "_let_values_cell");
+                    } else {
+                        Function* fn = builder->GetInsertBlock()->getParent();
+                        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+                        builder->SetInsertPoint(&fn->getEntryBlock(),
+                                                fn->getEntryBlock().begin());
+                        storage = builder->CreateAlloca(
+                            tagged_value_type, nullptr, var_name + "_let_values");
+                        builder->restoreIP(saved_ip);
+                    }
+                    builder->CreateStore(phi, storage);
+                    symbol_table[var_name] = storage;
+                } else {
+                    symbol_table[var_name] = phi;
+                }
             }
             return true;
         };
@@ -24891,6 +24992,21 @@ private:
         return false;
     }
 
+    // Assignment conversion is a storage decision, not only a capture
+    // decision. A do variable that is set! from its own body must use one
+    // durable cell when an escaping continuation can re-enter the loop; a
+    // captured variable must use that same cell even without call/cc. Keeping
+    // this predicate beside doFormCapturesVar prevents the step/header/body
+    // paths from ever selecting different locations.
+    bool doFormSetsVar(const eshkol_operations_t* op,
+                       const eshkol_ast_t* main_cons,
+                       const std::string& var) {
+        if (astSetsVar(main_cons, var)) return true;
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+            if (astSetsVar(&op->call_op.variables[i], var)) return true;
+        return false;
+    }
+
     Value* codegenDo(const eshkol_operations_t* op) {
         if (!op->call_op.func || op->call_op.func->type != ESHKOL_CONS) {
             eshkol_warn("do requires properly formed structure");
@@ -24908,6 +25024,10 @@ private:
 
         const eshkol_ast_t* test_ast = test_clause->cons_cell.car;
         const eshkol_ast_t* results_list = test_clause->cons_cell.cdr;
+        bool do_has_escaping_callcc = astHasEscapingCallCC(main_cons);
+        for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+            do_has_escaping_callcc = do_has_escaping_callcc ||
+                astHasEscapingCallCC(&op->call_op.variables[i]);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -24970,7 +25090,10 @@ private:
                 // pointer-passes WITHOUT rebinding anything. Otherwise the variable
                 // keeps its stack alloca and stays promotable by mem2reg, so
                 // closure-free `do` loops are unchanged.
-                const bool needs_shared_cell = doFormCapturesVar(op, main_cons, var_name);
+                const bool captured = doFormCapturesVar(op, main_cons, var_name);
+                const bool mutated = doFormSetsVar(op, main_cons, var_name);
+                const bool durable = do_has_escaping_callcc;
+                const bool needs_shared_cell = captured || (mutated && durable);
 
                 Value* alloca = nullptr;
                 if (needs_shared_cell) {
@@ -29492,6 +29615,10 @@ private:
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     if (astScanVar(&op->let_op.bindings[i], var, mode)) return true;
                 }
+                if (mode == VarScanMode::SetTarget &&
+                    bindingListShadows(op->let_op.bindings, op->let_op.num_bindings, var)) {
+                    return false;
+                }
                 return astScanVar(op->let_op.body, var, mode);
             }
             case ESHKOL_LAMBDA_OP:
@@ -29501,6 +29628,12 @@ private:
                                       var) &&
                     astReferencesVar(op->lambda_op.body, var)) {
                     return true;
+                }
+                if (mode == VarScanMode::SetTarget &&
+                    paramListShadows(op->lambda_op.parameters, op->lambda_op.num_params,
+                                     op->lambda_op.is_variadic ? op->lambda_op.rest_param : nullptr,
+                                     var)) {
+                    return false;
                 }
                 return astScanVar(op->lambda_op.body, var, mode);
             case ESHKOL_DEFINE_OP:
@@ -29515,6 +29648,8 @@ private:
                 //         (define (bump) (set! a (+ a i))) (bump))
                 // turned a correct 3 into a type error. `(define bump (lambda …))`
                 // is a different shape and is caught by the LAMBDA_OP case above.
+                if (mode == VarScanMode::SetTarget && op->define_op.name &&
+                    var == op->define_op.name) return false;
                 return astScanVar(op->define_op.value, var, mode);
             // ---- named layouts ----------------------------------------------
             case ESHKOL_GUARD_OP: {
@@ -29545,6 +29680,13 @@ private:
             case ESHKOL_LET_STAR_VALUES_OP: {
                 for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
                     if (astScanVar(&op->let_values_op.producers[i], var, mode)) return true;
+                }
+                if (mode == VarScanMode::SetTarget) {
+                    for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++)
+                        for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; j++)
+                            if (op->let_values_op.binding_vars[i][j] &&
+                                var == op->let_values_op.binding_vars[i][j])
+                                return false;
                 }
                 return astScanVar(op->let_values_op.body, var, mode);
             }
@@ -29624,8 +29766,62 @@ private:
         }
     }
 
+    // Collect a mutation summary for ASTs that contain no nested binder. Such
+    // bodies are the hot path for large generated lets/letrecs; binder-shaped
+    // ASTs deliberately fall back to astScanVar so shadowing remains exact.
+    bool collectFlatMutationTargets(const eshkol_ast_t* ast,
+                                    std::unordered_set<std::string>& targets) {
+        if (!ast) return true;
+        if (ast->type == ESHKOL_CONS) {
+            return collectFlatMutationTargets(ast->cons_cell.car, targets) &&
+                   collectFlatMutationTargets(ast->cons_cell.cdr, targets);
+        }
+        if (ast->type != ESHKOL_OP) return true;
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_SET_OP:
+                if (op->set_op.name) targets.insert(op->set_op.name);
+                return collectFlatMutationTargets(op->set_op.value, targets);
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; ++i)
+                    if (!collectFlatMutationTargets(
+                            &op->sequence_op.expressions[i], targets)) return false;
+                return true;
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (!collectFlatMutationTargets(op->call_op.func, targets)) return false;
+                for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
+                    if (!collectFlatMutationTargets(&op->call_op.variables[i], targets))
+                        return false;
+                return true;
+            default:
+                // A nested binder or a union layout not listed above needs the
+                // shadow-aware recursive query below.
+                return false;
+        }
+    }
+
     // Returns true iff `var` is the target of a set! anywhere in `ast`.
     bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+        if (ast && !flat_mutation_ineligible_.count(ast)) {
+            auto it = flat_mutation_targets_.find(ast);
+            if (it == flat_mutation_targets_.end()) {
+                std::unordered_set<std::string> targets;
+                if (collectFlatMutationTargets(ast, targets)) {
+                    it = flat_mutation_targets_.emplace(ast, std::move(targets)).first;
+                } else {
+                    flat_mutation_ineligible_.insert(ast);
+                }
+            }
+            if (it != flat_mutation_targets_.end())
+                return it->second.count(var) != 0;
+        }
         return astScanVar(ast, var, VarScanMode::SetTarget);
     }
 
@@ -31104,9 +31300,15 @@ private:
                         op->lambda_op.parameters[i].variable.id) {
                         std::string param_name = op->lambda_op.parameters[i].variable.id;
 
-                        // Create alloca for this parameter
-                        AllocaInst* param_alloca = builder->CreateAlloca(
-                            tagged_value_type, nullptr, param_name + "_tco");
+                        Value* param_alloca = nullptr;
+                        if (astHasEscapingCallCC(op->lambda_op.body)) {
+                            param_alloca = builder->CreateCall(
+                                getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)},
+                                param_name + "_tco_cell");
+                        } else {
+                            param_alloca = builder->CreateAlloca(
+                                tagged_value_type, nullptr, param_name + "_tco");
+                        }
 
                         // Store initial argument value
                         builder->CreateStore(&(*arg_it), param_alloca);
@@ -31151,7 +31353,11 @@ private:
                         op->lambda_op.parameters[i].variable.id) {
                         std::string pname = op->lambda_op.parameters[i].variable.id;
                         if (astSetsVar(op->lambda_op.body, pname)) {
-                            AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                            Value* box = astHasEscapingCallCC(op->lambda_op.body)
+                                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                                    {getArenaPtr(), sizeConst(16)}, pname + "_cell"))
+                                : static_cast<Value*>(builder->CreateAlloca(
+                                    tagged_value_type, nullptr, pname));
                             builder->CreateStore(&(*box_arg_it), box);
                             symbol_table[pname] = box;
                             eshkol_debug("Assignment conversion: boxed set!-mutated lambda param %s", pname.c_str());
@@ -31165,7 +31371,11 @@ private:
             if (is_variadic && box_arg_it != lambda_func->arg_end() &&
                 astSetsVar(op->lambda_op.body, op->lambda_op.rest_param)) {
                 std::string pname = op->lambda_op.rest_param;
-                AllocaInst* box = builder->CreateAlloca(tagged_value_type, nullptr, pname);
+                Value* box = astHasEscapingCallCC(op->lambda_op.body)
+                    ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                        {getArenaPtr(), sizeConst(16)}, pname + "_rest_cell"))
+                    : static_cast<Value*>(builder->CreateAlloca(
+                        tagged_value_type, nullptr, pname));
                 builder->CreateStore(&(*box_arg_it), box);
                 symbol_table[pname] = box;
                 eshkol_debug("Assignment conversion: boxed set!-mutated lambda rest param %s", pname.c_str());
@@ -32293,7 +32503,7 @@ private:
         std::string saved_tco_func_name = tco_ctx.func_name;
         bool saved_tco_enabled = tco_ctx.enabled;
         BasicBlock* saved_tco_loop_header = tco_ctx.loop_header;
-        std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
+        std::vector<Value*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
         bool saved_tco_iter_scope = tco_ctx.iter_scope;
         bool saved_tco_iter_nursery = tco_ctx.iter_nursery;               // ESH-0214e
@@ -32315,9 +32525,19 @@ private:
         // Add parameters to symbol table with TCO allocas
         arg_it = loop_func->arg_begin();
         for (size_t i = 0; i < param_names.size(); i++, ++arg_it) {
-            // Create alloca for parameter (TCO-style)
-            AllocaInst* param_alloca = builder->CreateAlloca(tagged_value_type, nullptr,
-                                                              param_names[i] + "_tco");
+            // Use an arena cell only when an escaping continuation can restore
+            // this loop after its native frame has changed. Otherwise this
+            // entry-block alloca is reused by every TCO call, preserving the
+            // loop's per-call/thread-local storage behavior.
+            const bool param_mutated = astSetsVar(op->let_op.body, param_names[i]);
+            const bool param_needs_durable_cell =
+                param_mutated &&
+                astHasEscapingCallCC(op->let_op.body);
+            Value* param_alloca = param_needs_durable_cell
+                ? static_cast<Value*>(builder->CreateCall(getArenaAllocateFunc(),
+                    {getArenaPtr(), sizeConst(16)}, param_names[i] + "_tco_cell"))
+                : static_cast<Value*>(builder->CreateAlloca(tagged_value_type, nullptr,
+                    param_names[i] + "_tco"));
             builder->CreateStore(&*arg_it, param_alloca);
             symbol_table[param_names[i]] = param_alloca;
 
@@ -42579,6 +42799,11 @@ namespace ControlFlowCallbacks {
     bool isVarSetWrapper(const void* ast, const char* name, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
+    }
+
+    bool continuationEscapeWrapper(const void* ast, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->astHasEscapingCallCC(static_cast<const eshkol_ast_t*>(ast));
     }
 
     void* codegenTypedASTWrapper(const void* ast, void* context) {
