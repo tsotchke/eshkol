@@ -13,6 +13,24 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+## Reliable FetchContent builds on the mesh
+
+Self-hosted Linux runners share a seeded source cache at
+`$HOME/lanes/_deps`. Seed it once with
+`scripts/mesh/seed_fetchcontent_cache.sh`, then configure lanes with:
+
+```sh
+cmake -S . -B build -G Ninja \
+  -DFETCHCONTENT_BASE_DIR="$HOME/lanes/_deps" \
+  -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+```
+
+`FETCHCONTENT_BASE_DIR` makes the pinned dependency sources and their
+FetchContent sub-builds reusable across lane build directories. The fully
+disconnected flag makes a seeded build fail immediately if the cache is
+incomplete instead of stalling on a network fetch. If the cache marker is
+absent, mesh CI omits both flags and falls back to the normal network path.
+
 Useful targets: `eshkol-run` (compiler/JIT driver), `eshkol-repl`,
 `eshkol-vm-standalone`, and `stdlib` (precompiled standard library object).
 
