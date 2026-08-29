@@ -82,10 +82,8 @@ static std::atomic<uint64_t> s_next_thread_id{1};
 // in flight (transient region allocations land in the shared arena instead of
 // being freed at region_pop) — a bounded, documented cost, never a correctness
 // hazard. Single-threaded programs are entirely unaffected (identical hijack).
-static arena_t* s_shared_root_arena = nullptr;         // true process-wide thread-safe arena
 static std::atomic<int> s_parallel_depth{0};           // >0 while a work-stealing construct may run
 static std::mutex s_parallel_arena_mtx;                // guards the 0<->1 transition swap
-static arena_t* s_saved_arena_at_parallel = nullptr;   // __global_arena captured at the 0->1 edge
 
 // Sentinel returned by eshkol_region_enter when it did NOT hijack the shared
 // slot (parallel/worker context). No real arena lives at address 0x1.
@@ -106,7 +104,6 @@ static void init_global_arena_internal() {
     if (!__global_arena) {
         eshkol_error("Failed to create global arena");
     }
-    s_shared_root_arena = __global_arena;
 }
 
 /**
@@ -617,33 +614,18 @@ void eshkol_region_pin_all(void) {
 extern "C" arena_t* eshkol_region_enter(eshkol_region_t* region) {
     if (!region || !region->arena) return REGION_NO_HIJACK;
 
-    // Unsafe to mutate the process-shared __global_arena when other threads may
-    // be reading it concurrently: on a pool worker, or while any work-stealing
-    // construct is in flight (which also covers the main thread running the
-    // parallel-map JIT-warmup item while workers spin up).
+    // Workers keep using the thread-safe process arena while parallel work is
+    // active; the lexical domain is thread-local everywhere else.
     if (s_parallel_depth.load(std::memory_order_acquire) != 0 ||
         arena_is_worker_thread()) {
         region->entry_saved_arena = REGION_NO_HIJACK;
         return REGION_NO_HIJACK;
     }
 
-    arena_t* saved = __global_arena;
-    // #341: record the displaced arena ON THE REGION as well as returning it.
-    // with-region codegen keeps the returned token in an SSA register, but a
-    // non-lexical teardown (region-close, or an unwind crossing this region)
-    // reaches the region only through the region stack and has no register to
-    // read — so the restore token has to be recoverable from the region itself.
-    region->entry_saved_arena = saved;
-    __global_arena = region->arena;
-    // OALR Phase A: mirror the redirect into the thread-local memory context so
-    // eshkol_current_arena() (the accessor generated code now routes through)
-    // resolves body allocations to the region arena WITHOUT reading the shared
-    // slot. Kept in lockstep with the __global_arena write above (single-threaded,
-    // non-parallel — this branch is unreachable on a worker or during a parallel
-    // scope) so migrated (accessor) and not-yet-migrated (direct __global_arena)
-    // allocation sites always resolve to the same arena.
+    arena_t* saved = eshkol_memctx_current()->allocation_domain;
+    region->entry_saved_arena = saved ? saved : REGION_NO_HIJACK;
     eshkol_memctx_current()->allocation_domain = region->arena;
-    return saved;
+    return region->entry_saved_arena;
 }
 
 /**
@@ -655,10 +637,10 @@ extern "C" arena_t* eshkol_region_enter(eshkol_region_t* region) {
  * @param saved The value returned by the matching eshkol_region_enter.
  */
 extern "C" void eshkol_region_leave(arena_t* saved) {
-    if (saved == REGION_NO_HIJACK) return;
-    __global_arena = saved;
-    // OALR Phase A: restore the thread-local allocation domain in lockstep with
-    // the shared slot (see eshkol_region_enter).
+    if (saved == REGION_NO_HIJACK) {
+        eshkol_memctx_current()->allocation_domain = nullptr;
+        return;
+    }
     eshkol_memctx_current()->allocation_domain = saved;
 }
 
@@ -678,12 +660,7 @@ extern "C" void eshkol_region_leave(arena_t* saved) {
  */
 extern "C" void eshkol_parallel_scope_begin(void) {
     std::lock_guard<std::mutex> lk(s_parallel_arena_mtx);
-    if (s_parallel_depth.fetch_add(1, std::memory_order_acq_rel) == 0) {
-        arena_t* root = s_shared_root_arena;
-        if (!root) root = get_global_arena_shared();  // ensures init + captures root
-        s_saved_arena_at_parallel = __global_arena;
-        if (root) __global_arena = root;
-    }
+    s_parallel_depth.fetch_add(1, std::memory_order_acq_rel);
 }
 
 /**
@@ -693,10 +670,7 @@ extern "C" void eshkol_parallel_scope_begin(void) {
  */
 extern "C" void eshkol_parallel_scope_end(void) {
     std::lock_guard<std::mutex> lk(s_parallel_arena_mtx);
-    if (s_parallel_depth.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        __global_arena = s_saved_arena_at_parallel;
-        s_saved_arena_at_parallel = nullptr;
-    }
+    s_parallel_depth.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 /**

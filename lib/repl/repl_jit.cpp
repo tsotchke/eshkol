@@ -151,45 +151,6 @@ static char* repl_copy_ast_cstr(const std::string& value) {
 }
 
 /**
- * @brief Synthesizes an ESHKOL_VAR AST node referencing variable @p name, for use in generated aliasing code.
- * @param line Source line to attribute to the synthesized node (for diagnostics).
- * @param column Source column to attribute to the synthesized node (for diagnostics).
- */
-static eshkol_ast_t repl_make_var_ast(const std::string& name,
-                                      uint32_t line,
-                                      uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_VAR;
-    ast.line = line;
-    ast.column = column;
-    ast.variable.id = repl_copy_ast_cstr(name);
-    ast.variable.data = nullptr;
-    return ast;
-}
-
-/**
- * @brief Synthesizes a `(define alias source)` AST node used to materialize an R7RS import prefix alias.
- *
- * Builds an ESHKOL_OP/ESHKOL_DEFINE_OP node whose value is an ESHKOL_VAR
- * referencing @p source, so evaluating it binds @p alias to the same value
- * as the already-imported @p source name.
- */
-static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
-                                               const std::string& source,
-                                               uint32_t line,
-                                               uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
-    ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = repl_copy_ast_cstr(alias);
-    ast.operation.define_op.value = new eshkol_ast_t;
-    *ast.operation.define_op.value = repl_make_var_ast(source, line, column);
-    return ast;
-}
-
-/**
  * @brief Appends synthesized `(define prefixed-name original-name)` AST nodes for an R7RS `(prefix ...)` import clause.
  *
  * For the module at @p module_index within @p require_ast, if an import
@@ -198,17 +159,12 @@ static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
  * pushes them onto @p out in sorted order. No-op if @p require_ast has no
  * prefix configured for @p module_index.
  */
-static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
-                                            uint64_t module_index,
-                                            const std::unordered_set<std::string>& exports,
-                                            std::vector<eshkol_ast_t>& out) {
+static void register_repl_r7rs_import_bindings(
+    const eshkol_ast_t& require_ast, uint64_t module_index,
+    const std::unordered_set<std::string>& exports,
+    std::unordered_map<std::string, std::string>& bindings) {
     const auto& require_op = require_ast.operation.require_op;
-    if (!require_op.import_prefixes ||
-        module_index >= require_op.num_modules ||
-        !require_op.import_prefixes[module_index] ||
-        require_op.import_prefixes[module_index][0] == '\0') {
-        return;
-    }
+    if (module_index >= require_op.num_modules) return;
 
     std::unordered_set<std::string> excepts;
     if (require_op.import_except_names &&
@@ -222,15 +178,80 @@ static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
         }
     }
 
-    std::vector<std::string> sorted_exports(exports.begin(), exports.end());
+    std::unordered_set<std::string> selected = exports;
+    if (require_op.import_only_names && require_op.num_import_only_names &&
+        require_op.import_only_names[module_index]) {
+        selected.clear();
+        for (uint64_t i = 0; i < require_op.num_import_only_names[module_index]; ++i) {
+            const char* name = require_op.import_only_names[module_index][i];
+            if (name && exports.count(name)) selected.insert(name);
+        }
+    }
+    std::vector<std::string> sorted_exports(selected.begin(), selected.end());
     std::sort(sorted_exports.begin(), sorted_exports.end());
-    const std::string prefix = require_op.import_prefixes[module_index];
+    const std::string prefix = require_op.import_prefixes && require_op.import_prefixes[module_index]
+        ? require_op.import_prefixes[module_index] : std::string();
     for (const auto& exported : sorted_exports) {
         if (excepts.count(exported) > 0) continue;
-        out.push_back(repl_make_define_alias_ast(prefix + exported,
-                                                 exported,
-                                                 require_ast.line,
-                                                 require_ast.column));
+        std::string imported = exported;
+        if (require_op.import_rename_from && require_op.import_rename_to &&
+            require_op.num_import_renames && require_op.import_rename_from[module_index]) {
+            for (uint64_t i = 0; i < require_op.num_import_renames[module_index]; ++i) {
+                if (std::string(require_op.import_rename_from[module_index][i]) == exported) {
+                    imported = require_op.import_rename_to[module_index][i];
+                    break;
+                }
+            }
+        }
+        const std::string alias = prefix + imported;
+        if (alias != exported) bindings[alias] = exported;
+    }
+}
+
+static void rewrite_repl_import_bindings(
+    eshkol_ast_t* ast,
+    const std::unordered_map<std::string, std::string>& bindings) {
+    if (!ast) return;
+    if (ast->type == ESHKOL_VAR && ast->variable.id) {
+        auto it = bindings.find(ast->variable.id);
+        if (it != bindings.end()) {
+            delete[] ast->variable.id;
+            ast->variable.id = repl_copy_ast_cstr(it->second);
+        }
+        return;
+    }
+    if (ast->type != ESHKOL_OP) return;
+    switch (ast->operation.op) {
+    case ESHKOL_DEFINE_OP:
+        rewrite_repl_import_bindings(ast->operation.define_op.value, bindings);
+        break;
+    case ESHKOL_LAMBDA_OP:
+        rewrite_repl_import_bindings(ast->operation.lambda_op.body, bindings);
+        break;
+    case ESHKOL_SEQUENCE_OP:
+        for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; ++i)
+            rewrite_repl_import_bindings(&ast->operation.sequence_op.expressions[i], bindings);
+        break;
+    case ESHKOL_SET_OP:
+        if (ast->operation.set_op.name) {
+            auto it = bindings.find(ast->operation.set_op.name);
+            if (it != bindings.end()) {
+                delete[] ast->operation.set_op.name;
+                ast->operation.set_op.name = repl_copy_ast_cstr(it->second);
+            }
+        }
+        rewrite_repl_import_bindings(ast->operation.set_op.value, bindings);
+        break;
+    case ESHKOL_CALL_OP:
+    case ESHKOL_IF_OP:
+    case ESHKOL_WHEN_OP:
+    case ESHKOL_UNLESS_OP:
+        rewrite_repl_import_bindings(ast->operation.call_op.func, bindings);
+        for (uint64_t i = 0; i < ast->operation.call_op.num_vars; ++i)
+            rewrite_repl_import_bindings(&ast->operation.call_op.variables[i], bindings);
+        break;
+    default:
+        break;
     }
 }
 
@@ -3745,7 +3766,6 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         // Handle (require module.name ...)
         // Use loadModule which now does proper two-pass batch loading
         if (ast->operation.op == ESHKOL_REQUIRE_OP) {
-            std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
 
@@ -3757,7 +3777,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                         eshkol::library_registry::exports(module_name)) {
                     auto& known = module_exports_[module_name];
                     known.insert(unit_exports->begin(), unit_exports->end());
-                    append_repl_r7rs_prefix_aliases(*ast, i, known, alias_asts);
+                    register_repl_r7rs_import_bindings(*ast, i, known, import_bindings_);
                     continue;
                 }
 
@@ -3775,12 +3795,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 }
                 auto exports_it = module_exports_.find(module_name);
                 if (exports_it != module_exports_.end()) {
-                    append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
+                    register_repl_r7rs_import_bindings(*ast, i, exports_it->second, import_bindings_);
                 }
-            }
-            if (!alias_asts.empty()) {
-                // Caller-owned heap result; the alias batch has no value.
-                delete static_cast<int64_t*>(executeBatch(alias_asts, true));
             }
             return nullptr;
         }
@@ -3794,6 +3810,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             return nullptr;
         }
     }
+
+    // Resolve imported spellings to their provider bindings before codegen.
+    // This preserves the one-binding identity across repeated REPL modules.
+    rewrite_repl_import_bindings(ast, import_bindings_);
 
     // Pre-register function/lambda variables so they're tracked for REPL cross-evaluation
     // This mirrors what executeBatch does for batch compilations

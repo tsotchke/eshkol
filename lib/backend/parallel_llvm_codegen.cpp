@@ -1327,12 +1327,10 @@ llvm::Value* ParallelCodegen::ensureTaggedValue(llvm::Value* val) {
 }
 
 llvm::Value* ParallelCodegen::getArenaPtr() {
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        eshkol_error("ParallelCodegen: __global_arena not found");
-        return nullptr;
-    }
-    return ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
+    llvm::FunctionType* type = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
+    llvm::FunctionCallee accessor = ctx_.module().getOrInsertFunction(
+        "eshkol_current_arena", type);
+    return ctx_.builder().CreateCall(accessor, {}, "arena");
 }
 
 // Generate LLVM IR to reverse a list (tagged value -> tagged value)

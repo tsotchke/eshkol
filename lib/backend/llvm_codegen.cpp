@@ -5080,7 +5080,7 @@ private:
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         // Pack closure info: no captures (bits 0-15), arity (bits 16-31),
         // variadic (bit 63). For a variadic procedure the arity slot carries
@@ -5651,7 +5651,6 @@ private:
 
         Value* arena_param = chunk_func->arg_begin();
         arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
 
         for (size_t i = begin_index; i < end_index; i++) {
             codegenLibraryInitAST(asts[init_indices[i]]);
@@ -5714,7 +5713,6 @@ private:
 
         Value* arena_param = chunk_func->arg_begin();
         arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
 
         for (size_t i = begin_index; i < end_index; i++) {
             emitLambdaSExprRegistration(pending_lambda_sexprs[i]);
@@ -6130,7 +6128,6 @@ private:
         // Get arena parameter and store in global
         Value* arena_param = init_func->arg_begin();
         arena_param->setName("arena");
-        builder->CreateStore(arena_param, global_arena);
 
         // Process global variable definitions and top-level set! statements in
         // noinline chunks. Large aggregate libraries otherwise produce one huge
@@ -6377,7 +6374,6 @@ private:
                     builder->CreateStore(arena_ptr, shared_arena_ref);
                     eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
-                builder->CreateStore(arena_ptr, global_arena);
 
                 // Initialize lambda registry for homoiconic display
                 builder->CreateCall(eshkol_lambda_registry_init_func);
@@ -6506,7 +6502,6 @@ private:
                     builder->CreateStore(arena_ptr, shared_arena_ref);
                     eshkol_debug("Loaded thread-safe global arena in main wrapper");
                 }
-                builder->CreateStore(arena_ptr, global_arena);
 
                 // Initialize lambda registry for homoiconic display
                 builder->CreateCall(eshkol_lambda_registry_init_func);
@@ -6640,7 +6635,6 @@ private:
                 builder->CreateStore(arena_ptr, shared_arena_ref2);
                 eshkol_debug("Loaded thread-safe global arena in main (top-level expressions case)");
             }
-            builder->CreateStore(arena_ptr, global_arena);
 
             // Initialize lambda registry for homoiconic display
             builder->CreateCall(eshkol_lambda_registry_init_func);
@@ -6657,7 +6651,7 @@ private:
                     lib_init_func = Function::Create(lib_init_type, Function::ExternalLinkage,
                                                      "__eshkol_lib_init__", module.get());
                 }
-                Value* arena_for_lib = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_for_lib = getArenaPtr();
                 builder->CreateCall(lib_init_func, {arena_for_lib});
                 eshkol_debug("Called library init function for stdlib");
             }
@@ -8762,7 +8756,7 @@ private:
                                   rest_body, rest_done);
 
             builder->SetInsertPoint(rest_body);
-            Value* rest_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* rest_arena = getArenaPtr();
             Value* rest_cons = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {rest_arena});
             Value* rest_elem = builder->CreateLoad(tagged_value_type,
                 builder->CreateGEP(spread_args_type, spread->args_ptr,
@@ -8814,7 +8808,7 @@ private:
                 rest_list = packPtrToTaggedValue(
                     ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
                 for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
-                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                    Value* arena_ptr = getArenaPtr();
                     Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
 
                     builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
@@ -11021,10 +11015,7 @@ private:
 
             case ESHKOL_BIGNUM_LITERAL: {
                 // Integer literal too large for int64 — construct bignum at runtime
-                Value* arena_ptr = builder->CreateLoad(
-                    PointerType::getUnqual(*context),
-                    global_arena,
-                    "arena_for_bignum_lit");
+                Value* arena_ptr = getArenaPtr();
                 Value* str_ptr = builder->CreateGlobalString(ast->str_val.ptr, "bignum_lit_str");
                 Value* str_len = ConstantInt::get(int64_type, strlen(ast->str_val.ptr));
 
@@ -11414,7 +11405,7 @@ private:
             if (wrapper_func) {
                 // Create closure for the wrapper function
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 Value* packed_info = sizeConst(0);  // No captures
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
@@ -11436,7 +11427,7 @@ private:
             Function* wrapper_func = createBuiltinIOFunction(var_name);
             if (wrapper_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 Value* packed_info = sizeConst(0);
                 Value* sexpr_ptr = intPtrConst(0);
                 Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
@@ -11513,7 +11504,7 @@ private:
             if (builtin_func) {
                 // Create closure for the comparison function
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 // Pack info: no captures, arity=2
                 uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
                 Value* packed_info_val = sizeConst(packed_info);
@@ -11536,7 +11527,7 @@ private:
             if (builtin_func) {
                 // Create closure for the arithmetic function (like math builtins above)
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 // Pack info: no captures, arity=2
                 uint64_t packed_info = 0 | (2 << 16);  // arity in bits 16-31
                 Value* packed_info_val = sizeConst(packed_info);
@@ -11565,8 +11556,7 @@ private:
                 sret_info->first, sret_info->second);
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(
-                    PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 uint64_t arity = sret_info->second;
                 uint64_t packed_info = (arity & 0xFFFF) << 16;
                 Value* packed_info_val = sizeConst(packed_info);
@@ -11592,7 +11582,7 @@ private:
             if (builtin_func) {
                 // Create closure for the predicate function
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 // Pack info: no captures, arity=1 (predicates are unary)
                 uint64_t packed_info = 0 | (1 << 16);  // arity in bits 16-31
                 Value* packed_info_val = sizeConst(packed_info);
@@ -11617,7 +11607,7 @@ private:
             Function* builtin_func = createBuiltinEqualityFunction(var_name);
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 uint64_t packed_info = 0 | (2 << 16);  // no captures, arity=2
                 Value* packed_info_val = sizeConst(packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
@@ -11644,7 +11634,7 @@ private:
             Function* builtin_func = createBuiltinCharFunction(var_name);
             if (builtin_func) {
                 Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 uint64_t packed_info = 0 | (1 << 16);  // no captures, arity=1
                 Value* packed_info_val = sizeConst(packed_info);
                 Value* sexpr_ptr = intPtrConst(0);
@@ -11689,8 +11679,7 @@ private:
                 Value* sexp_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "thunk_sexp");
                 builder->CreateStore(&*eval_thunk->arg_begin(), sexp_alloca);
                 Value* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "thunk_result");
-                Value* arena_ptr = builder->CreateLoad(
-                    PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 builder->CreateCall(sret_func, {result_alloca, sexp_alloca, arena_ptr});
                 Value* result = builder->CreateLoad(tagged_value_type, result_alloca);
                 builder->CreateRet(result);
@@ -11699,8 +11688,7 @@ private:
             }
 
             Value* func_ptr_int = builder->CreatePtrToInt(eval_thunk, intptr_type);
-            Value* arena_ptr = builder->CreateLoad(
-                PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             uint64_t packed_info = 0 | (1ULL << 16); // no captures, arity=1
             Value* packed_info_val = sizeConst(packed_info);
             Value* sexpr_ptr = intPtrConst(0);
@@ -11727,7 +11715,7 @@ private:
                 // Wrap in closure for proper first-class function use
                 Function* func = cast<Function>(builtin_func);
                 Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 // Pack info: no captures, arity
                 uint64_t packed_info = 0 | (arity << 16);  // arity in bits 16-31
                 Value* packed_info_val = sizeConst(packed_info);
@@ -11889,7 +11877,7 @@ private:
                 } else {
                     func_ptr_int = builder->CreatePtrToInt(repl_func, intptr_type);
                 }
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
 
                 // SW-27: the REPL/`-e` lane needs the rest-arg shape too. It
                 // cannot share emitFunctionAsCallableValue because the hot-
@@ -12038,8 +12026,7 @@ private:
     Value* makeVariadicIdentityClosureValue(const std::string& wrapper_name) {
         Function* wrapper = getOrCreateVariadicIdentityWrapper(wrapper_name);
         Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
-        Value* arena_ptr = builder->CreateLoad(
-            PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         // Packed info: 0 captures, 0 fixed params, variadic bit set (bit 63).
         // The allocator also reads this and writes the CLOSURE_FLAG_VARIADIC
@@ -15314,7 +15301,7 @@ private:
                  PointerType::getUnqual(*context)}, false);
             FunctionCallee d2e_fn = module->getOrInsertFunction(
                 "eshkol_double_to_exact_tagged", d2e_ft);
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(d2e_fn, {arena_ptr, dbl_val, exact_slot});
             Value* converted_exact = builder->CreateLoad(tagged_value_type, exact_slot, "i2e_result");
             builder->CreateBr(merge_bb);
@@ -15449,7 +15436,7 @@ private:
                 builder->CreateStore(ch_i64, slot);
             }
 
-            Value* arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena = getArenaPtr();
             FunctionType* enc_ft = FunctionType::get(
                 PointerType::getUnqual(*context),
                 {PointerType::getUnqual(*context),
@@ -15844,7 +15831,7 @@ private:
 
         // R7RS read: parse S-expression from port (or stdin)
         if (func_name == "read") {
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* fp;
             if (op->call_op.num_vars >= 1) {
                 Value* port_arg = codegenAST(&op->call_op.variables[0]);
@@ -15957,7 +15944,7 @@ private:
             llvm::FunctionCallee open_func = module->getOrInsertFunction("eshkol_open_input_string",
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* fp = builder->CreateCall(open_func, {arena_ptr, str_ptr, str_len});
             // Pack as input port tagged value. Start from ConstantAggregateZero
             // (not undef) so the i32 padding at field {3} is zero-initialised
@@ -15995,7 +15982,7 @@ private:
             llvm::FunctionCallee get_func = module->getOrInsertFunction("eshkol_get_output_string",
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* str_ptr = builder->CreateCall(get_func, {arena_ptr, fp});
             // Pack as string HEAP_PTR tagged value (zero-init all fields).
             Value* str_int = builder->CreatePtrToInt(str_ptr, int64_type);
@@ -16798,7 +16785,7 @@ private:
             Value* thunk = typedValueToTaggedValue(thunk_tv);
 
             // Allocate promise: [forced(i64) | thunk(tagged) | cached(tagged)] = 40 bytes
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* promise_ptr = builder->CreateCall(
                 mem->getArenaAllocateWithHeader(),
                 {arena_ptr, ConstantInt::get(int64_type, 40),
@@ -16836,7 +16823,7 @@ private:
             if (!val_tv.llvm_value) return nullptr;
             Value* val = typedValueToTaggedValue(val_tv);
 
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* promise_ptr = builder->CreateCall(
                 mem->getArenaAllocateWithHeader(),
                 {arena_ptr, ConstantInt::get(int64_type, 40),
@@ -17426,7 +17413,7 @@ private:
                 nd_fn = Function::Create(ft, Function::ExternalLinkage,
                     rt_name, module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(nd_fn, {arena_ptr, arg_alloca, res_alloca});
             return builder->CreateLoad(tvTy, res_alloca,
                 func_name == "numerator" ? "numerator_result" : "denominator_result");
@@ -17457,7 +17444,7 @@ private:
                 mk_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rational_make_tagged", module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
             return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
         }
@@ -17491,7 +17478,7 @@ private:
                 rat_fn = Function::Create(ft, Function::ExternalLinkage,
                     "eshkol_rationalize_tagged", module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             builder->CreateCall(rat_fn, {arena_ptr, x_alloca, eps_alloca, result_alloca});
             return builder->CreateLoad(tvTy, result_alloca, "rationalize_result");
         }
@@ -17543,7 +17530,7 @@ private:
 
             // Allocate: 8 (length) + k (data)
             Value* data_size = builder->CreateAdd(length, ConstantInt::get(int64_type, 8));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -17564,7 +17551,7 @@ private:
             // (bytevector byte ...)
             uint64_t n = op->call_op.num_vars;
             Value* data_size = ConstantInt::get(int64_type, n + 8);
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -17678,7 +17665,7 @@ private:
             Value* blocks = builder->CreateGEP(int8_type, bv_ptr,
                 ConstantInt::get(int64_type, 8));
 
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* tensor = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
             // 1-D dims = [n]
             Value* dims = builder->CreateCall(mem->getArenaAllocate(),
@@ -17775,7 +17762,7 @@ private:
 
             // Allocate new bytevector
             Value* data_size = builder->CreateAdd(new_len, ConstantInt::get(int64_type, 8));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* new_bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -17853,7 +17840,7 @@ private:
             // (bytevector-append bv ...)
             uint64_t n = op->call_op.num_vars;
             if (n == 0) {
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 Value* bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                     {arena_ptr, ConstantInt::get(int64_type, 8),
                      ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -17880,7 +17867,7 @@ private:
             }
 
             Value* data_size = builder->CreateAdd(total, ConstantInt::get(int64_type, 8));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* new_bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -17927,7 +17914,7 @@ private:
 
             // Allocate string with header: str_len + 1 (null terminator)
             Value* str_alloc_size = builder->CreateAdd(str_len, ConstantInt::get(int64_type, 1));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* str_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, str_alloc_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
@@ -17978,7 +17965,7 @@ private:
 
             // Allocate bytevector: 8 (length) + bv_len (data)
             Value* data_size = builder->CreateAdd(bv_len, ConstantInt::get(int64_type, 8));
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
@@ -20861,8 +20848,7 @@ private:
 
             // Overflow: promote to bignum via eshkol_bignum_from_overflow
             builder->SetInsertPoint(ovf_bb);
-            Value* arena_ptr = builder->CreateLoad(
-                PointerType::getUnqual(*context), global_arena, "arena_for_hott_ovf");
+            Value* arena_ptr = getArenaPtr();
             // Declare eshkol_bignum_from_overflow
             auto* bn_ovf_type = FunctionType::get(
                 PointerType::getUnqual(*context),
@@ -21406,7 +21392,7 @@ private:
             builder->SetInsertPoint(math_tensor_path);
             Value* arg_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_tensor_arg").c_str());
             builder->CreateStore(arg_tagged, arg_slot);
-            Value* arena_ptr_t = builder->CreateLoad(ptr_type, global_arena);
+            Value* arena_ptr_t = getArenaPtr();
             FunctionType* map_ft = FunctionType::get(ptr_type, {ptr_type, ptr_type, int32_type}, false);
             FunctionCallee map_fn = module->getOrInsertFunction("eshkol_tensor_map_libm", map_ft);
             Value* mapped = builder->CreateCall(map_fn, {arena_ptr_t, arg_slot,
@@ -21622,7 +21608,7 @@ private:
                 Value* rat_ptr_int = unpackInt64FromTaggedValue(arg_tagged);
                 Value* rat_ptr = builder->CreateIntToPtr(rat_ptr_int, rndPtrTy);
                 Value* rnd_res_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "rat_round_res");
-                Value* rnd_arena = builder->CreateLoad(rndPtrTy, global_arena);
+                Value* rnd_arena = getArenaPtr();
                 builder->CreateCall(rat_func, {rnd_arena, rat_ptr, rnd_res_alloca});
                 tagged_regular_result = builder->CreateLoad(tagged_value_type, rnd_res_alloca,
                                                             "rat_round_tagged");
@@ -24706,8 +24692,7 @@ private:
 
                 Value* alloca = nullptr;
                 if (needs_shared_cell) {
-                    Value* arena_ptr = builder->CreateLoad(
-                        PointerType::getUnqual(*context), global_arena);
+                    Value* arena_ptr = getArenaPtr();
                     alloca = builder->CreateCall(getArenaAllocateFunc(),
                                                  {arena_ptr, sizeConst(16)},
                                                  var_name + "_do_cell");
@@ -24898,7 +24883,7 @@ private:
 
         // Bignum path: call runtime
         builder->SetInsertPoint(bn_bb);
-        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* a_alloca = builder->CreateAlloca(tagged_value_type);
         Value* b_alloca = builder->CreateAlloca(tagged_value_type);
         Value* r_alloca = builder->CreateAlloca(tagged_value_type);
@@ -24993,7 +24978,7 @@ private:
 
         // Bignum path: call runtime with op=3 (not), right operand unused
         builder->SetInsertPoint(bn_bb);
-        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* a_alloca = builder->CreateAlloca(tagged_value_type);
         Value* dummy_alloca = builder->CreateAlloca(tagged_value_type);
         Value* r_alloca = builder->CreateAlloca(tagged_value_type);
@@ -25127,7 +25112,7 @@ private:
         builder->CreateCondBr(is_bn, bn_bb, int_bb);
 
         builder->SetInsertPoint(bn_bb);
-        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* n_alloca = builder->CreateAlloca(tagged_value_type);
         Value* r_alloca = builder->CreateAlloca(tagged_value_type);
         builder->CreateStore(n, n_alloca);
@@ -25207,7 +25192,7 @@ private:
 
         // Bignum path: call runtime
         builder->SetInsertPoint(bn_bb);
-        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* n_alloca = builder->CreateAlloca(tagged_value_type);
         Value* c_alloca = builder->CreateAlloca(tagged_value_type);
         Value* r_alloca = builder->CreateAlloca(tagged_value_type);
@@ -25343,7 +25328,7 @@ private:
             int64_type);
 
         // Allocate new string with header
-        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
             {arena_ptr, length});
 
@@ -25409,7 +25394,7 @@ private:
             return nullptr;
         }
 
-        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         llvm::FunctionType* fn_ty = llvm::FunctionType::get(
             builder->getPtrTy(), {builder->getPtrTy()}, false);
@@ -25452,7 +25437,7 @@ private:
 
         // NULL path: allocate empty string
         builder->SetInsertPoint(null_bb);
-        Value* arena_null = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* arena_null = getArenaPtr();
         Value* empty_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
             {arena_null, ConstantInt::get(int64_type, 0)});
         builder->CreateBr(merge_bb);
@@ -25463,7 +25448,7 @@ private:
         FunctionCallee strlen_fn = module->getOrInsertFunction("strlen", strlen_ty);
         Value* length = builder->CreateCall(strlen_fn, {raw_ptr});
 
-        Value* arena_ptr = builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
             {arena_ptr, length});
 
@@ -25554,7 +25539,7 @@ private:
 
         builder->SetInsertPoint(empty_bb);
         Value* empty_arena =
-            builder->CreateLoad(builder->getPtrTy(), global_arena);
+            getArenaPtr();
         Value* empty_str = builder->CreateCall(
             mem->getArenaAllocateStringWithHeader(),
             {empty_arena, ConstantInt::get(int64_type, 0)});
@@ -25562,7 +25547,7 @@ private:
 
         builder->SetInsertPoint(valid_bb);
         Value* arena_ptr =
-            builder->CreateLoad(builder->getPtrTy(), global_arena);
+            getArenaPtr();
         Value* new_str = builder->CreateCall(
             mem->getArenaAllocateStringWithHeader(), {arena_ptr, length});
         builder->CreateMemCpy(new_str, MaybeAlign(1), raw_ptr,
@@ -25635,7 +25620,7 @@ private:
         // Consolidated pointer system: Use header-based allocation
         // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
         // Header contains subtype=HEAP_SUBTYPE_VECTOR, returns pointer to length field
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* vec_ptr = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
             {arena_ptr, ConstantInt::get(int64_type, num_elems)});
 
@@ -31096,7 +31081,7 @@ private:
             //   - Bits 0-15:  num_captures
             //   - Bits 16-31: fixed_param_count
             //   - Bit 63:     is_variadic flag
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* arena_ptr = getArenaPtr();
             uint64_t packed_info = free_vars.size() & 0xFFFF;
             packed_info |= ((uint64_t)op->lambda_op.num_params & 0xFFFF) << 16;
             if (is_variadic) {
@@ -31243,8 +31228,7 @@ private:
                         // position — this degrades to the pre-Bug-T behavior for
                         // that edge case, but doesn't make it worse.
 
-                        Value* arena_ptr = builder->CreateLoad(
-                            PointerType::getUnqual(*context), global_arena);
+                        Value* arena_ptr = getArenaPtr();
                         Value* alloc_size = sizeConst(16);  // sizeof(eshkol_tagged_value_t)
                         Value* arena_storage = builder->CreateCall(
                             getArenaAllocateFunc(), {arena_ptr, alloc_size});
@@ -31405,7 +31389,7 @@ private:
         }
 
         // Allocate closure with 0 captures but with S-expression
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         // VARIADIC FIX: Pack closure info even for 0 captures
         // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
@@ -31578,7 +31562,7 @@ private:
         if (!thunk) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
         uint64_t packed_info = info.captures.size() & 0xFFFF;
         packed_info |= (info.arity & 0xFFFF) << 16;
         Value* packed_info_val = sizeConst(packed_info);
@@ -31772,8 +31756,7 @@ private:
             // procedure and vice versa.
             if (isa<AllocaInst>(outer_val) &&
                 (loop_escapes || astSetsVar(op->let_op.body, fv))) {
-                Value* arena_ptr = builder->CreateLoad(
-                    PointerType::getUnqual(*context), global_arena);
+                Value* arena_ptr = getArenaPtr();
                 Value* arena_storage = builder->CreateCall(
                     getArenaAllocateFunc(), {arena_ptr, sizeConst(16)});
                 builder->CreateStore(
@@ -31832,8 +31815,7 @@ private:
             // parameter used to come back as whatever had reused the stack slot
             // ("Type error in <: expected number, got pair").
             if (loop_escapes) {
-                Value* esc_arena = builder->CreateLoad(
-                    PointerType::getUnqual(*context), global_arena);
+                Value* esc_arena = getArenaPtr();
                 Value* esc_cell = builder->CreateCall(
                     getArenaAllocateFunc(), {esc_arena, sizeConst(16)});
                 Value* esc_tagged = outer_val;
@@ -32242,7 +32224,7 @@ private:
         // Use class member tensor_type (shared by all tensor operations)
 
         // Get arena for OALR-compliant allocation
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         // Allocate tensor with header via arena (OALR compliant - no malloc)
         Value* typed_tensor_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
@@ -33513,7 +33495,7 @@ private:
         Value* v2_elems = builder->CreateLoad(PointerType::getUnqual(*context), v2_elems_field);
 
         // Get arena for OALR-compliant allocation
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
 
         // Allocate result tensor via arena (OALR compliant - no malloc)
         Value* result_ptr = builder->CreateCall(mem->getArenaAllocateTensorWithHeader(), {arena_ptr});
@@ -36228,7 +36210,7 @@ private:
         // Compute max elements that fit safely: (buffer_size - 16) / 26
         Value* safe_max = builder->CreateUDiv(
             builder->CreateSub(buffer_size, ConstantInt::get(int64_type, 16)), per_elem);
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* string_buffer = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, buffer_size});
         Value* typed_string_buffer = builder->CreatePointerCast(string_buffer, builder->getPtrTy());
         
@@ -36314,7 +36296,7 @@ private:
 
         // M1 CONSOLIDATION: Use arena allocation for temporary number buffer (OALR compliant)
         Value* num_buffer_size = ConstantInt::get(int64_type, 32);
-        Value* num_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* num_arena_ptr = getArenaPtr();
         Value* num_buffer = builder->CreateCall(mem->getArenaAllocate(), {num_arena_ptr, num_buffer_size});
         Value* typed_num_buffer = builder->CreatePointerCast(num_buffer, builder->getPtrTy());
 
@@ -36412,7 +36394,7 @@ private:
         
         // M1 CONSOLIDATION: Use arena allocation for temporary string buffer (OALR compliant)
         Value* buffer_size = ConstantInt::get(int64_type, 2048);
-        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* arena_ptr = getArenaPtr();
         Value* string_buffer = builder->CreateCall(mem->getArenaAllocate(), {arena_ptr, buffer_size});
         Value* typed_string_buffer = builder->CreatePointerCast(string_buffer, builder->getPtrTy());
         
@@ -36533,7 +36515,7 @@ private:
         
         // M1 CONSOLIDATION: Use arena allocation for temporary number buffer (OALR compliant)
         Value* num_buffer_size = ConstantInt::get(int64_type, 32);
-        Value* num_arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        Value* num_arena_ptr = getArenaPtr();
         Value* num_buffer = builder->CreateCall(mem->getArenaAllocate(), {num_arena_ptr, num_buffer_size});
         Value* typed_num_buffer = builder->CreatePointerCast(num_buffer, builder->getPtrTy());
 
@@ -37685,9 +37667,11 @@ private:
 
     // Helper: Pack complex struct to tagged value (heap allocate)
     Value* packComplexToTagged(Value* complex_struct) {
-        // Get global arena
-        GlobalVariable* arena_global = module->getNamedGlobal("__global_arena");
-        Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
+        // Get the calling thread's allocation arena.
+        FunctionType* arena_type = FunctionType::get(ptr_type, {}, false);
+        FunctionCallee arena_accessor = module->getOrInsertFunction(
+            "eshkol_current_arena", arena_type);
+        Value* arena_ptr = builder->CreateCall(arena_accessor, {}, "arena");
 
         // Allocate 16 bytes for complex number
         Value* size = sizeConst(16);
@@ -37773,7 +37757,7 @@ private:
         std::vector<Type*>  param_types;
         std::vector<Value*> call_args;
         if (needs_arena) {
-            Value* arena_ptr = builder->CreateLoad(ptr_ty, global_arena, "i128_arena");
+            Value* arena_ptr = getArenaPtr();
             param_types.push_back(ptr_ty);
             call_args.push_back(arena_ptr);
         }
@@ -38398,9 +38382,11 @@ private:
         // Compute log2(N)
         Value* log2n = computeLog2(len);
 
-        // Get arena for allocations
-        GlobalVariable* arena_global = module->getNamedGlobal("__global_arena");
-        Value* arena_ptr = builder->CreateLoad(ptr_type, arena_global, "arena");
+        // Get the calling thread's allocation arena.
+        FunctionType* arena_type = FunctionType::get(ptr_type, {}, false);
+        FunctionCallee arena_accessor = module->getOrInsertFunction(
+            "eshkol_current_arena", arena_type);
+        Value* arena_ptr = builder->CreateCall(arena_accessor, {}, "arena");
 
         // Guard against int64 overflow: len > 2^57 would overflow len * 8
         Value* len_too_large = builder->CreateICmpSGT(len,
@@ -41803,7 +41789,7 @@ private:
 
     // Helper: load arena pointer from global
     Value* loadArenaPtr() {
-        return builder->CreateLoad(PointerType::getUnqual(*context), global_arena, "arena");
+        return getArenaPtr();
     }
 
     // Helper: alloca + store a tagged value, return the alloca ptr

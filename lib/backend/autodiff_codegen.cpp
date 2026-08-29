@@ -1229,14 +1229,7 @@ llvm::Value* AutodiffCodegen::getDualTangent(llvm::Value* dual) {
 llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     if (!dual) return nullptr;
 
-    // Get global arena pointer
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        eshkol_warn("packDualToTagged: __global_arena not found");
-        return tagged_.packNull();
-    }
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate space for dual number on the heap (arena)
     // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
@@ -1963,9 +1956,7 @@ llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
 // Helper to get arena pointer from global
 /** @brief Load the current value of the `__global_arena` global, or nullptr if the global does not exist. */
 llvm::Value* AutodiffCodegen::getArenaPtr() {
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) return nullptr;
-    return ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    return ctx_.currentArena();
 }
 
 /** @brief Emit `eshkol_ad_node_probe(arena, bits, expect_type)`: is this element
@@ -3109,7 +3100,7 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
 
         // Create closure capturing the function parameter
         Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* arena_ptr = ctx_.currentArena();
 
         uint64_t packed_info = 1;  // 1 capture (the function)
         Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
@@ -3266,7 +3257,7 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
 
         // Allocate closure with captures
         Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* arena_ptr = ctx_.currentArena();
 
         uint64_t packed_info = orig_num_captures & 0xFFFF;
         Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
@@ -3295,7 +3286,7 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     } else {
         // No captures - still need to allocate a closure structure
         Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* arena_ptr = ctx_.currentArena();
 
         uint64_t packed_info = 0;  // 0 captures
         Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
@@ -4283,7 +4274,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     // Two-or-more (or zero) arguments: gather the spread scalars into a header'd
     // Scheme vector ([length(8)][tagged doubles], HEAP_SUBTYPE_VECTOR).
     ctx_.builder().SetInsertPoint(ho_multi);
-    Value* point_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* point_arena_ptr = ctx_.currentArena();
     Value* point_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {point_arena_ptr, dim_val});
     ctx_.builder().CreateStore(dim_val, point_ptr);  // length at offset 0
     Value* point_elems = ctx_.builder().CreatePointerCast(
@@ -4389,7 +4380,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
             }
             static_arity = adResolveValueArity(fp, static_arity);
         }
-        Value* static_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* static_arena = ctx_.currentArena();
         Value* static_func_ptr_int = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
         // packed_info: 0 captures, `static_arity` fixed params, NOT variadic
         uint64_t static_packed_info = (static_arity & 0xFFFF) << 16;
@@ -4405,7 +4396,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     }
 
     Value* func_ptr_int = ctx_.builder().CreatePtrToInt(grad_func, ctx_.int64Type());
-    Value* arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena = ctx_.currentArena();
     // packed_info format: bits 0-15 = num_captures, bits 16-31 = fixed_params, bit 63 = is_variadic
     // We have 1 capture, 0 fixed params, and IS variadic
     uint64_t packed_info = 1 | (0ULL << 16) | (1ULL << 63);  // 1 capture, variadic
@@ -4518,7 +4509,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     eshkol_error("arena_allocate not found for gradient");
                     return nullptr;
                 }
-                Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+                Value* arena_ptr = ctx_.currentArena();
 
                 // Get tagged_value size
                 uint64_t tagged_size = ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType());
@@ -5629,7 +5620,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get arena for OALR-compliant tensor allocation (used throughout gradient computation)
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // ESH-0235: decide, at compile time, whether a HEAP_SUBTYPE_VECTOR
     // ((vector …)-constructed) point must be seeded on the REVERSE-mode tensor
@@ -5891,8 +5882,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                                  current_func->getEntryBlock().begin());
         Value* list_slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_list_head");
         ctx_.builder().CreateStore(vector_val, list_slot);
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -5954,7 +5944,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             Value* t_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), t_ptr, 2);
             Value* t_elems_ptr = ctx_.builder().CreateLoad(ctx_.builder().getPtrTy(), t_elems_field);
 
-            Value* t_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+            Value* t_arena = ctx_.currentArena();
             Value* t_svec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {t_arena, t_n});
             ctx_.builder().CreateStore(t_n, t_svec);
             Value* t_svec_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), t_svec, ConstantInt::get(ctx_.int64Type(), 8));
@@ -6060,7 +6050,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_elems = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
 
     // Allocate result tensor for gradient - use arena allocation with header for HEAP_PTR type
-    Value* arena_for_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_for_svec = ctx_.currentArena();
     Value* svec_typed_result = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_for_svec});
 
     // Set result tensor dimensions - use arena allocation
@@ -6094,7 +6084,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_dual_result_elems = ctx_.builder().CreatePointerCast(svec_dual_result_elems8, ctx_.ptrType());
 
     // Get arena for dual vector allocation
-    Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_svec = ctx_.currentArena();
 
     // ESH-0093: this forward-mode vector gradient participates in the runtime
     // perturbation-level protocol (ESH-0070). The active component is seeded
@@ -6664,8 +6654,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     
     // Build tensor of AD node pointers to pass to function
     // M1 CONSOLIDATION: Use arena allocation with header for HEAP_PTR type
-    Value* ad_arena_ptr = ctx_.builder().CreateLoad(
-        PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* ad_arena_ptr = ctx_.currentArena();
     Function* alloc_tensor_full = mem_.getArenaAllocateTensorFull();
     Value* typed_ad_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_full,
         {ad_arena_ptr, input_num_dims, n}, "ad_tensor");
@@ -7642,7 +7631,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // CRITICAL FIX: Handle Scheme VECTOR_PTR - convert to tensor format
     // Get current function for basic blocks
@@ -7720,8 +7709,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(jac_list_to_svec);
     {
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -9763,7 +9751,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
     // ── VECTOR/TENSOR HESSIAN ───────────────────────────────────────────
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // Get current function for basic blocks
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -9812,8 +9800,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
         }
         if (func_ptr && hess_mp_arity > 1) {
             const uint64_t N = hess_mp_arity;
-            Value* mp_arena = ctx_.builder().CreateLoad(
-                PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+            Value* mp_arena = ctx_.currentArena();
 
             // Extract the N input coordinates as plain doubles (vector/list/tensor).
             Function* mp_fn = ctx_.builder().GetInsertBlock()->getParent();
@@ -9949,8 +9936,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(hess_list_to_svec);
     {
-        Value* l2s_arena = ctx_.builder().CreateLoad(
-            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        Value* l2s_arena = ctx_.currentArena();
         llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
         if (!l2s_fn) {
             llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
@@ -10284,7 +10270,7 @@ llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     // Get arena for OALR-compliant allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // Allocate tensor structure via arena (OALR compliant - no malloc)
     Value* typed_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
@@ -10578,7 +10564,7 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
     Value* curl_input_type = tagged_.getType(vector_val);
@@ -11037,7 +11023,7 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     }
 
     // Get arena for OALR-compliant tensor allocation
-    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+    Value* arena_ptr = ctx_.currentArena();
 
     // M1 CONSOLIDATION: Handle HEAP_PTR (with subtype dispatch), legacy VECTOR_PTR, and tensor
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();

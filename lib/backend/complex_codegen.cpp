@@ -114,19 +114,11 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
  *         as ESHKOL_VALUE_COMPLEX.
  */
 llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
-    // Get global arena for heap allocation
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        // Create external declaration if not present
-        arena_global = new llvm::GlobalVariable(
-            ctx_.module(),
-            ctx_.ptrType(),
-            false,
-            llvm::GlobalValue::ExternalLinkage,
-            nullptr,
-            "__global_arena");
-    }
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
+    // Get the calling thread's allocation arena.
+    llvm::FunctionType* arena_type = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
+    llvm::FunctionCallee arena_accessor = ctx_.module().getOrInsertFunction(
+        "eshkol_current_arena", arena_type);
+    llvm::Value* arena_ptr = ctx_.builder().CreateCall(arena_accessor, {}, "arena");
 
     // Allocate 16 bytes for complex number on heap
     llvm::Value* size = llvm::ConstantInt::get(ctx_.int64Type(), 16);

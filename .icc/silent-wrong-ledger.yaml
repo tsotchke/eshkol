@@ -6045,7 +6045,8 @@ entries:
 
   - id: SW-103
     bucket: DOC-DEBT
-    status: open
+    status: closed
+    closed_at: "01a23e8e04610866ef744e4f48caba2b8c10a926"
     title: "ADR-0000 Stage 1 instrumentation must distinguish scalar and tensor nodes and clear both gradient stores"
     repro: >-
       Before this slice, EshkolADCounters exposed only one tape-node count and
@@ -6067,11 +6068,16 @@ entries:
       Implementation is present in lib/core/runtime_autodiff.cpp,
       lib/core/arena_memory.h, lib/backend/vm_core.c, and lib/backend/vm_native.c.
       The executable close evidence is tests/core/ad_tape_zero_gradients_test.cpp
-      plus the one-pass AD gate after the mandated Linux build.
+      plus the one-pass AD gate after the mandated Linux build. The focused
+      Linux CTest run reports ad_tape_zero_gradients_test: Passed and the
+      Stage 1 gate reports PASS: strict-region native execution, PASS:
+      strict-region VM execution, and PASS: strict-region global arena write
+      gate.
 
   - id: SW-104
     bucket: DOC-DEBT
-    status: open
+    status: closed
+    closed_at: "01a23e8e04610866ef744e4f48caba2b8c10a926"
     title: "ADR-0000 Stage 2 semantic identity must not fork from the parser NodeId substrate"
     repro: >-
       The frontend previously carried source spans on one substrate while
@@ -6093,5 +6099,8 @@ entries:
     evidence: >-
       Implementation is present in inc/eshkol/frontend/semantic_identity.h,
       lib/frontend/semantic_identity.cpp, and tests/frontend/semantic_identity_test.cpp.
-      The Stage 2 gate remains open until the cross-consumer evidence is run on
-      the mandated Linux build.
+      Close evidence is the mandated Linux CTest run: semantic_identity_test,
+      workspace_resolver_test, define_library_same_unit_vm_smoke, and
+      adr0000_stage2_gate all Passed; the native, VM, and REPL import modifier
+      corpus also reports its expected PASS lines. No compatibility-generated
+      import alias helper remains in the frontend, VM, REPL, or AOT driver.

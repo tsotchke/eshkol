@@ -1,0 +1,7 @@
+insert|alpha|1
+insert|beta|1
+insert|alpha|-1
+delete|gamma|-1
+duplicate|beta|1
+cancellation|delta|1
+cancellation|delta|-1

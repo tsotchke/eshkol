@@ -2491,6 +2491,28 @@ target_include_directories(
 )
 eshkol_apply_common_compile_settings(eshkol-static)
 
+# LLVM-free workspace analysis.  Keep the parser, semantic identity tables,
+# module graph, and path resolver in a separately linkable target so analysis
+# clients cannot acquire the execution backend merely by asking for `check`.
+# The runtime archive is intentionally the only dependency: it contains the
+# hosted reader/runtime support but no LLVM libraries or code-generation TU.
+add_library(eshkol-workspace STATIC
+  lib/frontend/parser.cpp
+  lib/frontend/node_identity.cpp
+  lib/frontend/semantic_identity.cpp
+  lib/frontend/diagnostic.cpp
+  lib/frontend/library_registry.cpp
+  lib/frontend/workspace.cpp
+  lib/types/hott_types.cpp
+  lib/core/ast.cpp
+)
+target_include_directories(eshkol-workspace PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+target_compile_features(eshkol-workspace PUBLIC cxx_std_20)
+target_compile_options(eshkol-workspace PRIVATE
+  ${ESHKOL_WARNING_FLAGS} ${ESHKOL_HARDENING_FLAGS})
+target_link_libraries(eshkol-workspace PUBLIC eshkol-runtime)
+
 if(ESHKOL_TENSORCORE_ENABLED)
     target_compile_definitions(eshkol-runtime-support-obj PRIVATE
         ESHKOL_TENSORCORE_ENABLED=1
@@ -2498,6 +2520,15 @@ if(ESHKOL_TENSORCORE_ENABLED)
     target_link_libraries(eshkol-runtime-support-obj PRIVATE ${ESHKOL_TENSORCORE_TARGET})
     target_link_libraries(eshkol-runtime PUBLIC ${ESHKOL_TENSORCORE_TARGET})
     target_link_libraries(eshkol-static PUBLIC ${ESHKOL_TENSORCORE_TARGET})
+endif()
+
+# Unified front door for non-executing workspace analysis.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol.cpp")
+    add_executable(eshkol exe/eshkol.cpp)
+    target_compile_features(eshkol PRIVATE cxx_std_20)
+    target_include_directories(eshkol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol PRIVATE eshkol-workspace eshkol-runtime)
+    install(TARGETS eshkol DESTINATION bin)
 endif()
 
 if(ESHKOL_QUANTUM_ENABLED)
@@ -2620,7 +2651,7 @@ foreach (exe ${EXE_SRC})
   get_filename_component(exename ${exe} NAME_WE)
 
   # Skip eshkol-repl - it's handled separately below
-  if(exename STREQUAL "eshkol-repl")
+  if(exename STREQUAL "eshkol-repl" OR exename STREQUAL "eshkol")
     continue()
   endif()
 
@@ -2978,18 +3009,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/lsp/eshkol_lsp.cpp")
     message(STATUS "Building LSP server: eshkol-lsp")
 
     add_executable(eshkol-lsp tools/lsp/eshkol_lsp.cpp)
-
-    target_compile_options(eshkol-lsp PRIVATE ${LLVM_CXXFLAGS_LIST})
-    target_compile_definitions(eshkol-lsp PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    target_compile_features(eshkol-lsp PRIVATE cxx_std_20)
     target_include_directories(eshkol-lsp PRIVATE inc/)
-
-    eshkol_target_llvm_includes(eshkol-lsp)
-
-    if(LLVM_LIBRARY_DIRS)
-        target_link_directories(eshkol-lsp PRIVATE ${LLVM_LIBRARY_DIRS})
-    endif()
-
-    target_link_libraries(eshkol-lsp PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    target_link_libraries(eshkol-lsp PRIVATE eshkol-workspace)
 
     install(TARGETS eshkol-lsp DESTINATION bin)
 endif()
@@ -3029,6 +3051,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/sem
     add_test(NAME semantic_identity_test COMMAND semantic_identity_test)
     set_tests_properties(semantic_identity_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: semantic identity and Diagnostic v1")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-workspace AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/workspace_resolver_test.cpp")
+    add_executable(workspace_resolver_test
+        tests/frontend/workspace_resolver_test.cpp)
+    target_compile_features(workspace_resolver_test PRIVATE cxx_std_20)
+    target_include_directories(workspace_resolver_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(workspace_resolver_test PRIVATE eshkol-workspace)
+    add_test(NAME workspace_resolver_test
+             COMMAND workspace_resolver_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/modules/visibility_test.esk")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_io_test.cpp")
@@ -7153,6 +7188,31 @@ endif()
 
 if(ESHKOL_ENABLE_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/CMakeLists.txt")
     add_subdirectory(tests/fuzz)
+endif()
+
+# ADR-0000 Stage 1 and Stage 2 executable gates. These invoke the built
+# native/VM/tooling consumers so the status table cannot be advanced by a
+# source-only claim.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME adr0000_stage1_gate
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_adr0000_stage1_gate.sh"
+                     "$<TARGET_FILE:eshkol-run>"
+                     "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    set_tests_properties(adr0000_stage1_gate PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 300
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol AND TARGET eshkol-lsp)
+    add_test(NAME adr0000_stage2_gate
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_adr0000_stage2_gate.sh"
+                     "$<TARGET_FILE:eshkol>"
+                     "$<TARGET_FILE:eshkol-lsp>")
+    set_tests_properties(adr0000_stage2_gate PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 300
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 # ESH-0215: build-integration fixture exercising cmake/EshkolCompile.cmake's

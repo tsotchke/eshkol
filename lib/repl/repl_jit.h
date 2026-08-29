@@ -235,6 +235,11 @@ private:
     // addIRModule tries to define the same symbol.
     std::unordered_map<std::string, llvm::orc::ResourceTrackerSP> symbol_trackers_;
 
+    // Imported names map directly to provider spellings. This is semantic
+    // binding state; the REPL must not materialize imports as generated
+    // top-level definitions.
+    std::unordered_map<std::string, std::string> import_bindings_;
+
     // Track which lambdas have been registered in the JIT dylib (to avoid duplicate registration)
     std::unordered_set<std::string> registered_lambdas_;
 

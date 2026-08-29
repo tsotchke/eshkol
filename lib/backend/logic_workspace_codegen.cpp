@@ -92,7 +92,7 @@ Function* LogicWorkspaceCodegen::getOrDeclareRuntimeFunc(const char* name, Funct
 
 Value* LogicWorkspaceCodegen::loadArenaPtr() {
     auto& builder = ctx_.builder();
-    auto* arena_global = ctx_.globalArena();
+    auto* arena_global = ctx_.currentArena();
     return builder.CreateLoad(ctx_.ptrType(), arena_global, "arena_ptr");
 }
 

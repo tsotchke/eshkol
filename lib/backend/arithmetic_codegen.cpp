@@ -32,18 +32,19 @@
 
 namespace eshkol {
 
-// Helper: Get arena pointer from __global_arena global variable
+// Helper: Get the calling thread's current allocation arena.
 /**
- * @brief Loads the current arena pointer from the `__global_arena` module global.
+ * @brief Calls the runtime's thread-local current-arena accessor.
  *
  * @param ctx Codegen context providing the IR builder and module.
  * @return The loaded `arena_t*` value, or nullptr if `__global_arena` has not
  *         been declared in the module.
  */
 static llvm::Value* getArenaPtr(CodegenContext& ctx) {
-    llvm::GlobalVariable* arena_global = ctx.module().getNamedGlobal("__global_arena");
-    if (!arena_global) return nullptr;
-    return ctx.builder().CreateLoad(ctx.ptrType(), arena_global);
+    llvm::FunctionType* type = llvm::FunctionType::get(ctx.ptrType(), {}, false);
+    llvm::FunctionCallee accessor = ctx.module().getOrInsertFunction(
+        "eshkol_current_arena", type);
+    return ctx.builder().CreateCall(accessor);
 }
 
 // Helper: Get or declare eshkol_bignum_from_overflow(arena, a, b, op)

@@ -66,14 +66,7 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
         return tagged_.packNull();
     }
 
-    // Get global arena pointer (note: it's named __global_arena)
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        eshkol_warn("__global_arena not found");
-        return tagged_.packNull();
-    }
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate tagged cons cell with object header (takes only arena pointer).
     // Returns pointer to cons cell data; header is at (ptr - 8).
@@ -849,7 +842,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* new_length = ctx_.builder().CreateSub(length, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
         // Allocate new vector with header using arena
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* typed_new_vec = ctx_.builder().CreateCall(
             mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, new_length});
 
@@ -902,7 +895,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* tensor_new_len = ctx_.builder().CreateSub(tensor_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
         // Get arena for OALR-compliant allocation
-        llvm::Value* tensor_arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* tensor_arena_ptr = ctx_.currentArena();
 
         // Allocate new tensor structure via arena (OALR compliant - no malloc)
         llvm::Value* new_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {tensor_arena_ptr});
@@ -1513,7 +1506,7 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     }
 
     // Allocate from arena with header (for consolidated HEAP_PTR type)
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, length});
 
@@ -1588,7 +1581,7 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     uint64_t num_elems = op->call_op.num_vars;
 
     // Allocate from arena with header (for consolidated HEAP_PTR type)
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), num_elems)});
 
@@ -1941,7 +1934,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* row_offset = ctx_.builder().CreateMul(idx, row_size);
 
     // Get arena for OALR-compliant allocation
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate new 1D tensor struct via arena (OALR compliant - no malloc)
     llvm::Value* slice_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
@@ -2506,7 +2499,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     // patterns / AD-node pointers, per the tensor element encoding used
     // elsewhere in this file, e.g. vectorRef's tensor_1d_path).
     ctx_.builder().SetInsertPoint(tensor_copy_block);
-    llvm::Value* tensor_arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* tensor_arena_ptr = ctx_.currentArena();
     llvm::Value* new_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {tensor_arena_ptr});
 
     // dims = [count] (rank 1)
@@ -2542,7 +2535,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     // VECTOR PATH (#156, unchanged): allocate the fresh vector and store its
     // length, then copy the [start,end) slice (16 bytes per tagged element).
     ctx_.builder().SetInsertPoint(vector_copy_block);
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, count});
     llvm::Value* new_len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
@@ -2597,7 +2590,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     uint64_t num_vecs = op->call_op.num_vars;
     if (num_vecs == 0) {
         // (vector-append) => empty vector
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
             {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 0)});
         llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -2673,7 +2666,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     }
 
     // Allocate new vector
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, total_len});
 
@@ -3117,7 +3110,7 @@ llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     llvm::Value* length = count_n;
 
     // Allocate vector
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, length});
 

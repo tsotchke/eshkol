@@ -1046,6 +1046,7 @@ static int compile_and_run(const char* source) {
      * instruction is emitted, exactly as the native engine decides it before
      * code generation. A violating program must not run on ANY engine. */
     vm_clear_compile_failure();
+    vm_clear_import_bindings();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
@@ -1112,6 +1113,7 @@ static int compile_and_run(const char* source) {
      * its `define-library` is refused rather than silently satisfied by the
      * body that gets spliced in below it. */
     vm_clear_compile_failure();
+    vm_clear_import_bindings();
     vm_plan_unit_libraries(top_exprs, n_top_exprs);
 
     /* Pass 2: Scan for top-level defines that need boxing.

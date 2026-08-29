@@ -596,6 +596,97 @@ static int vm_unit_library_defined(const char* name) {
     return vm_unit_library_index(name) >= 0;
 }
 
+extern int eshkol_resolve_module_source_path_c(const char* module_name,
+                                               const char* base_dir,
+                                               const char* lib_dir,
+                                               char* output,
+                                               size_t output_size);
+
+typedef struct {
+    char alias[128];
+    char target[128];
+} VmImportBinding;
+
+static VmImportBinding g_vm_import_bindings[256];
+static int g_vm_n_import_bindings = 0;
+
+static void vm_clear_import_bindings(void) { g_vm_n_import_bindings = 0; }
+
+static void vm_register_import_binding(const char* alias, const char* target) {
+    if (!alias || !*alias || !target || !*target || strcmp(alias, target) == 0) return;
+    for (int i = 0; i < g_vm_n_import_bindings; ++i) {
+        if (strcmp(g_vm_import_bindings[i].alias, alias) == 0) {
+            strncpy(g_vm_import_bindings[i].target, target, 127);
+            g_vm_import_bindings[i].target[127] = '\0';
+            return;
+        }
+    }
+    if (g_vm_n_import_bindings >= 256) return;
+    strncpy(g_vm_import_bindings[g_vm_n_import_bindings].alias, alias, 127);
+    strncpy(g_vm_import_bindings[g_vm_n_import_bindings].target, target, 127);
+    g_vm_import_bindings[g_vm_n_import_bindings].alias[127] = '\0';
+    g_vm_n_import_bindings++;
+}
+
+static const char* vm_import_target(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_vm_n_import_bindings; ++i)
+        if (strcmp(g_vm_import_bindings[i].alias, name) == 0)
+            return g_vm_import_bindings[i].target;
+    return NULL;
+}
+
+static void vm_source_base_dir(const char* source_path, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    strncpy(out, source_path && *source_path ? source_path : ".", out_size - 1);
+    out[out_size - 1] = '\0';
+    char* slash = strrchr(out, '/');
+#ifdef _WIN32
+    char* backslash = strrchr(out, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+#endif
+    if (!slash) strncpy(out, ".", out_size - 1);
+    else if (slash == out) slash[1] = '\0';
+    else *slash = '\0';
+    out[out_size - 1] = '\0';
+}
+
+static int vm_collect_module_exports(const char* source, char exports[][128], int max_exports) {
+    if (!source || !exports || max_exports <= 0) return 0;
+    const char* saved = src_ptr;
+    src_ptr = source;
+    int count = 0;
+    while (count < max_exports) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* form = parse_sexp();
+        if (!form) break;
+        if (form->type == N_LIST && form->n_children >= 2 && form->children[0]->type == N_SYMBOL) {
+            const char* head = form->children[0]->symbol;
+            if (strcmp(head, "provide") == 0 || strcmp(head, "export") == 0) {
+                for (int i = 1; i < form->n_children && count < max_exports; ++i)
+                    if (form->children[i]->type == N_SYMBOL) {
+                        strncpy(exports[count], form->children[i]->symbol, 127);
+                        exports[count++][127] = '\0';
+                    }
+            } else if (strcmp(head, "define") == 0) {
+                const Node* name = form->children[1];
+                if (name->type == N_SYMBOL) {
+                    strncpy(exports[count], name->symbol, 127);
+                    exports[count++][127] = '\0';
+                } else if (name->type == N_LIST && name->n_children > 0 &&
+                           name->children[0]->type == N_SYMBOL) {
+                    strncpy(exports[count], name->children[0]->symbol, 127);
+                    exports[count++][127] = '\0';
+                }
+            }
+        }
+        free_node(form);
+    }
+    src_ptr = saved;
+    return count;
+}
+
 /**
  * @brief Records @p name as a library defined by this compilation unit,
  *        together with the union of its `export` clauses.
@@ -737,42 +828,32 @@ static const Node* vm_import_set_library_datum(const Node* set) {
  * value of its own: the caller owns the stack contract described on
  * compile_form_require().
  */
-static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
-    if (!mod_name || !*mod_name) return;
-
-    /* Track already-loaded modules to avoid double-loading */
-    for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
-        if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
-    }
-    if (g_compiler_ctx.n_loaded < 64)
-        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
-
-    /* stdlib is the prelude — builtins already available */
-    if (strcmp(mod_name, "stdlib") == 0) return;
-
-    /* Build file path: module.name → lib/module/name.esk */
-    char path[512];
-    snprintf(path, sizeof(path), "lib/");
-    int pi = 4;
-    for (const char* p = mod_name; *p && pi < 500; p++) {
-        path[pi++] = (*p == '.') ? '/' : *p;
-    }
-    path[pi] = '\0';
-    strncat(path, ".esk", sizeof(path) - pi - 1);
-
+static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
+                                     char exports[][128], int max_exports) {
+    if (!mod_name || !*mod_name) return -1;
+    if (strcmp(mod_name, "stdlib") == 0) return 0;
 #ifdef ESHKOL_VM_NO_DISASM
-    /* WASM mode: no filesystem access. Prelude builtins already available. */
-    return;
+    return 0;
 #else
-    /* Read and parse the file */
-    FILE* mf = fopen(path, "r");
-    if (!mf) {
-        /* Try alternative path: replace ALL dots with slashes */
-        char alt[512];
-        snprintf(alt, sizeof(alt), "%s.esk", mod_name);
-        for (char* p = alt; *p; p++) if (*p == '.') *p = '/';
-        mf = fopen(alt, "r");
+    char base_dir[1024];
+    char path[4096];
+    vm_source_base_dir(g_compiler_ctx.source_path, base_dir, sizeof(base_dir));
+    if (!eshkol_resolve_module_source_path_c(mod_name, base_dir, NULL,
+                                             path, sizeof(path))) {
+        char message[512];
+        snprintf(message, sizeof(message), "module '%s' was not found", mod_name);
+        vm_compile_error(message, "module lookup uses the shared workspace resolver");
+        return -1;
     }
+
+    int already_loaded = 0;
+    for (int i = 0; i < g_compiler_ctx.n_loaded; i++)
+        if (strcmp(g_compiler_ctx.loaded_modules[i], path) == 0) already_loaded = 1;
+    if (!already_loaded && g_compiler_ctx.n_loaded < 64)
+        strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], path, 127);
+
+    int discovered_exports = 0;
+    FILE* mf = fopen(path, "r");
     if (mf) {
         fseek(mf, 0, SEEK_END);
         long len = ftell(mf);
@@ -782,6 +863,17 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
             fread(src, 1, len, mf);
             src[len] = '\0';
             fclose(mf);
+            if (exports && max_exports > 0) {
+                discovered_exports = vm_collect_module_exports(src, exports, max_exports);
+                if (already_loaded) {
+                    free(src);
+                    return discovered_exports;
+                }
+            }
+            if (already_loaded) {
+                free(src);
+                return 0;
+            }
             /* Parse and compile all top-level forms.
              *
              * Under the SAME stack discipline the unit's own top level uses
@@ -791,6 +883,8 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
              * top-level form — every later local in that module, and in the
              * importing unit, then addressed the wrong slot. */
             const char* saved_src = src_ptr;
+            const char* saved_source_path = g_compiler_ctx.source_path;
+            g_compiler_ctx.source_path = path;
             src_ptr = src;
             while (1) {
                 skip_ws();
@@ -803,12 +897,13 @@ static void vm_compile_module_by_name(FuncChunk* c, const char* mod_name) {
                 free_node(expr);
             }
             src_ptr = saved_src;
+            g_compiler_ctx.source_path = saved_source_path;
             free(src);
         } else {
             fclose(mf);
         }
     }
-    /* If file not found, silently continue (builtins always available) */
+    return discovered_exports;
 #endif
 }
 
@@ -838,29 +933,13 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
          * module styles share one namespace, so `(require m)` after
          * `(define-library (m) …)` must not go to disk either. */
         if (!vm_unit_library_defined(node->children[1]->symbol)) {
-            vm_compile_module_by_name(c, node->children[1]->symbol);
+            vm_compile_module_by_name(c, node->children[1]->symbol, NULL, 0);
         }
     }
     /* Balance the caller's POP when the require added no binding of its own
      * (empty/absent module, or a malformed require). */
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
     return;
-}
-
-/** @brief Emits `(define <alias> <target>)` through the ordinary define path. */
-static void vm_emit_import_alias(FuncChunk* c, const char* alias, const char* target) {
-    if (!alias || !*alias || !target || !*target || strcmp(alias, target) == 0) return;
-    Node* def = make_call_node("define");
-    if (!def) return;
-    Node* lhs = make_symbol_node(alias);
-    Node* rhs = make_symbol_node(target);
-    if (!lhs || !rhs) { free_node(lhs); free_node(rhs); free_node(def); return; }
-    add_child(def, lhs);
-    add_child(def, rhs);
-    int before = c->n_locals;
-    compile_expr(c, def, 0);
-    if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
-    free_node(def);
 }
 
 /**
@@ -877,7 +956,7 @@ static void vm_emit_import_alias(FuncChunk* c, const char* alias, const char* ta
  *   not bottom out in a library this compilation unit defines (in which case
  *   nothing was emitted and the caller falls back to the module search path).
  */
-static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
+static int vm_resolve_unit_import_set(const Node* set,
                                       char visible[][128], int max_visible) {
     if (!set || set->type != N_LIST || set->n_children < 1) return -1;
     const Node* head = set->children[0];
@@ -885,7 +964,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
     if (head->type == N_SYMBOL && set->n_children >= 2 &&
         (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
          strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0)) {
-        int n = vm_resolve_unit_import_set(c, set->children[1], visible, max_visible);
+        int n = vm_resolve_unit_import_set(set->children[1], visible, max_visible);
         if (n < 0) return -1;
 
         if (strcmp(head->symbol, "only") == 0) {
@@ -926,7 +1005,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
                 const char* to = pair->children[1]->symbol;
                 for (int i = 0; i < n; i++) {
                     if (strcmp(visible[i], from) != 0) continue;
-                    vm_emit_import_alias(c, to, from);
+                    vm_register_import_binding(to, from);
                     strncpy(visible[i], to, 127);
                     visible[i][127] = '\0';
                     break;
@@ -940,7 +1019,7 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
         for (int i = 0; i < n; i++) {
             char alias[128];
             snprintf(alias, sizeof(alias), "%s%s", prefix->symbol, visible[i]);
-            vm_emit_import_alias(c, alias, visible[i]);
+            vm_register_import_binding(alias, visible[i]);
             strncpy(visible[i], alias, 127);
             visible[i][127] = '\0';
         }
@@ -961,6 +1040,61 @@ static int vm_resolve_unit_import_set(FuncChunk* c, const Node* set,
     return n;
 }
 
+/* Apply the same import-set algebra to a file-backed module surface. The
+ * names are provider spellings; only aliases are recorded in the VM lookup
+ * table, so no generated value-copying definitions can mask identity. */
+static int vm_register_external_import_set(const Node* set,
+                                           char visible[][128], int max_visible) {
+    if (!set || set->type != N_LIST || set->n_children < 1) return -1;
+    const Node* head = set->children[0];
+    if (head->type != N_SYMBOL || set->n_children < 2) return max_visible;
+    if (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0 ||
+        strcmp(head->symbol, "prefix") == 0 || strcmp(head->symbol, "rename") == 0) {
+        int n = vm_register_external_import_set(set->children[1], visible, max_visible);
+        if (n < 0) return -1;
+        if (strcmp(head->symbol, "only") == 0 || strcmp(head->symbol, "except") == 0) {
+            int kept = 0;
+            for (int i = 0; i < n; ++i) {
+                int listed = 0;
+                for (int a = 2; a < set->n_children; ++a)
+                    if (set->children[a]->type == N_SYMBOL &&
+                        strcmp(set->children[a]->symbol, visible[i]) == 0) listed = 1;
+                if ((strcmp(head->symbol, "only") == 0) != listed) {
+                    if (kept != i) strncpy(visible[kept], visible[i], 127);
+                    visible[kept++][127] = '\0';
+                }
+            }
+            return kept;
+        }
+        if (strcmp(head->symbol, "rename") == 0) {
+            for (int a = 2; a < set->n_children; ++a) {
+                const Node* pair = set->children[a];
+                if (pair->type != N_LIST || pair->n_children != 2 ||
+                    pair->children[0]->type != N_SYMBOL ||
+                    pair->children[1]->type != N_SYMBOL) continue;
+                for (int i = 0; i < n; ++i) {
+                    if (strcmp(visible[i], pair->children[0]->symbol) != 0) continue;
+                    vm_register_import_binding(pair->children[1]->symbol, visible[i]);
+                    strncpy(visible[i], pair->children[1]->symbol, 127);
+                    visible[i][127] = '\0';
+                }
+            }
+            return n;
+        }
+        const Node* prefix = set->children[set->n_children - 1];
+        if (prefix->type != N_SYMBOL) return n;
+        for (int i = 0; i < n; ++i) {
+            char alias[128];
+            snprintf(alias, sizeof(alias), "%s%s", prefix->symbol, visible[i]);
+            vm_register_import_binding(alias, visible[i]);
+            strncpy(visible[i], alias, 127);
+            visible[i][127] = '\0';
+        }
+        return n;
+    }
+    return max_visible;
+}
+
 /**
  * @brief Compile an R7RS `(import <import-set> …)` form.
  *
@@ -976,7 +1110,7 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
     int locals_at_start = c->n_locals;
     for (int i = 1; i < node->n_children; i++) {
         char visible[64][128];
-        if (vm_resolve_unit_import_set(c, node->children[i], visible, 64) >= 0) continue;
+        if (vm_resolve_unit_import_set(node->children[i], visible, 64) >= 0) continue;
         const Node* lib = vm_import_set_library_datum(node->children[i]);
         char name[256];
         if (!vm_library_name_from_datum(lib, name, sizeof(name))) continue;
@@ -996,7 +1130,39 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
                              "the import, or put the library in its own file.");
             continue;
         }
-        vm_compile_module_by_name(c, name);
+        char exports[64][128];
+        int n_exports = vm_compile_module_by_name(c, name, exports, 64);
+        if (n_exports >= 0)
+            vm_register_external_import_set(node->children[i], exports, n_exports);
+        /* Preserve the nested-prefix binding even when the inner import-set
+         * is narrowed: the VM's fixed reader keeps the provider surface in a
+         * separate array, so register the selected provider names directly. */
+        const Node* spec = node->children[i];
+        if (spec->type == N_LIST && spec->n_children >= 3 &&
+            spec->children[0]->type == N_SYMBOL &&
+            strcmp(spec->children[0]->symbol, "prefix") == 0 &&
+            spec->children[spec->n_children - 1]->type == N_SYMBOL) {
+            const Node* base = spec->children[1];
+            const Node* only = (base->type == N_LIST && base->n_children >= 2 &&
+                               base->children[0]->type == N_SYMBOL &&
+                               strcmp(base->children[0]->symbol, "only") == 0)
+                ? base : NULL;
+            const char* prefix = spec->children[spec->n_children - 1]->symbol;
+            for (int e = 0; e < n_exports; ++e) {
+                bool selected = only == NULL;
+                if (only) {
+                    for (int j = 2; j < only->n_children; ++j)
+                        if (only->children[j]->type == N_SYMBOL &&
+                            strcmp(only->children[j]->symbol, exports[e]) == 0)
+                            selected = true;
+                }
+                if (selected) {
+                    char alias[128];
+                    snprintf(alias, sizeof(alias), "%s%s", prefix, exports[e]);
+                    vm_register_import_binding(alias, exports[e]);
+                }
+            }
+        }
     }
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
@@ -2998,6 +3164,21 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
  * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
  */
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
+    if (node && node->type == N_SYMBOL) {
+        const char* target = vm_import_target(node->symbol);
+        if (target) {
+            strncpy(node->symbol, target, sizeof(node->symbol) - 1);
+            node->symbol[sizeof(node->symbol) - 1] = '\0';
+        }
+    } else if (node && node->type == N_LIST && node->n_children > 0 &&
+               node->children[0]->type == N_SYMBOL) {
+        const char* target = vm_import_target(node->children[0]->symbol);
+        if (target) {
+            strncpy(node->children[0]->symbol, target,
+                    sizeof(node->children[0]->symbol) - 1);
+            node->children[0]->symbol[sizeof(node->children[0]->symbol) - 1] = '\0';
+        }
+    }
     if (!node) return;
 
     /* Check for macro expansion — must come before all other dispatch */
