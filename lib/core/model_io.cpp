@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -319,6 +320,12 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
 bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records) {
     if (!path || !records) return false;
 
+    /* A malformed header can advertise billions of records/dimensions. Keep
+     * allocations derived from those fields bounded by bytes that are
+     * actually present, and turn allocation failures into the documented
+     * load failure rather than letting malformed input escape as a crash. */
+    try {
+
     std::vector<std::uint8_t> bytes;
     if (!read_file(path, &bytes) || bytes.size() < 16) return false;
 
@@ -343,10 +350,11 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
     if (!reader.read_u32(&version) || !reader.read_u32(&tensor_count) || !reader.read_u32(&flags)) {
         return false;
     }
-    (void)flags;
-    if (version != kFormatVersion) return false;
+    if (flags != 0 || version != kFormatVersion) return false;
 
     records->clear();
+    if (reader.offset > reader.size ||
+        tensor_count > (reader.size - reader.offset) / 9) return false;
     records->reserve(tensor_count);
     for (std::uint32_t i = 0; i < tensor_count; ++i) {
         ParsedTensorRecord record;
@@ -354,6 +362,10 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         if (!reader.read_u32(&name_len) || !reader.read_string(name_len, &record.name)) return false;
         if (!reader.read_u32(&record.ndims)) return false;
 
+        if (reader.offset > reader.size || reader.size - reader.offset < 1 ||
+            record.ndims > (reader.size - reader.offset - 1) / sizeof(std::uint64_t)) {
+            return false;
+        }
         record.dims.resize(record.ndims);
         for (std::uint32_t dim = 0; dim < record.ndims; ++dim) {
             if (!reader.read_u64(&record.dims[dim])) return false;
@@ -365,6 +377,10 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         std::uint64_t total_elements = 0;
         if (!compute_total_elements(record.dims, &total_elements)) return false;
         if (total_elements > SIZE_MAX / sizeof(std::uint64_t)) return false;
+        if (reader.offset > reader.size ||
+            total_elements > (reader.size - reader.offset) / sizeof(std::uint64_t)) {
+            return false;
+        }
         record.element_bits.resize(static_cast<std::size_t>(total_elements));
         for (std::uint64_t elem = 0; elem < total_elements; ++elem) {
             if (!reader.read_u64(&record.element_bits[static_cast<std::size_t>(elem)])) return false;
@@ -373,7 +389,20 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
         records->push_back(std::move(record));
     }
 
-    return reader.offset == reader.size;
+    const bool valid = reader.offset == reader.size;
+    return valid;
+    } catch (const std::exception&) {
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
+/** Report a rejected checkpoint without exposing parser internals to callers. */
+void report_checkpoint_failure(const char* operation, const char* path) {
+    std::fprintf(stderr,
+                 "ERROR: %s: invalid or unreadable ESKM checkpoint '%s'\n",
+                 operation ? operation : "checkpoint-load", path ? path : "<null>");
 }
 
 /** @brief Materialize an arena-allocated tensor from a parsed checkpoint record.
@@ -535,7 +564,15 @@ extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records) || records.size() != 1) return;
+    if (!parse_checkpoint(path, &records)) {
+        report_checkpoint_failure("tensor-load", path);
+        return;
+    }
+    if (records.size() != 1) {
+        std::fprintf(stderr,
+                     "ERROR: tensor-load: ESKM checkpoint must contain exactly one tensor\n");
+        return;
+    }
 
     eshkol_tensor_t* tensor = nullptr;
     if (!tensor_from_record(arena, records.front(), &tensor)) return;
@@ -788,7 +825,10 @@ extern "C" void eshkol_model_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records)) return;
+    if (!parse_checkpoint(path, &records)) {
+        report_checkpoint_failure("model-load", path);
+        return;
+    }
     if (!build_model_list(arena, records, result)) {
         *result = make_null();
     }
