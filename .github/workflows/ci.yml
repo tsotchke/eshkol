@@ -456,6 +456,7 @@ jobs:
           python3 scripts/gate_no_silent_wrong.py --self-test
           python3 scripts/check_ledger_integrity.py --self-test
           python3 scripts/check_oracle_schema.py --self-test
+          python3 scripts/check_oracle_bindings.py --self-test
           python3 scripts/audit_oracle_false_green.py --self-test
           python3 scripts/check_evidence_staleness.py --self-test
           python3 scripts/gate_ad_shared_node_model.py --self-test
@@ -499,6 +500,10 @@ jobs:
       - name: Completion-oracle file parses and every criterion is gradeable
         shell: bash
         run: python3 scripts/check_oracle_schema.py
+
+      - name: Every completion-oracle CTest and script binding resolves
+        shell: bash
+        run: python3 scripts/check_oracle_bindings.py --no-trace
 
       - name: No oracle target can read ready on zero evidence (F19 / A13)
         shell: bash

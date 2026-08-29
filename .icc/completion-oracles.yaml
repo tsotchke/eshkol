@@ -25,7 +25,7 @@ oracles:
       - test_evidence: true
         severity: high
         label: v1.2 edge-case tests are indexed and runnable
-        action: cd build && cmake --build . && ctest -R v1_2
+        action: BUILD_DIR=build ./scripts/run_v1_2_edge_cases_tests.sh
 
       - no_contract_gap:
           - flag_without_contract
@@ -1455,12 +1455,12 @@ oracles:
       - test_evidence: true
         severity: high
         label: 'Bytecode VM Stage-1 region evacuator: with-region reclaims on the VM heap with a flat RSS curve across iteration counts, matching output with ESHKOL_VM_REGION_EVAC on and off'
-        action: cd build && cmake --build . && ctest -R vm_region_flat_rss
+        action: BUILD_DIR=build ./tests/memory/vm_region_flat_rss_test.sh
 
       - test_evidence: true
         severity: high
         label: 'Bytecode VM Stage-1 region evacuator classifies the full heap-tag space (28 HeapType members + geometric-tag extensions); a compile-time span check and a startup fatal-check guard every row is filled in'
-        action: cd build && cmake --build . && ctest -R vm_region_evac_subtype_coverage
+        action: BUILD_DIR=build ./tests/memory/vm_region_evac_subtype_coverage_test.sh
 
       # #471: linear Qubit violations are compile-time errors, not warnings.
       - test_evidence: true
@@ -1494,7 +1494,7 @@ oracles:
       - test_evidence: true
         severity: high
         label: 'Mutual tail recursion through cond/case/when/and/or is as wide as isInTailPosition; the tail-transfer dispatcher bounds differing-call-signature and non-AArch64 mutual tail calls (previously SIGBUS at ~5,000,000 hops)'
-        action: cd build && cmake --build . && ctest -R tail_transfer
+        action: BUILD_DIR=build ./scripts/run_tco_tests.sh
 
       - test_evidence: true
         severity: high
@@ -1519,7 +1519,7 @@ oracles:
       - test_evidence: true
         severity: high
         label: 'gensym is dispatched on native JIT/AOT and the bytecode VM (fid / VM builtin id 2227), not merely defined in a module the slim runtime archive never links'
-        action: cd build && cmake --build . && ctest -R gensym
+        action: BUILD_DIR=build ./scripts/run_control_flow_tests.sh
 
       # Assurance waves 1 and 2 (#454, #465, F19/ADR-0010 A13) -- same
       # probes already graded under eshkol-compiler-readiness, viewed
@@ -1603,7 +1603,7 @@ oracles:
       - test_evidence: true
         severity: high
         label: 'parse_quoted_data_with_token dispatches every quoted-datum kind (vector, quasiquote, unquote), not only list and quote; compile_quote preserves is_char/is_inexact reader flags'
-        action: cd build && cmake --build . && ctest -R reader
+        action: ctest -R v1_3_quoted_datum_kinds_runtime_smoke
 
       # #458/audit H1: NumPy capsule keeps the tensor buffer alive.
       - test_evidence: true
