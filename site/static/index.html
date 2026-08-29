@@ -51,6 +51,7 @@
     <p class="loading-sub">This website is written in Eshkol, compiled to WebAssembly.</p>
   </div>
   <script src="eshkol-runtime.js"></script>
+  <script src="eshkol-webgpu.js"></script>
   <script src="eshkol-vm.js"></script>
   <script>
     // ─── GitHub Pages SPA redirect ─────────────────────────────────────
@@ -71,6 +72,7 @@
       const loadingEl = document.getElementById('loading');
       try {
         const runtime = new EshkolRuntime();
+        await runtime.initWebGPU();
         const response = await fetch('eshkol-site.wasm');
         const { instance } = await WebAssembly.instantiate(
           await response.arrayBuffer(),

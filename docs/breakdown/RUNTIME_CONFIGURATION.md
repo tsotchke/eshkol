@@ -143,7 +143,8 @@ The maximum recursion depth (`ESHKOL_MAX_STACK` / `ESHKOL_DEFAULT_MAX_STACK_DEPT
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ESHKOL_GPU_MATMUL_THRESHOLD` | 100000 | Element count threshold for GPU matmul dispatch. Set to `1` to force all matmul through GPU. |
-| `ESHKOL_GPU_PRECISION` | `exact` | GPU precision mode: `exact` (sf64, 53-bit), `high` (df64, ~48-bit), `fast` (f32, 24-bit). |
+| `ESHKOL_GPU_PRECISION` | `exact` | GPU precision mode: native backends support `exact` (sf64, 53-bit), `high` (df64, ~48-bit), and `fast` (f32, 24-bit); WebGPU supports `high`/`fast` only and refuses `exact` to CPU. |
+| `ESHKOL_WEBGPU_ASYNCIFY` | `ON` | Emscripten CMake option: enable Asyncify for WebGPU readback. Disable only when WebGPU dispatch is not linked. |
 | `ESHKOL_SF64_KERNEL` | `v2` | Software float64 kernel version: `v1` (original) or `v2` (deferred rounding). |
 
 ### Debug and Diagnostics

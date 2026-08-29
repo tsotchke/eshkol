@@ -147,7 +147,8 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 | Option | Default | Description |
 |--------|---------|-------------|
 | `ESHKOL_BLAS_ENABLED` | `ON` | BLAS acceleration (Accelerate on macOS, OpenBLAS on Linux) |
-| `ESHKOL_GPU_ENABLED` | `ON` | GPU acceleration (Metal on macOS, CUDA on Linux) |
+| `ESHKOL_GPU_ENABLED` | `ON` | GPU acceleration (Metal on macOS, CUDA on Linux, WebGPU on Emscripten/wasm) |
+| `ESHKOL_WEBGPU_ASYNCIFY` | `ON` | Emscripten wasm only: add `-sASYNCIFY` so synchronous GPU dispatch can wait for browser readback |
 | `ESHKOL_XLA_ENABLED` | `OFF` | XLA/StableHLO backend for tensor fusion |
 | `ESHKOL_ENABLE_ASAN` | `OFF` | Address Sanitizer |
 | `ESHKOL_ENABLE_UBSAN` | `OFF` | Undefined Behavior Sanitizer |
