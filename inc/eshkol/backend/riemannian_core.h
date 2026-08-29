@@ -76,16 +76,13 @@
  * the same maps under any LAMBDA0. Only distances, norms and the
  * gradient conversion carry the factor.
  *
- * RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` (`ad_hyperbolic_distance`,
- * `ad_poincare_exp_map`, `ad_poincare_log_map`, `ad_geodesic_attention`) computes
- * the same ball formulas, but its entry points take a BALL PARAMETER c > 0, not a
- * sectional curvature: it converts with `c = (curvature == 0) ? 1 : |curvature|`.
- * For K < 0 that coincides with this file (c = -K) and the two agree. For K >= 0
- * IT DOES NOT: at K = 0 the bridge silently selects the c = 1 ball, and at K > 0
- * it selects a ball where this file selects a sphere. The bridge must branch on
- * the sign of K and refuse K >= 0 on its Poincare-only entry points; that is a
- * change to the bridge, tracked on its own lane, and until it lands the
- * "VM and AD agree" claim holds only for K < 0.
+ * RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` includes this header
+ * and calls these same f64 primitives for its hyperbolic distance, Poincare
+ * exponential/logarithmic maps, and geodesic-attention distance scores. The
+ * bridge validates that its public curvature is negative, converts it to the
+ * common ball parameter c = -K, and retains the common forward weights for its
+ * reverse rule. There is no second bridge-side forward formula to drift from
+ * this model: the VM and bridge distance/map forwards are one implementation.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
@@ -164,6 +161,20 @@ static double eshkol_rm_norm(const double* a, int n) {
  * B * (1e308)^2 when B is small. */
 static double eshkol_rm_scaled_product4(double a, double b, double c, double d);
 
+/* Square root of every finite nonnegative f64 value with explicit exponent
+ * halving. frexp/ldexp keeps the operation well-defined at both the subnormal
+ * and DBL_MAX ends of the range. */
+static double eshkol_rm_sqrt_nonnegative(double x) {
+    if (!(x > 0.0) || !isfinite(x)) return sqrt(x);
+    int exponent = 0;
+    double mantissa = frexp(x, &exponent);
+    if (exponent % 2 != 0) {
+        mantissa *= 2.0;
+        --exponent;
+    }
+    return ldexp(sqrt(mantissa), exponent / 2);
+}
+
 static double eshkol_rm_scaled_norm2_times(const double* a, double factor, int n) {
     double max_abs = 0.0;
     for (int i = 0; i < n; i++) {
@@ -190,6 +201,25 @@ static double eshkol_rm_scaled_product4(double a, double b, double c, double d) 
     double ma = frexp(a, &ea), mb = frexp(b, &eb);
     double mc = frexp(c, &ec), md = frexp(d, &ed);
     return scalbn(((ma * mb) * mc) * md, ea + eb + ec + ed);
+}
+
+/* The same product with one f64 residual retained. The residual is important
+ * when the product is close to one and the desired result is 1-product: the
+ * returned high word alone would expose the subtraction to the f64 ulp at 1. */
+static void eshkol_rm_scaled_product4_dd(double a, double b, double c, double d,
+                                         double* hi_out, double* lo_out) {
+    int ea, eb, ec, ed;
+    double ma = frexp(a, &ea), mb = frexp(b, &eb);
+    double mc = frexp(c, &ec), md = frexp(d, &ed);
+    double p1 = ma * mb;
+    double e1 = fma(ma, mb, -p1);
+    double p2 = p1 * mc;
+    double e2 = fma(p1, mc, -p2) + e1 * mc;
+    double p3 = p2 * md;
+    double e3 = fma(p2, md, -p3) + e2 * md;
+    const int exponent = ea + eb + ec + ed;
+    *hi_out = scalbn(p3, exponent);
+    *lo_out = scalbn(e3, exponent);
 }
 
 /* A curvature-weighted square with the curvature exponent carried separately
@@ -330,10 +360,43 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
 /** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
  *         precision. */
 static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
-    double lo = 0.0;
-    double hi = eshkol_rm_dot_dd(x, x, n, &lo);
-    if (isfinite(hi))
-        return fma(-B, lo, fma(-B, hi, 1.0));
+    /* Track d = 1 - B|x|^2 as a compensated scaled sum. The direct squared
+     * norm can overflow even when the scaled radius is finite, while
+     * subtracting a rounded product from one loses all relative digits near
+     * the boundary. */
+    double max_abs = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double ai = fabs(x[i]);
+        if (!isfinite(ai)) return ai;
+        if (ai > max_abs) max_abs = ai;
+    }
+    if (max_abs == 0.0 || B == 0.0) return 1.0;
+    double scaled_norm2 = 0.0, compensation = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double z = x[i] / max_abs;
+        double term = z * z;
+        double y = term - compensation;
+        double sum = scaled_norm2 + y;
+        compensation = (sum - scaled_norm2) - y;
+        scaled_norm2 = sum;
+    }
+    double product_hi = 0.0, product_lo = 0.0;
+    eshkol_rm_scaled_product4_dd(B, max_abs, max_abs, scaled_norm2,
+                                 &product_hi, &product_lo);
+    /* The compensated part of the normalized sum is a fifth factor. At the
+     * boundary the three-factor product is O(1), so this correction retains
+     * the low word without creating an overflowing intermediate. */
+    product_lo += eshkol_rm_scaled_product4(B, max_abs, max_abs,
+                                            -compensation);
+    double rounded = 1.0 - product_hi;
+    /* TwoSum(1, -product_hi): spelling the residual as (-product_hi) -
+     * (rounded - 1) avoids recomputing 1-rounded, which would repeat the
+     * cancellation this branch is preserving. */
+    double rounded_minus_one = rounded - 1.0;
+    double split = -product_hi - rounded_minus_one;
+    double residual = split - product_lo;
+    double result = rounded + residual;
+    if (isfinite(result)) return result;
     return 1.0 - eshkol_rm_scaled_norm2_times(x, B, n);
 }
 
@@ -371,7 +434,8 @@ static void eshkol_rm_axpby_exact(double p, const double* a, double q,
 /** @brief The ball parameter B of the chart of curvature -c: the number for
  *         which the ball is |x|^2 < 1/B and Mobius addition is (+)_B. */
 static double eshkol_rm_ball_param(double c) {
-    return c * (ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
+    return eshkol_rm_scaled_product4(c, ESHKOL_RM_LAMBDA0,
+                                     ESHKOL_RM_LAMBDA0, 0.25);
 }
 
 /** @brief The conformal factor lambda_x of the metric of curvature @p K at
@@ -466,7 +530,7 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
 static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
                                    int n) {
     double q  = eshkol_rm_one_plus_dot(x, y, B, n);
-    double root_B = sqrt(B);
+    double root_B = eshkol_rm_sqrt_nonnegative(B);
     double gram = 0.0;
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
@@ -483,7 +547,7 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
 static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
                                         double B, int n) {
     double q  = eshkol_rm_one_minus_dot(x, y, B, n);
-    double root_B = sqrt(B);
+    double root_B = eshkol_rm_sqrt_nonnegative(B);
     double gram = 0.0;
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
@@ -577,7 +641,7 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
         if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
             return "the point must lie strictly inside the Poincare ball";
     } else if (K > 0.0) {
-        double R = 1.0 / sqrt(K);
+        double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         if (!isfinite(R)) return "the sphere radius is not finite";
         double xn = eshkol_rm_norm(x, n);
         if (!(fabs(xn - R) <= ESHKOL_RM_SPHERE_TOL * R))
@@ -671,7 +735,7 @@ static const char* eshkol_rm_sphere_distance_domain(const double* x,
         sn = hypot(sn, y[i] / yn - cs * (x[i] / xn));
     if (!(sn > 0.0) || !isfinite(sn) || !isfinite(cs))
         return "the spherical distance derivative is not finite";
-    const double R = 1.0 / sqrt(K);
+    const double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
     const double theta = atan2(sn, cs);
     if (!isfinite(R) || !isfinite(theta) || !isfinite(R * theta))
         return "the spherical distance is not finite";
@@ -751,7 +815,7 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
         return NULL;
     }
     {
-        double R  = 1.0 / sqrt(K);
+        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         if (eshkol_rm_sphere_antipodal(x, y, n))
             return "the two points are antipodal: distance is not differentiable";
         *out = R * eshkol_rm_sphere_angle(x, y, R, n, NULL);
@@ -795,7 +859,7 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
     if (K < 0.0) {
         double B   = eshkol_rm_ball_param(-K);
         double lam = eshkol_rm_lambda(x, K, n);
-        double z   = sqrt(B) * lam * vn / ESHKOL_RM_LAMBDA0;
+        double z   = eshkol_rm_sqrt_nonnegative(B) * lam * vn / ESHKOL_RM_LAMBDA0;
         double f   = (lam / ESHKOL_RM_LAMBDA0) * eshkol_rm_tanh_over(z);
         for (int i = 0; i < n; i++) scratch[i] = f * v[i];
         eshkol_rm_mobius_add(x, scratch, B, n, out);
@@ -804,7 +868,7 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
         return eshkol_rm_require_interior(out, K, n);
     }
     {
-        double R  = 1.0 / sqrt(K);
+        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         double th = vn / R;
         double ca = cos(th), sa = sin(th);
         for (int i = 0; i < n; i++) out[i] = ca * x[i] + R * sa * v[i] / vn;
@@ -875,7 +939,7 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
     }
     {
         /* Sphere: log_x(y) = theta R * u/|u| with u = y - (<x,y>/R^2) x. */
-        double R  = 1.0 / sqrt(K);
+        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         if (!isfinite(R)) return "the sphere radius is not finite";
         double* u = scratch;
         if (eshkol_rm_sphere_antipodal(x, y, n))
@@ -972,7 +1036,7 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
         return NULL;
     }
     double B = eshkol_rm_ball_param(-K);
-    double s = sqrt(B);
+    double s = eshkol_rm_sqrt_nonnegative(B);
     double t = s * xn;
     double coef = tanh(r * atanh(t)) / (s * xn);
     for (int i = 0; i < n; i++) out[i] = coef * x[i];
@@ -1001,7 +1065,7 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
     }
     if (K < 0.0) {
         double xn = eshkol_rm_norm(x, n);
-        double R = 1.0 / sqrt(eshkol_rm_ball_param(-K));
+        double R = 1.0 / eshkol_rm_sqrt_nonnegative(eshkol_rm_ball_param(-K));
         /* Leave a margin so the projected point is STRICTLY inside: a point
          * exactly on the boundary makes lambda infinite and every log map
          * degenerate to zero, which is the failure mode frechet_mean_core.h
@@ -1016,7 +1080,7 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
         return NULL;
     }
     {
-        double R = 1.0 / sqrt(K);
+        double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         double max_abs = 0.0;
         for (int i = 0; i < n; i++) {
             if (!isfinite(x[i])) return "a coordinate is not finite";
@@ -1189,12 +1253,12 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
     }
 
     {
-        double R  = 1.0 / sqrt(K);
+        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         double cs = eshkol_rm_dot(x, y, n) / (R * R);
         double sn = 0.0;
         for (int i = 0; i < n; i++) { double t = y[i] - cs * x[i]; sn += t * t; }
         double th = atan2(sqrt(sn) / R, cs);
-        double rk = 1.0 / sqrt(K);
+        double rk = 1.0 / eshkol_rm_sqrt_nonnegative(K);
         if (d_out) *d_out = th * rk;
         if (th == 0.0) {
             *d1_out = 0.0;
@@ -1330,7 +1394,7 @@ static eshkol_rm_directional eshkol_rm_dmobius_den(
         ? eshkol_rm_done_minus_dot(a, b, da, db, B, n)
         : eshkol_rm_done_plus_dot(a, b, da, db, B, n);
     eshkol_rm_directional result = eshkol_rm_dmul(q, q);
-    const double root_B = sqrt(B);
+    const double root_B = eshkol_rm_sqrt_nonnegative(B);
     for (int i = 0; i < n; ++i) {
         for (int j = i + 1; j < n; ++j) {
             eshkol_rm_directional ai = {root_B * a[i], root_B * da[i]};
@@ -1460,7 +1524,7 @@ static bool eshkol_rm_exp_directional(
     eshkol_rm_directional lambda = eshkol_rm_ddiv(
         {ESHKOL_RM_LAMBDA0, 0.0}, nb);
     eshkol_rm_directional z = eshkol_rm_dmul(
-        {sqrt(B), 0.0}, eshkol_rm_ddiv(
+        {eshkol_rm_sqrt_nonnegative(B), 0.0}, eshkol_rm_ddiv(
             eshkol_rm_dmul(lambda, vn), {ESHKOL_RM_LAMBDA0, 0.0}));
     eshkol_rm_directional f = eshkol_rm_dmul(
         eshkol_rm_ddiv(lambda, {ESHKOL_RM_LAMBDA0, 0.0}),

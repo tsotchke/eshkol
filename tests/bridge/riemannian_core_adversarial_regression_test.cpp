@@ -75,6 +75,30 @@ static void check_adversarial_roots() {
     check("curvature_derivative_never_returns_nan_success",
           why != nullptr || (std::isfinite(d) && std::isfinite(d1) &&
                              std::isfinite(d2)));
+
+    const double extreme_curvatures[] = {
+        DBL_MAX, DBL_MAX / 2.0, DBL_MAX / 4.0
+    };
+    bool ball_param_ok = true;
+    for (double c : extreme_curvatures) {
+        const double positive = eshkol_rm_ball_param(c);
+        const double negative = eshkol_rm_ball_param(-c);
+        ball_param_ok = ball_param_ok && std::isfinite(positive) &&
+                        positive == c && std::isfinite(negative) &&
+                        negative == -c;
+    }
+    check("ball_parameter_preserves_top_finite_binades", ball_param_ok);
+
+    const double scaled_boundary[2] = {0.0, 9.99999999999e149};
+    const double scaled_B = 1e-300;
+    const double got_d = eshkol_rm_one_minus_bnorm2(scaled_boundary, scaled_B, 2);
+    /* Binary128 reference for the exact f64 fixture; x86 long double has
+     * only 64 significand bits and rounds the near-one product too early. */
+    const long double ref_d = 1.9999100196141823908743937057113335866e-12L;
+    const long double rel_d = std::fabs((long double)got_d - ref_d) /
+                              std::fabs(ref_d);
+    check("scaled_ball_denominator_matches_extended_precision",
+          std::isfinite(got_d) && rel_d < 1e-12L);
 }
 
 int main() {

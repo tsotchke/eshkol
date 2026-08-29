@@ -1497,7 +1497,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
          * changed here: the distance was the ambient L2 for every curvature, and
          * the weights were exp() with no max-shift, which overflows to inf for
          * strongly negative scores and then divides inf by inf. */
-        double sc = (Kc < 0.0) ? sqrt(-Kc) : 1.0;
+        double sc = (Kc < 0.0) ? eshkol_rm_sqrt_nonnegative(-Kc) : 1.0;
         double scale = 1.0 / (sc * sqrt((double)dim));
         double* row = vm_geometric_scratch(vm, nk, 1);
         if (!row) { vm_push(vm, NIL_VAL); break; }

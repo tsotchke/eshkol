@@ -217,7 +217,7 @@ ad_node_t* ad_tensor_embedding(
  ******************************************************************************/
 
 /**
- * @brief Hyperbolic distance in the Poincare ball model.
+ * @brief Hyperbolic distance in the shared Poincare-ball implementation.
  *
  * d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
  *
@@ -228,7 +228,7 @@ ad_node_t* ad_tensor_embedding(
  * `curvature` is sectional curvature and must be negative; this entry point
  * implements only the Poincare branch. Both points must be strictly inside the
  * ball. The forward is the shared f64 implementation in
- * backend/riemannian_core.h.
+ * backend/riemannian_core.h, also used by the VM geometry opcodes.
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
  * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
  */
@@ -270,10 +270,12 @@ ad_node_t* ad_poincare_log_map(
 /**
  * @brief Geodesic attention with curvature-adaptive scaling.
  *
- * Replaces dot-product with geodesic distance in attention scores:
+ * Replaces dot-product with the shared f64 geodesic distance primitive from
+ * backend/riemannian_core.h in attention scores:
  * s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a
  * value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The
- * forward retains the softmax weights on the node so
+ * VM and bridge forwards use the same shared-core distance/map implementation;
+ * this bridge retains the softmax weights on the node so
  * the backward reads the same numbers the forward produced rather than
  * recomputing the max-shift and the mask.
  *

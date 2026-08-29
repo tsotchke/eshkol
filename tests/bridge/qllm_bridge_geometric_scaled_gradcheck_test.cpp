@@ -11,6 +11,7 @@
 #include "eshkol/eshkol.h"
 #include "eshkol/bridge/qllm_bridge.h"
 #include "eshkol/backend/tensor_backward.h"
+#include "eshkol/backend/riemannian_core.h"
 
 extern "C" {
 typedef struct arena arena_t;
@@ -486,6 +487,36 @@ static bool check_true_min_spherical_attention() {
     return true;
 }
 
+static bool check_ball_parameter_extremes() {
+    const double curvatures[] = {DBL_MAX, DBL_MAX / 2.0, DBL_MAX / 4.0};
+    for (double c : curvatures) {
+        if (!std::isfinite(eshkol_rm_ball_param(c)) ||
+            eshkol_rm_ball_param(c) != c ||
+            !std::isfinite(eshkol_rm_ball_param(-c)) ||
+            eshkol_rm_ball_param(-c) != -c)
+            return false;
+    }
+    return true;
+}
+
+static bool check_scaled_boundary_denominator() {
+    const double x[2] = {0.0, 9.99999999999e149};
+    const double B = 1e-300;
+    const double got = eshkol_rm_one_minus_bnorm2(x, B, 2);
+    double product_hi = 0.0, product_lo = 0.0;
+    eshkol_rm_scaled_product4_dd(B, x[1], x[1], 1.0,
+                                 &product_hi, &product_lo);
+    /* Binary128 reference for these exact f64 inputs. x86 long double has
+     * only 64 significand bits and rounds this near-one product too early. */
+    const long double want = 1.9999100196141823908743937057113335866e-12L;
+    const long double rel = std::fabs((long double)got - want) /
+                            std::fabs(want);
+    std::printf("scaled_boundary: denominator=%.17g reference=%.21Lg rel=%.3Le "
+                "product=(%.17g,%.17g)\n", got, want, rel,
+                product_hi, product_lo);
+    return std::isfinite(got) && rel < 1e-12L;
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (int n = 1; n <= 64; ++n) {
@@ -520,6 +551,10 @@ int main() {
     if (subnormal_fd) ++passed; else ++failed;
     const bool true_min_sphere = check_true_min_spherical_attention();
     if (true_min_sphere) ++passed; else ++failed;
+    const bool ball_parameter = check_ball_parameter_extremes();
+    if (ball_parameter) ++passed; else ++failed;
+    const bool scaled_boundary = check_scaled_boundary_denominator();
+    if (scaled_boundary) ++passed; else ++failed;
     std::printf("Results: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

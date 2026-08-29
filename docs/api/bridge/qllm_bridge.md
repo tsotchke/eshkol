@@ -252,7 +252,7 @@ ad_node_t* ad_hyperbolic_distance(
 );
 ```
 
-Hyperbolic distance in the Poincare ball model. d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2))) NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. `curvature` is sectional curvature and must be negative; this entry point implements only the Poincare branch. Both points must be strictly inside the ball. The forward is the shared f64 implementation in backend/riemannian_core.h. Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
+Hyperbolic distance in the shared Poincare-ball implementation. d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2))) NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian distance has a cone point at coincidence: the one-sided slopes disagree in every direction, so only a subgradient set exists there. The backward refuses at coincident points rather than returning a plausible member of that set. `curvature` is sectional curvature and must be negative; this entry point implements only the Poincare branch. Both points must be strictly inside the ball. The forward is the shared f64 implementation in backend/riemannian_core.h, also used by the VM geometry opcodes. Away from coincidence the gradient is exact, and its Euclidean magnitude is the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
 
 ### `ad_poincare_exp_map`
 
@@ -286,7 +286,7 @@ Poincare logarithmic map. Maps a point y back to the tangent space at x through 
 
 ### `ad_geodesic_attention`
 
-*Function* — line 287
+*Function* — line 289
 
 ```c
 ad_node_t* ad_geodesic_attention(
@@ -300,11 +300,11 @@ ad_node_t* ad_geodesic_attention(
 );
 ```
 
-Geodesic attention with curvature-adaptive scaling. Replaces dot-product with geodesic distance in attention scores: s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The forward retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere.
+Geodesic attention with curvature-adaptive scaling. Replaces dot-product with the shared f64 geodesic distance primitive from backend/riemannian_core.h in attention scores: s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The VM and bridge forwards use the same shared-core distance/map implementation; this bridge retains the softmax weights on the node so the backward reads the same numbers the forward produced rather than recomputing the max-shift and the mask. CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because the geodesic distance has no derivative at coincident points, this op is not differentiable whenever a query row equals a key row exactly — which is the ordinary case when Q and K are the same tensor. The backward refuses there and names the (batch, head, i, j) it refused on. Dot-product attention (ad_tensor_attention) has no such point and is differentiable everywhere.
 
 ### `ad_frechet_mean`
 
-*Function* — line 328
+*Function* — line 330
 
 ```c
 ad_node_t* ad_frechet_mean(
@@ -332,7 +332,7 @@ Mean tensor node [dim], or NULL on error.
 
 ### `eshkol_qllm_bridge_init`
 
-*Function* — line 348
+*Function* — line 350
 
 ```c
 bool eshkol_qllm_bridge_init(const char* library_path);
@@ -350,7 +350,7 @@ true on success
 
 ### `eshkol_qllm_bridge_shutdown`
 
-*Function* — line 353
+*Function* — line 355
 
 ```c
 void eshkol_qllm_bridge_shutdown(void);
@@ -360,7 +360,7 @@ Shutdown the qLLM bridge.
 
 ### `eshkol_qllm_bridge_ready`
 
-*Function* — line 358
+*Function* — line 360
 
 ```c
 bool eshkol_qllm_bridge_ready(void);

@@ -1508,14 +1508,20 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
                 }
             }
 
-            /* Softmax Jacobian, one row dot product per row. */
+            /* Softmax Jacobian from the max-shifted forward. Center each
+             * upstream entry against the others before weighting it, so the
+             * uniform case contains only exact zero differences rather than
+             * a rounded subtraction from p.dot(dA). */
             for (int64_t i = 0; i < seq; i++) {
-                double dot = 0.0;
-                for (int64_t j = 0; j < seq; j++)
-                    dot += Ah[i * seq + j] * dA[(size_t)(i * seq + j)];
-                for (int64_t j = 0; j < seq; j++)
+                for (int64_t j = 0; j < seq; j++) {
+                    double centered = 0.0;
+                    for (int64_t m = 0; m < seq; m++)
+                        centered += Ah[i * seq + m] *
+                                    (dA[(size_t)(i * seq + j)] -
+                                     dA[(size_t)(i * seq + m)]);
                     dS[(size_t)(i * seq + j)] =
-                        Ah[i * seq + j] * (dA[(size_t)(i * seq + j)] - dot) * scale;
+                        Ah[i * seq + j] * centered * scale;
+                }
             }
 
             /* dQ[i][d] = sum_j dS[i][j] * K[j][d] */
@@ -1939,7 +1945,8 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                      heads, head_dim, dim, curvature);
         return;
     }
-    const double metric_scale = curvature < 0.0 ? std::sqrt(-curvature) : 1.0;
+    const double metric_scale = curvature < 0.0
+        ? eshkol_rm_sqrt_nonnegative(-curvature) : 1.0;
     const double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
 
     const double* Q = (const double*)qn->tensor_value;
@@ -1988,7 +1995,6 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                 const double* grow = &G[(b * seq + i) * dim + off];
 
                 /* dL/dV and dL/dp. */
-                double pdot = 0.0;
                 for (size_t j = 0; j < limit; ++j) {
                     const size_t vj = (b * seq + j) * dim + off;
                     double acc = 0.0;
@@ -2002,16 +2008,14 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                                      "is non-finite at query row %zu and key row %zu.", i, j);
                         return;
                     }
-                    pdot += arow[j] * acc;
-                    if (!std::isfinite(pdot)) {
-                        eshkol_fatal("geodesic-attention backward: softmax dot intermediate "
-                                     "is non-finite at query row %zu.", i);
-                        return;
-                    }
                 }
-                /* Softmax Jacobian: ds_j = p_j (dp_j - sum_m p_m dp_m). */
+                /* Max-shifted softmax Jacobian in cancellation-free form:
+                 * ds_j = p_j sum_m p_m (dp_j - dp_m). */
                 for (size_t j = 0; j < limit; ++j) {
-                    ds[j] = arow[j] * (dp[j] - pdot);
+                    double centered = 0.0;
+                    for (size_t m = 0; m < limit; ++m)
+                        centered += arow[m] * (dp[j] - dp[m]);
+                    ds[j] = arow[j] * centered;
                     if (!std::isfinite(ds[j])) {
                         eshkol_fatal("geodesic-attention backward: shifted softmax adjoint "
                                      "is non-finite at query row %zu and key row %zu.", i, j);

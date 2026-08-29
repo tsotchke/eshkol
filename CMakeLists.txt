@@ -6278,7 +6278,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME qllm_bridge_geometric_scaled_gradcheck
              COMMAND qllm_bridge_geometric_scaled_gradcheck_test)
     set_tests_properties(qllm_bridge_geometric_scaled_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 134 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 136 passed, 0 failed")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND
@@ -6291,7 +6291,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME riemannian_core_adversarial_regression
              COMMAND riemannian_core_adversarial_regression_test)
     set_tests_properties(riemannian_core_adversarial_regression PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 6 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 8 passed, 0 failed")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND

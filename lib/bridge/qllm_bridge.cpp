@@ -206,7 +206,7 @@ bool poincare_curvature(double K, const char* op, double* out_c) {
 }
 
 bool poincare_in_ball(const double* p, double c, size_t n, double* out_sn) {
-    if (out_sn) *out_sn = std::sqrt(c) * norm_value(p, n);
+    if (out_sn) *out_sn = eshkol_rm_sqrt_nonnegative(c) * norm_value(p, n);
     return eshkol_rm_check_point(p, -c, (int)n) == nullptr;
 }
 
@@ -906,7 +906,8 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
     if (!O || !scores || !A) return nullptr;
 
     /* Score by negative shared-core geodesic distance. */
-    double metric_scale = curvature < 0.0 ? std::sqrt(-curvature) : 1.0;
+    double metric_scale = curvature < 0.0
+        ? eshkol_rm_sqrt_nonnegative(-curvature) : 1.0;
     double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
     if (!std::isfinite(metric_scale) || !(scale > 0.0) || !std::isfinite(scale)) {
         eshkol_error("qllm bridge: ad_geodesic_attention score scale is not finite");
