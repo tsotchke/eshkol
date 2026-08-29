@@ -253,10 +253,10 @@ extern "C" {
     void eshkol_batch_matmul_f64(const double* a, const double* b, double* c,
                                   int64_t batch, int64_t M, int64_t K, int64_t N);
     int64_t eshkol_broadcast_elementwise_f64(
-        const double* a_data, const int64_t* a_shape, int64_t a_rank,
+        int64_t op, const double* a_data, const int64_t* a_shape, int64_t a_rank,
         const double* b_data, const int64_t* b_shape, int64_t b_rank,
-        double* out_data, const int64_t* out_shape, int64_t out_rank,
-        int64_t op);
+        double* out_data, int64_t* out_dims,
+        int64_t* out_ndim, int64_t* out_total);
     int64_t eshkol_check_recursion_depth(void);
     void eshkol_decrement_recursion_depth(void);
     int64_t eshkol_utf8_strlen(const char* s);

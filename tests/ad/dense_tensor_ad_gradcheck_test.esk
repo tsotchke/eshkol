@@ -17,13 +17,11 @@
 ;;;      against another program.
 ;;;   2. Against CENTRAL DIFFERENCES on the same loss. This is the independent
 ;;;      oracle: it shares no code with the reverse pass.
-;;;   3. Against the SCALARIZING PATH, byte for byte. That comparison is not in
-;;;      this file — it cannot be, because the two lowerings are selected at
-;;;      COMPILE time — it is scripts/run_dense_tensor_ad_gate.sh, which runs
-;;;      this program twice (ESHKOL_DENSE_TENSOR_AD_NODES=1 and =0) and diffs
-;;;      the `GRAD ` lines below. Identical output from two different tape
-;;;      shapes is the strongest statement available that packing changed the
-;;;      REPRESENTATION of a gradient and not its value.
+;;;   3. Against the SCALARIZING PATH numerically within tolerance. That
+;;;      comparison is not in this file — it cannot be, because the two
+;;;      lowerings are selected at COMPILE time — it is
+;;;      scripts/run_dense_tensor_ad_gate.sh, which runs this program twice
+;;;      and parses the `GRAD ` lines below as numeric vectors.
 ;;;   4. Exactness: (ad-finite-difference-evals) must be 0 on every case. The
 ;;;      FD oracle above runs OUTSIDE the AD path, so it does not touch that
 ;;;      counter.
@@ -39,9 +37,8 @@
 ;;; which is what makes a chain O(1) per op rather than O(1) at its ends), and
 ;;; tensor-mean as well as tensor-sum as the reduction.
 ;;;
-;;; NOT COVERED, and why: batched matmul. Eshkol's matmul is PEP-465 — 2-D and
-;;; 1-D operands with the documented promotion/contraction rules — and ADR-0002
-;;; does not introduce a batch dimension. There is no batched op to gradcheck.
+;;; This file also covers the public batch-matmul op, which has a separate
+;;; dense node and batched VJP, plus transpose consumers and max subgradients.
 
 (require stdlib)
 
@@ -111,8 +108,7 @@
         #t)))
 
 ;; Print the gradient on one stable line so the two-lowering differential can
-;; diff it. The label makes each line self-identifying; the values are printed
-;; unrounded, so the comparison is exact and not to a tolerance.
+;; parse it. The label makes each line self-identifying.
 (define (emit-grad label g)
   (display "GRAD ") (display label)
   (let ((n (vector-length g)))
@@ -156,6 +152,23 @@
     (check (string-append label ": gradient still routes through the tape") (> n 0))
     (check (string-append label ": tape node count within ceiling") (<= n ceiling))))
 
+;; A max tie is not classically differentiable, so central differences at the
+;; tie are not an oracle for the selected subgradient. Check the documented
+;; last-winner selection directly and retain the tape/counter assertions.
+(define (subgradcheck label loss point expected ceiling)
+  (ad-reset-counters!)
+  (let* ((g (gradient loss point))
+         (n (tape-nodes)))
+    (emit-grad label g)
+    (check (string-append label ": matches the documented subgradient")
+           (grad-equals? g expected 1.0e-9))
+    (check (string-append label ": one primal call") (= (ad-primal-calls) 1))
+    (check (string-append label ": one reverse pass") (= (ad-reverse-passes) 1))
+    (check (string-append label ": no finite differences inside the AD path")
+           (= (ad-finite-difference-evals) 0))
+    (check (string-append label ": gradient still routes through the tape") (> n 0))
+    (check (string-append label ": tape node count within ceiling") (<= n ceiling))))
+
 ;; ---- constants -------------------------------------------------------------
 
 (define C22 (tensor 2 2 1.0 2.0 3.0 4.0))          ; row sums 3, 7
@@ -171,6 +184,13 @@
                         0.5 3.0
                         2.0 1.0))
 (define V3  (tensor 3 1.0 -2.0 0.5))               ; 1-D, PEP-465 contraction
+
+;; The allocation must equal the exact broadcast total, not a capped product
+;; of input totals. Keep this probe before any gradient call so it exercises
+;; the ordinary numeric tensor path and can be read with tensor-get.
+(define large-broadcast (tensor-add (zeros 4097 4097) (tensor 1 1 2.0)))
+(check "large broadcast writes its full output"
+       (approx= (tensor-get large-broadcast 4096 4096) 2.0 1.0e-12))
 
 ;; ---- 1. square, gradient w.r.t. the first operand ---------------------------
 ;; L(X) = sum(X·C). dL/dX[i][k] = sum_j C[k][j] — the row sums of C, the same
@@ -257,6 +277,17 @@
            (list -4.5 9.75 6.0 -4.5 9.75 6.0)
            2000)
 
+;; The tape outlives this lexical scratch region. Dense result, shape, saved
+;; operands, and packed slots must therefore live in the tape home arena; this
+;; case is run with ESHKOL_ARENA_POISON=1 in the mesh evidence pass.
+(gradcheck "dense_payload_survives_region"
+           (lambda (z)
+             (with-region 'dense-scratch
+               (tensor-sum (matmul (reshape z 2 2) C22))))
+           (vector 10.0 20.0 30.0 40.0)
+           (list 3.0 7.0 3.0 7.0)
+           2000)
+
 ;; ---- 7. dense elementwise VJPs --------------------------------------------
 ;; The four arithmetic nodes have distinct dense registry IDs; their backward
 ;; rules use the saved dense operands and must not fall into scalar ADD/SUB/
@@ -288,6 +319,18 @@
            (list 0.5 0.25 0.2 0.125)
            2000)
 
+;; P0 regression: both elementwise operations must consume numeric dense
+;; buffers. Reading the original scalar-node slots makes this return zeros or
+;; pointer-bit garbage while the one-operation checks above still pass.
+(gradcheck "elementwise_nested_dense_forward"
+           (lambda (z)
+             (let* ((x (reshape z 2 2))
+                    (y (tensor-mul x x)))
+               (tensor-sum (tensor-mul y y))))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 4.0 32.0 108.0 256.0)
+           2000)
+
 ;; Broadcasted RHS [1,2] over LHS [2,2].  The RHS gradients are sums over
 ;; both rows, which catches a backward that computes only the first occurrence.
 (define B12 (tensor 1 2 10.0 20.0))
@@ -308,6 +351,54 @@
                                                 (reshape z 1 2))))
            (vector 10.0 20.0)
            (list 4.0 6.0)
+           2000)
+
+;; Transpose before matmul uses the scalar-slot boundary; transpose after a
+;; dense producer must itself retain a dense node and preserve the VJP.
+(gradcheck "matmul_transposed_operand"
+           (lambda (z)
+             (tensor-sum (matmul (transpose (reshape z 2 3)) C23)))
+           (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
+           (list 1.5 1.5 1.5 3.0 3.0 3.0)
+           2000)
+
+(gradcheck "dense_transpose_consumer"
+           (lambda (z)
+             (tensor-sum (transpose (matmul (reshape z 2 3) A32))))
+           (vector 1.0 -1.0 2.0 0.5 3.0 -2.0)
+           (list -1.0 3.5 3.0 -1.0 3.5 3.0)
+           2000)
+
+;; Public batch-matmul is rank-3 and has an independent VJP for every batch.
+(define B121 (tensor 1 2 1 3.0 4.0))
+(gradcheck "batch_matmul_dense"
+           (lambda (z)
+             (tensor-sum (batch-matmul (reshape z 1 2 2) B121)))
+           (vector 1.0 2.0 3.0 4.0)
+           (list 3.0 4.0 3.0 4.0)
+           2000)
+
+;; Matmul AD admission rejects rank-3 operands instead of silently treating
+;; them as 2-D and dropping a batch slice.
+(check "matmul rejects rank-3 AD operand"
+       (guard (exn (#t #t))
+         (gradient (lambda (z)
+                     (tensor-sum (matmul (reshape z 1 2 2) C22)))
+                   (vector 1.0 2.0 3.0 4.0))
+         #f))
+
+;; Max has no two-sided derivative at a tie. Eshkol documents and tests the
+;; deterministic last-winner subgradient used by scalar max as well.
+(define M2 (tensor 2 3.0 6.0))
+(gradcheck "max_dense_unique"
+           (lambda (z) (tensor-max (tensor-mul (reshape z 2) M2)))
+           (vector 1.0 2.0)
+           (list 0.0 6.0)
+           2000)
+(subgradcheck "max_dense_tie_last_winner"
+           (lambda (z) (tensor-max (tensor-add (reshape z 2) (tensor 2 0.0 0.0))))
+           (vector 2.0 2.0)
+           (list 0.0 1.0)
            2000)
 
 ;; ---- 8. the cost does not grow with M*N*K ----------------------------------

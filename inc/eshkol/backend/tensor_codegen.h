@@ -1208,13 +1208,13 @@ public:
      * lowering follows.
      *
      * @param src_val      the (tagged) operand
-     * @param is_mean      true for tensor-mean, false for tensor-sum
+     * @param reduction_op 0 for sum, 1 for mean, 2 for max
      * @param merge_block  the caller's result merge block
      * @param out_exit     receives the block the dense result flows out of
      * @param name         IR name prefix
      * @return the tagged dense result, or nullptr if no dense path was emitted
      */
-    llvm::Value* emitDenseADReduce(llvm::Value* src_val, bool is_mean,
+    llvm::Value* emitDenseADReduce(llvm::Value* src_val, int64_t reduction_op,
                                    llvm::BasicBlock* merge_block,
                                    llvm::BasicBlock** out_exit,
                                    const char* name);
@@ -1400,7 +1400,9 @@ private:
      */
     llvm::Value* rawTensorArithmeticSIMD(llvm::Value* tensor1, llvm::Value* tensor2,
                                          const std::string& operation,
-                                         bool numeric_only = false);
+                                         bool numeric_only = false,
+                                         llvm::Value* numeric_view1 = nullptr,
+                                         llvm::Value* numeric_view2 = nullptr);
 
     /** Emit ADR-0002's one-node dense elementwise lowering for tensor inputs. */
     llvm::Value* emitDenseTensorArithmetic(llvm::Value* arg1, llvm::Value* arg2,
@@ -1510,6 +1512,9 @@ public:
         llvm::Value* tensor_val,
         const char* op_name,
         TensorOperandMode mode = TensorOperandMode::CoerceCollections);
+
+    /** Return the current arena, promoted to the active AD tape's home arena. */
+    llvm::Value* allocationArena();
 
     /**
      * Validate a reduction axis against the operand's rank, at runtime.

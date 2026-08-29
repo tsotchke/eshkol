@@ -513,13 +513,36 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         c.node, c_elems, c_total, c_dims, c_ndim, &c_dense, "dense_arith_b_operand");
     if (!a_parent || !c_parent || !a_dense || !c_dense) return tagged_.packNull();
 
+    // Build numeric-only tensor views. The arithmetic kernel receives these
+    // explicitly, so its single numeric accessor cannot fall back to the
+    // original tensor slots, which may contain scalar AD-node addresses.
+    auto numeric_view = [&](llvm::Value* source, llvm::Value* dense,
+                            const std::string& name) {
+        llvm::Value* view = b.CreateAlloca(tensor_type, nullptr, name + "_view");
+        for (unsigned i = 0; i < 5; ++i) {
+            llvm::Value* field = b.CreateStructGEP(tensor_type, source, i);
+            llvm::Type* field_type = (i == TypeSystem::TENSOR_DIMENSIONS_IDX ||
+                                      i == TypeSystem::TENSOR_ELEMENTS_IDX)
+                ? static_cast<llvm::Type*>(ctx_.ptrType())
+                : static_cast<llvm::Type*>(ctx_.int64Type());
+            llvm::Value* value = b.CreateLoad(
+                field_type, field);
+            if (i == TypeSystem::TENSOR_ELEMENTS_IDX) value = dense;
+            b.CreateStore(value, b.CreateStructGEP(tensor_type, view, i));
+        }
+        return view;
+    };
+    llvm::Value* a_numeric_view = numeric_view(a.tensor, a_dense, "dense_arith_a_numeric");
+    llvm::Value* c_numeric_view = numeric_view(c.tensor, c_dense, "dense_arith_b_numeric");
+
     /* rawTensorArithmeticSIMD owns the established shape/broadcast rules and
      * numeric kernel.  numeric_only prevents it from emitting its legacy
      * scalar AD loop while this dense wrapper is active. */
     llvm::Value* a_tagged = tagged_.packHeapPtr(a.tensor);
     llvm::Value* c_tagged = tagged_.packHeapPtr(c.tensor);
     llvm::Value* numeric_result = rawTensorArithmeticSIMD(
-        a_tagged, c_tagged, operation, /*numeric_only=*/true);
+        a_tagged, c_tagged, operation, /*numeric_only=*/true,
+        a_numeric_view, c_numeric_view);
     llvm::Value* result_tensor = b.CreateIntToPtr(
         tagged_.unpackInt64(numeric_result), ctx_.ptrType());
     llvm::Value* result_elems = load_field(
@@ -530,7 +553,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         b.CreateStructGEP(tensor_type, result_tensor, TypeSystem::TENSOR_NUM_DIMS_IDX));
 
     llvm::Value* saved = b.CreateCall(mem_.getArenaAllocate(), {
-        b.CreateLoad(ctx_.ptrType(), ctx_.globalArena()),
+        allocationArena(),
         llvm::ConstantInt::get(ctx_.int64Type(), 2 * sizeof(void*))},
         "dense_arith_saved");
     b.CreateStore(a_dense, b.CreateGEP(ctx_.ptrType(), saved,
@@ -2065,7 +2088,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
 }
 
 llvm::Value* TensorCodegen::emitDenseADReduce(
-    llvm::Value* src_val, bool is_mean,
+    llvm::Value* src_val, int64_t reduction_op,
     llvm::BasicBlock* merge_block, llvm::BasicBlock** out_exit,
     const char* name)
 {
@@ -2115,8 +2138,17 @@ llvm::Value* TensorCodegen::emitDenseADReduce(
 
     llvm::Value* dn_acc = b.CreateAlloca(ctx_.doubleType(), nullptr, pfx + "_dense_acc");
     llvm::Value* dn_i = b.CreateAlloca(ctx_.int64Type(), nullptr, pfx + "_dense_i");
-    b.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), dn_acc);
-    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dn_i);
+    llvm::Value* initial = nullptr;
+    if (reduction_op == 2) {
+        initial = b.CreateLoad(ctx_.doubleType(), b.CreateGEP(ctx_.doubleType(), dn_elems,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    } else {
+        initial = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+    b.CreateStore(initial, dn_acc);
+    b.CreateStore(reduction_op == 2
+        ? llvm::ConstantInt::get(ctx_.int64Type(), 1)
+        : llvm::ConstantInt::get(ctx_.int64Type(), 0), dn_i);
     llvm::BasicBlock* dn_cond = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_cond", fn);
     llvm::BasicBlock* dn_body = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_body", fn);
     llvm::BasicBlock* dn_done = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_done", fn);
@@ -2129,13 +2161,17 @@ llvm::Value* TensorCodegen::emitDenseADReduce(
     b.SetInsertPoint(dn_body);
     llvm::Value* dn_e = b.CreateLoad(ctx_.doubleType(),
         b.CreateGEP(ctx_.doubleType(), dn_elems, dn_iv));
-    b.CreateStore(b.CreateFAdd(b.CreateLoad(ctx_.doubleType(), dn_acc), dn_e), dn_acc);
+    llvm::Value* old = b.CreateLoad(ctx_.doubleType(), dn_acc);
+    llvm::Value* next = reduction_op == 2
+        ? b.CreateSelect(b.CreateFCmpOGE(dn_e, old), dn_e, old)
+        : b.CreateFAdd(old, dn_e);
+    b.CreateStore(next, dn_acc);
     b.CreateStore(b.CreateAdd(dn_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dn_i);
     b.CreateBr(dn_cond);
 
     b.SetInsertPoint(dn_done);
     llvm::Value* dn_val = b.CreateLoad(ctx_.doubleType(), dn_acc);
-    if (is_mean) {
+    if (reduction_op == 1) {
         // A zero-element tensor cannot be averaged; guard the divide rather
         // than publishing a NaN into the tape.
         llvm::Value* n_fp = b.CreateSIToFP(
@@ -2147,7 +2183,7 @@ llvm::Value* TensorCodegen::emitDenseADReduce(
 
     // The reduction's own storage: a one-element f64 buffer (so the reverse
     // pass recognises a tensor node) plus the shape {1} that says so.
-    llvm::Value* dn_arena = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* dn_arena = allocationArena();
     llvm::Function* dn_alloc = mem_.getArenaAllocate();
     llvm::Value* dn_buf = b.CreateCall(dn_alloc,
         {dn_arena, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, pfx + "_dense_buf");
@@ -2157,7 +2193,8 @@ llvm::Value* TensorCodegen::emitDenseADReduce(
     b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), dn_shape);
 
     llvm::Value* dn_out = autodiff_->recordADNodeTensor(
-        static_cast<uint32_t>(is_mean ? AD_NODE_MEAN : AD_NODE_SUM),
+        static_cast<uint32_t>(reduction_op == 2 ? AD_NODE_TENSOR_MAX_DENSE :
+                              (reduction_op == 1 ? AD_NODE_MEAN : AD_NODE_SUM)),
         dn_node, nullptr, nullptr, nullptr,
         dn_buf,
         nullptr, llvm::ConstantInt::get(ctx_.int64Type(), 0),
@@ -2218,7 +2255,7 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     // branch, so the ordinary lowering below is unchanged.
     llvm::BasicBlock* tsum_dense_exit = nullptr;
     llvm::Value* tsum_dense_result =
-        emitDenseADReduce(src_val, /*is_mean=*/false, sum_merge, &tsum_dense_exit, "tensor-sum");
+        emitDenseADReduce(src_val, /*reduction_op=*/0, sum_merge, &tsum_dense_exit, "tensor-sum");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 
@@ -2564,7 +2601,7 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     // reduction when the operand is a dense tensor AD-node handle.
     llvm::BasicBlock* tmean_dense_exit = nullptr;
     llvm::Value* tmean_dense_result =
-        emitDenseADReduce(src_val, /*is_mean=*/true, mean_merge, &tmean_dense_exit, "tensor-mean");
+        emitDenseADReduce(src_val, /*reduction_op=*/1, mean_merge, &tmean_dense_exit, "tensor-mean");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 

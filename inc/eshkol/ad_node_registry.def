@@ -23,8 +23,8 @@
  *   NAME    Enum member spelling without the AD_NODE_ prefix.  AD_NODE_##NAME
  *           is generated in inc/eshkol/eshkol.h.
  *
- *   VALUE   The node type's numeric value.  Stated explicitly and asserted to
- *           equal the row's ordinal (see ESHKOL_AD_NODE_REGISTRY_ROWS), because
+ *   VALUE   The node type's numeric value.  Stated explicitly and checked by
+ *           one generated static assertion per row to equal its ordinal, because
  *           these values are an ABI: emitted LLVM IR compares node->type
  *           against integer literals, and serialized tapes carry them.
  *
@@ -68,7 +68,7 @@
  * ADDING A NODE TYPE
  *   Append a row here.  Three things then hold without further action:
  *     - AD_NODE_<NAME> and AD_NODE_TYPE_COUNT are correct by construction;
- *     - a static assertion proves VALUE == ordinal, so the dense dispatch
+ *     - generated static assertions prove VALUE == ordinal, so the dense dispatch
  *       tables indexed by node type stay valid;
  *     - the tensor dispatcher either handles it (SCALAR_ADJOINT / BRIDGE /
  *       LEAF / CUSTOM_VJP / UNREGISTERED are all generated) or refuses to
@@ -264,5 +264,8 @@ ESHKOL_AD_NODE(TENSOR_BROADCAST_ADD_DENSE,   88, TENSOR, INLINE, ESHKOL_AD_NO_BR
 ESHKOL_AD_NODE(TENSOR_BROADCAST_SUB_DENSE,   89, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(TENSOR_BROADCAST_MUL_DENSE,   90, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(TENSOR_BROADCAST_DIV_DENSE,   91, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+/* Dense whole-tensor max uses the documented last-winner subgradient at ties. */
+ESHKOL_AD_NODE(TENSOR_MAX_DENSE,              92, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+ESHKOL_AD_NODE(BATCH_MATMUL,                  93, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 
 /* clang-format on */
