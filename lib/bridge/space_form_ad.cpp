@@ -98,7 +98,8 @@ void ensure_grad(ad_node_t* n) {
  * outside the model or beyond the injectivity radius. `grad_x` / `grad_y` are
  * the COORDINATE gradients — the metric tensor has already been applied, which
  * is what the reverse tape accumulates. The Riemannian gradient the theory
- * states, `-2 log_x(y)`, is `g^{-1}` times what comes out here, and
+ * states, `-2 log_x(y)` (with the sphere's canonicalization Jacobian applied to
+ * raw accepted inputs), is `g^{-1}` times what comes out here, and
  * `sf_log_map` below returns exactly that log so the identity can be checked
  * against an independent evaluation rather than against a rearrangement of
  * these same lines.
@@ -131,7 +132,7 @@ const char* form_name(int form);
 
 /** @brief Direct stable squared distance using the shared Riemannian core. */
 bool space_form_sq_value(int form, double K, const double* x, const double* y,
-                         size_t n, double* out) {
+                         size_t n, double distance_scale, double* out) {
     if (!valid_form_curvature(form, K) || !finite_point(x, n) ||
         !finite_point(y, n) || eshkol_rm_check_point(x, K, (int)n) != nullptr ||
         eshkol_rm_check_point(y, K, (int)n) != nullptr) return false;
@@ -140,9 +141,32 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
         return true;
     }
     if (K == 0.0) {
-        double e = 0.0;
+        double unweighted = 0.0;
+        bool direct_finite = true;
         for (size_t i = 0; i < n; ++i) {
             double d = x[i] - y[i];
+            unweighted += d * d;
+            if (!std::isfinite(unweighted)) {
+                direct_finite = false;
+                break;
+            }
+        }
+        if (direct_finite && std::isfinite(distance_scale * distance_scale *
+                                            unweighted)) {
+            *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA *
+                   (distance_scale * distance_scale * unweighted);
+            return std::isfinite(*out);
+        }
+        double e = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            /* Scale before subtracting opposite-signed huge coordinates: the
+             * weighted distance can be finite even when |x-y| is not. */
+            double d;
+            if ((x[i] < 0.0 && y[i] > 0.0) ||
+                (x[i] > 0.0 && y[i] < 0.0))
+                d = distance_scale * x[i] - distance_scale * y[i];
+            else
+                d = distance_scale * (x[i] - y[i]);
             e += d * d;
         }
         *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA * e;
@@ -156,43 +180,68 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
         for (size_t i = 0; i < n; ++i)
             delta = std::hypot(delta, x[i] - y[i]);
         double scaled_delta = delta / std::sqrt(a * b);
-        double psi = eshkol_rm_psi(B * scaled_delta * scaled_delta,
+        double scaled_argument = std::sqrt(B) * scaled_delta;
+        double psi = eshkol_rm_psi(scaled_argument * scaled_argument,
                                    nullptr, nullptr);
-        double d = ESHKOL_RM_LAMBDA0 * scaled_delta * psi;
+        double d = ESHKOL_RM_LAMBDA0 *
+                   (distance_scale * scaled_delta) * psi;
         *out = d * d;
         return std::isfinite(*out);
     }
     double R = 1.0 / std::sqrt(K);
     if (eshkol_rm_sphere_antipodal(x, y, (int)n)) return false;
     double theta = eshkol_rm_sphere_angle(x, y, R, (int)n, nullptr);
-    *out = R * R * theta * theta;
+    /* Form the finite physical distance before squaring.  R*R can overflow
+     * even when (R*theta)^2 is finite for a small angular separation. */
+    double d = R * (distance_scale * theta);
+    *out = d * d;
     return std::isfinite(*out);
 }
 
 /** @brief Shared-core squared distance and coordinate gradients. */
 SfPair factor_sq(int form, double K, const double* x, const double* y, size_t n,
-                 double* grad_x, double* grad_y) {
+                 double weight, double* grad_x, double* grad_y) {
     double d2 = 0.0;
-    if (!space_form_sq_value(form, K, x, y, n, &d2)) return SfPair{0.0, false};
+    double distance_scale = std::sqrt(weight);
+    if (!space_form_sq_value(form, K, x, y, n, distance_scale, &d2)) {
+        return SfPair{0.0, false};
+    }
     if (grad_x || grad_y) {
         if (K == 0.0) {
             for (size_t i = 0; i < n; ++i) {
-                double d = x[i] - y[i];
-                if (grad_x) grad_x[i] = 2.0 * d;
-                if (grad_y) grad_y[i] = -2.0 * d;
+                if (weight == 1.0) {
+                    double d = x[i] - y[i];
+                    if (grad_x) grad_x[i] = 2.0 * d;
+                    if (grad_y) grad_y[i] = -2.0 * d;
+                } else {
+                    double raw_d = x[i] - y[i];
+                    double direct_g = 2.0 * weight * raw_d;
+                    double wx = distance_scale * x[i];
+                    double wy = distance_scale * y[i];
+                    double d = wx - wy;
+                    double g = std::isfinite(direct_g) ? direct_g
+                                                       : 2.0 * distance_scale * d;
+                    if (grad_x) grad_x[i] = g;
+                    if (grad_y) grad_y[i] = -g;
+                }
             }
         } else {
             std::vector<double> log_x(n), log_y(n), scratch(n);
             if (eshkol_rm_log_map(x, y, K, (int)n, log_x.data(), scratch.data()) ||
-                eshkol_rm_log_map(y, x, K, (int)n, log_y.data(), scratch.data()))
+                eshkol_rm_log_map(y, x, K, (int)n, log_y.data(), scratch.data())) {
                 return SfPair{0.0, false};
-            double sx = (K < 0.0) ? eshkol_rm_lambda(x, K, (int)n) : 1.0;
-            double sy = (K < 0.0) ? eshkol_rm_lambda(y, K, (int)n) : 1.0;
-            sx *= sx;
-            sy *= sy;
+            }
+            double sx = (K < 0.0) ? eshkol_rm_lambda(x, K, (int)n) *
+                                    eshkol_rm_lambda(x, K, (int)n)
+                                  : (1.0 / std::sqrt(K)) /
+                                    eshkol_rm_norm(x, (int)n);
+            double sy = (K < 0.0) ? eshkol_rm_lambda(y, K, (int)n) *
+                                    eshkol_rm_lambda(y, K, (int)n)
+                                  : (1.0 / std::sqrt(K)) /
+                                    eshkol_rm_norm(y, (int)n);
             for (size_t i = 0; i < n; ++i) {
-                if (grad_x) grad_x[i] = -2.0 * sx * log_x[i];
-                if (grad_y) grad_y[i] = -2.0 * sy * log_y[i];
+                if (grad_x) grad_x[i] = -2.0 * weight * sx * log_x[i];
+                if (grad_y) grad_y[i] = -2.0 * weight * sy * log_y[i];
             }
         }
     }
@@ -283,28 +332,23 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
             off += dim;
             continue;
         }
-        SfPair r = factor_sq(factors[i].form, K, X + off, Y + off, dim,
+        SfPair r = factor_sq(factors[i].form, K, X + off, Y + off, dim, w,
                              grad_x ? grad_x + off : nullptr,
                              grad_y ? grad_y + off : nullptr);
         if (!r.ok) {
             if (out_bad_factor) *out_bad_factor = i;
             return false;
         }
-        double term = w * r.d2;
-        if (!std::isfinite(term) || !std::isfinite(acc + term)) {
+        /* factor_sq has already formed sqrt(w)*d and returned w*d^2, so an
+         * overflowing unweighted factor cannot poison a finite weighted sum. */
+        if (!std::isfinite(r.d2) || !std::isfinite(acc + r.d2)) {
             if (out_bad_factor) *out_bad_factor = i;
             return false;
         }
-        acc += term;
+        acc += r.d2;
         /* The product metric is block diagonal: factor f's coordinates appear
          * in no other factor's distance, so w_f scales that block of the
          * gradient and there are no cross terms to add. */
-        if (w != 1.0) {
-            for (size_t j = 0; j < dim; ++j) {
-                if (grad_x) grad_x[off + j] *= w;
-                if (grad_y) grad_y[off + j] *= w;
-            }
-        }
         if (grad_x || grad_y) {
             for (size_t j = 0; j < dim; ++j) {
                 if ((grad_x && !std::isfinite(grad_x[off + j])) ||

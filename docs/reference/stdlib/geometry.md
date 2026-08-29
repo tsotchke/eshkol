@@ -86,9 +86,11 @@ that pops `vm_geometric_arity(fid)` arguments and pushes `()`, so the stack stay
 balanced either way. Check for `(null? result)` if you need to distinguish a failure
 from a value.
 
-The exception is `frechet-mean`, which raises a catchable Scheme condition (via
-`vm_raise_error_msg`, so `guard` can catch it) rather than return a non-stationary
-iterate. The reasoning is in the source: a mean that has not reached stationarity is
+The exceptions are `frechet-mean`, and the portable VM's spherical
+`great-circle-distance` and `spherical-log` operations at their cut locus. They
+raise a catchable Scheme condition (via `vm_raise_error_msg`, so `guard` can
+catch it) rather than return a non-stationary mean or a finite-looking answer
+where the spherical logarithm is undefined. The reasoning is in the source: a mean that has not reached stationarity is
 exactly the input whose implicit derivative is a plausible wrong gradient.
 
 ## Data model
@@ -130,10 +132,10 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `mobius-scalar-mul` | 815 | 3 | tensor | `r * x` (K discarded) |
 | `poincare-distance` | 816 | 3 | float | L2 distance (same case as 811) |
 | `frechet-mean` | 817 | 3 | tensor | **real** weighted Karcher mean, gated; raises |
-| `great-circle-distance` | 819 | 2 | float | `acos` of the clamped normalised dot |
+| `great-circle-distance` | 819 | 2 | float | `acos` of the clamped normalised dot; raises at antipodes |
 | `slerp` | 820 | 3 | tensor | normalised `(1-t)x + t y` |
 | `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | normalised `base + tangent` |
-| `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `point - base` |
+| `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `point - base`; raises at antipodes |
 | `spherical-project` | 823 | 1 | tensor | L2-normalised copy |
 | `so3-exp` | 824 | 1 | tensor | axis-angle → unit quaternion, shape `(4)` |
 | `so3-log` | 825 | 1 | tensor | quaternion → axis-angle, shape `(3)` |
@@ -398,7 +400,8 @@ Catch the refusal rather than let it propagate if the inputs are user data:
 ### `(great-circle-distance x y)` — id 819
 
 Two tensors of equal total size. Returns `acos(clamp(⟨x,y⟩ / (‖x‖‖y‖), −1, 1))`, and
-`0.0` if either norm is zero. `()` on a size mismatch.
+`0.0` if either norm is zero. An antipodal pair raises a named condition because
+the shortest geodesic is not unique. `()` on a size mismatch.
 
 ```scheme
 (define x (make-tensor '(3) 1.0))
@@ -425,8 +428,9 @@ Two tensors. Returns `normalize(base + tangent)`.
 
 ### `(spherical-log base point)` / `(spherical-log-map …)` — id 822
 
-Returns `point − base`. Shares a case with id 810 but takes **two** arguments, not
-three — there is no curvature argument.
+Returns `point − base`. An antipodal pair raises a named condition because the
+spherical logarithm is not single-valued at the cut locus. Shares a case with id
+810 but takes **two** arguments, not three — there is no curvature argument.
 
 ```scheme
 (spherical-log (make-tensor '(3) 1.0) (make-tensor '(3) 2.0))

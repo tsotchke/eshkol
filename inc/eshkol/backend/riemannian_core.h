@@ -89,6 +89,7 @@
 #define ESHKOL_BACKEND_RIEMANNIAN_CORE_H
 
 #include <math.h>
+#include <float.h>
 #include <string.h>
 
 /* The conformal factor at the origin of the ball chart. See the model block
@@ -152,17 +153,29 @@ static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
     return 1;
 }
 
-/* Negative collinearity after normalization is the common, scale-aware
- * antipode predicate used by both spherical distance and spherical log.  It
- * refuses only an exactly representable antipode; a merely near-antipodal
- * pair retains its finite direction and is evaluated. */
-static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
+/* Return cos(theta) after canonicalizing both points to the unit sphere.  The
+ * normalization happens before the dot product, so the calculation cannot
+ * overflow when R is huge and both callers see the same geometry. */
+static double eshkol_rm_sphere_cosine(const double* x, const double* y, int n) {
     double xn = eshkol_rm_norm(x, n);
     double yn = eshkol_rm_norm(y, n);
-    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+    if (!(xn > 0.0) || !(yn > 0.0)) return 1.0;
+    double c = 0.0;
     for (int i = 0; i < n; i++)
-        if (y[i] / yn != -(x[i] / xn)) return 0;
-    return 1;
+        c += (x[i] / xn) * (y[i] / yn);
+    return c;
+}
+
+/* The angle is not differentiable when cos(theta) reaches -1.  A dot product
+ * of n rounded products can miss -1 by O(n*epsilon), even for an exactly
+ * collinear binary64 pair whose separately normalized components do not add
+ * back to zero.  Use a tolerance tied to that dot-product rounding, not an
+ * arbitrary angular band: genuinely non-antipodal representable points stay
+ * available to the log map. */
+static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
+    double c = eshkol_rm_sphere_cosine(x, y, n);
+    double rounding = 8.0 * (double)(n + 1) * DBL_EPSILON;
+    return c <= -1.0 + rounding;
 }
 
 /* Cancellation-free spherical geometry.  The input points are first
@@ -270,7 +283,9 @@ static void eshkol_rm_axpby_exact(double p, const double* a, double q,
 /** @brief The ball parameter B of the chart of curvature -c: the number for
  *         which the ball is |x|^2 < 1/B and Mobius addition is (+)_B. */
 static double eshkol_rm_ball_param(double c) {
-    return c * (ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
+    /* Divide before multiplying: c*4 overflows for finite c near DBL_MAX,
+     * although the chart parameter itself is finite and meaningful. */
+    return (c / 4.0) * (ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0);
 }
 
 /** @brief The conformal factor lambda_x of the metric of curvature @p K at
@@ -384,7 +399,8 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
     double x2 = eshkol_rm_dot(x, x, n);
     double y2 = eshkol_rm_dot(y, y, n);
     double q  = eshkol_rm_one_plus_dot(x, y, B, n);
-    double scale = B * B * x2 * y2;
+    double bx = B * sqrt(x2), by = B * sqrt(y2);
+    double scale = bx * bx * (by * by);
     double gram;
     if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
         gram = eshkol_rm_gram_lagrange(x, y, n);
@@ -392,7 +408,8 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
         gram = x2 * y2 - xy * xy;
         if (gram < 0.0) gram = 0.0;   /* non-negative by Cauchy-Schwarz */
     }
-    return q * q + B * B * gram;
+    double bgram = B * sqrt(gram);
+    return q * q + bgram * bgram;
 }
 
 /** @brief The Mobius denominator of the pair (-x, y), i.e.
@@ -404,7 +421,8 @@ static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
     double y2 = eshkol_rm_dot(y, y, n);
     double xy = eshkol_rm_dot(x, y, n);
     double q  = eshkol_rm_one_minus_dot(x, y, B, n);
-    double scale = B * B * x2 * y2;
+    double bx = B * sqrt(x2), by = B * sqrt(y2);
+    double scale = bx * bx * (by * by);
     double gram;
     if (n <= ESHKOL_RM_GRAM_EXACT_DIM || !(q * q > 1e-8 * scale)) {
         gram = eshkol_rm_gram_lagrange(x, y, n);
@@ -412,7 +430,8 @@ static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
         gram = x2 * y2 - xy * xy;
         if (gram < 0.0) gram = 0.0;
     }
-    return q * q + B * B * gram;
+    double bgram = B * sqrt(gram);
+    return q * q + bgram * bgram;
 }
 
 /**
@@ -500,7 +519,11 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
     } else if (K > 0.0) {
         double R = 1.0 / sqrt(K);
         double xn = eshkol_rm_norm(x, n);
-        if (!(fabs(xn - R) <= ESHKOL_RM_SPHERE_TOL * R))
+        /* Compare the measured norm to the DECLARED radius as a relative
+         * ratio.  Subtracting two large radii can overflow or discard the
+         * meaningful relative error; this form stays scale-free. */
+        if (!(isfinite(R) && xn > 0.0 &&
+              fabs(xn / R - 1.0) <= ESHKOL_RM_SPHERE_TOL))
             return "the point must lie ON the sphere of radius 1/sqrt(K) "
                    "(use manifold-project to move it there)";
     }
@@ -590,7 +613,8 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
         double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
                     eshkol_rm_one_minus_bnorm2(y, B, n);
         double scaled_delta = delta / sqrt(P);
-        double ps = eshkol_rm_psi(B * scaled_delta * scaled_delta,
+        double scaled_argument = sqrt(B) * scaled_delta;
+        double ps = eshkol_rm_psi(scaled_argument * scaled_argument,
                                   NULL, NULL);
         *out = ESHKOL_RM_LAMBDA0 * scaled_delta * ps;
         return NULL;
