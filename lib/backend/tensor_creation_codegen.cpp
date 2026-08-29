@@ -67,11 +67,8 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
                                                    llvm::Value* fill_value,
                                                    bool use_memset_zero) {
     auto& builder = ctx_.builder();
-    auto& context = ctx_.context();
-
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
