@@ -1,0 +1,76 @@
+;; Alpoge's Keller map: exact rational fibers and constant Jacobian.
+;; This is a self-checking regression for first-class differentiands and
+;; exact values stored in heterogeneous Scheme vectors.
+
+(define (A x y) (+ 1 (* x y)))
+(define (B x y z) (+ (* (A x y) (A x y) z) (* y y (+ 4 (* 3 x y)))))
+(define (P x y z) (* (A x y) (B x y z)))
+(define (Q x y z) (+ y (* 3 x (B x y z))))
+(define (R x y z) (- (* 2 x) (* 3 x x y) (* x x x z)))
+(define (F x y z) (list (P x y z) (Q x y z) (R x y z)))
+
+(define (Pv v) (P (vref v 0) (vref v 1) (vref v 2)))
+(define (Qv v) (Q (vref v 0) (vref v 1) (vref v 2)))
+(define (Rv v) (R (vref v 0) (vref v 1) (vref v 2)))
+
+(define (det3 a b c)
+  (- (+ (* (vref a 0) (- (* (vref b 1) (vref c 2))
+                          (* (vref b 2) (vref c 1))))
+        (* (vref a 2) (- (* (vref b 0) (vref c 1))
+                          (* (vref b 1) (vref c 0)))))
+     (* (vref a 1) (- (* (vref b 0) (vref c 2))
+                       (* (vref b 2) (vref c 0))))))
+
+;; Named differentiands exercise the direct gradient lowering.
+(define (named-det p)
+  (det3 (gradient Pv p) (gradient Qv p) (gradient Rv p)))
+
+;; The captured g is called from the AD-traced lambda. This exercises the
+;; closure factory and its runtime closure/capture dispatch.
+(define (comp-grad g)
+  (lambda (x y z)
+    (gradient (lambda (v)
+                (g (vref v 0) (vref v 1) (vref v 2)))
+              (vector x y z))))
+(define gP (comp-grad P))
+(define gQ (comp-grad Q))
+(define gR (comp-grad R))
+(define (closure-det p)
+  (let ((x (vref p 0)) (y (vref p 1)) (z (vref p 2)))
+    (det3 (gP x y z) (gQ x y z) (gR x y z))))
+
+(define failures 0)
+(define (check label condition)
+  (if condition
+      #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (newline))))
+
+;; Three exact rational points are in the same fiber over (-1/4, 0, 0).
+(define (fiber-target? x y z)
+  (let ((out (F x y z)))
+    (and (= (car out) -1/4)
+         (= (cadr out) 0)
+         (= (caddr out) 0))))
+(check "exact fiber at (0,0,-1/4)"
+       (fiber-target? 0 0 -1/4))
+(check "exact fiber at (1,-3/2,13/2)"
+       (fiber-target? 1 -3/2 13/2))
+(check "exact fiber at (-1,3/2,13/2)"
+       (fiber-target? -1 3/2 13/2))
+
+(define p-exact (vector 1 -3/2 13/2))
+(define p-double (vector 1.0 -1.5 6.5))
+(check "named gradient determinant at exact vector"
+       (= (named-det p-exact) -2))
+(check "named gradient determinant at double vector"
+       (= (named-det p-double) -2))
+(check "closure-factory determinant at exact vector"
+       (= (closure-det p-exact) -2))
+(check "closure-factory determinant at double vector"
+       (= (closure-det p-double) -2))
+
+(if (= failures 0)
+    (begin (display "PASS: Jacobian counterexample") (newline))
+    (begin (display "FAIL: Jacobian counterexample failures=")
+           (display failures) (newline)))

@@ -6802,3 +6802,85 @@ entries:
       value with an embedded NUL, including the type discriminator and suffix.
     caught_by: [direct-measurement]
     missed_by: [consumer-session-tests, icc-readiness]
+  - id: SW-135
+    bucket: SILENT-WRONG
+    subtag: crash
+    family: ad/closure-factory-gradient
+    severity: highest
+    status: closed
+    closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e"
+    title: "A closure-factory gradient crashed when its AD-traced lambda called a captured function value"
+    repro: >-
+      `.scratch/jacobian_ce.esk`: `(comp-grad g)` returns a closure whose body
+      calls `(gradient (lambda (v) (g (vref v 0) (vref v 1) (vref v 2)))
+      (vector x y z))`; invoking the returned `gP`, `gQ`, or `gR` closure
+      previously died on its first gradient call with SIGBUS/stack overflow.
+    observed: "SIGBUS (likely stack overflow) during the first closure-factory gradient call; no Scheme diagnostic"
+    correct: "The captured callable is dispatched once through the normal closure ABI and the gradient returns its three partial derivatives"
+    root_cause: >-
+      The differentiand was a closure-captured function value nested inside a
+      generated AD lambda. The older lowering mixed direct function calls,
+      closure capture reconstruction, and AD dispatch, allowing the generated
+      closure call to re-enter the wrong AD lowering rather than invoke the
+      captured value. The architectural resolution is the shared runtime-value
+      differentiand path: resolve callable expressions through ordinary
+      expression codegen, pass captures with the closure ABI, and use one
+      runtime closure gradient emitter for direct and higher-order forms.
+    fix: >-
+      The current revision contains the shared `resolveDifferentiandClosure`,
+      `emitRuntimeClosureGradient`, and runtime closure/capture dispatch path;
+      the permanent Keller-map fixture exercises the previously failing nested
+      shape rather than adding a special case for its function names.
+    evidence: >-
+      `tests/ad/jacobian_counterexample_test.esk` checks the closure factory at
+      exact and double vectors. On the required Linux build, both
+      `./build/eshkol-run -r .scratch/jacobian_ce.esk` and the AOT artifact
+      completed with exit 0 and printed determinant -2 at every tested point.
+    caught_by: [direct-measurement, ad-jacobian-counterexample-regression]
+    missed_by: [pre-existing-ad-regression-suite]
+    notes: >-
+      No new production lowering was duplicated here: the runtime-value AD
+      architecture already provides the root fix on this revision. The new
+      gate keeps the closure-factory shape live on native JIT, native AOT, VM
+      source, and VM ESKB execution.
+
+  - id: SW-136
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: ad/rational-vector-gradient
+    severity: highest
+    status: closed
+    closed_at: "171928a019a41f5668b9cab9de439936c32a7f6e"
+    title: "Reverse-mode gradient over a vector containing exact rationals reinterpreted tagged values as doubles"
+    repro: >-
+      `.scratch/jac2.esk`: `(detJ (vector 1 -3/2 13/2))`, where `detJ`
+      computes three named-function gradients and their determinant. The
+      affected path read an exact rational vector element's HEAP_PTR payload
+      as an f64 seed.
+    observed: "-8.57076e+44 instead of -2, exit 0, with no diagnostic"
+    correct: "The exact vector point is differentiated by value and det(J) is -2, matching the corresponding double vector"
+    root_cause: >-
+      Exact rationals are HEAP_PTR-tagged objects while the jet and tape
+      carriers store raw doubles. The old vector seed path classified or
+      unpacked elements by assumed representation, so a rational pointer was
+      treated as numeric bits. This was a representation-boundary error, not a
+      Keller-map formula error.
+    fix: >-
+      The existing tag-aware AD boundary asks `eshkol_ad_point_to_double` to
+      convert each exact element by its runtime tag, and the scalar/collection
+      predicates use the same runtime authority. This is the already-landed
+      exact-input architecture; the separate exact-coefficient branch was not
+      duplicated. The Keller-map fixture adds the missing vector regression.
+    evidence: >-
+      `tests/ad/jacobian_counterexample_test.esk` compares named and
+      closure-factory determinants for `(vector 1 -3/2 13/2)` and
+      `(vector 1.0 -1.5 6.5)`. Required Linux JIT, AOT, VM source, and VM ESKB
+      runs all completed with exit 0 and determinant -2; the original
+      `.scratch/jac2.esk` also printed `exact: det Jac at (1,-3/2,13/2) = -2`.
+    caught_by: [direct-measurement, ad-jacobian-counterexample-regression]
+    missed_by: [pre-existing-exact-point-regression]
+    notes: >-
+      Vector points intentionally remain on the inexact jet/tape carrier; the
+      correctness contract is value equality with the corresponding inexact
+      coordinates. Exact scalar points use the exact Taylor tier where the
+      carrier can preserve exact coefficients.

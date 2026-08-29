@@ -3868,6 +3868,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Alpoge's Keller-map counterexample: the three exact rational points
+    # (0,0,-1/4), (1,-3/2,13/2), and (-1,3/2,13/2) all map to (-1/4,0,0),
+    # while det(J)=-2. The fixture checks named gradients and a closure factory
+    # whose captured function is called inside the AD-traced lambda. Exact
+    # rationals remain tagged values at every vector element boundary; they may
+    # not be reinterpreted as heap addresses. Run the same self-check on native
+    # JIT/AOT and both VM source/ESKB routes.
+    add_test(
+        NAME ad_jacobian_counterexample_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/jacobian_counterexample_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(ad_jacobian_counterexample_runtime_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_jacobian_counterexample_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_jacobian_counterexample_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/jacobian_counterexample_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_jacobian_counterexample_aot'"
+    )
+    set_tests_properties(ad_jacobian_counterexample_aot_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
     # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
     # regression in it is a regression in all three. It was unwired -- nothing in
@@ -5357,6 +5386,28 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 PASS_REGULAR_EXPRESSION "memory_store_durability_test.sh: PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
     endif()
+    add_test(
+        NAME ad_jacobian_counterexample_vm_source_smoke
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/jacobian_counterexample_test.esk"
+    )
+    set_tests_properties(ad_jacobian_counterexample_vm_source_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
+    add_test(
+        NAME ad_jacobian_counterexample_vm_eskb_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/ad_jacobian_counterexample.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/jacobian_counterexample_test.esk' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/ad_jacobian_counterexample.eskb'"
+    )
+    set_tests_properties(ad_jacobian_counterexample_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at

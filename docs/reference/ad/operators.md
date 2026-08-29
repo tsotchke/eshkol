@@ -112,6 +112,14 @@ scalar):
 (gradient (lambda (x) (* x x)) 3.0)   ;; => 6
 ```
 
+An input vector may contain exact integers and rationals. Each element is
+classified by its runtime tag before the gradient carrier is seeded, so an
+exact rational is converted by value rather than being read as the address of
+its heap object. The result agrees with the same gradient at the corresponding
+inexact vector on native and VM execution. The Keller-map regression in
+[`tests/ad/jacobian_counterexample_test.esk`](../../../tests/ad/jacobian_counterexample_test.esk)
+checks this through named functions and a closure factory.
+
 ---
 
 ## `jacobian` — reverse-mode Jacobian
