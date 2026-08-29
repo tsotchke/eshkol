@@ -84,7 +84,9 @@
          ;; Expected is computed with the required exact cast path.
          (expected (exact->inexact (i128->int ref)))
          (got (vector-ref Cd idx)))
-    (if (not (certify-kernel "ozaki sample" got expected 1e-12))
+    ;; BLAS is the exact negative control: any nonzero tolerance could accept
+    ;; the rounding difference that this canary is required to expose.
+    (if (not (certify-kernel "ozaki sample" got expected 0.0))
         (begin
           (set! total-fail (+ total-fail 1))
           (display "MISMATCH row=") (display row)

@@ -16,7 +16,7 @@
               "assert-close rejects out-of-tolerance values")
 (check-helper (certify-kernel "helper exact" 3.0 3.0 1e-12)
               "certify-kernel returns true on a match")
-(check-helper (not (certify-kernel "helper mismatch" 3.0 4.0 1e-12))
+(check-helper (not (certify-kernel "helper mismatch" 3.0 4.0 0.0))
               "certify-kernel returns false on a mismatch")
 
 (if (= failures 0) (exit 0) (exit 1))

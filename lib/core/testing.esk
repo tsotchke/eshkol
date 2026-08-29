@@ -119,14 +119,14 @@
 
 ;; assert-close: numeric absolute/relative comparison for standalone gates.
 (define (assert-close actual expected tolerance)
-  (<= (abs (- actual expected))
-      (* tolerance (if (> (abs expected) 1.0) (abs expected) 1.0))))
+  (let ((scale (if (< (abs expected) 1.0) 1.0 (abs expected))))
+    (<= (abs (- actual expected)) (* tolerance scale))))
 
-;; certify-kernel: emit a diagnostic marker and return its boolean.
+;; certify-kernel: compare a kernel witness and return its boolean.
+;; Reporting belongs to the caller: negative controls must be able to inspect
+;; a false result without emitting a failure marker that makes the harness red.
 (define (certify-kernel name actual expected tolerance)
-  (if (assert-close actual expected tolerance)
-      (begin (display "PASS: ") (display name) (newline) #t)
-      (begin (display "FAIL: ") (display name) (newline) #f)))
+  (assert-close actual expected tolerance))
 
 ;; check-raises: thunk MUST raise. If it returns normally, that's a failure.
 (define (check-raises thunk)

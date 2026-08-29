@@ -33,8 +33,10 @@ return `#f`. The tolerance is absolute when `|expected| < 1` and relative to
 
 ### `(certify-kernel name actual expected tolerance)`
 
-Compare one kernel witness with `assert-close`, print `PASS: name` or
-`FAIL: name`, and return the corresponding boolean for exit-code aggregation.
+Compare one kernel witness with `assert-close` and return the corresponding
+boolean for exit-code aggregation. It does not print or mutate the test
+registry; callers own any `PASS:`/`FAIL:` reporting so expected-negative
+controls can inspect a false result without being mistaken for a failed gate.
 
 ```scheme
 (require core.testing)
