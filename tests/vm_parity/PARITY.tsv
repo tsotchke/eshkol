@@ -419,7 +419,7 @@ l-bfgs	gap	ml faculty has no VM fid coverage
 label-smoothing-loss	gap	ml faculty has no VM fid coverage
 last	gap	no VM name binding
 last-pair	vm-supported	
-layer-norm	gap	ml faculty has no VM fid coverage
+layer-norm	vm-supported	forward dual carrier and scalar layer-norm path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 lcm	vm-supported	
 leaky-relu	gap	ml faculty has no VM fid coverage
 lecun-normal!	gap	ml faculty has no VM fid coverage
@@ -722,7 +722,7 @@ right?	gap	no VM name binding
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
-scaled-dot-attention	gap	ml faculty has no VM fid coverage
+scaled-dot-attention	vm-supported	forward dual carrier and scalar scaled-dot-attention path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 scheme-report-environment	gap	port/file IO surface missing in VM
 sdnc-improve!	gap	core.sdnc has no VM fids
 sdnc-params	gap	core.sdnc has no VM fids

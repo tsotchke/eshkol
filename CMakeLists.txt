@@ -5055,6 +5055,35 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
     endif()
 endif()
 
+# Issue #551: forward-mode dual values inside Scheme vectors must survive the
+# tensor boundary used by transformer operations.  The test retains all three
+# original reproducers, checks attention and layer-norm against independent
+# central differences, and runs in both JIT and AOT modes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk")
+    add_test(
+        NAME issue_551_tensor_transformer_dual_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(issue_551_tensor_transformer_dual_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME issue_551_tensor_transformer_dual_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/issue_551_tensor_transformer_dual_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/issue_551_tensor_transformer_dual_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/issue_551_tensor_transformer_dual_aot'"
+    )
+    set_tests_properties(issue_551_tensor_transformer_dual_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")
     add_executable(tensor_backward_dual_impl_gradcheck_test
         tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp)
@@ -5824,6 +5853,19 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
         PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
         FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/551_tensor_transformer_dual.esk")
+        add_test(
+            NAME issue_551_tensor_transformer_dual_vm_smoke
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/551_tensor_transformer_dual.esk"
+        )
+        set_tests_properties(issue_551_tensor_transformer_dual_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: issue_551_tensor_transformer_dual"
+                FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+    endif()
 
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at

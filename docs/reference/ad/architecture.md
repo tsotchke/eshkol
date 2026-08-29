@@ -41,7 +41,7 @@ which re-derives every declaration from the source rather than believing it.
 |---------|-------|------------|------------|
 | `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | ~80 typed nodes incl. `AD_NODE_CUSTOM` | native |
 | forward jet | `autodiff_codegen.cpp` (`seedForwardAndPush`) | e1/e2/ep slots + Taylor tower | native |
-| `VmDual {primal, tangent}` | `vm_dual.c` | 16 flat forward-dual ops | VM |
+| `VmDual {primal, tangent}` | `vm_dual.c`; dual tensor carrier in `vm_tensor.c` | 16 flat forward-dual ops plus first-order transformer tensor propagation | VM |
 | `VmHyperDual {f, f1, f2, f12}` | `vm_hyperdual.c` | second-order forward | VM |
 | `AdTape`/`AdNode` Wengert tape | `vm_autodiff.c` | 17 ops, int-indexed | **both** — the Scheme-visible `ad-*` primitives |
 
@@ -194,7 +194,10 @@ returning a wrong number.
 
 **The VM.** `lib/backend/vm_autodiff.c` has its own scalar `AdNode`
 representation; no `vm_*.c` file references `ad_node_t` or any `AD_NODE_*`
-constant. `frechet-mean` (native call id 817) therefore cannot record an
+constant. `VmTensor` now carries a parallel `VmDual` buffer when a first-order
+dual vector crosses the tensor boundary; the VM implements the exact
+first-order dual paths for `layer-norm` and rank-2 `scaled-dot-attention`, but
+still has no reverse tensor-node tape. `frechet-mean` (native call id 817) therefore cannot record an
 `AD_NODE_FRECHET_MEAN`, and the same chunked-storage and shared-reverse-rule
 work listed for `AD_NODE_CUSTOM` above is the prerequisite. Its forward is
 nonetheless already shared with the bridge producer —
@@ -461,3 +464,5 @@ the tape.
 - [operators.md](operators.md) — per-operator API, capture rules, nesting table
 - [support-matrix.md](support-matrix.md) — oracle matrix and open cells
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — opcodes, tensor backward, tape internals
+
+First-order forward AD accepts dtype-DUAL tensors produced from Scheme vectors of live duals. `scaled-dot-attention` and `layer-norm` preserve the carrier, and `tensor-get` returns its tagged element (SW-111).
