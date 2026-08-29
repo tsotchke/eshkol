@@ -63,7 +63,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (44,043 lines)
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp (44,318 lines)
 |    GENERATION    |  AST -> LLVM IR via 35 codegen modules (~108,400 lines)
 +------------------+
        |
@@ -208,7 +208,7 @@ typedef struct hott_type_expr {
 
 ## LLVM Backend
 
-**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (44,043 lines)
+**Implementation:** [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (44,318 lines)
 
 The LLVM backend is the heart of the compiler. It translates ASTs to LLVM IR and orchestrates 36 specialized codegen modules.
 
@@ -392,7 +392,7 @@ The LLVM backend distributes code generation across 36 specialized modules. Each
 
 | Module | Source File | Lines | Responsibility |
 |:---|:---|---:|:---|
-| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 44,043 | Orchestrator, AST dispatch, builtins, consciousness engine |
+| **Main Codegen** | [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) | 44,318 | Orchestrator, AST dispatch, builtins, consciousness engine |
 | **Autodiff** | [`autodiff_codegen.cpp`](../../lib/backend/autodiff_codegen.cpp) | 14,545 | Forward/reverse/symbolic AD modes |
 | **Arithmetic** | [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) | 4,012 | +, -, *, /, bignum, rational, complex dispatch |
 | **String/IO** | [`string_io_codegen.cpp`](../../lib/backend/string_io_codegen.cpp) | 3,860 | String ops, display/write, file I/O, JSON, CSV |
