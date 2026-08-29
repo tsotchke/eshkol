@@ -5520,6 +5520,19 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
 
+    # The browser bootstrap and desktop VM must expose the same canonical
+    # Scheme stdlib. This fixture exercises names that are absent from the
+    # builtin-only prelude and therefore catches a missing stdlib closure.
+    add_test(NAME vm_canonical_stdlib_surface_smoke
+        COMMAND eshkol-vm-standalone-test
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/stdlib_surface.esk")
+    set_tests_properties(vm_canonical_stdlib_surface_smoke PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 300
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "PASS: VM canonical stdlib surface"
+        FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error|unhandled native call")
+
     # SW-46 gate: the bytecode VM's divergence and curl are EXACT, and cost zero
     # finite-difference evaluations. Both used to compute a central difference at
     # h = 1e-7, so `curl` of a gradient field — whose curl vanishes identically —
@@ -5572,7 +5585,9 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     # link requirements the normal way instead.
     add_executable(eshkol-vm-prelude-cache-gen lib/backend/vm_prelude_cache.c)
     target_compile_definitions(eshkol-vm-prelude-cache-gen PRIVATE
-        GENERATE_PRELUDE_CACHE)
+        GENERATE_PRELUDE_CACHE
+        ESHKOL_VM_BUILDING_STDLIB_CACHE
+        ESHKOL_VM_STDLIB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_include_directories(eshkol-vm-prelude-cache-gen PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib

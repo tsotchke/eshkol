@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# regenerate_vm_prelude_cache.sh — SW-49: build lib/backend/vm_prelude_cache.h
-# from the current committed VM sources, or verify (--check) that the
-# committed copy already matches without touching it.
+# regenerate_vm_prelude_cache.sh — build lib/backend/vm_prelude_cache.h from
+# the current committed VM sources and canonical stdlib, or verify (--check)
+# that the committed copy already matches without touching it.
 #
 # BACKGROUND
 #   lib/backend/vm_prelude_cache.c is a generator: compiled with
@@ -9,8 +9,9 @@
 #   bytecode-VM unity build) so it can reach the reader/compiler internals
 #   (parse_sexp, compile_expr, emit_builtin_preamble, ...) that are `static`
 #   to that one translation unit, compiles the canonical prelude
-#   (ESHKOL_VM_PRELUDE_SOURCE, lib/backend/vm_prelude_source.h) to bytecode,
-#   and prints the result as vm_prelude_cache.h C array literals on stdout.
+#   (ESHKOL_VM_PRELUDE_SOURCE, lib/backend/vm_prelude_source.h), followed by
+#   the canonical lib/stdlib.esk dependency closure, to bytecode, and prints
+#   the complete bootstrap as vm_prelude_cache.h C array literals on stdout.
 #   emit_builtin_preamble() turns every entry of eshkol_vm.c's BUILTINS[]
 #   dispatch table into one prelude local, so ANY addition, removal or
 #   rename there invalidates the committed header — and nothing before
@@ -42,7 +43,7 @@
 #                 the `vm_prelude_cache_is_current` ctest runs.
 #   --build-dir   An existing (or to-be-created) CMake build directory to
 #                 configure/build the generator in. Default: a fresh
-#                 directory created with mktemp -d, removed on exit unless
+#                 directory under .scratch, removed on exit unless
 #                 --keep-build-dir is also given.
 #   --gen-exe     Path to an already-built eshkol-vm-prelude-cache-gen
 #                 binary. Skips configure/build entirely.
@@ -90,7 +91,11 @@ trap cleanup EXIT
 
 if [ -z "$GEN_EXE" ]; then
     if [ -z "$BUILD_DIR" ]; then
-        BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-prelude-cache-gen.XXXXXX")" \
+        mkdir -p "$REPO_ROOT/.scratch" || {
+            echo "FAIL: could not create $REPO_ROOT/.scratch" >&2
+            exit 2
+        }
+        BUILD_DIR="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-vm-prelude-cache-gen.XXXXXX")" \
             || { echo "FAIL: mktemp -d failed" >&2; exit 2; }
         OWN_BUILD_DIR=1
     fi

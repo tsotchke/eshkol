@@ -17,6 +17,11 @@
  * place that defines the prelude — all three sites #include it and use the
  * same `ESHKOL_VM_PRELUDE_SOURCE` constant.
  *
+ * The generated vm_prelude_cache.h extends this prelude with the canonical
+ * lib/stdlib.esk dependency closure. That header is the complete bootstrap
+ * image used by filesystem-free WASM; this source remains the cache generator
+ * and desktop VM prelude input.
+ *
  * Notes for editors
  * -----------------
  *  • The prelude is plain Scheme source compiled at startup; no preprocessor
