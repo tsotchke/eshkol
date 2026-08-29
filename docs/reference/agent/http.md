@@ -41,13 +41,15 @@ Source: `lib/agent/http.esk`. C symbols: `qllm_http_*` (libcurl-backed).
 | `http-stream-close` | `(http-stream-close stream)` |
 | `sse-event-type` / `sse-event-data` / `sse-event-free` | event accessors |
 
-### Known limitations (report inline)
+### Implementation status
 
-- `http-post` currently routes through the JSON convenience FFI
-  (`qllm_http_post_json`) and only forwards the `Authorization` or `x-api-key`
-  header; arbitrary custom headers are not yet marshaled through the full FFI.
-- `http-stream-next` returns a placeholder `("message" . "")` pending full SSE
-  event-struct field access. Treat SSE as experimental.
+- Synchronous requests marshal the complete header list through the native
+  length-aware HTTP ABI; custom headers are preserved for GET, POST, and the
+  generic `http-request` path.
+- SSE streaming is implemented end to end: open, next-event, done/error
+  status, owned event type/data accessors, and close are all wired to the
+  native client. `http-stream-next` returns the parsed event rather than a
+  placeholder.
 
 ## Server — `agent.http-server`
 

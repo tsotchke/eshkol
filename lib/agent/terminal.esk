@@ -4,7 +4,8 @@
 ;;
 (provide term-init term-shutdown term-raw-mode term-cooked-mode
          term-width term-height term-resized?
-         term-read-key term-read-key-timeout
+         term-read-key term-read-key-timeout term-read-key-timeout-raw
+         TERM-READ-TIMEOUT TERM-READ-EOF TERM-READ-IO-ERROR
          term-clear term-move-to term-cursor-pos
          term-show-cursor term-hide-cursor
          term-write term-flush term-set-title
@@ -32,7 +33,7 @@
 (extern i32 term-height-raw :real eshkol_term_height)
 (extern i32 term-resized-raw :real eshkol_term_resized)
 (extern i32 term-read-key-raw :real eshkol_term_read_key)
-(extern i32 term-read-key-timeout-raw i32 :real eshkol_term_read_key_timeout)
+(extern i32 term-read-key-timeout-native-raw i32 :real eshkol_term_read_key_timeout)
 (extern void term-clear-raw :real eshkol_term_clear)
 (extern void term-move-to-raw i32 i32 :real eshkol_term_move_to)
 (extern i32 term-cursor-row-raw :real eshkol_term_cursor_row)
@@ -52,7 +53,25 @@
 (define (term-height) (term-height-raw))
 (define (term-resized?) (= (term-resized-raw) 1))
 (define (term-read-key) (term-read-key-raw))
-(define (term-read-key-timeout ms) (term-read-key-timeout-raw ms))
+
+;; Negative raw values are kept as a compatibility surface, while the
+;; high-level timeout API returns a tagged result so timeout, EOF, and I/O
+;; failure cannot be confused with one another.
+(define TERM-READ-TIMEOUT -1)
+(define TERM-READ-EOF -2)
+(define TERM-READ-IO-ERROR -3)
+(define (term-read-key-timeout-raw ms) (term-read-key-timeout-native-raw ms))
+(define (term-key-result code)
+  (cond ((= code TERM-READ-TIMEOUT)
+         (list (cons 'status 'timeout) (cons 'key #f)))
+        ((= code TERM-READ-EOF)
+         (list (cons 'status 'eof) (cons 'key #f)))
+        ((= code TERM-READ-IO-ERROR)
+         (list (cons 'status 'io-error) (cons 'key #f)))
+        (else
+         (list (cons 'status 'key) (cons 'key code)))))
+(define (term-read-key-timeout ms)
+  (term-key-result (term-read-key-timeout-raw ms)))
 (define (term-clear) (term-clear-raw))
 (define (term-move-to row col) (term-move-to-raw row col))
 (define (term-cursor-pos) (cons (term-cursor-row-raw) (term-cursor-col-raw)))

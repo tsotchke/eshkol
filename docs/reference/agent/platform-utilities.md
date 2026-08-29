@@ -79,7 +79,7 @@ cursor control, key input.
 |-------|-----------|
 | Lifecycle | `term-init` (→ `#t`), `term-shutdown`, `term-raw-mode`, `term-cooked-mode` |
 | Geometry | `term-width`, `term-height`, `term-resized?` |
-| Input | `term-read-key`, `term-read-key-timeout ms` |
+| Input | `term-read-key`, `term-read-key-timeout ms` → `((status . key|timeout|eof|io-error) (key . value))`; use `term-read-key-timeout-raw` for the integer compatibility surface |
 | Output | `term-clear`, `term-move-to row col`, `term-cursor-pos` (→ `(row . col)`), `term-show-cursor`, `term-hide-cursor`, `term-write str`, `term-flush`, `term-set-title title` |
 
 Key constants: `KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_HOME KEY_END

@@ -21,7 +21,9 @@ if [ ! -x /bin/sh ] || ! command -v echo >/dev/null 2>&1 \
     exit 0
 fi
 
-WORK=$(mktemp -d -t eshkol_subprocess_api.XXXXXX)
+mkdir -p "$ROOT/.scratch"
+WORK="$ROOT/.scratch/subprocess_api_test.$$"
+mkdir "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/subprocess_api.esk" <<'EOF'
@@ -167,6 +169,70 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (define argv-timeout-result
   (run-argv-capture (list "sleep" "5") "." 100 4096))
 
+(define env-proc
+  (process-spawn-argv-env
+   (list "sh" "-c" "test \"$ESHKOL_FFI_OVERLAY\" = overlay && test -n \"$PATH\"")
+   "."
+   (list (cons "ESHKOL_FFI_OVERLAY" "overlay"))))
+(define env-wait
+  (if env-proc
+      (let ((status (process-wait env-proc 5000)))
+        (process-destroy env-proc)
+        status)
+      -999))
+
+(define options-proc
+  (process-spawn-argv-options
+   (list "sh" "-c" "test \"$ESHKOL_FFI_OPTIONS\" = options")
+   (list (cons 'cwd ".")
+         (cons 'env (list (cons "ESHKOL_FFI_OPTIONS" "options")))
+         (cons 'stdin 'null)
+         (cons 'process-group #t))))
+(define options-wait
+  (if options-proc
+      (let ((status (process-wait options-proc 5000)))
+        (process-destroy options-proc)
+        status)
+      -999))
+
+(define binary-proc
+  (process-spawn-shell "printf 'left\\0right'" "."))
+(define binary-result
+  (if binary-proc
+      (begin
+        (process-close-stdin binary-proc)
+        (process-wait binary-proc 5000)
+        (let ((bytes (process-read-stdout-bytes binary-proc 4096)))
+          (process-destroy binary-proc)
+          bytes))
+      (cons "" -1)))
+
+(define stale-proc (process-spawn-argv (list "true") "."))
+(when stale-proc
+  (process-wait stale-proc 5000)
+  (process-destroy stale-proc))
+(define stale-pid (if stale-proc (process-pid stale-proc) 0))
+(define stale-wait (if stale-proc (process-wait stale-proc 0) -999))
+
+;; Keep a handle in a suite closure, close it once, and then exercise the
+;; captured handle again. The second call must reach the tombstone diagnostic,
+;; not freed memory or an instruction-stream fault.
+(define (make-closed-handle-probe)
+  (let ((proc (process-spawn-argv (list "true") ".")))
+    (lambda (operation)
+      (if (= operation 0)
+          (begin (process-wait proc 5000) (process-destroy proc) 0)
+          (process-pid proc)))))
+(define closed-handle-probe (make-closed-handle-probe))
+(define closure-close-result (closed-handle-probe 0))
+(define closure-after-close (closed-handle-probe 1))
+
+(define bound-a (process-spawn-argv (list "sleep" "1") "."))
+(define bound-b (process-spawn-argv (list "sleep" "1") "."))
+(define bound-c (process-spawn-argv (list "true") "."))
+(when bound-a (process-destroy bound-a))
+(when bound-b (process-destroy bound-b))
+
 (define destroy-proc
   (process-spawn-argv (list "sleep" "30") "."))
 
@@ -216,6 +282,17 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (check "run-argv-capture timeout exit code"
        (cdr (assoc 'exit-code argv-timeout-result))
        124)
+(check "argv env overlay preserves inherited environment" env-wait 0)
+(check "argv options preserve env and lifecycle options" options-wait 0)
+(check "binary stdout keeps embedded NUL and native length"
+       binary-result
+       (cons "left\0right" 10))
+(check "destroyed process handle is tombstoned" stale-pid 0)
+(check "use after close returns diagnostic sentinel" stale-wait -1)
+(check "captured closed handle remains a diagnostic tombstone"
+       closure-after-close
+       0)
+(check "concurrent spawn bound rejects excess child" bound-c #f)
 (check "process-destroy kills running child"
        (cdr (assoc 'exit-code destroy-kill-check))
        1)
@@ -228,4 +305,17 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
       (exit 0)))
 EOF
 
-ESHKOL_PATH=. "$RUN" -r "$WORK/subprocess_api.esk"
+ESHKOL_PATH=. ESHKOL_SUBPROC_MAX_CONCURRENT=2 "$RUN" -r "$WORK/subprocess_api.esk"
+
+# Repeat the same reduction through the native AOT path. The source exits
+# nonzero on any failed check, so this is an independent native-engine proof.
+AOT="$WORK/subprocess_api_aot"
+if ! ESHKOL_PATH=. ESHKOL_SUBPROC_MAX_CONCURRENT=2 "$RUN" \
+        "$WORK/subprocess_api.esk" -o "$AOT"; then
+    echo "FAIL: subprocess AOT compilation"
+    exit 1
+fi
+if ! ESHKOL_SUBPROC_MAX_CONCURRENT=2 "$AOT"; then
+    echo "FAIL: subprocess AOT execution"
+    exit 1
+fi

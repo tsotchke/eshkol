@@ -7327,6 +7327,16 @@ if(ESHKOL_BUILD_AGENT_FFI)
             set_tests_properties(agent-http-contract PROPERTIES TIMEOUT 90)
         endif()
 
+        add_executable(eshkol-agent-terminal-status-test
+            tests/agent/agent_terminal_status_test.c)
+        target_link_libraries(eshkol-agent-terminal-status-test PRIVATE
+            eshkol-agent-ffi)
+        if(BUILD_TESTING)
+            add_test(NAME agent-terminal-status
+                COMMAND eshkol-agent-terminal-status-test)
+            set_tests_properties(agent-terminal-status PROPERTIES TIMEOUT 30)
+        endif()
+
         add_executable(eshkol-agent-sse-test
             tests/agent/agent_sse_parser_test.c)
         target_include_directories(eshkol-agent-sse-test PRIVATE

@@ -1,0 +1,18 @@
+;; High-level terminal input returns a tagged result rather than conflating
+;; timeout, EOF, and I/O failure with one integer sentinel.
+
+(require agent.terminal)
+
+(define result (term-read-key-timeout 0))
+(define status (cdr (assoc 'status result)))
+(if (or (eq? status 'timeout)
+        (eq? status 'eof)
+        (eq? status 'io-error)
+        (eq? status 'key))
+    (begin
+      (display "PASS: terminal read status is tagged")
+      (newline))
+    (begin
+      (display "FAIL: terminal read status is not tagged")
+      (newline)
+      (exit 1)))

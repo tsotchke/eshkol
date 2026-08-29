@@ -48,6 +48,9 @@
  * would have finished in milliseconds given somewhere to put its
  * output. See Noesis v5 audit BUG A (2026-04-19). */
 typedef struct {
+    uint64_t magic;
+    int closed;
+    int spawn_slot_reserved;
     int64_t pid;
 #ifndef _WIN32
     int stdin_fd;   /* parent writes to child's stdin */
@@ -74,7 +77,96 @@ typedef struct {
     size_t stderr_cap;
     int stdout_eof;
     int stderr_eof;
+    size_t last_stdout_read_len;
+    size_t last_stderr_read_len;
 } eshkol_subprocess_t;
+
+#define ESHKOL_PROCESS_HANDLE_MAGIC UINT64_C(0x4553484b4f4c5052)
+
+#ifndef _WIN32
+static pthread_mutex_t g_spawn_limit_mu = PTHREAD_MUTEX_INITIALIZER;
+static size_t g_active_spawn_count = 0;
+#else
+static volatile LONG g_active_spawn_count = 0;
+#endif
+
+static size_t eshkol_spawn_limit(void) {
+    const char* value = getenv("ESHKOL_SUBPROC_MAX_CONCURRENT");
+    if (!value || !*value) return 64;
+    char* end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || *end != '\0' || parsed == 0) return 64;
+    if (parsed > 4096) return 4096;
+    return (size_t)parsed;
+}
+
+static int eshkol_spawn_slot_acquire(void) {
+#ifndef _WIN32
+    const size_t limit = eshkol_spawn_limit();
+    int acquired = 0;
+    pthread_mutex_lock(&g_spawn_limit_mu);
+    if (g_active_spawn_count < limit) {
+        g_active_spawn_count++;
+        acquired = 1;
+    }
+    pthread_mutex_unlock(&g_spawn_limit_mu);
+    if (!acquired) {
+        fprintf(stderr,
+                "process-spawn: concurrent process limit (%zu) reached; "
+                "destroy a process handle or raise ESHKOL_SUBPROC_MAX_CONCURRENT\n",
+                limit);
+    }
+    return acquired;
+#else
+    const LONG limit = (LONG)eshkol_spawn_limit();
+    for (;;) {
+        LONG current = g_active_spawn_count;
+        if (current >= limit) {
+            fprintf(stderr,
+                    "process-spawn: concurrent process limit (%ld) reached; "
+                    "destroy a process handle or raise ESHKOL_SUBPROC_MAX_CONCURRENT\n",
+                    (long)limit);
+            return 0;
+        }
+        if (InterlockedCompareExchange(&g_active_spawn_count, current + 1, current) == current)
+            return 1;
+    }
+#endif
+}
+
+static void eshkol_spawn_slot_release(eshkol_subprocess_t* proc) {
+    if (!proc || !proc->spawn_slot_reserved) return;
+    proc->spawn_slot_reserved = 0;
+#ifndef _WIN32
+    pthread_mutex_lock(&g_spawn_limit_mu);
+    if (g_active_spawn_count > 0) g_active_spawn_count--;
+    pthread_mutex_unlock(&g_spawn_limit_mu);
+#else
+    InterlockedDecrement(&g_active_spawn_count);
+#endif
+}
+
+static void process_abort_spawn(eshkol_subprocess_t* proc) {
+    if (!proc) return;
+    eshkol_spawn_slot_release(proc);
+    free(proc);
+}
+
+static int process_handle_live(eshkol_subprocess_t* proc, const char* operation) {
+    if (!proc) {
+        fprintf(stderr, "%s: invalid NULL process handle\n", operation);
+        return 0;
+    }
+    if (proc->magic != ESHKOL_PROCESS_HANDLE_MAGIC) {
+        fprintf(stderr, "%s: invalid process handle\n", operation);
+        return 0;
+    }
+    if (proc->closed) {
+        fprintf(stderr, "%s: process handle is already closed\n", operation);
+        return 0;
+    }
+    return 1;
+}
 
 #ifndef _WIN32
 /* Forward decl — body below in the Pipe Draining section. */
@@ -448,7 +540,195 @@ static char** eshkol_scrub_environ(void) {
 #endif
 }
 
+#ifndef _WIN32
+static int packed_env_overrides_name(char* const* overrides, size_t count,
+                                     const char* entry) {
+    const char* equals = entry ? strchr(entry, '=') : NULL;
+    if (!equals) return 0;
+    size_t name_len = (size_t)(equals - entry);
+    for (size_t i = 0; i < count; ++i) {
+        const char* override_equals = strchr(overrides[i], '=');
+        if (override_equals && (size_t)(override_equals - overrides[i]) == name_len &&
+            strncmp(overrides[i], entry, name_len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static char** build_env_overlay(const char* packed_env) {
+    extern char** environ;
+    if (!packed_env || !packed_env[0]) return NULL;
+    char* packed = strdup(packed_env);
+    if (!packed) return NULL;
+
+    size_t override_count = 1;
+    for (const char* p = packed; *p; ++p) if (*p == '\t') override_count++;
+    char** overrides = (char**)calloc(override_count, sizeof(char*));
+    if (!overrides) { free(packed); return NULL; }
+    size_t parsed = 0;
+    char* cursor = packed;
+    for (;;) {
+        char* tab = strchr(cursor, '\t');
+        if (tab) *tab = '\0';
+        char* equals = strchr(cursor, '=');
+        if (!*cursor || !equals || equals == cursor) {
+            free(overrides); free(packed); return NULL;
+        }
+        overrides[parsed++] = cursor;
+        if (!tab) break;
+        cursor = tab + 1;
+    }
+
+    char** base = eshkol_scrub_environ();
+    size_t base_count = 0;
+    if (base) while (base[base_count]) base_count++;
+    char** result = (char**)calloc(base_count + parsed + 1, sizeof(char*));
+    if (!result) { free(overrides); free(packed); return NULL; }
+
+    size_t written = 0;
+    for (size_t i = 0; i < base_count; ++i) {
+        if (!packed_env_overrides_name(overrides, parsed, base[i])) {
+            result[written] = strdup(base[i]);
+            if (!result[written]) {
+                for (size_t j = 0; j < written; ++j) free(result[j]);
+                free(result); free(overrides); free(packed); return NULL;
+            }
+            written++;
+        }
+    }
+    for (size_t i = 0; i < parsed; ++i) {
+        result[written] = strdup(overrides[i]);
+        if (!result[written]) {
+            for (size_t j = 0; j < written; ++j) free(result[j]);
+            free(result); free(overrides); free(packed); return NULL;
+        }
+        written++;
+    }
+    result[written] = NULL;
+    free(overrides);
+    free(packed);
+    return result;
+}
+
+static void free_env_overlay(char** envp) {
+    if (!envp) return;
+    for (size_t i = 0; envp[i]; ++i) free(envp[i]);
+    free(envp);
+}
+
+static void execvp_with_env(const char* file, char* const argv[], char* const envp[]) {
+    if (strchr(file, '/')) {
+        execve(file, argv, envp);
+        return;
+    }
+    const char* path = NULL;
+    for (char* const* item = envp; item && *item; ++item) {
+        if (strncmp(*item, "PATH=", 5) == 0) { path = *item + 5; break; }
+    }
+    if (!path || !*path) path = "/usr/local/bin:/usr/bin:/bin";
+    char* copy = strdup(path);
+    if (!copy) return;
+    for (char* part = copy; part;) {
+        char* next = strchr(part, ':');
+        if (next) *next++ = '\0';
+        size_t dir_len = strlen(part);
+        size_t file_len = strlen(file);
+        char* candidate = (char*)malloc(dir_len + file_len + 2);
+        if (!candidate) break;
+        memcpy(candidate, part, dir_len);
+        candidate[dir_len] = '/';
+        memcpy(candidate + dir_len + 1, file, file_len + 1);
+        execve(candidate, argv, envp);
+        free(candidate);
+        if (!next) break;
+        part = next;
+    }
+    free(copy);
+}
+#endif
+
 #ifdef _WIN32
+static wchar_t* utf8_to_wide(const char* value);
+
+static int windows_env_name_equal(const wchar_t* entry, const wchar_t* override) {
+    if (!entry || !override) return 0;
+    const wchar_t* entry_end = wcschr(entry, L'=');
+    const wchar_t* override_end = wcschr(override, L'=');
+    if (!entry_end || !override_end || entry_end - entry != override_end - override)
+        return 0;
+    return wcsncmp(entry, override, (size_t)(entry_end - entry)) == 0;
+}
+
+static wchar_t* build_windows_env_block(const char* packed_env) {
+    if (!packed_env || !packed_env[0]) return NULL;
+    char* packed = strdup(packed_env);
+    if (!packed) return NULL;
+
+    size_t override_count = 1;
+    for (const char* p = packed; *p; ++p) if (*p == '\t') override_count++;
+    wchar_t** overrides = (wchar_t**)calloc(override_count, sizeof(wchar_t*));
+    if (!overrides) { free(packed); return NULL; }
+
+    size_t parsed = 0;
+    char* cursor = packed;
+    for (;;) {
+        char* tab = strchr(cursor, '\t');
+        if (tab) *tab = '\0';
+        char* equals = strchr(cursor, '=');
+        if (!*cursor || !equals || equals == cursor) goto fail;
+        overrides[parsed] = utf8_to_wide(cursor);
+        if (!overrides[parsed]) goto fail;
+        parsed++;
+        if (!tab) break;
+        cursor = tab + 1;
+    }
+
+    LPWCH system_env = GetEnvironmentStringsW();
+    if (!system_env) goto fail;
+    size_t base_len = 0;
+    while (system_env[base_len] || system_env[base_len + 1]) base_len++;
+    size_t capacity = base_len + 2;
+    for (size_t i = 0; i < parsed; ++i) capacity += wcslen(overrides[i]) + 1;
+    wchar_t* result = (wchar_t*)calloc(capacity + 1, sizeof(wchar_t));
+    if (!result) {
+        FreeEnvironmentStringsW(system_env);
+        goto fail;
+    }
+
+    size_t written = 0;
+    for (const wchar_t* entry = system_env; *entry; entry += wcslen(entry) + 1) {
+        int replaced = 0;
+        for (size_t i = 0; i < parsed; ++i) {
+            if (windows_env_name_equal(entry, overrides[i])) {
+                replaced = 1;
+                break;
+            }
+        }
+        if (!replaced) {
+            size_t len = wcslen(entry);
+            memcpy(result + written, entry, (len + 1) * sizeof(wchar_t));
+            written += len + 1;
+        }
+    }
+    for (size_t i = 0; i < parsed; ++i) {
+        size_t len = wcslen(overrides[i]);
+        memcpy(result + written, overrides[i], (len + 1) * sizeof(wchar_t));
+        written += len + 1;
+    }
+    result[written] = L'\0';
+    FreeEnvironmentStringsW(system_env);
+    for (size_t i = 0; i < parsed; ++i) free(overrides[i]);
+    free(overrides);
+    free(packed);
+    return result;
+
+fail:
+    for (size_t i = 0; i < parsed; ++i) free(overrides[i]);
+    free(overrides);
+    free(packed);
+    return NULL;
+}
+
 static wchar_t* utf8_to_wide(const char* value) {
     if (!value) return NULL;
     int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
@@ -558,7 +838,8 @@ static int duplicate_pipe_fd(HANDLE source, int flags) {
 
 static eshkol_subprocess_t* spawn_windows_command_line(
     eshkol_subprocess_t* proc, const wchar_t* application,
-    wchar_t* command_line, const char* cwd_arg, int64_t flags) {
+    wchar_t* command_line, const char* cwd_arg, int64_t flags,
+    const wchar_t* environment) {
     if (!proc || !command_line) return NULL;
     int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) != 0;
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
@@ -611,7 +892,7 @@ static eshkol_subprocess_t* spawn_windows_command_line(
     DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT |
                            CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED;
     BOOL created = CreateProcessW(application, command_line, NULL, NULL, TRUE,
-                                  creation_flags, NULL, cwd, &si, &pi);
+                                  creation_flags, (void*)environment, cwd, &si, &pi);
     free(cwd);
     CloseHandle(stdin_read);
     CloseHandle(stdout_write);
@@ -707,6 +988,12 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
+    if (!eshkol_spawn_slot_acquire()) {
+        free(proc);
+        return NULL;
+    }
+    proc->magic = ESHKOL_PROCESS_HANDLE_MAGIC;
+    proc->spawn_slot_reserved = 1;
 
 #ifndef _WIN32
     int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) ? 1 : 0;
@@ -714,24 +1001,24 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
     int devnull_fd = -1;
     /* Partial-success pipe creation was leaking fds — #182. */
     if (!stdin_null) {
-        if (pipe(stdin_pipe) != 0) { free(proc); return NULL; }
+        if (pipe(stdin_pipe) != 0) { process_abort_spawn(proc); return NULL; }
     } else {
         /* Open /dev/null read-only once; the posix_spawn child dup2s
          * it onto STDIN_FILENO and it gets closed in the child via
          * addclose. Parent closes its copy after the spawn returns. */
         devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        if (devnull_fd < 0) { free(proc); return NULL; }
+        if (devnull_fd < 0) { process_abort_spawn(proc); return NULL; }
     }
     if (pipe(stdout_pipe) != 0) {
         if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
         else close(devnull_fd);
-        free(proc); return NULL;
+        process_abort_spawn(proc); return NULL;
     }
     if (pipe(stderr_pipe) != 0) {
         if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
         else close(devnull_fd);
         close(stdout_pipe[0]); close(stdout_pipe[1]);
-        free(proc); return NULL;
+        process_abort_spawn(proc); return NULL;
     }
 
     /* Prefer posix_spawn for the "no chdir needed" hot path — see the
@@ -816,7 +1103,7 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
-            free(proc);
+            process_abort_spawn(proc);
             errno = spawn_errno;
             return NULL;
         }
@@ -827,7 +1114,7 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
-            free(proc);
+            process_abort_spawn(proc);
             return NULL;
         }
 
@@ -884,17 +1171,17 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
     DWORD got = GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
     if (got == 0 || got >= MAX_PATH) wcscpy(comspec, L"C:\\Windows\\System32\\cmd.exe");
     wchar_t* wide_command = utf8_to_wide(command ? command : "");
-    if (!wide_command) { free(proc); return NULL; }
+    if (!wide_command) { process_abort_spawn(proc); return NULL; }
     size_t needed = wcslen(comspec) + wcslen(wide_command) + 16;
     wchar_t* cmdline = (wchar_t*)calloc(needed, sizeof(wchar_t));
-    if (!cmdline) { free(wide_command); free(proc); return NULL; }
+    if (!cmdline) { free(wide_command); process_abort_spawn(proc); return NULL; }
     swprintf(cmdline, needed, L"\"%ls\" /d /s /c %ls", comspec, wide_command);
     free(wide_command);
-    if (wcslen(cmdline) >= 32767) { free(cmdline); free(proc); return NULL; }
+    if (wcslen(cmdline) >= 32767) { free(cmdline); process_abort_spawn(proc); return NULL; }
     eshkol_subprocess_t* result = spawn_windows_command_line(
-        proc, comspec, cmdline, cwd_arg, flags);
+        proc, comspec, cmdline, cwd_arg, flags, NULL);
     free(cmdline);
-    if (!result) free(proc);
+    if (!result) process_abort_spawn(proc);
     return result;
 #endif
 }
@@ -1019,13 +1306,19 @@ static char** parse_tab_argv(const char* packed, int* argc_out) {
  * @param flags           ESHKOL_SPAWN_STDIN_NULL or 0.
  * @return Newly allocated eshkol_subprocess_t handle, or NULL on failure.
  */
-eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
-                                                    const char* cwd_arg,
-                                                    int64_t flags) {
+static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
+    const char* tab_packed_argv, const char* cwd_arg, int64_t flags,
+    const char* packed_env) {
     if (!tab_packed_argv || !tab_packed_argv[0]) return NULL;
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
+    if (!eshkol_spawn_slot_acquire()) {
+        free(proc);
+        return NULL;
+    }
+    proc->magic = ESHKOL_PROCESS_HANDLE_MAGIC;
+    proc->spawn_slot_reserved = 1;
 
 #ifndef _WIN32
     int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) ? 1 : 0;
@@ -1033,7 +1326,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
     char** argv = parse_tab_argv(tab_packed_argv, &argc);
     if (!argv || argc == 0 || !argv[0]) {
         if (argv) { free(argv[0]); free(argv); }
-        free(proc);
+        process_abort_spawn(proc);
         return NULL;
     }
 
@@ -1042,24 +1335,24 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
     /* Same partial-success fd-leak guard as the shell-form spawn. */
     if (!stdin_null) {
         if (pipe(stdin_pipe) != 0) {
-            free(argv[0]); free(argv); free(proc); return NULL;
+            free(argv[0]); free(argv); process_abort_spawn(proc); return NULL;
         }
     } else {
         devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
         if (devnull_fd < 0) {
-            free(argv[0]); free(argv); free(proc); return NULL;
+            free(argv[0]); free(argv); process_abort_spawn(proc); return NULL;
         }
     }
     if (pipe(stdout_pipe) != 0) {
         if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
         else close(devnull_fd);
-        free(argv[0]); free(argv); free(proc); return NULL;
+        free(argv[0]); free(argv); process_abort_spawn(proc); return NULL;
     }
     if (pipe(stderr_pipe) != 0) {
         if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
         else close(devnull_fd);
         close(stdout_pipe[0]); close(stdout_pipe[1]);
-        free(argv[0]); free(argv); free(proc); return NULL;
+        free(argv[0]); free(argv); process_abort_spawn(proc); return NULL;
     }
 
     /* posix_spawn instead of fork+exec.
@@ -1091,6 +1384,22 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
      * ~2 ms inside eshkol-run — beats Python's subprocess.run. */
     int no_chdir = (!cwd_arg || !cwd_arg[0] ||
                     (cwd_arg[0] == '.' && cwd_arg[1] == '\0'));
+    char** owned_env = NULL;
+    char** child_env = eshkol_scrub_environ();
+    char** env_to_pass = child_env ? child_env : environ;
+    if (packed_env && packed_env[0]) {
+        owned_env = build_env_overlay(packed_env);
+        if (!owned_env) {
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            free(argv[0]); free(argv); process_abort_spawn(proc);
+            errno = EINVAL;
+            return NULL;
+        }
+        env_to_pass = owned_env;
+    }
     if (no_chdir) {
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
@@ -1104,7 +1413,10 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
 #if defined(__APPLE__)
         posix_spawnattr_t attr;
         posix_spawnattr_init(&attr);
-        posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+        short attr_flags = POSIX_SPAWN_CLOEXEC_DEFAULT;
+        if (flags & 2) attr_flags |= POSIX_SPAWN_SETPGROUP;
+        posix_spawnattr_setflags(&attr, attr_flags);
+        if (flags & 2) posix_spawnattr_setpgroup(&attr, 0);
         posix_spawnattr_t* attr_ptr = &attr;
 #else
         if (stdin_null) {
@@ -1117,16 +1429,26 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[0]);
         posix_spawn_file_actions_addclose(&fa, stdout_pipe[1]);
         posix_spawn_file_actions_addclose(&fa, stderr_pipe[1]);
+        posix_spawnattr_t group_attr;
+        int group_attr_init = 0;
         posix_spawnattr_t* attr_ptr = NULL;
+        if (flags & 2) {
+            posix_spawnattr_init(&group_attr);
+            posix_spawnattr_setflags(&group_attr, POSIX_SPAWN_SETPGROUP);
+            posix_spawnattr_setpgroup(&group_attr, 0);
+            attr_ptr = &group_attr;
+            group_attr_init = 1;
+        }
 #endif
 
-        /* Cached-scrubbed env — do NOT free. */
-        char** child_env = eshkol_scrub_environ();
-        char** env_to_pass = child_env ? child_env : environ;
         spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, env_to_pass);
+        free_env_overlay(owned_env);
+        owned_env = NULL;
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
         posix_spawnattr_destroy(&attr);
+#else
+        if (group_attr_init) posix_spawnattr_destroy(&group_attr);
 #endif
 
         if (spawn_errno != 0) {
@@ -1134,7 +1456,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
-            free(argv[0]); free(argv); free(proc);
+            free(argv[0]); free(argv); process_abort_spawn(proc);
             errno = spawn_errno;
             return NULL;
         }
@@ -1151,7 +1473,8 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
-            free(argv[0]); free(argv); free(proc);
+            free_env_overlay(owned_env);
+            free(argv[0]); free(argv); process_abort_spawn(proc);
             return NULL;
         }
         if (pid == 0) {
@@ -1168,11 +1491,19 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
             dup2(stderr_pipe[1], STDERR_FILENO);
             close(stdout_pipe[1]); close(stderr_pipe[1]);
             if (chdir(cwd_arg) != 0) _exit(126);
+            if (flags & 2) (void)setpgid(0, 0);
             eshkol_unset_env_injection_vars();  /* audit C6 */
             eshkol_apply_subproc_rlimits();     /* audit H7 */
-            execvp(argv[0], argv);
+            if (packed_env && packed_env[0]) {
+                execvp_with_env(argv[0], argv, env_to_pass);
+            } else {
+                execvp(argv[0], argv);
+            }
             _exit(127);
         }
+        if (pid > 0 && (flags & 2)) (void)setpgid(pid, pid);
+        free_env_overlay(owned_env);
+        owned_env = NULL;
     }
 
     /* Parent */
@@ -1194,13 +1525,33 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
     return proc;
 #else
     wchar_t* cmdline = build_windows_argv_command_line(tab_packed_argv);
-    if (!cmdline) { free(proc); return NULL; }
+    if (!cmdline) { process_abort_spawn(proc); return NULL; }
+    wchar_t* environment = build_windows_env_block(packed_env);
+    if (packed_env && packed_env[0] && !environment) {
+        free(cmdline);
+        process_abort_spawn(proc);
+        return NULL;
+    }
     eshkol_subprocess_t* result = spawn_windows_command_line(
-        proc, NULL, cmdline, cwd_arg, flags);
+        proc, NULL, cmdline, cwd_arg, flags, environment);
+    free(environment);
     free(cmdline);
-    if (!result) free(proc);
+    if (!result) process_abort_spawn(proc);
     return result;
 #endif
+}
+
+eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
+                                                    const char* cwd_arg,
+                                                    int64_t flags) {
+    return qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, NULL);
+}
+
+eshkol_subprocess_t* qllm_process_spawn_argv_env_flags(const char* tab_packed_argv,
+                                                       const char* cwd_arg,
+                                                       const char* packed_env,
+                                                       int64_t flags) {
+    return qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, packed_env);
 }
 
 /* Back-compat shim: original 2-arg signature, still referenced by the
@@ -1235,7 +1586,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
  *         argument or a write error (including the /dev/null-stdin case).
  */
 int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, int64_t len) {
-    if (!proc || !data || len <= 0) return -1;
+    if (!process_handle_live(proc, "process-write-stdin") || !data || len <= 0) return -1;
 #ifndef _WIN32
     if (proc->stdin_fd < 0) {
         /* audit H9: prior behaviour silently returned -1 when the
@@ -1262,7 +1613,7 @@ int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, in
  * @brief Close the child's stdin pipe/handle, signalling EOF to the child.
  */
 void qllm_process_close_stdin(eshkol_subprocess_t* proc) {
-    if (!proc) return;
+    if (!process_handle_live(proc, "process-close-stdin")) return;
 #ifndef _WIN32
     if (proc->stdin_fd >= 0) { close(proc->stdin_fd); proc->stdin_fd = -1; }
 #else
@@ -1365,7 +1716,7 @@ static char* read_all_stream_windows(HANDLE pipe,
  *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
  */
 int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
-    if (!proc || !buf || buf_size <= 0) return -1;
+    if (!process_handle_live(proc, "process-read-stdout") || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
     if (proc->stdout_fd < 0) return -1;
     ssize_t n = read(proc->stdout_fd, buf, (size_t)buf_size);
@@ -1384,7 +1735,7 @@ int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t b
  *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
  */
 int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
-    if (!proc || !buf || buf_size <= 0) return -1;
+    if (!process_handle_live(proc, "process-read-stderr") || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
     if (proc->stderr_fd < 0) return -1;
     ssize_t n = read(proc->stderr_fd, buf, (size_t)buf_size);
@@ -1494,17 +1845,23 @@ static char* read_all_stream_posix(int fd,
  *         non-positive @p max_size. Always NULL on Windows.
  */
 char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
-    if (!proc) return NULL;
+    if (!process_handle_live(proc, "process-read-all-stdout")) return NULL;
 #ifndef _WIN32
-    return read_all_stream_posix(proc->stdout_fd,
+    int64_t native_len = 0;
+    char* result = read_all_stream_posix(proc->stdout_fd,
                                  &proc->stdout_buf, &proc->stdout_len, &proc->stdout_cap,
                                  &proc->stdout_eof,
-                                 max_size, out_len);
+                                 max_size, out_len ? out_len : &native_len);
+    proc->last_stdout_read_len = result ? (size_t)(out_len ? *out_len : native_len) : 0;
+    return result;
 #else
-    return read_all_stream_windows(proc->stdout_read,
+    int64_t native_len = 0;
+    char* result = read_all_stream_windows(proc->stdout_read,
                                    &proc->stdout_buf, &proc->stdout_len,
                                    &proc->stdout_cap, &proc->stdout_eof,
-                                   max_size, out_len);
+                                   max_size, out_len ? out_len : &native_len);
+    proc->last_stdout_read_len = result ? (size_t)(out_len ? *out_len : native_len) : 0;
+    return result;
 #endif
 }
 
@@ -1519,18 +1876,43 @@ char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, 
  *         non-positive @p max_size. Always NULL on Windows.
  */
 char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
-    if (!proc) return NULL;
+    if (!process_handle_live(proc, "process-read-all-stderr")) return NULL;
 #ifndef _WIN32
-    return read_all_stream_posix(proc->stderr_fd,
+    int64_t native_len = 0;
+    char* result = read_all_stream_posix(proc->stderr_fd,
                                  &proc->stderr_buf, &proc->stderr_len, &proc->stderr_cap,
                                  &proc->stderr_eof,
-                                 max_size, out_len);
+                                 max_size, out_len ? out_len : &native_len);
+    proc->last_stderr_read_len = result ? (size_t)(out_len ? *out_len : native_len) : 0;
+    return result;
 #else
-    return read_all_stream_windows(proc->stderr_read,
+    int64_t native_len = 0;
+    char* result = read_all_stream_windows(proc->stderr_read,
                                    &proc->stderr_buf, &proc->stderr_len,
                                    &proc->stderr_cap, &proc->stderr_eof,
-                                   max_size, out_len);
+                                   max_size, out_len ? out_len : &native_len);
+    proc->last_stderr_read_len = result ? (size_t)(out_len ? *out_len : native_len) : 0;
+    return result;
 #endif
+}
+
+/**
+ * @brief Return the byte count from the most recent stdout read-all call.
+ *
+ * The count is captured before the malloc-owned buffer crosses the FFI, so a
+ * caller can copy embedded NUL bytes with a length-aware string primitive.
+ */
+int64_t qllm_process_last_stdout_read_length(eshkol_subprocess_t* proc) {
+    if (!process_handle_live(proc, "process-last-stdout-read-length")) return -1;
+    return (int64_t)proc->last_stdout_read_len;
+}
+
+/**
+ * @brief Return the byte count from the most recent stderr read-all call.
+ */
+int64_t qllm_process_last_stderr_read_length(eshkol_subprocess_t* proc) {
+    if (!process_handle_live(proc, "process-last-stderr-read-length")) return -1;
+    return (int64_t)proc->last_stderr_read_len;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1765,7 +2147,7 @@ static void* drain_thread_fn(void* vp) {
  * No-op if @p proc is NULL or already marked exited.
  */
 static void check_exit_status(eshkol_subprocess_t* proc) {
-    if (!proc || proc->exited) return;
+    if (!process_handle_live(proc, "process-status") || proc->exited) return;
 #ifndef _WIN32
     int status;
     pid_t result = waitpid((pid_t)proc->pid, &status, WNOHANG);
@@ -1776,12 +2158,14 @@ static void check_exit_status(eshkol_subprocess_t* proc) {
         } else if (WIFSIGNALED(status)) {
             proc->exit_code = 128 + WTERMSIG(status);
         }
+        eshkol_spawn_slot_release(proc);
     }
 #else
     DWORD code;
     if (GetExitCodeProcess(proc->hProcess, &code) && code != STILL_ACTIVE) {
         proc->exited = 1;
         proc->exit_code = (int)code;
+        eshkol_spawn_slot_release(proc);
     }
 #endif
 }
@@ -1818,7 +2202,7 @@ static void check_exit_status(eshkol_subprocess_t* proc) {
  *         on error (NULL @p proc, waitpid failure, kqueue setup failure).
  */
 int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
-    if (!proc) return -1;
+    if (!process_handle_live(proc, "process-wait")) return -1;
     if (proc->exited) return 0;
 #ifndef _WIN32
     /* Per-stream byte cap. 16 MB is well above any reasonable tool
@@ -2082,7 +2466,7 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
  *         it has exited or @p proc is NULL.
  */
 int32_t qllm_process_running(eshkol_subprocess_t* proc) {
-    if (!proc) return 0;
+    if (!process_handle_live(proc, "process-running")) return 0;
     check_exit_status(proc);
     return !proc->exited;
 }
@@ -2095,7 +2479,7 @@ int32_t qllm_process_running(eshkol_subprocess_t* proc) {
  *         exited yet.
  */
 int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
-    if (!proc) return -1;
+    if (!process_handle_live(proc, "process-exit-code")) return -1;
     check_exit_status(proc);
     return proc->exit_code;
 }
@@ -2112,7 +2496,7 @@ int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
  * is NULL.
  */
 void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
-    if (!proc) return;
+    if (!process_handle_live(proc, "process-kill")) return;
 #ifndef _WIN32
     kill((pid_t)proc->pid, signal);
 #else
@@ -2148,7 +2532,7 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
  *         @p proc is NULL.
  */
 int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
-    if (!proc) return 0;
+    if (!process_handle_live(proc, "process-pid")) return 0;
     return proc->pid;
 }
 
@@ -2173,7 +2557,18 @@ int32_t qllm_process_stderr_fd(eshkol_subprocess_t* proc) {
  * explicitly beforehand. No-op if @p proc is NULL.
  */
 void qllm_process_destroy(eshkol_subprocess_t* proc) {
-    if (!proc) return;
+    if (!proc) {
+        fprintf(stderr, "process-destroy: invalid NULL process handle\n");
+        return;
+    }
+    if (proc->magic != ESHKOL_PROCESS_HANDLE_MAGIC) {
+        fprintf(stderr, "process-destroy: invalid process handle\n");
+        return;
+    }
+    if (proc->closed) {
+        fprintf(stderr, "process-destroy: process handle is already closed\n");
+        return;
+    }
 #ifndef _WIN32
     check_exit_status(proc);
     if (!proc->exited && proc->pid > 0) {
@@ -2239,5 +2634,7 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
     if (proc->stdout_buf) free(proc->stdout_buf);
     if (proc->stderr_buf) free(proc->stderr_buf);
 #endif
-    free(proc);
+    eshkol_spawn_slot_release(proc);
+    proc->pid = 0;
+    proc->closed = 1;
 }
