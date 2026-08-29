@@ -54,7 +54,8 @@ PROVIDE = re.compile(r"\(provide\s+([^)]*)\)", re.S)
 # constants, and FFI declarations. Keep the token grammar aligned with the
 # reader instead of silently dropping valid names because they do not begin
 # with a lowercase letter.
-NAME = r"([A-Za-z_*][A-Za-z0-9!?*+<>=./_%-]*)"
+VERBATIM_NAME = r"\|(?:\\.|[^|])*\|"
+NAME = r"((?:[A-Za-z_*][A-Za-z0-9!?*+<>=./_%-]*|" + VERBATIM_NAME + r"))"
 DEFINE = re.compile(r"\(define\s+\(?\s*" + NAME)
 EXTERN = re.compile(r"\(extern\s+\S+\s+" + NAME)
 
@@ -76,6 +77,7 @@ def strip_scheme_comments(text):
     in_string = False
     escaped = False
     in_comment = False
+    in_verbatim = False
     for ch in text:
         if in_comment:
             if ch == "\n":
@@ -91,14 +93,31 @@ def strip_scheme_comments(text):
             elif ch == '"':
                 in_string = False
             continue
+        if in_verbatim:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "|":
+                in_verbatim = False
+            continue
         if ch == '"':
             in_string = True
+            out.append(ch)
+        elif ch == "|":
+            in_verbatim = True
             out.append(ch)
         elif ch == ";":
             in_comment = True
         else:
             out.append(ch)
     return "".join(out)
+
+
+def scheme_tokens(text):
+    """Split a comment-free Scheme surface while preserving |...| names."""
+    return re.findall(r"\|(?:\\.|[^|])*\||[^\s]+", text)
 
 
 def collect_docs(root):
@@ -131,7 +150,7 @@ def collect_modules(root):
     for esk in glob.glob(os.path.join(root, "lib/**/*.esk"), recursive=True):
         txt = strip_scheme_comments(read(esk))
         for m in PROVIDE.finditer(txt):
-            for tok in m.group(1).split():
+            for tok in scheme_tokens(m.group(1)):
                 tok = tok.strip()
                 if tok and not tok.startswith(";"):
                     provided.add(tok)

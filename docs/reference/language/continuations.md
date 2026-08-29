@@ -190,6 +190,12 @@ Both consult the same classification, so an escape-only capture inside a
 `with-region` neither copies the stack nor pins, and a capture that may escape
 does both.
 
+Pinned-region retention is bounded. Native and VM continuation capture account
+for the cumulative arena bytes retained by accepted region pins and reject a
+new capture once the 64 MiB budget would be exceeded. The rejection is
+diagnostic and fail-closed: an unaccepted continuation is never resumed onto a
+region that may have been reclaimed.
+
 #### Limits
 
 One shape does not behave as R7RS specifies and is tracked in
@@ -202,13 +208,16 @@ One shape does not behave as R7RS specifies and is tracked in
   diagnostic** naming the cause and the workaround (move the definition above
   the `call/cc`, or use the native backend) rather than resuming onto a
   corrupted store. Native has no such restriction.
-Assignment conversion is complete on both engines. Every local targeted by
-`set!` is stored in an arena-backed cell, including locals that no closure
-captures. A continuation restores the frame's control values, but the cell is
-outside that snapshot, so a re-entry observes the location's current value as
-R7RS requires. `tests/continuations/assignment_conversion.esk` proves the
-filed `f=1`, `f=2`, `f=3`, `done` contract on native JIT, native AOT, and the
-bytecode VM.
+Assignment conversion is complete on both engines. Every lexical local
+targeted by `set!` is represented by a shared mutable location when a closure
+or an escaping continuation can observe it. Native uses an arena-backed cell
+for a location that must outlive the native frame and an entry-block stack cell
+for a location whose scope is provably local; the VM uses its vector cell only
+for the corresponding closure/continuation cases. A continuation restores the
+frame's control values, but never rolls back an assignment-converted location,
+so re-entry observes the location's current value as R7RS requires.
+`tests/continuations/assignment_conversion.esk` proves the filed `f=1`,
+`f=2`, `f=3`, `done` contract on native JIT, native AOT, and the bytecode VM.
 The complete continuation regression inventory is in
 [`tests/continuations/README.md`](../../../tests/continuations/README.md).
 
