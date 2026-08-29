@@ -4660,6 +4660,24 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
              COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_exhaustive_dispatch.py"
                      --self-test)
+
+    # ADR-0002 / SW-48: compile and execute the dense tensor AD gradcheck in
+    # both codegen lowerings, then compare the gradients byte-for-byte and
+    # require the dense tape to be smaller.  This is intentionally a CTest
+    # entry rather than a source-only assertion: an unexecuted dense node is
+    # the defect this test exists to prevent.
+    if(TARGET eshkol-run AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dense_tensor_ad_gate.sh")
+        add_test(
+            NAME dense_tensor_ad_gradcheck
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dense_tensor_ad_gate.sh")
+        set_tests_properties(dense_tensor_ad_gradcheck PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "dense tensor AD gate: PASS"
+            FAIL_REGULAR_EXPRESSION "dense tensor AD gate: FAIL|fatal signal|LLVM module verification failed")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensor_backward_dual_impl_gradcheck_test.cpp")

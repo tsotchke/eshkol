@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The dense tensor AD node executes (ADR-0002 Position A; ledger SW-48).**
+  Under reverse-mode AD, `matmul` now records ONE `AD_NODE_MATMUL` tape node
+  and lets the dense backward kernel carry the adjoint, instead of the
+  `2·M·N·K` scalar nodes it recorded per matmul. `tensor-sum` and `tensor-mean`
+  record one `AD_NODE_SUM` / `AD_NODE_MEAN` node over a dense operand. Tape
+  size scales with the number of *tensor* operations rather than with scalar
+  element count, which is the thing ADR-0002 exists to do and which ADR-0000's
+  Stage-7 gate (`scalar_ad_nodes_from_matmul == 0`) was written against.
+
+  This path had never run. Its admitting guard,
+  `autodiff_ && ad_mode && !after_matmul_compute`, was *unsatisfiable* —
+  `after_matmul_compute` is assigned non-null a few lines above under exactly
+  `autodiff_ && ad_mode` — so `recordADNodeTensor` had zero live callers while
+  reading like a switch waiting to be flipped. Flipping it SIGSEGV'd, because
+  the reverse pass recognised a tensor node by a non-null `tensor_gradient`,
+  which `recordADNodeTensor` deliberately leaves null: the node fell into the
+  scalar dispatch and dereferenced the `input1`/`input2` a tensor node
+  legitimately leaves null. Two further things were unfinished behind that: the
+  node was computed and then dropped, and no consumer understood the dense
+  representation.
+
+  All three are closed. The reverse pass selects on `tensor_value`, which a
+  tensor node carries from the moment it is recorded; `matmul` *returns* the
+  node under AD, tagged `CALLABLE` with the AD-node subtype; and the reductions
+  consume it. Where an operand arrives scalarized — the tensor of scalar AD
+  nodes `(gradient f x)` seeds — a new registry row `AD_NODE_TENSOR_PACK`
+  bridges it, with an identity-scatter backward that performs no arithmetic.
+
+  Gradients are unchanged, and that is gated rather than asserted:
+  `scripts/run_dense_tensor_ad_gate.sh` compiles
+  `tests/ad/dense_tensor_ad_gradcheck_test.esk` under **both** lowerings
+  (`ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0`, a codegen-time choice, so they
+  are two emitted programs) and requires byte-identical gradients across square
+  and non-square shapes, either operand, the PEP-465 1-D contraction, both
+  reductions and a dense→dense `matmul` chain — while the tape gets strictly
+  smaller. Each case is also checked against its closed form and against
+  central differences.
+
+  Elementwise tensor arithmetic and the broadcast variants still scalarize
+  (ADR-0002 Phase C.3/C.4, v1.4). `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects the
+  older lowering.
+
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
   maps that id to a `SourceSpan` — the first column of the

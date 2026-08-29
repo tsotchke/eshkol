@@ -519,6 +519,11 @@ llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
     }
 
     auto& builder = ctx_.builder();
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", current_func);
+    llvm::BasicBlock* dense_max_exit = nullptr;
+    llvm::Value* dense_max_result = emitDenseADReduce(
+        tensor_val, /*reduction_op=*/2, max_merge, &dense_max_exit, "tensor-max");
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-max");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -527,9 +532,6 @@ llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
     llvm::Value* elems_ptr = builder.CreateLoad(ctx_.ptrType(), elems_field);
     llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
     llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), total_field);
-
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::BasicBlock* max_merge = llvm::BasicBlock::Create(ctx_.context(), "max_merge", current_func);
 
     llvm::Value* ad_tagged_result = nullptr;
     llvm::BasicBlock* ad_exit_block = nullptr;
@@ -617,10 +619,14 @@ llvm::Value* TensorCodegen::tensorMax(const eshkol_operations_t* op) {
     llvm::BasicBlock* numeric_exit_block = builder.GetInsertBlock();
 
     builder.SetInsertPoint(max_merge);
-    llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), ad_exit_block ? 2 : 1, "max_result");
+    unsigned max_incoming = 1 + (ad_exit_block ? 1 : 0) + (dense_max_exit ? 1 : 0);
+    llvm::PHINode* result_phi = builder.CreatePHI(ctx_.taggedValueType(), max_incoming, "max_result");
     result_phi->addIncoming(tagged_result, numeric_exit_block);
     if (ad_exit_block && ad_tagged_result) {
         result_phi->addIncoming(ad_tagged_result, ad_exit_block);
+    }
+    if (dense_max_exit && dense_max_result) {
+        result_phi->addIncoming(dense_max_result, dense_max_exit);
     }
     return result_phi;
 }
@@ -1892,22 +1898,98 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
     if (a_val->getType() != ctx_.taggedValueType()) a_val = tagged_.packInt64(a_val, true);
     if (b_val->getType() != ctx_.taggedValueType()) b_val = tagged_.packInt64(b_val, true);
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
-
-    // Unpack tensor pointers (type-checked: ESH-0069)
-    llvm::Value* a_ptr = unpackTensorOperandChecked(a_val, "batch-matmul");
-    llvm::Value* b_ptr = unpackTensorOperandChecked(b_val, "batch-matmul");
     llvm::Type*  tt    = ctx_.tensorType();
+
+    struct ExtractedTensor {
+        llvm::Value* ptr;
+        llvm::Value* node;
+    };
+    auto extract = [&](llvm::Value* input, const char* name) -> ExtractedTensor {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+        llvm::BasicBlock* callable = llvm::BasicBlock::Create(ctx_.context(),
+            std::string(name) + "_callable", fn);
+        llvm::BasicBlock* ad = llvm::BasicBlock::Create(ctx_.context(),
+            std::string(name) + "_ad", fn);
+        llvm::BasicBlock* dense = llvm::BasicBlock::Create(ctx_.context(),
+            std::string(name) + "_dense", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(ctx_.context(),
+            std::string(name) + "_plain", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(ctx_.context(),
+            std::string(name) + "_join", fn);
+        llvm::Value* base = tagged_.getBaseType(tagged_.getType(input));
+        llvm::Value* is_callable = builder.CreateICmpEQ(base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        builder.CreateCondBr(is_callable, callable, plain);
+
+        builder.SetInsertPoint(callable);
+        llvm::Value* is_ad = tagged_.checkCallableSubtype(input, CALLABLE_SUBTYPE_AD_NODE);
+        builder.CreateCondBr(is_ad, ad, plain);
+
+        builder.SetInsertPoint(ad);
+        llvm::Value* raw = builder.CreateIntToPtr(tagged_.unpackInt64(input), ctx_.ptrType());
+        llvm::Value* ad_elems = builder.CreateLoad(ctx_.ptrType(),
+            builder.CreateStructGEP(ctx_.adNodeType(), raw,
+                                    TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+        builder.CreateCondBr(builder.CreateICmpNE(ad_elems, null_ptr), dense, plain);
+
+        builder.SetInsertPoint(dense);
+        llvm::Value* shape = builder.CreateLoad(ctx_.ptrType(),
+            builder.CreateStructGEP(ctx_.adNodeType(), raw, TypeSystem::AD_NODE_SHAPE_IDX));
+        llvm::Value* ndim = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateStructGEP(ctx_.adNodeType(), raw, TypeSystem::AD_NODE_NDIM_IDX));
+        llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_total_elements",
+            llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+        llvm::Value* total = builder.CreateCall(total_fn, {raw},
+                                                std::string(name) + "_total");
+        llvm::Value* view = builder.CreateCall(
+            mem_.getArenaAllocateTensorWithHeader(), {allocationArena()},
+            std::string(name) + "_view");
+        builder.CreateStore(shape, builder.CreateStructGEP(tt, view, 0));
+        builder.CreateStore(ndim, builder.CreateStructGEP(tt, view, 1));
+        builder.CreateStore(ad_elems, builder.CreateStructGEP(tt, view, 2));
+        builder.CreateStore(total, builder.CreateStructGEP(tt, view, 3));
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+                            builder.CreateStructGEP(tt, view, 4));
+        llvm::BasicBlock* dense_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(plain);
+        llvm::Value* plain_ptr = unpackTensorOperandChecked(input, name);
+        llvm::BasicBlock* plain_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(join);
+        llvm::PHINode* ptr = builder.CreatePHI(ctx_.ptrType(), 2,
+                                               std::string(name) + "_ptr");
+        ptr->addIncoming(view, dense_exit);
+        ptr->addIncoming(plain_ptr, plain_exit);
+        llvm::PHINode* node = builder.CreatePHI(ctx_.ptrType(), 2,
+                                                std::string(name) + "_node");
+        node->addIncoming(raw, dense_exit);
+        node->addIncoming(null_ptr, plain_exit);
+        return {ptr, node};
+    };
+
+    ExtractedTensor a = extract(a_val, "batch_a");
+    ExtractedTensor b = extract(b_val, "batch_b");
+    llvm::Value* a_ptr = a.ptr;
+    llvm::Value* b_ptr = b.ptr;
 
     // Load A dims: [batch, M, K]
     llvm::Value* a_dims  = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(tt, a_ptr, 0));
+    llvm::Value* a_ndim  = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(tt, a_ptr, 1));
     llvm::Value* a_total = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(tt, a_ptr, 3));
     llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(tt, a_ptr, 2));
 
     llvm::Value* b_dims  = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(tt, b_ptr, 0));
+    llvm::Value* b_ndim  = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(tt, b_ptr, 1));
     llvm::Value* b_total = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(tt, b_ptr, 3));
     llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(tt, b_ptr, 2));
+
+    emitRankGuard(a_ndim, 3, "batch-matmul: left operand must be rank 3", "bmm_a_rank");
+    emitRankGuard(b_ndim, 3, "batch-matmul: right operand must be rank 3", "bmm_b_rank");
 
     // Extract batch, M, K from A; K, N from B
     llvm::Value* batch = builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), a_dims,
@@ -1919,16 +2001,36 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
     llvm::Value* N_dim = builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), b_dims,
         llvm::ConstantInt::get(ctx_.int64Type(), 2)));
 
+    llvm::Value* b_batch = builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(
+        ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    llvm::Value* b_K = builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(
+        ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+    llvm::Function* bmm_fn_context = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* bmm_shape_ok = llvm::BasicBlock::Create(ctx_.context(), "bmm_shape_ok", bmm_fn_context);
+    llvm::BasicBlock* bmm_shape_err = llvm::BasicBlock::Create(ctx_.context(), "bmm_shape_err", bmm_fn_context);
+    llvm::FunctionCallee bmm_valid_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_batch_matmul_shape_valid",
+        llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type(), ctx_.int64Type()}, false));
+    llvm::Value* bmm_valid = builder.CreateICmpNE(
+        builder.CreateCall(bmm_valid_fn, {batch, M_dim, K_dim, N_dim}),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    builder.CreateCondBr(builder.CreateAnd(builder.CreateAnd(builder.CreateICmpEQ(batch, b_batch),
+        builder.CreateICmpEQ(K_dim, b_K)), bmm_valid), bmm_shape_ok, bmm_shape_err);
+    builder.SetInsertPoint(bmm_shape_err);
+    emitCatchableError("batch-matmul: batch or inner dimensions mismatch");
+    builder.SetInsertPoint(bmm_shape_ok);
+
     // Result total = batch * M * N
     llvm::Value* result_total = builder.CreateMul(builder.CreateMul(batch, M_dim), N_dim);
+    llvm::Value* arena_ptr = allocationArena();
 
-    // Allocate result tensor [batch, M, N]
+    // Allocate the output before either AD lowering. The scalar fallback writes
+    // node pointers into these slots, while the dense path writes doubles.
     llvm::Function* arena_alloc  = mem_.getArenaAllocate();
     llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
-    llvm::Value*    result_ptr   = builder.CreateCall(alloc_tensor, {arena_ptr}, "bmm_result");
-
-    // Allocate dims array [3] = {batch, M, N}
-    llvm::Value* dims_bytes  = llvm::ConstantInt::get(ctx_.int64Type(), 3 * sizeof(int64_t));
+    llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "bmm_result");
+    llvm::Value* dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 3 * sizeof(int64_t));
     llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "bmm_dims");
     builder.CreateStore(batch, builder.CreateGEP(ctx_.int64Type(), result_dims,
         llvm::ConstantInt::get(ctx_.int64Type(), 0)));
@@ -1936,10 +2038,154 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), 1)));
     builder.CreateStore(N_dim, builder.CreateGEP(ctx_.int64Type(), result_dims,
         llvm::ConstantInt::get(ctx_.int64Type(), 2)));
-
-    llvm::Value* elems_bytes  = builder.CreateMul(result_total,
+    llvm::Value* elems_bytes = builder.CreateMul(result_total,
         llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(double)));
     llvm::Value* result_elems = builder.CreateCall(arena_alloc, {arena_ptr, elems_bytes}, "bmm_elems");
+
+    llvm::Value* use_a = a_elems;
+    llvm::Value* use_b = b_elems;
+    llvm::Value* parent_a_use = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* parent_b_use = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* ad_enabled = nullptr;
+    llvm::BasicBlock* scalar_ad_after = nullptr;
+    if (autodiff_ && !denseTensorADNodesEnabled()) {
+        llvm::Value* scalar_ad = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(ctx_.context(), "bmm_scalar_ad", fn);
+        llvm::BasicBlock* numeric_block = llvm::BasicBlock::Create(ctx_.context(), "bmm_scalar_numeric", fn);
+        scalar_ad_after = llvm::BasicBlock::Create(ctx_.context(), "bmm_scalar_after", fn);
+        builder.CreateCondBr(scalar_ad, ad_block, numeric_block);
+
+        builder.SetInsertPoint(ad_block);
+        llvm::Value* bs_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bmm_ad_batch");
+        llvm::Value* i_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bmm_ad_row");
+        llvm::Value* j_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bmm_ad_col");
+        llvm::Value* k_counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bmm_ad_k");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), bs_counter);
+        llvm::BasicBlock* bs_cond = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_batch_cond", fn);
+        llvm::BasicBlock* bs_body = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_batch_body", fn);
+        llvm::BasicBlock* bs_done = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_batch_done", fn);
+        llvm::BasicBlock* i_cond = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_i_cond", fn);
+        llvm::BasicBlock* i_body = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_i_body", fn);
+        llvm::BasicBlock* i_done = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_i_done", fn);
+        llvm::BasicBlock* j_cond = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_j_cond", fn);
+        llvm::BasicBlock* j_body = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_j_body", fn);
+        llvm::BasicBlock* j_done = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_j_done", fn);
+        llvm::BasicBlock* k_cond = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_k_cond", fn);
+        llvm::BasicBlock* k_body = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_k_body", fn);
+        llvm::BasicBlock* k_done = llvm::BasicBlock::Create(ctx_.context(), "bmm_ad_k_done", fn);
+        builder.CreateBr(bs_cond);
+        builder.SetInsertPoint(bs_cond);
+        builder.CreateCondBr(builder.CreateICmpULT(
+            builder.CreateLoad(ctx_.int64Type(), bs_counter), batch), bs_body, bs_done);
+        builder.SetInsertPoint(bs_body);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), i_counter);
+        builder.CreateBr(i_cond);
+        builder.SetInsertPoint(i_cond);
+        builder.CreateCondBr(builder.CreateICmpULT(
+            builder.CreateLoad(ctx_.int64Type(), i_counter), M_dim), i_body, i_done);
+        builder.SetInsertPoint(i_body);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), j_counter);
+        builder.CreateBr(j_cond);
+        builder.SetInsertPoint(j_cond);
+        builder.CreateCondBr(builder.CreateICmpULT(
+            builder.CreateLoad(ctx_.int64Type(), j_counter), N_dim), j_body, j_done);
+        builder.SetInsertPoint(j_body);
+        llvm::Value* acc = builder.CreateAlloca(ctx_.ptrType(), nullptr, "bmm_ad_acc");
+        builder.CreateStore(autodiff_->createADConstant(
+            llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), acc);
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), k_counter);
+        builder.CreateBr(k_cond);
+        builder.SetInsertPoint(k_cond);
+        builder.CreateCondBr(builder.CreateICmpULT(
+            builder.CreateLoad(ctx_.int64Type(), k_counter), K_dim), k_body, k_done);
+        builder.SetInsertPoint(k_body);
+        llvm::Value* bs = builder.CreateLoad(ctx_.int64Type(), bs_counter);
+        llvm::Value* ii = builder.CreateLoad(ctx_.int64Type(), i_counter);
+        llvm::Value* jj = builder.CreateLoad(ctx_.int64Type(), j_counter);
+        llvm::Value* kk = builder.CreateLoad(ctx_.int64Type(), k_counter);
+        llvm::Value* a_index = builder.CreateAdd(
+            builder.CreateMul(builder.CreateAdd(builder.CreateMul(bs, M_dim), ii), K_dim), kk);
+        llvm::Value* b_index = builder.CreateAdd(
+            builder.CreateMul(builder.CreateAdd(builder.CreateMul(bs, K_dim), kk), N_dim), jj);
+        llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), a_elems, a_index));
+        llvm::Value* b_bits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), b_elems, b_index));
+        llvm::Value* a_node = adNodeFromTensorElementBits(a_bits, "bmm_ad_a");
+        llvm::Value* b_node = adNodeFromTensorElementBits(b_bits, "bmm_ad_b");
+        llvm::Value* product = autodiff_->recordADNodeBinary(4, a_node, b_node);
+        llvm::Value* old_acc = builder.CreateLoad(ctx_.ptrType(), acc);
+        builder.CreateStore(autodiff_->recordADNodeBinary(2, old_acc, product), acc);
+        builder.CreateStore(builder.CreateAdd(kk,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)), k_counter);
+        builder.CreateBr(k_cond);
+        builder.SetInsertPoint(k_done);
+        llvm::Value* c_index = builder.CreateAdd(
+            builder.CreateMul(builder.CreateAdd(builder.CreateMul(
+                builder.CreateLoad(ctx_.int64Type(), bs_counter), M_dim),
+                builder.CreateLoad(ctx_.int64Type(), i_counter)), N_dim),
+            builder.CreateLoad(ctx_.int64Type(), j_counter));
+        builder.CreateStore(builder.CreatePtrToInt(builder.CreateLoad(ctx_.ptrType(), acc),
+            ctx_.int64Type()), builder.CreateGEP(ctx_.int64Type(), result_elems, c_index));
+        builder.CreateStore(builder.CreateAdd(builder.CreateLoad(ctx_.int64Type(), j_counter),
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)), j_counter);
+        builder.CreateBr(j_cond);
+        builder.SetInsertPoint(j_done);
+        builder.CreateStore(builder.CreateAdd(builder.CreateLoad(ctx_.int64Type(), i_counter),
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)), i_counter);
+        builder.CreateBr(i_cond);
+        builder.SetInsertPoint(i_done);
+        builder.CreateStore(builder.CreateAdd(builder.CreateLoad(ctx_.int64Type(), bs_counter),
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)), bs_counter);
+        builder.CreateBr(bs_cond);
+        builder.SetInsertPoint(bs_done);
+        builder.CreateBr(scalar_ad_after);
+        builder.SetInsertPoint(numeric_block);
+    }
+    if (autodiff_ && denseTensorADNodesEnabled()) {
+        ad_enabled = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* pack = llvm::BasicBlock::Create(ctx_.context(), "bmm_dense_pack", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(ctx_.context(), "bmm_dense_plain", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(ctx_.context(), "bmm_dense_join", fn);
+        builder.CreateCondBr(ad_enabled, pack, plain);
+
+        builder.SetInsertPoint(pack);
+        llvm::Value* a_dense = nullptr;
+        llvm::Value* b_dense = nullptr;
+        llvm::Value* parent_a = autodiff_->emitDenseTensorOperand(
+            a.node, a_elems, a_total, a_dims, a_ndim, &a_dense, "bmm_a_operand");
+        llvm::Value* parent_b = autodiff_->emitDenseTensorOperand(
+            b.node, b_elems, b_total, b_dims, b_ndim, &b_dense, "bmm_b_operand");
+        if (!parent_a || !parent_b || !a_dense || !b_dense) {
+            emitCatchableError("batch-matmul: failed to densify AD operands");
+        }
+        llvm::BasicBlock* pack_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(plain);
+        llvm::BasicBlock* plain_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(join);
+        llvm::PHINode* a_phi = builder.CreatePHI(ctx_.ptrType(), 2, "bmm_a_numeric");
+        a_phi->addIncoming(a_dense, pack_exit);
+        a_phi->addIncoming(a_elems, plain_exit);
+        llvm::PHINode* b_phi = builder.CreatePHI(ctx_.ptrType(), 2, "bmm_b_numeric");
+        b_phi->addIncoming(b_dense, pack_exit);
+        b_phi->addIncoming(b_elems, plain_exit);
+        llvm::PHINode* parent_a_phi = builder.CreatePHI(ctx_.ptrType(), 2, "bmm_parent_a");
+        parent_a_phi->addIncoming(parent_a, pack_exit);
+        parent_a_phi->addIncoming(llvm::ConstantPointerNull::get(ctx_.ptrType()), plain_exit);
+        llvm::PHINode* parent_b_phi = builder.CreatePHI(ctx_.ptrType(), 2, "bmm_parent_b");
+        parent_b_phi->addIncoming(parent_b, pack_exit);
+        parent_b_phi->addIncoming(llvm::ConstantPointerNull::get(ctx_.ptrType()), plain_exit);
+        use_a = a_phi;
+        use_b = b_phi;
+        parent_a_use = parent_a_phi;
+        parent_b_use = parent_b_phi;
+    }
 
     // Propagate element dtype to the result so f16/bf16 batched matmul takes
     // the cublasGemmStridedBatched tensor-core path (ESH-0024).
@@ -1962,7 +2208,11 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
         bmm_fn = llvm::Function::Create(bmm_ft, llvm::Function::ExternalLinkage,
             "eshkol_batch_matmul_dispatch", &ctx_.module());
     }
-    builder.CreateCall(bmm_fn, {a_elems, b_elems, result_elems, batch, M_dim, K_dim, N_dim, bmm_dtype});
+    builder.CreateCall(bmm_fn, {use_a, use_b, result_elems, batch, M_dim, K_dim, N_dim, bmm_dtype});
+    if (scalar_ad_after) {
+        builder.CreateBr(scalar_ad_after);
+        builder.SetInsertPoint(scalar_ad_after);
+    }
 
     // Populate result tensor struct
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1975,6 +2225,47 @@ llvm::Value* TensorCodegen::batchMatmul(const eshkol_operations_t* op) {
     builder.CreateStore(result_total,
         builder.CreateStructGEP(tensor_type, result_ptr, 3));
 
+    if (ad_enabled) {
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* record = llvm::BasicBlock::Create(ctx_.context(), "bmm_record", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(ctx_.context(), "bmm_return_plain", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(ctx_.context(), "bmm_return_join", fn);
+        builder.CreateCondBr(ad_enabled, record, plain);
+
+        builder.SetInsertPoint(record);
+        llvm::Value* saved = builder.CreateCall(mem_.getArenaAllocate(), {
+            allocationArena(), llvm::ConstantInt::get(ctx_.int64Type(), 2 * sizeof(void*))},
+            "bmm_saved");
+        builder.CreateStore(use_a, builder.CreateGEP(ctx_.ptrType(), saved,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+        builder.CreateStore(use_b, builder.CreateGEP(ctx_.ptrType(), saved,
+            llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+        llvm::Value* node = autodiff_->recordADNodeTensor(
+            static_cast<uint32_t>(AD_NODE_BATCH_MATMUL), parent_a_use, parent_b_use,
+            nullptr, nullptr, result_elems, saved,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2), result_dims,
+            llvm::ConstantInt::get(ctx_.int64Type(), 3));
+        llvm::ArrayType* params_ty = llvm::ArrayType::get(ctx_.int64Type(), 6);
+        llvm::Value* params = builder.CreateStructGEP(ctx_.adNodeType(), node, 12);
+        builder.CreateStore(batch, builder.CreateConstGEP2_32(params_ty, params, 0, 0));
+        builder.CreateStore(M_dim, builder.CreateConstGEP2_32(params_ty, params, 0, 1));
+        builder.CreateStore(K_dim, builder.CreateConstGEP2_32(params_ty, params, 0, 2));
+        builder.CreateStore(N_dim, builder.CreateConstGEP2_32(params_ty, params, 0, 3));
+        llvm::Value* dense_result = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+        llvm::BasicBlock* record_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(plain);
+        llvm::Value* plain_result = tagged_.packHeapPtr(result_ptr);
+        llvm::BasicBlock* plain_exit = builder.GetInsertBlock();
+        builder.CreateBr(join);
+
+        builder.SetInsertPoint(join);
+        llvm::PHINode* result = builder.CreatePHI(ctx_.taggedValueType(), 2, "bmm_result_value");
+        result->addIncoming(dense_result, record_exit);
+        result->addIncoming(plain_result, plain_exit);
+        return result;
+    }
     return tagged_.packHeapPtr(result_ptr);
 }
 

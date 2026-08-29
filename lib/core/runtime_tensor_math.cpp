@@ -630,6 +630,7 @@ static int64_t compute_broadcast_shape(
         int64_t ai = (i < a_ndim) ? a_dims[a_ndim - 1 - i] : 1;
         int64_t bi = (i < b_ndim) ? b_dims[b_ndim - 1 - i] : 1;
 
+        if (ai <= 0 || bi <= 0) return -1;
         if (ai == bi) {
             out_dims[out_ndim - 1 - i] = ai;
         } else if (ai == 1) {
@@ -641,6 +642,97 @@ static int64_t compute_broadcast_shape(
         }
     }
     return out_ndim;
+}
+
+static bool broadcast_total_checked(const int64_t* dims, int64_t ndim,
+                                    int64_t* total_out) {
+    int64_t total = 1;
+    for (int64_t i = 0; i < ndim; ++i) {
+        if (dims[i] <= 0 || total > INT64_MAX / dims[i]) return false;
+        total *= dims[i];
+    }
+    if ((uint64_t)total > SIZE_MAX / sizeof(double)) return false;
+    *total_out = total;
+    return true;
+}
+
+static bool tensor_product_checked(int64_t a, int64_t b, int64_t* out) {
+    if (a <= 0 || b <= 0 || a > INT64_MAX / b) return false;
+    int64_t product = a * b;
+    if ((uint64_t)product > SIZE_MAX / sizeof(double)) return false;
+    *out = product;
+    return true;
+}
+
+static bool tensor_product3_checked(int64_t a, int64_t b, int64_t c,
+                                    int64_t* out) {
+    int64_t ab;
+    return tensor_product_checked(a, b, &ab) &&
+           tensor_product_checked(ab, c, out);
+}
+
+extern "C" int64_t eshkol_matmul_shape_valid(int64_t M, int64_t K, int64_t N) {
+    int64_t a_count, b_count, c_count;
+    return tensor_product_checked(M, K, &a_count) &&
+           tensor_product_checked(K, N, &b_count) &&
+           tensor_product_checked(M, N, &c_count);
+}
+
+extern "C" int64_t eshkol_batch_matmul_shape_valid(
+    int64_t batch, int64_t M, int64_t K, int64_t N) {
+    int64_t a_count, b_count, c_count;
+    return tensor_product3_checked(batch, M, K, &a_count) &&
+           tensor_product3_checked(batch, K, N, &b_count) &&
+           tensor_product3_checked(batch, M, N, &c_count);
+}
+
+extern "C" int64_t eshkol_broadcast_shape_f64(
+    const int64_t* a_dims, int64_t a_ndim,
+    const int64_t* b_dims, int64_t b_ndim,
+    int64_t* out_dims, int64_t* out_ndim_out, int64_t* out_total_out)
+{
+    if (!out_dims || !out_ndim_out || !out_total_out) return -1;
+    int64_t bcast_dims[16];
+    int64_t out_ndim = compute_broadcast_shape(
+        a_dims, a_ndim, b_dims, b_ndim, bcast_dims);
+    int64_t out_total = 0;
+    if (out_ndim < 0 || !broadcast_total_checked(bcast_dims, out_ndim, &out_total)) return -1;
+    for (int64_t i = 0; i < out_ndim; ++i) out_dims[i] = bcast_dims[i];
+    *out_ndim_out = out_ndim;
+    *out_total_out = out_total;
+    return 0;
+}
+
+/** @brief Map a flat broadcast-output index back to one source tensor index.
+ *         Used by the legacy scalarising AD oracle as well as runtime tests. */
+extern "C" int64_t eshkol_broadcast_source_index(
+    int64_t flat, const int64_t* out_dims, int64_t out_ndim,
+    const int64_t* src_dims, int64_t src_ndim)
+{
+    if (flat < 0 || out_ndim < 0 || src_ndim < 0 || out_ndim > 16 ||
+        src_ndim > out_ndim || (out_ndim > 0 && !out_dims) ||
+        (src_ndim > 0 && !src_dims)) return -1;
+    int64_t src_strides[16] = {0};
+    if (src_ndim > 0) {
+        src_strides[src_ndim - 1] = 1;
+        for (int64_t d = src_ndim - 2; d >= 0; --d) {
+            if (src_dims[d + 1] <= 0 ||
+                src_strides[d + 1] > INT64_MAX / src_dims[d + 1]) return -1;
+            src_strides[d] = src_strides[d + 1] * src_dims[d + 1];
+        }
+    }
+    int64_t source_index = 0;
+    int64_t remaining = flat;
+    for (int64_t out_i = out_ndim - 1; out_i >= 0; --out_i) {
+        int64_t dim = out_dims[out_i];
+        if (dim <= 0) return -1;
+        int64_t coordinate = remaining % dim;
+        remaining /= dim;
+        int64_t src_i = out_i - (out_ndim - src_ndim);
+        if (src_i >= 0 && src_dims[src_i] != 1)
+            source_index += coordinate * src_strides[src_i];
+    }
+    return source_index;
 }
 
 /**
@@ -661,8 +753,8 @@ static int64_t compute_broadcast_shape(
  * @param b_data        Second operand's flat row-major elements.
  * @param b_dims        Second operand's shape.
  * @param b_ndim        Second operand's rank.
- * @param out_data      Output flat row-major elements (caller-allocated to
- *                      the broadcast total size).
+ * @param out_data      Output flat row-major elements (allocated to the exact
+ *                      preflighted broadcast total by generated callers).
  * @param out_dims      Output broadcast shape (caller-allocated, length >=
  *                      max(a_ndim, b_ndim)).
  * @param out_ndim_out  Output broadcast rank.
@@ -683,8 +775,8 @@ extern "C" int64_t eshkol_broadcast_elementwise_f64(
     for (int64_t i = 0; i < out_ndim; i++) out_dims[i] = bcast_dims[i];
     *out_ndim_out = out_ndim;
 
-    int64_t out_total = 1;
-    for (int64_t d = 0; d < out_ndim; d++) out_total *= bcast_dims[d];
+    int64_t out_total = 0;
+    if (!broadcast_total_checked(bcast_dims, out_ndim, &out_total)) return -1;
     *out_total_out = out_total;
 
     int64_t out_strides[16], a_strides[16], b_strides[16];
