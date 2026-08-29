@@ -3996,12 +3996,12 @@ struct R7rsImportSpec {
 };
 
 /**
- * @brief Builds an ESHKOL_REQUIRE_OP AST node requiring @p modules, with empty per-module prefix/except metadata.
+ * @brief Builds an ESHKOL_REQUIRE_OP AST node requiring @p modules, with empty
+ * per-module import-set metadata.
  *
- * Allocates parallel arrays (module names, import prefixes, except-name
- * lists) sized to @p modules.size(), initializing the prefix/except entries
- * to empty/null; callers such as make_r7rs_require_ast() may subsequently
- * fill in per-module prefix and except-name data.
+ * Allocates parallel arrays sized to @p modules.size(). Import modifiers stay
+ * metadata on this node and are consumed by the shared binding resolver; the
+ * parser never manufactures value-copying `define` aliases.
  */
 static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
                                      uint32_t line,
@@ -4015,11 +4015,21 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     ast.operation.require_op.import_prefixes = new char*[modules.size()];
     ast.operation.require_op.import_except_names = new char**[modules.size()];
     ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
+    ast.operation.require_op.import_only_names = new char**[modules.size()];
+    ast.operation.require_op.num_import_only_names = new uint64_t[modules.size()];
+    ast.operation.require_op.import_rename_from = new char**[modules.size()];
+    ast.operation.require_op.import_rename_to = new char**[modules.size()];
+    ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
     for (size_t i = 0; i < modules.size(); i++) {
         ast.operation.require_op.module_names[i] = parser_copy_cstr(modules[i]);
         ast.operation.require_op.import_prefixes[i] = nullptr;
         ast.operation.require_op.import_except_names[i] = nullptr;
         ast.operation.require_op.num_import_except_names[i] = 0;
+        ast.operation.require_op.import_only_names[i] = nullptr;
+        ast.operation.require_op.num_import_only_names[i] = 0;
+        ast.operation.require_op.import_rename_from[i] = nullptr;
+        ast.operation.require_op.import_rename_to[i] = nullptr;
+        ast.operation.require_op.num_import_renames[i] = 0;
     }
     return ast;
 }
@@ -4028,10 +4038,8 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
  * @brief Builds an ESHKOL_REQUIRE_OP AST for a set of parsed R7RS import specs, wiring up per-module prefix/except data.
  *
  * Delegates module-name collection to make_require_ast(), then for each
- * spec whose prefix should apply to the *whole* module (i.e. it has a
- * @c prefix but no @c only list and no @c renames — those cases instead
- * generate individual alias defines via append_r7rs_import_forms()),
- * fills in that module's import prefix and except-name list.
+ * spec fills in the complete import-set metadata. No compatibility aliases
+ * are generated: consumers resolve these names to the provider BindingId.
  */
 static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& specs,
                                           uint32_t line,
@@ -4045,10 +4053,6 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
     eshkol_ast_t ast = make_require_ast(modules, line, column);
     for (size_t i = 0; i < specs.size(); i++) {
         const auto& spec = specs[i];
-        const bool defer_prefix_all =
-            !spec.prefix.empty() && spec.only.empty() && spec.renames.empty();
-        if (!defer_prefix_all) continue;
-
         ast.operation.require_op.import_prefixes[i] = parser_copy_cstr(spec.prefix);
         if (!spec.except.empty()) {
             ast.operation.require_op.num_import_except_names[i] = spec.except.size();
@@ -4058,44 +4062,22 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
                     parser_copy_cstr(spec.except[j]);
             }
         }
+        if (!spec.only.empty()) {
+            ast.operation.require_op.num_import_only_names[i] = spec.only.size();
+            ast.operation.require_op.import_only_names[i] = new char*[spec.only.size()];
+            for (size_t j = 0; j < spec.only.size(); ++j)
+                ast.operation.require_op.import_only_names[i][j] = parser_copy_cstr(spec.only[j]);
+        }
+        if (!spec.renames.empty()) {
+            ast.operation.require_op.num_import_renames[i] = spec.renames.size();
+            ast.operation.require_op.import_rename_from[i] = new char*[spec.renames.size()];
+            ast.operation.require_op.import_rename_to[i] = new char*[spec.renames.size()];
+            for (size_t j = 0; j < spec.renames.size(); ++j) {
+                ast.operation.require_op.import_rename_from[i][j] = parser_copy_cstr(spec.renames[j].from);
+                ast.operation.require_op.import_rename_to[i][j] = parser_copy_cstr(spec.renames[j].to);
+            }
+        }
     }
-    return ast;
-}
-
-/**
- * @brief Builds an ESHKOL_DEFINE_OP AST that defines @p alias as a plain variable bound to the value of @p source.
- *
- * Used to lower R7RS `rename` and prefixed `only` import-set entries into
- * `(define alias source)` forms so the renamed/prefixed name resolves to
- * the underlying imported binding.
- */
-static eshkol_ast_t make_define_alias_ast(const std::string& alias,
-                                           const std::string& source,
-                                           uint32_t line,
-                                           uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_OP;
-    stamp_node(ast, line, column);
-    ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = parser_copy_cstr(alias);
-    ast.operation.define_op.value = new eshkol_ast_t;
-    *ast.operation.define_op.value = make_parser_var_ast(source.c_str(), line, column);
-    ast.operation.define_op.is_function = 0;
-    ast.operation.define_op.parameters = nullptr;
-    ast.operation.define_op.num_params = 0;
-    ast.operation.define_op.is_variadic = 0;
-    ast.operation.define_op.rest_param = nullptr;
-    ast.operation.define_op.is_external = 0;
-    ast.operation.define_op.return_type = nullptr;
-    ast.operation.define_op.param_types = nullptr;
-    ast.operation.define_op.link_section = nullptr;
-    ast.operation.define_op.alignment = 0;
-    ast.operation.define_op.has_alignment = 0;
-    ast.operation.define_op.is_used = 0;
-    ast.operation.define_op.is_weak = 0;
-    ast.operation.define_op.export_symbol = 0;
-    ast.operation.define_op.export_name = nullptr;
-    ast.operation.define_op.is_no_return = 0;
     return ast;
 }
 
@@ -4479,61 +4461,24 @@ static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
 }
 
 /**
- * @brief Checks whether @p name is listed in @p spec's `except` names (from an R7RS `(except <set> name...)` import set).
- */
-static bool r7rs_name_is_excepted(const R7rsImportSpec& spec,
-                                  const std::string& name) {
-    return std::find(spec.except.begin(), spec.except.end(), name) != spec.except.end();
-}
-
-/**
- * @brief Lowers parsed R7RS import specs into a sequence of AST forms, appending them to @p forms.
+ * @brief Lowers parsed R7RS import specs to one metadata-bearing require form.
  *
- * First appends a single require-all form (via make_r7rs_require_ast()).
- * Then, for each spec's rename pairs not excluded via `except`, appends a
- * `(define new old)` alias (make_define_alias_ast()) so the renamed binding
- * is visible under its new name. If a spec has a non-empty `prefix`, also
- * appends a `(define prefix+name name)` alias for each of its `only` names
- * that wasn't already covered by a rename, so prefixed names resolve
- * correctly (per-module prefix-of-everything is instead handled directly by
- * make_r7rs_require_ast() when there is no `only`/`renames` narrowing).
+ * Binding modifiers are retained on the require node. The old compatibility
+ * lowering emitted value-copying `define` forms, which lost provider identity
+ * and made the compiler, VM, and tools disagree about imported bindings.
  */
 static void append_r7rs_import_forms(const std::vector<R7rsImportSpec>& specs,
                                      std::vector<eshkol_ast_t>* forms,
                                      uint32_t line,
                                      uint32_t column) {
     forms->push_back(make_r7rs_require_ast(specs, line, column));
-
-    for (const auto& spec : specs) {
-        for (const auto& rename : spec.renames) {
-            if (r7rs_name_is_excepted(spec, rename.from)) continue;
-            forms->push_back(make_define_alias_ast(spec.prefix + rename.to,
-                                                   rename.from, line, column));
-        }
-
-        if (spec.prefix.empty()) continue;
-        for (const auto& name : spec.only) {
-            if (r7rs_name_is_excepted(spec, name)) continue;
-            bool renamed = false;
-            for (const auto& rename : spec.renames) {
-                if (rename.from == name) {
-                    renamed = true;
-                    break;
-                }
-            }
-            if (!renamed) {
-                forms->push_back(make_define_alias_ast(spec.prefix + name,
-                                                       name, line, column));
-            }
-        }
-    }
 }
 
 /**
  * @brief Builds the AST for a top-level R7RS `import` form from its parsed import specs.
  *
- * Lowers @p specs into a require form plus any alias defines (via
- * append_r7rs_import_forms()) and wraps them into a single AST node with
+ * Lowers @p specs into a metadata-bearing require form and wraps it into a
+ * single AST node with
  * make_sequence_or_null_ast().
  */
 static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& specs,
@@ -10097,6 +10042,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.require_op.import_prefixes = new char*[modules.size()];
             ast.operation.require_op.import_except_names = new char**[modules.size()];
             ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
+            ast.operation.require_op.import_only_names = new char**[modules.size()];
+            ast.operation.require_op.num_import_only_names = new uint64_t[modules.size()];
+            ast.operation.require_op.import_rename_from = new char**[modules.size()];
+            ast.operation.require_op.import_rename_to = new char**[modules.size()];
+            ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
             for (size_t i = 0; i < modules.size(); i++) {
                 { size_t _len = modules[i].length();
                 ast.operation.require_op.module_names[i] = new char[_len + 1];
@@ -10104,6 +10054,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.require_op.import_prefixes[i] = nullptr;
                 ast.operation.require_op.import_except_names[i] = nullptr;
                 ast.operation.require_op.num_import_except_names[i] = 0;
+                ast.operation.require_op.import_only_names[i] = nullptr;
+                ast.operation.require_op.num_import_only_names[i] = 0;
+                ast.operation.require_op.import_rename_from[i] = nullptr;
+                ast.operation.require_op.import_rename_to[i] = nullptr;
+                ast.operation.require_op.num_import_renames[i] = 0;
             }
 
             return ast;

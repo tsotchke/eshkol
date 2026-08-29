@@ -70,8 +70,7 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
     auto& context = ctx_.context();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -178,8 +177,7 @@ llvm::Value* TensorCodegen::createTensorFromDimsArray(llvm::Value* dims_ptr,
     auto& builder = ctx_.builder();
     auto& context = ctx_.context();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
 
@@ -422,7 +420,7 @@ llvm::Value* TensorCodegen::tensorCast(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
-    llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* ptr_int = tagged_.unpackInt64(t);
     llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
     llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_cast_alloc");
@@ -581,8 +579,7 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     llvm::Value* cons_ptr = builder.CreateIntToPtr(list_ptr_int, ctx_.ptrType());
 
     llvm::Function* mt_arena_alloc = mem_.getArenaAllocate();
-    llvm::Value* mt_list_arena = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* mt_list_arena = ctx_.currentArena();
     // Size the dims array from the shape list itself: a fixed 16-entry array
     // silently truncated any shape of rank > 16 (see eshkol_cons_list_dim_count).
     auto* mt_count_ft = llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false);

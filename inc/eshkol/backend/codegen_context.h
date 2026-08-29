@@ -274,6 +274,16 @@ public:
     llvm::GlobalVariable* globalArena() { return global_arena_; }
     void setGlobalArena(llvm::GlobalVariable* arena) { global_arena_ = arena; }
 
+    // Allocation sites must query the calling thread. Returning the old
+    // process-global slot here would make a nested region on one worker
+    // visible to another worker.
+    llvm::Value* currentArena() {
+        llvm::FunctionType* type = llvm::FunctionType::get(ptrType(), {}, false);
+        llvm::FunctionCallee accessor = module_.getOrInsertFunction(
+            "eshkol_current_arena", type);
+        return builder_.CreateCall(accessor, {}, "arena");
+    }
+
     /**
      * Single accessor for "the arena that allocations should currently target".
      *

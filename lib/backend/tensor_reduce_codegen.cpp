@@ -912,8 +912,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // matmul writes double bit patterns here; AD-mode matmul writes AD node
     // pointers in the same int64 element slots.
     llvm::Value* c_total = ctx_.builder().CreateMul(a_rows, b_cols);
-    llvm::Value* dot_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* dot_arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
     llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {dot_arena_ptr}, "dot_tensor");
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
@@ -1189,8 +1188,7 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-apply");
 
     // Create result tensor with same dimensions using arena
-    llvm::Value* apply_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* apply_arena_ptr = ctx_.currentArena();
 
     // Allocate tensor struct with header
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -1580,7 +1578,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Declare eshkol_xla_reduce runtime function
     auto* ptrTy = ctx_.ptrType();
@@ -1640,7 +1638,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         builder.CreateCondBr(in_ad_mode, ad_block, numeric_block);
 
         builder.SetInsertPoint(ad_block);
-        llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Function* arena_alloc = mem_.getArenaAllocate();
         llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
         llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "axis_reduce_ad_tensor");
@@ -1814,7 +1812,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
 
         builder.SetInsertPoint(numeric_block);
 
-        llvm::Value* numeric_arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* numeric_arena_ptr = ctx_.currentArena();
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -1836,7 +1834,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     }
 
     // Load arena and declare runtime
-    llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     auto* ptrTy = ctx_.ptrType();
     auto* i64Ty = ctx_.int64Type();
     llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,

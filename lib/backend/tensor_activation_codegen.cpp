@@ -56,8 +56,7 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "relu");
@@ -200,8 +199,7 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "sigmoid");
@@ -411,7 +409,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
             builder.CreateCondBr(in_ad_mode, ad_path, numeric_path);
 
             builder.SetInsertPoint(ad_path);
-            llvm::Value* ad_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+            llvm::Value* ad_arena = ctx_.currentArena();
             llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
             llvm::Function* arena_alloc = mem_.getArenaAllocate();
             llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {ad_arena}, "softmax_axis_ad_result");
@@ -563,7 +561,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
             llvm::BasicBlock* ad_exit = builder.GetInsertBlock();
 
             builder.SetInsertPoint(numeric_path);
-            llvm::Value* numeric_arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+            llvm::Value* numeric_arena = ctx_.currentArena();
             auto* ptrTy = ctx_.ptrType();
             auto* i64Ty = ctx_.int64Type();
             llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -582,7 +580,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
             return result_phi;
         }
 
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -596,8 +594,7 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "softmax");
@@ -918,8 +915,7 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "gelu");
@@ -1115,8 +1111,7 @@ llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "leaky-relu");
@@ -1253,8 +1248,7 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     if (!tensor_val) return nullptr;
     auto& builder = ctx_.builder();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "silu");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1365,8 +1359,7 @@ llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
         alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "elu");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1483,8 +1476,7 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
 
     auto& builder = ctx_.builder();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "selu");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1604,8 +1596,7 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
 
     auto& builder = ctx_.builder();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "mish");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1735,8 +1726,7 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
 
     auto& builder = ctx_.builder();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "hard-swish");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1835,8 +1825,7 @@ llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
 
     auto& builder = ctx_.builder();
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "hard-sigmoid");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -1945,8 +1934,7 @@ llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
         beta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "softplus");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -2076,8 +2064,7 @@ llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
     llvm::Value* p = tagged_.unpackDouble(p_tagged);
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "dropout");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -2204,8 +2191,7 @@ llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
         alpha = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "celu");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -2317,8 +2303,7 @@ llvm::Value* TensorCodegen::tensorSoftmaxBackward(llvm::Value* softmax_output, l
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack softmax output tensor
     llvm::Value* softmax_ptr_int = tagged_.unpackInt64(softmax_output);
@@ -2447,8 +2432,7 @@ llvm::Value* TensorCodegen::tensorReluBackward(llvm::Value* input, llvm::Value* 
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr_int = tagged_.unpackInt64(input);
@@ -2545,8 +2529,7 @@ llvm::Value* TensorCodegen::tensorSigmoidBackward(llvm::Value* sigmoid_output, l
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack sigmoid output tensor
     llvm::Value* sig_ptr_int = tagged_.unpackInt64(sigmoid_output);
@@ -2644,8 +2627,7 @@ llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* 
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr_int = tagged_.unpackInt64(input);
@@ -2770,8 +2752,7 @@ llvm::Value* TensorCodegen::tensorLeakyReluBackward(llvm::Value* input, llvm::Va
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr_int = tagged_.unpackInt64(input);
@@ -2870,8 +2851,7 @@ llvm::Value* TensorCodegen::tensorSiluBackward(llvm::Value* input, llvm::Value* 
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr_int = tagged_.unpackInt64(input);

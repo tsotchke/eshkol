@@ -71,8 +71,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "max-pool2d");
@@ -357,8 +356,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Value* input_ptr = unpackTensorOperandChecked(input_val, "avg-pool2d");
     llvm::Type* tensor_type = ctx_.tensorType();
@@ -623,8 +621,7 @@ llvm::Value* TensorCodegen::conv1d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -839,8 +836,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
         stride = builder.CreateSExtOrTrunc(stride_arg, ctx_.int64Type());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -1425,7 +1421,7 @@ llvm::Value* TensorCodegen::emitNumericNormalize(llvm::Value* input_val,
     auto* dblTy = ctx_.doubleType();
     auto* tvTy = ctx_.taggedValueType();
 
-    llvm::Value* arena = builder.CreateLoad(ptrTy, ctx_.globalArena());
+    llvm::Value* arena = ctx_.currentArena();
 
     // Store the tagged input/gamma/beta into stack slots so the runtime can
     // decode them (scalar vs tensor) from a pointer.
@@ -1491,7 +1487,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
         if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         (void)arena;
         llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -1585,8 +1581,7 @@ llvm::Value* TensorCodegen::batchNorm(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -1724,7 +1719,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         if (eps_arg->getType() == ctx_.taggedValueType()) eps_d = tagged_.unpackDouble(eps_arg);
         else if (eps_arg->getType()->isIntegerTy(64)) eps_d = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
 
-        llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena = ctx_.currentArena();
         (void)arena;
         llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -1816,8 +1811,7 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
         epsilon = builder.CreateSIToFP(eps_arg, ctx_.doubleType());
     }
 
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Unpack input tensor
