@@ -306,7 +306,8 @@ private:
     void registerStdlibSymbols();
 
     // Load a module, optionally preferring the precompiled stdlib object path.
-    bool loadModule(const std::string& module_name, bool allow_precompiled_stdlib);
+    bool loadModule(const std::string& module_name, bool allow_precompiled_stdlib,
+                    bool enforce_visibility = true);
 
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);

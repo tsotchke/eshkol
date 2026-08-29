@@ -282,9 +282,9 @@ Usage: eshkol-run [options] <input.esk|input.o> [input.esk|input.o]
 | `--compile-only` | `-c` | Compile to object file only (no linking) |
 | `--emit-object` | | Alias for `--compile-only`; intended for build-system integrations |
 | `--shared-lib` | `-s` | Link a loadable shared library; add `-c`/`--emit-object` for a library-mode object instead |
-| `-fPIC` | | Accepted for build-system compatibility when emitting objects |
+| `-fPIC` | | Emit position-independent native AOT object code; redundant for WebAssembly and artifactless `-r` / `-e` |
 | `-I <dir>` | | Add a source/module search path for `load` and `require` resolution |
-| `-D NAME[=VALUE]` | | Accepted for build-system compatibility; defines are not source semantics yet |
+| `-D NAME[=VALUE]` | | Define a compile-time feature visible to `cond-expand`; the optional value is accepted for build-tool compatibility |
 | `--wasm` | `-w` | Compile to WebAssembly (`.wasm`) format |
 | `--eval <expr>` | `-e` | JIT evaluate an expression and print the result |
 | `--run` | `-r` | JIT run a file (interpret without creating a binary) |
@@ -339,11 +339,12 @@ This contract is intentionally CMake-friendly:
   wants. On its own it links a loadable shared library whose exports use the
   platform C ABI instead.
 - `-I dir` extends Eshkol's module/source search path.
-- `-D NAME[=VALUE]` is accepted for compatibility with existing build rules,
-  but preprocessor-style defines are not part of Eshkol source semantics yet.
-- `-fPIC` selects the position-independent object contract; emitted LLVM object
-  code already uses the PIC relocation model on this path, so the flag is a
-  compatibility spelling rather than an additional transformation.
+- `-D NAME[=VALUE]` defines a compile-time feature visible to `cond-expand` on
+  native and VM compilation paths.
+- `-fPIC` requests the native AOT PIC object contract. Native object emission
+  already selects LLVM's PIC relocation model; WebAssembly is always
+  position-independent and artifactless `-r` / `-e` paths have no object to
+  relocate.
 
 ---
 

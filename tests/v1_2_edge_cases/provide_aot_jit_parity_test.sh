@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
-# provide_aot_jit_parity_test.sh — Bug Z regression (filed 2026-04-30,
-# closed by Eshkol 1235e0a).
+# provide_aot_jit_parity_test.sh — `load` remains an inline inclusion form.
 #
-# Pre-fix: `(provide pub)` was an informational declaration in JIT
-# mode but a hard export boundary in AOT mode.  Code that worked
-# under `eshkol-run -r` would `Unknown function: priv` under
-# `eshkol-run` (AOT).  Noesis had 65 files using `(load ...)` to
-# expose the full module, all of which silently broke under AOT.
+# `provide` establishes an export boundary for `(require ...)` and
+# `(import ...)`, but `(load ...)` deliberately includes a file in the
+# current top-level environment. This test protects that distinction
+# in both native execution modes.
 #
-# This test asserts that `provide` is informational in BOTH modes:
-# `(load ...)` exposes everything in the file.  If a strict-export
-# mode is desired in the future, it should be opted into via a
-# separate keyword (e.g. `(export ...)`).
+# Keep all run artifacts in the repository's isolated scratch root.
 
 set -u
 
@@ -23,8 +18,15 @@ if [ ! -x "$RUN" ]; then
     exit 0
 fi
 
-WORK=$(mktemp -d -t eshkol_provide_parity_test.XXXXXX)
-trap 'rm -rf "$WORK" /tmp/provide_parity_aot.$$' EXIT
+export ESHKOL_TEST_TMP_ROOT="$ROOT/.scratch"
+ISO="$ROOT/scripts/lib/test_isolation.sh"
+[ -r "$ISO" ] || { echo "FAIL: cannot read $ISO" >&2; exit 1; }
+source "$ISO"
+eshkol_test_isolation_init "provide-aot-jit-parity"
+trap eshkol_test_isolation_cleanup EXIT
+
+WORK="$ESHKOL_TEST_TMPDIR/work"
+mkdir -p "$WORK"
 
 cat > "$WORK/lib.esk" <<EOF
 (provide pub)
@@ -38,9 +40,8 @@ cat > "$WORK/main.esk" <<EOF
 (display "pub-result: ") (display (pub)) (newline)
 EOF
 
-# Both modes must print the same two lines.  Under AOT a non-zero
-# exit or "Unknown function: priv" indicates the regression has
-# returned.
+# Both modes must print the same two lines because load has no module
+# boundary. The require/import boundary is covered by visibility tests.
 EXPECTED=$'priv-result: 42\npub-result: 84'
 
 # JIT
@@ -53,7 +54,7 @@ if [ "$JIT_OUT" != "$EXPECTED" ]; then
 fi
 
 # AOT
-AOT_BIN="/tmp/provide_parity_aot.$$"
+AOT_BIN="$WORK/provide_parity_aot"
 "$RUN" "$WORK/main.esk" -o "$AOT_BIN" >/dev/null 2>&1
 if [ ! -x "$AOT_BIN" ]; then
     echo "FAIL: AOT compile produced no binary"
@@ -67,5 +68,5 @@ if [ "$AOT_OUT" != "$EXPECTED" ]; then
     exit 1
 fi
 
-echo "PASS: provide is informational in both JIT and AOT"
+echo "PASS: load remains inline in both JIT and AOT"
 exit 0

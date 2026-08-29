@@ -4331,6 +4331,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: debug_info_emission_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dd10_surface_test.sh")
+        add_test(
+            NAME dd10_surface_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dd10_surface_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(dd10_surface_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: dd10_surface_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/shared_lib_abi_test.sh")
         # `--shared-lib` promises a library a C host can dlopen and call. Eshkol's

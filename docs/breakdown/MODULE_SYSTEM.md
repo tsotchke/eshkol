@@ -34,7 +34,7 @@ A module file declares its public interface using one or more `provide` forms at
       (cons (f (car lst)) (map f (cdr lst)))))
 ```
 
-`provide` is a declaration-level directive processed by the compiler. It does not generate any runtime code. Its purpose is to make the linker-visible symbol name predictable and to support tooling such as the LSP server.
+`provide` is a declaration-level directive processed by the compiler. It does not generate any runtime code. It defines the import boundary: names omitted from a module with `provide` are private on native and VM engines. A module without `provide` retains the legacy rule that all definitions are importable.
 
 ### 2.2 Consuming Modules: `require`
 
@@ -441,7 +441,7 @@ This guarantees that every definition appears in `result` before any use of it, 
 
 **Module names are flat strings, not hierarchical objects.** `core.list.transform` is simply the string `"core.list.transform"` in `precompiled_modules`. There is no namespace object or module-level environment at runtime.
 
-**`provide` is not enforced at compile time.** A module can `define` a symbol without `provide`-ing it, and other modules can still use it if they know the name. `provide` is advisory for tooling; the compiler does not generate linkage restrictions based on it.
+**`provide` is enforced at compile time.** A module can define private helpers without exporting them, but an importer that names one receives a compile-time visibility error. The module's own definitions and dependent modules' provided names remain available inside the module during compilation.
 
 **Relative requires are not supported.** All module paths are resolved relative to the search path, never relative to the requiring file's location. This avoids ambiguity in deeply nested module trees.
 

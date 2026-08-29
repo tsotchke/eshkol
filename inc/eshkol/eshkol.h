@@ -2560,6 +2560,7 @@ typedef struct eshkol_operation {
 	           char **import_prefixes;           // Optional R7RS bare-prefix aliases per module
 	           char ***import_except_names;       // Optional R7RS except lists per module
 	           uint64_t *num_import_except_names; // Lengths for import_except_names entries
+	           uint8_t is_load;                  // True for inline `(load ...)`, not module import
 	       } require_op;
 	       struct {
 	           char **export_names;              // Array of exported symbol names

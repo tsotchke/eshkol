@@ -1,0 +1,3 @@
+(cond-expand
+  (DD10_FEATURE (display "PASS: -D feature") (newline))
+  (else (display "FAIL: -D feature") (newline)))

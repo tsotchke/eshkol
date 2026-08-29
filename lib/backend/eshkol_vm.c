@@ -1478,6 +1478,7 @@ typedef struct VmEskbEmitOptions {
 static void compile_source_to_chunk_with_options(const char* source,
                                                  FuncChunk* chunk,
                                                  const VmEskbEmitOptions* options) {
+    g_vm_n_private_imports = 0;
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
 

@@ -11820,6 +11820,19 @@ private:
             }
         }
 
+        // A module-private variable is still present in global_symbol_table so
+        // its defining module can read it. Apply the visibility check before
+        // consulting that table for an importing compilation unit.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(var_name) > 0) {
+                eshkol_error("Variable '%s' is private (not exported from its module)",
+                             var_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
+
         // GLOBAL SYMBOL TABLE FIX: Check global_symbol_table for top-level defines
         // Top-level defines (constants, functions) are stored in global_symbol_table
         // but may not be in local symbol_table inside nested lambdas
@@ -18756,6 +18769,22 @@ private:
             }
         }
 
+        // A module-private function may also be present in function_table
+        // after its defining module was loaded. Refuse it before any global
+        // or function-table lookup can turn that implementation detail into
+        // an importer-visible binding. The defining module is compiled before
+        // it registers its private names, so its own references remain valid.
+        if (g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
+            }
+        }
+
         // Step 2: Check global function_table if not found locally. A local
         // variable binding in call position must shadow any same-named global
         // helper; otherwise local letrec closures such as `mul` can briefly
@@ -18947,6 +18976,21 @@ private:
                              repl_is_variadic ? repl_fixed_params : num_call_args,
                              num_call_args);
                 return result;
+            }
+        }
+
+        // A module-private function is still present in global_symbol_table so
+        // its defining module can call it. Check the REPL visibility registry
+        // before consulting that table, otherwise an importer can bypass the
+        // private-symbol guard simply because the function was already JITed.
+        if (!callee && g_repl_mode_enabled) {
+            std::lock_guard<std::mutex> lock(g_repl_mutex);
+            if (g_repl_private_symbols.count(func_name) > 0 ||
+                g_repl_private_symbols.count(func_key) > 0) {
+                eshkol_error("Function '%s' is private (not exported from its module)",
+                             func_name.c_str());
+                markFatalCodegenError();
+                return nullptr;
             }
         }
 

@@ -41,6 +41,10 @@ cwd-rooted resolution fails on a different answer rather than a missing file.
 (provide name …)     ; in the providing file: export these names
 (require module)      ; in the consuming file: load module and import its provides
 ```
+When a module has a `provide` form, only the listed names are visible to
+importers; definitions omitted from it remain private on native and VM engines.
+If no `provide` form is present, all definitions retain the legacy importable
+surface.
 A module name maps to a file path: `core.list.transform` → `core/list/transform.esk`,
 `greet` → `greet.esk`.
 

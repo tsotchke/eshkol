@@ -74,6 +74,7 @@ static void vm_raise_error_msg(VM* vm, const char* msg);
  * the derivation, the convergence criterion and why the gate is measured in
  * Riemannian units. */
 #include "eshkol/backend/frechet_mean_core.h"
+#include "eshkol/backend/riemannian_core.h"
 
 /**
  * @brief Shared implementation of native id 817 for both the portable and the
@@ -613,11 +614,40 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         break;
     }
     case 812: case 843: { /* parallel/vector transport(x, y, v, curvature) */
-        (void)as_number(vm_pop(vm));
+        double curvature = as_number(vm_pop(vm));
         VmTensor* v = vm_get_tensor(vm, vm_pop(vm));
-        (void)vm_pop(vm); /* y */
-        (void)vm_pop(vm); /* x */
-        vm_push_tensor_or_nil(vm, vm_tensor_copy_for_geometry(vm, v));
+        VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
+        if (!x || !y || !v || !x->data || !y->data || !v->data ||
+            x->total != y->total || x->total != v->total || x->total <= 0) {
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, v->shape, v->n_dims);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (curvature < 0.0) {
+            const int n = (int)x->total;
+            double* negative_x = (double*)vm_alloc(
+                &vm->heap.regions, (size_t)n * sizeof(double));
+            if (!negative_x) { vm_push(vm, NIL_VAL); break; }
+            for (int i = 0; i < n; ++i) negative_x[i] = -x->data[i];
+            const double ball_parameter = -curvature;
+            const double x_denominator =
+                1.0 - ball_parameter * eshkol_rm_dot(x->data, x->data, n);
+            const double y_denominator =
+                1.0 - ball_parameter * eshkol_rm_dot(y->data, y->data, n);
+            if (x_denominator == 0.0 || y_denominator == 0.0) {
+                vm_push(vm, NIL_VAL);
+                break;
+            }
+            eshkol_rm_gyration(y->data, negative_x, v->data,
+                               ball_parameter, n, out->data);
+            const double conformal_ratio = y_denominator / x_denominator;
+            for (int i = 0; i < n; ++i) out->data[i] *= conformal_ratio;
+        } else {
+            for (int64_t i = 0; i < v->total; ++i) out->data[i] = v->data[i];
+        }
+        vm_push_tensor_or_nil(vm, out);
         break;
     }
     case 813: { /* manifold-project(x, curvature) */

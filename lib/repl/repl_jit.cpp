@@ -2979,7 +2979,9 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
  * resolved path via the loaded_modules set.
  * @return true on success; false if the module cannot be found/opened.
  */
-bool ReplJITContext::loadModule(const std::string& module_name, bool allow_precompiled_stdlib) {
+bool ReplJITContext::loadModule(const std::string& module_name,
+                               bool allow_precompiled_stdlib,
+                               bool enforce_visibility) {
     // Check if already loaded by NAME first (for stdlib.o preloaded modules)
     if (loaded_modules.count(module_name)) {
         return true;  // Already loaded via stdlib.o
@@ -3079,7 +3081,7 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     // Delay registering them with codegen until after the module finishes compiling
     // so internal forward references still work while loading the module itself.
     std::vector<std::string> private_symbols_to_register;
-    if (has_provide) {
+    if (enforce_visibility && has_provide) {
         for (const auto& sym : defined_symbols) {
             if (exported_symbols.find(sym) == exported_symbols.end()) {
                 private_symbols_.insert(sym);
@@ -3858,6 +3860,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         // Handle (require module.name ...)
         // Use loadModule which now does proper two-pass batch loading
         if (ast->operation.op == ESHKOL_REQUIRE_OP) {
+            const bool inline_load = ast->operation.require_op.is_load != 0;
             std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
@@ -3874,7 +3877,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                     continue;
                 }
 
-                if (!loadModule(module_name)) {
+                if (!loadModule(module_name, true, !inline_load)) {
                     uint32_t defined_at = 0;
                     if (eshkol::library_registry::plannedLater(module_name, &defined_at)) {
                         throw std::runtime_error(
