@@ -2243,6 +2243,7 @@ Alphabetical index of every public symbol found in `inc/eshkol/**/*.h`. Generate
 | [`eshkol_vm_host_push_int64`](backend/vm.md) | Function | `backend/vm.h` | no |
 | [`eshkol_vm_install_host_natives`](backend/vm.md) | Function | `backend/vm.h` | no |
 | [`eshkol_vm_install_limits`](backend/vm.md) | Function | `backend/vm.h` | yes |
+| [`eshkol_vm_install_tensor_limit`](backend/vm.md) | Function | `backend/vm.h` | no |
 | [`eshkol_vm_install_linear_check`](backend/vm.md) | Function | `backend/vm.h` | no |
 | [`ESHKOL_VM_IS_PACKED_LITERAL_FID`](backend/vm_limits.md) | Macro | `backend/vm_limits.h` | no |
 | [`eshkol_vm_load_chunk`](backend/vm.md) | Function | `backend/vm.h` | no |

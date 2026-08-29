@@ -76,7 +76,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
-| [`backend/vm.h`](backend/vm.md) | 45 | 1 |
+| [`backend/vm.h`](backend/vm.md) | 48 | 1 |
 | [`backend/vm_limits.h`](backend/vm_limits.md) | 21 | 0 |
 | [`backend/work_stealing_deque.h`](backend/work_stealing_deque.md) | 80 | 37 |
 
