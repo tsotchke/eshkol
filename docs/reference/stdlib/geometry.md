@@ -132,7 +132,7 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `mobius-scalar-mul` | 815 | 3 | tensor | `r * x` (K discarded) |
 | `poincare-distance` | 816 | 3 | float | L2 distance (same case as 811) |
 | `frechet-mean` | 817 | 3 | tensor | **real** weighted Karcher mean, gated; raises |
-| `great-circle-distance` | 819 | 2 | float | `acos` of the clamped normalised dot; raises at antipodes |
+| `great-circle-distance` | 819 | 2 | float | scale-invariant `atan2` angle; raises only at exact antipodes |
 | `slerp` | 820 | 3 | tensor | normalised `(1-t)x + t y` |
 | `spherical-exp` / `spherical-exp-map` | 821 | 2 | tensor | normalised `base + tangent` |
 | `spherical-log` / `spherical-log-map` | 822 | 2 | tensor | `point - base`; raises at antipodes |
@@ -399,9 +399,15 @@ Catch the refusal rather than let it propagate if the inputs are user data:
 
 ### `(great-circle-distance x y)` — id 819
 
-Two tensors of equal total size. Returns `acos(clamp(⟨x,y⟩ / (‖x‖‖y‖), −1, 1))`, and
-`0.0` if either norm is zero. An antipodal pair raises a named condition because
-the shortest geodesic is not unique. `()` on a size mismatch.
+Two tensors of equal total size. Each input is first normalized with a
+scale-invariant hypot norm, so raw products never overflow or underflow the
+angle calculation. The result is
+`atan2(sin(theta), 1 - ||y_hat - x_hat||²/2)`, where `sin(theta)` is evaluated
+from the norm of the pairwise cross products. This is `0.0` if either norm is
+zero. An antipodal pair raises a named condition because the shortest geodesic
+is not unique; the refusal is limited to vectors that are exactly negatively
+collinear after canonicalization, so genuine near-antipodes are still
+evaluated. `()` on a size mismatch.
 
 ```scheme
 (define x (make-tensor '(3) 1.0))

@@ -975,6 +975,30 @@ int main() {
                detail);
     }
     {
+        /* This is deliberately inside the former 8*(n+1)*epsilon cosine
+         * exclusion band: the point is near, but not at, the cut locus. */
+        const int n = 64;
+        const double eps = 1e-7;
+        std::vector<double> x(n, 0.0), y(n, 0.0);
+        x[0] = 1.0;
+        y[0] = -std::cos(eps);
+        y[1] = std::sin(eps);
+        Run r = run_single(x.data(), y.data(), n,
+                           ESHKOL_SPACE_FORM_SPHERICAL, 1.0);
+        const double theta = std::acos(-1.0) - eps;
+        const double drel = std::fabs(r.d2 - theta * theta) /
+                            (1.0 + theta * theta);
+        bool ok = r.ok && drel < 1e-14 &&
+                  std::fabs(r.gx[0]) < 1e-12 &&
+                  std::fabs(r.gx[1] + 2.0 * theta) < 1e-12;
+        char detail[128];
+        std::snprintf(detail, sizeof(detail),
+                      "d2 %.17g rel %.3e gx0 %.17g gx1 %.17g",
+                      r.d2, drel, r.gx[0], r.gx[1]);
+        report("audit: 64D near-antipode inside former tolerance band answers",
+               ok, detail);
+    }
+    {
         const double x[1] = { 0.0 };
         const double y[1] = { 3.0 };
         eshkol_manifold_factor_t f = {
