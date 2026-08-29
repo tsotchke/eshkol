@@ -192,6 +192,16 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
 // `eshkol_tensor_operand_checked`, so there is exactly one source of truth and
 // the per-op codegen stays a single call.
 // ─────────────────────────────────────────────────────────────────────────────
+llvm::Value* TensorCodegen::allocationArena() {
+    auto& b = ctx_.builder();
+    llvm::Value* current = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    if (!autodiff_) return current;
+    llvm::FunctionCallee home = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_home_arena",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    return b.CreateCall(home, {current}, "ad_home_arena");
+}
+
 /** @brief Type-checked unpack of a tensor operand to an `eshkol_tensor_t*`
  *         (see ESH-0069 note above): records the current source location
  *         for error reporting, coerces non-tagged operands to a tagged

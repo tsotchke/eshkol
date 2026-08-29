@@ -155,11 +155,33 @@ is a shrink-only ratchet on the tape size, and
 compiles
 [`tests/ad/dense_tensor_ad_gradcheck_test.esk`](../../../tests/ad/dense_tensor_ad_gradcheck_test.esk)
 under **both** lowerings — `ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0` — and
-requires their gradients to be byte-identical while the tape shrinks. The
+requires their parsed numeric gradients to agree within tolerance while the tape shrinks. The
 scalarizing lowering is retained precisely so that it can go on serving as that
 oracle; `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects it, and the choice is made at
 codegen time, so the two are two emitted programs rather than one program with
 a runtime branch.
+
+#### Dense-versus-scalar routing
+
+The compiled backend's dense resident-tape route is shape-specific:
+
+| Operation and shapes | Route in AD mode | Contract |
+|---|---|---|
+| `tensor-add`, `tensor-sub`, `tensor-mul`, `tensor-div` with equal ranks and dimensions | dense | one node; both numeric operands come from the densified f64 views |
+| The same elementwise operations with broadcast-compatible shapes, including leading rank promotion | dense broadcast | one node; output is preflighted and allocated at the exact broadcast total |
+| `matmul` with operand ranks 1 or 2, matching inner dimension, and overflow-safe products | dense | one `AD_NODE_MATMUL`; 1-D contraction follows PEP-465 result shape |
+| `batch-matmul` with rank-3 operands `[batch,M,K]` and `[batch,K,N]` | dense batched | one `AD_NODE_BATCH_MATMUL`; each batch has an independent VJP |
+| `transpose` of a dense rank-2 producer | dense consumer | one `AD_NODE_TRANSPOSE`; backward swaps the two matrix axes |
+| whole-tensor `tensor-sum`, `tensor-mean`, and `tensor-max` of a dense producer | dense reduction | one tensor node; max uses the documented last-winner subgradient at ties |
+| `matmul` rank greater than 2, incompatible shapes, or overflowed products | loud error | no `AD_NODE_MATMUL` is recorded |
+| convolution, attention, norm layers, and unsupported shape-changing consumers | scalarized or loud error at the call site | not admitted to the dense node contract |
+
+Dense operand buffers, result buffers, saved operands, packed scalar slots, and
+shape arrays retained by a tensor node are allocated from
+`eshkol_ad_home_arena`, the active tape's owner arena. This lifetime boundary
+makes a region exit unable to reclaim a live dense node payload. The dense max
+tie rule is a subgradient convention, not an assertion that the ordinary
+derivative exists at a tie.
 
 **Still scalarizing** (unchanged, and correct — the scalar decomposition has
 always produced exact gradients; what it costs is tape size): `conv2d`,
