@@ -1,0 +1,28 @@
+id: SW-128
+bucket: SILENT-WRONG
+status: closed
+closed_at: "171928a0+worktree-fix-agent-process-ffi"
+title: "Binary subprocess output was copied as a NUL-terminated C string"
+repro: >-
+  Spawn `printf 'left\\0right'` through `process-spawn-shell`, then read
+  with `process-read-stdout-bytes`.
+observed: >-
+  C-string conversion stopped at the embedded NUL and returned only `left`
+  despite the child writing 10 bytes; the child could still exit 0.
+correct: >-
+  Native read length crosses the FFI with the owned buffer and the binding
+  uses `ptr->string-n`, yielding `left\\0right` and native length 10.
+observed_after: >-
+  The handle records the last stdout/stderr byte count, bytes wrappers
+  return `(bytes . native-byte-length)`, and ordinary string wrappers use
+  the same length-aware copy.
+fixed_by: >-
+  `qllm_process_last_stdout_read_length`,
+  `qllm_process_last_stderr_read_length`, and the
+  `process-read-*-bytes` wrappers.
+evidence: >-
+  `tests/v1_2_edge_cases/subprocess_shell_argv_test.sh` checks the exact
+  embedded-NUL reduction and native length 10 on the remote Linux AOT/JIT
+  harness; the remote run reports the binary check PASS.
+caught_by: [consumer-triage, direct-measurement]
+missed_by: [icc-readiness, prior-owned-c-string-regression]

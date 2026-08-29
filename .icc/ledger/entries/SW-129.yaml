@@ -1,0 +1,29 @@
+id: SW-129
+bucket: SILENT-WRONG
+status: closed
+closed_at: "171928a0+worktree-fix-agent-process-ffi"
+title: "term-read-key-timeout conflated timeout, EOF, and I/O error"
+repro: >-
+  Invoke `term-read-key-timeout` with empty input, closed input, and an
+  invalid input descriptor.
+observed: >-
+  All three low-level outcomes returned `-1`; a high-level caller could
+  treat EOF or I/O failure as an ordinary timeout and continue.
+correct: >-
+  Timeout, EOF, and I/O error are distinct statuses in the high-level
+  result, while raw integer access remains available for compatibility.
+observed_after: >-
+  The high-level result reports `timeout`, `eof`, `io-error`, or `key`,
+  and the native status test observes -1, -2, and -3 respectively.
+fixed_by: >-
+  Status constants and POSIX/Windows result codes in
+  `lib/agent/c/agent_terminal.c`, plus the tagged result in
+  `lib/agent/terminal.esk`.
+evidence: >-
+  `tests/agent/agent_terminal_status_test.c` covers timeout, EOF, and
+  invalid-descriptor I/O error on the remote Linux host; its output is
+  `PASS: terminal read distinguishes timeout, EOF, and I/O error`.
+  `tests/v1_2_edge_cases/terminal_read_status_test.esk` checks the tagged
+  high-level shape.
+caught_by: [consumer-triage, direct-measurement]
+missed_by: [icc-readiness, prior-terminal-surface-test]

@@ -825,6 +825,9 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"process-spawn", 1780, 3}, {"process-wait", 1781, 1},
     {"process-spawn-with-env", 1780, 3},
+    {"process-spawn-argv-env", 1780, 3},
+    {"process-spawn-argv-options", 1803, 2},
+    {"process-spawn-argv-with-options", 1803, 2},
     {"process-kill", 1782, 2}, {"io-poll", 1783, 2},
     {"poll", 1783, 2}, {"process-pid", 1784, 0},
     {"process-setpgid", 1785, 2}, {"process-kill-tree", 1786, 2},

@@ -319,6 +319,8 @@ dereferenced the timeout as an address.
 | `process-spawn` | exactly 2 | `command` `cwd` |
 | `process-spawn-shell` | exactly 2 | `command` `cwd` |
 | `process-spawn-argv` | exactly 2 | `argv` `cwd` |
+| `process-spawn-argv-env` | exactly 3 | `argv` `cwd` `env` |
+| `process-spawn-argv-options` / `process-spawn-argv-with-options` | exactly 2 | `argv` `options` |
 | `process-wait` | exactly 2 | `handle` `timeout-ms` |
 | `process-write-stdin` | exactly 2 | `handle` `data` |
 | `process-read-stdout` / `process-read-stderr` | exactly 2 | `handle` `max-bytes` |

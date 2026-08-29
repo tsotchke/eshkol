@@ -668,6 +668,8 @@ process-pid	vm-supported
 process-read-nonblocking	vm-supported	
 process-setpgid	vm-supported	
 process-spawn	vm-supported	
+process-spawn-argv-env	vm-supported	Direct argv with an explicit environment overlay shares the process-spawn VM implementation.
+process-spawn-argv-options	vm-supported	Options form lowers to the same argv-env process implementation.
 process-spawn-pty	vm-supported	
 process-wait	vm-supported	
 promise?	vm-supported	

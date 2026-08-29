@@ -57,6 +57,27 @@
 (check "process-spawn-with-env propagates environment"
        (and child (= 0 (process-wait child))))
 
+;; The argv-env spelling has the same overlay semantics: direct argv execution
+;; receives the named variable and retains PATH for command lookup.
+(define argv-child
+  (process-spawn-argv-env
+    (list "/bin/sh" "-c"
+          "test \"$ESHKOL_ARGV_OVERLAY\" = yes && test -n \"$PATH\"")
+    "."
+    (list (cons "ESHKOL_ARGV_OVERLAY" "yes"))))
+(check "process-spawn-argv-env uses direct argv with environment overlay"
+       (and argv-child (= 0 (process-wait argv-child))))
+
+(define options-child
+  (process-spawn-argv-options
+    (list "/bin/sh" "-c" "test \"$ESHKOL_OPTIONS_OVERLAY\" = yes")
+    (list (cons 'cwd ".")
+          (cons 'env (list (cons "ESHKOL_OPTIONS_OVERLAY" "yes")))
+          (cons 'stdin 'null)
+          (cons 'process-group #t))))
+(check "process-spawn-argv-options matches argv-env"
+       (and options-child (= 0 (process-wait options-child))))
+
 (check "shell-split tokenizes deterministic words"
        (equal? (shell-split "alpha beta") (list "alpha" "beta")))
 

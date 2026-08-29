@@ -1,0 +1,30 @@
+id: SW-127
+bucket: SILENT-WRONG
+status: closed
+closed_at: "171928a0+worktree-fix-agent-process-ffi"
+title: "AOT process-spawn-argv ignored the requested environment overlay"
+repro: >-
+  `(process-spawn-argv-env (list "sh" "-c" "test
+  \"$ESHKOL_FFI_OVERLAY\" = overlay && test -n \"$PATH\"") "."
+  (list (cons "ESHKOL_FFI_OVERLAY" "overlay")))`.
+observed: >-
+  The native argv spawn had no environment-overlay API and inherited only
+  its scrubbed ambient environment; a child could return exit status 0
+  without observing the requested variable.
+correct: >-
+  Native/AOT and VM argv-env spawns overlay named string pairs on the
+  inherited environment, preserve unrelated entries such as PATH, and
+  return the child's real exit status.
+observed_after: >-
+  Both new APIs pass the overlay reduction on native/AOT and VM execution;
+  the child exits 0 only when the overlay variable and inherited PATH exist.
+fixed_by: >-
+  Packed environment ABI in `lib/agent/c/agent_subprocess.c`, wrappers in
+  `lib/agent/subprocess.esk`, and shared VM process dispatch in
+  `lib/backend/vm_native.c`/`lib/backend/eshkol_vm.c`.
+evidence: >-
+  `tests/v1_2_edge_cases/subprocess_shell_argv_test.sh` and
+  `tests/vm/remaining_system_surface_regression.esk`; the remote Linux
+  native and VM runs report the overlay and options checks PASS.
+caught_by: [consumer-triage, direct-measurement]
+missed_by: [icc-readiness, vm-parity-before-fix]

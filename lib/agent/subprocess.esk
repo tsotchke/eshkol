@@ -8,9 +8,12 @@
 (require core.capabilities)
 
 (provide process-spawn process-spawn-shell process-spawn-argv
+         process-spawn-argv-env process-spawn-argv-options
+         process-spawn-argv-with-options
          process-write-stdin process-close-stdin
          process-read-stdout process-read-stderr
          process-read-all-stdout process-read-all-stderr
+         process-read-stdout-bytes process-read-stderr-bytes
          process-wait process-running? process-exit-code process-pid
          process-kill process-destroy
          run-command run-command-capture
@@ -24,6 +27,7 @@
 (extern ptr process-spawn-shell-raw ptr ptr i64 :real qllm_process_spawn_shell)
 (extern ptr process-spawn-argv-raw ptr ptr :real qllm_process_spawn_argv)
 (extern ptr process-spawn-argv-flags-raw ptr ptr i64 :real qllm_process_spawn_argv_flags)
+(extern ptr process-spawn-argv-env-flags-raw ptr ptr ptr i64 :real qllm_process_spawn_argv_env_flags)
 (extern i64 process-write-stdin-raw ptr ptr i64 :real qllm_process_write_stdin)
 (extern void process-close-stdin-raw ptr :real qllm_process_close_stdin)
 (extern i64 process-read-stdout-raw ptr ptr i64 :real qllm_process_read_stdout)
@@ -37,6 +41,8 @@
 (extern void process-kill-raw ptr i32 :real qllm_process_kill)
 (extern void process-destroy-raw ptr :real qllm_process_destroy)
 (extern i64 process-pid-raw ptr :real qllm_process_pid)
+(extern i64 process-last-stdout-read-length-raw ptr :real qllm_process_last_stdout_read_length)
+(extern i64 process-last-stderr-read-length-raw ptr :real qllm_process_last_stderr_read_length)
 
 ;; ============================================================================
 ;; High-Level Wrappers
@@ -48,6 +54,12 @@
 ;; stdin (the common case — run-command-capture and friends all close
 ;; stdin immediately).
 (define PROCESS_SPAWN_STDIN_NULL 1)
+(define PROCESS_SPAWN_NEW_PROCESS_GROUP 2)
+
+(define (process-normalize-handle handle)
+  ;; Some FFI targets represent a NULL pointer as the empty list. Normalize
+  ;; that ABI spelling to the documented boolean failure value.
+  (if (or (not handle) (null? handle)) #f handle))
 
 ;; ----------------------------------------------------------------------------
 ;; Positional-argument guards
@@ -106,7 +118,7 @@
                     tail; `(process-spawn cmd)` is an arity error."
   (capability-require! 'subprocess command)
   (process-check-cwd! "process-spawn" cwd)
-  (process-spawn-raw command cwd #f 0))
+  (process-normalize-handle (process-spawn-raw command cwd #f 0)))
 
 (define (process-spawn-nostdin command cwd)
   "Spawn a legacy command string with stdin redirected to /dev/null. Faster than
@@ -115,7 +127,8 @@
    Arity: exactly 2 arguments — (command cwd), both required, as process-spawn."
   (capability-require! 'subprocess command)
   (process-check-cwd! "process-spawn-nostdin" cwd)
-  (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL))
+  (process-normalize-handle
+   (process-spawn-raw command cwd #f PROCESS_SPAWN_STDIN_NULL)))
 
 (define (process-spawn-shell command cwd)
   "Spawn a command through the platform shell. Returns process handle.
@@ -125,7 +138,7 @@
   (capability-require! 'subprocess command)
   (capability-require! 'shell command)
   (process-check-cwd! "process-spawn-shell" cwd)
-  (process-spawn-shell-raw command cwd 0))
+  (process-normalize-handle (process-spawn-shell-raw command cwd 0)))
 
 (define (process-spawn-shell-nostdin command cwd)
   "Spawn a shell command with stdin redirected to /dev/null.
@@ -133,15 +146,48 @@
   (capability-require! 'subprocess command)
   (capability-require! 'shell command)
   (process-check-cwd! "process-spawn-shell-nostdin" cwd)
-  (process-spawn-shell-raw command cwd PROCESS_SPAWN_STDIN_NULL))
+  (process-normalize-handle
+   (process-spawn-shell-raw command cwd PROCESS_SPAWN_STDIN_NULL)))
 
-(define (process-owned-c-string->string buf)
-  "Copy a malloc-owned C string into Eshkol space, then free it."
+(define (process-owned-c-string->bytes buf length)
+  "Copy exactly length bytes from a malloc-owned C buffer into Eshkol space,
+   then free it. The copy is length-aware and preserves embedded NUL bytes."
   (if buf
-      (let ((s (ptr->string buf)))
+      (let ((s (ptr->string-n buf length)))
         (process-free-buffer-raw buf)
         s)
       ""))
+
+(define (process-pack-argv argv)
+  (let loop ((rest (cdr argv)) (packed (car argv)))
+    (if (null? rest)
+        packed
+        (loop (cdr rest)
+              (string-append packed "\t" (car rest))))))
+
+(define (process-pack-env env)
+  (if (or (not env) (null? env))
+      #f
+      (let loop ((rest env) (packed ""))
+        (if (null? rest)
+            packed
+            (let* ((entry (car rest))
+                   (_entry-ok (unless (pair? entry)
+                                (error "process-spawn-argv-env: env must contain (string . string) pairs" entry)))
+                   (key (car entry))
+                   (value (cdr entry)))
+              (unless (and (string? key) (string? value)
+                           (> (string-length key) 0)
+                           (not (string-contains key "="))
+                           (not (string-contains key "\t"))
+                           (not (string-contains key "\x00"))
+                           (not (string-contains value "\t"))
+                           (not (string-contains value "\x00")))
+                (error "process-spawn-argv-env: environment entries must be string pairs without '=', TAB, or NUL" entry))
+              (loop (cdr rest)
+                    (if (null? (cdr rest))
+                        (string-append key "=" value)
+                        (string-append packed key "=" value "\t"))))))))
 
 ;; Audit M9: an argv element containing a literal tab would get
 ;; re-split by the C-side parse_tab_argv. Reject such args explicitly
@@ -182,11 +228,59 @@
      (capability-require! 'subprocess argv)
      (process-check-cwd! "process-spawn-argv" cwd)
      (process-argv-check-args argv)
-     (let loop ((rest (cdr argv)) (packed (car argv)))
-       (if (null? rest)
-           (process-spawn-argv-raw packed cwd)
-           (loop (cdr rest)
-                 (string-append packed "\t" (car rest))))))))
+     (process-normalize-handle
+      (process-spawn-argv-raw (process-pack-argv argv) cwd)))))
+
+(define (process-spawn-argv-env argv cwd env)
+  "Spawn argv directly with an explicit environment overlay.
+   `env` is an alist of (variable-name . value) string pairs. Entries replace
+   inherited variables while all other scrubbed inherited variables remain.
+   This is the same overlay contract as the VM process surface."
+  (cond
+    ((null? argv) #f)
+    ((not (list? argv)) #f)
+    ((not (or (not env) (list? env)))
+     (error "process-spawn-argv-env: env must be an alist or #f"))
+    (else
+     (capability-require! 'subprocess argv)
+     (process-check-cwd! "process-spawn-argv-env" cwd)
+     (process-argv-check-args argv)
+     (process-normalize-handle
+      (process-spawn-argv-env-flags-raw
+       (process-pack-argv argv) cwd (process-pack-env env) 0)))))
+
+(define (process-option options key default)
+  (let ((entry (assq key options)))
+    (if entry (cdr entry) default)))
+
+(define (process-spawn-argv-options argv options)
+  "Spawn argv directly using an options alist.
+   Supported keys are `cwd` (string or #f), `env` (string alist or #f),
+   `stdin` (`pipe` or `null`), and `process-group` (#t or #f)."
+  (unless (list? options)
+    (error "process-spawn-argv-options: options must be an alist"))
+  (let* ((cwd (process-option options 'cwd "."))
+         (env (process-option options 'env #f))
+         (stdin (process-option options 'stdin 'pipe))
+         (group (process-option options 'process-group #f))
+         (flags (+ (if (eq? stdin 'null) PROCESS_SPAWN_STDIN_NULL 0)
+                   (if group PROCESS_SPAWN_NEW_PROCESS_GROUP 0))))
+    (cond
+      ((null? argv) #f)
+      ((not (list? argv)) #f)
+      ((not (or (eq? stdin 'pipe) (eq? stdin 'null)))
+       (error "process-spawn-argv-options: stdin must be 'pipe or 'null"))
+      (else
+       (capability-require! 'subprocess argv)
+       (process-check-cwd! "process-spawn-argv-options" cwd)
+       (process-argv-check-args argv)
+       (process-normalize-handle
+       (process-spawn-argv-env-flags-raw
+         (process-pack-argv argv) cwd (process-pack-env env) flags))))))
+
+(define (process-spawn-argv-with-options argv options)
+  "Compatibility alias for process-spawn-argv-options."
+  (process-spawn-argv-options argv options))
 
 ;; Argv spawn with stdin wired to /dev/null. Hot path for run-argv-capture
 ;; — saves a pipe() + 2 close()s per call (~100 us). See comment on
@@ -202,11 +296,9 @@
      (capability-require! 'subprocess argv)
      (process-check-cwd! "process-spawn-argv-nostdin" cwd)
      (process-argv-check-args argv)
-     (let loop ((rest (cdr argv)) (packed (car argv)))
-       (if (null? rest)
-           (process-spawn-argv-flags-raw packed cwd PROCESS_SPAWN_STDIN_NULL)
-           (loop (cdr rest)
-                 (string-append packed "\t" (car rest))))))))
+     (process-normalize-handle
+      (process-spawn-argv-flags-raw
+       (process-pack-argv argv) cwd PROCESS_SPAWN_STDIN_NULL)))))
 
 (define (process-write-stdin proc data)
   "Write data to a process's stdin. Returns bytes written or -1 on error.
@@ -219,19 +311,33 @@
   "Close a process's stdin (signal EOF). Arity: exactly 1 argument — (proc)."
   (process-close-stdin-raw proc))
 
+(define (process-read-stdout-bytes proc max-bytes)
+  "Read stdout and return `(bytes . native-byte-length)`."
+  (let ((buf (process-read-all-stdout-raw proc max-bytes #f)))
+    (if buf
+        (let ((length (process-last-stdout-read-length-raw proc)))
+          (cons (process-owned-c-string->bytes buf length) length))
+        (cons "" 0))))
+
+(define (process-read-stderr-bytes proc max-bytes)
+  "Read stderr and return `(bytes . native-byte-length)`."
+  (let ((buf (process-read-all-stderr-raw proc max-bytes #f)))
+    (if buf
+        (let ((length (process-last-stderr-read-length-raw proc)))
+          (cons (process-owned-c-string->bytes buf length) length))
+        (cons "" 0))))
+
 (define (process-read-stdout proc max-bytes)
   "Read available stdout. Returns a string (empty when nothing is available).
    Arity: exactly 2 arguments — (proc max-bytes), both required.
    The native buffer is copied into Eshkol space and freed before return."
-  (process-owned-c-string->string
-    (process-read-all-stdout-raw proc max-bytes #f)))
+  (car (process-read-stdout-bytes proc max-bytes)))
 
 (define (process-read-stderr proc max-bytes)
   "Read available stderr. Returns a string (empty when nothing is available).
    Arity: exactly 2 arguments — (proc max-bytes), both required.
    The native buffer is copied into Eshkol space and freed before return."
-  (process-owned-c-string->string
-    (process-read-all-stderr-raw proc max-bytes #f)))
+  (car (process-read-stderr-bytes proc max-bytes)))
 
 (define (process-read-all-stdout proc max-bytes)
   "Read all stdout until EOF. Returns a string.

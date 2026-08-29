@@ -16971,17 +16971,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1780: { /* process-spawn(cmd, args-list, env-alist) → pid or #f
                   * cmd: string, args: list of strings, env: alist of (name . value) or #f
-                  * Returns child PID on success, #f on failure */
+                  * Returns child PID on success, #f on failure.
+                  * The process-spawn-argv-env alias passes (argv, cwd, env)
+                  * through this same implementation; its list-valued first
+                  * argument selects direct argv mode and its second argument
+                  * is the child's working directory. */
         Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
+        int argv_mode = (cmd_val.type == VAL_PAIR);
+        Value program_val = cmd_val;
+        Value command_args = args_val;
+        const char* cwd_path = NULL;
+        if (argv_mode) {
+            if (!is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
+                vm_push(vm, BOOL_VAL(0));
+                break;
+            }
+            HeapObject* argv_head = vm->heap.objects[cmd_val.as.ptr];
+            program_val = argv_head->cons.car;
+            command_args = argv_head->cons.cdr;
+            if (args_val.type == VAL_STRING && is_valid_heap_ptr(vm, args_val.as.ptr)) {
+                VmString* cwd_string = (VmString*)vm->heap.objects[args_val.as.ptr]->opaque.ptr;
+                if (cwd_string) cwd_path = cwd_string->data;
+            }
+        }
 #if !defined(ESHKOL_VM_WASM)
-        if (cmd_val.type == VAL_STRING && is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
-            HeapObject* cmd_obj = vm->heap.objects[cmd_val.as.ptr];
+        if (program_val.type == VAL_STRING && is_valid_heap_ptr(vm, program_val.as.ptr)) {
+            HeapObject* cmd_obj = vm->heap.objects[program_val.as.ptr];
             VmString* cs = cmd_obj ? (VmString*)cmd_obj->opaque.ptr : NULL;
             if (cs && cs->data) {
                 char* argv_buf[256];
                 int argc_local = 0;
                 argv_buf[argc_local++] = cs->data;
-                Value acur = args_val;
+                Value acur = command_args;
                 while (acur.type == VAL_PAIR && argc_local < 255 && is_valid_heap_ptr(vm, acur.as.ptr)) {
                     HeapObject* node = vm->heap.objects[acur.as.ptr];
                     Value elem = node->cons.car;
@@ -17083,8 +17104,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (pid == 0) {
                     /* Child */
                     (void)setpgid(0, 0);
-                    if (envp) execve(argv_buf[0], argv_buf, envp);
-                    else execvp(argv_buf[0], argv_buf);
+                    if (cwd_path && chdir(cwd_path) != 0) _exit(126);
+                    if (env_val.type == VAL_PAIR) {
+                        Value ecur = env_val;
+                        while (ecur.type == VAL_PAIR && is_valid_heap_ptr(vm, ecur.as.ptr)) {
+                            HeapObject* node = vm->heap.objects[ecur.as.ptr];
+                            Value entry = node->cons.car;
+                            if (entry.type == VAL_PAIR && is_valid_heap_ptr(vm, entry.as.ptr)) {
+                                HeapObject* pair = vm->heap.objects[entry.as.ptr];
+                                if (pair->cons.car.type == VAL_STRING && pair->cons.cdr.type == VAL_STRING &&
+                                    is_valid_heap_ptr(vm, pair->cons.car.as.ptr) &&
+                                    is_valid_heap_ptr(vm, pair->cons.cdr.as.ptr)) {
+                                    VmString* key = (VmString*)vm->heap.objects[pair->cons.car.as.ptr]->opaque.ptr;
+                                    VmString* val = (VmString*)vm->heap.objects[pair->cons.cdr.as.ptr]->opaque.ptr;
+                                    if (key && val) (void)setenv(key->data, val->data, 1);
+                                }
+                            }
+                            ecur = node->cons.cdr;
+                        }
+                    }
+                    (void)envp;
+                    execvp(argv_buf[0], argv_buf);
                     _exit(127);
                 } else if (pid > 0) {
                     (void)setpgid(pid, pid);
@@ -17098,6 +17138,51 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)env_val; (void)args_val; (void)cmd_val;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 1803: { /* process-spawn-argv-options(argv, options) → pid or #f */
+        Value options = vm_pop(vm), argv = vm_pop(vm);
+        Value cwd = vm_string_value(vm, ".", 1);
+        Value env = NIL_VAL;
+        int valid = 1;
+        if (options.type != VAL_NIL && options.type != VAL_PAIR) valid = 0;
+        Value cursor = options;
+        while (cursor.type == VAL_PAIR && is_valid_heap_ptr(vm, cursor.as.ptr)) {
+            HeapObject* node = vm->heap.objects[cursor.as.ptr];
+            Value entry = node->cons.car;
+            if (entry.type != VAL_PAIR || !is_valid_heap_ptr(vm, entry.as.ptr)) {
+                valid = 0;
+                break;
+            }
+            HeapObject* pair = vm->heap.objects[entry.as.ptr];
+            VmString* key = vm_value_as_string(vm, pair->cons.car);
+            Value value = pair->cons.cdr;
+            if (!key || !key->data) {
+                valid = 0;
+                break;
+            }
+            if (strcmp(key->data, "cwd") == 0) cwd = value;
+            else if (strcmp(key->data, "env") == 0) env = value;
+            else if (strcmp(key->data, "stdin") == 0) {
+                VmString* stdin_mode = vm_value_as_string(vm, value);
+                if (!stdin_mode || (strcmp(stdin_mode->data, "pipe") != 0 &&
+                                    strcmp(stdin_mode->data, "null") != 0)) valid = 0;
+            } else if (strcmp(key->data, "process-group") != 0) {
+                valid = 0;
+            }
+            cursor = node->cons.cdr;
+        }
+        if (cursor.type != VAL_NIL) valid = 0;
+        if (!valid) {
+            fprintf(stderr, "process-spawn-argv-options: invalid options alist\n");
+            vm_push(vm, BOOL_VAL(0));
+            break;
+        }
+        vm_push(vm, argv);
+        vm_push(vm, cwd);
+        vm_push(vm, env);
+        vm_dispatch_native(vm, 1780);
         break;
     }
 

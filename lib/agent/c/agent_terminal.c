@@ -45,6 +45,11 @@ int eshkol_term_read_key_timeout(int timeout_ms);
 #define KEY_F3        1016
 #define KEY_F4        1017
 
+/* Negative values are reserved for read status and are not key codes. */
+#define ESHKOL_TERM_READ_TIMEOUT -1
+#define ESHKOL_TERM_READ_EOF     -2
+#define ESHKOL_TERM_READ_IO_ERROR -3
+
 #ifndef _WIN32
 /* ───────────────────────── POSIX implementation ───────────────────────── */
 
@@ -210,7 +215,9 @@ int eshkol_term_read_key(void) {
  * @param timeout_ms Milliseconds to wait for the first byte; negative
  *   blocks indefinitely. Escape-sequence continuation bytes use their
  *   own fixed short timeouts regardless of this value.
- * @return The key code (a raw byte value or a KEY_* constant), or -1 on timeout or read error.
+ * @return The key code (a raw byte value or a KEY_* constant),
+ *   ESHKOL_TERM_READ_TIMEOUT on timeout, ESHKOL_TERM_READ_EOF on EOF, or
+ *   ESHKOL_TERM_READ_IO_ERROR on an I/O error.
  */
 int eshkol_term_read_key_timeout(int timeout_ms) {
     unsigned char c;
@@ -218,11 +225,14 @@ int eshkol_term_read_key_timeout(int timeout_ms) {
     if (timeout_ms >= 0) {
         struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
         int ret = poll(&pfd, 1, timeout_ms);
-        if (ret <= 0) return -1;
+        if (ret == 0) return ESHKOL_TERM_READ_TIMEOUT;
+        if (ret < 0 || (pfd.revents & (POLLERR | POLLNVAL)))
+            return ESHKOL_TERM_READ_IO_ERROR;
     }
 
     ssize_t n = read(STDIN_FILENO, &c, 1);
-    if (n <= 0) return -1;
+    if (n == 0) return ESHKOL_TERM_READ_EOF;
+    if (n < 0) return ESHKOL_TERM_READ_IO_ERROR;
 
     /* Ctrl+A through Ctrl+Z */
     if (c >= 1 && c <= 26) return c;
@@ -239,7 +249,10 @@ int eshkol_term_read_key_timeout(int timeout_ms) {
     /* Escape sequence */
     if (c == 27) {
         struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
-        if (poll(&pfd, 1, 50) <= 0) return KEY_ESCAPE;
+        int continuation = poll(&pfd, 1, 50);
+        if (continuation == 0) return KEY_ESCAPE;
+        if (continuation < 0 || (pfd.revents & (POLLERR | POLLNVAL)))
+            return ESHKOL_TERM_READ_IO_ERROR;
 
         unsigned char seq[5];
         n = read(STDIN_FILENO, &seq[0], 1);
@@ -574,20 +587,23 @@ static int translate_key(const KEY_EVENT_RECORD* key) {
 int eshkol_term_read_key(void) { return eshkol_term_read_key_timeout(-1); }
 
 int eshkol_term_read_key_timeout(int timeout_ms) {
-    if (g_term_input == INVALID_HANDLE_VALUE) return -1;
+    if (g_term_input == INVALID_HANDLE_VALUE) return ESHKOL_TERM_READ_IO_ERROR;
     DWORD wait_ms = timeout_ms < 0 ? INFINITE : (DWORD)timeout_ms;
     ULONGLONG deadline = timeout_ms < 0 ? 0 : GetTickCount64() + wait_ms;
     for (;;) {
         DWORD remaining = INFINITE;
         if (timeout_ms >= 0) {
             ULONGLONG now = GetTickCount64();
-            if (now >= deadline) return -1;
+            if (now >= deadline) return ESHKOL_TERM_READ_TIMEOUT;
             remaining = (DWORD)(deadline - now);
         }
-        if (WaitForSingleObject(g_term_input, remaining) != WAIT_OBJECT_0) return -1;
+        DWORD wait_result = WaitForSingleObject(g_term_input, remaining);
+        if (wait_result == WAIT_TIMEOUT) return ESHKOL_TERM_READ_TIMEOUT;
+        if (wait_result != WAIT_OBJECT_0) return ESHKOL_TERM_READ_IO_ERROR;
         INPUT_RECORD rec;
         DWORD count = 0;
-        if (!ReadConsoleInputW(g_term_input, &rec, 1, &count) || count != 1) return -1;
+        if (!ReadConsoleInputW(g_term_input, &rec, 1, &count) || count != 1)
+            return ESHKOL_TERM_READ_IO_ERROR;
         if (rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
             refresh_dimensions();
             continue;

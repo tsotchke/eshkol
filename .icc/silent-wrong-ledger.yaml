@@ -6921,6 +6921,130 @@ entries:
       checks the same value on native and VM paths.
     caught_by: [ESH-0099, consumer-reduction, direct-measurement]
     missed_by: [icc-smoke, icc-readiness, pre-fix-stress-row]
+  - id: SW-127
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "171928a0+worktree-fix-agent-process-ffi"
+    title: "AOT process-spawn-argv ignored the requested environment overlay"
+    repro: >-
+      `(process-spawn-argv-env (list "sh" "-c" "test
+      \"$ESHKOL_FFI_OVERLAY\" = overlay && test -n \"$PATH\"") "."
+      (list (cons "ESHKOL_FFI_OVERLAY" "overlay")))`.
+    observed: >-
+      The native argv spawn had no environment-overlay API and inherited only
+      its scrubbed ambient environment; a child could return exit status 0
+      without observing the requested variable.
+    correct: >-
+      Native/AOT and VM argv-env spawns overlay named string pairs on the
+      inherited environment, preserve unrelated entries such as PATH, and
+      return the child's real exit status.
+    observed_after: >-
+      Both new APIs pass the overlay reduction on native/AOT and VM execution;
+      the child exits 0 only when the overlay variable and inherited PATH exist.
+    fixed_by: >-
+      Packed environment ABI in `lib/agent/c/agent_subprocess.c`, wrappers in
+      `lib/agent/subprocess.esk`, and shared VM process dispatch in
+      `lib/backend/vm_native.c`/`lib/backend/eshkol_vm.c`.
+    evidence: >-
+      `tests/v1_2_edge_cases/subprocess_shell_argv_test.sh` and
+      `tests/vm/remaining_system_surface_regression.esk`; the remote Linux
+      native and VM runs report the overlay and options checks PASS.
+    caught_by: [consumer-triage, direct-measurement]
+    missed_by: [icc-readiness, vm-parity-before-fix]
+  - id: SW-128
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "171928a0+worktree-fix-agent-process-ffi"
+    title: "Binary subprocess output was copied as a NUL-terminated C string"
+    repro: >-
+      Spawn `printf 'left\\0right'` through `process-spawn-shell`, then read
+      with `process-read-stdout-bytes`.
+    observed: >-
+      C-string conversion stopped at the embedded NUL and returned only `left`
+      despite the child writing 10 bytes; the child could still exit 0.
+    correct: >-
+      Native read length crosses the FFI with the owned buffer and the binding
+      uses `ptr->string-n`, yielding `left\\0right` and native length 10.
+    observed_after: >-
+      The handle records the last stdout/stderr byte count, bytes wrappers
+      return `(bytes . native-byte-length)`, and ordinary string wrappers use
+      the same length-aware copy.
+    fixed_by: >-
+      `qllm_process_last_stdout_read_length`,
+      `qllm_process_last_stderr_read_length`, and the
+      `process-read-*-bytes` wrappers.
+    evidence: >-
+      `tests/v1_2_edge_cases/subprocess_shell_argv_test.sh` checks the exact
+      embedded-NUL reduction and native length 10 on the remote Linux AOT/JIT
+      harness; the remote run reports the binary check PASS.
+    caught_by: [consumer-triage, direct-measurement]
+    missed_by: [icc-readiness, prior-owned-c-string-regression]
+  - id: SW-129
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "171928a0+worktree-fix-agent-process-ffi"
+    title: "term-read-key-timeout conflated timeout, EOF, and I/O error"
+    repro: >-
+      Invoke `term-read-key-timeout` with empty input, closed input, and an
+      invalid input descriptor.
+    observed: >-
+      All three low-level outcomes returned `-1`; a high-level caller could
+      treat EOF or I/O failure as an ordinary timeout and continue.
+    correct: >-
+      Timeout, EOF, and I/O error are distinct statuses in the high-level
+      result, while raw integer access remains available for compatibility.
+    observed_after: >-
+      The high-level result reports `timeout`, `eof`, `io-error`, or `key`,
+      and the native status test observes -1, -2, and -3 respectively.
+    fixed_by: >-
+      Status constants and POSIX/Windows result codes in
+      `lib/agent/c/agent_terminal.c`, plus the tagged result in
+      `lib/agent/terminal.esk`.
+    evidence: >-
+      `tests/agent/agent_terminal_status_test.c` covers timeout, EOF, and
+      invalid-descriptor I/O error on the remote Linux host; its output is
+      `PASS: terminal read distinguishes timeout, EOF, and I/O error`.
+      `tests/v1_2_edge_cases/terminal_read_status_test.esk` checks the tagged
+      high-level shape.
+    caught_by: [consumer-triage, direct-measurement]
+    missed_by: [icc-readiness, prior-terminal-surface-test]
+  - id: SW-139
+    bucket: PARITY-RATCHET
+    status: closed
+    closed_at: "worktree-rb-567"
+    title: "The documented exit procedure had no VM binding"
+    repro: >-
+      A portable VM source containing `(display "before") (exit 1)
+      (display "after")` exercises the documented termination form.
+    observed: >-
+      Native LLVM lowers `(exit code)` to a noreturn libc call, but the VM had
+      no `exit` name in `BUILTINS[]`. The VM compiler warned that `exit` was
+      undefined, so a VM program that reached an error branch using `exit`
+      failed as "calling non-function" instead of terminating with the
+      requested status. The rebased terminal status fixture also uses
+      `agent.terminal` FFI, which is documented as native-only and is not a VM
+      reproducer for the binding gap.
+    correct: >-
+      The VM resolves `exit` as a first-class one-argument procedure and
+      terminates with the same documented status behavior as native: inexact
+      codes clamp to [0, 255], exact codes truncate to i32, and registered VM
+      `at-exit` handlers drain before termination.
+    observed_after: >-
+      The VM `BUILTINS[]` table binds `exit` to native id 2097 and the VM
+      dispatcher performs the parity-preserving termination. The terminal
+      status fixture no longer reports an undefined `exit` or calling error on
+      the native agent-FFI path; the standalone VM direct exit probe terminates
+      with the requested status and does not execute later forms.
+    fixed_by: >-
+      `lib/backend/eshkol_vm.c` builtin binding and `lib/backend/vm_native.c`
+      dispatch case 2097; `tests/vm_parity/PARITY.tsv` now marks the construct
+      `vm-supported`.
+    evidence: >-
+      Remote old-donkey terminal, process, and FFI suite runs on native and VM;
+      the explicit VM exit-status probe verifies status 7 and no output after
+      the call.
+    caught_by: [direct-measurement, vm-parity-surface-audit]
+    missed_by: [icc-readiness, prior-terminal-surface-test]
   - id: SW-135
     bucket: SILENT-WRONG
     subtag: crash
