@@ -14,12 +14,19 @@
 #define HEAP_MANIFOLD_POINT  31
 #define HEAP_MANIFOLD_TANGENT 32
 
+#include <limits.h>
+
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
 #include <semiclassical_qllm/manifold.h>
 #include <semiclassical_qllm/geodesic.h>
 #include <semiclassical_qllm/hyperbolic.h>
 #include <semiclassical_qllm/spherical.h>
 #endif
+
+/* The spherical cut-locus test is shared with the native bridge.  Even the
+ * portable VM path must refuse an antipodal log/distance rather than return a
+ * finite-looking value for an undefined logarithm. */
+#include "eshkol/backend/riemannian_core.h"
 
 /** @brief Convert a f64 VmTensor to a VM-arena-allocated float32 array,
  *         for passing to the semiclassical_qllm C API. */
@@ -36,6 +43,12 @@ static float* vm_tensor_to_float(VM* vm, const VmTensor* t) {
 static VmTensor* vm_get_tensor(VM* vm, Value v) {
     if (!is_heap_type(vm, v, HEAP_TENSOR)) return NULL;
     return (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+}
+
+static int vm_sphere_antipodal(const VmTensor* x, const VmTensor* y) {
+    return x && y && x->data && y->data && x->total == y->total &&
+           x->total > 0 && x->total <= INT_MAX &&
+           eshkol_rm_sphere_antipodal(x->data, y->data, (int)x->total);
 }
 
 /** @brief Push a scalar float result onto the VM stack. */
@@ -597,10 +610,21 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, base, 1.0, tangent, 1.0));
         break;
     }
-    case 810: case 822: { /* log-map(base, point, curvature) / spherical-log(base, point) */
+    case 810: { /* log-map(base, point, curvature) */
         if (fid == 810) (void)as_number(vm_pop(vm));
         VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
+        vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, base, -1.0));
+        break;
+    }
+    case 822: { /* spherical-log(base, point): undefined at the antipode */
+        VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
+        VmTensor* base = vm_get_tensor(vm, vm_pop(vm));
+        if (vm_sphere_antipodal(base, point)) {
+            vm_raise_error_msg(vm,
+                               "spherical-log: antipodal endpoints have no unique log map");
+            break;
+        }
         vm_push_tensor_or_nil(vm, vm_tensor_linear_combo_for_geometry(vm, point, 1.0, base, -1.0));
         break;
     }
@@ -651,6 +675,11 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
         if (!x || !y || x->total != y->total) { vm_push(vm, NIL_VAL); break; }
+        if (vm_sphere_antipodal(x, y)) {
+            vm_raise_error_msg(vm,
+                               "great-circle-distance: antipodal endpoints have no unique geodesic");
+            break;
+        }
         double nx = sqrt(vm_tensor_dot_for_geometry(x, x));
         double ny = sqrt(vm_tensor_dot_for_geometry(y, y));
         if (nx <= 0.0 || ny <= 0.0) { vm_push_float(vm, 0.0); break; }
@@ -1309,6 +1338,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* yv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* xv = vm_get_tensor(vm, vm_pop(vm));
         if (xv && yv && xv->total == yv->total) {
+            if (vm_sphere_antipodal(xv, yv)) {
+                vm_raise_error_msg(vm,
+                                   "great-circle-distance: antipodal endpoints have no unique geodesic");
+                break;
+            }
             float* xf = vm_tensor_to_float(vm, xv);
             float* yf = vm_tensor_to_float(vm, yv);
             float dist = qllm_spherical_distance(xf, yf, (int)xv->total);
@@ -1357,6 +1391,11 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
         VmTensor* bv = vm_get_tensor(vm, vm_pop(vm));
         if (bv && pv) {
+            if (vm_sphere_antipodal(bv, pv)) {
+                vm_raise_error_msg(vm,
+                                   "spherical-log: antipodal endpoints have no unique log map");
+                break;
+            }
             float* bf = vm_tensor_to_float(vm, bv);
             float* pf = vm_tensor_to_float(vm, pv);
             qllm_tensor_t* result = qllm_spherical_log_map(bf, pf, (int)bv->total);

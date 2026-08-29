@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "primitive": "squared_distance",
+  "eshkol_version": "1.3.4",
+  "generator": "tests/qllm_oracle/squared_distance.esk",
+  "reference": "inc/eshkol/bridge/space_form.h (AD_NODE_SQUARED_DISTANCE)",
+  "formula": "d^2(x,y) on H^n (ball) / S^n / R^n and products; grad_x d^2 = -2 log_x(y)",
+  "dtype": "float64",
+  "ad_mode": "reverse",
+  "cases": [
+    {
+      "id": "squared_distance.euclidean.d3",
+      "form": "euclidean",
+      "dim": 3,
+      "inputs": {"x": [0.5, -1.25, 2], "y": [-0.75, 0.5, 0.125]},
+      "primal_outputs": {"d2": 8.140625, "d": 2.8531780526283317},
+      "gradients": {"d_d2_d_x": [2.5, -3.5, 3.75], "all_finite": true},
+      "fd_cross_check": {"best_step": 0.01, "best_rel_diff": 1.522591576628786e-14, "fd_usable": true}
+    },
+    {
+      "id": "squared_distance.ball.d3.c1",
+      "form": "hyperbolic",
+      "dim": 3,
+      "curvature": 1,
+      "inputs": {"x": [0.3, -0.2, 0.1], "y": [-0.15, 0.25, 0.4]},
+      "primal_outputs": {"d2": 2.488583550322671, "d": 1.5775245007044014, "lambda_x": 2.3255813953488373},
+      "gradients": {"d_d2_d_x": [5.220650016932333, -4.738068922930185, -2.0326900626151105], "all_finite": true},
+      "identities": {"gauss_lemma_rel": 2.13758831580321e-16},
+      "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 1.0393500062082036e-10, "fd_usable": true}
+    },
+    {
+      "id": "squared_distance.sphere.d3.c1",
+      "form": "spherical",
+      "dim": 3,
+      "curvature": 1,
+      "inputs": {"x": [0.6, -0.8, 0], "y": [0.20628424925175867, 0.309426373877638, 0.9282791216329139]},
+      "primal_outputs": {"d2": 2.872635450625902, "d": 1.6948850847847774},
+      "gradients": {"d_d2_d_x": [-0.9583573646009185, -0.7187680234506886, -3.171035397576568], "all_finite": true},
+      "identities": {"gauss_lemma_rel": 1.0116456960060129e-16, "radial_component": 1.1102230246251565e-16},
+      "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 2.6856256033044853e-11, "fd_usable": true}
+    },
+    {
+      "id": "squared_distance.product.h2s2r2",
+      "form": "product",
+      "dim": 7,
+      "layout": "H2(c=1,w=1) x S2(ambient 3,c=1,w=2) x R2(w=0.5)",
+      "inputs": {"x": [0.25, -0.1, 0.6, -0.8, 0, 1.5, 0.25], "y": [-0.3, 0.2, 0.20628424925175867, 0.309426373877638, 0.9282791216329139, -0.5, 1.75]},
+      "primal_outputs": {"d2": 10.563201437978517, "d2_hyperbolic": 1.6929305367267136, "d2_spherical": 2.872635450625902, "d2_euclidean": 6.25},
+      "gradients": {"d_d2_d_x": [4.974407747741088, -2.596587685832792, -1.916714729201837, -1.4375360469013772, -6.342070795153136, 2, -1.5], "all_finite": true},
+      "identities": {"additivity_rel": 0},
+      "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 7.746605301072222e-11, "fd_usable": true}
+    },
+    {
+      "id": "squared_distance.ball.coincident.d3.c1",
+      "form": "hyperbolic",
+      "dim": 3,
+      "curvature": 1,
+      "route": "arcosh-then-square (NOT the shipped route)",
+      "inputs": {"x": [0.3, -0.2, 0.1], "y": [0.3, -0.2, 0.1]},
+      "primal_outputs": {"d2": 0},
+      "gradients": {"d_d2_d_x": [null, null, null], "all_finite": false},
+      "expected_from_log_map_route": {"d_d2_d_x": [0, 0, 0], "all_finite": true}
+    }
+  ]
+}

@@ -6,14 +6,16 @@
 # Eshkol's reverse-mode AD, self-checks the result against an in-language
 # central finite difference (and, for poincare_project, against the exact
 # rational forward Taylor tower), prints PASS:/FAIL: lines plus a
-# Passed:/Failed: summary, and writes golden-vector JSON into
-# tests/qllm_oracle/golden/.
+# Passed:/Failed: summary, and writes candidate golden-vector JSON into a
+# lane-local scratch directory.
 #
-# The JSON is a build product that is COMMITTED: qLLM's fp32 C/torch/Metal
-# tests consume it as a reference, so a change in the numbers has to show up
-# as a reviewable diff. Rerunning this script regenerates it deterministically
-# (there is no RNG anywhere in the exporters), so `git diff` after a run is
-# the drift check.
+# The JSON in tests/qllm_oracle/golden/ is the committed independent reference:
+# qLLM's fp32 C/torch/Metal tests consume it as a reference. This gate never
+# overwrites that artifact. It regenerates a candidate in lane-local scratch
+# and fails if the squared-distance candidate differs from the committed bytes,
+# so a changed implementation cannot refresh its own oracle into green. The
+# older geometric goldens remain schema-validated here; two of them are known
+# to vary by host/compiler and are not rewritten by this task.
 #
 # Verdicts per file+mode:
 #   PASS   ran to completion, no FAIL:, no nonzero Failed: summary
@@ -32,9 +34,13 @@ GEN_DIR="$REPO_ROOT/tests/qllm_oracle"
 OUT_DIR="$GEN_DIR/golden"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/qllm_oracle.jsonl"
-mkdir -p "$TRACE_DIR" "$OUT_DIR"
+SCRATCH_DIR="${ORACLE_SCRATCH_DIR:-$REPO_ROOT/.scratch/qllm-oracle}"
+GENERATED_DIR="$SCRATCH_DIR/generated"
+AOT_BIN_DIR="$SCRATCH_DIR/aot-bin"
+AOT_JSON_DIR="$SCRATCH_DIR/aot-json"
+mkdir -p "$TRACE_DIR" "$OUT_DIR" "$GENERATED_DIR" "$AOT_BIN_DIR" "$AOT_JSON_DIR"
 : "${TRACE_FILE:?}"; : > "$TRACE_FILE"
-: "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-qllm-oracle-jit-cache}"
+: "${ESHKOL_JIT_CACHE_DIR:=$SCRATCH_DIR/jit-cache}"
 export ESHKOL_JIT_CACHE_DIR
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
@@ -73,6 +79,7 @@ poincare_retract.esk
 sphere_ops.esk
 poincare_maps.esk
 sheaf_ee_step.esk
+squared_distance.esk
 "
 
 # macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).
@@ -149,8 +156,8 @@ for f in $EXPORTERS; do
         continue
     fi
 
-    # ----- JIT (-r) : this is the lane that writes the golden JSON -----
-    rout=$(QLLM_ORACLE_OUT="$OUT_DIR" run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$path" 2>&1); rrc=$?
+    # ----- JIT (-r) : generate a candidate; never overwrite the golden -----
+    rout=$(QLLM_ORACLE_OUT="$GENERATED_DIR" run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$path" 2>&1); rrc=$?
     rv=$(verdict "$rrc" "$rout")
     count_verdict "$rv" "$f" "r"
     if [ "$rv" = "PASS" ]; then
@@ -161,7 +168,7 @@ for f in $EXPORTERS; do
 
     # ----- AOT -----
     if [ "$DO_AOT" -eq 1 ]; then
-        bin="${TMPDIR:-/tmp}/qllm_oracle_${base}.bin"; rm -f "$bin"
+        bin="$AOT_BIN_DIR/${base}.bin"; rm -f "$bin"
         cout=$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$path" -o "$bin" 2>&1); crc=$?
         if [ "$crc" -ne 0 ] || [ ! -x "$bin" ] || printf '%s' "$cout" | grep -qE \
             "Failed to generate LLVM IR|LLVM module verification failed"; then
@@ -171,10 +178,9 @@ for f in $EXPORTERS; do
             # By default the AOT lane writes to a scratch dir so the two lanes
             # cannot interleave writes into the committed golden/ tree.
             if [ "$KEEP_JSON_AOT" -eq 1 ]; then
-                aot_out="$OUT_DIR"
+                aot_out="$GENERATED_DIR"
             else
-                aot_out="${TMPDIR:-/tmp}/qllm_oracle_aot_json"
-                mkdir -p "$aot_out"
+                aot_out="$AOT_JSON_DIR"
             fi
             aout=$(QLLM_ORACLE_OUT="$aot_out" run_guarded "$AOT_RUN_TIMEOUT" "$bin" 2>&1); arc=$?
             av=$(verdict "$arc" "$aout")
@@ -187,15 +193,19 @@ for f in $EXPORTERS; do
     fi
 done
 
-# Every exporter must have produced parseable JSON.
+# Every exporter must have produced parseable candidate JSON. The committed
+# squared-distance reference must also match byte-for-byte; it is the external
+# reference consumed by this task's bridge gate.
 echo
+jrc=1
 if command -v python3 >/dev/null 2>&1; then
-    jout=$(python3 - "$OUT_DIR" <<'PY'
+    jout=$(python3 - "$GENERATED_DIR" "$OUT_DIR" <<'PY'
 import json, pathlib, sys
 d = pathlib.Path(sys.argv[1])
+committed = pathlib.Path(sys.argv[2])
 files = sorted(d.glob("*.json"))
 if not files:
-    print("no golden JSON produced")
+    print("no candidate golden JSON produced")
     sys.exit(1)
 bad = 0
 for f in files:
@@ -206,15 +216,27 @@ for f in files:
         bad += 1
         continue
     n = len(obj.get("cases", [])) if isinstance(obj, dict) else 0
-    print(f"  ok {f.name}  schema_version={obj.get('schema_version')} cases={n}")
+    ref = committed / f.name
+    if f.name == "squared_distance.json":
+        if not ref.is_file() or f.read_bytes() != ref.read_bytes():
+            print(f"  DRIFT {f.name}: candidate differs from committed reference")
+            bad += 1
+        else:
+            print(f"  match {f.name}  schema_version={obj.get('schema_version')} cases={n}")
+    else:
+        print(f"  schema-ok {f.name}  schema_version={obj.get('schema_version')} cases={n}")
+ref = committed / "squared_distance.json"
+if not (d / ref.name).is_file():
+    print(f"  MISSING candidate for committed reference {ref.name}")
+    bad += 1
 sys.exit(1 if bad else 0)
 PY
 ) ; jrc=$?
-    echo "golden JSON validation:"
+    echo "golden JSON reference gate:"
     printf '%s\n' "$jout"
     if [ "$jrc" -ne 0 ]; then
         crashed+=1
-        BAD="$BAD golden-json:invalid"
+        BAD="$BAD golden-json:reference-mismatch"
     fi
 else
     echo "golden JSON validation: skipped (no python3)"
@@ -225,7 +247,7 @@ echo "qllm_oracle summary: total=$total passed=$passed failed=$failed crashed=$c
 [ -n "$BAD" ] && echo "qllm_oracle offenders:$BAD"
 
 gate=PASS
-if [ "$failed" -ne 0 ] || [ "$crashed" -ne 0 ] || [ "$hung" -ne 0 ] || [ "$total" -eq 0 ]; then
+if [ "$failed" -ne 0 ] || [ "$crashed" -ne 0 ] || [ "$hung" -ne 0 ] || [ "$total" -eq 0 ] || [ "$jrc" -ne 0 ]; then
     gate=FAIL
 fi
 emit_event "qllm_oracle_gate" "$gate" \

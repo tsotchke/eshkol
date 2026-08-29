@@ -122,6 +122,19 @@ is deterministic; regenerating reproduces the corpus byte-for-byte.
 
 ---
 
+## Native AD bridge status
+
+The Scheme composition oracle covers the Scheme operators above. The native
+bridge has one additional registered AD primitive:
+
+| Node / entry point | Status | Coverage | VM status |
+|---|---|---|---|
+| `AD_NODE_SQUARED_DISTANCE` / `ad_squared_distance` and `ad_product_squared_distance` | **COMPLETE** | `squared_distance_gradcheck`: 45 exact, identity, audit-counterexample, boundary, golden-vector, and finite-difference checks through the real producer and reverse sweep | Native-only, justified in `tests/vm_parity/PARITY.tsv`: the VM has no tensor-valued `ad_node_t` carrier or matching opcode |
+
+The node is not a Scheme builtin, so it does not add a row to the Scheme
+operator axes. Its registered row in `inc/eshkol/ad_node_registry.def` is the
+source of truth for its tensor payload and bridge backward function.
+
 ## See also
 
 - [operators.md](operators.md) — per-operator API, capture rules, nesting

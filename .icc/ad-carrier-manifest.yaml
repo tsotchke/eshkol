@@ -320,6 +320,7 @@ fd_scan:
     - lib/bridge/qllm_bridge.cpp
     - lib/bridge/tensor_backward.cpp
     - inc/eshkol/backend/frechet_mean_core.h
+    - lib/bridge/space_form_ad.cpp
 
 # Every difference-quotient site the scan finds must appear here. `symbol` is
 # the epsilon-valued name; `path` is where it is bound. An unledgered site is

@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Squared geodesic distance as an AD primitive, differentiable *through* the
+  diagonal.** `AD_NODE_SQUARED_DISTANCE` computes `d²(x,y)` on `H^n` (Poincaré
+  ball), `S^n` and `R^n`, and on products of them, and returns the exact
+  gradient `grad_x d² = -2 log_x(y)`.
+
+  The point is what it does at `x == y`. Riemannian distance `d` has a cone
+  point there — the one-sided slopes disagree in every direction — and
+  `ad_hyperbolic_distance` refuses at coincidence for that reason. `d²` does
+  not have the defect, and it cannot be obtained from `d` by squaring:
+  `2·d·grad d` is `0·(no limit)` at the diagonal. So the rule is evaluated in
+  the log-map form from the start and never differentiates `sqrt(d²)`. The
+  value is exactly `0.0` there and every gradient component is exactly `0.0`,
+  with no epsilon guard producing it — every formula is written in the
+  separation `y - x`, so coincidence is reached by that difference becoming
+  zero rather than by two `O(1)` quantities cancelling.
+
+  This matters for scoring, not as an edge case: a self-attention row scores
+  every query against itself, so the diagonal is present in every row when `Q`
+  and `K` are the same tensor. It is also the only admissible form — on a
+  two-point homogeneous space, an isometry-invariant pairwise score that is
+  `C²` across the diagonal must factor through `d²` on these spaces.
+
+  New: `inc/eshkol/bridge/space_form.h`, `lib/bridge/space_form_ad.cpp`
+  (`ad_squared_distance` / `ad_product_squared_distance` and their backward),
+  `tests/bridge/squared_distance_gradcheck_test.cpp` (audit regression checks,
+  `ctest -R squared_distance_gradcheck`) and
+  `tests/qllm_oracle/squared_distance.esk` with its golden vectors. The golden
+  exporter deliberately takes the *other* route — `arcosh`/`arccos` squared,
+  differentiated by generic reverse-mode AD — so the two implementations agree
+  to `1.5e-16` away from the diagonal, and its coincident case records that
+  route returning a non-finite gradient for a finite value. The cut locus on
+  `S^n` is still refused, because there the mathematics really does run out.
+
+  The bridge uses signed sectional curvature: `K < 0` is the Poincare ball,
+  `K = 0` is Euclidean, and `K > 0` is spherical. Form/sign mismatches,
+  non-finite inputs, off-manifold spherical points, and the actual spherical
+  antipode are refused. Near-boundary hyperbolic pairs use the shared stable
+  `asinh`/log-map core, and zero product weights contribute exactly zero.
+
 - **ADR-0000 Stage 1, phase A: the frontend node-identity substrate.** Every
   AST node the parser produces now carries a stable `NodeId`, and a side table
   maps that id to a `SourceSpan` — the first column of the

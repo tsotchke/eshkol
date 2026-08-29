@@ -6443,3 +6443,44 @@ entries:
       libsemiclassical_qllm the way ESHKOL_QLLM_ENABLED does for
       eshkol-qllm-run; that wiring is out of scope here (BI-4 only asked
       for the accessor to be correct and ledgered).
+  - id: SW-68
+    bucket: SILENT-WRONG
+    status: closed
+    closed_at: "ad-squared-distance-recut"
+    closed_by: >-
+      AD_NODE_SQUARED_DISTANCE is registered with a BRIDGE backward and is
+      exercised through the native producer and reverse dispatcher.
+    title: >-
+      Squared geodesic distance was unavailable as a smooth AD primitive at
+      coincidence, leaving callers with only ordinary distance's cone-point
+      refusal.
+    repro: >-
+      Ordinary geodesic distance has no derivative at coincident points, and
+      squaring that node cannot repair the undefined factor in 2*d*grad(d).
+      No direct squared-distance node or registered backward existed.
+    observed: >-
+      The native AD surface had no operation for a finite squared-distance
+      value with an exact zero gradient at coincidence.
+    correct: >-
+      Evaluate squared distance directly in log-map form on Euclidean,
+      hyperbolic, spherical, and product manifolds. The gradient vanishes
+      exactly at coincidence; only the spherical cut locus is refused.
+    root_cause: >-
+      The available primitive was ordinary distance, whose correct refusal
+      was inherited by callers that needed the smooth squared score. The
+      missing node was also absent from the closed AD dispatch registry.
+    fix: >-
+      Added registry row 83 with a BRIDGE backward, native single-form and
+      product producers, direct log-map gradients, exact diagonal and
+      boundary checks, independent golden vectors, and finite differences.
+    evidence: >-
+      squared_distance_gradcheck is pinned to 45 checks and runs the real
+      producers and reverse dispatcher. It covers exact Euclidean values,
+      exact coincidence on all forms and a product, identities, boundary
+      refusals, golden vectors, and finite differences.
+    caught_by: [squared_distance_gradcheck, exhaustive_dispatch_gate]
+    missed_by: [pre-registry-ad-dispatch, ad-oracle, vm-parity]
+    notes: >-
+      This is native-only. The VM has no tensor-valued ad_node_t carrier or
+      matching opcode; the explicit native-only parity row and architecture
+      documentation record that limitation.
