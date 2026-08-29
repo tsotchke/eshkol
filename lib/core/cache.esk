@@ -163,7 +163,7 @@
 (define (memoize-key2 x y)
   (let ((p (open-output-string)))
     (display x p)
-    (display "\x00" p)
+    (display "\x00;" p)
     (display y p)
     (get-output-string p)))
 

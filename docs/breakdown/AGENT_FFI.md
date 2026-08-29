@@ -308,10 +308,10 @@ Before any URL or header reaches libcurl, the Scheme layer runs
        (not (string-contains s "\r"))
        (not (string-contains s "\n"))
        (not (string-contains s "\t"))
-       (not (string-contains s "\x00"))
-       (not (string-contains s "\x0b"))   ;; VT
-       (not (string-contains s "\x0c"))   ;; FF
-       (not (string-contains s "\x7f"))   ;; DEL
+       (not (string-contains s "\x00;"))
+       (not (string-contains s "\x0b;"))   ;; VT
+       (not (string-contains s "\x0c;"))   ;; FF
+       (not (string-contains s "\x7f;"))   ;; DEL
        ))
 ```
 

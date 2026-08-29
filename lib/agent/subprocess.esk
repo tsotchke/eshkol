@@ -158,7 +158,7 @@
        (error "process-spawn-argv: argv element contains literal TAB "
               "(would be re-split by the underlying tab-separated wire "
               "format); pass it via a wrapper or escape it externally" a))
-     (when (string-contains a "\x00")
+     (when (string-contains a "\x00;")
        (error "process-spawn-argv: argv element contains NUL byte "
               "(would truncate at the C boundary)" a)))
    argv))

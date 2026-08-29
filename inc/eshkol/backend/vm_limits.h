@@ -44,6 +44,21 @@
 #define ESHKOL_VM_MAX_CODE 100000
 #endif
 
+/* Packed string/symbol literals carry their pack count in the native-call
+ * operand.  The legacy ids 100/101 remain readable for older ESKB files, but
+ * newly emitted bytecode uses these reserved ids so the runtime never has to
+ * guess where a literal begins on the operand stack.  Keep the ranges below
+ * the signed 32-bit instruction-operand ceiling and outside the host-native
+ * range. */
+#ifndef ESHKOL_VM_PACKED_STRING_MAX_BYTES
+#define ESHKOL_VM_PACKED_STRING_MAX_BYTES (1024 * 1024)
+#endif
+
+#define ESHKOL_VM_PACKED_STRING_FID_BASE 2000000000
+#define ESHKOL_VM_PACKED_SYMBOL_FID_BASE 2100000000
+#define ESHKOL_VM_PACKED_LITERAL_MAX_PACKS \
+    ((ESHKOL_VM_PACKED_STRING_MAX_BYTES + 7) / 8)
+
 /* Per-closure upvalue capacity: the SINGLE source of truth shared by the
  * compiler (vm_parser.c's MAX_UPVALUES, which bounds how many free variables
  * one lexical scope may register) and the runtime closure representation
@@ -110,6 +125,10 @@
 
 #if ESHKOL_VM_MAX_CODE <= 0
 #error "ESHKOL_VM_MAX_CODE must be positive"
+#endif
+
+#if ESHKOL_VM_PACKED_LITERAL_MAX_PACKS >= 100000000
+#error "ESHKOL_VM_PACKED_STRING_MAX_BYTES leaves no safe packed-fid range"
 #endif
 
 #if ESHKOL_VM_MAX_CLOSURE_UPVALUES <= 0

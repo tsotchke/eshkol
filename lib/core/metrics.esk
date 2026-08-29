@@ -163,7 +163,7 @@
   (let loop ((rest vals) (out "") (first? #t))
     (if (null? rest) out
         (loop (cdr rest)
-              (string-append out (if first? "" "\x1f") (label->string (car rest)))
+              (string-append out (if first? "" "\x1f;") (label->string (car rest)))
               #f))))
 
 (define (label->string v)
@@ -354,7 +354,7 @@
 
 (define (split-key s)
   (if (equal? s "") '()
-      (split-on-sep s "\x1f")))
+      (split-on-sep s "\x1f;")))
 
 (define (split-on-sep s sep)
   (let ((idx (string-index s sep)))

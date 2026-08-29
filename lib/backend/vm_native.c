@@ -6637,7 +6637,7 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
  * same conservative depth bound on every platform.
  */
 #define VM_READER_MAX_DEPTH 512
-#define VM_READER_MAX_TOKEN (1024 * 1024)
+#define VM_READER_MAX_TOKEN ESHKOL_VM_PACKED_STRING_MAX_BYTES
 
 static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof);
 static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok);
@@ -7550,6 +7550,68 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     return 1;
 }
 
+/* Build a packed string/symbol when the compiler supplied the exact pack
+ * count in the native-call id.  The old ids 100/101 are still handled by the
+ * legacy stack scan below so previously serialized ESKB remains readable. */
+static void vm_dispatch_packed_literal(VM* vm, int n_packs, int symbol) {
+    int len_pos;
+    int64_t slen64;
+    int slen;
+    char* buf;
+    VmString* s;
+    int32_t ptr;
+
+    if (!vm || n_packs < 0 || n_packs > ESHKOL_VM_PACKED_LITERAL_MAX_PACKS ||
+        vm->sp <= n_packs) {
+        if (vm) vm->error = 1;
+        return;
+    }
+    len_pos = vm->sp - n_packs - 1;
+    if (vm->stack[len_pos].type != VAL_INT) {
+        vm->error = 1;
+        return;
+    }
+    slen64 = vm->stack[len_pos].as.i;
+    if (slen64 < 0 || slen64 > ESHKOL_VM_PACKED_STRING_MAX_BYTES ||
+        (slen64 + 7) / 8 != n_packs) {
+        vm->error = 1;
+        return;
+    }
+    slen = (int)slen64;
+    buf = (char*)malloc((size_t)slen + 1);
+    if (!buf) {
+        vm->error = 1;
+        return;
+    }
+    for (int p = n_packs - 1; p >= 0; p--) {
+        Value pack_v = vm_pop(vm);
+        if (pack_v.type != VAL_INT) {
+            free(buf);
+            vm->error = 1;
+            return;
+        }
+        uint64_t pack = (uint64_t)pack_v.as.i;
+        for (int b = 0; b < 8 && p * 8 + b < slen; b++)
+            buf[p * 8 + b] = (char)((pack >> (b * 8)) & 0xFFu);
+    }
+    vm_pop(vm); /* length */
+    buf[slen] = 0;
+    s = vm_string_new(&vm->heap.regions, buf, slen);
+    free(buf);
+    if (!s) {
+        vm->error = 1;
+        return;
+    }
+    ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return;
+    }
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = s;
+    vm_push(vm, (Value){.type = symbol ? VAL_SYMBOL : VAL_STRING, .as.ptr = ptr});
+}
+
 /**
  * @brief Task #113 — R7RS real-to-complex promotion for `sqrt` and `log`.
  *
@@ -7590,6 +7652,20 @@ static int vm_math_promote_negative(VM* vm, Value a, int is_sqrt) {
 
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
+    if (fid >= ESHKOL_VM_PACKED_STRING_FID_BASE &&
+        fid < ESHKOL_VM_PACKED_STRING_FID_BASE +
+                  ESHKOL_VM_PACKED_LITERAL_MAX_PACKS + 1) {
+        vm_dispatch_packed_literal(
+            vm, fid - ESHKOL_VM_PACKED_STRING_FID_BASE, 0);
+        return;
+    }
+    if (fid >= ESHKOL_VM_PACKED_SYMBOL_FID_BASE &&
+        fid < ESHKOL_VM_PACKED_SYMBOL_FID_BASE +
+                  ESHKOL_VM_PACKED_LITERAL_MAX_PACKS + 1) {
+        vm_dispatch_packed_literal(
+            vm, fid - ESHKOL_VM_PACKED_SYMBOL_FID_BASE, 1);
+        return;
+    }
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
         int slot = fid - ESHKOL_VM_HOST_NATIVE_BASE;
         if (slot >= 0 && slot < g_host_native_count && g_host_natives[slot]) {
@@ -13981,6 +14057,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Peek down to find the length */
         int n_packs_guess = 0;
         int slen = 0;
+        int found_nonzero_length = 0;
+        int found_zero_length = 0;
         /* The compiler pushes: CONST(len), CONST(pack0), ..., CONST(packN-1), NATIVE_CALL 100 */
         /* So TOS-N = len, TOS-(N-1) through TOS-0 = packs, where N = (len+7)/8 */
         /* We need to scan backwards from TOS to find the length */
@@ -13991,13 +14069,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int expected_packs = candidate >= 0 &&
                     candidate <= VM_READER_MAX_TOKEN ? (candidate + 7) / 8 : -1;
                 /* A zero-filled pack is also a valid candidate length of 0.
-                 * Select the furthest matching length slot so an all-NUL
-                 * literal cannot be mistaken for its top zero-valued pack. */
-                if (expected_packs == try_n && try_n >= n_packs_guess) {
+                 * Prefer the nearest positive-length match, which is the
+                 * actual call's length for legacy ESKB, and only use a zero
+                 * length when no positive match exists. New bytecode carries
+                 * the exact count in its reserved fid and does not use this
+                 * compatibility heuristic. */
+                if (expected_packs == try_n && candidate == 0 && try_n == 0) {
+                    found_zero_length = 1;
+                } else if (expected_packs == try_n && !found_nonzero_length) {
                     slen = candidate;
                     n_packs_guess = try_n;
+                    found_nonzero_length = 1;
                 }
             }
+        }
+        if (!found_nonzero_length && !found_zero_length) {
+            vm->error = 1;
+            vm_push(vm, NIL_VAL);
+            break;
         }
         char* buf = (char*)malloc((size_t)slen + 1);
         if (!buf) {

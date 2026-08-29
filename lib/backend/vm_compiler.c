@@ -255,7 +255,8 @@ static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
             pack |= ((int64_t)(unsigned char)symbol[p * 8 + b]) << (b * 8);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
     }
-    chunk_emit(c, OP_NATIVE_CALL, 101);
+    chunk_emit(c, OP_NATIVE_CALL,
+               ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);
 }
 
 /**
@@ -1506,7 +1507,8 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
             }
             chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(pack)));
         }
-        chunk_emit(&func, OP_NATIVE_CALL, 100); /* build-string-from-packed */
+        chunk_emit(&func, OP_NATIVE_CALL,
+                   ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
         for (int i = 0; i < n_fields; i++)
             chunk_emit(&func, OP_GET_LOCAL, i);
         chunk_emit(&func, OP_VEC_CREATE, n_fields + 1); /* +1 for type tag */
@@ -3426,6 +3428,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type == N_STRING) {
         /* String literal → emit packed char data + NATIVE_CALL 100 to build heap string.
          * Pack up to 8 chars per int64 constant, push them, then call build-string. */
+        if (node->string_len > ESHKOL_VM_PACKED_STRING_MAX_BYTES) {
+            vm_compile_error("string literal exceeds the VM string-length ceiling", NULL);
+            return;
+        }
         int len = (int)node->string_len;
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
@@ -3436,7 +3442,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             }
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100); /* build-string-from-packed */
+        chunk_emit(c, OP_NATIVE_CALL,
+                   ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
         return;
     }
 
@@ -4756,7 +4763,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* WASM: no filesystem, skip include */
         return;
 #else
-        const char* path = node->children[1]->symbol;
+        if (node->children[1]->type != N_STRING ||
+            !node->children[1]->string_data) {
+            vm_compile_error("include path must be a string literal", NULL);
+            return;
+        }
+        const char* path = node->children[1]->string_data;
         int fold_case = is_sym(head, "include-ci");
         FILE* incf = fopen(path, "r");
         if (incf) {

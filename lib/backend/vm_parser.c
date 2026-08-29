@@ -1168,7 +1168,8 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                 pack |= ((int64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 101);
+        chunk_emit(c, OP_NATIVE_CALL,
+                   ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);
         return;
     }
     if (datum->type == N_LIST && datum->is_vector) {
