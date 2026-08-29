@@ -44,7 +44,8 @@ ESHKOL_VM="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
 QUANTUM_RUN="$QUANTUM_BUILD_DIR_PATH/eshkol-run"
 
 # The complete-suite harness delegates to older scripts whose BUILD_DIR
-# contract is repository-relative (they invoke ./$BUILD_DIR/eshkol-run).
+# contract is runner-relative (they invoke ./$BUILD_DIR/eshkol-run from the
+# checked-out workspace).
 # Accept either spelling at this boundary, but normalize an absolute path
 # beneath the repository before crossing into that legacy interface.
 case "$BUILD_DIR_PATH" in
@@ -76,7 +77,7 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
     # of either tree mid-run makes the coverage evidence a mixture of two
     # compilers, and a single relink was enough to manufacture a SEGFAULT
     # verdict for a test that passes on a stable build. run_all_tests.sh is
-    # invoked with a repository-relative BUILD_DIR (its interface), so the guard
+    # invoked with a runner-relative BUILD_DIR (its interface), so the guard
     # here is a start/end fingerprint of every relinkable artifact in both trees
     # rather than a redirect at a private copy.
     ESHKOL_TEST_ISOLATION_NO_TRAP=1

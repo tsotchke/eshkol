@@ -187,7 +187,7 @@ jobs:
     runs-on: ${{ fromJSON(matrix.labels) }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     strategy:
       fail-fast: false
       # One runner per node; don't let two lanes fight over the same box's

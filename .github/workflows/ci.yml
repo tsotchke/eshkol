@@ -337,7 +337,7 @@ jobs:
           'ubuntu-22.04' }}
     env:
       MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-surface-manifest
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-surface-manifest
     steps:
       - uses: actions/checkout@v6
       - name: Toolchain preflight (primary mesh; provisioned out of band)
@@ -474,7 +474,7 @@ jobs:
           'ubuntu-22.04' }}
     env:
       MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-assurance-gates
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-assurance-gates
     steps:
       - uses: actions/checkout@v6
       - name: Toolchain preflight (primary mesh; provisioned out of band)
@@ -1235,7 +1235,7 @@ jobs:
              (startsWith(matrix.name, 'linux-arm64-') && vars.ESHKOL_MESH_ARM64_LABELS != '') ||
              (startsWith(matrix.name, 'macos-') && vars.ESHKOL_MESH_MACOS_LABELS != '')) &&
             'true' || 'false' }}
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -1791,7 +1791,7 @@ jobs:
             (github.event_name != 'pull_request' ||
              github.event.pull_request.head.repo.full_name == github.repository) &&
             vars.ESHKOL_MESH_WINDOWS_LABELS != '' && 'true' || 'false' }}
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
     # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
     # CUDA toolkit install and GPU build/test on top. 90 minutes leaves that
@@ -2216,7 +2216,7 @@ jobs:
     timeout-minutes: 45
     env:
       MESH_PRIMARY_JOB: ${{ vars.ESHKOL_MESH_PRIMARY == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-wasm-execute-diff
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-wasm-execute-diff
     steps:
       - uses: actions/checkout@v6
 

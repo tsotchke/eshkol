@@ -24,7 +24,7 @@ jobs:
           fromJSON('["self-hosted", "Linux", "X64", "eshkol", "linux-mesh"]') ||
           'ubuntu-latest' }}
     env:
-      MESH_JOB_BUILD_DIR: ${{ github.workspace }}/.mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-guard
+      MESH_JOB_BUILD_DIR: .mesh-build-${{ github.run_id }}-${{ github.run_attempt }}-guard
     timeout-minutes: 5
     steps:
       - name: Toolchain preflight (primary mesh; provisioned out of band)

@@ -274,7 +274,7 @@ eshkol_test_reset_bin() {
 #       directory.  Point the suite's ESHKOL_RUN at it and a concurrent rebuild
 #       cannot touch what is under test.  Only usable by suites that address the
 #       compiler through an absolute path variable — suites hardcoding
-#       `./$BUILD_DIR/eshkol-run` need the repo-relative build dir and must use
+#       `$BUILD_DIR/eshkol-run` need the runner-relative build dir and must use
 #       the fingerprint guard instead.
 #
 #   eshkol_test_toolchain_snapshot <build_dir> / eshkol_test_toolchain_verify

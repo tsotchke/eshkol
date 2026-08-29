@@ -195,7 +195,7 @@ run_gate_canary() {
     fi
 
     eshkol_test_reset_bin
-    if ! ./"$BUILD_DIR"/eshkol-run "$canary_path" -L./"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+    if ! "$ESHKOL_RUN" "$canary_path" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         echo -e "${RED}COMPILE FAIL${NC}"
         echo -e "${RED}  >>> the canary must compile and then fail at runtime — it did neither${NC}"
         CANARY_HARD_FAIL=1
@@ -256,6 +256,7 @@ echo ""
 # Determine which build directory to use
 # Override with: BUILD_DIR=build-cuda ./scripts/run_gpu_tests.sh
 BUILD_DIR="${BUILD_DIR:-build}"
+ESHKOL_RUN="$BUILD_DIR/eshkol-run"
 
 # Ensure build directory exists
 if [ ! -d "$BUILD_DIR" ]; then
@@ -294,7 +295,7 @@ for test_file in tests/gpu/*.esk; do
     # Clean up stale temp files before each test
     eshkol_test_reset_bin
     # Try to compile
-    if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+    if "$ESHKOL_RUN" "$test_file" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if [ "$test_name" = "cuda_host_sync_regression_test.esk" ]; then
             runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 "$ESHKOL_TEST_BIN")
