@@ -148,6 +148,17 @@ EM_JS(void, eshkol_webgpu_js_set_threshold, (double threshold), {
     if (be && typeof be.setThreshold === "function") be.setThreshold(threshold);
 });
 
+/** @brief Mirror the JS operation-eligibility predicate. The C side cannot
+ *         infer the selected precision tier or an adapter's fused-fma result;
+ *         consulting the same backend object prevents C from reporting a GPU
+ *         dispatch that the browser glue will immediately refuse. */
+EM_JS(int, eshkol_webgpu_js_should_use, (double num_elements), {
+    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
+             globalThis.eshkolWebGPUBackend ||
+             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
+    return (be && typeof be.shouldUse === "function" && be.shouldUse(num_elements)) ? 1 : 0;
+});
+
 /*
  * Asynchronous compute entry points. Each mirrors the matching method of the
  * EshkolWebGPU class in web/eshkol-webgpu.js one-for-one: pointers are wasm
@@ -169,8 +180,10 @@ EM_ASYNC_JS(int, eshkol_webgpu_js_matmul, (void* aPtr, void* bPtr, void* cPtr,
     if (typeof be.supportsOperation === "function" && !be.supportsOperation("matmul")) return 2;
     try {
         be.setMemory(wasmMemory);
-        await be.matmulF64(aPtr, bPtr, cPtr, M, K, N);
-        return 0;
+        var before = Number(be.executionMarker) || 0;
+        var marker = await be.matmulF64(aPtr, bPtr, cPtr, M, K, N);
+        return (Number.isSafeInteger(marker) && marker > before &&
+                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
     } catch (e) {
         if (be.diagnostics) be.diagnostics.push("gemm failed, CPU fallback: " + e);
         return 3;
@@ -190,8 +203,10 @@ EM_ASYNC_JS(int, eshkol_webgpu_js_elementwise, (void* aPtr, void* bPtr,
     if (typeof be.supportsOperation === "function" && !be.supportsOperation("elementwise", op)) return 2;
     try {
         be.setMemory(wasmMemory);
-        await be.elementwiseF64(aPtr, bPtr, outPtr, n, op);
-        return 0;
+        var before = Number(be.executionMarker) || 0;
+        var marker = await be.elementwiseF64(aPtr, bPtr, outPtr, n, op);
+        return (Number.isSafeInteger(marker) && marker > before &&
+                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
     } catch (e) {
         if (be.diagnostics) be.diagnostics.push("elementwise failed, CPU fallback: " + e);
         return 3;
@@ -211,8 +226,10 @@ EM_ASYNC_JS(int, eshkol_webgpu_js_reduce, (void* inPtr, void* outPtr,
     if (typeof be.supportsOperation === "function" && !be.supportsOperation("reduce", op)) return 2;
     try {
         be.setMemory(wasmMemory);
-        await be.reduceF64(inPtr, outPtr, n, op);
-        return 0;
+        var before = Number(be.executionMarker) || 0;
+        var marker = await be.reduceF64(inPtr, outPtr, n, op);
+        return (Number.isSafeInteger(marker) && marker > before &&
+                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
     } catch (e) {
         if (be.diagnostics) be.diagnostics.push("reduce failed, CPU fallback: " + e);
         return 3;
@@ -457,12 +474,14 @@ size_t eshkol_gpu_get_threshold(void) {
 
 /** @brief Decide whether an operation of `num_elements` elements should go to
  *         the GPU: an active backend plus at-or-above the threshold. The JS
- *         side applies one further test (the `exact` precision tier declines
- *         everything), which surfaces here as a bridge fallback, not as a
- *         different answer from this predicate.
+ *         side applies the precision-tier certification test as well;
+ *         unverified `high` and `exact` tiers decline everything, which
+ *         surfaces here as a bridge fallback rather than a different answer
+ *         from this predicate.
  *  @return 1 to use the GPU, 0 for CPU. */
 int eshkol_gpu_should_use(size_t num_elements) {
-    return (g_active_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
+    if (g_active_backend == ESHKOL_GPU_NONE || num_elements < g_gpu_threshold) return 0;
+    return eshkol_webgpu_js_should_use(static_cast<double>(num_elements));
 }
 
 // ============================================================================

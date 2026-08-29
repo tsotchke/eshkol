@@ -44,9 +44,11 @@ WebGPU is part of the same `eshkol_gpu_*` and `eshkol_matmul_dispatch` seam as
 Metal and CUDA. CMake selects `gpu_memory_webgpu.cpp` when `EMSCRIPTEN` is
 true, enables the Emscripten Dawn WebGPU port with
 `--use-port=emdawnwebgpu` (the current replacement for `-sUSE_WEBGPU=1`), and enables
-`-sASYNCIFY` by default through `ESHKOL_WEBGPU_ASYNCIFY`. The page loads
-`eshkol-webgpu.js` and calls `initWebGPU()` before WASM instantiation. If
-`navigator.gpu`, an adapter, Asyncify, or a live device is absent, the active
+`-sASYNCIFY` by default through `ESHKOL_WEBGPU_ASYNCIFY` for the C-side
+`EM_ASYNC_JS` bridge. The page loads `eshkol-webgpu.js`, requires the paired
+`WebAssembly.Suspending`/`WebAssembly.promising` JSPI API, and calls
+`initWebGPU()` before WASM instantiation. If `navigator.gpu`, an adapter,
+Asyncify, JSPI, or a live device is absent, the active
 backend is `ESHKOL_GPU_NONE` and the ordinary CPU path runs.
 
 WGSL has no f64 type. The browser backend therefore has these explicit tiers:
@@ -54,8 +56,8 @@ WGSL has no f64 type. The browser backend therefore has these explicit tiers:
 | Tier | WebGPU behavior | Claim |
 |---|---|---|
 | `exact` | Refuses GPU and falls back to CPU | IEEE f64 correctness remains a CPU/native-backend claim |
-| `high` | df32 `(hi, lo)` f32 emulation | Present but currently refuses browser dispatch until `GPU_GATE_TOL` (default `1e-9`) is met |
-| `fast` | f32 kernels | Never used by the 1e-9 correctness gate; callers must opt into its lower-precision contract |
+| `high` | df32 `(hi, lo)` f32 emulation | Refuses browser dispatch until the live differential gate certifies the compensation path at `GPU_GATE_TOL` (default `1e-9`) |
+| `fast` | f32 kernels | Refused by the 1e-9 gate; callers must explicitly provide a looser `gateTolerance` contract |
 
 The `two_sum` and `two_prod` compensation terms in
 `lib/backend/gpu/wgsl/double_float.wgsl` use a zero-valued storage read as an
@@ -63,8 +65,9 @@ opaque barrier. This is required because WGSL has no precise-math attribute
 and an optimizer may otherwise fold the error term away. The barrier is bound
 by each df32 pipeline and is checked by the browser differential runner.
 
-The verified browser scope is matmul, algebraic elementwise operations, and
-sum/min/max/mean reductions. Transpose, softmax, normalization, and backward
+The browser gate exercises matmul, algebraic elementwise operations, and
+sum/min/max/mean reductions. These remain CPU fallbacks until the live gate
+produces a correctness witness. Transpose, softmax, normalization, and backward
 GPU kernels remain CPU fallbacks until they have their own WGSL implementation
 and a correctness witness; they are not advertised as WebGPU-complete.
 

@@ -74,10 +74,11 @@
         const runtime = new EshkolRuntime();
         await runtime.initWebGPU();
         const response = await fetch('eshkol-site.wasm');
-        const { instance } = await WebAssembly.instantiate(
+        const { instance: rawInstance } = await WebAssembly.instantiate(
           await response.arrayBuffer(),
           runtime.createImports()
         );
+        const instance = runtime.wrapInstance(rawInstance);
         runtime.setInstance(instance);
         if (loadingEl) loadingEl.remove();
 
@@ -93,9 +94,9 @@
           if (anchor) anchor.scrollIntoView();
         };
 
-        const navigate = () => {
+        const navigate = async () => {
           if (instance.exports.scheme_main) {
-            instance.exports.scheme_main(0);
+            await instance.exports.scheme_main(0);
           }
           scrollToFragment();
           if (window.location.pathname === '/downloads' ||
@@ -106,12 +107,12 @@
 
         // Initial render
         if (instance.exports.main) {
-          instance.exports.main(0, 0);
+          await instance.exports.main(0, 0);
         }
         scrollToFragment();
 
         // Back / forward
-        window.addEventListener('popstate', navigate);
+        window.addEventListener('popstate', () => { navigate().catch(console.error); });
 
         // ─── Single unified click handler ──────────────────────────────
         // Priority order prevents interference between handlers:

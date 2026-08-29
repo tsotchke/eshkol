@@ -54,17 +54,17 @@ const CORRUPTIONS = {
         'acc = acc + A[row * d.K + k] * B[col * d.K + k];',
     ],
     gemm_df32: [
-        /acc = df_add\(acc, df_mul\(A\[row \* d\.K \+ k\], B\[k \* d\.N \+ col\]\)\);/,
-        'acc = df_add(acc, df_mul(A[row * d.K + k], B[col * d.K + k]));',
+        /acc = df_add\(acc, df_mul\(A\[row \* d\.K \+ k\], B\[k \* d\.N \+ col\], slot\), slot\);/,
+        'acc = df_add(acc, df_mul(A[row * d.K + k], B[col * d.K + k], slot), slot);',
     ],
     /* Elementwise: make ADD compute a - b. */
     elem: [/case 0u:  \{ r = a \+ b; \}/, 'case 0u:  { r = a - b; }'],
-    elem_df32: [/case 0u: \{ r = df_add\(a, b\); \}/, 'case 0u: { r = df_add(a, df_neg(b)); }'],
-    /* Reduction: drop the last lane from the tree combine. */
-    reduce: [/while \(stride > 0u\) \{/, 'while (stride > 1u) {'],
+    elem_df32: [/case 0u: \{ r = df_add\(a, b, i\); \}/, 'case 0u: { r = df_add(a, df_neg(b), i); }'],
+    /* Reduction: make every partial block empty, producing a wrong identity. */
+    reduce: [/var hi = block_start \+ p\.per_group;/, 'var hi = block_start;'],
     /* Double-float core: break two_prod's error term, which silently degrades
      * df32 to f32 -- the subtlest realistic corruption of the set. */
-    two_prod: [/let e = fma\(a, b, -p\);/, 'let e = 0.0;'],
+    two_prod: [/let e = opaque_f32\(fma\(aa, bb, -p\), slot\);/, 'let e = opaque_f32(0.0, slot);'],
 };
 
 function loadModuleSource() {

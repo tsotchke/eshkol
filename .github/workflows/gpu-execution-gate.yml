@@ -52,6 +52,10 @@ on:
       - 'lib/backend/gpu/**'
       - 'lib/backend/vm_gpu_dispatch.h'
       - 'tests/gpu/gpu_correctness_gate.*'
+      - 'web/**'
+      - 'site/static/eshkol-webgpu.js'
+      - 'site/static/eshkol-runtime.js'
+      - 'scripts/lib/webgpu_diff_runner.mjs'
       - '.github/workflows/gpu-execution-gate.yml'
 
 concurrency:
@@ -78,8 +82,22 @@ jobs:
           # Fresh build every run — correctness is the point, not build
           # caching. Self-hosted runners can set REUSE_BUILDS=1 in their
           # own environment if they persist build-gpu-gate*/ between runs.
-          GPU_GATE_TOL: '1e-4'
+          GPU_GATE_TOL: '1e-9'
         run: ./tests/gpu/gpu_correctness_gate.sh
+
+      - name: Run browser WebGPU differential gate
+        shell: bash
+        env:
+          GPU_GATE_TOL: '1e-9'
+        run: |
+          set +e
+          node scripts/lib/webgpu_diff_runner.mjs
+          rc=$?
+          if [ "$rc" -eq 77 ]; then
+            echo 'webgpu_diff_runner: SKIP - browser WebGPU evidence is unavailable on this runner'
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Upload gate logs
         if: always()

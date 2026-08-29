@@ -145,7 +145,9 @@ int eshkol_gpu_supports_f64(void);
  * `ESHKOL_GPU_PRECISION=default` in the precision-tier docs. On CUDA
  * this returns 1 (same as `eshkol_gpu_supports_f64`). On Metal this
  * returns 1 whenever GPU init succeeded (SF64 is always available).
- * Returns 0 only when no GPU backend is active at all.
+ * WebGPU returns 0 because WGSL has no correct-to-ULP f64 path; it is a
+ * compute backend for the explicitly gated df32/fast tiers, not an fp64
+ * capability. Other backends return 0 when no fp64 path is active.
  *
  * @return 1 if any fp64 path is usable (native or emulated), 0 otherwise.
  */
