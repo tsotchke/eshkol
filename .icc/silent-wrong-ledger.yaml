@@ -6735,3 +6735,42 @@ entries:
       attractive route is liveness-based (let the evacuator's own mark phase
       decide, since it already walks HEAP_CONTINUATION) and belongs with the
       Stage-2 evacuator work rather than here.
+  - id: SW-98
+    bucket: DOC-DEBT
+    status: closed
+    closed_at: "1d36bf45"
+    title: "ESH-0103 documented a deeply nested native compile-time/RSS cliff without a release gate"
+    observed: >-
+      The documentation reported that a roughly 10,000-deep nested expression
+      used excessive JIT time and RSS, but the repository had no bounded,
+      release-wired measurement for the claim. The existing two-point helper
+      measured only AOT time, had no RSS assertion, used host temporary space,
+      and was not registered with CTest or CI.
+    correct: >-
+      Native JIT and AOT compilation of the same generated expression must
+      complete within explicit time and RSS ceilings and keep both ratios
+      approximately linear over the 1,000/4,000/16,000 depth ladder; the VM
+      must retain an agreeing arithmetic parity case.
+    root_cause: >-
+      ArithmeticCodegen had previously inlined the full numeric-tower dispatch
+      at every operator. That produced one LLVM function with O(depth) allocas
+      and O(depth) basic blocks, so SROA's dominance-frontier work became
+      superlinear. The dispatch is now emitted once per binary operator as a
+      cached module-local noinline helper, leaving one call at each nested node;
+      the frontend also distinguishes ordinary non-macro traversal from real
+      macro expansion at its depth guard, so the deep probe reaches codegen.
+    fixed_by: >-
+      lib/backend/arithmetic_codegen.cpp,
+      inc/eshkol/backend/arithmetic_codegen.h (the out-of-line noinline
+      dispatch introduced at 1d36bf45), and
+      lib/frontend/macro_expander.cpp; the bounded gate is
+      tests/perf/nested_expr_compile_time_test.sh, registered in CMakeLists.txt,
+      the Linux CI lane and the v1.3.5 completion oracle.
+    evidence: >-
+      The gate's self-test accepts synthetic linear metrics and rejects
+      synthetic quadratic metrics. Its real run records per-mode wall time,
+      peak RSS and return code for all six JIT/AOT ladder cells in
+      scripts/icc_traces/nested_expr_compile_time_gate.jsonl; the VM parity
+      counterpart is tests/vm_parity/corpus/72_nested_expression.esk.
+    caught_by: [KNOWN_ISSUES, direct-measurement]
+    missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, CI]
