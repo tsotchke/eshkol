@@ -68,6 +68,19 @@
 (display (if (and (eq? distance-cut 'caught) (eq? log-cut 'caught))
              "PASS" "FAIL")) (display ": spherical cut locus refuses") (newline)
 
+;; The angle path must normalize before multiplying or squaring.  These are
+;; orthogonal nonzero vectors at opposite ends of binary64's exponent range;
+;; raw dot/norm arithmetic would underflow or overflow and report zero.
+(define half-pi (/ (acos -1.0) 2.0))
+(define sub-x (tensor 2 4.9406564584124654e-324 0.0))
+(define sub-y (tensor 2 0.0 4.9406564584124654e-324))
+(define wide-x (tensor 2 1e300 0.0))
+(define wide-y (tensor 2 0.0 1e-300))
+(define (angle-close? a b) (< (abs (- a b)) 1e-15))
+(display (if (and (angle-close? (great-circle-distance sub-x sub-y) half-pi)
+                  (angle-close? (great-circle-distance wide-x wide-y) half-pi))
+             "PASS" "FAIL")) (display ": scale-invariant spherical angle") (newline)
+
 (manifold-destroy! h)
 (display "PASS: geometric fallback numeric regression complete")
 (newline)

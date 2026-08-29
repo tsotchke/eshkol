@@ -153,53 +153,91 @@ static int eshkol_rm_points_equal(const double* x, const double* y, int n) {
     return 1;
 }
 
-/* Return cos(theta) after canonicalizing both points to the unit sphere.  The
- * normalization happens before the dot product, so the calculation cannot
- * overflow when R is huge and both callers see the same geometry. */
-static double eshkol_rm_sphere_cosine(const double* x, const double* y, int n) {
-    double xn = eshkol_rm_norm(x, n);
-    double yn = eshkol_rm_norm(y, n);
-    if (!(xn > 0.0) || !(yn > 0.0)) return 1.0;
-    double c = 0.0;
-    for (int i = 0; i < n; i++)
-        c += (x[i] / xn) * (y[i] / yn);
-    return c;
+/* Return whether the two vectors are exactly negatively collinear after
+ * scale-invariant canonicalization.  The old normalized-dot tolerance treated
+ * every point in an O(sqrt(n*epsilon)) angular band as an antipode, which
+ * removed genuine differentiable points.  A cross-product test identifies the
+ * actual singular set instead.  Each vector is max-abs scaled before any
+ * product, and the two-product residual comparison keeps an exact zero exact
+ * even when the products themselves round.
+ */
+static double eshkol_rm_max_abs(const double* a, int n) {
+    double m = 0.0;
+    for (int i = 0; i < n; i++) {
+        double v = fabs(a[i]);
+        if (v > m) m = v;
+    }
+    return m;
 }
 
-/* The angle is not differentiable when cos(theta) reaches -1.  A dot product
- * of n rounded products can miss -1 by O(n*epsilon), even for an exactly
- * collinear binary64 pair whose separately normalized components do not add
- * back to zero.  Use a tolerance tied to that dot-product rounding, not an
- * arbitrary angular band: genuinely non-antipodal representable points stay
- * available to the log map. */
+static int eshkol_rm_product_equal(double a, double b, double c, double d) {
+    double p = a * b;
+    double q = c * d;
+    return p == q && fma(a, b, -p) == fma(c, d, -q);
+}
+
 static int eshkol_rm_sphere_antipodal(const double* x, const double* y, int n) {
-    double c = eshkol_rm_sphere_cosine(x, y, n);
-    double rounding = 8.0 * (double)(n + 1) * DBL_EPSILON;
-    return c <= -1.0 + rounding;
+    double xn = eshkol_rm_max_abs(x, n);
+    double yn = eshkol_rm_max_abs(y, n);
+    if (!(xn > 0.0) || !(yn > 0.0)) return 0;
+
+    int pivot = -1;
+    for (int i = 0; i < n; i++) {
+        double xi = x[i] / xn;
+        double yi = y[i] / yn;
+        if (xi != 0.0 || yi != 0.0) {
+            if (xi == 0.0 || yi == 0.0 || (xi < 0.0) == (yi < 0.0))
+                return 0;
+            if (pivot < 0) pivot = i;
+        }
+    }
+    if (pivot < 0) return 0;
+
+    double xp = x[pivot] / xn;
+    double yp = y[pivot] / yn;
+    for (int i = 0; i < n; i++) {
+        double xi = x[i] / xn;
+        double yi = y[i] / yn;
+        if (!eshkol_rm_product_equal(xi, yp, xp, yi)) return 0;
+    }
+    return 1;
 }
 
-/* Cancellation-free spherical geometry.  The input points are first
- * canonicalized to the requested radius.  If @p u is non-NULL it receives
- * u_x = (bar_y - bar_x) + (E/(2R^2)) bar_x. */
+/* Scale-invariant spherical geometry.  The input points are canonicalized to
+ * unit vectors before any product with the physical radius, so huge and
+ * subnormal inputs follow the same path as ordinary inputs.  The sine is the
+ * norm of the pairwise cross products and the angle cosine is recovered from
+ * the chord; atan2(sin(theta), cos(theta)) remains well-conditioned at both
+ * ends.  The separately accumulated normalized dot is used for the tangent
+ * projection so its radial component is consistent with the input pair.
+ * If @p u is non-NULL it receives the physical tangent
+ * u_x = R * (y_hat - cos(theta) * x_hat). */
 static double eshkol_rm_sphere_angle(const double* x, const double* y,
                                      double R, int n, double* u) {
     double xn = eshkol_rm_norm(x, n);
     double yn = eshkol_rm_norm(y, n);
     double chord = 0.0;
     for (int i = 0; i < n; i++) {
-        double delta = R * (y[i] / yn) - R * (x[i] / xn);
+        double delta = y[i] / yn - x[i] / xn;
         chord = hypot(chord, delta);
     }
-    double chord_over_R = chord / R;
-    double half_chord_sq = 0.5 * chord_over_R * chord_over_R;
-    double un = 0.0;
+    double half_chord_sq = 0.5 * chord * chord;
+    double cosine = 1.0 - half_chord_sq;
+    double tangent_cosine = 0.0;
+    for (int i = 0; i < n; i++)
+        tangent_cosine += (x[i] / xn) * (y[i] / yn);
+    double sine = 0.0;
     for (int i = 0; i < n; i++) {
-        double bar_x = R * (x[i] / xn);
-        double ux = R * (y[i] / yn) - bar_x + half_chord_sq * bar_x;
-        if (u) u[i] = ux;
-        un = hypot(un, ux);
+        double xi = x[i] / xn;
+        double yi = y[i] / yn;
+        for (int j = i + 1; j < n; j++) {
+            double xj = x[j] / xn;
+            double yj = y[j] / yn;
+            sine = hypot(sine, xi * yj - xj * yi);
+        }
+        if (u) u[i] = R * (yi - tangent_cosine * xi);
     }
-    return atan2(un / R, 1.0 - half_chord_sq);
+    return atan2(sine, cosine);
 }
 
 /**
