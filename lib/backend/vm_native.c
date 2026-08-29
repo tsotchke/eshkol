@@ -14624,9 +14624,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 1680: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_alphabetic((int64_t)as_number(a)))); break; }
     case 1681: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_numeric((int64_t)as_number(a)))); break; }
-    case 1682: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isspace(c))); break; }
-    case 1683: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isupper(c))); break; }
-    case 1684: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(islower(c))); break; }
+    case 1682: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_whitespace((int64_t)as_number(a)))); break; }
+    case 1683: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_uppercase((int64_t)as_number(a)))); break; }
+    case 1684: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(eshkol_unicode_is_lowercase((int64_t)as_number(a)))); break; }
     case 1685: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = toupper(c)}); break; }
     case 1686: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = tolower(c)}); break; }
     case 1687: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) == (int)as_number(b))); break; }

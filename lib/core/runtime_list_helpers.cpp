@@ -744,8 +744,7 @@ void eshkol_list_to_vector_sret(eshkol_tagged_value_t* out,
     }
 
     arena_t* arena = get_global_arena();
-    size_t alloc_size = (size_t)n * sizeof(eshkol_tagged_value_t) + 8;
-    void* vec = arena_allocate_with_header(arena, alloc_size, HEAP_SUBTYPE_VECTOR, 0);
+    void* vec = arena_allocate_vector_with_header(arena, (size_t)n);
     if (!vec) return;
 
     *(int64_t*)vec = n;

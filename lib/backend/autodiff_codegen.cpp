@@ -850,11 +850,8 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
     // Is the heap object a scheme vector (subtype VECTOR)?
     b.SetInsertPoint(nd_check);
     llvm::Value* nd_ptr = tagged_.unpackPtr(result_tagged);
-    llvm::Value* nd_hdr = b.CreateGEP(ctx_.int8Type(), nd_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), -8));
-    llvm::Value* nd_sub = b.CreateLoad(ctx_.int8Type(), nd_hdr);
-    llvm::Value* nd_is_vec = b.CreateICmpEQ(nd_sub,
-        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    llvm::Value* nd_is_vec = tagged_.checkHeapSubtype(
+        result_tagged, HEAP_SUBTYPE_VECTOR);
     b.CreateCondBr(nd_is_vec, nd_vec, nd_scalar);
 
     // Vector path: build a scheme vector of per-component derivatives.
