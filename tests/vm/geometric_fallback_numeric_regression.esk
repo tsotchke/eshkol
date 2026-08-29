@@ -56,6 +56,18 @@
 (display (if (= (transition-geometry! h -1.0 0.5) -0.75) "PASS" "FAIL")) (display ": transition geometry") (newline)
 (display (if (= (manifold-interpolate h s 0.5) 0.125) "PASS" "FAIL")) (display ": manifold interpolate") (newline)
 
+;; The spherical cut locus is a genuine domain error on both VM dispatch
+;; bodies. A clamped acos value of pi is not a substitute for a missing log
+;; direction, so both public operations must raise a catchable condition.
+(define sphere-x (tensor 3 1.0 0.0 0.0))
+(define sphere-y (tensor 3 -1.0 0.0 0.0))
+(define distance-cut (guard (e (#t 'caught))
+                            (great-circle-distance sphere-x sphere-y)))
+(define log-cut (guard (e (#t 'caught))
+                       (spherical-log sphere-x sphere-y)))
+(display (if (and (eq? distance-cut 'caught) (eq? log-cut 'caught))
+             "PASS" "FAIL")) (display ": spherical cut locus refuses") (newline)
+
 (manifold-destroy! h)
 (display "PASS: geometric fallback numeric regression complete")
 (newline)

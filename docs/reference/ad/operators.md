@@ -67,8 +67,13 @@ grad_x d²(x,y) = -2 log_x(y)
 
 It is differentiable at `x == y`; the forward value and both point gradients
 are exactly zero there. The spherical antipode remains a refusal because the
-log map is not defined at the cut locus. The bridge is native-only and has an
-explicit VM-parity justification; it does not claim a Scheme or VM surface.
+log map is not defined at the cut locus. Spherical inputs are validated against
+the declared radius `R = 1/sqrt(K)` and then canonicalized for the forward;
+the coordinate backward therefore includes `R/||x||` and `R/||y||` for raw
+accepted coordinates. The shared spherical cut-locus predicate is also used by
+the VM's spherical distance/log operations, which raise a named condition at
+antipodes. The bridge is native-only and has an explicit VM-parity
+justification; it does not claim a Scheme squared-distance surface.
 See [`space_form.h`](../../../inc/eshkol/bridge/space_form.h) and the
 [support matrix](support-matrix.md).
 
