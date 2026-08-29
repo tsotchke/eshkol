@@ -1075,13 +1075,20 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         int nq = (int)q->shape[0], nk = (int)k->shape[0], dim = (int)q->shape[1];
         int vdim = (int)values->shape[1];
         if ((int)k->shape[1] != dim || (int)values->shape[0] < nk) { vm_push(vm, NIL_VAL); break; }
+        if (!isfinite(Kc) || nk <= 0 || dim <= 0 || vdim <= 0) {
+            vm_geometric_raise(vm, "geodesic-attention-forward",
+                               "curvature and tensor dimensions must be finite and positive", Kc);
+            return;
+        }
         if (!vm_geometric_validate_rows(vm, "geodesic-attention-forward",
-                                        q, k, nq, nk, dim, Kc)) break;
+                                        q, k, nq, nk, dim, Kc)) return;
+        double* scores = vm_geometric_scratch(vm, nk, 1);
+        if (!scores) { vm_push(vm, NIL_VAL); break; }
         int64_t shape[2] = {nq, vdim};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         for (int i = 0; i < nq; i++) {
-            double wsum = 0.0;
+            double max_score = -HUGE_VAL;
             for (int j = 0; j < nk; j++) {
                 double distance = 0.0;
                 const char* why = eshkol_rm_distance(
@@ -1089,12 +1096,39 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
                     Kc, dim, &distance);
                 if (why) { vm_geometric_raise(vm, "geodesic-attention-forward", why, Kc); return; }
                 double metric_scale = Kc < 0.0 ? sqrt(-Kc) : 1.0;
-                double w = exp(-distance / (metric_scale * sqrt((double)dim)));
-                wsum += w;
-                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] += w * values->data[j * vdim + d];
+                scores[j] = -distance / (metric_scale * sqrt((double)dim));
+                if (!isfinite(scores[j])) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                       "distance produced a non-finite attention score", Kc);
+                    return;
+                }
+                if (scores[j] > max_score) max_score = scores[j];
             }
-            if (wsum != 0.0)
-                for (int d = 0; d < vdim; d++) out->data[i * vdim + d] /= wsum;
+            if (!isfinite(max_score)) {
+                vm_geometric_raise(vm, "geodesic-attention-forward",
+                                   "attention score maximum is not finite", Kc);
+                return;
+            }
+            double wsum = 0.0;
+            for (int j = 0; j < nk; j++) {
+                scores[j] = exp(scores[j] - max_score);
+                if (!isfinite(scores[j])) {
+                    vm_geometric_raise(vm, "geodesic-attention-forward",
+                                       "softmax produced a non-finite weight", Kc);
+                    return;
+                }
+                wsum += scores[j];
+            }
+            if (!(wsum > 0.0) || !isfinite(wsum)) {
+                vm_geometric_raise(vm, "geodesic-attention-forward",
+                                   "softmax produced an invalid weight sum", Kc);
+                return;
+            }
+            for (int j = 0; j < nk; j++) {
+                double w = scores[j] / wsum;
+                for (int d = 0; d < vdim; d++)
+                    out->data[i * vdim + d] += w * values->data[j * vdim + d];
+            }
         }
         VM_PUSH_TENSOR(vm, out);
         break;

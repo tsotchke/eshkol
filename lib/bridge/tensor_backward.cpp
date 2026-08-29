@@ -1589,46 +1589,64 @@ double scalar_upstream(const ad_node_t* node) {
 /** @brief Gradient of the Poincare-ball distance d(x, y) with respect to both
  *         arguments, for the ball of curvature -c.
  *
- *      d      = acosh(arg)/sqrt(c),   arg = 1 + 2c|x-y|^2/(dx dy)
- *      dx     = 1 - c|x|^2,           dy  = 1 - c|y|^2
- *
- *  d(acosh)/d(arg) = 1/sqrt(arg^2 - 1), and arg depends on x both through the
- *  numerator |x-y|^2 and through dx in the denominator; both terms are kept.
+ *  The direction of the distance gradient is taken from the stable Mobius
+ *  numerator used by eshkol_rm_log_map.  In particular, rebuilding
+ *  acosh(1 + 2c|x-y|^2/(dx dy)) here would round a close distinct pair to
+ *  acosh(1), even though the shared forward computes its distance stably.
  *
  *  @param gx  out, n doubles: d d / d x (may be NULL)
  *  @param gy  out, n doubles: d d / d y (may be NULL)
- *  @return false when the two points coincide (arg <= 1), where the distance
- *          has no derivative, or when either point is outside the ball.
+ *  @return false when the two points coincide, where the distance has no
+ *          derivative, or when either point is outside the ball.
  */
+bool stable_poincare_direction(const double* from, const double* to, double c,
+                               int64_t n, std::vector<double>* direction) {
+    const int dim = (int)n;
+    const double nf = eshkol_rm_one_minus_bnorm2(from, c, dim);
+    const double nt = eshkol_rm_one_minus_bnorm2(to, c, dim);
+    if (!(nf > 0.0) || !(nt > 0.0)) return false;
+
+    const double to2 = eshkol_rm_dot(to, to, dim);
+    const double den = eshkol_rm_mobius_den_negx(from, to, c, dim);
+    const double na = den + c * to2 * nf;
+    direction->resize((size_t)n);
+    double norm = 0.0;
+    for (int64_t i = 0; i < n; ++i) {
+        (*direction)[(size_t)i] = nf * to[i] - na * from[i];
+        norm = std::hypot(norm, (*direction)[(size_t)i]);
+    }
+    if (!(norm > 0.0) || !std::isfinite(norm)) return false;
+    for (int64_t i = 0; i < n; ++i)
+        (*direction)[(size_t)i] /= norm;
+    return true;
+}
+
 bool hyperbolic_distance_grad(const double* x, const double* y, double c,
                               int64_t n, double* gx, double* gy,
                               double* dist_out) {
-    double diff2 = 0.0, xx = 0.0, yy = 0.0;
-    for (int64_t i = 0; i < n; i++) {
-        double dd = x[i] - y[i];
-        diff2 += dd * dd;
-        xx += x[i] * x[i];
-        yy += y[i] * y[i];
+    if (!(c > 0.0) || !std::isfinite(c) || n <= 0) return false;
+    if (eshkol_rm_check_point(x, -c, (int)n) != nullptr ||
+        eshkol_rm_check_point(y, -c, (int)n) != nullptr) return false;
+    bool distinct = false;
+    for (int64_t i = 0; i < n; ++i) {
+        if (x[i] != y[i]) { distinct = true; break; }
     }
-    double dx = 1.0 - c * xx;
-    double dy = 1.0 - c * yy;
-    if (!(dx > 0.0) || !(dy > 0.0)) return false;
+    if (!distinct) return false;
 
-    double arg = 1.0 + 2.0 * c * diff2 / (dx * dy);
-    if (dist_out) *dist_out = (arg > 1.0) ? (std::acosh(arg) / std::sqrt(c)) : 0.0;
+    double distance = 0.0;
+    if (eshkol_rm_distance(x, y, -c, (int)n, &distance) != nullptr ||
+        !std::isfinite(distance)) return false;
+    if (dist_out) *dist_out = distance;
 
-    /* arg == 1 is exactly x == y. sqrt(arg^2 - 1) = 0 there and the distance is
-     * a cone point: the one-sided slopes disagree in every direction, so no
-     * derivative exists to return. */
-    if (!(arg > 1.0)) return false;
-
-    double dacosh = 1.0 / (std::sqrt(c) * std::sqrt(arg * arg - 1.0));
-    if (!std::isfinite(dacosh)) return false;
-
+    std::vector<double> direction_x, direction_y;
+    if (!stable_poincare_direction(x, y, c, n, &direction_x) ||
+        !stable_poincare_direction(y, x, c, n, &direction_y)) return false;
+    const double lambda_x = eshkol_rm_lambda(x, -c, (int)n);
+    const double lambda_y = eshkol_rm_lambda(y, -c, (int)n);
+    if (!std::isfinite(lambda_x) || !std::isfinite(lambda_y)) return false;
     for (int64_t i = 0; i < n; i++) {
-        double num = 4.0 * c * (x[i] - y[i]) / (dx * dy);
-        if (gx) gx[i] = dacosh * (num + 4.0 * c * c * diff2 * x[i] / (dx * dx * dy));
-        if (gy) gy[i] = dacosh * (-num + 4.0 * c * c * diff2 * y[i] / (dx * dy * dy));
+        if (gx) gx[i] = -lambda_x * direction_x[(size_t)i];
+        if (gy) gy[i] = -lambda_y * direction_y[(size_t)i];
     }
     return true;
 }
@@ -1846,21 +1864,20 @@ extern "C" void tensor_poincare_exp_map_backward(ad_node_t* node) {
      * with dcoef/dv_j = k * v_j; splitting it out is what lets the |v| -> 0
      * limit be taken exactly instead of as 0/0. */
     double coef, dcoef_dv_over_v;
-    const double kSmallTangent = 1e-6;      /* below this the series is more accurate */
-    if (vnorm < kSmallTangent) {
+    const double u = sc * vnorm / dx;
+    const double kSmallU = 1e-6;            /* series is in u, not coordinate |v| */
+    if (std::fabs(u) < kSmallU) {
         coef = 1.0 / dx - c * vv / (3.0 * dx * dx * dx);
         dcoef_dv_over_v = -2.0 * c / (3.0 * dx * dx * dx);
     } else {
-        const double u = sc * vnorm / dx;               /* = sc * lambda * |v| / 2 */
         const double th = std::tanh(u);
         const double sech2 = 1.0 - th * th;
         coef = th / (sc * vnorm);
         dcoef_dv_over_v = (sech2 / dx - th / (sc * vnorm)) / vv;
     }
     /* dcoef/dx_j = 2 c x_j sech^2(u) / dx^2 (through lambda_x only). */
-    const double u2 = (vnorm < kSmallTangent) ? 0.0 : (sc * vnorm / dx);
-    const double th2 = std::tanh(u2);
-    const double sech2x = 1.0 - th2 * th2;
+    const double th = std::tanh(u);
+    const double sech2x = 1.0 - th * th;
     const double dcoef_dx_scale = 2.0 * c * sech2x / (dx * dx);
 
     std::vector<double> s((size_t)n);
@@ -1987,10 +2004,25 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                      "operands, got rank %zu.", qn->ndim);
         return;
     }
+    if (kn->ndim != 3 || vn_node->ndim != 3) {
+        eshkol_fatal("geodesic-attention backward: Q, K and V must all have rank 3.");
+        return;
+    }
+    for (size_t d = 0; d < 3; ++d) {
+        if (kn->shape[d] != qn->shape[d] || vn_node->shape[d] != qn->shape[d]) {
+            eshkol_fatal("geodesic-attention backward: Q, K and V shapes must "
+                         "remain identical before row indexing.");
+            return;
+        }
+    }
 
     const size_t batch = (size_t)qn->shape[0];
     const size_t seq   = (size_t)qn->shape[1];
     const size_t dim   = (size_t)qn->shape[2];
+    if (batch == 0 || seq == 0 || dim == 0) {
+        eshkol_fatal("geodesic-attention backward: degenerate Q shape.");
+        return;
+    }
     const int64_t* p6  = (const int64_t*)&node->params;
     const int     heads    = (int)p6[0];
     const size_t  head_dim = (size_t)p6[1];

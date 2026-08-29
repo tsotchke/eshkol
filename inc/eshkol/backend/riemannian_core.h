@@ -142,7 +142,9 @@ static double eshkol_rm_dot(const double* a, const double* b, int n) {
 }
 
 static double eshkol_rm_norm(const double* a, int n) {
-    return sqrt(eshkol_rm_dot(a, a, n));
+    double norm = 0.0;
+    for (int i = 0; i < n; i++) norm = hypot(norm, a[i]);
+    return norm;
 }
 
 /**
@@ -446,9 +448,9 @@ static void eshkol_rm_gyration(const double* a, const double* b, const double* w
  * @return NULL when it is, else a reason naming what is wrong.
  */
 static const char* eshkol_rm_check_point(const double* x, double K, int n) {
-    if (!(K == K)) return "curvature is NaN";
+    if (!isfinite(K)) return "curvature is not finite";
     for (int i = 0; i < n; i++)
-        if (!(x[i] == x[i])) return "a coordinate is NaN";
+        if (!isfinite(x[i])) return "a coordinate is not finite";
     if (K < 0.0) {
         double B = eshkol_rm_ball_param(-K);
         if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
@@ -525,13 +527,16 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
-    double E = 0.0;
-    for (int i = 0; i < n; i++) { double d = x[i] - y[i]; E += d * d; }
-
     if (K == 0.0) {
-        *out = ESHKOL_RM_FLAT_LAMBDA * sqrt(E);
+        double diff_norm = 0.0;
+        for (int i = 0; i < n; i++)
+            diff_norm = hypot(diff_norm, x[i] - y[i]);
+        *out = ESHKOL_RM_FLAT_LAMBDA * diff_norm;
+        if (!isfinite(*out)) return "the computed distance is not finite";
         return NULL;
     }
+    double E = 0.0;
+    for (int i = 0; i < n; i++) { double d = x[i] - y[i]; E += d * d; }
     if (K < 0.0) {
         double B  = eshkol_rm_ball_param(-K);
         double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
@@ -539,6 +544,7 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
         double R  = E / P;
         double ps = eshkol_rm_psi(B * R, NULL, NULL);
         *out = ESHKOL_RM_LAMBDA0 * sqrt(R) * ps;
+        if (!isfinite(*out)) return "the computed distance is not finite";
         return NULL;
     }
     {
@@ -550,6 +556,7 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
             sn += t * t;
         }
         *out = R * atan2(sqrt(sn) / R, cs);
+        if (!isfinite(*out)) return "the computed distance is not finite";
         return NULL;
     }
 }
